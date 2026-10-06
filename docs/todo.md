@@ -117,6 +117,16 @@ written while firn lived in the Whitefoot repository; a path such as
   with Redis's `unit/scripting` and `unit/multi` busy tests. Reopen before
   any deployment that accepts scripts from clients it does not control, or
   when the suite's time matters.
+- **SPOP with a count records one SREM where Redis records one per
+  member.** For a count smaller than the set, firn records one SREM naming
+  every member it popped (`spop_meta` in `firn/commands/sets.wf`); Redis
+  7.0.15 records an SREM for each member (`spopWithCountCommand`, cases 2
+  and 3), which a transaction or a script then wraps with the rest of its
+  records. Both replay to the same set, so only the file's bytes differ.
+  The change: one SREM record per member. Validate with a records case
+  through `check_held_records` or the network path, against Redis's file.
+  Reopen when the file's bytes are compared with Redis's for sets, or when
+  a consumer replays firn's file into Redis.
 - **A list at 2^32 elements drops what is pushed onto it.** firn's lists
   live in a deque whose ceiling is 2^32 elements (`pkg::store::ceiling`);
   a push or a move onto a list at the ceiling drops the element and

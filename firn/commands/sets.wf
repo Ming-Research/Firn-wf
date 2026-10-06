@@ -86,7 +86,6 @@ struct Membership {
 struct Operands {
   wrong: Bool;
   missing: Bool;
-  lapsed: Bool;
   smallest: u64;
   least: u64;
   first: u64;
@@ -149,55 +148,14 @@ fn add_members(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(val
 
 fn run_sadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "SADD key member [member ...]: adds the members to the set, creating it for an absent key, and answers how many were new. A key whose expiry has been reached is removed first, the removal recorded before the addition.";
-  prepare_keys(input: input, args: args, client: client, first: 2_u64);
+  sadd_parse(input: input, args: args, client: client, now: time^.check);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.number = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = add_members(env: client, value: held);
-      }
-      None() => {
-      }
-    }
-    let create = client^.state == state_absent;
-    if client^.state == state_expired {
-      set slot^ = None<Entry>();
-      set create = True();
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if create {
-      let wanted = client^.items.inner.len;
-      let capacity = imax(wanted, 4_u64);
-      if capacity <= ceiling {
-        let members = hash_map_new::<Key, unit, ceiling>(capacity: capacity);
-        set client^.number = add_all(members: &members, client: client);
-        let made = Value::Members(members: move members);
-        let fresh = Entry(value: move made, expires: 0_u64);
-        set slot^ = Some<Entry>(value: move fresh);
-        set client^.state = state_done;
-      }
-    }
-    if client^.state == state_done {
-      if client^.number > 0_u64 {
-        if store^.logging {
-          log_command(log: &m^.log, input: input, args: args);
-        }
-      }
-    }
+    let lapsed = sadd_body(slot: slot, client: client);
+    let appended = set_members_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
   }
-  clear_items(client: client);
-  if client^.state == state_done {
-    let added = cvt.wrap::<u64, i64>(client^.number);
-    reply_integer(client: client, value: added);
-    return unit;
-  }
-  reply_wrong_type(client: client);
+  sadd_finish(client: client);
   return unit;
 }
 
@@ -255,44 +213,14 @@ fn remove_members(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(
 
 fn run_srem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "SREM key member [member ...]: removes the members from the set, removing the key when the set is left empty, and answers how many it held. A key whose expiry has been reached is removed, its removal recorded.";
-  prepare_keys(input: input, args: args, client: client, first: 2_u64);
+  srem_parse(input: input, args: args, client: client, now: time^.check);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.number = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = remove_members(env: client, value: held);
-      }
-      None() => {
-      }
-    }
-    let emptied = client^.state == state_emptied;
-    let lapsed = client^.state == state_expired;
-    let removing = bor(emptied, lapsed);
-    if removing {
-      set slot^ = None<Entry>();
-    }
-    if lapsed {
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if client^.number > 0_u64 {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
-    }
+    let lapsed = srem_body(slot: slot, client: client);
+    let appended = set_members_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
   }
-  clear_items(client: client);
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  let removed = cvt.wrap::<u64, i64>(client^.number);
-  reply_integer(client: client, value: removed);
+  srem_finish(client: client);
   return unit;
 }
 
@@ -393,92 +321,17 @@ fn pop_members(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(val
 
 fn run_spop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "SPOP key [count]: removes and answers a member chosen at random, or an array of up to count of them, removing the key when the set is left empty; more arguments are a syntax error, as in Redis. The file records the pop as Redis records it, so that a replay removes the same members: the members removed as SREM, one command where Redis writes one SREM per member inside a transaction, and a pop with a count that empties the set as DEL of its key. A key whose expiry has been reached is removed, its removal recorded.";
-  if args^.inner.len > 3_u64 {
-    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  let ready = spop_parse(input: input, args: args, client: client, now: time^.check);
+  if bnot(ready) {
     return unit;
   }
-  let counted = args^.inner.len == 3_u64;
-  let wanted = 1_u64;
-  if counted {
-    let amount = arg(args: args, index: 2_u64);
-    let number = read_integer(input: input, start: amount.start, length: amount.length);
-    let negative = number.value < 0_i64;
-    let invalid = number.state != 1_u64;
-    let refused = bor(invalid, negative);
-    if refused {
-      reply_error(client: client, word: &text_positive[0_u64..43_u64]);
-      return unit;
-    }
-    set wanted = cvt.wrap::<i64, u64>(number.value);
-  }
-  clear_items(client: client);
-  let key_span = arg(args: args, index: 1_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.number = wanted;
-  set client^.high = 0_i64;
-  if counted {
-    set client^.high = 1_i64;
-  }
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = pop_members(env: client, value: held);
-      }
-      None() => {
-      }
-    }
-    let emptied = client^.state == state_emptied;
-    let lapsed = client^.state == state_expired;
-    let removing = bor(emptied, lapsed);
-    if removing {
-      set slot^ = None<Entry>();
-    }
-    if lapsed {
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    let popped = client^.items.inner.len;
-    let whole = band(emptied, counted);
-    if whole {
-      if store^.logging {
-        log_count(log: &m^.log, count: 2_u64, room: key_span.length);
-        log_word(log: &m^.log, word: &word_spop_whole[0_u64..3_u64]);
-        log_input(log: &m^.log, input: input, span: key_span);
-      }
-    } else if popped > 0_u64 {
-      if store^.logging {
-        let count = popped +wrap 2_u64;
-        log_count(log: &m^.log, count: count, room: key_span.length);
-        log_word(log: &m^.log, word: &word_srem[0_u64..4_u64]);
-        log_input(log: &m^.log, input: input, span: key_span);
-        for @members (index in 0_u64..popped) {
-          if index < client^.items.inner.len {
-            log_text(log: &m^.log, text: &client^.items.inner[index].bytes);
-          }
-        }
-      }
-    }
+    let lapsed = spop_body(slot: slot, client: client);
+    let appended = spop_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
   }
-  clear_items(client: client);
-  let done = client^.state == state_done;
-  let emptied = client^.state == state_emptied;
-  let answered = bor(done, emptied);
-  if answered {
-    return unit;
-  }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  if counted {
-    reply_set(client: client, count: 0_u64);
-    return unit;
-  }
-  reply_nil(client: client);
+  spop_finish(client: client);
   return unit;
 }
 
@@ -516,30 +369,16 @@ fn set_size(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env) 
 
 fn run_scard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "SCARD key: answers the set's size, 0 for an absent key.";
+  scard_parse(client: client, now: time^.check);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.number = 0_u64;
   atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = set_size(env: client, value: held);
-      }
-      None() => {
-      }
-    }
+    let lapsed = scard_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
-    set client^.number = 0_u64;
   }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  let size = cvt.wrap::<u64, i64>(client^.number);
-  reply_integer(client: client, value: size);
+  scard_finish(client: client);
   return unit;
 }
 
@@ -585,30 +424,16 @@ fn members_out(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
 
 fn run_smembers(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "SMEMBERS key: answers the set's members as a set, an array under RESP2, in no promised order, as in Redis, written into the reply inside the statement that finds the set; an absent key answers an empty set.";
+  smembers_parse(client: client, now: time^.check);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
   atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = members_out(env: client, value: held);
-      }
-      None() => {
-      }
-    }
+    let lapsed = smembers_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
   }
-  if client^.state == state_done {
-    return unit;
-  }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  reply_set(client: client, count: 0_u64);
+  smembers_finish(client: client);
   return unit;
 }
 
@@ -677,44 +502,17 @@ fn members_known(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
 
 fn run_sismember(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, many: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "SISMEMBER key member, and SMISMEMBER key member [member ...] (many): answers 1 when the set holds the member and 0 otherwise, for SMISMEMBER an array of them in the order named, zeros for an absent key. The members are hashed before the statement.";
-  prepare_keys(input: input, args: args, client: client, first: 2_u64);
-  let count = client^.items.inner.len;
+  sismember_parse(input: input, args: args, client: client, now: time^.check, many: many);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.high = 0_i64;
-  if many {
-    set client^.high = 1_i64;
-  }
+  let count = client^.items.inner.len;
   atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = members_known(env: client, value: held);
-      }
-      None() => {
-      }
-    }
+    let lapsed = sismember_body(slot: slot, client: client);
   }
-  clear_items(client: client);
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
   }
-  if client^.state == state_done {
-    return unit;
-  }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  if many {
-    reply_array(client: client, count: count);
-    for @absent (step in 0_u64..count) {
-      reply_integer(client: client, value: 0_i64);
-    }
-    return unit;
-  }
-  reply_integer(client: client, value: 0_i64);
+  sismember_finish(client: client, many: many, count: count);
   return unit;
 }
 
@@ -854,59 +652,19 @@ fn random_members(env: &Client, value: &Entry) -> kind: u64 reads(value), writes
 
 fn run_srandmember(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "SRANDMEMBER key [count]: answers a member chosen at random, or with a count the members random_members chooses, written into the reply inside the statement that finds the set; an absent key answers the null bulk string, or an empty array with a count. As in Redis, more arguments are a syntax error, and a count that is no integer, or is -2^63, whose magnitude no 64-bit integer holds, is refused before the key is looked up.";
-  let count = args^.inner.len;
-  if count > 3_u64 {
-    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  let ready = srandmember_parse(input: input, args: args, client: client, now: time^.check);
+  if bnot(ready) {
     return unit;
-  }
-  let counted = count == 3_u64;
-  let wanted = 1_i64;
-  if counted {
-    let amount = arg(args: args, index: 2_u64);
-    let number = read_integer(input: input, start: amount.start, length: amount.length);
-    if number.state != 1_u64 {
-      reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-      return unit;
-    }
-    if number.value == -9223372036854775808_i64 {
-      reply_error(client: client, word: &text_srandmember_count[0_u64..90_u64]);
-      return unit;
-    }
-    set wanted = number.value;
   }
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.low = wanted;
-  set client^.high = 0_i64;
-  if counted {
-    set client^.high = 1_i64;
-  }
   atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = random_members(env: client, value: held);
-      }
-      None() => {
-      }
-    }
+    let lapsed = srandmember_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
   }
-  if client^.state == state_done {
-    return unit;
-  }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  if counted {
-    reply_array(client: client, count: 0_u64);
-    return unit;
-  }
-  reply_nil(client: client);
+  srandmember_finish(client: client);
   return unit;
 }
 
@@ -1094,103 +852,13 @@ fn place_member(slot: &Option<Entry>, member: Key, keys: &KeyEnv) -> result: uni
 
 fn run_smove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "SMOVE source destination member: moves the member from the source set to the destination set, creating the destination for an absent key and removing the source when it is left empty, and answers 1, or 0 when the source does not hold it. One statement holds both keys' entries through a key set whose returned indices identify the source and destination, so that the move takes effect at one point. As in Redis, both keys are looked up first, each found expired removed with its removal recorded; an absent source answers 0 whatever the destination holds; a key holding another kind is refused; and a source equal to the destination answers whether it holds the member, changing nothing.";
-  let source_place = key_bounds(input: input, args: args, index: 1_u64);
-  let source_key = &input^[source_place.start..source_place.end];
-  let destination_place = key_bounds(input: input, args: args, index: 2_u64);
-  let destination_key = &input^[destination_place.start..destination_place.end];
   let keys = key_set_new(capacity: 2_u64);
-  let source = key_set_insert(keys: &keys, key: source_key);
-  let destination = key_set_insert(keys: &keys, key: destination_key);
-  clear_items(client: client);
-  let member = key_at(input: input, args: args, index: 3_u64);
-  push_item(client: client, item: move member);
-  let now = time^.check;
-  set client^.state = state_absent;
-  set client^.number = 0_u64;
+  let pair = smove_parse(input: input, args: args, client: client, keys: &keys, now: time^.check);
   atomic slots = &store^.keys[keys], m = &store^.meta {
-    let found = entry_none;
-    if source < keys.len {
-      set found = set_kind(slot: &slots^[source], now: now);
-    }
-    let target = entry_none;
-    if destination < keys.len {
-      set target = set_kind(slot: &slots^[destination], now: now);
-    }
-    if found == entry_lapsed {
-      if source < keys.len {
-        set slots^[source] = None<Entry>();
-      }
-      set found = entry_none;
-      if store^.logging {
-        log_removal(log: &m^.log, key: source_key);
-      }
-      if source == destination {
-        set target = entry_none;
-      }
-    }
-    if target == entry_lapsed {
-      if destination < keys.len {
-        set slots^[destination] = None<Entry>();
-      }
-      set target = entry_none;
-      if store^.logging {
-        log_removal(log: &m^.log, key: destination_key);
-      }
-    }
-    let wrong_source = found == entry_other;
-    let wrong_target = target == entry_other;
-    let wrong = bor(wrong_source, wrong_target);
-    if found == entry_none {
-      set client^.state = state_done;
-    } else if wrong {
-      set client^.state = state_wrong;
-    } else if source == destination {
-      set client^.state = state_done;
-      if source < keys.len {
-        if client^.items.inner.len > 0_u64 {
-          let keys_env = client^.keys;
-          let held = entry_holds(slot: &slots^[source], member: &client^.items.inner[0_u64], keys: &keys_env, now: now);
-          if held {
-            set client^.number = 1_u64;
-          }
-        }
-      }
-    } else {
-      set client^.state = state_done;
-      let present = source < keys.len;
-      let prepared = client^.items.inner.len > 0_u64;
-      let possible = band(present, prepared);
-      if possible {
-        let moving = take_back(window: &client^.items.inner);
-        let removed = drop_member(slot: &slots^[source], member: &moving, client: client);
-        if removed {
-          if client^.number == 0_u64 {
-            set slots^[source] = None<Entry>();
-          }
-          let keys_env = client^.keys;
-          if destination < keys.len {
-            place_member(slot: &slots^[destination], member: move moving, keys: &keys_env);
-          } else {
-            let dropped = move moving;
-          }
-          set client^.number = 1_u64;
-          if store^.logging {
-            log_command(log: &m^.log, input: input, args: args);
-          }
-        } else {
-          let dropped = move moving;
-          set client^.number = 0_u64;
-        }
-      }
-    }
+    let work = smove_body(slots: slots, source: pair.source, destination: pair.target, client: client);
+    let appended = smove_meta(log: &m^.log, logged: store^.logging, work: &work, input: input, args: args);
   }
-  clear_items(client: client);
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  let answer = cvt.wrap::<u64, i64>(client^.number);
-  reply_integer(client: client, value: answer);
+  smove_finish(client: client);
   return unit;
 }
 
@@ -1241,10 +909,10 @@ fn operand_argument(payload: u64, first: u64) -> position: u64 pure {
   return 1_u64;
 }
 
-fn survey(slots: &Entries<Entry>, keys: &KeySet, positions: &Box<Slots<u64>>, now: u64) -> found: Operands reads(slots), reads(keys), reads(positions) {
-  doc "What a set operation's keys hold: whether a set holds another kind (wrong), whether one is absent or expired (missing), whether one is expired (lapsed), the position of the smallest live set and its size, ties chosen by first operand occurrence, the first set's position and whether it is named again (repeated), and the destination's position, each position keys' length when there is none.";
+fn survey(slots: &Entries<Entry>, keys: &KeySet, positions: &Box<Slots<u64>>, first: u64, now: u64, removed: &Box<Slots<u64>>) -> found: Operands reads(keys), reads(positions), writes(slots), writes(removed) {
+  doc "Looks up operands in first-occurrence order, removing each expired entry and noting its argument for DEL before gathering, and stops at the first live wrong type. Duplicate operands need only one lookup at the command's fixed time. Reports missing operands, the smallest live set and its size with first-occurrence ties, the first set and whether it repeats, and the destination, using keys' length for no position. A destination not also an operand is not looked up.";
   let no = False();
-  let found = Operands(wrong: no, missing: no, lapsed: no, smallest: keys^.len, least: 18446744073709551615_u64, first: keys^.len, repeated: no, destination: keys^.len);
+  let found = Operands(wrong: no, missing: no, smallest: keys^.len, least: 18446744073709551615_u64, first: keys^.len, repeated: no, destination: keys^.len);
   for @entries (at in 0_u64..keys^.len) {
     let payload = key_position(positions: positions, index: at);
     let storing = iand(payload, operand_store);
@@ -1265,8 +933,11 @@ fn survey(slots: &Entries<Entry>, keys: &KeySet, positions: &Box<Slots<u64>>, no
         let kind = set_kind(slot: &slots^[at], now: now);
         if kind == entry_other {
           set found.wrong = True();
+          return found;
         } else if kind == entry_lapsed {
-          set found.lapsed = True();
+          set slots^[at] = None<Entry>();
+          let position = operand_argument(payload: payload, first: first);
+          note_position(positions: removed, position: position);
           set found.missing = True();
         } else if kind == entry_none {
           set found.missing = True();
@@ -1438,7 +1109,558 @@ fn store_members(slot: &Option<Entry>, members: &HashMap<Key, unit, ceiling>) ->
 }
 
 fn run_combine(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, operation: u64, storing: Bool) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
-  doc "SINTER, SUNION and SDIFF key [key ...], operation_inter, operation_union and operation_diff, answer the intersection of the sets, their union, or the first set's members no other set holds, in no promised order, as in Redis, an absent key counting as an empty set; with storing, SINTERSTORE, SUNIONSTORE and SDIFFSTORE destination key [key ...] store that result at the destination, without an expiry, whatever it held, removing it for an empty result, and answer the result's size. One statement holds every key named through a key set, the destination among them, so that the operation takes effect at one point; a key holding another kind is refused before anything changes. A storing operation removes each set found expired, recording its removal before its own record, and is recorded only when it changes the destination; the others leave a set found expired to remove_expired after the statement.";
+  doc "SINTER, SUNION and SDIFF key [key ...], operation_inter, operation_union and operation_diff, answer the intersection of the sets, their union, or the first set's members no other set holds, in no promised order, as in Redis, an absent key counting as an empty set; with storing, SINTERSTORE, SUNIONSTORE and SDIFFSTORE destination key [key ...] store that result at the destination, without an expiry, whatever it held, removing it for an empty result, and answer the result's size. One statement holds every key named through a key set, the destination among them, so that the operation takes effect at one point. Operands are looked up in key order, removing expired entries before gathering and stopping at the first live wrong type. Their DEL records precede a STORE record, which is appended only when the destination changes.";
+  let keys = set_combine_parse(input: input, args: args, client: client, storing: storing, now: time^.check);
+  let members = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let work = set_combine_body(slots: slots, keys: &keys, client: client, env: env, operation: operation, storing: storing, members: &members);
+    let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &work.removed, changed: work.changed, input: input, args: args);
+  }
+  set_combine_finish(client: client, storing: storing, members: &members);
+  return unit;
+}
+
+fn run_sintercard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
+  doc "SINTERCARD numkeys key [key ...] [LIMIT limit]: answers the size of the sets' intersection, counting no further than the limit when it is not 0, in one statement holding every key named through a key set; an absent key counts as an empty set. As in Redis, before any key is looked up, numkeys must be an integer from 1 to the number of arguments after it, LIMIT, read in either case up to a zero byte, takes an integer that is not negative, a later one replacing an earlier, and anything else after the keys is a syntax error.";
+  let plan = sintercard_parse(input: input, args: args, client: client);
+  if bnot(plan.valid) {
+    return unit;
+  }
+  let keys = sintercard_keys(input: input, args: args, client: client, end: plan.end, now: time^.check);
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let removed = sintercard_body(slots: slots, keys: &keys, client: client, env: env, limit: plan.limit);
+    let changed = False();
+    let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &removed, changed: changed, input: input, args: args);
+  }
+  sintercard_finish(client: client);
+  return unit;
+}
+
+fn sadd_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64) -> result: unit reads(input), reads(args), writes(client) {
+  doc "Prepares SADD once for network and held execution; refusals precede lookup.";
+  prepare_keys(input: input, args: args, client: client, first: 2_u64);
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  return unit;
+}
+
+fn sadd_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool writes(slot), writes(client) {
+  doc "SADD over one entry, preserving its member traversal and random draws.";
+  match slot^ {
+    Some(value: held) => {
+      let edited = add_members(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  let lapsed = client^.state == state_expired;
+  let create = client^.state == state_absent;
+  if client^.state == state_expired {
+    set slot^ = None<Entry>();
+    set create = True();
+  }
+  if create {
+    let wanted = client^.items.inner.len;
+    let capacity = imax(wanted, 4_u64);
+    if capacity <= ceiling {
+      let members = hash_map_new::<Key, unit, ceiling>(capacity: capacity);
+      set client^.number = add_all(members: &members, client: client);
+      let made = Value::Members(members: move members);
+      let fresh = Entry(value: move made, expires: 0_u64);
+      set slot^ = Some<Entry>(value: move fresh);
+      set client^.state = state_done;
+    }
+  }
+  return lapsed;
+}
+
+fn sadd_finish(client: &Client) -> result: unit writes(client) {
+  doc "SADD completes the reply and releases prepared members where needed.";
+  clear_items(client: client);
+  if client^.state == state_done {
+    let added = cvt.wrap::<u64, i64>(client^.number);
+    reply_integer(client: client, value: added);
+    return unit;
+  }
+  reply_wrong_type(client: client);
+  return unit;
+}
+
+fn srem_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64) -> result: unit reads(input), reads(args), writes(client) {
+  doc "Prepares SREM once for network and held execution; refusals precede lookup.";
+  prepare_keys(input: input, args: args, client: client, first: 2_u64);
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  return unit;
+}
+
+fn srem_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool writes(slot), writes(client) {
+  doc "SREM over one entry, preserving its member traversal and random draws.";
+  match slot^ {
+    Some(value: held) => {
+      let edited = remove_members(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  let emptied = client^.state == state_emptied;
+  let lapsed = client^.state == state_expired;
+  let removing = bor(emptied, lapsed);
+  if removing {
+    set slot^ = None<Entry>();
+  }
+  return lapsed;
+}
+
+fn srem_finish(client: &Client) -> result: unit writes(client) {
+  doc "SREM completes the reply and releases prepared members where needed.";
+  clear_items(client: client);
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  let removed = cvt.wrap::<u64, i64>(client^.number);
+  reply_integer(client: client, value: removed);
+  return unit;
+}
+
+fn spop_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64) -> ready: Bool reads(input), reads(args), writes(client) {
+  doc "Prepares SPOP once for network and held execution; refusals precede lookup.";
+  if args^.inner.len > 3_u64 {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+    return False();
+  }
+  let counted = args^.inner.len == 3_u64;
+  let wanted = 1_u64;
+  if counted {
+    let amount = arg(args: args, index: 2_u64);
+    let number = read_integer(input: input, start: amount.start, length: amount.length);
+    let negative = number.value < 0_i64;
+    let invalid = number.state != 1_u64;
+    let refused = bor(invalid, negative);
+    if refused {
+      reply_error(client: client, word: &text_positive[0_u64..43_u64]);
+      return False();
+    }
+    set wanted = cvt.wrap::<i64, u64>(number.value);
+  }
+  clear_items(client: client);
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.number = wanted;
+  set client^.high = 0_i64;
+  if counted {
+    set client^.high = 1_i64;
+  }
+  return True();
+}
+
+fn spop_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool writes(slot), writes(client) {
+  doc "SPOP over one entry, preserving its member traversal and random draws.";
+  match slot^ {
+    Some(value: held) => {
+      let edited = pop_members(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  let emptied = client^.state == state_emptied;
+  let lapsed = client^.state == state_expired;
+  let removing = bor(emptied, lapsed);
+  if removing {
+    set slot^ = None<Entry>();
+  }
+  return lapsed;
+}
+
+fn spop_finish(client: &Client) -> result: unit writes(client) {
+  doc "SPOP completes the reply and releases prepared members where needed.";
+  let counted = client^.high == 1_i64;
+  clear_items(client: client);
+  let done = client^.state == state_done;
+  let emptied = client^.state == state_emptied;
+  let answered = bor(done, emptied);
+  if answered {
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if counted {
+    reply_set(client: client, count: 0_u64);
+    return unit;
+  }
+  reply_nil(client: client);
+  return unit;
+}
+
+fn scard_parse(client: &Client, now: u64) -> result: unit writes(client) {
+  doc "Prepares SCARD once for network and held execution; refusals precede lookup.";
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  return unit;
+}
+
+fn scard_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(slot), writes(client) {
+  doc "SCARD over one entry, preserving its member traversal and random draws.";
+  match slot^ {
+    Some(value: held) => {
+      let found = set_size(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  let lapsed = client^.state == state_expired;
+  return lapsed;
+}
+
+fn scard_finish(client: &Client) -> result: unit writes(client) {
+  doc "SCARD completes the reply and releases prepared members where needed.";
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  let size = cvt.wrap::<u64, i64>(client^.number);
+  reply_integer(client: client, value: size);
+  return unit;
+}
+
+fn smembers_parse(client: &Client, now: u64) -> result: unit writes(client) {
+  doc "Prepares SMEMBERS once for network and held execution; refusals precede lookup.";
+  set client^.now = now;
+  set client^.state = state_absent;
+  return unit;
+}
+
+fn smembers_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(slot), writes(client) {
+  doc "SMEMBERS over one entry, preserving its member traversal and random draws.";
+  match slot^ {
+    Some(value: held) => {
+      let found = members_out(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  let lapsed = client^.state == state_expired;
+  return lapsed;
+}
+
+fn smembers_finish(client: &Client) -> result: unit writes(client) {
+  doc "SMEMBERS completes the reply and releases prepared members where needed.";
+  if client^.state == state_done {
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  reply_set(client: client, count: 0_u64);
+  return unit;
+}
+
+fn sismember_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64, many: Bool) -> result: unit reads(input), reads(args), writes(client) {
+  doc "Prepares SISMEMBER once for network and held execution; refusals precede lookup.";
+  prepare_keys(input: input, args: args, client: client, first: 2_u64);
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.high = 0_i64;
+  if many {
+    set client^.high = 1_i64;
+  }
+  return unit;
+}
+
+fn sismember_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(slot), writes(client) {
+  doc "SISMEMBER over one entry, preserving its member traversal and random draws.";
+  match slot^ {
+    Some(value: held) => {
+      let found = members_known(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  let lapsed = client^.state == state_expired;
+  return lapsed;
+}
+
+fn sismember_finish(client: &Client, many: Bool, count: u64) -> result: unit writes(client) {
+  doc "SISMEMBER completes the reply and releases prepared members where needed.";
+  clear_items(client: client);
+  if client^.state == state_done {
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if many {
+    reply_array(client: client, count: count);
+    for @absent (step in 0_u64..count) {
+      reply_integer(client: client, value: 0_i64);
+    }
+    return unit;
+  }
+  reply_integer(client: client, value: 0_i64);
+  return unit;
+}
+
+fn srandmember_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64) -> ready: Bool reads(input), reads(args), writes(client) {
+  doc "Prepares SRANDMEMBER once for network and held execution; refusals precede lookup.";
+  let count = args^.inner.len;
+  if count > 3_u64 {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+    return False();
+  }
+  let counted = count == 3_u64;
+  let wanted = 1_i64;
+  if counted {
+    let amount = arg(args: args, index: 2_u64);
+    let number = read_integer(input: input, start: amount.start, length: amount.length);
+    if number.state != 1_u64 {
+      reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+      return False();
+    }
+    if number.value == -9223372036854775808_i64 {
+      reply_error(client: client, word: &text_srandmember_count[0_u64..90_u64]);
+      return False();
+    }
+    set wanted = number.value;
+  }
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.low = wanted;
+  set client^.high = 0_i64;
+  if counted {
+    set client^.high = 1_i64;
+  }
+  return True();
+}
+
+fn srandmember_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(slot), writes(client) {
+  doc "SRANDMEMBER over one entry, preserving its member traversal and random draws.";
+  match slot^ {
+    Some(value: held) => {
+      let found = random_members(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  let lapsed = client^.state == state_expired;
+  return lapsed;
+}
+
+fn srandmember_finish(client: &Client) -> result: unit writes(client) {
+  doc "SRANDMEMBER completes the reply and releases prepared members where needed.";
+  let counted = client^.high == 1_i64;
+  if client^.state == state_done {
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if counted {
+    reply_array(client: client, count: 0_u64);
+    return unit;
+  }
+  reply_nil(client: client);
+  return unit;
+}
+
+fn set_members_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log) {
+  doc "SADD and SREM record expiry removal before a command that changed members, returning the number of records.";
+  let changed = client^.number > 0_u64;
+  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key);
+  return appended;
+}
+
+fn spop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log) {
+  doc "Records SPOP exactly as before: DEL for a counted whole set, otherwise one SREM naming the members in their selected order.";
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: lapsed, key: key);
+  let key_span = arg(args: args, index: 1_u64);
+  let counted = client^.high == 1_i64;
+  let emptied = client^.state == state_emptied;
+  let popped = client^.items.inner.len;
+  let whole = band(emptied, counted);
+  if whole {
+    if logged {
+      log_count(log: log, count: 2_u64, room: key_span.length);
+      log_word(log: log, word: &word_spop_whole[0_u64..3_u64]);
+      log_input(log: log, input: input, span: key_span);
+      set appended = appended +wrap 1_u64;
+    }
+  } else if popped > 0_u64 {
+    if logged {
+      let count = popped +wrap 2_u64;
+      log_count(log: log, count: count, room: key_span.length);
+      log_word(log: log, word: &word_srem[0_u64..4_u64]);
+      log_input(log: log, input: input, span: key_span);
+      set appended = appended +wrap 1_u64;
+      for @members (index in 0_u64..popped) {
+        if index < client^.items.inner.len {
+          log_text(log: log, text: &client^.items.inner[index].bytes);
+        }
+      }
+    }
+  }
+  return appended;
+}
+
+fn smove_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, keys: &KeySet, now: u64) -> pair: KeyPair reads(input), reads(args), writes(client), writes(keys) {
+  doc "Prepares SMOVE's two key indices and member once, including an equal source and destination.";
+  let source_place = key_bounds(input: input, args: args, index: 1_u64);
+  let source_key = &input^[source_place.start..source_place.end];
+  let destination_place = key_bounds(input: input, args: args, index: 2_u64);
+  let destination_key = &input^[destination_place.start..destination_place.end];
+  let source = key_set_insert(keys: keys, key: source_key);
+  let destination = key_set_insert(keys: keys, key: destination_key);
+  clear_items(client: client);
+  let member = key_at(input: input, args: args, index: 3_u64);
+  push_item(client: client, item: move member);
+  set client^.now = now;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  return KeyPair(source: source, target: destination);
+}
+
+struct SetMoveWork {
+  source_expired: Bool;
+  target_expired: Bool;
+  changed: Bool;
+}
+
+fn smove_body(slots: &Entries<Entry>, source: u64, destination: u64, client: &Client) -> work: SetMoveWork writes(slots), writes(client) {
+  doc "SMOVE over its key set entries; looks up both before checking the source, and removes an expired entry once even when both indices name it.";
+  let no = False();
+  let work = SetMoveWork(source_expired: no, target_expired: no, changed: no);
+  let found = entry_none;
+  if source < slots^.len {
+    set found = set_kind(slot: &slots^[source], now: client^.now);
+  }
+  let target = entry_none;
+  if destination < slots^.len {
+    set target = set_kind(slot: &slots^[destination], now: client^.now);
+  }
+  if found == entry_lapsed {
+    if source < slots^.len {
+      set slots^[source] = None<Entry>();
+    }
+    set found = entry_none;
+    set work.source_expired = True();
+    if source == destination {
+      set target = entry_none;
+    }
+  }
+  if target == entry_lapsed {
+    if destination < slots^.len {
+      set slots^[destination] = None<Entry>();
+    }
+    set target = entry_none;
+    set work.target_expired = True();
+  }
+  let wrong_source = found == entry_other;
+  let wrong_target = target == entry_other;
+  let wrong = bor(wrong_source, wrong_target);
+  if found == entry_none {
+    set client^.state = state_done;
+  } else if wrong {
+    set client^.state = state_wrong;
+  } else if source == destination {
+    set client^.state = state_done;
+    if source < slots^.len {
+      if client^.items.inner.len > 0_u64 {
+        let keys_env = client^.keys;
+        let held = entry_holds(slot: &slots^[source], member: &client^.items.inner[0_u64], keys: &keys_env, now: client^.now);
+        if held {
+          set client^.number = 1_u64;
+        }
+      }
+    }
+  } else {
+    set client^.state = state_done;
+    let present = source < slots^.len;
+    let prepared = client^.items.inner.len > 0_u64;
+    let possible = band(present, prepared);
+    if possible {
+      let moving = take_back(window: &client^.items.inner);
+      let removed = drop_member(slot: &slots^[source], member: &moving, client: client);
+      if removed {
+        if client^.number == 0_u64 {
+          set slots^[source] = None<Entry>();
+        }
+        let keys_env = client^.keys;
+        if destination < slots^.len {
+          place_member(slot: &slots^[destination], member: move moving, keys: &keys_env);
+        } else {
+          let dropped = move moving;
+        }
+        set client^.number = 1_u64;
+        set work.changed = True();
+      } else {
+        let dropped = move moving;
+        set client^.number = 0_u64;
+      }
+    }
+  }
+  return work;
+}
+
+fn smove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &SetMoveWork, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(work), reads(input), reads(args), writes(log) {
+  doc "Records source then destination removals, then a move that changed members, exactly as on the network.";
+  let source_place = key_bounds(input: input, args: args, index: 1_u64);
+  let source_key = &input^[source_place.start..source_place.end];
+  let target_place = key_bounds(input: input, args: args, index: 2_u64);
+  let target_key = &input^[target_place.start..target_place.end];
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: work^.source_expired, key: source_key);
+  let remaining = changed_meta(log: log, logged: logged, removed: work^.target_expired, changed: work^.changed, input: input, args: args, key: target_key);
+  set appended = appended +wrap remaining;
+  return appended;
+}
+
+fn smove_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes SMOVE's integer or wrong-type reply.";
+  clear_items(client: client);
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  let answer = cvt.wrap::<u64, i64>(client^.number);
+  reply_integer(client: client, value: answer);
+  return unit;
+}
+
+struct SetCombineWork {
+  changed: Bool;
+  removed: Box<Slots<u64>>;
+}
+
+fn set_operands_meta(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(removed), reads(input), reads(args), writes(log) {
+  doc "Records removed operands in the body's order, then any expired STORE destination, followed by the STORE command only when its destination changed.";
+  let appended = 0_u64;
+  if logged {
+    for @removals (at in 0_u64..removed^.inner.len) {
+      if at < removed^.inner.len {
+        let position = removed^.inner[at];
+        let place = key_bounds(input: input, args: args, index: position);
+        let key = &input^[place.start..place.end];
+        log_removal(log: log, key: key);
+        set appended = appended +wrap 1_u64;
+      }
+    }
+    if changed {
+      log_command(log: log, input: input, args: args);
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  return appended;
+}
+
+fn set_combine_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, storing: Bool, now: u64) -> keys: KeySet reads(input), reads(args), writes(client) {
+  doc "Prepares the set operation's insertion-indexed operands, destination and initial state once.";
   let count = args^.inner.len;
   let first = 1_u64;
   if storing {
@@ -1446,71 +1668,56 @@ fn run_combine(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   }
   key_positions(positions: &client^.key_metadata, count: args^.inner.len);
   let keys = operand_keys(input: input, args: args, first: first, end: count, storing: storing, positions: &client^.key_metadata);
-  let now = time^.check;
-  let result = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
-  let lapsed = False();
+  set client^.now = now;
   set client^.state = state_absent;
   set client^.number = 0_u64;
-  atomic slots = &store^.keys[keys], m = &store^.meta {
-    let found = survey(slots: slots, keys: &keys, positions: &client^.key_metadata, now: now);
-    if found.wrong {
-      set client^.state = state_wrong;
-    } else {
-      set client^.state = state_done;
-      if storing {
-        if found.lapsed {
-          for @lapsing (at in 0_u64..keys.len) {
-            let payload = key_position(positions: &client^.key_metadata, index: at);
-            let named = iand(payload, operand_named);
-            if named != 0_u64 {
-              let kind = set_kind(slot: &slots^[at], now: now);
-              if kind == entry_lapsed {
-                set slots^[at] = None<Entry>();
-                if store^.logging {
-                  let position = operand_argument(payload: payload, first: first);
-                  let place = key_bounds(input: input, args: args, index: position);
-                  let key = &input^[place.start..place.end];
-                  log_removal(log: &m^.log, key: key);
-                }
-              }
-            }
+  return move keys;
+}
+
+fn set_combine_body(slots: &Entries<Entry>, keys: &KeySet, client: &Client, env: &KeyEnv, operation: u64, storing: Bool, members: &HashMap<Key, unit, ceiling>) -> work: SetCombineWork reads(keys), reads(env), writes(slots), writes(client), writes(members) {
+  doc "SINTER, SUNION and SDIFF, with or without STORE, over the named entries; the shared survey removes expired operands before gathering or refusing a live wrong type. A nonempty STORE also removes an expired destination and notes its removal after the operands' removals; an empty result deletes the destination without an expiry lookup, as Redis does.";
+  let no = False();
+  let removed = box_slots_new::<u64>(capacity: 0_u64);
+  let work = SetCombineWork(changed: no, removed: move removed);
+  let first = 1_u64;
+  if storing {
+    set first = 2_u64;
+  }
+  let found = survey(slots: slots, keys: keys, positions: &client^.key_metadata, first: first, now: client^.now, removed: &work.removed);
+  if found.wrong {
+    set client^.state = state_wrong;
+  } else {
+    set client^.state = state_done;
+    let size = gather(slots: slots, keys: keys, positions: &client^.key_metadata, found: found, operation: operation, env: env, now: client^.now, result: members);
+    set client^.number = size;
+    if storing {
+      let target = found.destination;
+      if target < slots^.len {
+        let changed = False();
+        if size > 0_u64 {
+          let target_kind = set_kind(slot: &slots^[target], now: client^.now);
+          if target_kind == entry_lapsed {
+            set slots^[target] = None<Entry>();
+            note_position(positions: &work.removed, position: 1_u64);
           }
-        }
-      } else {
-        set lapsed = found.lapsed;
-      }
-      let size = gather(slots: slots, keys: &keys, positions: &client^.key_metadata, found: found, operation: operation, env: env, now: now, result: &result);
-      set client^.number = size;
-      if storing {
-        let target = found.destination;
-        if target < keys.len {
-          let changed = False();
-          if size > 0_u64 {
-            store_members(slot: &slots^[target], members: &result);
+          store_members(slot: &slots^[target], members: members);
+          set changed = True();
+        } else {
+          let present = entry_present(slot: &slots^[target]);
+          if present {
             set changed = True();
-          } else {
-            let present = entry_present(slot: &slots^[target]);
-            if present {
-              set changed = True();
-              set slots^[target] = None<Entry>();
-            }
-          }
-          if changed {
-            if store^.logging {
-              log_command(log: &m^.log, input: input, args: args);
-            }
+            set slots^[target] = None<Entry>();
           }
         }
+        set work.changed = changed;
       }
     }
   }
-  if lapsed {
-    for @lapsing (index in first..count) {
-      let place = key_bounds(input: input, args: args, index: index);
-      let key = &input^[place.start..place.end];
-      remove_expired(store: store, key: key, now: now);
-    }
-  }
+  return move work;
+}
+
+fn set_combine_finish(client: &Client, storing: Bool, members: &HashMap<Key, unit, ceiling>) -> result: unit reads(members), writes(client) {
+  doc "Completes a set operation with its wrong-type error, STORE count, or members in the unchanged result-map traversal order.";
   if client^.state == state_wrong {
     reply_wrong_type(client: client);
     return unit;
@@ -1520,14 +1727,22 @@ fn run_combine(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     reply_integer(client: client, value: answer);
     return unit;
   }
-  let size = hash_map_len::<Key, unit, ceiling>(map: &result);
+  let size = hash_map_len::<Key, unit, ceiling>(map: members);
   reply_set(client: client, count: size);
-  hash_map_each::<Key, unit, Client, fn member_out, ceiling>(map: &result, env: client);
+  hash_map_each::<Key, unit, Client, fn member_out, ceiling>(map: members, env: client);
   return unit;
 }
 
-fn run_sintercard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
-  doc "SINTERCARD numkeys key [key ...] [LIMIT limit]: answers the size of the sets' intersection, counting no further than the limit when it is not 0, in one statement holding every key named through a key set; an absent key counts as an empty set. As in Redis, before any key is looked up, numkeys must be an integer from 1 to the number of arguments after it, LIMIT, read in either case up to a zero byte, takes an integer that is not negative, a later one replacing an earlier, and anything else after the keys is a syntax error.";
+struct SetCardPlan {
+  valid: Bool;
+  end: u64;
+  limit: u64;
+}
+
+fn sintercard_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> plan: SetCardPlan reads(input), reads(args), writes(client) {
+  doc "Reads SINTERCARD's numkeys and LIMIT options and writes their refusals once, before any lookup.";
+  let no = False();
+  let plan = SetCardPlan(valid: no, end: 0_u64, limit: 0_u64);
   let count = args^.inner.len;
   let numbered = arg(args: args, index: 1_u64);
   let numkeys = read_integer(input: input, start: numbered.start, length: numbered.length);
@@ -1536,13 +1751,13 @@ fn run_sintercard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   let refused = bor(invalid, small);
   if refused {
     reply_error(client: client, word: &text_sintercard_numkeys[0_u64..36_u64]);
-    return unit;
+    return plan;
   }
   let named = cvt.wrap::<i64, u64>(numkeys.value);
   let available = count -sat 2_u64;
   if named > available {
     reply_error(client: client, word: &text_sintercard_keys[0_u64..55_u64]);
-    return unit;
+    return plan;
   }
   let end = named +wrap 2_u64;
   let limit = 0_u64;
@@ -1564,48 +1779,56 @@ fn run_sintercard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       let rejected = bor(bad, negative);
       if rejected {
         reply_error(client: client, word: &text_sintercard_limit[0_u64..27_u64]);
-        return unit;
+        return plan;
       }
       set limit = cvt.wrap::<i64, u64>(number.value);
     } else {
       reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
-      return unit;
+      return plan;
     }
     set index = index +wrap 2_u64;
   }
+  set plan.valid = True();
+  set plan.end = end;
+  set plan.limit = limit;
+  return plan;
+}
+
+fn sintercard_keys(input: &[u8], args: &Box<Slots<Span>>, client: &Client, end: u64, now: u64) -> keys: KeySet reads(input), reads(args), writes(client) {
+  doc "Prepares SINTERCARD's key set and initial state after its options are accepted.";
   let not_storing = False();
   key_positions(positions: &client^.key_metadata, count: args^.inner.len);
   let keys = operand_keys(input: input, args: args, first: 2_u64, end: end, storing: not_storing, positions: &client^.key_metadata);
-  let now = time^.check;
-  let unused = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
-  let lapsed = False();
-  let size = 0_u64;
+  set client^.now = now;
   set client^.state = state_done;
-  atomic slots = &store^.keys[keys] {
-    let found = survey(slots: slots, keys: &keys, positions: &client^.key_metadata, now: now);
-    set lapsed = found.lapsed;
-    if found.wrong {
-      set client^.state = state_wrong;
-    } else if found.missing {
-    } else {
-      let every = True();
-      let filtered = True();
-      let counting = False();
-      set size = combine(slots: slots, keys: &keys, positions: &client^.key_metadata, from: found.smallest, env: env, now: now, every: every, wanted: filtered, limit: limit, keep: counting, result: &unused);
-    }
+  set client^.number = 0_u64;
+  return move keys;
+}
+
+fn sintercard_body(slots: &Entries<Entry>, keys: &KeySet, client: &Client, env: &KeyEnv, limit: u64) -> removed: Box<Slots<u64>> reads(keys), reads(env), writes(slots), writes(client) {
+  doc "Counts the intersection after the shared ordered operand lookup, returning the removals to record even on a wrong-type refusal, and preserving LIMIT behavior.";
+  let removed = box_slots_new::<u64>(capacity: 0_u64);
+  let unused = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
+  let found = survey(slots: slots, keys: keys, positions: &client^.key_metadata, first: 2_u64, now: client^.now, removed: &removed);
+  if found.wrong {
+    set client^.state = state_wrong;
+  } else if found.missing {
+  } else {
+    let every = True();
+    let filtered = True();
+    let counting = False();
+    set client^.number = combine(slots: slots, keys: keys, positions: &client^.key_metadata, from: found.smallest, env: env, now: client^.now, every: every, wanted: filtered, limit: limit, keep: counting, result: &unused);
   }
-  if lapsed {
-    for @lapsing (position in 2_u64..end) {
-      let place = key_bounds(input: input, args: args, index: position);
-      let key = &input^[place.start..place.end];
-      remove_expired(store: store, key: key, now: now);
-    }
-  }
+  return move removed;
+}
+
+fn sintercard_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes SINTERCARD's count or wrong-type reply.";
   if client^.state == state_wrong {
     reply_wrong_type(client: client);
     return unit;
   }
-  let answer = cvt.wrap::<u64, i64>(size);
+  let answer = cvt.wrap::<u64, i64>(client^.number);
   reply_integer(client: client, value: answer);
   return unit;
 }
