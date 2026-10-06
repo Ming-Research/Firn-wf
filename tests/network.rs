@@ -5142,6 +5142,39 @@ fn firn_combines_lapsed_sets_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// firn records the sets commands run inside a transaction's EXEC and a script as Redis 7.0.15 propagates them over sets found expired: a read records the removal alone, SADD the removal and then itself, SMOVE onto an expired set the destination's removal and then itself, and a script whose one effect is a removal records it bare. The expected
+/// records are redis-server 7.0.15's (Firn-wf probe run 37504720562).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_sets_commands_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["SADD", "s1", "a"],
+            &["PEXPIREAT", "s1", "1"],
+            &["SADD", "s2", "a", "b"],
+            &["PEXPIREAT", "s2", "1"],
+            &["SADD", "s3", "a"],
+            &["PEXPIREAT", "s3", "1"],
+            &["SADD", "s4", "a"],
+            &["PEXPIREAT", "s4", "1"],
+            &["SADD", "src", "x"],
+        ],
+        &[
+            &["MULTI"],
+            &["SCARD", "s1"],
+            &["SADD", "s2", "n"],
+            &["SMOVE", "src", "s3", "x"],
+            &["EXEC"],
+            &["EVAL", "return redis.call('SPOP', KEYS[1])", "1", "s4"],
+            &["SMEMBERS", "s2"],
+            &["SMEMBERS", "s3"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n:0\r\n:1\r\n:1\r\n$-1\r\n*1\r\n$1\r\nn\r\n*1\r\n$1\r\nx\r\n:2\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ns1\r\n*2\r\n$3\r\nDEL\r\n$2\r\ns2\r\n*3\r\n$4\r\nSADD\r\n$2\r\ns2\r\n$1\r\nn\r\n*2\r\n$3\r\nDEL\r\n$2\r\ns3\r\n*4\r\n$5\r\nSMOVE\r\n$3\r\nsrc\r\n$2\r\ns3\r\n$1\r\nx\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$3\r\nDEL\r\n$2\r\ns4\r\n",
+    );
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
