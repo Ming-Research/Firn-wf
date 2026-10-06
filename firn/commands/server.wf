@@ -156,12 +156,6 @@ fn flush_refused(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> refu
   return True();
 }
 
-fn flush_body(keys: &ConcurrentHashMap<Entry>, fresh: &ConcurrentHashMap<Entry>) -> result: unit writes(keys), writes(fresh) {
-  doc "FLUSHALL and FLUSHDB's body swaps the held map with a fresh held map. The caller keeps the old map until after its statement, as the network path always has.";
-  swap(first: keys, second: fresh);
-  return unit;
-}
-
 fn flush_meta(due: &PriorityQueue<Due, ceiling>, none_due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(input), reads(args), writes(due), writes(none_due), writes(log) {
   doc "FLUSHALL and FLUSHDB's metadata clears the expiry queue and appends the command exactly as sent, even for an empty database, returning its record count. Earlier records in the caller's log are preserved.";
   swap(first: due, second: none_due);
@@ -170,7 +164,7 @@ fn flush_meta(due: &PriorityQueue<Due, ceiling>, none_due: &PriorityQueue<Due, c
 }
 
 fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "FLUSHALL and FLUSHDB through flush_refused, flush_body, flush_meta and reply_ok. The network caller supplies the fresh map, holds it beside the keyspace and metadata, and releases the old map and expiries after that statement and before the reply, under either SYNC or ASYNC. A held caller also needs a fresh held map; the pinned language cannot clear a map through its reference alone.";
+  doc "FLUSHALL and FLUSHDB through flush_refused, a swap of the keyspace's map for a fresh one, flush_meta and reply_ok. The fresh map is held beside the keyspace and metadata, and the old map and expiries are released after that statement and before the reply, under either SYNC or ASYNC. A held caller would need a fresh held map; the pinned language cannot clear a map through its reference alone.";
   let refused = flush_refused(input: input, args: args, client: client);
   if refused {
     return unit;
@@ -178,7 +172,7 @@ fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     let fresh = shared_map_new::<Entry>(capacity: keyspace_capacity);
     let none_due = priority_queue_new::<Due, ceiling>();
     atomic t = &store^.keys, f = &fresh, m = &store^.meta {
-      flush_body(keys: t, fresh: f);
+      swap(first: t, second: f);
       let appended = flush_meta(due: &m^.due, none_due: &none_due, log: &m^.log, logged: store^.logging, input: input, args: args);
     }
   }
