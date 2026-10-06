@@ -67,6 +67,8 @@ const client_info_fixed: Array<u8, 93> = " idle=0 flags=N db=0 sub=0 psub=0 ssub
 
 const client_info_end: Array<u8, 1> = "\n";
 
+const client_info_minus: Array<u8, 1> = "-";
+
 const word_id: Array<u8, 2> =[73_u8, 68_u8];
 
 const word_getname: Array<u8, 7> =[71_u8, 69_u8, 84_u8, 78_u8, 65_u8, 77_u8, 69_u8];
@@ -384,7 +386,7 @@ fn run_client(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result:
 }
 
 fn run_client_info(client: &Client) -> result: unit writes(client) {
-  doc "CLIENT INFO: the connection's line of facts in Redis 7.0.15's form, name=value pairs in Redis's order separated by spaces and ended by a line feed, as text, a bulk string under RESP2 and a verbatim string under RESP3. The fields carry real values where firn has them: the id, the name, the whole seconds since the server began serving the connection, counted on the calendar clock as Redis counts a client's age, and the protocol. Every other field it gives is fixed for firn: idle 0, since the connection's last interaction is the read that brought this command; the flag N and multi -1, no transaction, publish and subscribe or tracking being open while CLIENT runs; database 0, firn's one; no subscriptions; the command client|info; the user default, firn's one; and no tracking redirection. Fields firn cannot measure, the peer's and its own address, which Whitefoot's socket address does not show, the descriptor, the events and the sizes of Redis's buffers, are left out.";
+  doc "CLIENT INFO: the connection's line of facts in Redis 7.0.15's form, name=value pairs in Redis's order separated by spaces and ended by a line feed, as text, a bulk string under RESP2 and a verbatim string under RESP3. The fields carry real values where firn has them: the id, the name, the whole seconds since the server began serving the connection, counted on the calendar clock as Redis counts a client's age, negative when the clock was set back, and the protocol. Every other field it gives is fixed for firn: idle 0, since the connection's last interaction is the read that brought this command; the flag N and multi -1, no transaction, publish and subscribe or tracking being open while CLIENT runs; database 0, firn's one; no subscriptions; the command client|info; the user default, firn's one; and no tracking redirection. Fields firn cannot measure, the peer's and its own address, which Whitefoot's socket address does not show, the descriptor, the events and the sizes of Redis's buffers, are left out.";
   let text = box_slots_new::<u8>(capacity: 256_u64);
   text_word(text: &text, word: &client_info_id[0_u64..3_u64]);
   text_number(text: &text, value: client^.id);
@@ -396,8 +398,14 @@ fn run_client_info(client: &Client) -> result: unit writes(client) {
   text_word(text: &text, word: &client_info_age[0_u64..5_u64]);
   let current = client^.unix_us / 1000000_u64;
   let since = client^.since_us / 1000000_u64;
-  let age = current -sat since;
-  text_number(text: &text, value: age);
+  if since > current {
+    let back = since -wrap current;
+    text_word(text: &text, word: &client_info_minus[0_u64..1_u64]);
+    text_number(text: &text, value: back);
+  } else {
+    let age = current -wrap since;
+    text_number(text: &text, value: age);
+  }
   text_word(text: &text, word: &client_info_fixed[0_u64..93_u64]);
   text_number(text: &text, value: client^.resp);
   text_word(text: &text, word: &client_info_end[0_u64..1_u64]);

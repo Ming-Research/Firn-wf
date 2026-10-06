@@ -3600,7 +3600,8 @@ fn firn_requires_its_password_as_redis_does() {
 /// keyspace is empty; CONFIG RESETSTAT zeroes the connections INFO counts;
 /// and QUIT answers OK and closes the connection, leaving the request after it
 /// unanswered. The expected bytes are redis-server 7.0.15's, started with one
-/// database, but for the ids.
+/// database, but for the ids and the keyspace line, which leaves out the
+/// expires and avg_ttl firn does not count.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_connection_commands_as_redis_does() {
@@ -3687,7 +3688,7 @@ fn firn_answers_connection_commands_as_redis_does() {
         .expect("ask for INFO's fixed sections");
     expect_replies(
         &mut client,
-        b"+OK\r\n$30\r\n# Cluster\r\ncluster_enabled:0\r\n\r\n$0\r\n\r\n$44\r\n# Keyspace\r\ndb0:keys=1,expires=0,avg_ttl=0\r\n\r\n$11\r\n# Modules\r\n\r\n",
+        b"+OK\r\n$30\r\n# Cluster\r\ncluster_enabled:0\r\n\r\n$0\r\n\r\n$26\r\n# Keyspace\r\ndb0:keys=1\r\n\r\n$11\r\n# Modules\r\n\r\n",
         "INFO's fixed sections",
     );
     let defaults = [
@@ -3866,7 +3867,8 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
 /// CLIENT INFO with an argument is Redis's arity error. The line is
 /// redis-server 7.0.15's but for the fields firn leaves out, the addresses,
 /// descriptor, events and buffer sizes, and for the age, 0 or 1 as the second
-/// may turn between the connection and the command.
+/// may turn between the connection and the command, and from 2 after more
+/// than two seconds.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_client_info_as_redis_does() {
@@ -3907,6 +3909,31 @@ fn firn_answers_client_info_as_redis_does() {
         .expect("read the CLIENT INFO batch's replies");
     let returned = String::from_utf8_lossy(&returned).replace(" age=1 ", " age=0 ");
     assert_eq!(returned, expected, "the CLIENT INFO batch");
+    std::thread::sleep(Duration::from_millis(2200));
+    client
+        .write_all(&resp(&["CLIENT", "INFO"]))
+        .expect("ask for the line after two seconds");
+    let later = format!("={}\r\ntxt:{second}\r\n", second.len() + 4);
+    let mut returned = vec![0_u8; later.len()];
+    client
+        .read_exact(&mut returned)
+        .expect("read the line after two seconds");
+    let returned = String::from_utf8_lossy(&returned).into_owned();
+    let age = returned
+        .split(" age=")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("no age in {returned:?}"));
+    assert!(
+        (2..=4).contains(&age),
+        "the age after two seconds: {returned:?}"
+    );
+    assert_eq!(
+        returned.replace(&format!(" age={age} "), " age=0 "),
+        later,
+        "the line after two seconds"
+    );
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);

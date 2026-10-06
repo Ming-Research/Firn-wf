@@ -324,8 +324,8 @@ written while firn lived in the Whitefoot repository; a path such as
   that are true of firn, but no memory used, processor time, commands or
   errors counted, keyspace hits or misses, keys expired or changes since a
   save, so its CPU, Commandstats, Errorstats and Latencystats sections are
-  empty; the keyspace line's `expires` and `avg_ttl` are 0 whatever the keys
-  hold. Tests of Redis's suite that read those fields fail on firn: all three
+  empty, and the keyspace line leaves out `expires` and `avg_ttl`. Tests of
+  Redis's suite that read those fields fail on firn: all three
   of `unit/info-command`, which expect `rejected_calls` in Commandstats, and
   those reading `used_memory`, `total_error_replies` or `expired_keys`.
   Counting `expires` needs the statements that set, clear or remove an
