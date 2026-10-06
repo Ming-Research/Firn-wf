@@ -117,6 +117,19 @@ written while firn lived in the Whitefoot repository; a path such as
   with Redis's `unit/scripting` and `unit/multi` busy tests. Reopen before
   any deployment that accepts scripts from clients it does not control, or
   when the suite's time matters.
+- **A list at 2^32 elements drops what is pushed onto it.** firn's lists
+  live in a deque whose ceiling is 2^32 elements (`pkg::store::ceiling`);
+  a push or a move onto a list at the ceiling drops the element and
+  answers as if it were stored, and LINSERT drops it and answers -1 as for
+  a missing pivot (`firn/commands/lists.wf`, `list_room` and its callers),
+  so LMOVE from another list onto a full one removes the source's element
+  and stores it nowhere. Redis 7.0.15 has no such ceiling
+  on a 64-bit host. The change: refuse the command before it changes
+  anything, with an error naming the limit, and check LMOVE's destination
+  before popping its source. Validate with a list built at the ceiling in
+  a unit test of the deque helpers, since a network case would need tens of
+  gigabytes. Reopen when a workload approaches a billion elements in one
+  list, or with the next change to the list representation.
 - **Replay still differs from Redis's loader in two cases.** A file that
   does not parse, cannot be read or holds a block larger than the input
   window's ceiling now stops firn with status 4, as Redis 7.0.15 exits

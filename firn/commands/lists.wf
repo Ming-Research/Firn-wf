@@ -26,6 +26,7 @@ alias hash_map_lookup = std::collections::hash_map::hash_map_lookup;
 alias hash_map_remove = std::collections::hash_map::hash_map_remove;
 alias log_command = pkg::store::log_command;
 alias read_integer = pkg::bytes::read_integer;
+alias reply_arity = pkg::protocol::reply_arity;
 alias reply_array = pkg::protocol::reply_array;
 alias reply_bulk = pkg::protocol::reply_bulk;
 alias reply_error = pkg::protocol::reply_error;
@@ -212,64 +213,15 @@ fn push_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
 
 fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, front: Bool, existing: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LPUSH key element [element ...] and RPUSH: pushes each element in turn at the list's head (front) or tail, creating the list for an absent key, and answers its length; LPUSHX and RPUSHX (existing) push only onto a list that exists and answer 0 for an absent key. A key whose expiry has been reached is removed first, the removal recorded before the push.";
-  prepare_elements(input: input, args: args, client: client);
+  push_parse(input: input, args: args, client: client, time: time, front: front);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.low = 1_i64;
-  if front {
-    set client^.low = 0_i64;
-  }
+  let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = push_items(env: client, value: held);
-      }
-      None() => {
-      }
-    }
-    if client^.state == state_expired {
-      set slot^ = None<Entry>();
-      set client^.state = state_absent;
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    let create = client^.state == state_absent;
-    if existing {
-      set create = False();
-    }
-    if create {
-      let wanted = client^.items.inner.len;
-      let capacity = imax(wanted, 8_u64);
-      if capacity <= ceiling {
-        let list = deque_new::<Box<Slots<u8>>, ceiling>(capacity: capacity);
-        push_all(list: &list, client: client, front: front);
-        set client^.number = list.inner.len;
-        let made = Value::Items(items: move list);
-        let fresh = Entry(value: move made, expires: 0_u64);
-        set slot^ = Some<Entry>(value: move fresh);
-        set client^.state = state_done;
-      }
-    }
-    if client^.state == state_done {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
-    }
+    let work = push_body(slot: slot, client: client, front: front, existing: existing);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
-  clear_items(client: client);
-  if client^.state == state_done {
-    let length = cvt.wrap::<u64, i64>(client^.number);
-    reply_integer(client: client, value: length);
-    return unit;
-  }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  reply_integer(client: client, value: 0_i64);
+  push_finish(client: client);
   return unit;
 }
 
@@ -339,77 +291,18 @@ fn pop_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(value
 
 fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, front: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LPOP key [count] and RPOP: removes and answers the element at the list's head (front) or tail, or an array of up to count of them, removing the key when the list is left empty; an absent key answers the null bulk string, or the null array when a count is given. A pop that removes nothing, of a count of 0, is not recorded, as Redis does not propagate it, and a key whose expiry has been reached is removed with its removal recorded.";
-  let counted = args^.inner.len == 3_u64;
-  let wanted = 1_u64;
-  if counted {
-    let amount = arg(args: args, index: 2_u64);
-    let number = read_integer(input: input, start: amount.start, length: amount.length);
-    let negative = number.value < 0_i64;
-    let invalid = number.state != 1_u64;
-    let refused = bor(invalid, negative);
-    if refused {
-      reply_error(client: client, word: &text_positive[0_u64..43_u64]);
-      return unit;
-    }
-    set wanted = cvt.wrap::<i64, u64>(number.value);
+  let ready = pop_parse(input: input, args: args, client: client, time: time, front: front);
+  if bnot(ready) {
+    return unit;
   }
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.number = wanted;
-  set client^.low = 1_i64;
-  if front {
-    set client^.low = 0_i64;
-  }
-  set client^.high = 0_i64;
-  if counted {
-    set client^.high = 1_i64;
-  }
+  let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = pop_items(env: client, value: held);
-      }
-      None() => {
-      }
-    }
-    let emptied = client^.state == state_emptied;
-    let lapsed = client^.state == state_expired;
-    let removing = bor(emptied, lapsed);
-    if removing {
-      set slot^ = None<Entry>();
-    }
-    if lapsed {
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    let done = client^.state == state_done;
-    let changed = bor(done, emptied);
-    let popped = client^.number > 0_u64;
-    let recorded = band(changed, popped);
-    if recorded {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
-    }
+    let work = pop_body(slot: slot, client: client);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
-  let done = client^.state == state_done;
-  let emptied = client^.state == state_emptied;
-  let answered = bor(done, emptied);
-  if answered {
-    return unit;
-  }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  if counted {
-    reply_nil_array(client: client);
-    return unit;
-  }
-  reply_nil(client: client);
+  pop_finish(client: client);
   return unit;
 }
 
@@ -481,43 +374,19 @@ fn range_items(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
 
 fn run_lrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LRANGE key start stop: answers the list's elements from start to stop, both inclusive and counted from the tail when negative, written into the reply inside the atomic statement that finds the list.";
-  let first = arg(args: args, index: 2_u64);
-  let last = arg(args: args, index: 3_u64);
-  let start = read_integer(input: input, start: first.start, length: first.length);
-  let stop = read_integer(input: input, start: last.start, length: last.length);
-  let bad_start = start.state != 1_u64;
-  let bad_stop = stop.state != 1_u64;
-  let bad = bor(bad_start, bad_stop);
-  if bad {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  let ready = lrange_parse(input: input, args: args, client: client, time: time);
+  if bnot(ready) {
     return unit;
   }
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.low = start.value;
-  set client^.high = stop.value;
   atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = range_items(env: client, value: held);
-      }
-      None() => {
-      }
-    }
+    lrange_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
   }
-  if client^.state == state_done {
-    return unit;
-  }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  reply_array(client: client, count: 0_u64);
+  lrange_finish(client: client);
   return unit;
 }
 
@@ -555,30 +424,17 @@ fn list_length(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
 
 fn run_llen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LLEN key: answers the list's length, 0 for an absent key.";
+  llen_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.number = 0_u64;
   atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = list_length(env: client, value: held);
-      }
-      None() => {
-      }
-    }
+    llen_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
     set client^.number = 0_u64;
   }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  let length = cvt.wrap::<u64, i64>(client^.number);
-  reply_integer(client: client, value: length);
+  llen_finish(client: client);
   return unit;
 }
 
@@ -671,38 +527,16 @@ fn index_item(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
 
 fn run_lindex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LINDEX key index: answers the element at the index, counted from the tail when negative, written into the reply inside the statement that finds the list, or the null bulk string for an index past either end or an absent key. An index that is no integer is refused only for a key holding a list, since Redis looks the key up first.";
-  let written = arg(args: args, index: 2_u64);
-  let index = read_integer(input: input, start: written.start, length: written.length);
+  lindex_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.low = index.value;
-  set client^.number = index.state;
   atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = index_item(env: client, value: held);
-      }
-      None() => {
-      }
-    }
+    lindex_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
   }
-  if client^.state == state_done {
-    return unit;
-  }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  if client^.state == state_list_invalid {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
-  }
-  reply_nil(client: client);
+  lindex_finish(client: client);
   return unit;
 }
 
@@ -757,54 +591,15 @@ fn set_item(env: &Client, value: &Entry, element: Box<Slots<u8>>) -> kind: u64 w
 
 fn run_lset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LSET key index element: replaces the element at the index, counted from the tail when negative, and answers OK; an absent key is refused as no such key and an index past either end as out of range. An index that is no integer is refused only for a key holding a list, since Redis looks the key up first.";
-  let written = arg(args: args, index: 2_u64);
-  let index = read_integer(input: input, start: written.start, length: written.length);
-  let value_span = arg(args: args, index: 3_u64);
-  let element = argument_element(input: input, span: value_span);
+  lset_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.low = index.value;
-  set client^.number = index.state;
+  let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = set_item(env: client, value: held, element: move element);
-      }
-      None() => {
-        let dropped = move element;
-      }
-    }
-    if client^.state == state_expired {
-      set slot^ = None<Entry>();
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if client^.state == state_done {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
-    }
+    let work = lset_body(slot: slot, client: client, input: input, args: args);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
-  if client^.state == state_done {
-    reply_ok(client: client);
-    return unit;
-  }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  if client^.state == state_list_invalid {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
-  }
-  if client^.state == state_list_range {
-    reply_error(client: client, word: &text_lset_range[0_u64..22_u64]);
-    return unit;
-  }
-  reply_error(client: client, word: &text_lset_no_key[0_u64..15_u64]);
+  lset_finish(client: client);
   return unit;
 }
 
@@ -901,55 +696,18 @@ fn remove_items(env: &Client, value: &Entry, input: &[u8], element: Span) -> kin
 
 fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LREM key count element: removes the elements equal to element, the first count of them for a positive count, the last ones for a negative count and every one for 0, removing the key when the list is left empty, and answers how many it removed; a count that is no integer is refused before the key is looked up, as Redis refuses it.";
-  let written = arg(args: args, index: 2_u64);
-  let count = read_integer(input: input, start: written.start, length: written.length);
-  if count.state != 1_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  let ready = lrem_parse(input: input, args: args, client: client, time: time);
+  if bnot(ready) {
     return unit;
   }
-  let element = arg(args: args, index: 3_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.number = 0_u64;
-  set client^.low = count.value;
+  let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = remove_items(env: client, value: held, input: input, element: element);
-      }
-      None() => {
-      }
-    }
-    let emptied = client^.state == state_emptied;
-    let lapsed = client^.state == state_expired;
-    let removing = bor(emptied, lapsed);
-    if removing {
-      set slot^ = None<Entry>();
-    }
-    if lapsed {
-      set client^.number = 0_u64;
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    let done = client^.state == state_done;
-    let changed = bor(done, emptied);
-    let removed = client^.number > 0_u64;
-    let recorded = band(changed, removed);
-    if recorded {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
-    }
+    let work = lrem_body(slot: slot, client: client, input: input, args: args);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  let answer = cvt.wrap::<u64, i64>(client^.number);
-  reply_integer(client: client, value: answer);
+  lrem_finish(client: client);
   return unit;
 }
 
@@ -1034,55 +792,18 @@ fn trim_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
 
 fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LTRIM key start stop: keeps the list's elements from start to stop, both inclusive and counted from the tail when negative, removing the key when none is kept, and answers OK, for an absent key too. A trim that removes nothing is not recorded, as Redis does not propagate it.";
-  let first = arg(args: args, index: 2_u64);
-  let last = arg(args: args, index: 3_u64);
-  let start = read_integer(input: input, start: first.start, length: first.length);
-  let stop = read_integer(input: input, start: last.start, length: last.length);
-  let bad_start = start.state != 1_u64;
-  let bad_stop = stop.state != 1_u64;
-  let bad = bor(bad_start, bad_stop);
-  if bad {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  let ready = ltrim_parse(input: input, args: args, client: client, time: time);
+  if bnot(ready) {
     return unit;
   }
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.number = 0_u64;
-  set client^.low = start.value;
-  set client^.high = stop.value;
+  let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = trim_items(env: client, value: held);
-      }
-      None() => {
-      }
-    }
-    let emptied = client^.state == state_emptied;
-    let lapsed = client^.state == state_expired;
-    let removing = bor(emptied, lapsed);
-    if removing {
-      set slot^ = None<Entry>();
-    }
-    if lapsed {
-      set client^.number = 0_u64;
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if client^.number > 0_u64 {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
-    }
+    let work = ltrim_body(slot: slot, client: client);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  reply_ok(client: client);
+  ltrim_finish(client: client);
   return unit;
 }
 
@@ -1164,58 +885,18 @@ fn insert_item(env: &Client, value: &Entry, input: &[u8], pivot: Span, element: 
 
 fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LINSERT key BEFORE|AFTER pivot element: inserts the element just before or after the first element equal to the pivot and answers the list's new length, -1 when no element equals the pivot and 0 for an absent key. BEFORE and AFTER are read in either case up to a zero byte, as Redis's strcasecmp reads them, and anything else is a syntax error before the key is looked up.";
-  let where_span = arg(args: args, index: 2_u64);
-  let before = word_at(input: input, span: where_span, word: &word_linsert_before[0_u64..6_u64]);
-  let after = word_at(input: input, span: where_span, word: &word_linsert_after[0_u64..5_u64]);
-  let known = bor(before, after);
-  if known {
-  } else {
-    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  let ready = linsert_parse(input: input, args: args, client: client, time: time);
+  if bnot(ready) {
     return unit;
   }
-  let pivot = arg(args: args, index: 3_u64);
-  let value_span = arg(args: args, index: 4_u64);
-  let element = argument_element(input: input, span: value_span);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
-  set client^.number = 0_u64;
+  let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = insert_item(env: client, value: held, input: input, pivot: pivot, element: move element, after: after);
-      }
-      None() => {
-        let dropped = move element;
-      }
-    }
-    if client^.state == state_expired {
-      set slot^ = None<Entry>();
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if client^.state == state_done {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
-    }
+    let work = linsert_body(slot: slot, client: client, input: input, args: args);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
-  if client^.state == state_done {
-    let length = cvt.wrap::<u64, i64>(client^.number);
-    reply_integer(client: client, value: length);
-    return unit;
-  }
-  if client^.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  if client^.state == state_list_missing {
-    reply_integer(client: client, value: -1_i64);
-    return unit;
-  }
-  reply_integer(client: client, value: 0_i64);
+  linsert_finish(client: client);
   return unit;
 }
 
@@ -1310,99 +991,22 @@ fn seek_items(env: &Seek, value: &Entry, input: &[u8], element: Span, positions:
 
 fn run_lpos(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LPOS key element [RANK rank] [COUNT num-matches] [MAXLEN len]: answers the position of the element's match the rank names, counted from the tail for a negative rank, or with COUNT an array of up to that many positions from that match on, every one for 0, scanning at most MAXLEN elements when it is not 0. Options come in any order, a later one replacing an earlier, each read in either case up to a zero byte and refused, as Redis refuses it, before the key is looked up: a rank that is no integer or is 0, a count or length that is no integer or negative, and an option without its value or unknown. No match, or an absent key, answers the null bulk string, or an empty array with COUNT.";
-  let count = args^.inner.len;
-  let rank = 1_i64;
-  let wanted = 0_i64;
-  let counted = False();
-  let maxlen = 0_u64;
-  let index = 3_u64;
-  loop @options {
-    if index >= count {
-      break @options;
-    }
-    let option = arg(args: args, index: index);
-    let value_index = index +wrap 1_u64;
-    let more = value_index < count;
-    let value = arg(args: args, index: value_index);
-    let number = read_integer(input: input, start: value.start, length: value.length);
-    let invalid = number.state != 1_u64;
-    let negative = number.value < 0_i64;
-    let refused = bor(invalid, negative);
-    let named_rank = word_at(input: input, span: option, word: &word_lpos_rank[0_u64..4_u64]);
-    let named_count = word_at(input: input, span: option, word: &word_count[0_u64..5_u64]);
-    let named_maxlen = word_at(input: input, span: option, word: &word_lpos_maxlen[0_u64..6_u64]);
-    let ranking = band(named_rank, more);
-    let counting = band(named_count, more);
-    let bounding = band(named_maxlen, more);
-    if ranking {
-      if invalid {
-        reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-        return unit;
-      }
-      if number.value == 0_i64 {
-        reply_error(client: client, word: &text_lpos_rank[0_u64..132_u64]);
-        return unit;
-      }
-      set rank = number.value;
-    } else if counting {
-      if refused {
-        reply_error(client: client, word: &text_lpos_count[0_u64..27_u64]);
-        return unit;
-      }
-      set wanted = number.value;
-      set counted = True();
-    } else if bounding {
-      if refused {
-        reply_error(client: client, word: &text_lpos_maxlen[0_u64..28_u64]);
-        return unit;
-      }
-      set maxlen = cvt.wrap::<i64, u64>(number.value);
-    } else {
-      reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
-      return unit;
-    }
-    set index = index +wrap 2_u64;
+  let no = False();
+  let seek = Seek(rank: 1_i64, count: 0_i64, counted: no, maxlen: 0_u64, now: time^.check, state: state_absent);
+  let ready = lpos_parse(input: input, args: args, client: client, time: time, seek: &seek);
+  if bnot(ready) {
+    return unit;
   }
-  let element = arg(args: args, index: 2_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  let seek = Seek(rank: rank, count: wanted, counted: counted, maxlen: maxlen, now: time^.check, state: state_absent);
   let positions = box_slots_new::<u64>(capacity: 0_u64);
   atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = seek_items(env: &seek, value: held, input: input, element: element, positions: &positions);
-      }
-      None() => {
-      }
-    }
+    lpos_body(slot: slot, input: input, args: args, seek: &seek, positions: &positions);
   }
   if seek.state == state_expired {
     remove_expired(store: store, key: key, now: seek.now);
   }
-  if seek.state == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  let found = positions.inner.len;
-  if counted {
-    reply_array(client: client, count: found);
-    for @answers (at in 0_u64..found) {
-      if at < positions.inner.len {
-        let position = positions.inner[at];
-        let signed = cvt.wrap::<u64, i64>(position);
-        reply_integer(client: client, value: signed);
-      }
-    }
-    return unit;
-  }
-  if positions.inner.len > 0_u64 {
-    let position = positions.inner[0_u64];
-    let signed = cvt.wrap::<u64, i64>(position);
-    reply_integer(client: client, value: signed);
-    return unit;
-  }
-  reply_nil(client: client);
+  lpos_finish(client: client, seek: &seek, positions: &positions);
   return unit;
 }
 
@@ -1521,93 +1125,750 @@ fn end_named(input: &[u8], span: Span) -> end: u64 reads(input) {
 
 fn run_lmove_named(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LMOVE source destination LEFT|RIGHT LEFT|RIGHT: reads the two ends, the source's first, refusing anything but LEFT or RIGHT as a syntax error before any key is looked up, and moves the element as run_lmove does.";
-  let from_span = arg(args: args, index: 3_u64);
-  let from = end_named(input: input, span: from_span);
-  if from == 0_u64 {
-    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  let ready = lmove_parse(input: input, args: args, client: client);
+  if bnot(ready) {
     return unit;
   }
-  let to_span = arg(args: args, index: 4_u64);
-  let to = end_named(input: input, span: to_span);
-  if to == 0_u64 {
-    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
-    return unit;
-  }
-  let from_head = from == 1_u64;
-  let to_head = to == 1_u64;
+  let from_head = client^.low == 0_i64;
+  let to_head = client^.high == 0_i64;
   run_lmove(store: store, input: input, args: args, client: client, env: env, time: time, from_head: from_head, to_head: to_head);
   return unit;
 }
 
 fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, from_head: Bool, to_head: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LMOVE source destination LEFT|RIGHT LEFT|RIGHT and RPOPLPUSH source destination, which moves from the tail to the head: removes the element at the source list's head (from_head) or tail, pushes it onto the destination list's head (to_head) or tail, creating the destination for an absent key and removing the source when it is left empty, and answers the element; a source equal to the destination rotates the list. One statement holds both keys' entries through a key set whose returned indices identify the source and destination, so that the move takes effect at one point. As in Redis, an absent source answers the null bulk string without the destination being looked at, a key holding another kind is refused, and a key found expired is removed, its removal recorded before the move.";
-  let source_place = key_bounds(input: input, args: args, index: 1_u64);
-  let source_key = &input^[source_place.start..source_place.end];
-  let destination_place = key_bounds(input: input, args: args, index: 2_u64);
-  let destination_key = &input^[destination_place.start..destination_place.end];
-  let keys = key_set_new(capacity: 2_u64);
-  let source = key_set_insert(keys: &keys, key: source_key);
-  let destination = key_set_insert(keys: &keys, key: destination_key);
-  let now = time^.check;
+  let ks = key_set_new(capacity: 2_u64);
+  let pair = rename_parse(input: input, args: args, keys: &ks);
+  set client^.now = time^.check;
+  let logged = store^.logging;
+  atomic slots = &store^.keys[ks], m = &store^.meta {
+    let work = lmove_body(slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
+    let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args);
+  }
+  lmove_finish(client: client);
+  return unit;
+}
+
+struct ListWork {
+  removed: Bool;
+  changed: Bool;
+}
+
+fn push_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool) -> result: unit reads(input), reads(args), reads(time), writes(client) {
+  doc "PUSH parsing and request state, shared by the network and held callers.";
+  prepare_elements(input: input, args: args, client: client);
+  set client^.now = time^.check;
   set client^.state = state_absent;
-  atomic slots = &store^.keys[keys], m = &store^.meta {
-    let found = entry_none;
-    if source < keys.len {
-      set found = list_kind(slot: &slots^[source], now: now);
+  set client^.low = 1_i64;
+  if front {
+    set client^.low = 0_i64;
+  }
+  return unit;
+}
+
+fn push_body(slot: &Option<Entry>, client: &Client, front: Bool, existing: Bool) -> work: ListWork writes(slot), writes(client) {
+  doc "PUSH over its held entry; reports expired removal and whether the original command must be recorded.";
+  let removed = False();
+  let changed = False();
+  match slot^ {
+    Some(value: held) => {
+      let edited = push_items(env: client, value: held);
     }
-    if found == entry_lapsed {
-      if source < keys.len {
-        set slots^[source] = None<Entry>();
+    None() => {
+    }
+  }
+  if client^.state == state_expired {
+    set slot^ = None<Entry>();
+    set client^.state = state_absent;
+    set removed = True();
+  }
+  let create = client^.state == state_absent;
+  if existing {
+    set create = False();
+  }
+  if create {
+    let wanted = client^.items.inner.len;
+    let capacity = imax(wanted, 8_u64);
+    if capacity <= ceiling {
+      let list = deque_new::<Box<Slots<u8>>, ceiling>(capacity: capacity);
+      push_all(list: &list, client: client, front: front);
+      set client^.number = list.inner.len;
+      let made = Value::Items(items: move list);
+      let fresh = Entry(value: move made, expires: 0_u64);
+      set slot^ = Some<Entry>(value: move fresh);
+      set client^.state = state_done;
+    }
+  }
+  if client^.state == state_done {
+    set changed = True();
+  }
+  return ListWork(removed: removed, changed: changed);
+}
+
+fn push_finish(client: &Client) -> result: unit writes(client) {
+  doc "PUSH reply after the shared body.";
+  clear_items(client: client);
+  if client^.state == state_done {
+    let length = cvt.wrap::<u64, i64>(client^.number);
+    reply_integer(client: client, value: length);
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  reply_integer(client: client, value: 0_i64);
+  return unit;
+}
+
+fn pop_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool) -> ready: Bool reads(input), reads(args), reads(time), writes(client) {
+  doc "POP parsing and request state, shared by the network and held callers.";
+  if args^.inner.len > 3_u64 {
+    let name = arg(args: args, index: 0_u64);
+    reply_arity(client: client, input: input, name: name);
+    return False();
+  }
+  let counted = args^.inner.len == 3_u64;
+  let wanted = 1_u64;
+  if counted {
+    let amount = arg(args: args, index: 2_u64);
+    let number = read_integer(input: input, start: amount.start, length: amount.length);
+    let negative = number.value < 0_i64;
+    let invalid = number.state != 1_u64;
+    let refused = bor(invalid, negative);
+    if refused {
+      reply_error(client: client, word: &text_positive[0_u64..43_u64]);
+      return False();
+    }
+    set wanted = cvt.wrap::<i64, u64>(number.value);
+  }
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.number = wanted;
+  set client^.low = 1_i64;
+  if front {
+    set client^.low = 0_i64;
+  }
+  set client^.high = 0_i64;
+  if counted {
+    set client^.high = 1_i64;
+  }
+  return True();
+}
+
+fn pop_body(slot: &Option<Entry>, client: &Client) -> work: ListWork writes(slot), writes(client) {
+  doc "POP over its held entry; reports expired removal and whether the original command must be recorded.";
+  let removed = False();
+  let changed = False();
+  match slot^ {
+    Some(value: held) => {
+      let edited = pop_items(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  let emptied = client^.state == state_emptied;
+  let lapsed = client^.state == state_expired;
+  let removing = bor(emptied, lapsed);
+  if removing {
+    set slot^ = None<Entry>();
+  }
+  if lapsed {
+    set removed = True();
+  }
+  let done = client^.state == state_done;
+  let completed = bor(done, emptied);
+  let popped = client^.number > 0_u64;
+  let recorded = band(completed, popped);
+  if recorded {
+    set changed = True();
+  }
+  return ListWork(removed: removed, changed: changed);
+}
+
+fn pop_finish(client: &Client) -> result: unit writes(client) {
+  doc "POP reply after the shared body.";
+  let done = client^.state == state_done;
+  let emptied = client^.state == state_emptied;
+  let answered = bor(done, emptied);
+  if answered {
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if client^.high == 1_i64 {
+    reply_nil_array(client: client);
+    return unit;
+  }
+  reply_nil(client: client);
+  return unit;
+}
+
+fn lrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> ready: Bool reads(input), reads(args), reads(time), writes(client) {
+  doc "LRANGE parsing and request state, shared by the network and held callers.";
+  let first = arg(args: args, index: 2_u64);
+  let last = arg(args: args, index: 3_u64);
+  let start = read_integer(input: input, start: first.start, length: first.length);
+  let stop = read_integer(input: input, start: last.start, length: last.length);
+  let bad_start = start.state != 1_u64;
+  let bad_stop = stop.state != 1_u64;
+  let bad = bor(bad_start, bad_stop);
+  if bad {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return False();
+  }
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.low = start.value;
+  set client^.high = stop.value;
+  return True();
+}
+
+fn lrange_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+  doc "LRANGE over its held entry; live values use the existing reply writer and expired entries record state_expired.";
+  match slot^ {
+    Some(value: held) => {
+      let found = range_items(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn lrange_finish(client: &Client) -> result: unit writes(client) {
+  doc "LRANGE reply after the shared body.";
+  if client^.state == state_done {
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  reply_array(client: client, count: 0_u64);
+  return unit;
+}
+
+fn llen_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(time), writes(client) {
+  doc "LLEN parsing and request state, shared by the network and held callers.";
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  return unit;
+}
+
+fn llen_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+  doc "LLEN over its held entry; live values use the existing reply writer and expired entries record state_expired.";
+  match slot^ {
+    Some(value: held) => {
+      let found = list_length(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn llen_finish(client: &Client) -> result: unit writes(client) {
+  doc "LLEN reply after the shared body.";
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  let length = cvt.wrap::<u64, i64>(client^.number);
+  reply_integer(client: client, value: length);
+  return unit;
+}
+
+fn lindex_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(input), reads(args), reads(time), writes(client) {
+  doc "LINDEX parsing and request state, shared by the network and held callers.";
+  let written = arg(args: args, index: 2_u64);
+  let index = read_integer(input: input, start: written.start, length: written.length);
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.low = index.value;
+  set client^.number = index.state;
+  return unit;
+}
+
+fn lindex_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+  doc "LINDEX over its held entry; live values use the existing reply writer and expired entries record state_expired.";
+  match slot^ {
+    Some(value: held) => {
+      let found = index_item(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn lindex_finish(client: &Client) -> result: unit writes(client) {
+  doc "LINDEX reply after the shared body.";
+  if client^.state == state_done {
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if client^.state == state_list_invalid {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return unit;
+  }
+  reply_nil(client: client);
+  return unit;
+}
+
+fn lset_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(input), reads(args), reads(time), writes(client) {
+  doc "LSET parsing and request state, shared by the network and held callers.";
+  let written = arg(args: args, index: 2_u64);
+  let index = read_integer(input: input, start: written.start, length: written.length);
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.low = index.value;
+  set client^.number = index.state;
+  return unit;
+}
+
+fn lset_body(slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(input), reads(args), writes(slot), writes(client) {
+  doc "LSET over its held entry; reports expired removal and whether the original command must be recorded.";
+  let removed = False();
+  let changed = False();
+  let value_span = arg(args: args, index: 3_u64);
+  let element = argument_element(input: input, span: value_span);
+  match slot^ {
+    Some(value: held) => {
+      let edited = set_item(env: client, value: held, element: move element);
+    }
+    None() => {
+      let dropped = move element;
+    }
+  }
+  if client^.state == state_expired {
+    set slot^ = None<Entry>();
+    set removed = True();
+  }
+  if client^.state == state_done {
+    set changed = True();
+  }
+  return ListWork(removed: removed, changed: changed);
+}
+
+fn lset_finish(client: &Client) -> result: unit writes(client) {
+  doc "LSET reply after the shared body.";
+  if client^.state == state_done {
+    reply_ok(client: client);
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if client^.state == state_list_invalid {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return unit;
+  }
+  if client^.state == state_list_range {
+    reply_error(client: client, word: &text_lset_range[0_u64..22_u64]);
+    return unit;
+  }
+  reply_error(client: client, word: &text_lset_no_key[0_u64..15_u64]);
+  return unit;
+}
+
+fn lrem_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> ready: Bool reads(input), reads(args), reads(time), writes(client) {
+  doc "LREM parsing and request state, shared by the network and held callers.";
+  let written = arg(args: args, index: 2_u64);
+  let count = read_integer(input: input, start: written.start, length: written.length);
+  if count.state != 1_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return False();
+  }
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  set client^.low = count.value;
+  return True();
+}
+
+fn lrem_body(slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(input), reads(args), writes(slot), writes(client) {
+  doc "LREM over its held entry; reports expired removal and whether the original command must be recorded.";
+  let removed = False();
+  let changed = False();
+  let element = arg(args: args, index: 3_u64);
+  match slot^ {
+    Some(value: held) => {
+      let edited = remove_items(env: client, value: held, input: input, element: element);
+    }
+    None() => {
+    }
+  }
+  let emptied = client^.state == state_emptied;
+  let lapsed = client^.state == state_expired;
+  let removing = bor(emptied, lapsed);
+  if removing {
+    set slot^ = None<Entry>();
+  }
+  if lapsed {
+    set client^.number = 0_u64;
+    set removed = True();
+  }
+  let done = client^.state == state_done;
+  let completed = bor(done, emptied);
+  let any_removed = client^.number > 0_u64;
+  let recorded = band(completed, any_removed);
+  if recorded {
+    set changed = True();
+  }
+  return ListWork(removed: removed, changed: changed);
+}
+
+fn lrem_finish(client: &Client) -> result: unit writes(client) {
+  doc "LREM reply after the shared body.";
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  let answer = cvt.wrap::<u64, i64>(client^.number);
+  reply_integer(client: client, value: answer);
+  return unit;
+}
+
+fn ltrim_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> ready: Bool reads(input), reads(args), reads(time), writes(client) {
+  doc "LTRIM parsing and request state, shared by the network and held callers.";
+  let first = arg(args: args, index: 2_u64);
+  let last = arg(args: args, index: 3_u64);
+  let start = read_integer(input: input, start: first.start, length: first.length);
+  let stop = read_integer(input: input, start: last.start, length: last.length);
+  let bad_start = start.state != 1_u64;
+  let bad_stop = stop.state != 1_u64;
+  let bad = bor(bad_start, bad_stop);
+  if bad {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return False();
+  }
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  set client^.low = start.value;
+  set client^.high = stop.value;
+  return True();
+}
+
+fn ltrim_body(slot: &Option<Entry>, client: &Client) -> work: ListWork writes(slot), writes(client) {
+  doc "LTRIM over its held entry; reports expired removal and whether the original command must be recorded.";
+  let removed = False();
+  let changed = False();
+  match slot^ {
+    Some(value: held) => {
+      let edited = trim_items(env: client, value: held);
+    }
+    None() => {
+    }
+  }
+  let emptied = client^.state == state_emptied;
+  let lapsed = client^.state == state_expired;
+  let removing = bor(emptied, lapsed);
+  if removing {
+    set slot^ = None<Entry>();
+  }
+  if lapsed {
+    set client^.number = 0_u64;
+    set removed = True();
+  }
+  if client^.number > 0_u64 {
+    set changed = True();
+  }
+  return ListWork(removed: removed, changed: changed);
+}
+
+fn ltrim_finish(client: &Client) -> result: unit writes(client) {
+  doc "LTRIM reply after the shared body.";
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  reply_ok(client: client);
+  return unit;
+}
+
+fn linsert_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> ready: Bool reads(input), reads(args), reads(time), writes(client) {
+  doc "LINSERT parsing and request state, shared by the network and held callers.";
+  let where_span = arg(args: args, index: 2_u64);
+  let before = word_at(input: input, span: where_span, word: &word_linsert_before[0_u64..6_u64]);
+  let after = word_at(input: input, span: where_span, word: &word_linsert_after[0_u64..5_u64]);
+  let known = bor(before, after);
+  if known {
+  } else {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+    return False();
+  }
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  set client^.low = 0_i64;
+  if after {
+    set client^.low = 1_i64;
+  }
+  return True();
+}
+
+fn linsert_body(slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(input), reads(args), writes(slot), writes(client) {
+  doc "LINSERT over its held entry; reports expired removal and whether the original command must be recorded.";
+  let removed = False();
+  let changed = False();
+  let value_span = arg(args: args, index: 4_u64);
+  let element = argument_element(input: input, span: value_span);
+  let pivot = arg(args: args, index: 3_u64);
+  let after = client^.low == 1_i64;
+  match slot^ {
+    Some(value: held) => {
+      let edited = insert_item(env: client, value: held, input: input, pivot: pivot, element: move element, after: after);
+    }
+    None() => {
+      let dropped = move element;
+    }
+  }
+  if client^.state == state_expired {
+    set slot^ = None<Entry>();
+    set removed = True();
+  }
+  if client^.state == state_done {
+    set changed = True();
+  }
+  return ListWork(removed: removed, changed: changed);
+}
+
+fn linsert_finish(client: &Client) -> result: unit writes(client) {
+  doc "LINSERT reply after the shared body.";
+  if client^.state == state_done {
+    let length = cvt.wrap::<u64, i64>(client^.number);
+    reply_integer(client: client, value: length);
+    return unit;
+  }
+  if client^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if client^.state == state_list_missing {
+    reply_integer(client: client, value: -1_i64);
+    return unit;
+  }
+  reply_integer(client: client, value: 0_i64);
+  return unit;
+}
+
+fn lpos_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, seek: &Seek) -> ready: Bool reads(input), reads(args), reads(time), writes(client), writes(seek) {
+  doc "LPOS options and errors, shared by network and held callers.";
+  let count = args^.inner.len;
+  let rank = 1_i64;
+  let wanted = 0_i64;
+  let counted = False();
+  let maxlen = 0_u64;
+  let index = 3_u64;
+  loop @options {
+    if index >= count {
+      break @options;
+    }
+    let option = arg(args: args, index: index);
+    let value_index = index +wrap 1_u64;
+    let more = value_index < count;
+    let value = arg(args: args, index: value_index);
+    let number = read_integer(input: input, start: value.start, length: value.length);
+    let invalid = number.state != 1_u64;
+    let negative = number.value < 0_i64;
+    let refused = bor(invalid, negative);
+    let named_rank = word_at(input: input, span: option, word: &word_lpos_rank[0_u64..4_u64]);
+    let named_count = word_at(input: input, span: option, word: &word_count[0_u64..5_u64]);
+    let named_maxlen = word_at(input: input, span: option, word: &word_lpos_maxlen[0_u64..6_u64]);
+    let ranking = band(named_rank, more);
+    let counting = band(named_count, more);
+    let bounding = band(named_maxlen, more);
+    if ranking {
+      if invalid {
+        reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+        return False();
       }
-      if store^.logging {
-        log_removal(log: &m^.log, key: source_key);
+      if number.value == 0_i64 {
+        reply_error(client: client, word: &text_lpos_rank[0_u64..132_u64]);
+        return False();
+      }
+      set rank = number.value;
+    } else if counting {
+      if refused {
+        reply_error(client: client, word: &text_lpos_count[0_u64..27_u64]);
+        return False();
+      }
+      set wanted = number.value;
+      set counted = True();
+    } else if bounding {
+      if refused {
+        reply_error(client: client, word: &text_lpos_maxlen[0_u64..28_u64]);
+        return False();
+      }
+      set maxlen = cvt.wrap::<i64, u64>(number.value);
+    } else {
+      reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+      return False();
+    }
+    set index = index +wrap 2_u64;
+  }
+  set seek^.rank = rank;
+  set seek^.count = wanted;
+  set seek^.counted = counted;
+  set seek^.maxlen = maxlen;
+  set seek^.now = time^.check;
+  set seek^.state = state_absent;
+  return True();
+}
+
+fn lpos_body(slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, seek: &Seek, positions: &Box<Slots<u64>>) -> result: unit reads(slot), reads(input), reads(args), writes(seek), writes(positions) {
+  doc "LPOS over its held entry, collecting matching positions and recording expired or wrong-type entries.";
+  let element = arg(args: args, index: 2_u64);
+  match slot^ {
+    Some(value: held) => {
+      let found = seek_items(env: seek, value: held, input: input, element: element, positions: positions);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn lpos_finish(client: &Client, seek: &Seek, positions: &Box<Slots<u64>>) -> result: unit reads(seek), reads(positions), writes(client) {
+  doc "LPOS reply from the shared body, preserving scalar and counted forms.";
+  if seek^.state == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  let found = positions^.inner.len;
+  if seek^.counted {
+    reply_array(client: client, count: found);
+    for @answers (at in 0_u64..found) {
+      if at < positions^.inner.len {
+        let position = positions^.inner[at];
+        let signed = cvt.wrap::<u64, i64>(position);
+        reply_integer(client: client, value: signed);
       }
     }
-    if found == entry_other {
+    return unit;
+  }
+  if positions^.inner.len > 0_u64 {
+    let position = positions^.inner[0_u64];
+    let signed = cvt.wrap::<u64, i64>(position);
+    reply_integer(client: client, value: signed);
+    return unit;
+  }
+  reply_nil(client: client);
+  return unit;
+}
+
+fn lmove_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> ready: Bool reads(input), reads(args), writes(client) {
+  doc "LMOVE directions, low and high 0 for the head and 1 for the tail; errors precede lookups.";
+  let from_span = arg(args: args, index: 3_u64);
+  let from = end_named(input: input, span: from_span);
+  if from == 0_u64 {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+    return False();
+  }
+  let to_span = arg(args: args, index: 4_u64);
+  let to = end_named(input: input, span: to_span);
+  if to == 0_u64 {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+    return False();
+  }
+  set client^.low = 1_i64;
+  if from == 1_u64 {
+    set client^.low = 0_i64;
+  }
+  set client^.high = 1_i64;
+  if to == 1_u64 {
+    set client^.high = 0_i64;
+  }
+  return True();
+}
+
+struct ListMoveWork {
+  source_expired: Bool;
+  target_expired: Bool;
+  changed: Bool;
+}
+
+fn lmove_body(slots: &Entries<Entry>, source: u64, destination: u64, client: &Client, from_head: Bool, to_head: Bool) -> work: ListMoveWork writes(slots), writes(client) {
+  doc "LMOVE and RPOPLPUSH over their key set entries, including equal indices; source lookup precedes destination lookup.";
+  let no = False();
+  let work = ListMoveWork(source_expired: no, target_expired: no, changed: no);
+  set client^.state = state_absent;
+  let found = entry_none;
+  if source < slots^.len {
+    set found = list_kind(slot: &slots^[source], now: client^.now);
+  }
+  if found == entry_lapsed {
+    if source < slots^.len {
+      set slots^[source] = None<Entry>();
+    }
+    set work.source_expired = True();
+  }
+  if found == entry_other {
+    set client^.state = state_wrong;
+  }
+  if found == entry_wanted {
+    let target = entry_none;
+    if destination < slots^.len {
+      set target = list_kind(slot: &slots^[destination], now: client^.now);
+    }
+    if target == entry_lapsed {
+      if destination < slots^.len {
+        set slots^[destination] = None<Entry>();
+      }
+      set work.target_expired = True();
+    }
+    if target == entry_other {
       set client^.state = state_wrong;
-    }
-    if found == entry_wanted {
-      let target = entry_none;
-      if destination < keys.len {
-        set target = list_kind(slot: &slots^[destination], now: now);
-      }
-      if target == entry_lapsed {
-        if destination < keys.len {
-          set slots^[destination] = None<Entry>();
-        }
-        if store^.logging {
-          log_removal(log: &m^.log, key: destination_key);
-        }
-      }
-      if target == entry_other {
-        set client^.state = state_wrong;
-      } else if source < keys.len {
-        let popped = take_element(slot: &slots^[source], from_head: from_head, client: client);
-        let left = client^.number;
-        match move popped {
-          Some(value: element) => {
-            reply_bulk(client: client, stored: &element);
-            if destination < keys.len {
-              place_element(slot: &slots^[destination], element: move element, to_head: to_head);
-            } else {
-              let dropped = move element;
-            }
-            if left == 0_u64 {
-              if source != destination {
-                set slots^[source] = None<Entry>();
-              }
-            }
-            set client^.state = state_done;
-            if store^.logging {
-              log_command(log: &m^.log, input: input, args: args);
+    } else if source < slots^.len {
+      let popped = take_element(slot: &slots^[source], from_head: from_head, client: client);
+      let left = client^.number;
+      match move popped {
+        Some(value: element) => {
+          reply_bulk(client: client, stored: &element);
+          if destination < slots^.len {
+            place_element(slot: &slots^[destination], element: move element, to_head: to_head);
+          } else {
+            let dropped = move element;
+          }
+          if left == 0_u64 {
+            if source != destination {
+              set slots^[source] = None<Entry>();
             }
           }
-          None() => {
-          }
+          set client^.state = state_done;
+          set work.changed = True();
+        }
+        None() => {
         }
       }
     }
   }
+  return work;
+}
+
+fn lmove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ListMoveWork, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(work), reads(input), reads(args), writes(log) {
+  doc "Records source then destination expiry removals followed by the move exactly as sent; returns the effects record count.";
+  let source_place = key_bounds(input: input, args: args, index: 1_u64);
+  let source_key = &input^[source_place.start..source_place.end];
+  let target_place = key_bounds(input: input, args: args, index: 2_u64);
+  let target_key = &input^[target_place.start..target_place.end];
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: work^.source_expired, key: source_key);
+  let remaining = changed_meta(log: log, logged: logged, removed: work^.target_expired, changed: work^.changed, input: input, args: args, key: target_key);
+  set appended = appended +wrap remaining;
+  return appended;
+}
+
+fn lmove_finish(client: &Client) -> result: unit writes(client) {
+  doc "LMOVE and RPOPLPUSH reply after the shared body.";
   if client^.state == state_done {
     return unit;
   }

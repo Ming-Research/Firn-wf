@@ -5208,6 +5208,290 @@ fn firn_records_held_hashes_commands_as_redis_propagates_them() {
     );
 }
 
+/// firn runs the lists commands written as parts, LPUSH to RPOPLPUSH, inside a transaction's EXEC and through a script as Redis 7.0.15 does, LMOVE and RPOPLPUSH over one key and two among them. The same requests, from the same keys, run in one transaction,
+/// each error or boundary request in a transaction of its own, then through
+/// a script's redis.call and the errors through redis.pcall, and give the
+/// replies redis-server 7.0.15 gives (Firn-wf probe run 37499945138).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_lists_parts_as_redis_does() {
+    const SETUP: &[&[&str]] = &[
+        &["FLUSHALL"],
+        &["SET", "wrong", "text"],
+        &["RPUSH", "a", "a", "b", "a", "c"],
+        &["RPUSH", "b", "x", "y"],
+        &["RPUSH", "err", "a", "b", "a"],
+        &["RPUSH", "one", "z"],
+        &["RPUSH", "trim", "a", "b", "c"],
+        &["RPUSH", "rem", "a", "a", "b", "a"],
+    ];
+    const VALID: &[&[&str]] = &[
+        &["LPUSH", "a", "head", "head2"],
+        &["RPUSH", "a", "tail"],
+        &["LPUSHX", "a", "hx"],
+        &["RPUSHX", "a", "tx"],
+        &["LPUSHX", "missing", "x"],
+        &["RPUSHX", "missing", "x"],
+        &["LRANGE", "a", "0", "-1"],
+        &["LLEN", "a"],
+        &["LINDEX", "a", "-1"],
+        &["LSET", "a", "-1", "changed"],
+        &["LINSERT", "a", "BEFORE", "b", "before"],
+        &["LINSERT", "a", "AFTER", "b", "after"],
+        &["LPOS", "a", "a"],
+        &["LPOS", "a", "a", "RANK", "-1", "COUNT", "0", "MAXLEN", "0"],
+        &["LREM", "rem", "-1", "a"],
+        &["LTRIM", "trim", "1", "-1"],
+        &["LPOP", "a"],
+        &["RPOP", "a"],
+        &["LPOP", "a", "0"],
+        &["RPOP", "a", "2"],
+        &["LMOVE", "a", "b", "LEFT", "RIGHT"],
+        &["LMOVE", "b", "b", "RIGHT", "LEFT"],
+        &["LMOVE", "b", "b", "LEFT", "LEFT"],
+        &["LMOVE", "b", "b", "RIGHT", "RIGHT"],
+        &["RPOPLPUSH", "b", "a"],
+        &["RPOPLPUSH", "one", "one"],
+        &["LRANGE", "b", "0", "-1"],
+        &["LLEN", "one"],
+        &["LPOP", "one", "10"],
+        &["EXISTS", "one"],
+        &["LPOP", "missing", "0"],
+        &["RPOP", "missing"],
+        &["LMOVE", "missing", "wrong", "LEFT", "LEFT"],
+        &["LINSERT", "missing", "BEFORE", "p", "v"],
+        &["LTRIM", "missing", "0", "-1"],
+        &["LPOS", "missing", "a", "COUNT", "0"],
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["LPUSH", "wrong", "x"],
+        &["RPUSHX", "wrong", "x"],
+        &["LPOP", "wrong"],
+        &["RPOP", "wrong", "0"],
+        &["LPOP", "err", "-1"],
+        &["RPOP", "err", "bad"],
+        &["LPOP", "err", "9223372036854775808"],
+        &["LPOP", "err", "1", "extra"],
+        &["LRANGE", "wrong", "0", "-1"],
+        &["LRANGE", "missing", "bad", "-1"],
+        &["LLEN", "wrong"],
+        &["LINDEX", "missing", "bad"],
+        &["LINDEX", "wrong", "bad"],
+        &["LINDEX", "err", "bad"],
+        &["LINDEX", "err", "-9223372036854775808"],
+        &["LSET", "missing", "bad", "x"],
+        &["LSET", "wrong", "bad", "x"],
+        &["LSET", "err", "bad", "x"],
+        &["LSET", "err", "99", "x"],
+        &["LREM", "wrong", "0", "a"],
+        &["LREM", "missing", "bad", "a"],
+        &["LTRIM", "wrong", "0", "-1"],
+        &["LTRIM", "missing", "0", "bad"],
+        &["LINSERT", "wrong", "BEFORE", "a", "x"],
+        &["LINSERT", "missing", "SIDEWAYS", "a", "x"],
+        &["LINSERT", "err", "AFTER", "absent-pivot", "x"],
+        &["LPOS", "wrong", "a"],
+        &["LPOS", "err", "a", "RANK", "0"],
+        &["LPOS", "err", "a", "RANK", "bad"],
+        &["LPOS", "err", "a", "COUNT", "-1"],
+        &["LPOS", "err", "a", "COUNT", "bad"],
+        &["LPOS", "err", "a", "MAXLEN", "-1"],
+        &["LPOS", "err", "a", "MAXLEN", "bad"],
+        &["LPOS", "err", "a", "COUNT"],
+        &["LPOS", "err", "a", "UNKNOWN", "1"],
+        &[
+            "LPOS",
+            "err",
+            "a",
+            "RANK",
+            "-9223372036854775808",
+            "COUNT",
+            "1",
+        ],
+        &["LMOVE", "err", "wrong", "LEFT", "RIGHT"],
+        &["LMOVE", "wrong", "err", "LEFT", "RIGHT"],
+        &["LMOVE", "missing", "err", "BAD", "RIGHT"],
+        &["LMOVE", "err", "err", "LEFT", "BAD"],
+        &["RPOPLPUSH", "err", "wrong"],
+        &["RPOPLPUSH", "wrong", "err"],
+    ];
+    const TRANSACTIONS: &[u8] = b"+OK\r\n+OK\r\n:4\r\n:2\r\n:3\r\n:1\r\n:3\r\n:4\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*36\r\n:6\r\n\
+:7\r\n:8\r\n:9\r\n:0\r\n:0\r\n*9\r\n$2\r\nhx\r\n$5\r\nhead2\r\n$4\r\nhead\r\n\
+$1\r\na\r\n$1\r\nb\r\n$1\r\na\r\n$1\r\nc\r\n$4\r\ntail\r\n$2\r\ntx\r\n:9\r\n\
+$2\r\ntx\r\n+OK\r\n:10\r\n:11\r\n:3\r\n*2\r\n:7\r\n:3\r\n:1\r\n+OK\r\n$2\r\n\
+hx\r\n$7\r\nchanged\r\n*0\r\n*2\r\n$4\r\ntail\r\n$1\r\nc\r\n$5\r\nhead2\r\n\
+$5\r\nhead2\r\n$5\r\nhead2\r\n$1\r\ny\r\n$1\r\ny\r\n$1\r\nz\r\n*2\r\n$5\r\n\
+head2\r\n$1\r\nx\r\n:1\r\n*1\r\n$1\r\nz\r\n:0\r\n*-1\r\n$-1\r\n$-1\r\n:0\r\n\
++OK\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is out of range, must be positive\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is out of range, must be positive\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is out of range, must be positive\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR wrong number of arguments for 'lpop' command\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n$-1\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n$-1\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR no such key\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR index out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n:-1\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list\r\n\
++OK\r\n+QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR COUNT can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR COUNT can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR MAXLEN can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR MAXLEN can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n\
++OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n\
+:2\r\n:0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+    const SCRIPTS: &[u8] = b"+OK\r\n+OK\r\n:4\r\n:2\r\n:3\r\n:1\r\n:3\r\n:4\r\n:6\r\n:7\r\n:8\r\n:9\r\n:0\r\n\
+:0\r\n*9\r\n$2\r\nhx\r\n$5\r\nhead2\r\n$4\r\nhead\r\n$1\r\na\r\n$1\r\nb\r\n\
+$1\r\na\r\n$1\r\nc\r\n$4\r\ntail\r\n$2\r\ntx\r\n:9\r\n$2\r\ntx\r\n+OK\r\n:10\r\n\
+:11\r\n:3\r\n*2\r\n:7\r\n:3\r\n:1\r\n+OK\r\n$2\r\nhx\r\n$7\r\nchanged\r\n*0\r\n\
+*2\r\n$4\r\ntail\r\n$1\r\nc\r\n$5\r\nhead2\r\n$5\r\nhead2\r\n$5\r\nhead2\r\n\
+$1\r\ny\r\n$1\r\ny\r\n$1\r\nz\r\n*2\r\n$5\r\nhead2\r\n$1\r\nx\r\n:1\r\n*1\r\n\
+$1\r\nz\r\n:0\r\n$-1\r\n$-1\r\n$-1\r\n:0\r\n+OK\r\n*0\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is out of range, must be positive\r\n\
+-ERR value is out of range, must be positive\r\n\
+-ERR value is out of range, must be positive\r\n\
+-ERR wrong number of arguments for 'lpop' command\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is not an integer or out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n$-1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is not an integer or out of range\r\n$-1\r\n-ERR no such key\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is not an integer or out of range\r\n-ERR index out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is not an integer or out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is not an integer or out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR syntax error\r\n:-1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list\r\n\
+-ERR value is not an integer or out of range\r\n-ERR COUNT can't be negative\r\n\
+-ERR COUNT can't be negative\r\n-ERR MAXLEN can't be negative\r\n\
+-ERR MAXLEN can't be negative\r\n-ERR syntax error\r\n-ERR syntax error\r\n\
+*2\r\n:2\r\n:0\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR syntax error\r\n-ERR syntax error\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    transactions.push(resp(&["MULTI"]));
+    for request in VALID {
+        transactions.push(resp(request));
+    }
+    transactions.push(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.push(resp(&["MULTI"]));
+        transactions.push(resp(request));
+        transactions.push(resp(&["EXEC"]));
+    }
+    let mut scripts: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.push(resp(&call));
+        }
+    }
+    for (requests, expected, what) in [
+        (transactions, TRANSACTIONS, "the transactions"),
+        (scripts, SCRIPTS, "the scripts"),
+    ] {
+        client
+            .write_all(&requests.concat())
+            .expect("send the requests");
+        expect_replies(&mut client, expected, what);
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn records the lists commands run inside a transaction's EXEC and a script as Redis 7.0.15 propagates them over lists found expired: a read records the removal alone, a push the removal and then itself, LMOVE onto an expired list the destination's removal and then itself, and a script whose one effect is a removal records it bare. The expected
+/// records are redis-server 7.0.15's (Firn-wf probe run 37504720562).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_lists_commands_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["RPUSH", "l1", "a"],
+            &["PEXPIREAT", "l1", "1"],
+            &["RPUSH", "l2", "a", "b"],
+            &["PEXPIREAT", "l2", "1"],
+            &["RPUSH", "l3", "a"],
+            &["PEXPIREAT", "l3", "1"],
+            &["RPUSH", "l4", "a"],
+            &["PEXPIREAT", "l4", "1"],
+            &["RPUSH", "src", "x"],
+        ],
+        &[
+            &["MULTI"],
+            &["LLEN", "l1"],
+            &["LPUSH", "l2", "n"],
+            &["LMOVE", "src", "l3", "LEFT", "RIGHT"],
+            &["EXEC"],
+            &["EVAL", "return redis.call('RPOP', KEYS[1])", "1", "l4"],
+            &["LRANGE", "l2", "0", "-1"],
+            &["LRANGE", "l3", "0", "-1"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n:0\r\n:1\r\n$1\r\nx\r\n$-1\r\n*1\r\n$1\r\nn\r\n*1\r\n$1\r\nx\r\n:2\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nl1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nl2\r\n*3\r\n$5\r\nLPUSH\r\n$2\r\nl2\r\n$1\r\nn\r\n*2\r\n$3\r\nDEL\r\n$2\r\nl3\r\n*5\r\n$5\r\nLMOVE\r\n$3\r\nsrc\r\n$2\r\nl3\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$3\r\nDEL\r\n$2\r\nl4\r\n",
+    );
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
