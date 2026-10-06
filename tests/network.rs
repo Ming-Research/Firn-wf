@@ -4332,6 +4332,173 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// firn runs the keys and strings commands written as parts, from DEL to
+/// INCRBYFLOAT, inside a transaction's EXEC and through a script's
+/// redis.call, and their errors through redis.pcall, as Redis 7.0.15 does:
+/// the same requests, from the same keys, give the same replies whichever
+/// path runs them, PING's and MSETNX's own argument checks among them,
+/// which a transaction queues and EXEC answers. The expected bytes are
+/// redis-server 7.0.15's (Firn-wf probe run 37490938223).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_keys_and_strings_parts_as_redis_does() {
+    const VALID: &[&[&str]] = &[
+        &["PING"],
+        &["PING", "hello"],
+        &["ECHO", "hello"],
+        &["SETNX", "parts:a", "one"],
+        &["SETNX", "parts:a", "two"],
+        &["EXISTS", "parts:a", "parts:a", "parts:missing"],
+        &["TYPE", "parts:a"],
+        &["TYPE", "parts:list"],
+        &["TYPE", "parts:missing"],
+        &["SETEX", "parts:seconds", "60", "value"],
+        &["PSETEX", "parts:millis", "60000", "value"],
+        &["PERSIST", "parts:seconds"],
+        &["PERSIST", "parts:seconds"],
+        &["GETSET", "parts:a", "replacement"],
+        &["GETDEL", "parts:a"],
+        &["GETDEL", "parts:a"],
+        &["SET", "parts:a", "abc"],
+        &["GETEX", "parts:a", "PX", "60000"],
+        &["GETEX", "parts:a", "PERSIST"],
+        &["APPEND", "parts:a", "def"],
+        &["SETRANGE", "parts:a", "8", "Z"],
+        &["STRLEN", "parts:a"],
+        &["GETRANGE", "parts:a", "-3", "-1"],
+        &["MGET", "parts:a", "parts:missing", "parts:list", "parts:a"],
+        &[
+            "MSETNX", "parts:x", "first", "parts:x", "last", "parts:y", "other",
+        ],
+        &["MGET", "parts:x", "parts:y"],
+        &["MSETNX", "parts:x", "rejected", "parts:z", "untouched"],
+        &["EXISTS", "parts:z"],
+        &["INCRBYFLOAT", "parts:number", "0.1"],
+        &["INCRBYFLOAT", "parts:number", "0.2"],
+        &["DEL", "parts:x", "parts:x", "parts:missing"],
+        &["UNLINK", "parts:y", "parts:y"],
+        &["DBSIZE"],
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["PING", "one", "two"],
+        &["MSETNX", "parts:odd", "value", "dangling"],
+        &["GETEX", "parts:missing", "EX", "bad"],
+        &["GETEX", "parts:list", "EX", "bad"],
+        &["GETEX", "parts:a", "EX", "bad"],
+        &["GETEX", "parts:a", "PXAT", "1"],
+        &["SETEX", "parts:bad", "0", "value"],
+        &["PSETEX", "parts:bad", "bad", "value"],
+        &["GETSET", "parts:list", "value"],
+        &["GETDEL", "parts:list"],
+        &["APPEND", "parts:list", "value"],
+        &["SETRANGE", "parts:a", "-1", "value"],
+        &["SETRANGE", "parts:a", "536870912", "x"],
+        &["SETRANGE", "parts:missing", "10", ""],
+        &["GETRANGE", "parts:a", "bad", "1"],
+        &["INCRBYFLOAT", "parts:list", "bad"],
+        &["INCRBYFLOAT", "parts:number", "bad"],
+        &["INCRBYFLOAT", "parts:number", "inf"],
+        &["DBSIZE"],
+    ];
+    const TRANSACTIONS: &[u8] =
+        b"+OK\r\n:1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
+*33\r\n+PONG\r\n$5\r\nhello\r\n$5\r\nhello\r\n:1\r\n:0\r\n:2\r\n+string\r\n\
++list\r\n+none\r\n+OK\r\n+OK\r\n:1\r\n:0\r\n$3\r\none\r\n$11\r\nreplacement\r\n\
+$-1\r\n+OK\r\n$3\r\nabc\r\n$3\r\nabc\r\n:6\r\n:9\r\n:9\r\n$3\r\n\x00\x00Z\r\n\
+*4\r\n$9\r\nabcdef\x00\x00Z\r\n$-1\r\n$-1\r\n$9\r\nabcdef\x00\x00Z\r\n:1\r\n\
+*2\r\n$4\r\nlast\r\n$5\r\nother\r\n:0\r\n:0\r\n$3\r\n0.1\r\n$3\r\n0.3\r\n:1\r\n\
+:1\r\n:5\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR wrong number of arguments for 'ping' command\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR wrong number of arguments for 'msetnx' command\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+$-1\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n$9\r\nabcdef\x00\x00Z\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR invalid expire time in 'setex' command\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is not an integer or out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR offset is out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR string exceeds maximum allowed size (proto-max-bulk-len)\r\n+OK\r\n\
++QUEUED\r\n*1\r\n:0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is not an integer or out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not a valid float\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR increment would produce NaN or Infinity\r\n+OK\r\n+QUEUED\r\n*1\r\n:4\r\n";
+    const SCRIPTS: &[u8] =
+        b"+OK\r\n:1\r\n+PONG\r\n$5\r\nhello\r\n$5\r\nhello\r\n:1\r\n:0\r\n:2\r\n\
++string\r\n+list\r\n+none\r\n+OK\r\n+OK\r\n:1\r\n:0\r\n$3\r\none\r\n$11\r\n\
+replacement\r\n$-1\r\n+OK\r\n$3\r\nabc\r\n$3\r\nabc\r\n:6\r\n:9\r\n:9\r\n$3\r\n\
+\x00\x00Z\r\n*4\r\n$9\r\nabcdef\x00\x00Z\r\n$-1\r\n$-1\r\n$9\r\n\
+abcdef\x00\x00Z\r\n:1\r\n*2\r\n$4\r\nlast\r\n$5\r\nother\r\n:0\r\n:0\r\n$3\r\n\
+0.1\r\n$3\r\n0.3\r\n:1\r\n:1\r\n:5\r\n\
+-ERR wrong number of arguments for 'ping' command\r\n\
+-ERR wrong number of arguments for 'msetnx' command\r\n$-1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is not an integer or out of range\r\n$9\r\nabcdef\x00\x00Z\r\n\
+-ERR invalid expire time in 'setex' command\r\n\
+-ERR value is not an integer or out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR offset is out of range\r\n\
+-ERR string exceeds maximum allowed size (proto-max-bulk-len)\r\n:0\r\n\
+-ERR value is not an integer or out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is not a valid float\r\n\
+-ERR increment would produce NaN or Infinity\r\n:4\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let setup: [&[&str]; 2] = [&["FLUSHALL"], &["LPUSH", "parts:list", "x"]];
+    let mut transactions = Vec::new();
+    for request in setup {
+        transactions.extend(resp(request));
+    }
+    transactions.extend(resp(&["MULTI"]));
+    for request in VALID {
+        transactions.extend(resp(request));
+    }
+    transactions.extend(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.extend(resp(&["MULTI"]));
+        transactions.extend(resp(request));
+        transactions.extend(resp(&["EXEC"]));
+    }
+    client
+        .write_all(&transactions)
+        .expect("send the transactions");
+    expect_replies(&mut client, TRANSACTIONS, "the transactions");
+    let mut scripts = Vec::new();
+    for request in setup {
+        scripts.extend(resp(request));
+    }
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.extend(resp(&call));
+        }
+    }
+    client.write_all(&scripts).expect("send the scripts");
+    expect_replies(&mut client, SCRIPTS, "the scripts");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
