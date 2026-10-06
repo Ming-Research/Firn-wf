@@ -425,6 +425,10 @@ written while firn lived in the Whitefoot repository; a path such as
   "Connection reset by peer" on the first batch's reply, or once with the
   server never listening: 1 run of 3 at `cea9188d4`, 3 of 4 at `f8ca277a9`,
   and 4 of 8 at `a008b01ef` and after; a case run alone passed 6 times of 6.
+  In this repository's CI on a hosted ubuntu-24.04 runner, run 37434341538
+  (2026-10-06) failed `firn_closes_a_client_silent_past_its_idle_limit_on_both_routes`
+  with "the program never listened" while the other 27 passed; the same
+  commit passed in three other runs.
   The programs that abort during those runs are the same two in passing and
   failing runs alike, so firn is not seen to crash, and ports chosen below the
   ephemeral range, one per case, changed nothing. The gate's hosted runners
