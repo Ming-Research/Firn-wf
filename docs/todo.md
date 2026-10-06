@@ -20,9 +20,10 @@ written while firn lived in the Whitefoot repository; a path such as
   [deployment direction](../research/investigations/firn/DESIGN.md#deployment-direction)
   requires usable cache/session storage and scripted conditional updates,
   with an existing application using its ordinary client and unchanged
-  business logic. Select the consumers and their required command behavior
-  before treating a feature inventory as release coverage; a leaderboard or
-  queue is a candidate additional scenario, not yet a selected dependency.
+  business logic. The selected consumers and the gaps their tests expose are
+  in the [consumers investigation](../research/investigations/consumers/README.md#what-the-milestone-needs-from-firn),
+  which orders the work below; a leaderboard or queue is a candidate
+  additional scenario, not yet a selected dependency.
   Complete the following work and remove this item when the deployment
   evidence meets that boundary:
   - Complete the selected clients' connection behavior, RESP3, command
@@ -468,4 +469,21 @@ written while firn lived in the Whitefoot repository; a path such as
 
 ## Whitefoot requirements
 
-None filed since firn left the Whitefoot repository.
+- **A program cannot enumerate the keys of a `ConcurrentHashMap`.** The
+  specification (v0.93, the concurrent map paragraph of [SHARE-1] and
+  [SHARE-2]) gives a map keyed access, key-set access and `map_count`, and
+  no way to learn which keys it holds. Minimal witness: given
+  `m: Shared<ConcurrentHashMap<u64>>` after `m["a"] = Some(1)` and
+  `m["b"] = Some(2)`, no program can compute the list `["a", "b"]` without
+  knowing those keys already. Redis's `SCAN`, `KEYS` and `RANDOMKEY` need
+  it; connect-redis, a selected consumer, lists and clears its sessions with
+  `SCAN MATCH COUNT`
+  ([consumers](../research/investigations/consumers/README.md#what-the-milestone-needs-from-firn)).
+  `SCAN` also needs a resumable cursor that returns every key present for
+  the whole scan at least once while the map grows, shrinks or is written by
+  other contexts, as Redis's reverse-binary cursor over its table does. The
+  change: a map operation that visits a bounded range of the map's slots
+  from a cursor and returns the next cursor, under the same guarantee.
+  Keeping a second index of keys beside the map in firn would double every
+  write's bookkeeping, so the gap belongs to Whitefoot. Reopen when
+  Whitefoot specifies it.
