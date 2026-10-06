@@ -21,6 +21,11 @@ base..head, groups checked and skipped), Checks (what you ran) and Findings
 sides of a contradiction), or "none within scope".
 ```
 
+## A. Every change
+
+- [ ] **A1 — No vendored Whitefoot.** Whitefoot enters only through
+  `whitefoot.pin`; no Whitefoot source is copied into the repository.
+
 ## C. Code and cases — changes to Whitefoot sources or tests
 
 - [ ] **C1 — Reference expectation.** Expected results come from the
