@@ -5061,6 +5061,38 @@ $0\r\n\r\n$3\r\nv\x00x\r\n:0\r\n:3\r\n$3\r\n3.5\r\n:4102444800000\r\n\
     assert_eq!(status, 0);
 }
 
+/// firn records the hashes commands run inside a transaction's EXEC and a script as Redis 7.0.15 propagates them over hashes found expired: a read records the removal alone, a write the removal and then itself, HINCRBYFLOAT as HSET with the sum, inside the transaction's MULTI and EXEC, and a script whose one effect is a removal records it bare. The expected
+/// records are redis-server 7.0.15's (Firn-wf probe run 37504720562).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_hashes_commands_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["HSET", "h1", "f", "1"],
+            &["PEXPIREAT", "h1", "1"],
+            &["HSET", "h2", "f", "2"],
+            &["PEXPIREAT", "h2", "1"],
+            &["HSET", "h3", "f", "3"],
+            &["PEXPIREAT", "h3", "1"],
+            &["HSET", "h4", "f", "4"],
+            &["PEXPIREAT", "h4", "1"],
+        ],
+        &[
+            &["MULTI"],
+            &["HGET", "h1", "f"],
+            &["HSET", "h2", "g", "v"],
+            &["HINCRBYFLOAT", "h3", "f", "1.5"],
+            &["EXEC"],
+            &["EVAL", "return redis.call('HDEL', KEYS[1], 'f')", "1", "h4"],
+            &["HGETALL", "h2"],
+            &["HGETALL", "h3"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n$-1\r\n:1\r\n$3\r\n1.5\r\n:0\r\n*2\r\n$1\r\ng\r\n$1\r\nv\r\n*2\r\n$1\r\nf\r\n$3\r\n1.5\r\n:2\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nh1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nh2\r\n*4\r\n$4\r\nHSET\r\n$2\r\nh2\r\n$1\r\ng\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\nh3\r\n*4\r\n$4\r\nHSET\r\n$2\r\nh3\r\n$1\r\nf\r\n$3\r\n1.5\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$3\r\nDEL\r\n$2\r\nh4\r\n",
+    );
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
