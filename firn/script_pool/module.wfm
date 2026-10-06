@@ -15,8 +15,9 @@ public struct Registered {
 }
 
 public struct EnginePool {
-  doc "Idle engines and SHA1-to-source registry. A connection owns its engine outside short pool statements; script execution never holds the pool. running counts the scripts in progress, which SCRIPT KILL answers by, and kills the kills requested, which a script compares with the count it saw when it began, between its attempts.";
+  doc "The one engine scripts run on and the SHA1-to-source registry. A script takes the engine in a short statement that waits while out is 1, keeps it outside the pool's statements while one of its attempts runs, and puts it back after the attempt, so that scripts use the engine in turn and see the state earlier ones left in it, as Redis's scripts share one Lua state; idle holds it while no script has it. running counts the scripts in progress, which SCRIPT KILL answers by, and kills the kills requested, which a script compares with the count it saw when it began, between its attempts.";
   public idle: Box<Slots<PooledEngine>>;
+  public out: u64;
   public registry: Box<Slots<Registered>>;
   public source_bytes: u64;
   public generation: u64;
@@ -24,4 +25,4 @@ public struct EnginePool {
   public kills: u64;
 }
 
-public fn new_pool() -> pool: EnginePool pure doc "An empty pool, allocating engines only when taken.";
+public fn new_pool() -> pool: EnginePool pure doc "A pool with no engine yet, the engine made when first taken.";

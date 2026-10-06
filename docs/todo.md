@@ -96,19 +96,39 @@ written while firn lived in the Whitefoot repository; a path such as
   Redis scripting surface and application workloads have correctness and
   performance evidence, recording any remaining incompatibilities separately.
 
-- **A script can hold the whole keyspace without limit.** A firn script
-  runs inside one atomic statement holding every key and the keyspace's
-  metadata (`script_command` in `firn/commands/script.wf`), and the
-  first scripting version stops no script: one that loops forever stalls
-  every client and the append-only file's writer until firn is killed, where
-  Redis 7.0.15 answers other clients `BUSY` once `busy-reply-threshold`
-  (5 seconds) passes and lets `SCRIPT KILL` stop a script that has not
-  written. The change: count the engine's steps and, past the threshold,
-  answer other clients `BUSY` and accept `SCRIPT KILL` and `SHUTDOWN NOSAVE`,
-  which needs a way for the clients' contexts to run while the script's
-  statement holds the keyspace. Validate with Redis's `unit/scripting` busy
-  tests. Reopen when the Lua engine runs real scripts, before any deployment
-  that accepts scripts from clients it does not control.
+- **A busy script gets no BUSY reply, and one that has written cannot be
+  stopped.** A firn script runs in attempts, each in one atomic statement
+  holding every key and the keyspace's metadata (`eval` in
+  `firn/scripting/entry.wf`). `SCRIPT KILL` stops a script that has written
+  nothing at the end of its current attempt; one that has written runs to
+  its end holding the keyspace, so an endless one stalls every client and
+  the append-only file's writer until firn is killed. Redis 7.0.15 answers
+  other clients `BUSY` once `busy-reply-threshold` (`lua-time-limit`, 5
+  seconds) has passed, leaving them `SCRIPT KILL` and `SHUTDOWN NOSAVE`,
+  which stops even a script that has written. firn has no threshold: a
+  command that needs the keyspace waits for the attempt to end. Redis's
+  suite test `just EXEC and script timeout` waits for `BUSY` before it sends
+  `SCRIPT KILL`, so on firn it hangs until the suite's 120-second timeout
+  and its retry. The change: the pool records when the running script
+  began, a command that would take the keyspace answers `BUSY` past the
+  threshold, which adds a check of the pool to every such command, a cost to
+  measure on the 14900K first, and `SHUTDOWN NOSAVE` ends firn. Validate
+  with Redis's `unit/scripting` and `unit/multi` busy tests. Reopen before
+  any deployment that accepts scripts from clients it does not control, or
+  when the suite's time matters.
+- **A script's `pcall` returns an error table Redis would unwrap.** Redis
+  7.0.15 replaces Lua's `pcall` with `luaRedisPcall`, which returns the
+  `err` field of an error table that has a string one in place of the table.
+  firn applies that conversion only to the errors `redis.call` raises
+  (`redis_raised` in `firn/scripting/host.wf`); an error a script raises
+  itself reaches Halo's built-in `pcall`, which returns the value unchanged,
+  so `local ok,e = pcall(function() error({err='ERR x'},0) end) return
+  type(e)` answers `table` where Redis answers `string` (recorded on
+  redis-server 7.0.15: `string`, and `ERR x` for `e`). The change belongs to
+  Halo: its `pcall` unwraps the `err` field for an embedding that asks for
+  Redis's, and firn's `redis_raised` conversion then goes. Validate with
+  that case and a table without `err`, which stays a table in Redis. Reopen
+  when Halo-wf offers the option.
 - **Replay still differs from Redis's loader in two cases.** A file that
   does not parse, cannot be read or holds a block larger than the input
   window's ceiling now stops firn with status 4, as Redis 7.0.15 exits
@@ -416,22 +436,6 @@ written while firn lived in the Whitefoot repository; a path such as
   logarithmic; it changes the library's representation, a design decision.
   Reopen when a workload ranks or counts in large sorted sets, or with the
   library's next ordered map change.
-
-- **A busy script gets no BUSY reply.** Redis 7.0.15 answers other clients'
-  commands `BUSY` once a script has run past `busy-reply-threshold`
-  (`lua-time-limit`), leaving them `SCRIPT KILL` and `SHUTDOWN NOSAVE`.
-  firn has no threshold: a command that needs the keyspace waits until the
-  script's attempt ends, and a script that has written runs to its end
-  holding it, so an endless one holds it until `SCRIPT KILL` from another
-  connection. Redis's suite test `just EXEC and script timeout` sends `EXEC`
-  during such a script and waits for `BUSY` before it sends `SCRIPT KILL`,
-  so on firn it hangs until the suite's 120-second timeout and its retry
-  (`firn/scripting/entry.wf`). The change: the pool records when the
-  running script began, and a command that would take the keyspace answers
-  `BUSY` past the threshold. It adds a check of the pool to every such
-  command, a cost to measure on the 14900K before choosing it. Reopen when
-  a consumer runs scripts long enough to meet the threshold, or when the
-  suite's time matters.
 
 ## Tests
 

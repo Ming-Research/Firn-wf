@@ -218,6 +218,7 @@ default.
   the connection and server commands, and the dispatch;
 - `scripting`: `EVAL`, `EVALSHA` and `SCRIPT`, the Redis Lua environment
   and the conversions between replies and Lua values; `script_pool` holds
-  the engines and the registry of scripts the keyspace shares;
+  the one Lua engine every script takes in turn and the registry of
+  scripts the keyspace shares;
 - `persistence`: the append-only file's writer and its replay;
 - `server`: connections, active expiry, the invocation's options and `main`.

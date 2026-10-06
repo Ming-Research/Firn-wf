@@ -1287,8 +1287,7 @@ fn firn_stops_on_an_append_only_file_that_does_not_parse() {
         resp(&["SET", "b", "2"]),
     ]
     .concat();
-    std::fs::write(&path, &content)
-        .unwrap_or_else(|error| panic!("write the fixture: {error}"));
+    std::fs::write(&path, &content).unwrap_or_else(|error| panic!("write the fixture: {error}"));
     let port = free_port();
     let text = port.to_string();
     let output = program.run(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]);
@@ -4161,6 +4160,12 @@ fn firn_runs_scripts_as_redis_does() {
         vec!["EVAL", "return redis.call('INCR',KEYS[1])", "1", "sk"],
         vec![
             "EVAL",
+            "local f = redis.call\nreturn f('INCR',KEYS[1])",
+            "1",
+            "sk",
+        ],
+        vec![
+            "EVAL",
             "return redis.call('SET',KEYS[1],'v','EX',100,'NX')",
             "1",
             "sk2",
@@ -4214,7 +4219,7 @@ fn firn_runs_scripts_as_redis_does() {
     let sets = "*1\r\n".repeat(2665);
     let limit = "-ERR reached lua stack limit\r\n";
     let expected = format!(
-        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n$-1\r\n$2\r\nsv\r\n:1\r\n:42\r\n:47\r\n-ERR value is not an integer or out of range\r\n-ERR value is not an integer or out of range script: da8455f0535fd532821b3713a4eccd80fc4b8457, on @user_script:1.\r\n+OK\r\n:100\r\n:1\r\n+OK\r\n$1\r\nb\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n$2\r\nsv\r\n_\r\n_\r\n"
+        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n$-1\r\n$2\r\nsv\r\n:1\r\n:42\r\n:47\r\n-ERR value is not an integer or out of range\r\n-ERR value is not an integer or out of range script: da8455f0535fd532821b3713a4eccd80fc4b8457, on @user_script:1.\r\n-ERR value is not an integer or out of range script: 8225a61dd7e7b8c6f60bf49e74d2d38d8fbd695f, on @user_script:2.\r\n+OK\r\n:100\r\n:1\r\n+OK\r\n$1\r\nb\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n$2\r\nsv\r\n_\r\n_\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the scripting batch");
     drop(client);
@@ -4270,6 +4275,59 @@ fn firn_kills_a_looping_script_as_redis_does() {
     );
     drop(looping);
     drop(other);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn's scripts share one Lua state as Redis 7.0.15's do: the cjson
+/// precision one script sets reaches a later script on another connection
+/// while a third connection's script is in progress, and survives that
+/// script's abandoned attempts and its kill. With a pool of engines the
+/// later script could take another engine than the one the setting reached
+/// and encode 3.14159 at the default precision of 14 digits.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_scripts_share_one_lua_state_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]);
+    let mut looping = connect_when_ready(port);
+    let mut setter = connect_when_ready(port);
+    let mut reader = connect_when_ready(port);
+    looping
+        .write_all(&resp(&["EVAL", "while true do end", "0"]))
+        .expect("start the looping script");
+    std::thread::sleep(Duration::from_millis(300));
+    setter
+        .write_all(&resp(&[
+            "EVAL",
+            "cjson.encode_number_precision(3) return 1",
+            "0",
+        ]))
+        .expect("set the precision");
+    expect_replies(&mut setter, b":1\r\n", "the precision set");
+    let encode = resp(&["EVAL", "return cjson.encode(3.14159)", "0"]);
+    reader.write_all(&encode).expect("encode a number");
+    expect_replies(
+        &mut reader,
+        b"$4\r\n3.14\r\n",
+        "the number while a script runs",
+    );
+    setter
+        .write_all(&resp(&["SCRIPT", "KILL"]))
+        .expect("kill the script");
+    expect_replies(&mut setter, b"+OK\r\n", "SCRIPT KILL");
+    expect_replies(
+        &mut looping,
+        b"-ERR Script killed by user with SCRIPT KILL... script: 694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7, on @user_script:1.\r\n",
+        "the killed script",
+    );
+    reader.write_all(&encode).expect("encode again");
+    expect_replies(&mut reader, b"$4\r\n3.14\r\n", "the number after the kill");
+    drop(looping);
+    drop(setter);
+    drop(reader);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
 }
