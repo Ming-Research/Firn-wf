@@ -37,7 +37,7 @@ const text_watch_inside: Array<u8, 37> = "ERR WATCH inside MULTI is not allowed"
 
 const text_execabort: Array<u8, 59> = "EXECABORT Transaction discarded because of previous errors.";
 
-const text_not_queued: Array<u8, 66> = "ERR unknown command, or one firn does not yet run in transactions";
+const text_not_queued: Array<u8, 65> = "ERR unknown command, or one firn does not yet run in transactions";
 
 const reply_queued: Array<u8, 9> = "+QUEUED\r\n";
 
@@ -142,7 +142,7 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
   if kind == 0_u64 {
-    reply_error(client: client, word: &text_not_queued[0_u64..66_u64]);
+    reply_error(client: client, word: &text_not_queued[0_u64..65_u64]);
     set transaction^.dirty = True();
     return unit;
   }
@@ -190,8 +190,12 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
       set first = first +wrap count;
       let name = arg(args: &args, index: 0_u64);
       let kind = held_kind(input: queued, name: name);
-      let ran = held_run(kind: kind, keys: t, meta: m, effects: &effects, logged: logged, input: queued, args: &args, client: client, env: env, time: time);
-      set appended = appended +wrap ran;
+      if kind != 0_u64 {
+        let ran = held_run(kind: kind, keys: t, meta: m, effects: &effects, logged: logged, input: queued, args: &args, client: client, env: env, time: time);
+        set appended = appended +wrap ran;
+      } else {
+        reply_error(client: client, word: &text_not_queued[0_u64..65_u64]);
+      }
     }
     if appended > 1_u64 {
       log_count(log: &m^.log, count: 1_u64, room: 16_u64);
