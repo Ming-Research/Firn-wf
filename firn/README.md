@@ -62,8 +62,15 @@ clients send on their own:
   `EXPIRETIME`, `PEXPIRETIME`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `TYPE`,
   `PERSIST`, `DBSIZE`, `PING`, `ECHO`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`,
   `GETDEL`, `GETEX`, `APPEND`, `SETRANGE`, `STRLEN`, `GETRANGE`, `MGET`,
-  `MSETNX`, `INCRBYFLOAT`, `RENAME`, `RENAMENX` and `COPY`. Any other command
-  sent inside a transaction is queued, and `EXEC` then refuses the whole transaction;
+  `MSETNX`, `INCRBYFLOAT`, `RENAME`, `RENAMENX`, `COPY`, `TOUCH`, `SUBSTR`,
+  `TIME`, `SELECT 0`, `COMMAND` and `COMMAND COUNT`. These also run through
+  `redis.call` and `redis.pcall`, with the same one-database and empty command
+  description limits as the network path. `FLUSHALL`, `FLUSHDB` and `INFO`
+  have shared parts but are not yet reachable from EXEC or scripts: flushing
+  needs a way to clear an already-held map, and INFO needs the server counters
+  passed into the held command interface. Unsupported command names sent
+  inside a transaction are queued, and `EXEC` then refuses the whole
+  transaction; invalid `COMMAND` subcommands are refused when sent;
   `WATCH` is refused inside one and unknown outside;
 - server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which

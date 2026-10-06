@@ -79,6 +79,18 @@ const arity_renamenx: i64 = 3_i64;
 
 const arity_copy: i64 = -3_i64;
 
+const arity_time: i64 = 1_i64;
+
+const arity_select: i64 = 2_i64;
+
+const arity_command: i64 = -1_i64;
+
+const arity_command_count: i64 = 2_i64;
+
+const arity_flush: i64 = -1_i64;
+
+const arity_info: i64 = -1_i64;
+
 const arity_noscript_with_argument: i64 = -2_i64;
 
 const text_script_arity: Array<u8, 58> = "ERR Wrong number of args calling Redis command from script";
@@ -238,7 +250,7 @@ fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
 }
 
 fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY, the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
+  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 166 COMMAND (164 and 165 reserved for FLUSHALL and FLUSHDB, 167 for INFO pending their held-state support), the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
   let code = name_code(input: input, start: name.start, length: name.length);
   if code == code_get {
     return 1_u64;
@@ -369,6 +381,21 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   if code == code_copy {
     return 39_u64;
   }
+  if code == code_touch {
+    return 160_u64;
+  }
+  if code == code_substr {
+    return 161_u64;
+  }
+  if code == code_time {
+    return 162_u64;
+  }
+  if code == code_select {
+    return 163_u64;
+  }
+  if code == code_command {
+    return 166_u64;
+  }
   return 0_u64;
 }
 
@@ -470,6 +497,21 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   }
   if kind == 39_u64 {
     return arity_copy;
+  }
+  if kind == 160_u64 {
+    return arity_exists;
+  }
+  if kind == 161_u64 {
+    return arity_getrange;
+  }
+  if kind == 162_u64 {
+    return arity_time;
+  }
+  if kind == 163_u64 {
+    return arity_select;
+  }
+  if kind == 166_u64 {
+    return arity_command;
   }
   return 0_i64;
 }
@@ -639,14 +681,45 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
     let appended = script_copy(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     return appended;
   }
+  if kind == 160_u64 {
+    let appended = script_named(kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 161_u64 {
+    let appended = script_getrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 162_u64 {
+    run_time(client: client);
+    return 0_u64;
+  }
+  if kind == 163_u64 {
+    run_select(input: input, args: args, client: client);
+    return 0_u64;
+  }
+  if kind == 166_u64 {
+    run_command(input: input, args: args, client: client);
+    return 0_u64;
+  }
   return 0_u64;
 }
 
 fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
-  doc "Runs one command a script calls, inside the script's statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the script's own record of what it changed, which the caller wraps in MULTI and EXEC when it holds more than one, as Redis 7.0.15 propagates a script's effects. time is the script's: its check is the instant the script began. The commands held_kind names run through held_run; a count of arguments outside a command's arity is refused as Redis refuses it from a script, and AUTH, HELLO, QUIT, DEBUG, CONFIG, CLIENT and FUNCTION, which Redis 7.0.15 marks noscript, as Redis refuses them, after the arity check of the command itself: AUTH, DEBUG, CONFIG, CLIENT and FUNCTION need an argument, HELLO and QUIT none; a subcommand's own arity, such as CONFIG GET's, is not checked, so a short subcommand gets the refusal where Redis answers the arity error. Every other name is answered with Redis's error for a name no command has, extended to say that firn may know the command and not yet run it from scripts: firn names its commands only in execute's rows, so a script cannot tell an unknown name from a command firn has not split into its parts, and the extended text keeps the words Redis's own tests match.";
+  doc "Runs one command a script calls, inside the script's statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the script's own record of what it changed, which the caller wraps in MULTI and EXEC when it holds more than one, as Redis 7.0.15 propagates a script's effects. time is the script's: its check is the instant the script began. COMMAND's subcommand and its arity are resolved by command_plan before it runs; an unsupported one receives the unknown-command refusal. The commands held_kind names run through held_run; a count of arguments outside a command's arity is refused as Redis refuses it from a script, and AUTH, HELLO, QUIT, DEBUG, CONFIG, CLIENT and FUNCTION, which Redis 7.0.15 marks noscript, as Redis refuses them, after the arity check of the command itself: AUTH, DEBUG, CONFIG, CLIENT and FUNCTION need an argument, HELLO and QUIT none; a subcommand's own arity, such as CONFIG GET's, is not checked, so a short subcommand gets the refusal where Redis answers the arity error. Every other name is answered with Redis's error for a name no command has, extended to say that firn may know the command and not yet run it from scripts: firn names its commands only in execute's rows, so a script cannot tell an unknown name from a command firn has not split into its parts, and the extended text keeps the words Redis's own tests match.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
+  if kind == 166_u64 {
+    let command = command_plan(input: input, args: args);
+    if command == 3_u64 {
+      reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
+      return 0_u64;
+    }
+    if command == 0_u64 {
+      reply_error(client: client, word: &text_script_unknown_or_unsplit[0_u64..87_u64]);
+      return 0_u64;
+    }
+  }
   if kind != 0_u64 {
     let arity = held_arity(kind: kind);
     if arity_holds(arity: arity, count: count) {
@@ -903,7 +976,7 @@ fn script_setex(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slot
 }
 
 fn script_named(kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
-  doc "DEL and UNLINK remove each named entry, EXISTS counts every occurrence, and MGET answers each in order, using the network bodies and metadata.";
+  doc "DEL and UNLINK remove each named entry, EXISTS and TOUCH count every occurrence, and MGET answers each in order, using the network bodies and metadata.";
   let count = args^.inner.len;
   let many = count -sat 1_u64;
   let removed_count = 0_u64;

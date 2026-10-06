@@ -437,6 +437,28 @@ written while firn lived in the Whitefoot repository; a path such as
   Reopen when a workload ranks or counts in large sorted sets, or with the
   library's next ordered map change.
 
+- **INFO cannot yet run under EXEC or a script's held command interface.**
+  `info_plan`, `info_body` and `info_finish` in `firn/commands/info.wf`
+  now share the network implementation, but `ScriptCommands.call` has no
+  `ServerState`: `INFO server` needs `started`, and `INFO stats` needs
+  `connections`. Neither value is in `Client`, `Time` or `Meta`. A server
+  snapshot passed by the outer caller, or a server-state target held beside
+  the keyspace, needs an architecture-approved interface change, including
+  `held_run`, EXEC and the scripting caller. Do not supply invented counts
+  or silently omit these sections. Reopen when that interface is extended;
+  validate section selection, uptime and connection counters against Redis
+  7.0.15, and INFO keyspace after earlier writes in the same statement.
+
+- **TIME uses the connection's last clock reading.** The network path and
+  held code 162 both call `run_time`, which reads `Client.unix_us`; Redis
+  7.0.15's `timeCommand` calls `gettimeofday` for each invocation, even
+  inside EXEC or Lua. Expiry time remains frozen independently. A long
+  script can therefore report stale time in firn. Fixing this needs a clock
+  capability in the held interface and a nonwaiting calendar read, without
+  changing expiry's frozen `Time`. Reopen with the held-interface work;
+  validate TIME's two decimal bulk strings and microsecond range, and
+  compare two calls around substantial script work without changing expiry.
+
 ## Tests
 
 - **Thirteen of Redis's suite tests are lost to a connection left in
@@ -516,4 +538,19 @@ written while firn lived in the Whitefoot repository; a path such as
 
 ## Whitefoot requirements
 
-None filed since firn left the Whitefoot repository.
+- **A held concurrent map cannot be emptied without another held map.**
+  At pin `364f86c2fd16151103ac3947e5bf069727686733`, the minimal operation
+  needed is a nonwaiting function taking `keys: &ConcurrentHashMap<V>`
+  with `writes(keys)` that leaves every entry `None`. SHARE-1/PRE-1 expose
+  `map_count`, per-key access and `shared_map_new`, but no clear or iterator;
+  TYPE-9 admits maps only as shared state. `swap` needs a second held map,
+  reached through another atomic target, and SHARE-2 makes that acquisition
+  waiting. `ScriptCommands.call` cannot wait. Consequently FLUSHALL/FLUSHDB
+  (reserved held codes 164/165) have shared network parts but remain
+  unavailable inside EXEC and scripts. A fixed supply of fresh maps cannot
+  support an arbitrary number of Lua flush calls. Add a map-clear operation
+  in Whitefoot, then adapt `flush_body` without dropping prior effects or
+  reopening the outer statement. Reopen for these commands; validate two
+  flushes separated by writes, expiry-queue removal, empty-map propagation,
+  concurrent atomicity, and AOF replay against Redis 7.0.15. No compiler
+  change or pin upgrade has been made here.

@@ -427,7 +427,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_touch {
-    let fits = count >= 2_u64;
+    let fits = arity_holds(arity: arity_exists, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -714,7 +714,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let flushing_one = code == code_flushdb;
   let flushing = bor(flushing_all, flushing_one);
   if flushing {
-    let fits = count >= 1_u64;
+    let fits = arity_holds(arity: arity_flush, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -745,7 +745,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_info {
-    let fits = count >= 1_u64;
+    let fits = arity_holds(arity: arity_info, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1178,7 +1178,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_select {
-    let fits = count == 2_u64;
+    let fits = arity_holds(arity: arity_select, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1189,7 +1189,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_time {
-    let fits = count == 1_u64;
+    let fits = arity_holds(arity: arity_time, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);

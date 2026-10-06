@@ -354,37 +354,71 @@ fn run_client(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result:
   return unit;
 }
 
-fn run_select(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
-  doc "SELECT index: firn keeps one database, so 0 is answered OK and any other index as Redis answers one past its databases; an index that is not a number, or not one of 32 bits, is answered with Redis's error for each.";
+fn select_plan(input: &[u8], args: &Box<Slots<Span>>) -> error: u64 reads(input), reads(args) {
+  doc "SELECT's parsing and one-database body: 0 selects database zero, 1 is not an integer, 2 exceeds signed 32 bits, 3 names an unavailable database. No key or metadata changes are needed.";
   let index = arg(args: args, index: 1_u64);
   let number = read_integer(input: input, start: index.start, length: index.length);
   if number.state != 1_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
+    return 1_u64;
   }
   let below = number.value < -2147483648_i64;
   let above = number.value > 2147483647_i64;
   let outside = bor(below, above);
   if outside {
-    reply_error(client: client, word: &text_select_range[0_u64..72_u64]);
-    return unit;
+    return 2_u64;
   }
   if number.value != 0_i64 {
-    reply_error(client: client, word: &text_db_range[0_u64..28_u64]);
-    return unit;
+    return 3_u64;
   }
-  reply_ok(client: client);
+  return 0_u64;
+}
+
+fn select_finish(client: &Client, error: u64) -> result: unit writes(client) {
+  doc "SELECT's reply and refusals, shared by the network, EXEC and scripts.";
+  if error == 1_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  } else if error == 2_u64 {
+    reply_error(client: client, word: &text_select_range[0_u64..72_u64]);
+  } else if error == 3_u64 {
+    reply_error(client: client, word: &text_db_range[0_u64..28_u64]);
+  } else {
+    reply_ok(client: client);
+  }
+  return unit;
+}
+
+fn run_select(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
+  doc "SELECT index through select_plan and select_finish, with no key or metadata work: firn has one database, so selecting zero leaves the connection as it was.";
+  let error = select_plan(input: input, args: args);
+  select_finish(client: client, error: error);
+  return unit;
+}
+
+struct TimeReply {
+  seconds: i64;
+  microseconds: i64;
+}
+
+fn time_body(unix_us: u64) -> made: TimeReply pure {
+  doc "TIME's body over the calendar reading, with no arguments to parse or keyspace metadata to change.";
+  let seconds = unix_us / 1000000_u64;
+  let micro = unix_us % 1000000_u64;
+  let whole = cvt.wrap::<u64, i64>(seconds);
+  let part = cvt.wrap::<u64, i64>(micro);
+  return TimeReply(seconds: whole, microseconds: part);
+}
+
+fn time_finish(client: &Client, value: &TimeReply) -> result: unit reads(value), writes(client) {
+  doc "TIME's reply: two bulk strings of decimal seconds and microseconds.";
+  reply_array(client: client, count: 2_u64);
+  reply_bulk_decimal(client: client, value: value^.seconds);
+  reply_bulk_decimal(client: client, value: value^.microseconds);
   return unit;
 }
 
 fn run_time(client: &Client) -> result: unit writes(client) {
-  doc "TIME: the calendar time as the clocks were last read, as Redis answers it: the seconds since 1970 and the microseconds within that second, each a bulk string of its decimal digits.";
-  let seconds = client^.unix_us / 1000000_u64;
-  let micro = client^.unix_us % 1000000_u64;
-  let whole = cvt.wrap::<u64, i64>(seconds);
-  let part = cvt.wrap::<u64, i64>(micro);
-  reply_array(client: client, count: 2_u64);
-  reply_bulk_decimal(client: client, value: whole);
-  reply_bulk_decimal(client: client, value: part);
+  doc "TIME through time_body and time_finish: the calendar time as the clocks were last read, preserving the network path's clock source.";
+  let value = time_body(unix_us: client^.unix_us);
+  time_finish(client: client, value: &value);
   return unit;
 }
