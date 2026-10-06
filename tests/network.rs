@@ -4946,6 +4946,58 @@ $1\r\nx\r\n:0\r\n*0\r\n*0\r\n:0\r\n:0\r\n*0\r\n:0\r\n*2\r\n:0\r\n:0\r\n$-1\r\n\
     assert_eq!(status, 0);
 }
 
+/// firn treats a set found expired as absent when it combines sets, as
+/// Redis 7.0.15's sunionDiffGenericCommand and sinterGenericCommand look
+/// each key up first: SUNION, SDIFF and SINTER of a lapsed set answer no
+/// members, and a combination refused for a key of another kind has still
+/// removed the lapsed set named before it, so DBSIZE, which counts entries
+/// not yet removed, counts only the other key.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_combines_lapsed_sets_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["SADD", "lapsing", "x"],
+        vec!["PEXPIRE", "lapsing", "1"],
+        vec!["SADD", "lapsing2", "x"],
+        vec!["PEXPIRE", "lapsing2", "1"],
+        vec!["SET", "text", "v"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("set the keys up");
+    expect_replies(
+        &mut client,
+        b":1\r\n:1\r\n:1\r\n:1\r\n+OK\r\n",
+        "the keys set up",
+    );
+    std::thread::sleep(Duration::from_millis(5));
+    let mut batch = Vec::new();
+    for request in [
+        vec!["SUNION", "lapsing"],
+        vec!["SDIFF", "lapsing"],
+        vec!["SINTER", "lapsing"],
+        vec!["SUNION", "lapsing2", "text"],
+        vec!["DBSIZE"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("combine the sets");
+    expect_replies(
+        &mut client,
+        b"*0\r\n*0\r\n*0\r\n-WRONGTYPE Operation against a key holding the wrong kind of value\r\n:1\r\n",
+        "the combinations",
+    );
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
