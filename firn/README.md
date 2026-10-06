@@ -41,8 +41,9 @@ clients send on their own:
   `ZSCORE`, `ZMSCORE`, `ZCARD`, `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count,
   `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores
   read and written as Redis 7.0.15 reads and writes them;
-- scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS` and
-  `SCRIPT FLUSH [SYNC|ASYNC]`, running Lua 5.1 scripts on the Halo engine
+- scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
+  `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
+  has written nothing, running Lua 5.1 scripts on the Halo engine
   of [Halo-wf](https://github.com/Ming-Research/Halo-wf), `deps/halo-wf`,
   with Redis's `KEYS`, `ARGV`, `redis` library and reply conversions, in
   either protocol. A compiled script is kept until `SCRIPT FLUSH`, as in

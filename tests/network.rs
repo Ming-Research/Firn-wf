@@ -4181,6 +4181,61 @@ fn firn_runs_scripts_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// firn's SCRIPT KILL stops a script that has written nothing at the end of
+/// its current attempt and answers it Redis 7.0.15's error, naming the
+/// script's SHA1 and the line it ran; SCRIPT KILL answers NOTBUSY when no
+/// script runs and Redis's arity error for an argument; and another
+/// connection's command runs between the looping script's attempts.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_kills_a_looping_script_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]);
+    let mut looping = connect_when_ready(port);
+    let mut other = connect_when_ready(port);
+    let mut batch = resp(&["SCRIPT", "KILL"]);
+    batch.extend(resp(&["SCRIPT", "KILL", "x"]));
+    other
+        .write_all(&batch)
+        .expect("send SCRIPT KILL with no script");
+    expect_replies(
+        &mut other,
+        b"-NOTBUSY No scripts in execution right now.\r\n-ERR wrong number of arguments for 'script|kill' command\r\n",
+        "SCRIPT KILL with no script",
+    );
+    looping
+        .write_all(&resp(&["EVAL", "while true do end", "0"]))
+        .expect("start the looping script");
+    std::thread::sleep(Duration::from_millis(300));
+    other
+        .write_all(&resp(&["SET", "k", "v"]))
+        .expect("write while the script loops");
+    expect_replies(&mut other, b"+OK\r\n", "a write while the script loops");
+    other
+        .write_all(&resp(&["SCRIPT", "KILL"]))
+        .expect("kill the script");
+    expect_replies(&mut other, b"+OK\r\n", "SCRIPT KILL");
+    expect_replies(
+        &mut looping,
+        b"-ERR Script killed by user with SCRIPT KILL... script: 694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7, on @user_script:1.\r\n",
+        "the killed script",
+    );
+    other
+        .write_all(&resp(&["SCRIPT", "KILL"]))
+        .expect("kill again");
+    expect_replies(
+        &mut other,
+        b"-NOTBUSY No scripts in execution right now.\r\n",
+        "SCRIPT KILL once the script ended",
+    );
+    drop(looping);
+    drop(other);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// Reads one RESP2 reply of bulk strings: a bulk string, none for the null
 /// bulk string, or each element of an array of bulk strings.
 #[cfg(target_os = "linux")]

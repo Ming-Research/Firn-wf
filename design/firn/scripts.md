@@ -12,6 +12,8 @@ Decision: A script compiled by EVAL or SCRIPT LOAD is kept until SCRIPT FLUSH, w
 
 Decision: A command a script calls writes its reply into the client's reply buffer as on the network, and the script receives it converted from those bytes by Redis 7.0.15's redisProtocolToLuaType, while a script's result is written by luaReplyToRedisReply's rules in the client's protocol, because a script's command then runs the network path's own reply writers, instead of a second, Lua-specific result for every command.
 
+Decision: SCRIPT KILL stops a script that has written nothing at the end of its current attempt, the script checking between its attempts for a kill requested since it began, and answers OK while any script is in progress and NOTBUSY while none is, because an attempt holds the keyspace's statement and the pool that records the request is reachable only between attempts, as the selected direction checks for a kill between statements, instead of checking within an attempt, which would nest the pool's statement inside the keyspace's; a script that has written runs to its end, and SCRIPT KILL sent while it does answers OK where Redis answers UNKILLABLE, since the pool does not learn that the script wrote.
+
 Rejected:
 - Releasing the statement around each of a script's commands: rejected because another client's command could then come between them, which Redis does not allow.
 - A registry of scripts per connection: rejected because EVALSHA on one connection must find a script another loaded, as Redis's registry is the server's.

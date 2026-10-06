@@ -171,6 +171,56 @@ fn read_sha(input: &[u8], span: Span, fold: Bool) -> sha: Array<u8, 40> reads(in
   return sha;
 }
 
+fn script_begins(store: &Keyspace) -> mark: u64 reads(store) waits {
+  doc "Counts a script in progress and returns the kills requested so far, against which its attempts are checked.";
+  let mark = 0_u64;
+  atomic p = &store^.scripts {
+    set p^.running = p^.running +sat 1_u64;
+    set mark = p^.kills;
+  }
+  return mark;
+}
+
+fn script_ends(store: &Keyspace) -> r: unit reads(store) waits {
+  doc "Counts a script in progress no longer.";
+  atomic p = &store^.scripts {
+    set p^.running = p^.running -sat 1_u64;
+  }
+  return unit;
+}
+
+fn kill_requested(store: &Keyspace, mark: u64) -> killed: Bool reads(store) waits {
+  doc "Whether SCRIPT KILL was sent since a script began.";
+  let killed = False();
+  atomic p = &store^.scripts {
+    set killed = p^.kills != mark;
+  }
+  return killed;
+}
+
+fn paused_line(vm: &Vm) -> line: u64 reads(vm) {
+  doc "The line of the instruction an attempt that ran out of budget would have run next, where Redis's hook names a killed script's line.";
+  let pc = vm^.saved_pc;
+  if pc < vm^.lineinfo.inner.len {
+    return cvt::<u32, u64>(vm^.lineinfo.inner[pc]);
+  }
+  return 0_u64;
+}
+
+fn reply_killed(client: &Client, sha: &Array<u8, 40>, line: u64) -> r: unit reads(sha), writes(client) {
+  doc "The error Redis 7.0.15 answers a script SCRIPT KILL stopped: its message, the script's SHA1 and the line its hook stopped at.";
+  let text = box_slots_new::<u8>(capacity: 128_u64);
+  text_bytes(out: &text, bytes: &killed_text[0_u64..45_u64]);
+  text_bytes(out: &text, bytes: &killed_script[0_u64..9_u64]);
+  text_bytes(out: &text, bytes: &sha^[0_u64..40_u64]);
+  text_bytes(out: &text, bytes: &killed_on[0_u64..18_u64]);
+  decimal(out: &text, n: line);
+  push(out: &text, byte: 46_u8);
+  let n = text.inner.len;
+  reply_error(client: client, word: &text.inner[0_u64..n]);
+  return unit;
+}
+
 fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "Read both states before dispatch to take the entire keys and metadata holds even while command bodies are refused. Engine allocation follows Redis's default of no script-specific memory cap; host resource exhaustion remains the environment's limit.";
   let count = args^.inner.len;
@@ -221,6 +271,8 @@ fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client
     return unit;
   }
   let budget = 1000_u64;
+  let mark = script_begins(store: store);
+  let stopped_at = 0_u64;
   loop {
     let pooled = take_engine(store: store);
     let n = source.inner.len;
@@ -253,6 +305,7 @@ fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client
                   set outcome = halo::embed::resume::<ScriptHost>(engine: &pooled.engine, env: &env, budget: 18446744073709551615_u64);
                 } else {
                   set retry = True();
+                  set stopped_at = paused_line(vm: &pooled.engine.vm);
                   set pooled.engine.vm.random_state = random;
                   halo::embed::reset(engine: &pooled.engine);
                   config_restore(vm: &pooled.engine.vm, saved: &configs, active: config_active);
@@ -293,8 +346,14 @@ fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client
     if bnot(retry) {
       break;
     }
+    let killed = kill_requested(store: store, mark: mark);
+    if killed {
+      reply_killed(client: client, sha: &sha, line: stopped_at);
+      break;
+    }
     set budget = budget +sat budget;
   }
+  script_ends(store: store);
   return unit;
 }
 
@@ -305,8 +364,10 @@ fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Clie
   let exists = pkg::bytes::name_is(input: input, start: sub.start, length: sub.length, word: &entry_text_8[0_u64..6_u64]);
   let flushing = pkg::bytes::name_is(input: input, start: sub.start, length: sub.length, word: &entry_text_9[0_u64..5_u64]);
   let loading = pkg::bytes::name_is(input: input, start: sub.start, length: sub.length, word: &entry_text_13[0_u64..4_u64]);
+  let killing = pkg::bytes::name_is(input: input, start: sub.start, length: sub.length, word: &word_kill[0_u64..4_u64]);
   let known = bor(exists, flushing);
   set known = bor(known, loading);
+  set known = bor(known, killing);
   if bnot(known) {
     script_unknown(client: client, input: input, sub: sub);
     return unit;
@@ -323,8 +384,29 @@ fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Clie
       return unit;
     }
   }
+  if killing {
+    if count != 2_u64 {
+      reply_error(client: client, word: &kill_arity_error[0_u64..55_u64]);
+      return unit;
+    }
+  }
   if client^.locked {
     reply_error(client: client, word: &script_noauth[0_u64..31_u64]);
+    return unit;
+  }
+  if killing {
+    let busy = False();
+    atomic p = &store^.scripts {
+      if p^.running > 0_u64 {
+        set p^.kills = p^.kills +wrap 1_u64;
+        set busy = True();
+      }
+    }
+    if busy {
+      pkg::protocol::reply_ok(client: client);
+    } else {
+      reply_error(client: client, word: &notbusy_error[0_u64..42_u64]);
+    }
     return unit;
   }
   if exists {
@@ -438,3 +520,15 @@ const exists_arity_error: Array<u8, 57> = "ERR wrong number of arguments for 'sc
 const load_arity_error: Array<u8, 55> = "ERR wrong number of arguments for 'script|load' command";
 
 const script_noauth: Array<u8, 31> = "NOAUTH Authentication required.";
+
+const word_kill: Array<u8, 4> = "KILL";
+
+const kill_arity_error: Array<u8, 55> = "ERR wrong number of arguments for 'script|kill' command";
+
+const notbusy_error: Array<u8, 42> = "NOTBUSY No scripts in execution right now.";
+
+const killed_text: Array<u8, 45> = "ERR Script killed by user with SCRIPT KILL...";
+
+const killed_script: Array<u8, 9> = " script: ";
+
+const killed_on: Array<u8, 18> = ", on @user_script:";
