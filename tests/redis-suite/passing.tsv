@@ -156,6 +156,7 @@ unit/scripting	INCRBYFLOAT: We can call scripts expanding client->argv from Lua	
 unit/scripting	LUA redis.status_reply API	1
 unit/scripting	LUA test pcall	1
 unit/scripting	LUA test pcall with error	1
+unit/scripting	LUA test pcall with non string/integer arg	1
 unit/scripting	SCRIPT EXISTS - can detect already defined scripts?	1
 unit/scripting	SCRIPT LOAD - is able to register scripts in the scripting cache	1
 unit/scripting	SCRIPTING FLUSH - is able to clear the scripts cache?	1
