@@ -5175,6 +5175,39 @@ fn firn_records_held_sets_commands_as_redis_propagates_them() {
     );
 }
 
+/// firn records SINTERSTORE, SUNIONSTORE and SDIFFSTORE run inside a transaction's EXEC and a script as Redis 7.0.15 propagates them over destinations found expired: a nonempty result removes the expired destination and records its DEL before the command, as setKey's lookup does, while an empty result records the command alone, as dbDelete does; a script of two effects is bracketed and one of one is not. The expected
+/// records are redis-server 7.0.15's (Firn-wf probe run 37512787568).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_setstore_commands_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["SADD", "src", "x"],
+            &["SADD", "d1", "old"],
+            &["PEXPIREAT", "d1", "1"],
+            &["SADD", "d2", "old"],
+            &["PEXPIREAT", "d2", "1"],
+            &["SADD", "d3", "old"],
+            &["PEXPIREAT", "d3", "1"],
+            &["SADD", "d4", "old"],
+            &["PEXPIREAT", "d4", "1"],
+        ],
+        &[
+            &["MULTI"],
+            &["SUNIONSTORE", "d1", "src"],
+            &["SINTERSTORE", "d2", "src", "none"],
+            &["EXEC"],
+            &["EVAL", "return redis.call('SDIFFSTORE', KEYS[1], KEYS[2])", "2", "d3", "src"],
+            &["EVAL", "return redis.call('SINTERSTORE', KEYS[1], KEYS[2], 'none')", "2", "d4", "src"],
+            &["SMEMBERS", "d1"],
+            &["SMEMBERS", "d3"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n:1\r\n:0\r\n:1\r\n:0\r\n*1\r\n$1\r\nx\r\n*1\r\n$1\r\nx\r\n:3\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nd1\r\n*3\r\n$11\r\nSUNIONSTORE\r\n$2\r\nd1\r\n$3\r\nsrc\r\n*4\r\n$11\r\nSINTERSTORE\r\n$2\r\nd2\r\n$3\r\nsrc\r\n$4\r\nnone\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nd3\r\n*3\r\n$10\r\nSDIFFSTORE\r\n$2\r\nd3\r\n$3\r\nsrc\r\n*1\r\n$4\r\nEXEC\r\n*4\r\n$11\r\nSINTERSTORE\r\n$2\r\nd4\r\n$3\r\nsrc\r\n$4\r\nnone\r\n",
+    );
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to

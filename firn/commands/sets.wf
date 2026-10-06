@@ -1639,7 +1639,7 @@ struct SetCombineWork {
 }
 
 fn set_operands_meta(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(removed), reads(input), reads(args), writes(log) {
-  doc "Records each removed operand in its body's order, followed by the STORE command only when its destination changed.";
+  doc "Records removed operands in the body's order, then any expired STORE destination, followed by the STORE command only when its destination changed.";
   let appended = 0_u64;
   if logged {
     for @removals (at in 0_u64..removed^.inner.len) {
@@ -1675,7 +1675,7 @@ fn set_combine_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, sto
 }
 
 fn set_combine_body(slots: &Entries<Entry>, keys: &KeySet, client: &Client, env: &KeyEnv, operation: u64, storing: Bool, members: &HashMap<Key, unit, ceiling>) -> work: SetCombineWork reads(keys), reads(env), writes(slots), writes(client), writes(members) {
-  doc "SINTER, SUNION and SDIFF, with or without STORE, over the named entries; the shared survey removes expired operands before gathering or refusing a live wrong type.";
+  doc "SINTER, SUNION and SDIFF, with or without STORE, over the named entries; the shared survey removes expired operands before gathering or refusing a live wrong type. A nonempty STORE also removes an expired destination and notes its removal after the operands' removals; an empty result deletes the destination without an expiry lookup, as Redis does.";
   let no = False();
   let removed = box_slots_new::<u64>(capacity: 0_u64);
   let work = SetCombineWork(changed: no, removed: move removed);
@@ -1695,6 +1695,11 @@ fn set_combine_body(slots: &Entries<Entry>, keys: &KeySet, client: &Client, env:
       if target < slots^.len {
         let changed = False();
         if size > 0_u64 {
+          let target_kind = set_kind(slot: &slots^[target], now: client^.now);
+          if target_kind == entry_lapsed {
+            set slots^[target] = None<Entry>();
+            note_position(positions: &work.removed, position: 1_u64);
+          }
           store_members(slot: &slots^[target], members: members);
           set changed = True();
         } else {
