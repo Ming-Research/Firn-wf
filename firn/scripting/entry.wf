@@ -432,7 +432,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   break;
                 }
                 Error() => {
-                  let line = callback_line(vm: &pooled.engine.vm);
+                  let line = halo::embed::error_line(engine: &pooled.engine);
                   let value = halo::embed::error_value(engine: &pooled.engine);
                   let locate = readonly_message(vm: &pooled.engine.vm, value: value);
                   let formatted = halo::embed::format_redis_error(engine: &pooled.engine, source: &source.inner[0_u64..n], line: line, locate: locate);

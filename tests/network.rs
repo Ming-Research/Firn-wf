@@ -4065,21 +4065,21 @@ fn firn_records_transactions_as_redis_propagates_them() {
 }
 
 /// firn runs scripts as Redis 7.0.15's EVAL, EVALSHA and SCRIPT do: a script
-/// compiled by EVAL or SCRIPT LOAD is cached under its SHA1 until SCRIPT
-/// FLUSH, EVALSHA finds it in either case and SCRIPT EXISTS in lower case
-/// only; KEYS and ARGV reach the script; the number of keys is checked as
-/// Redis checks it; a script that runs past its first budget is run again
-/// with a larger one; the globals' metatable is read-only; SCRIPT's
-/// subcommands and the commands' arities are answered as Redis answers them;
-/// redis.error_reply and redis.pcall's argument check answer Redis's error
-/// tables; and a script's result is written in the client's protocol, as
-/// luaReplyToRedisReply writes it, booleans following redis.setresp, and a
-/// result that contains itself ending in Redis's stack-limit error at the
-/// depth Redis reaches; redis.call and redis.pcall run the commands written
-/// as parts, numbers formatted as Redis formats them, an error reply raised
-/// at redis.call, at the line of the call or of a rethrow as Redis's error
-/// handler reports it, and returned by redis.pcall, and the reply read in the
-/// script's protocol whatever the client's. The expected bytes are
+/// compiled by EVAL or SCRIPT LOAD is cached under its SHA1 until SCRIPT FLUSH,
+/// EVALSHA finds it in either case and SCRIPT EXISTS in lower case only; KEYS
+/// and ARGV reach the script; the number of keys is checked as Redis checks it;
+/// a script that runs past its first budget is run again with a larger one; the
+/// globals' metatable is read-only; SCRIPT's subcommands and the commands'
+/// arities are answered as Redis answers them; redis.error_reply and
+/// redis.pcall's argument check answer Redis's error tables; and a script's
+/// result is written in the client's protocol, as luaReplyToRedisReply writes
+/// it, booleans following redis.setresp, and a result that contains itself
+/// ending in Redis's stack-limit error at the depth Redis reaches; redis.call
+/// and redis.pcall run the commands written as parts, numbers formatted as
+/// Redis formats them, an error reply raised at redis.call, at the line of the
+/// call or of a rethrow, through a local alias of error included, as Redis's
+/// error handler reports it, and returned by redis.pcall, and the reply read in
+/// the script's protocol whatever the client's. The expected bytes are
 /// redis-server 7.0.15's.
 #[cfg(target_os = "linux")]
 #[test]
@@ -4171,6 +4171,19 @@ fn firn_runs_scripts_as_redis_does() {
             "1",
             "sk",
         ],
+        vec!["EVAL", "local err = error\nerr('boom')", "0"],
+        vec![
+            "EVAL",
+            "local err = error\nlocal _, e = xpcall(function()\n  redis.call('INCR', KEYS[1])\nend, function(e) return e end)\nerr(e, 0)",
+            "1",
+            "sk",
+        ],
+        vec![
+            "EVAL",
+            "local f = redis.call\nlocal t = {}\nreturn f('INCR', KEYS[1])",
+            "1",
+            "sk",
+        ],
         vec![
             "EVAL",
             "return redis.call('SET',KEYS[1],'v','EX',100,'NX')",
@@ -4226,7 +4239,7 @@ fn firn_runs_scripts_as_redis_does() {
     let sets = "*1\r\n".repeat(2665);
     let limit = "-ERR reached lua stack limit\r\n";
     let expected = format!(
-        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n$-1\r\n$2\r\nsv\r\n:1\r\n:42\r\n:47\r\n-ERR value is not an integer or out of range\r\n-ERR value is not an integer or out of range script: da8455f0535fd532821b3713a4eccd80fc4b8457, on @user_script:1.\r\n-ERR value is not an integer or out of range script: 8225a61dd7e7b8c6f60bf49e74d2d38d8fbd695f, on @user_script:2.\r\n-ERR value is not an integer or out of range script: 6793b20f57c81afc3e867639a73e30ff2bd19609, on @user_script:4.\r\n+OK\r\n:100\r\n:1\r\n+OK\r\n$1\r\nb\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n$2\r\nsv\r\n_\r\n_\r\n"
+        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n$-1\r\n$2\r\nsv\r\n:1\r\n:42\r\n:47\r\n-ERR value is not an integer or out of range\r\n-ERR value is not an integer or out of range script: da8455f0535fd532821b3713a4eccd80fc4b8457, on @user_script:1.\r\n-ERR value is not an integer or out of range script: 8225a61dd7e7b8c6f60bf49e74d2d38d8fbd695f, on @user_script:2.\r\n-ERR value is not an integer or out of range script: 6793b20f57c81afc3e867639a73e30ff2bd19609, on @user_script:4.\r\n-ERR user_script:2: boom script: 443852b874bae87a7a4b0129daea4709fa17a0f1, on @user_script:2.\r\n-ERR value is not an integer or out of range script: d3a069bf51964f7e9ac333589ead69a481f56199, on @user_script:5.\r\n-ERR value is not an integer or out of range script: 3676a1037fb941aa22fb13a86e521811d4392a31, on @user_script:3.\r\n+OK\r\n:100\r\n:1\r\n+OK\r\n$1\r\nb\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n$2\r\nsv\r\n_\r\n_\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the scripting batch");
     drop(client);
