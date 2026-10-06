@@ -16,6 +16,21 @@
 name: redis-bench
 
 on:
+  # Temporary: lets the probe workflow call this one; removed with it.
+  workflow_call:
+    inputs:
+      runner: {type: string, required: true}
+      mode: {type: string, required: true}
+      revisions: {type: string, required: true}
+      cpus: {type: string, required: true}
+      tests: {type: string, required: true}
+      depths: {type: string, required: true}
+      passes: {type: string, required: true}
+      seconds: {type: string, required: true}
+      profile: {type: boolean, required: true}
+      profile_test: {type: string, required: true}
+      annotate: {type: string, required: true}
+      callers: {type: boolean, required: true}
   workflow_dispatch:
     inputs:
       runner:
@@ -111,19 +126,50 @@ jobs:
         run: |
           echo "OUT=$RUNNER_TEMP/redis-bench" >> "$GITHUB_ENV"
           OUT="$RUNNER_TEMP/redis-bench"
+          # The helpers that run a measurement in a session of its own and stop
+          # what it leaves, sourced by this step and the measurement.
+          cat > "$RUNNER_TEMP/redis-bench-session.sh" <<'HELPERS'
+          session_file=${SESSION_FILE/#\~/$HOME}
+          # Stops the processes of the recorded session that carry its token,
+          # so that a session number reused by another program is left alone,
+          # then removes the record.
+          stop_recorded() {
+            [ -n "$session_file" ] && [ -f "$session_file" ] || return 0
+            sid= token=
+            read -r sid token < "$session_file" || true
+            if [ -n "$sid" ] && [ -n "$token" ]; then
+              for pid in $(ps -s "$sid" -o pid= 2>/dev/null); do
+                if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx "FIRN_REDIS_BENCH_TOKEN=$token"; then
+                  echo "stopping $(ps -p "$pid" -o pid=,args= 2>/dev/null || echo "$pid")"
+                  kill "$pid" 2>/dev/null || true
+                fi
+              done
+              sleep 1
+            fi
+            rm -f "$session_file"
+          }
+          # Runs redis-bench.sh in a session of its own on the self-hosted
+          # machine: records the session's id and a token every process of it
+          # carries before the measurement starts, refusing to start without
+          # the record, and stops what it left when it ends, however it ends.
+          run_session() {
+            if [ -z "$session_file" ]; then
+              sh research/experiments/redis-bench/redis-bench.sh "$@"
+              return
+            fi
+            mkdir -p "$(dirname "$session_file")"
+            FIRN_REDIS_BENCH_TOKEN=$(cat /proc/sys/kernel/random/uuid)
+            export FIRN_REDIS_BENCH_TOKEN
+            status=0
+            setsid --wait sh -c 'echo "$$ $FIRN_REDIS_BENCH_TOKEN" > "$1" || exit 1; shift; exec sh research/experiments/redis-bench/redis-bench.sh "$@"' run "$session_file" "$@" || status=$?
+            stop_recorded
+            return $status
+          }
+          HELPERS
+          . "$RUNNER_TEMP/redis-bench-session.sh"
           # A cancelled run on the self-hosted machine can leave its servers
           # and clients behind, which would load the host this run measures.
-          # Each measurement runs in a session of its own whose id it records,
-          # so only that session's processes are stopped, and others' are left.
-          session_file=${SESSION_FILE/#\~/$HOME}
-          if [ -n "$session_file" ] && [ -f "$session_file" ]; then
-            sid=$(cat "$session_file")
-            echo "stopping session $sid left by an earlier run:"
-            ps -s "$sid" -o pid,args || true
-            pkill -s "$sid" || true
-            rm -f "$session_file"
-            sleep 2
-          fi
+          stop_recorded
           missing=
           for tool in clang ld.lld curl python3 git make taskset redis-server redis-benchmark redis-cli; do
             command -v "$tool" >/dev/null || missing="$missing $tool"
@@ -142,13 +188,14 @@ jobs:
             for tool in redis-server valkey-server dragonfly garnet-server redis-benchmark; do
               echo "$tool: $(command -v "$tool" || echo missing)"
             done
-            redis-server --version
+            # The versions are a record; none of them stops the run.
+            redis-server --version || true
             valkey-server --version 2>/dev/null || true
-            dragonfly --version 2>/dev/null | head -1 || true
-            garnet-server --version 2>/dev/null | head -1 || true
-            redis-benchmark --version
-            clang --version | head -1
-            ld.lld --version
+            { dragonfly --version 2>/dev/null | head -1; } || true
+            { garnet-server --version 2>/dev/null | head -1; } || true
+            redis-benchmark --version || true
+            { clang --version | head -1; } || true
+            ld.lld --version || true
           } | tee "$OUT/host.txt"
 
       - name: Build each revision's firn with its pinned compiler
@@ -175,8 +222,7 @@ jobs:
           done
           echo "IMAGES=$images" >> "$GITHUB_ENV"
 
-      - name: Measure the images interleaved
-        if: ${{ env.MODE == 'compare' }}
+      - name: Measure
         timeout-minutes: 110
         env:
           COMPARE_CPUS: ${{ inputs.cpus }}
@@ -189,61 +235,32 @@ jobs:
           PERF_ANNOTATE: ${{ inputs.annotate }}
           PERF_CALLERS: ${{ inputs.callers && '1' || '' }}
           PERF_FREQUENCY: ${{ inputs.callers && '999' || '4999' }}
-        run: |
-          set -o pipefail
-          # Runs redis-bench.sh in a session of its own, recording the
-          # session's id while it runs on the self-hosted machine.
-          run_session() {
-            session_file=${SESSION_FILE/#\~/$HOME}
-            if [ -n "$session_file" ]; then
-              mkdir -p "$(dirname "$session_file")"
-              status=0
-              setsid --wait sh -c 'echo $$ > "$1"; shift; exec sh research/experiments/redis-bench/redis-bench.sh "$@"' run "$session_file" "$@" || status=$?
-              rm -f "$session_file"
-              return $status
-            fi
-            sh research/experiments/redis-bench/redis-bench.sh "$@"
-          }
-          if [ "$PROFILE" = true ]; then
-            PERF=$(ls /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf 2>/dev/null | head -1 || true)
-            if [ -n "$PERF" ]; then
-              if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
-                sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
-              fi
-              export PERF
-            else
-              echo "no perf for this kernel; profiles skipped" | tee -a "$OUT/host.txt"
-            fi
-          fi
-          run_session compare 2>&1 | tee "$OUT/bench.txt"
-
-      - name: Measure firn against Redis and its competitors
-        if: ${{ env.MODE == 'scale' }}
-        timeout-minutes: 110
-        env:
           SCALE: ${{ inputs.cpus }}
           SCALE_TESTS: ${{ inputs.tests }}
           PASSES: ${{ inputs.passes }}
           SECONDS_PER_RUN: ${{ inputs.seconds }}
         run: |
           set -o pipefail
-          # Runs redis-bench.sh in a session of its own, recording the
-          # session's id while it runs on the self-hosted machine.
-          run_session() {
-            session_file=${SESSION_FILE/#\~/$HOME}
-            if [ -n "$session_file" ]; then
-              mkdir -p "$(dirname "$session_file")"
-              status=0
-              setsid --wait sh -c 'echo $$ > "$1"; shift; exec sh research/experiments/redis-bench/redis-bench.sh "$@"' run "$session_file" "$@" || status=$?
-              rm -f "$session_file"
-              return $status
+          . "$RUNNER_TEMP/redis-bench-session.sh"
+          if [ "$MODE" = compare ]; then
+            if [ "$PROFILE" = true ]; then
+              PERF=$(ls /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf 2>/dev/null | head -1 || true)
+              if [ -n "$PERF" ]; then
+                if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+                  sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+                fi
+                export PERF
+              else
+                echo "no perf for this kernel; profiles skipped" | tee -a "$OUT/host.txt"
+              fi
             fi
-            sh research/experiments/redis-bench/redis-bench.sh "$@"
-          }
-          make compiler
-          export FIRN_BASELINE="$OUT/base"
-          echo "firn: $(git rev-parse HEAD)" | tee -a "$OUT/host.txt"
-          run_session scale 2>&1 | tee "$OUT/scale.txt"
+            run_session compare 2>&1 | tee "$OUT/bench.txt"
+          else
+            make compiler
+            export FIRN_BASELINE="$OUT/base"
+            echo "firn: $(git rev-parse HEAD)" | tee -a "$OUT/host.txt"
+            run_session scale 2>&1 | tee "$OUT/scale.txt"
+          fi
 
       - name: Publish the host and the revisions
         if: always()
