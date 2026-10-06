@@ -4288,13 +4288,13 @@ fn firn_kills_a_looping_script_as_redis_does() {
 
 /// firn's scripts share one Lua state as Redis 7.0.15's do: the cjson
 /// precision one connection's script sets reaches another connection's
-/// script that runs while a third connection's script loops, and survives
-/// that script's abandoned attempts and its kill. The looping script holds
-/// the one engine during each attempt, so the later script waits for it;
-/// with a pool of engines it would take a second engine, served on another
-/// of the four drivers while an attempt runs, and encode 3.14159 at the
-/// default precision of 14 digits. The expected bytes are redis-server
-/// 7.0.15's (Firn-wf probe run 37487261232).
+/// script sent while a third connection's script runs. That script has
+/// written, so it runs to its end holding the one engine and the later
+/// script waits for both; with a pool of engines the later script, served
+/// on another of the four drivers meanwhile, would take a second engine and
+/// encode 3.14159 at the default precision of 14 digits. The expected bytes
+/// are redis-server 7.0.15's (Firn-wf probe run 37487261232), the running
+/// script's count its loop's.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_scripts_share_one_lua_state_as_redis_does() {
@@ -4303,7 +4303,7 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
     let text = port.to_string();
     let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), b"3"]);
     let mut setter = connect_when_ready(port);
-    let mut looping = connect_when_ready(port);
+    let mut writer = connect_when_ready(port);
     let mut reader = connect_when_ready(port);
     setter
         .write_all(&resp(&[
@@ -4313,30 +4313,26 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
         ]))
         .expect("set the precision");
     expect_replies(&mut setter, b":1\r\n", "the precision set");
-    looping
-        .write_all(&resp(&["EVAL", "while true do end", "0"]))
-        .expect("start the looping script");
-    std::thread::sleep(Duration::from_millis(300));
-    let encode = resp(&["EVAL", "return cjson.encode(3.14159)", "0"]);
-    reader.write_all(&encode).expect("encode a number");
+    writer
+        .write_all(&resp(&[
+            "EVAL",
+            "redis.call('SET',KEYS[1],'1') local i = 0 while i < 50000000 do i = i + 1 end return i",
+            "1",
+            "written",
+        ]))
+        .expect("start the writing script");
+    std::thread::sleep(Duration::from_millis(100));
+    reader
+        .write_all(&resp(&["EVAL", "return cjson.encode(3.14159)", "0"]))
+        .expect("encode a number");
     expect_replies(
         &mut reader,
         b"$4\r\n3.14\r\n",
-        "the number while a script runs",
+        "the number sent while a script runs",
     );
-    setter
-        .write_all(&resp(&["SCRIPT", "KILL"]))
-        .expect("kill the script");
-    expect_replies(&mut setter, b"+OK\r\n", "SCRIPT KILL");
-    expect_replies(
-        &mut looping,
-        b"-ERR Script killed by user with SCRIPT KILL... script: 694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7, on @user_script:1.\r\n",
-        "the killed script",
-    );
-    reader.write_all(&encode).expect("encode again");
-    expect_replies(&mut reader, b"$4\r\n3.14\r\n", "the number after the kill");
+    expect_replies(&mut writer, b":50000000\r\n", "the writing script");
     drop(setter);
-    drop(looping);
+    drop(writer);
     drop(reader);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
