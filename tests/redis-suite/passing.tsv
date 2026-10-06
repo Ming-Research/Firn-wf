@@ -6,6 +6,7 @@ integration/redis-cli	Interactive CLI: Multi-bulk reply	1
 integration/redis-cli	Interactive CLI: Parsing quotes	1
 integration/redis-cli	Interactive CLI: Status reply	1
 integration/redis-cli	Non-interactive TTY CLI: Bulk reply	1
+integration/redis-cli	Non-interactive TTY CLI: Escape character in JSON mode	1
 integration/redis-cli	Non-interactive TTY CLI: Integer reply	1
 integration/redis-cli	Non-interactive TTY CLI: Multi-bulk reply	1
 integration/redis-cli	Non-interactive TTY CLI: Read last argument from file	1
@@ -140,7 +141,6 @@ unit/protocol	Wrong multibulk payload header	1
 unit/protocol	raw protocol response	1
 unit/protocol	raw protocol response - deferred	1
 unit/protocol	raw protocol response - multiline	1
-unit/protocol	test large number of args	1
 unit/quit	Pipelined commands after QUIT must not be executed	1
 unit/quit	Pipelined commands after QUIT that exceed read buffer size	1
 unit/quit	QUIT returns OK	1
@@ -172,6 +172,54 @@ unit/type/incr	INCRBYFLOAT over 32bit value	1
 unit/type/incr	INCRBYFLOAT over 32bit value with over 32bit increment	1
 unit/type/incr	No negative zero	1
 unit/type/incr	string to double with null terminator	1
+unit/type/list	DEL a list	1
+unit/type/list	LINDEX against non existing key	1
+unit/type/list	LINDEX against non-list value error	1
+unit/type/list	LINDEX consistency test - quicklist	2
+unit/type/list	LINDEX random access - quicklist	2
+unit/type/list	LINSERT - linkedlist	1
+unit/type/list	LINSERT - ziplist	1
+unit/type/list	LINSERT raise error on bad syntax	1
+unit/type/list	LLEN against non existing key	1
+unit/type/list	LLEN against non-list value error	1
+unit/type/list	LMOVE left left base case - linkedlist	1
+unit/type/list	LMOVE left left base case - ziplist	1
+unit/type/list	LMOVE left left with linkedlist source and existing target linkedlist	1
+unit/type/list	LMOVE left left with linkedlist source and existing target ziplist	1
+unit/type/list	LMOVE left left with the same list as src and dst - linkedlist	1
+unit/type/list	LMOVE left left with the same list as src and dst - ziplist	1
+unit/type/list	LMOVE left left with ziplist source and existing target linkedlist	1
+unit/type/list	LMOVE left left with ziplist source and existing target ziplist	1
+unit/type/list	LMOVE left right base case - linkedlist	1
+unit/type/list	LMOVE left right base case - ziplist	1
+unit/type/list	LMOVE left right with linkedlist source and existing target linkedlist	1
+unit/type/list	LMOVE left right with linkedlist source and existing target ziplist	1
+unit/type/list	LMOVE left right with the same list as src and dst - linkedlist	1
+unit/type/list	LMOVE left right with the same list as src and dst - ziplist	1
+unit/type/list	LMOVE left right with ziplist source and existing target linkedlist	1
+unit/type/list	LMOVE left right with ziplist source and existing target ziplist	1
+unit/type/list	LMOVE right left base case - linkedlist	1
+unit/type/list	LMOVE right left base case - ziplist	1
+unit/type/list	LMOVE right left with linkedlist source and existing target linkedlist	1
+unit/type/list	LMOVE right left with linkedlist source and existing target ziplist	1
+unit/type/list	LMOVE right left with the same list as src and dst - linkedlist	1
+unit/type/list	LMOVE right left with the same list as src and dst - ziplist	1
+unit/type/list	LMOVE right left with ziplist source and existing target linkedlist	1
+unit/type/list	LMOVE right left with ziplist source and existing target ziplist	1
+unit/type/list	LMOVE right right base case - linkedlist	1
+unit/type/list	LMOVE right right base case - ziplist	1
+unit/type/list	LMOVE right right with linkedlist source and existing target linkedlist	1
+unit/type/list	LMOVE right right with linkedlist source and existing target ziplist	1
+unit/type/list	LMOVE right right with the same list as src and dst - linkedlist	1
+unit/type/list	LMOVE right right with the same list as src and dst - ziplist	1
+unit/type/list	LMOVE right right with ziplist source and existing target linkedlist	1
+unit/type/list	LMOVE right right with ziplist source and existing target ziplist	1
+unit/type/list	LPOP/RPOP against non existing key in RESP2	1
+unit/type/list	LPOP/RPOP against non existing key in RESP3	1
+unit/type/list	LPOP/RPOP with <count> against non existing key in RESP2	1
+unit/type/list	LPOP/RPOP with <count> against non existing key in RESP3	1
+unit/type/list	LPOP/RPOP with the count 0 returns an empty array in RESP2	1
+unit/type/list	LPOP/RPOP with the count 0 returns an empty array in RESP3	1
 unit/type/list	LPOP/RPOP with wrong number of arguments	1
 unit/type/list	LPOS COUNT + RANK option	1
 unit/type/list	LPOS COUNT option	1
@@ -181,9 +229,61 @@ unit/type/list	LPOS basic usage	1
 unit/type/list	LPOS no match	1
 unit/type/list	LPOS non existing key	1
 unit/type/list	LPOS when RANK is greater than matches	1
+unit/type/list	LPUSH against non-list value error	1
 unit/type/list	LPUSH, RPUSH, LLENGTH, LINDEX, LPOP - regular list	1
 unit/type/list	LPUSH, RPUSH, LLENGTH, LINDEX, LPOP - ziplist	1
+unit/type/list	LPUSHX, RPUSHX - generic	1
+unit/type/list	LPUSHX, RPUSHX - linkedlist	1
+unit/type/list	LPUSHX, RPUSHX - ziplist	1
+unit/type/list	LRANGE against non existing key	1
+unit/type/list	LRANGE basics - linkedlist	1
+unit/type/list	LRANGE basics - ziplist	1
+unit/type/list	LRANGE inverted indexes - linkedlist	1
+unit/type/list	LRANGE inverted indexes - ziplist	1
+unit/type/list	LRANGE out of range indexes including the full list - linkedlist	1
+unit/type/list	LRANGE out of range indexes including the full list - ziplist	1
+unit/type/list	LRANGE out of range negative end index - linkedlist	1
+unit/type/list	LRANGE out of range negative end index - ziplist	1
+unit/type/list	LRANGE with start > end yields an empty array for backward compatibility	1
+unit/type/list	LREM deleting objects that may be int encoded - linkedlist	1
+unit/type/list	LREM deleting objects that may be int encoded - ziplist	1
+unit/type/list	LREM remove all the occurrences - linkedlist	1
+unit/type/list	LREM remove all the occurrences - ziplist	1
+unit/type/list	LREM remove non existing element - linkedlist	1
+unit/type/list	LREM remove non existing element - ziplist	1
+unit/type/list	LREM remove the first occurrence - linkedlist	1
+unit/type/list	LREM remove the first occurrence - ziplist	1
+unit/type/list	LREM starting from tail with negative count (2) - linkedlist	1
+unit/type/list	LREM starting from tail with negative count (2) - ziplist	1
+unit/type/list	LREM starting from tail with negative count - linkedlist	1
+unit/type/list	LREM starting from tail with negative count - ziplist	1
+unit/type/list	LSET - linkedlist	1
+unit/type/list	LSET - ziplist	1
+unit/type/list	LSET against non existing key	1
+unit/type/list	LSET against non list value	1
+unit/type/list	LSET out of range index - linkedlist	1
+unit/type/list	LSET out of range index - ziplist	1
+unit/type/list	LTRIM basics - linkedlist	1
+unit/type/list	LTRIM basics - ziplist	1
+unit/type/list	LTRIM out of range negative end index - linkedlist	1
+unit/type/list	LTRIM out of range negative end index - ziplist	1
+unit/type/list	Mass RPOP/LPOP - quicklist	2
 unit/type/list	RPOP/LPOP with the optional count argument	1
+unit/type/list	RPOPLPUSH against non existing key	1
+unit/type/list	RPOPLPUSH against non existing src key	1
+unit/type/list	RPOPLPUSH against non list dst key	1
+unit/type/list	RPOPLPUSH against non list src key	1
+unit/type/list	RPOPLPUSH base case - linkedlist	1
+unit/type/list	RPOPLPUSH base case - ziplist	1
+unit/type/list	RPOPLPUSH with linkedlist source and existing target linkedlist	1
+unit/type/list	RPOPLPUSH with linkedlist source and existing target ziplist	1
+unit/type/list	RPOPLPUSH with the same list as src and dst - linkedlist	1
+unit/type/list	RPOPLPUSH with the same list as src and dst - ziplist	1
+unit/type/list	RPOPLPUSH with ziplist source and existing target linkedlist	1
+unit/type/list	RPOPLPUSH with ziplist source and existing target ziplist	1
+unit/type/list	RPUSH against non-list value error	1
+unit/type/list	Regression for bug 593 - chaining BRPOPLPUSH with other blocking cmds	1
+unit/type/list	Variadic RPUSH/LPUSH	1
 unit/type/list	reg node check compression combined with trim	1
 unit/type/list	reg node check compression with insert and pop	1
 unit/type/list	reg node check compression with lset	1
@@ -352,12 +452,10 @@ unit/type/string	STRLEN against non-existing key	1
 unit/type/string	STRLEN against plain string	1
 unit/type/string	Very big payload in GET/SET	1
 unit/type/string	Very big payload random access	1
-unit/type/zset	Basic ZPOPMIN/ZPOPMAX with a single key - listpack	1
-unit/type/zset	Basic ZPOPMIN/ZPOPMAX with a single key - skiplist	1
+unit/type/zset	Basic ZPOPMIN/ZPOPMAX - listpack RESP3	1
+unit/type/zset	Basic ZPOPMIN/ZPOPMAX - skiplist RESP3	1
 unit/type/zset	Check encoding - listpack	1
 unit/type/zset	Check encoding - skiplist	1
-unit/type/zset	ZADD - Return value is the number of actually added items - $encoding	2
-unit/type/zset	ZADD - Variadic version base case - $encoding	2
 unit/type/zset	ZADD - Variadic version does not add nothing on single parsing err - $encoding	2
 unit/type/zset	ZADD - Variadic version will raise error on missing arg - $encoding	2
 unit/type/zset	ZADD CH option changes return value to all changed elements - listpack	1
@@ -403,9 +501,7 @@ unit/type/zset	ZADD with options syntax error with incomplete pair - skiplist	1
 unit/type/zset	ZCARD basics - listpack	1
 unit/type/zset	ZCARD basics - skiplist	1
 unit/type/zset	ZINCRBY - can create a new sorted set - listpack	1
-unit/type/zset	ZINCRBY - can create a new sorted set - skiplist	1
 unit/type/zset	ZINCRBY - increment and decrement - listpack	1
-unit/type/zset	ZINCRBY - increment and decrement - skiplist	1
 unit/type/zset	ZINCRBY calls leading to NaN result in error - listpack	1
 unit/type/zset	ZINCRBY calls leading to NaN result in error - skiplist	1
 unit/type/zset	ZINCRBY does not work variadic even if shares ZADD implementation - $encoding	2
@@ -417,10 +513,10 @@ unit/type/zset	ZPOPMAX with negative count	2
 unit/type/zset	ZPOPMAX with the count 0 returns an empty array	2
 unit/type/zset	ZPOPMIN with negative count	2
 unit/type/zset	ZPOPMIN with the count 0 returns an empty array	2
-unit/type/zset	ZPOPMIN/ZPOPMAX with count - listpack	1
-unit/type/zset	ZPOPMIN/ZPOPMAX with count - skiplist	1
+unit/type/zset	ZPOPMIN/ZPOPMAX readraw in RESP3	1
+unit/type/zset	ZPOPMIN/ZPOPMAX with count - listpack RESP3	1
+unit/type/zset	ZPOPMIN/ZPOPMAX with count - skiplist RESP3	1
 unit/type/zset	ZRANGE basics - listpack	1
-unit/type/zset	ZRANGE basics - skiplist	1
 unit/type/zset	ZRANGEBYLEX with invalid lex range specifiers - listpack	1
 unit/type/zset	ZRANGEBYLEX with invalid lex range specifiers - skiplist	1
 unit/type/zset	ZRANGEBYLEX/ZREVRANGEBYLEX/ZLEXCOUNT basics - listpack	1
@@ -428,9 +524,7 @@ unit/type/zset	ZRANGEBYLEX/ZREVRANGEBYLEX/ZLEXCOUNT basics - skiplist	1
 unit/type/zset	ZRANGEBYSCORE with LIMIT - listpack	1
 unit/type/zset	ZRANGEBYSCORE with LIMIT - skiplist	1
 unit/type/zset	ZRANGEBYSCORE with LIMIT and WITHSCORES - listpack	1
-unit/type/zset	ZRANGEBYSCORE with LIMIT and WITHSCORES - skiplist	1
 unit/type/zset	ZRANGEBYSCORE with WITHSCORES - listpack	1
-unit/type/zset	ZRANGEBYSCORE with WITHSCORES - skiplist	1
 unit/type/zset	ZRANGEBYSCORE with non-value min or max - listpack	1
 unit/type/zset	ZRANGEBYSCORE with non-value min or max - skiplist	1
 unit/type/zset	ZRANGEBYSCORE/ZREVRANGEBYSCORE/ZCOUNT basics - listpack	1
@@ -454,7 +548,6 @@ unit/type/zset	ZREMRANGEBYSCORE basics - skiplist	1
 unit/type/zset	ZREMRANGEBYSCORE with non-value min or max - listpack	1
 unit/type/zset	ZREMRANGEBYSCORE with non-value min or max - skiplist	1
 unit/type/zset	ZREVRANGE basics - listpack	1
-unit/type/zset	ZREVRANGE basics - skiplist	1
 unit/type/zset	ZSET basic ZADD and score update - listpack	1
 unit/type/zset	ZSET basic ZADD and score update - skiplist	1
 unit/type/zset	ZSET element can't be set to NaN with ZADD - listpack	1

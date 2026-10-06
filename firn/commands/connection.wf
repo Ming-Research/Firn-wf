@@ -5,6 +5,7 @@ alias Span = pkg::protocol::Span;
 alias arg = pkg::protocol::arg;
 alias byte_at = pkg::bytes::byte_at;
 alias bytes_copy = pkg::bytes::bytes_copy;
+alias bytes_boxed = pkg::bytes::bytes_boxed;
 alias bytes_length = pkg::bytes::bytes_length;
 alias bytes_new = pkg::bytes::bytes_new;
 alias name_is = pkg::bytes::name_is;
@@ -15,9 +16,11 @@ alias reply_bulk_decimal = pkg::protocol::reply_bulk_decimal;
 alias reply_echoed = pkg::protocol::reply_echoed;
 alias reply_error = pkg::protocol::reply_error;
 alias reply_integer = pkg::protocol::reply_integer;
+alias reply_map = pkg::protocol::reply_map;
 alias reply_nil = pkg::protocol::reply_nil;
 alias reply_ok = pkg::protocol::reply_ok;
 alias reply_text = pkg::protocol::reply_text;
+alias reply_verbatim = pkg::protocol::reply_verbatim;
 alias reply_word = pkg::protocol::reply_word;
 
 const text_noauth: Array<u8, 31> =[78_u8, 79_u8, 65_u8, 85_u8, 84_u8, 72_u8, 32_u8, 65_u8, 117_u8, 116_u8, 104_u8, 101_u8, 110_u8, 116_u8, 105_u8, 99_u8, 97_u8, 116_u8, 105_u8, 111_u8, 110_u8, 32_u8, 114_u8, 101_u8, 113_u8, 117_u8, 105_u8, 114_u8, 101_u8, 100_u8, 46_u8];
@@ -34,7 +37,9 @@ const text_proto_number: Array<u8, 54> =[69_u8, 82_u8, 82_u8, 32_u8, 80_u8, 114_
 
 const text_hello_option: Array<u8, 35> =[45_u8, 69_u8, 82_u8, 82_u8, 32_u8, 83_u8, 121_u8, 110_u8, 116_u8, 97_u8, 120_u8, 32_u8, 101_u8, 114_u8, 114_u8, 111_u8, 114_u8, 32_u8, 105_u8, 110_u8, 32_u8, 72_u8, 69_u8, 76_u8, 76_u8, 79_u8, 32_u8, 111_u8, 112_u8, 116_u8, 105_u8, 111_u8, 110_u8, 32_u8, 39_u8];
 
-const reply_hello_head: Array<u8, 76> =[42_u8, 49_u8, 52_u8, 13_u8, 10_u8, 36_u8, 54_u8, 13_u8, 10_u8, 115_u8, 101_u8, 114_u8, 118_u8, 101_u8, 114_u8, 13_u8, 10_u8, 36_u8, 53_u8, 13_u8, 10_u8, 114_u8, 101_u8, 100_u8, 105_u8, 115_u8, 13_u8, 10_u8, 36_u8, 55_u8, 13_u8, 10_u8, 118_u8, 101_u8, 114_u8, 115_u8, 105_u8, 111_u8, 110_u8, 13_u8, 10_u8, 36_u8, 54_u8, 13_u8, 10_u8, 55_u8, 46_u8, 48_u8, 46_u8, 49_u8, 53_u8, 13_u8, 10_u8, 36_u8, 53_u8, 13_u8, 10_u8, 112_u8, 114_u8, 111_u8, 116_u8, 111_u8, 13_u8, 10_u8, 58_u8, 50_u8, 13_u8, 10_u8, 36_u8, 50_u8, 13_u8, 10_u8, 105_u8, 100_u8, 13_u8, 10_u8];
+const reply_hello_server: Array<u8, 59> =[36_u8, 54_u8, 13_u8, 10_u8, 115_u8, 101_u8, 114_u8, 118_u8, 101_u8, 114_u8, 13_u8, 10_u8, 36_u8, 53_u8, 13_u8, 10_u8, 114_u8, 101_u8, 100_u8, 105_u8, 115_u8, 13_u8, 10_u8, 36_u8, 55_u8, 13_u8, 10_u8, 118_u8, 101_u8, 114_u8, 115_u8, 105_u8, 111_u8, 110_u8, 13_u8, 10_u8, 36_u8, 54_u8, 13_u8, 10_u8, 55_u8, 46_u8, 48_u8, 46_u8, 49_u8, 53_u8, 13_u8, 10_u8, 36_u8, 53_u8, 13_u8, 10_u8, 112_u8, 114_u8, 111_u8, 116_u8, 111_u8, 13_u8, 10_u8];
+
+const reply_hello_id: Array<u8, 8> =[36_u8, 50_u8, 13_u8, 10_u8, 105_u8, 100_u8, 13_u8, 10_u8];
 
 const reply_hello_tail: Array<u8, 66> =[36_u8, 52_u8, 13_u8, 10_u8, 109_u8, 111_u8, 100_u8, 101_u8, 13_u8, 10_u8, 36_u8, 49_u8, 48_u8, 13_u8, 10_u8, 115_u8, 116_u8, 97_u8, 110_u8, 100_u8, 97_u8, 108_u8, 111_u8, 110_u8, 101_u8, 13_u8, 10_u8, 36_u8, 52_u8, 13_u8, 10_u8, 114_u8, 111_u8, 108_u8, 101_u8, 13_u8, 10_u8, 36_u8, 54_u8, 13_u8, 10_u8, 109_u8, 97_u8, 115_u8, 116_u8, 101_u8, 114_u8, 13_u8, 10_u8, 36_u8, 55_u8, 13_u8, 10_u8, 109_u8, 111_u8, 100_u8, 117_u8, 108_u8, 101_u8, 115_u8, 13_u8, 10_u8, 42_u8, 48_u8, 13_u8, 10_u8];
 
@@ -47,6 +52,22 @@ const word_client_id: Array<u8, 9> =[99_u8, 108_u8, 105_u8, 101_u8, 110_u8, 116_
 const word_client_getname: Array<u8, 14> =[99_u8, 108_u8, 105_u8, 101_u8, 110_u8, 116_u8, 124_u8, 103_u8, 101_u8, 116_u8, 110_u8, 97_u8, 109_u8, 101_u8];
 
 const word_client_setname: Array<u8, 14> =[99_u8, 108_u8, 105_u8, 101_u8, 110_u8, 116_u8, 124_u8, 115_u8, 101_u8, 116_u8, 110_u8, 97_u8, 109_u8, 101_u8];
+
+const word_client_info: Array<u8, 11> = "client|info";
+
+const word_info: Array<u8, 4> = "INFO";
+
+const client_info_id: Array<u8, 3> = "id=";
+
+const client_info_name: Array<u8, 6> = " name=";
+
+const client_info_age: Array<u8, 5> = " age=";
+
+const client_info_fixed: Array<u8, 93> = " idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|info user=default redir=-1 resp=";
+
+const client_info_end: Array<u8, 1> = "\n";
+
+const client_info_minus: Array<u8, 1> = "-";
 
 const word_id: Array<u8, 2> =[73_u8, 68_u8];
 
@@ -198,8 +219,9 @@ fn run_auth(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
 }
 
 fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "HELLO [protover [AUTH username password] [SETNAME clientname]]: answers as Redis 7.0 answers under RESP2. A version that is not a number is refused with Redis's error, and one other than 2 as unsupported, 3 included, since firn speaks RESP2 alone. The options then apply in order, AUTH as AUTH with a user name applies, against the password the server's state holds now, SETNAME as CLIENT SETNAME does, each stopping the command at its error with the options before it applied, and any other option is a syntax error; an option's name is read up to a zero byte, as Redis's strcasecmp reads it. A connection still locked is then refused; any other is answered with Redis's map of the server's facts, an array under RESP2: server redis and version 7.0.15, the server and version whose replies firn follows, protocol 2, the connection's id, standalone mode, the master role and no modules.";
+  doc "HELLO [protover [AUTH username password] [SETNAME clientname]]: answers as Redis 7.0.15 answers. A version that is not a number is refused with Redis's error, and one other than 2 or 3 as unsupported. The options then apply in order, AUTH as AUTH with a user name applies, against the password the server's state holds now, SETNAME as CLIENT SETNAME does, each stopping the command at its error with the options before it applied, and any other option is a syntax error; an option's name is read up to a zero byte, as Redis's strcasecmp reads it. A connection that has not authenticated is then refused, as Redis checks its flag of authentication even once no password is required; any other switches to the version given, keeps its own when none is, and is answered in it with Redis's map of the server's facts, an array under RESP2: server redis and version 7.0.15, the server and version whose replies firn follows, the protocol now in use, the connection's id, standalone mode, the master role and no modules.";
   let count = args^.inner.len;
+  let requested = 0_u64;
   if count >= 2_u64 {
     let version = arg(args: args, index: 1_u64);
     let number = read_integer(input: input, start: version.start, length: version.length);
@@ -207,10 +229,14 @@ fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
       reply_error(client: client, word: &text_proto_number[0_u64..54_u64]);
       return unit;
     }
-    if number.value != 2_i64 {
+    let low = number.value < 2_i64;
+    let high = number.value > 3_i64;
+    let unsupported = bor(low, high);
+    if unsupported {
       reply_error(client: client, word: &text_noproto[0_u64..36_u64]);
       return unit;
     }
+    set requested = cvt.wrap::<i64, u64>(number.value);
   }
   let index = 2_u64;
   loop @options {
@@ -260,11 +286,18 @@ fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
       return unit;
     }
   }
-  if client^.locked {
+  if bnot(client^.authenticated) {
     reply_error(client: client, word: &text_hello_noauth[0_u64..205_u64]);
     return unit;
   }
-  reply_word(client: client, word: &reply_hello_head[0_u64..76_u64]);
+  if requested != 0_u64 {
+    set client^.resp = requested;
+  }
+  reply_map(client: client, pairs: 7_u64);
+  reply_word(client: client, word: &reply_hello_server[0_u64..59_u64]);
+  let proto = cvt.wrap::<u64, i64>(client^.resp);
+  reply_integer(client: client, value: proto);
+  reply_word(client: client, word: &reply_hello_id[0_u64..8_u64]);
   let id = cvt.wrap::<u64, i64>(client^.id);
   reply_integer(client: client, value: id);
   reply_word(client: client, word: &reply_hello_tail[0_u64..66_u64]);
@@ -279,12 +312,25 @@ fn run_quit(client: &Client) -> result: unit writes(client) {
 }
 
 fn run_client(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
-  doc "CLIENT ID, CLIENT GETNAME and CLIENT SETNAME name answer as Redis does: the connection's id; its name, or the null bulk string when it has none; and OK once SETNAME has given or removed the name. Each given the wrong number of arguments is answered as Redis answers it, and then a connection that must authenticate first is answered NOAUTH. Any other subcommand, CLIENT SETINFO among them, which Redis 7.0 does not have, is answered as Redis answers an unknown one, its name echoed to 128 bytes.";
+  doc "CLIENT ID, CLIENT GETNAME, CLIENT SETNAME name and CLIENT INFO answer as Redis does: the connection's id; its name, or the null bulk string when it has none; OK once SETNAME has given or removed the name; and the connection's line of facts, as run_client_info writes it. Each given the wrong number of arguments is answered as Redis answers it, and then a connection that must authenticate first is answered NOAUTH. Any other subcommand, CLIENT SETINFO among them, which Redis 7.0 does not have, is answered as Redis answers an unknown one, its name echoed to 128 bytes.";
   let count = args^.inner.len;
   let sub = arg(args: args, index: 1_u64);
   let identifying = name_is(input: input, start: sub.start, length: sub.length, word: &word_id[0_u64..2_u64]);
   let getting = name_is(input: input, start: sub.start, length: sub.length, word: &word_getname[0_u64..7_u64]);
   let setting = name_is(input: input, start: sub.start, length: sub.length, word: &word_setname[0_u64..7_u64]);
+  let informing = name_is(input: input, start: sub.start, length: sub.length, word: &word_info[0_u64..4_u64]);
+  if informing {
+    if count != 2_u64 {
+      reply_arity_word(client: client, word: &word_client_info[0_u64..11_u64]);
+      return unit;
+    }
+    let stopped = denied(client: client);
+    if stopped {
+      return unit;
+    }
+    run_client_info(client: client);
+    return unit;
+  }
   if identifying {
     if count != 2_u64 {
       reply_arity_word(client: client, word: &word_client_id[0_u64..9_u64]);
@@ -336,6 +382,36 @@ fn run_client(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result:
   let shown = imin(sub.length, 128_u64);
   let echoed = reply_echoed(client: client, input: input, span: sub, limit: shown);
   reply_word(client: client, word: &text_try_client[0_u64..21_u64]);
+  return unit;
+}
+
+fn run_client_info(client: &Client) -> result: unit writes(client) {
+  doc "CLIENT INFO: the connection's line of facts in Redis 7.0.15's form, name=value pairs in Redis's order separated by spaces and ended by a line feed, as text, a bulk string under RESP2 and a verbatim string under RESP3. The fields carry real values where firn has them: the id, the name, the whole seconds since the server began serving the connection, counted on the calendar clock as Redis counts a client's age, negative when the clock was set back, and the protocol. Every other field it gives is fixed for firn: idle 0, since the connection's last interaction is the read that brought this command; the flag N and multi -1, no transaction, publish and subscribe or tracking being open while CLIENT runs; database 0, firn's one; no subscriptions; the command client|info; the user default, firn's one; and no tracking redirection. Fields firn cannot measure, the peer's and its own address, which Whitefoot's socket address does not show, the descriptor, the events and the sizes of Redis's buffers, are left out.";
+  let text = box_slots_new::<u8>(capacity: 256_u64);
+  text_word(text: &text, word: &client_info_id[0_u64..3_u64]);
+  text_number(text: &text, value: client^.id);
+  text_word(text: &text, word: &client_info_name[0_u64..6_u64]);
+  let duplicate = bytes_copy(bytes: &client^.name);
+  let name = bytes_boxed(bytes: move duplicate);
+  let named = name.inner.len;
+  text_word(text: &text, word: &name.inner[0_u64..named]);
+  text_word(text: &text, word: &client_info_age[0_u64..5_u64]);
+  let current = client^.unix_us / 1000000_u64;
+  let since = client^.since_us / 1000000_u64;
+  if since > current {
+    let back = since -wrap current;
+    text_word(text: &text, word: &client_info_minus[0_u64..1_u64]);
+    text_number(text: &text, value: back);
+  } else {
+    let age = current -wrap since;
+    text_number(text: &text, value: age);
+  }
+  text_word(text: &text, word: &client_info_fixed[0_u64..93_u64]);
+  text_number(text: &text, value: client^.resp);
+  text_word(text: &text, word: &client_info_end[0_u64..1_u64]);
+  let length = text.inner.len;
+  let window = &text.inner[0_u64..length];
+  reply_verbatim(client: client, input: window, start: 0_u64, length: length);
   return unit;
 }
 

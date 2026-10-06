@@ -1,7 +1,7 @@
 # firn
 
 firn is a server of Redis's protocol written in Whitefoot. It answers RESP2
-and inline requests, quoted arguments included, over TCP, pipelined or not,
+or RESP3, the version a connection's HELLO selects, and inline requests, quoted arguments included, over TCP, pipelined or not,
 and keeps strings, lists, sets, hashes and sorted sets in one keyspace, a
 shared map that every connection reaches through atomic statements naming
 the entries of the keys a command uses and the separate expiry, log or server
@@ -41,10 +41,10 @@ clients send on their own:
   `ZSCORE`, `ZMSCORE`, `ZCARD`, `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count,
   `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores
   read and written as Redis 7.0.15 reads and writes them;
-- connection: `PING`, `ECHO`, `QUIT`, `AUTH`, `HELLO` with no version or
-  version 2, version 3 being refused as unsupported, `SELECT 0`, firn
-  having one database, and `CLIENT ID`, `CLIENT GETNAME` and
-  `CLIENT SETNAME`;
+- connection: `PING`, `ECHO`, `QUIT`, `AUTH`, `HELLO` with no version,
+  version 2 or version 3, which switches the connection to RESP3, `SELECT 0`, firn
+  having one database, and `CLIENT ID`, `CLIENT GETNAME`, `CLIENT SETNAME`
+  and `CLIENT INFO`, described below;
 - server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which
   describe no command. `COMMAND DOCS` is answered as an unknown subcommand,
@@ -105,9 +105,15 @@ expiry's 10 runs a second, no configuration file, memory limit, eviction,
 script, function, replica, background save, rewrite, fork, module, publish
 and subscribe, tracking or cluster. What firn does not measure, memory and
 processor time, per-command and per-error counts among them, is left out,
-so its CPU, Commandstats, Errorstats and Latencystats sections are empty,
-and the keyspace line's `expires` and `avg_ttl`, which firn does not count,
-are 0.
+so its CPU, Commandstats, Errorstats and Latencystats sections are empty
+and its keyspace line gives `keys` alone, without the `expires` and
+`avg_ttl` firn does not count.
+
+`CLIENT INFO` answers the connection's line in Redis's form, with real
+values for the id, the name, the age and the protocol, and values fixed and
+true of firn for the others it gives. It leaves out what firn cannot report:
+the peer's and its own address, which Whitefoot's socket address does not
+show, the descriptor, the events and the sizes of Redis's buffers.
 
 `HELLO` and `INFO` report the server as `redis` version 7.0.15, the version
 whose replies firn follows.

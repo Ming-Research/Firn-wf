@@ -41,6 +41,8 @@ alias reply_array = pkg::protocol::reply_array;
 alias reply_error = pkg::protocol::reply_error;
 alias reply_integer = pkg::protocol::reply_integer;
 alias reply_nil = pkg::protocol::reply_nil;
+alias reply_pair = pkg::protocol::reply_pair;
+alias reply_pairs = pkg::protocol::reply_pairs;
 alias reply_score = pkg::scores::reply_score;
 alias reply_wrong_type = pkg::protocol::reply_wrong_type;
 alias reply_text = pkg::protocol::reply_text;
@@ -631,7 +633,7 @@ fn highest(sorted: &Sorted) -> found: Option<Rank> reads(sorted) {
 }
 
 fn pop_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(value) {
-  doc "Removes up to number of a live sorted set's lowest members, or of its highest when low is 1, the highest first, writing each member and its score as an array reply and leaving in number how many it removed. Records done, or emptied when the set is left empty; wrong for another kind and expired for an expired entry.";
+  doc "Removes up to number of a live sorted set's lowest members, or of its highest when low is 1, the highest first, writing each member and its score as an array reply, each pair nested under RESP3 when high is 1, and leaving in number how many it removed. Records done, or emptied when the set is left empty; wrong for another kind and expired for an expired entry.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -641,8 +643,13 @@ fn pop_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
     Ranked(ranked: sorted) => {
       let size = ordered_map_len::<Rank, unit, ceiling>(map: &sorted^.order);
       let taken = imin(env^.number, size);
-      let fields = taken *wrap 2_u64;
-      reply_array(client: env, count: fields);
+      let nested = env^.high == 1_i64;
+      if nested {
+        reply_pairs(client: env, pairs: taken);
+      } else {
+        let fields = taken *wrap 2_u64;
+        reply_array(client: env, count: fields);
+      }
       let keys = env^.keys;
       let from_top = env^.low == 1_i64;
       for @popping (step in 0_u64..taken) {
@@ -657,6 +664,9 @@ fn pop_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
           Some(value: rank) => {
             let removed = ordered_map_remove::<RankOrder, unit, ceiling>(map: &sorted^.order, key: &rank, env: &keys);
             let dropped = hash_map_remove::<KeyHash, f64, ceiling>(map: &sorted^.scores, key: &rank.member, env: &keys);
+            if nested {
+              reply_pair(client: env);
+            }
             reply_text(client: env, text: &rank.member.bytes);
             reply_score(client: env, score: rank.score);
           }
@@ -692,7 +702,7 @@ fn pop_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
 }
 
 fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, from_top: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZPOPMIN key [count] and ZPOPMAX (from_top): removes and answers the sorted set's lowest member, or its highest, and its score, or up to count of them, as one array, removing the key when the set is left empty; an absent key answers an empty array. More than one count is a syntax error, and a count that is not an integer or is negative is out of range, as Redis's getPositiveLongFromObjectOrReply reads it, before the key is read; only a pop that removed a member is appended to the file.";
+  doc "ZPOPMIN key [count] and ZPOPMAX (from_top): removes and answers the sorted set's lowest member, or its highest, and its score, or up to count of them, as one array, each member and score nested as a pair under RESP3 when a count is given, as Redis 7.0.15 nests them, removing the key when the set is left empty; an absent key answers an empty array. More than one count is a syntax error, and a count that is not an integer or is negative is out of range, as Redis's getPositiveLongFromObjectOrReply reads it, before the key is read; only a pop that removed a member is appended to the file.";
   let count = args^.inner.len;
   if count > 3_u64 {
     reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
@@ -719,6 +729,10 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   set client^.low = 0_i64;
   if from_top {
     set client^.low = 1_i64;
+  }
+  set client^.high = 0_i64;
+  if count == 3_u64 {
+    set client^.high = 1_i64;
   }
   atomic slot = &store^.keys[key], m = &store^.meta {
     match slot^ {

@@ -3354,7 +3354,8 @@ fn firn_listens_again_on_its_port_after_a_restart() {
 /// connection that changed it stays authenticated, a new one is refused the
 /// old password, and removing the password lets that one in at once, but only
 /// until a password is set again, since it has not authenticated, as Redis's
-/// flag of authentication has it; AUTH as the user default while no password
+/// flag of authentication has it, and HELLO, which checks that flag, still
+/// refuses it; AUTH as the user default while no password
 /// is set authenticates it, so that a password set afterwards leaves it in.
 /// A connection accepted while no password is set has authenticated too, and
 /// stays in once it sets one. The expected bytes are redis-server 7.0.15's
@@ -3406,6 +3407,8 @@ fn firn_requires_its_password_as_redis_does() {
         vec!["CONFIG", "GET"],
         vec!["CONFIG", "GET", "save"],
         vec!["CLIENT", "FOO"],
+        vec!["CLIENT", "INFO"],
+        vec!["CLIENT", "INFO", "x"],
         vec!["FUNCTION", "NOPE"],
         vec!["FUNCTION", "FLUSH"],
         vec!["DEBUG"],
@@ -3432,7 +3435,7 @@ fn firn_requires_its_password_as_redis_does() {
     client.write_all(&batch).expect("send the locked batch");
     expect_replies(
         &mut client,
-        b"-NOAUTH Authentication required.\r\n-ERR unknown command 'NOPE', with args beginning with: 'a' \r\n-ERR wrong number of arguments for 'get' command\r\n-ERR wrong number of arguments for 'config|get' command\r\n-NOAUTH Authentication required.\r\n-ERR unknown subcommand 'FOO'. Try CLIENT HELP.\r\n-ERR unknown subcommand 'NOPE'. Try FUNCTION HELP.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'debug' command\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'config|resetstat' command\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n+OK\r\n+PONG\r\n-ERR wrong number of arguments for 'ping' command\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n+PONG\r\n*2\r\n$11\r\nrequirepass\r\n$6\r\nsecret\r\n:0\r\n",
+        b"-NOAUTH Authentication required.\r\n-ERR unknown command 'NOPE', with args beginning with: 'a' \r\n-ERR wrong number of arguments for 'get' command\r\n-ERR wrong number of arguments for 'config|get' command\r\n-NOAUTH Authentication required.\r\n-ERR unknown subcommand 'FOO'. Try CLIENT HELP.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'client|info' command\r\n-ERR unknown subcommand 'NOPE'. Try FUNCTION HELP.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'debug' command\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'config|resetstat' command\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n+OK\r\n+PONG\r\n-ERR wrong number of arguments for 'ping' command\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n+PONG\r\n*2\r\n$11\r\nrequirepass\r\n$6\r\nsecret\r\n:0\r\n",
         "the locked batch",
     );
     for command in ["MSET", "MSETNX", "LPOP", "RPOP"] {
@@ -3509,13 +3512,14 @@ fn firn_requires_its_password_as_redis_does() {
         .expect("remove the password");
     expect_replies(&mut setter, b"+OK\r\n", "the password removed");
     let mut batch = resp(&["PING"]);
+    batch.extend(resp(&["HELLO", "3"]));
     batch.extend(resp(&["AUTH", "x"]));
     waiting
         .write_all(&batch)
         .expect("send once the password is removed");
     expect_replies(
         &mut waiting,
-        b"+PONG\r\n-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
+        b"+PONG\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
         "once the password is removed",
     );
     setter
@@ -3581,8 +3585,8 @@ fn firn_requires_its_password_as_redis_does() {
 /// same id; CLIENT SETNAME gives a name, refuses one with a space keeping the
 /// old one, and removes it with the empty name; CLIENT SETINFO, which Redis
 /// 7.0 does not have, is an unknown subcommand; HELLO answers RESP2's map with
-/// no version or version 2 and refuses 1 and 3 as unsupported, since firn
-/// speaks RESP2 alone, and its SETNAME names the connection, an option's name
+/// no version or version 2 and RESP3's with 3, and refuses 1 as unsupported,
+/// and its SETNAME names the connection, an option's name
 /// read up to a zero byte as Redis's strcasecmp reads it; AUTH without a
 /// configured password is answered with Redis's error for the password alone
 /// and succeeds for the user default; SELECT takes 0 alone, as Redis does with
@@ -3596,7 +3600,8 @@ fn firn_requires_its_password_as_redis_does() {
 /// keyspace is empty; CONFIG RESETSTAT zeroes the connections INFO counts;
 /// and QUIT answers OK and closes the connection, leaving the request after it
 /// unanswered. The expected bytes are redis-server 7.0.15's, started with one
-/// database, but for the ids and HELLO 3, which Redis would answer in RESP3.
+/// database, but for the ids and the keyspace line, which leaves out the
+/// expires and avg_ttl firn does not count.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_connection_commands_as_redis_does() {
@@ -3646,8 +3651,9 @@ fn firn_answers_connection_commands_as_redis_does() {
     }
     client.write_all(&batch).expect("send the connection batch");
     let hello = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
-        ":1\r\n$-1\r\n+OK\r\n$6\r\nconn-1\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$6\r\nconn-1\r\n+OK\r\n$-1\r\n-ERR unknown subcommand 'SETINFO'. Try CLIENT HELP.\r\n-ERR wrong number of arguments for 'client|id' command\r\n-ERR wrong number of arguments for 'client' command\r\n{hello}-NOPROTO unsupported protocol version\r\n-NOPROTO unsupported protocol version\r\n-ERR Protocol version is not an integer or out of range\r\n{hello}$9\r\nvia-hello\r\n-ERR Syntax error in HELLO option 'FOO'\r\n{hello}$8\r\nvia-zero\r\n{hello}-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n+OK\r\n+OK\r\n-ERR DB index is out of range\r\n-ERR value is not an integer or out of range\r\n-ERR value is out of range, value must between -2147483648 and 2147483647\r\n*0\r\n:0\r\n-ERR wrong number of arguments for 'command|count' command\r\n-ERR unknown subcommand 'DOCS'. Try COMMAND HELP.\r\n-ERR wrong number of arguments for 'time' command\r\n$12\r\n# Keyspace\r\n\r\n"
+        ":1\r\n$-1\r\n+OK\r\n$6\r\nconn-1\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$6\r\nconn-1\r\n+OK\r\n$-1\r\n-ERR unknown subcommand 'SETINFO'. Try CLIENT HELP.\r\n-ERR wrong number of arguments for 'client|id' command\r\n-ERR wrong number of arguments for 'client' command\r\n{hello}{hello3}-NOPROTO unsupported protocol version\r\n-ERR Protocol version is not an integer or out of range\r\n{hello}$9\r\nvia-hello\r\n-ERR Syntax error in HELLO option 'FOO'\r\n{hello}$8\r\nvia-zero\r\n{hello}-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n+OK\r\n+OK\r\n-ERR DB index is out of range\r\n-ERR value is not an integer or out of range\r\n-ERR value is out of range, value must between -2147483648 and 2147483647\r\n*0\r\n:0\r\n-ERR wrong number of arguments for 'command|count' command\r\n-ERR unknown subcommand 'DOCS'. Try COMMAND HELP.\r\n-ERR wrong number of arguments for 'time' command\r\n$12\r\n# Keyspace\r\n\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the connection batch");
     let before = std::time::SystemTime::now()
@@ -3682,7 +3688,7 @@ fn firn_answers_connection_commands_as_redis_does() {
         .expect("ask for INFO's fixed sections");
     expect_replies(
         &mut client,
-        b"+OK\r\n$30\r\n# Cluster\r\ncluster_enabled:0\r\n\r\n$0\r\n\r\n$44\r\n# Keyspace\r\ndb0:keys=1,expires=0,avg_ttl=0\r\n\r\n$11\r\n# Modules\r\n\r\n",
+        b"+OK\r\n$30\r\n# Cluster\r\ncluster_enabled:0\r\n\r\n$0\r\n\r\n$24\r\n# Keyspace\r\ndb0:keys=1\r\n\r\n$11\r\n# Modules\r\n\r\n",
         "INFO's fixed sections",
     );
     let defaults = [
@@ -3790,6 +3796,149 @@ fn firn_answers_connection_commands_as_redis_does() {
         .write_all(&resp(&["CLIENT", "ID"]))
         .expect("ask the third connection's id");
     expect_replies(&mut client, b":3\r\n", "the third connection's id");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers in RESP3 after HELLO 3 as Redis 7.0.15 does, and in RESP2
+/// again after HELLO 2: HELLO's map with protocol 3; the null for an absent
+/// string, an absent element of MGET and LPOP's count on an absent key; a map
+/// for HGETALL and CONFIG GET, an empty one for an absent hash; a set for
+/// SMEMBERS, set algebra and SPOP's count; doubles for scores; member and
+/// score pairs nested in ZRANGE WITHSCORES, ZPOPMIN with a count and
+/// HRANDFIELD WITHVALUES but not in ZPOPMIN without one; and INFO's text as a
+/// verbatim string. The expected bytes follow redis-server 7.0.15's reply
+/// writers (addReplyNull, addReplyNullArray, addReplyMapLen, addReplySetLen,
+/// addReplyDouble, addReplyVerbatim) for the same requests.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["HELLO", "3"],
+        vec!["GET", "absent"],
+        vec!["SET", "k", "v"],
+        vec!["MGET", "k", "absent"],
+        vec!["LPOP", "absent", "2"],
+        vec!["HSET", "h", "f", "v"],
+        vec!["HGETALL", "h"],
+        vec!["HGETALL", "absent"],
+        vec!["HRANDFIELD", "h", "1", "WITHVALUES"],
+        vec!["SADD", "s", "a"],
+        vec!["SMEMBERS", "s"],
+        vec!["SMEMBERS", "absent"],
+        vec!["SUNION", "s", "absent"],
+        vec!["ZADD", "z", "1.5", "a", "2", "b", "3", "c"],
+        vec!["ZSCORE", "z", "a"],
+        vec!["ZSCORE", "z", "absent"],
+        vec!["ZRANGE", "z", "0", "0", "WITHSCORES"],
+        vec!["ZPOPMIN", "z"],
+        vec!["ZPOPMIN", "z", "1"],
+        vec!["CONFIG", "GET", "appendonly"],
+        vec!["INFO", "cluster"],
+        vec!["SPOP", "s", "1"],
+        vec!["HELLO", "2"],
+        vec!["GET", "absent"],
+        vec!["HGETALL", "absent"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the RESP3 batch");
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let hello2 = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let expected = format!(
+        "{hello3}_\r\n+OK\r\n*2\r\n$1\r\nv\r\n_\r\n_\r\n:1\r\n%1\r\n$1\r\nf\r\n$1\r\nv\r\n%0\r\n*1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n:1\r\n~1\r\n$1\r\na\r\n~0\r\n~1\r\n$1\r\na\r\n:3\r\n,1.5\r\n_\r\n*1\r\n*2\r\n$1\r\na\r\n,1.5\r\n*2\r\n$1\r\na\r\n,1.5\r\n*1\r\n*2\r\n$1\r\nb\r\n,2\r\n%1\r\n$10\r\nappendonly\r\n$2\r\nno\r\n=34\r\ntxt:# Cluster\r\ncluster_enabled:0\r\n\r\n~1\r\n$1\r\na\r\n{hello2}$-1\r\n*0\r\n"
+    );
+    expect_replies(&mut client, expected.as_bytes(), "the RESP3 batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers CLIENT INFO with the connection's line of facts in Redis
+/// 7.0.15's form, a bulk string under RESP2 and a verbatim string under RESP3,
+/// the name CLIENT SETNAME gave and the protocol HELLO selected in it, and
+/// CLIENT INFO with an argument is Redis's arity error. The line is
+/// redis-server 7.0.15's but for the fields firn leaves out, the addresses,
+/// descriptor, events and buffer sizes, and for the age, 0 or 1 as the second
+/// may turn between the connection and the command, and at least 2 after
+/// more than two seconds, though no more than firn has run.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_client_info_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let spawned = Instant::now();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["CLIENT", "INFO"],
+        vec!["CLIENT", "SETNAME", "conn-1"],
+        vec!["CLIENT", "info", "x"],
+        vec!["HELLO", "3"],
+        vec!["CLIENT", "INFO"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client
+        .write_all(&batch)
+        .expect("send the CLIENT INFO batch");
+    let line = |name: &str, protocol: u32| {
+        format!(
+            "id=1 name={name} age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|info user=default redir=-1 resp={protocol}\n"
+        )
+    };
+    let first = line("", 2);
+    let second = line("conn-1", 3);
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let expected = format!(
+        "${}\r\n{first}\r\n+OK\r\n-ERR wrong number of arguments for 'client|info' command\r\n{hello3}={}\r\ntxt:{second}\r\n",
+        first.len(),
+        second.len() + 4
+    );
+    let mut returned = vec![0_u8; expected.len()];
+    client
+        .read_exact(&mut returned)
+        .expect("read the CLIENT INFO batch's replies");
+    let returned = String::from_utf8_lossy(&returned).replace(" age=1 ", " age=0 ");
+    assert_eq!(returned, expected, "the CLIENT INFO batch");
+    std::thread::sleep(Duration::from_millis(2200));
+    client
+        .write_all(&resp(&["CLIENT", "INFO"]))
+        .expect("ask for the line after two seconds");
+    let later = format!("={}\r\ntxt:{second}\r\n", second.len() + 4);
+    let mut returned = vec![0_u8; later.len()];
+    client
+        .read_exact(&mut returned)
+        .expect("read the line after two seconds");
+    let returned = String::from_utf8_lossy(&returned).into_owned();
+    let age = returned
+        .split(" age=")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .unwrap_or_else(|| panic!("no age in {returned:?}"));
+    // At least 2.2 seconds passed between serving the connection and this
+    // read, and fewer than firn has run, so the whole seconds between the
+    // two clock readings lie in that range.
+    let running = spawned.elapsed().as_secs() + 1;
+    assert!(
+        (2..=running).contains(&age),
+        "the age after two seconds, firn having run under {running} s: {returned:?}"
+    );
+    assert_eq!(
+        returned.replace(&format!(" age={age} "), " age=0 "),
+        later,
+        "the line after two seconds"
+    );
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
