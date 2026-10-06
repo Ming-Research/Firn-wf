@@ -3354,7 +3354,12 @@ fn firn_listens_again_on_its_port_after_a_restart() {
 /// connection that changed it stays authenticated, a new one is refused the
 /// old password, and removing the password lets that one in at once, but only
 /// until a password is set again, since it has not authenticated, as Redis's
-/// flag of authentication has it; AUTH as the user default while no password
+/// flag of authentication has it. A transaction it opens while no password is
+/// set is checked as Redis checks each command once one is set again: a
+/// queued command's arity, then its authentication, WATCH's own arity and
+/// authentication before its refusal, and EXEC discards the transaction with
+/// EXECABORT and NOAUTH, so that what follows runs outside it and nothing
+/// queued ran. AUTH as the user default while no password
 /// is set authenticates it, so that a password set afterwards leaves it in.
 /// A connection accepted while no password is set has authenticated too, and
 /// stays in once it sets one. The expected bytes are redis-server 7.0.15's
@@ -3518,6 +3523,52 @@ fn firn_requires_its_password_as_redis_does() {
         b"+PONG\r\n-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
         "once the password is removed",
     );
+    waiting
+        .write_all(&resp(&["MULTI"]))
+        .expect("open a transaction with no password set");
+    expect_replies(
+        &mut waiting,
+        b"+OK\r\n",
+        "a transaction with no password set",
+    );
+    setter
+        .write_all(&resp(&["CONFIG", "SET", "requirepass", "again"]))
+        .expect("set a password inside the transaction");
+    expect_replies(
+        &mut setter,
+        b"+OK\r\n",
+        "a password set inside the transaction",
+    );
+    let mut batch = Vec::new();
+    for request in [
+        vec!["SET", "k"],
+        vec!["SET", "k", "v"],
+        vec!["WATCH"],
+        vec!["WATCH", "k"],
+        vec!["EXEC"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    waiting
+        .write_all(&batch)
+        .expect("queue while a password is required");
+    expect_replies(
+        &mut waiting,
+        b"-ERR wrong number of arguments for 'set' command\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'watch' command\r\n-NOAUTH Authentication required.\r\n-EXECABORT Transaction discarded because of: NOAUTH Authentication required.\r\n",
+        "a transaction a password set inside it refuses",
+    );
+    setter
+        .write_all(&resp(&["CONFIG", "SET", "requirepass", ""]))
+        .expect("remove the password after the transaction");
+    expect_replies(
+        &mut setter,
+        b"+OK\r\n",
+        "the password removed after the transaction",
+    );
+    waiting
+        .write_all(&resp(&["GET", "k"]))
+        .expect("read after the discarded transaction");
+    expect_replies(&mut waiting, b"$-1\r\n", "after the discarded transaction");
     setter
         .write_all(&resp(&["CONFIG", "SET", "requirepass", "again"]))
         .expect("set a password again");
