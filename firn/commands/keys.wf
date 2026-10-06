@@ -381,18 +381,18 @@ fn run_del(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
           let payload = key_position(positions: &client^.key_metadata, index: at);
           let place = named_bounds(input: input, args: args, payload: payload);
           let key = &input^[place.start..place.end];
-          log_removal(log: &m^.log, key: key);
+          let lapsed = True();
+          let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key);
         }
       }
     }
     if removed > 0_u64 {
       if logged {
-        log_command(log: &m^.log, input: input, args: args);
+        let appended = mset_meta(log: &m^.log, logged: logged, input: input, args: args);
       }
     }
   }
-  let answer = cvt.wrap::<u64, i64>(removed);
-  reply_integer(client: client, value: answer);
+  count_finish(client: client, count: removed);
   return unit;
 }
 
@@ -415,13 +415,13 @@ fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
         if logged {
           let place = named_bounds(input: input, args: args, payload: payload);
           let key = &input^[place.start..place.end];
-          log_removal(log: &m^.log, key: key);
+          let lapsed = True();
+          let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key);
         }
       }
     }
   }
-  let answer = cvt.wrap::<u64, i64>(live);
-  reply_integer(client: client, value: answer);
+  count_finish(client: client, count: live);
   return unit;
 }
 
@@ -434,25 +434,10 @@ fn run_type(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     set kind = entry_kind(slot: slot, client: client);
-    if client^.state == state_expired {
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
+    let removed = client^.state == state_expired;
+    let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: removed, key: key);
   }
-  if kind == 1_u64 {
-    reply_word(client: client, word: &reply_type_string[0_u64..9_u64]);
-  } else if kind == 2_u64 {
-    reply_word(client: client, word: &reply_type_list[0_u64..7_u64]);
-  } else if kind == 3_u64 {
-    reply_word(client: client, word: &reply_type_set[0_u64..6_u64]);
-  } else if kind == 4_u64 {
-    reply_word(client: client, word: &reply_type_hash[0_u64..7_u64]);
-  } else if kind == 5_u64 {
-    reply_word(client: client, word: &reply_type_zset[0_u64..7_u64]);
-  } else {
-    reply_word(client: client, word: &reply_type_none[0_u64..7_u64]);
-  }
+  type_finish(client: client, kind: kind);
   return unit;
 }
 
@@ -852,30 +837,10 @@ fn run_persist(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let outcome = clear_expiry(env: &expiry, value: held);
-      }
-      None() => {
-      }
-    }
-    if expiry.state == state_expired {
-      set slot^ = None<Entry>();
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if expiry.state == state_done {
-      if store^.logging {
-        log_key_word(log: &m^.log, word: &word_persist[0_u64..7_u64], input: input, key: key_span);
-      }
-    }
+    persist_body(slot: slot, expiry: &expiry);
+    let appended = persist_meta(log: &m^.log, logged: store^.logging, expiry: &expiry, input: input, key_span: key_span, key: key);
   }
-  if expiry.state == state_done {
-    reply_word(client: client, word: &reply_one[0_u64..4_u64]);
-    return unit;
-  }
-  reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+  persist_finish(client: client, expiry: &expiry);
   return unit;
 }
 
@@ -883,10 +848,9 @@ fn run_dbsize(store: &Keyspace, client: &Client) -> result: unit reads(store), w
   doc "DBSIZE: answers how many keys the keyspace holds, counting an expired key not yet removed, as Redis does, in one statement that holds the keyspace's map whole.";
   let size = 0_u64;
   atomic t = &store^.keys {
-    set size = map_count::<Entry>(map: t);
+    set size = dbsize_body(keys: t);
   }
-  let answer = cvt.wrap::<u64, i64>(size);
-  reply_integer(client: client, value: answer);
+  count_finish(client: client, count: size);
   return unit;
 }
 
@@ -1205,5 +1169,84 @@ fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     return unit;
   }
   reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+  return unit;
+}
+
+fn changed_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(input), reads(args), reads(key), writes(log) {
+  doc "Records a lookup's expired removal and then a changed command as sent, returning the number of records for the caller's effects wrapper.";
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+  if changed {
+    let recorded = mset_meta(log: log, logged: logged, input: input, args: args);
+    set appended = appended +wrap recorded;
+  }
+  return appended;
+}
+
+fn type_finish(client: &Client, kind: u64) -> result: unit writes(client) {
+  doc "TYPE's reply for the kind entry_kind read.";
+  if kind == 1_u64 {
+    reply_word(client: client, word: &reply_type_string[0_u64..9_u64]);
+  } else if kind == 2_u64 {
+    reply_word(client: client, word: &reply_type_list[0_u64..7_u64]);
+  } else if kind == 3_u64 {
+    reply_word(client: client, word: &reply_type_set[0_u64..6_u64]);
+  } else if kind == 4_u64 {
+    reply_word(client: client, word: &reply_type_hash[0_u64..7_u64]);
+  } else if kind == 5_u64 {
+    reply_word(client: client, word: &reply_type_zset[0_u64..7_u64]);
+  } else {
+    reply_word(client: client, word: &reply_type_none[0_u64..7_u64]);
+  }
+  return unit;
+}
+
+fn persist_body(slot: &Option<Entry>, expiry: &Expiry) -> result: unit writes(slot), writes(expiry) {
+  doc "PERSIST's work on a held entry, including removal when expired.";
+  match slot^ {
+    Some(value: held) => {
+      let outcome = clear_expiry(env: expiry, value: held);
+    }
+    None() => {
+    }
+  }
+  if expiry^.state == state_expired {
+    set slot^ = None<Entry>();
+  }
+  return unit;
+}
+
+fn persist_meta(log: &Box<Slots<u8>>, logged: Bool, expiry: &Expiry, input: &[u8], key_span: Span, key: &[u8]) -> appended: u64 reads(expiry), reads(input), reads(key), writes(log) {
+  doc "PERSIST's expired removal or successful expiry removal, in Redis's propagated form.";
+  let removed = expiry^.state == state_expired;
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+  if expiry^.state == state_done {
+    if logged {
+      log_key_word(log: log, word: &word_persist[0_u64..7_u64], input: input, key: key_span);
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  return appended;
+}
+
+fn persist_finish(client: &Client, expiry: &Expiry) -> result: unit reads(expiry), writes(client) {
+  doc "PERSIST answers whether it removed an expiry.";
+  if expiry^.state == state_done {
+    reply_word(client: client, word: &reply_one[0_u64..4_u64]);
+    return unit;
+  }
+  reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+  return unit;
+}
+
+fn dbsize_body(keys: &ConcurrentHashMap<Entry>) -> size: u64 reads(keys) {
+  doc "DBSIZE counts every entry, including expired entries not yet removed.";
+  let size = map_count::<Entry>(map: keys);
+  return size;
+}
+
+fn count_finish(client: &Client, count: u64) -> result: unit writes(client) {
+  doc "Writes an unsigned command count as Redis's integer reply.";
+  let answer = cvt.wrap::<u64, i64>(count);
+  reply_integer(client: client, value: answer);
   return unit;
 }

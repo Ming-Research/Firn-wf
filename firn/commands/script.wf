@@ -1,3 +1,6 @@
+alias extended_read = pkg::extended::extended_read;
+alias Bytes = pkg::bytes::Bytes;
+alias reply_array = pkg::protocol::reply_array;
 alias Client = pkg::protocol::Client;
 alias ScriptCommands = pkg::scripting::ScriptCommands;
 alias Entry = pkg::store::Entry;
@@ -28,6 +31,48 @@ const arity_ttl: i64 = 2_i64;
 const arity_mset: i64 = -3_i64;
 
 const arity_set: i64 = -3_i64;
+
+const arity_del: i64 = -2_i64;
+
+const arity_unlink: i64 = -2_i64;
+
+const arity_exists: i64 = -2_i64;
+
+const arity_type: i64 = 2_i64;
+
+const arity_persist: i64 = 2_i64;
+
+const arity_dbsize: i64 = 1_i64;
+
+const arity_ping: i64 = -1_i64;
+
+const arity_echo: i64 = 2_i64;
+
+const arity_setnx: i64 = 3_i64;
+
+const arity_setex: i64 = 4_i64;
+
+const arity_psetex: i64 = 4_i64;
+
+const arity_getset: i64 = 3_i64;
+
+const arity_getdel: i64 = 2_i64;
+
+const arity_getex: i64 = -2_i64;
+
+const arity_append: i64 = 3_i64;
+
+const arity_setrange: i64 = 4_i64;
+
+const arity_strlen: i64 = 2_i64;
+
+const arity_getrange: i64 = 4_i64;
+
+const arity_mget: i64 = -2_i64;
+
+const arity_msetnx: i64 = -3_i64;
+
+const arity_incrbyfloat: i64 = 3_i64;
 
 const arity_noscript_with_argument: i64 = -2_i64;
 
@@ -190,7 +235,7 @@ fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
 }
 
 fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME and 15 MSET, the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
+  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
   let code = name_code(input: input, start: name.start, length: name.length);
   if code == code_get {
     return 1_u64;
@@ -246,6 +291,72 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   if code == code_mset {
     return 15_u64;
   }
+  if code == code_del {
+    return 16_u64;
+  }
+  if code == code_unlink {
+    return 17_u64;
+  }
+  if code == code_exists {
+    return 18_u64;
+  }
+  if code == code_type {
+    return 19_u64;
+  }
+  if code == code_persist {
+    return 20_u64;
+  }
+  if code == code_dbsize {
+    return 21_u64;
+  }
+  if code == code_ping {
+    return 22_u64;
+  }
+  if code == code_echo {
+    return 23_u64;
+  }
+  if code == code_setnx {
+    return 24_u64;
+  }
+  if code == code_setex {
+    return 25_u64;
+  }
+  if code == code_psetex {
+    return 26_u64;
+  }
+  if code == code_getset {
+    return 27_u64;
+  }
+  if code == code_getdel {
+    return 28_u64;
+  }
+  if code == code_getex {
+    return 29_u64;
+  }
+  if code == code_append {
+    return 30_u64;
+  }
+  if code == code_setrange {
+    return 31_u64;
+  }
+  if code == code_strlen {
+    return 32_u64;
+  }
+  if code == code_getrange {
+    return 33_u64;
+  }
+  if code == code_mget {
+    return 34_u64;
+  }
+  if code == code_msetnx {
+    return 35_u64;
+  }
+  if code == code_incrbyfloat {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_incrbyfloat[0_u64..11_u64]);
+    if spelled {
+      return 36_u64;
+    }
+  }
   return 0_u64;
 }
 
@@ -273,7 +384,73 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   if reader {
     return arity_ttl;
   }
-  return arity_mset;
+  if kind == 15_u64 {
+    return arity_mset;
+  }
+  if kind == 16_u64 {
+    return arity_del;
+  }
+  if kind == 17_u64 {
+    return arity_unlink;
+  }
+  if kind == 18_u64 {
+    return arity_exists;
+  }
+  if kind == 19_u64 {
+    return arity_type;
+  }
+  if kind == 20_u64 {
+    return arity_persist;
+  }
+  if kind == 21_u64 {
+    return arity_dbsize;
+  }
+  if kind == 22_u64 {
+    return arity_ping;
+  }
+  if kind == 23_u64 {
+    return arity_echo;
+  }
+  if kind == 24_u64 {
+    return arity_setnx;
+  }
+  if kind == 25_u64 {
+    return arity_setex;
+  }
+  if kind == 26_u64 {
+    return arity_psetex;
+  }
+  if kind == 27_u64 {
+    return arity_getset;
+  }
+  if kind == 28_u64 {
+    return arity_getdel;
+  }
+  if kind == 29_u64 {
+    return arity_getex;
+  }
+  if kind == 30_u64 {
+    return arity_append;
+  }
+  if kind == 31_u64 {
+    return arity_setrange;
+  }
+  if kind == 32_u64 {
+    return arity_strlen;
+  }
+  if kind == 33_u64 {
+    return arity_getrange;
+  }
+  if kind == 34_u64 {
+    return arity_mget;
+  }
+  if kind == 35_u64 {
+    return arity_msetnx;
+  }
+  if kind == 36_u64 {
+    return arity_incrbyfloat;
+  }
+  return 0_i64;
 }
 
 fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
@@ -340,8 +517,96 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
     let read = script_ttl(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: milliseconds, absolute: calendar);
     return read;
   }
-  let stored = script_mset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
-  return stored;
+  if kind == 15_u64 {
+    let stored = script_mset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return stored;
+  }
+  if kind == 16_u64 {
+    let appended = script_named(kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 17_u64 {
+    let appended = script_named(kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 18_u64 {
+    let appended = script_named(kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 19_u64 {
+    let appended = script_type(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 20_u64 {
+    let appended = script_persist(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 21_u64 {
+    let size = dbsize_body(keys: keys);
+    count_finish(client: client, count: size);
+    return 0_u64;
+  }
+  if kind == 22_u64 {
+    run_ping(input: input, args: args, client: client);
+    return 0_u64;
+  }
+  if kind == 23_u64 {
+    run_echo(input: input, args: args, client: client);
+    return 0_u64;
+  }
+  if kind == 24_u64 {
+    let appended = script_set_key(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 2_u64, flags: option_nx, at: 0_u64, mode: mode_setnx);
+    return appended;
+  }
+  if kind == 25_u64 {
+    let appended = script_setex(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, in_seconds: calendar, invalid: &text_expire_setex[0_u64..42_u64]);
+    return appended;
+  }
+  if kind == 26_u64 {
+    let appended = script_setex(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, in_seconds: relative, invalid: &text_expire_psetex[0_u64..43_u64]);
+    return appended;
+  }
+  if kind == 27_u64 {
+    let appended = script_set_key(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 2_u64, flags: option_get, at: 0_u64, mode: mode_getset);
+    return appended;
+  }
+  if kind == 28_u64 {
+    let appended = script_getdel(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 29_u64 {
+    let appended = script_getex(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    return appended;
+  }
+  if kind == 30_u64 {
+    let appended = script_append(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 31_u64 {
+    let appended = script_setrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 32_u64 {
+    let appended = script_strlen(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 33_u64 {
+    let appended = script_getrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 34_u64 {
+    let appended = script_named(kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 35_u64 {
+    let appended = script_msetnx(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 36_u64 {
+    let appended = script_incrbyfloat(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  return 0_u64;
 }
 
 fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
@@ -392,4 +657,316 @@ fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
 binding FirnCommands : ScriptCommands {
   doc "The commands a script calls are firn's commands written as parts, run by script_command.";
   call = script_command;
+}
+
+fn script_type(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "run_type through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
+  let records = 0_u64;
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let kind = 0_u64;
+  let slot = &keys^[key];
+  set kind = entry_kind(slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  let recorded_part = mset_lapse_meta(log: effects, logged: logged, lapsed: removed, key: key);
+  set records = records +wrap recorded_part;
+  type_finish(client: client, kind: kind);
+  return records;
+}
+
+fn script_persist(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "run_persist through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
+  let records = 0_u64;
+  let expiry = Expiry(at: 0_u64, now: time^.check, state: state_absent);
+  let key_span = arg(args: args, index: 1_u64);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  persist_body(slot: slot, expiry: &expiry);
+  let recorded_part = persist_meta(log: effects, logged: logged, expiry: &expiry, input: input, key_span: key_span, key: key);
+  set records = records +wrap recorded_part;
+  persist_finish(client: client, expiry: &expiry);
+  return records;
+}
+
+fn script_getdel(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "run_getdel through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
+  let records = 0_u64;
+  let key_span = arg(args: args, index: 1_u64);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let kind = 0_u64;
+  let slot = &keys^[key];
+  set kind = getdel_body(slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  let recorded_part = getdel_meta(log: effects, logged: logged, removed: removed, kind: kind, input: input, key_span: key_span, key: key);
+  set records = records +wrap recorded_part;
+  getdel_finish(client: client, kind: kind);
+  return records;
+}
+
+fn script_getex(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "run_getex through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
+  let records = 0_u64;
+  let setting = False();
+  let options = string_options(input: input, args: args, first: 2_u64, setting: setting);
+  if options.valid {
+  } else {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+    return 0_u64;
+  }
+  let plan = getex_plan(input: input, args: args, options: &options, time: time);
+  let key_span = arg(args: args, index: 1_u64);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let none = False();
+  let work = GetexWork(kind: 0_u64, removed: none, change: 0_u64);
+  let slot = &keys^[key];
+  set work = getex_body(slot: slot, client: client, plan: &plan);
+  let recorded_part = getex_meta(due: &meta^.due, log: effects, logged: logged, plan: &plan, work: &work, input: input, key_span: key_span, key: key, env: env);
+  set records = records +wrap recorded_part;
+  getex_finish(client: client, plan: &plan, work: &work);
+  return records;
+}
+
+fn script_append(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "run_append through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
+  let records = 0_u64;
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let value_span = arg(args: args, index: 2_u64);
+  set client^.now = time^.check;
+  let none = False();
+  let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
+  let slot = &keys^[key];
+  set work = append_body(slot: slot, input: input, client: client, value_span: value_span);
+  let changed = work.outcome == state_done;
+  let recorded_part = changed_meta(log: effects, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key);
+  set records = records +wrap recorded_part;
+  string_write_finish(client: client, work: &work);
+  return records;
+}
+
+fn script_setrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "run_setrange through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
+  let records = 0_u64;
+  let plan = setrange_plan(input: input, args: args);
+  let refused = setrange_refused(client: client, plan: &plan);
+  if refused {
+    return 0_u64;
+  }
+  let offset = cvt.wrap::<i64, u64>(plan.value);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let value_span = arg(args: args, index: 3_u64);
+  set client^.now = time^.check;
+  let none = False();
+  let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
+  let slot = &keys^[key];
+  set work = setrange_body(slot: slot, input: input, client: client, value_span: value_span, offset: offset);
+  let changed = work.outcome == state_done;
+  let recorded_part = changed_meta(log: effects, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key);
+  set records = records +wrap recorded_part;
+  string_write_finish(client: client, work: &work);
+  return records;
+}
+
+fn script_strlen(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "run_strlen through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
+  let records = 0_u64;
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let none = False();
+  let work = StringWork(outcome: 0_u64, length: 0_u64, removed: none);
+  let slot = &keys^[key];
+  set work = strlen_body(slot: slot, client: client);
+  let recorded_part = mset_lapse_meta(log: effects, logged: logged, lapsed: work.removed, key: key);
+  set records = records +wrap recorded_part;
+  strlen_finish(client: client, work: &work);
+  return records;
+}
+
+fn script_getrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "run_getrange through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
+  let records = 0_u64;
+  let plan = getrange_plan(input: input, args: args);
+  if plan.valid {
+  } else {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let kind = 0_u64;
+  let slot = &keys^[key];
+  set kind = getrange_body(slot: slot, client: client, start: plan.start, end: plan.end);
+  let removed = client^.state == state_expired;
+  let recorded_part = mset_lapse_meta(log: effects, logged: logged, lapsed: removed, key: key);
+  set records = records +wrap recorded_part;
+  getrange_finish(client: client, kind: kind);
+  return records;
+}
+
+fn script_incrbyfloat(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "run_incrbyfloat through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
+  let records = 0_u64;
+  let amount = arg(args: args, index: 2_u64);
+  let increment = extended_read(input: input, start: amount.start, length: amount.length);
+  let key_span = arg(args: args, index: 1_u64);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let nothing = slots_new::<u8, 24>();
+  let empty = Bytes::Short(bytes: move nothing);
+  let summed = FloatSum(increment: increment, text: move empty, now: time^.check, state: state_absent);
+  let slot = &keys^[key];
+  let removed = incrbyfloat_body(slot: slot, summed: &summed);
+  let recorded_part = incrbyfloat_meta(log: effects, logged: logged, removed: removed, summed: &summed, input: input, key_span: key_span, key: key);
+  set records = records +wrap recorded_part;
+  incrbyfloat_finish(client: client, summed: &summed);
+  return records;
+}
+
+fn script_set_key(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, key_index: u64, value_index: u64, flags: u64, at: u64, mode: u64) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "set_key through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
+  let records = 0_u64;
+  let value_span = arg(args: args, index: value_index);
+  let place = key_bounds(input: input, args: args, index: key_index);
+  let key = &input^[place.start..place.end];
+  let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
+  let timed_flag = iand(flags, options_expiry);
+  let timed = timed_flag != 0_u64;
+  set client^.now = time^.check;
+  let plan = SetPlan(flags: flags, at: at, mode: mode, key_index: key_index, value_index: value_index);
+  let none = False();
+  let work = SetWork(outcome: state_absent, answered: none, removed: none);
+  let slot = &keys^[key];
+  set work = set_body(slot: slot, client: client, value: move value, flags: flags, at: at);
+  let stored = work.outcome == state_done;
+  let queued = band(stored, timed);
+  let changed = bor(stored, work.removed);
+  let recorded = band(logged, changed);
+  let touches = bor(queued, recorded);
+  if touches {
+    let recorded_part = set_meta(due: &meta^.due, log: effects, logged: logged, plan: &plan, work: &work, input: input, args: args, key: key, env: env);
+    set records = records +wrap recorded_part;
+  }
+  set_finish(client: client, plan: &plan, work: &work);
+  return records;
+}
+
+fn script_setex(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, invalid: &[u8]) -> appended: u64 reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "SETEX and PSETEX read their expiry before lookup and use SET's shared parts.";
+  let flags = option_px;
+  if in_seconds {
+    set flags = option_ex;
+  }
+  let amount = arg(args: args, index: 2_u64);
+  let deadline = string_deadline(input: input, span: amount, flags: flags, unix_ms: time^.unix_ms);
+  if deadline.state == 0_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return 0_u64;
+  }
+  if deadline.state == 2_u64 {
+    reply_error(client: client, word: invalid);
+    return 0_u64;
+  }
+  let appended = script_set_key(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 3_u64, flags: flags, at: deadline.at, mode: mode_set);
+  return appended;
+}
+
+fn script_named(kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "DEL and UNLINK remove each named entry, EXISTS counts every occurrence, and MGET answers each in order, using the network bodies and metadata.";
+  let count = args^.inner.len;
+  let many = count -sat 1_u64;
+  let removed_count = 0_u64;
+  let live = 0_u64;
+  let appended = 0_u64;
+  set client^.now = time^.check;
+  if kind == 34_u64 {
+    reply_array(client: client, count: many);
+  }
+  for @named (index in 1_u64..count) {
+    let place = key_bounds(input: input, args: args, index: index);
+    let key = &input^[place.start..place.end];
+    let slot = &keys^[key];
+    let lapsed = False();
+    if kind <= 17_u64 {
+      let found = remove_live(slot: slot, now: time^.check);
+      if found == 1_u64 {
+        set removed_count = removed_count +wrap 1_u64;
+      }
+      set lapsed = found == 2_u64;
+    } else if kind == 34_u64 {
+      let found = mget_body(slot: slot, client: client);
+      set lapsed = client^.state == state_expired;
+      mget_finish(client: client, kind: found);
+    } else {
+      let found = entry_kind(slot: slot, client: client);
+      set lapsed = client^.state == state_expired;
+      if found != 0_u64 {
+        set live = live +wrap 1_u64;
+      }
+    }
+    let removal = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+    set appended = appended +wrap removal;
+  }
+  if kind <= 17_u64 {
+    if removed_count > 0_u64 {
+      let recorded = mset_meta(log: effects, logged: logged, input: input, args: args);
+      set appended = appended +wrap recorded;
+    }
+    count_finish(client: client, count: removed_count);
+  } else if kind != 34_u64 {
+    count_finish(client: client, count: live);
+  }
+  return appended;
+}
+
+fn script_msetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "MSETNX probes entries in argument order, stopping at the first live entry, then stores each pair through mset_body only if all were absent.";
+  let count = args^.inner.len;
+  let parity = count % 2_u64;
+  if parity == 0_u64 {
+    let name = arg(args: args, index: 0_u64);
+    reply_arity(client: client, input: input, name: name);
+    return 0_u64;
+  }
+  let pairs = count / 2_u64;
+  let appended = 0_u64;
+  set client^.now = time^.check;
+  for @checked (pair in 0_u64..pairs) {
+    let doubled = pair *wrap 2_u64;
+    let index = doubled +wrap 1_u64;
+    let place = key_bounds(input: input, args: args, index: index);
+    let key = &input^[place.start..place.end];
+    let slot = &keys^[key];
+    let kind = entry_kind(slot: slot, client: client);
+    let lapsed = client^.state == state_expired;
+    let removal = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+    set appended = appended +wrap removal;
+    if kind != 0_u64 {
+      let stored = False();
+      msetnx_finish(client: client, stored: stored);
+      return appended;
+    }
+  }
+  for @stored (pair in 0_u64..pairs) {
+    let doubled = pair *wrap 2_u64;
+    let index = doubled +wrap 1_u64;
+    let place = key_bounds(input: input, args: args, index: index);
+    let key = &input^[place.start..place.end];
+    let value_index = index +wrap 1_u64;
+    let slot = &keys^[key];
+    let replaced = mset_body(slot: slot, input: input, args: args, value_index: value_index, now: time^.check);
+  }
+  let recorded = mset_meta(log: effects, logged: logged, input: input, args: args);
+  set appended = appended +wrap recorded;
+  let stored = True();
+  msetnx_finish(client: client, stored: stored);
+  return appended;
 }
