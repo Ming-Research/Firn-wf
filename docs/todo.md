@@ -116,6 +116,16 @@ written while firn lived in the Whitefoot repository; a path such as
   with Redis's `unit/scripting` and `unit/multi` busy tests. Reopen before
   any deployment that accepts scripts from clients it does not control, or
   when the suite's time matters.
+- **SPOP with a count records one SREM where Redis records one per
+  member.** For a count smaller than the set, firn records one SREM naming
+  every member it popped (`spop_meta` in `firn/commands/sets.wf`); Redis
+  7.0.15 records an SREM for each member (`spopWithCountCommand`, cases 2
+  and 3), which a transaction or a script then wraps with the rest of its
+  records. Both replay to the same set, so only the file's bytes differ.
+  The change: one SREM record per member. Validate with a records case
+  through `check_held_records` or the network path, against Redis's file.
+  Reopen when the file's bytes are compared with Redis's for sets, or when
+  a consumer replays firn's file into Redis.
 - **A script's `pcall` returns an error table Redis would unwrap.** Redis
   7.0.15 replaces Lua's `pcall` with `luaRedisPcall`, which returns the
   `err` field of an error table that has a string one in place of the table.

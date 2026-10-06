@@ -1294,7 +1294,6 @@ fn spop_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool writes(slot)
 
 fn spop_finish(client: &Client) -> result: unit writes(client) {
   doc "SPOP completes the reply and releases prepared members where needed.";
-
   let counted = client^.high == 1_i64;
   clear_items(client: client);
   let done = client^.state == state_done;
@@ -1473,7 +1472,6 @@ fn srandmember_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads
 
 fn srandmember_finish(client: &Client) -> result: unit writes(client) {
   doc "SRANDMEMBER completes the reply and releases prepared members where needed.";
-
   let counted = client^.high == 1_i64;
   if client^.state == state_done {
     return unit;
@@ -1850,7 +1848,6 @@ fn sintercard_body(slots: &Entries<Entry>, keys: &KeySet, client: &Client, env: 
   doc "Counts the intersection over the key set's entries, preserving the existing survey and LIMIT behavior.";
   let unused = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
   let found = survey(slots: slots, keys: keys, positions: &client^.key_metadata, now: client^.now);
-
   if found.wrong {
     set client^.state = state_wrong;
   } else if found.missing {
