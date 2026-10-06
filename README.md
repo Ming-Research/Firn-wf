@@ -52,7 +52,10 @@ passes.
 ## Repository
 
 - `firn/`: the server, one Whitefoot module program (`firn/modules.wfg`).
-- `whitefoot.pin`: the Whitefoot compiler release firn builds with.
+- `whitefoot.pin`: the Whitefoot compiler release firn builds with;
+  `whitefoot-kit/`, a submodule of
+  [Whitefoot-kit](https://github.com/Ming-Research/Whitefoot-kit), fetches
+  and checks it.
 - `design/`: the decisions firn is built on, and their approval log; the
   `design-tree` skill is the `design/skill` submodule.
 - `research/`: the server's design and measurements

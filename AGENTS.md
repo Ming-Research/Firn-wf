@@ -5,8 +5,9 @@ answers Redis's clients over TCP for strings, lists, sets, hashes and sorted
 sets in one shared keyspace, with expiry and an append-only file, and is
 growing toward Redis scripting through Halo, the Lua engine of
 [Halo-wf](https://github.com/Ming-Research/Halo-wf). Whitefoot, the language
-and its compiler, is pinned as a compiler release named in `whitefoot.pin`,
-and the `design-tree` skill as the `design/skill/` submodule.
+and its compiler, is pinned as a compiler release named in `whitefoot.pin`
+and fetched through the `whitefoot-kit/` submodule, and the `design-tree`
+skill is the `design/skill/` submodule.
 
 ## Project goal
 
@@ -48,23 +49,10 @@ test suite (`tests/redis-suite/`, with historical results under
 `research/experiments/redis-compat/`). Its source is the oracle
 for what a command does where the documentation is silent.
 
-**The language.** The pinned Whitefoot commit defines the language. Releases
-carry only the compiler, so read the language in the Whitefoot repository at
-that commit: the specification `spec/kernel-spec.md`, which is normative, the
-maintained programs under `tests/programs/`, `docs/patterns.md` and the
-standard library's interfaces `lib/std/**/module.wfm`. The commit is the
-`commit` field of the release manifest that `make compiler` keeps as
-`build/whitefoot/<release>/whitefoot-release.json`. Read a file with, for
-example,
-
-```sh
-gh api 'repos/Ming-Research/Whitefoot/contents/spec/kernel-spec.md?ref=<commit>' \
-  -H 'Accept: application/vnd.github.raw'
-```
-
-or `git show <commit>:<path>` in a local Whitefoot clone. The compiler's
-diagnostics and repairs are the other source. firn never vendors Whitefoot
-source; see [The Whitefoot boundary](#the-whitefoot-boundary).
+**The language.** The pinned Whitefoot commit defines the language; read its
+specification, maintained programs and standard-library interfaces at that
+commit as [whitefoot-kit/downstream.md](whitefoot-kit/downstream.md#reading-the-language)
+describes. The compiler's diagnostics and repairs are the other source.
 
 A finished task is not evidence: a claim cites a design-tree decision, an
 investigation, a measurement with its workload, environment and comparison,
@@ -218,52 +206,21 @@ records or other prose changed. Fix every finding and review again as the
 `design-tree` skill's workflow describes, push, verify that the remote head
 is the reviewed revision, and fill the PR's review section.
 
-## Upgrading Whitefoot
+## Building with Whitefoot
 
-The owner periodically has an agent move every downstream project to the
-latest Whitefoot. For firn:
+firn builds with the Whitefoot compiler release `whitefoot.pin` names, through
+the `whitefoot-kit` submodule
+([Whitefoot-kit](https://github.com/Ming-Research/Whitefoot-kit)) that every
+project written in Whitefoot shares. Its
+[downstream.md](whitefoot-kit/downstream.md) holds the rules: the pin and its
+checks, trying an unmerged Whitefoot change with an experiment release or
+`make WHITEFOOTC=<path>`, upgrading Whitefoot, and where a Whitefoot gap is
+recorded (*Whitefoot requirements* in `docs/todo.md`). A change to those rules
+is made in Whitefoot-kit, and firn adopts it by moving the submodule.
 
-1. Take the Whitefoot `main` commit to adopt; its gate must have passed.
-   If Whitefoot has no release `wf-<12-character hash>` for it, or the
-   release was deleted (releases older than 30 days are deleted, except the
-   newest), dispatch Whitefoot's compiler release workflow for that commit:
-   `gh workflow run compiler-release.yml -R Ming-Research/Whitefoot -f commit=<hash>`.
-2. On a work branch, set `whitefoot.pin` to `release = wf-<hash>`.
-3. Read what changed between the old and new pinned commits that can affect
-   firn: `spec/log.md` and the specification, the standard library's
-   interfaces, and the compiler's diagnostics.
-4. Adapt firn to the new language and compiler, without weakening any check.
-5. Run CI (`make check`); when the compiler's code generation changed,
-   compare firn's benchmarks before and after on the 14900K.
-6. Open the PR naming both commits, both specification versions and every
-   change firn needed; it merges under rules 2 to 4.
-
-A pin whose release is gone gets the same commit dispatched again. An
-experiment release, `wf-exp-<12 hex>`, is published for an unmerged Whitefoot
-commit with `-f experiment=true` and serves only a work branch
-([The Whitefoot boundary](#the-whitefoot-boundary)).
-
-## The Whitefoot boundary
-
-- firn builds with exactly the pinned release, and moving the pin is a
-  deliberate change under rule 4. firn never vendors Whitefoot source or
-  pins Whitefoot as a submodule.
-- A change firn needs in Whitefoot is made in Whitefoot, under Whitefoot's
-  own AGENTS.md, as a branch and PR in its repository. A main release exists
-  only for a commit on Whitefoot's `main`, so firn's `main` adopts the change
-  after it merges there. While the Whitefoot PR is open, a firn work branch
-  tries it in CI by pinning an experiment release of the PR's head,
-  `release = wf-exp-<12 hex>`, published with
-  `gh workflow run compiler-release.yml -R Ming-Research/Whitefoot -f commit=<hash> -f experiment=true`,
-  or locally with a compiler built from it (`make WHITEFOOTC=<path> firn`).
-  Before the branch is ready, the change is on Whitefoot's `main` and the pin
-  names its release; `make pin-ready` refuses an experiment pin.
-- When a missing Whitefoot feature would bend firn's implementation or
-  architecture, add the feature to Whitefoot instead of working around it.
-  State the gap as its minimal semantic example, apart from the server code
-  that exposed it, and record it under *Whitefoot requirements* in
-  `docs/todo.md` until Whitefoot resolves it. A problem that belongs to the
-  server alone is fixed in firn, not by generalizing the language.
+For firn, an upgrade whose compiler changed code generation compares firn's
+benchmarks before and after on the 14900K
+(`research/experiments/redis-bench/redis-bench.sh`).
 
 ## Code and tests
 
