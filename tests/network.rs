@@ -4680,43 +4680,124 @@ $3\r\ntwo\r\n+OK\r\n+OK\r\n:0\r\n:1\r\n:1\r\n+OK\r\n+OK\r\n:4102444800000\r\n\
     assert_eq!(status, 0);
 }
 
+/// The commands of an append-only file, each its arguments.
+#[cfg(target_os = "linux")]
+fn file_records(mut bytes: &[u8]) -> Vec<Vec<Vec<u8>>> {
+    fn line(bytes: &mut &[u8]) -> usize {
+        let rest: &[u8] = *bytes;
+        let end = rest
+            .windows(2)
+            .position(|pair| pair == b"\r\n")
+            .expect("a record's line ends");
+        let count = std::str::from_utf8(&rest[1..end])
+            .expect("a count in ASCII")
+            .parse()
+            .expect("a count");
+        *bytes = &rest[end + 2..];
+        count
+    }
+    let mut records = Vec::new();
+    while !bytes.is_empty() {
+        let count = line(&mut bytes);
+        let mut record = Vec::new();
+        for _ in 0..count {
+            let length = line(&mut bytes);
+            record.push(bytes[..length].to_vec());
+            bytes = &bytes[length + 2..];
+        }
+        records.push(record);
+    }
+    records
+}
+
+/// Runs commands that meet keys found expired inside a transaction or a
+/// script and checks their replies and the records firn appends after a
+/// file that loads those keys. `loaded` sets the keys, those to meet
+/// expired with `PXAT 1`, an expiry the replay keeps as reached; `records`
+/// is what redis-server 7.0.15 appends for the same keys expiring under it
+/// with active expiry off, less the SELECT it begins with. firn's active
+/// expiry first sweeps 100 ms after it starts; when that sweep removed the
+/// keys before the commands met them, its DEL records stand outside any
+/// MULTI and EXEC, the replies being the same, and the run starts over, up
+/// to five times. A held command that records a removal outside its block
+/// shows the same form on every run and fails.
+#[cfg(target_os = "linux")]
+fn check_held_records(
+    loaded: &[&[&str]],
+    requests: &[&[&str]],
+    replies: &'static [u8],
+    records: &[u8],
+) {
+    let program = firn();
+    let loaded: Vec<u8> = loaded.iter().flat_map(|request| resp(request)).collect();
+    let batch: Vec<u8> = requests.iter().flat_map(|request| resp(request)).collect();
+    for _ in 0..5 {
+        let fixture = fixture_directory();
+        std::fs::write(fixture.path().join("held.aof"), &loaded).expect("write the loaded file");
+        let port = free_port();
+        let text = port.to_string();
+        let sent = batch.clone();
+        let client = std::thread::spawn(move || {
+            let mut client = connect_when_ready(port);
+            client.write_all(&sent).expect("send the commands");
+            expect_replies(&mut client, replies, "the commands");
+        });
+        let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"held.aof"]);
+        client.join().expect("the client's exchange");
+        assert!(output.status.success(), "firn: {:?}", output.status);
+        let file = std::fs::read(fixture.path().join("held.aof")).expect("read firn's file");
+        let recorded = file
+            .strip_prefix(loaded.as_slice())
+            .expect("the loaded records kept at the file's start");
+        if recorded == records {
+            return;
+        }
+        let mut inside = false;
+        let mut swept = false;
+        for record in file_records(recorded) {
+            match record[0].as_slice() {
+                b"MULTI" => inside = true,
+                b"EXEC" => inside = false,
+                b"DEL" if !inside => swept = true,
+                _ => {}
+            }
+        }
+        assert!(
+            swept,
+            "the records:\n{}\nwhere Redis appends:\n{}",
+            String::from_utf8_lossy(recorded),
+            String::from_utf8_lossy(records)
+        );
+    }
+    panic!("active expiry removed the loaded keys before the commands met them in five runs");
+}
+
 /// firn records RENAME and COPY run inside a transaction's EXEC and a
 /// script as Redis 7.0.15 propagates them over keys found expired: each
 /// expired key the commands find is removed and recorded as DEL where the
 /// command finds it, inside the transaction's MULTI and EXEC or the
 /// script's, with the commands that ran; a refused RENAME records only its
-/// source's removal. The keys come from a file whose expiries have passed,
-/// which the replay keeps as reached; the expected records are
-/// redis-server 7.0.15's for the same keys expiring under it with active
-/// expiry off (Firn-wf probe run 37499574103), less the SELECT it begins
-/// with.
+/// source's removal. The expected records are redis-server 7.0.15's
+/// (Firn-wf probe run 37499574103).
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_held_renames_and_copies_as_redis_propagates_them() {
-    let program = firn();
-    let fixture = fixture_directory();
-    let loaded: Vec<u8> = [
-        resp(&["SET", "a", "1"]),
-        resp(&["SET", "b", "2", "PXAT", "1"]),
-        resp(&["SET", "c", "3", "PXAT", "1"]),
-        resp(&["SET", "e", "5"]),
-        resp(&["SET", "f", "6", "PXAT", "1"]),
-        resp(&["SET", "g", "7", "PXAT", "1"]),
-    ]
-    .concat();
-    std::fs::write(fixture.path().join("held.aof"), &loaded).expect("write the loaded file");
-    let port = free_port();
-    let text = port.to_string();
-    let client = std::thread::spawn(move || {
-        let mut client = connect_when_ready(port);
-        let mut batch = Vec::new();
-        for request in [
-            vec!["MULTI"],
-            vec!["RENAME", "a", "b"],
-            vec!["RENAME", "c", "d"],
-            vec!["COPY", "e", "f"],
-            vec!["EXEC"],
-            vec![
+    check_held_records(
+        &[
+            &["SET", "a", "1"],
+            &["SET", "b", "2", "PXAT", "1"],
+            &["SET", "c", "3", "PXAT", "1"],
+            &["SET", "e", "5"],
+            &["SET", "f", "6", "PXAT", "1"],
+            &["SET", "g", "7", "PXAT", "1"],
+        ],
+        &[
+            &["MULTI"],
+            &["RENAME", "a", "b"],
+            &["RENAME", "c", "d"],
+            &["COPY", "e", "f"],
+            &["EXEC"],
+            &[
                 "EVAL",
                 "redis.call('RENAME', KEYS[1], KEYS[2]) return redis.pcall('COPY', KEYS[3], KEYS[4])",
                 "4",
@@ -4725,27 +4806,10 @@ fn firn_records_held_renames_and_copies_as_redis_propagates_them() {
                 "g",
                 "y",
             ],
-            vec!["MGET", "a", "b", "c", "d", "e", "f", "g", "x", "y"],
-        ] {
-            batch.extend(resp(&request));
-        }
-        client.write_all(&batch).expect("send the commands");
-        expect_replies(
-            &mut client,
-            b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR no such key\r\n:1\r\n:0\r\n*9\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n$1\r\n5\r\n$1\r\n5\r\n$-1\r\n$1\r\n1\r\n$-1\r\n",
-            "the commands",
-        );
-    });
-    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"held.aof"]);
-    client.join().expect("the client's exchange");
-    assert!(output.status.success(), "firn: {:?}", output.status);
-    let file = std::fs::read(fixture.path().join("held.aof")).expect("read firn's file");
-    let recorded = file
-        .strip_prefix(loaded.as_slice())
-        .expect("the loaded records kept at the file's start");
-    assert_eq!(
-        String::from_utf8_lossy(recorded),
-        "*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$1\r\na\r\n$1\r\nb\r\n*2\r\n$3\r\nDEL\r\n$1\r\nc\r\n*2\r\n$3\r\nDEL\r\n$1\r\nf\r\n*3\r\n$4\r\nCOPY\r\n$1\r\ne\r\n$1\r\nf\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*3\r\n$6\r\nRENAME\r\n$1\r\nb\r\n$1\r\nx\r\n*2\r\n$3\r\nDEL\r\n$1\r\ng\r\n*1\r\n$4\r\nEXEC\r\n",
+            &["MGET", "a", "b", "c", "d", "e", "f", "g", "x", "y"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR no such key\r\n:1\r\n:0\r\n*9\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n$1\r\n5\r\n$1\r\n5\r\n$-1\r\n$1\r\n1\r\n$-1\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$1\r\na\r\n$1\r\nb\r\n*2\r\n$3\r\nDEL\r\n$1\r\nc\r\n*2\r\n$3\r\nDEL\r\n$1\r\nf\r\n*3\r\n$4\r\nCOPY\r\n$1\r\ne\r\n$1\r\nf\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*3\r\n$6\r\nRENAME\r\n$1\r\nb\r\n$1\r\nx\r\n*2\r\n$3\r\nDEL\r\n$1\r\ng\r\n*1\r\n$4\r\nEXEC\r\n",
     );
 }
 
