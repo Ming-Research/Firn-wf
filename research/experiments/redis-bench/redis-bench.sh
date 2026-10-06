@@ -1,5 +1,5 @@
 #!/bin/sh
-# Measurements of firn (apps/firn) against Redis and its competitors, driven by
+# Measurements of firn (firn/) against Redis and its competitors, driven by
 # redis-benchmark: Experiments 7 and 8 of the io-model investigation (SHARED.md
 # and TIME-AND-FILES.md), run then on the subset firn grew from, and the
 # criteria of the firn investigation (research/investigations/firn/DESIGN.md).
@@ -56,8 +56,9 @@
 set -e
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}
+RELEASE=${RELEASE:-$(sed -n 's/^release = \(wf-[0-9a-f]\{12\}\)$/\1/p' "$ROOT/whitefoot.pin")}
 OUT=${OUT:-/tmp/redis-bench}
-WHITEFOOTC=${WHITEFOOTC:-$ROOT/compiler/target/gate/whitefootc}
+WHITEFOOTC=${WHITEFOOTC:-$ROOT/build/whitefoot/$RELEASE/whitefootc}
 BASELINE_ROOT=${BASELINE_ROOT:-}
 DRAGONFLY=${DRAGONFLY:-dragonfly}
 GARNET=${GARNET:-garnet-server}
@@ -80,7 +81,7 @@ mkdir -p "$OUT"
 # firn is linked as a server would be, its module and the runtime's units
 # optimized together; FIRN_LINK names other link options, or none.
 if [ "$MODE" != compare ]; then
-    "$WHITEFOOTC" ${FIRN_LINK---full-lto} --graph "$ROOT/apps/firn/modules.wfg" --entry firn -o "$OUT/firn"
+    "$WHITEFOOTC" ${FIRN_LINK---full-lto} --graph "$ROOT/firn/modules.wfg" --entry firn -o "$OUT/firn"
 fi
 baselines=
 if [ -n "$BASELINE_ROOT" ]; then

@@ -117,25 +117,27 @@ whose replies firn follows.
 long double has another format answers it, and `INCRBYFLOAT`, differently:
 in binary128 on aarch64 Linux, and in a double where long double is one.
 
-What is not there yet is listed in [docs/todo.md](../../docs/todo.md) under
-"firn"; the measurements and the design are in
-[research/investigations/firn](../../research/investigations/firn/DESIGN.md).
+What is not there yet is listed in [docs/todo.md](../docs/todo.md); the
+measurements and the design are in
+[research/investigations/firn](../research/investigations/firn/DESIGN.md).
 
 ## Build and run
 
-From the repository root, with the compiler built as the
-[README](../../README.md#try-it) describes:
+From the repository root, on Linux x86-64 or macOS arm64 with `/usr/bin/clang`
+installed, and LLD on Linux:
 
 ```sh
-compiler/target/release/whitefootc --graph apps/firn/modules.wfg --entry firn --cache compiler/target/firn-cache -o firn
-./firn 6379 0 - 0
+make firn
+./build/firn 6379 0 - 0
 redis-cli -p 6379 PING
 ```
 
-The cache keeps each module's checked and compiled parts, so a rebuild
-after an edit compiles only what the edit changed. A cached build does not
-link the runtime under link-time optimization; build with `--full-lto`
-instead of `--cache` to measure firn's speed, as the benchmarks do.
+`make firn` downloads the Whitefoot compiler release that `whitefoot.pin`
+names and builds `build/firn` with an incremental cache, which keeps each
+module's checked and compiled parts, so a rebuild after an edit compiles only
+what the edit changed. A cached build does not link the runtime under
+link-time optimization; `make firn-lto` builds `build/firn-lto` with
+`--full-lto` instead, to measure firn's speed, as the benchmarks do.
 
 Up to four arguments may come first by position, in this order:
 
@@ -189,7 +191,7 @@ default.
 - `store`: the keyspace, one shared state holding a keyed table of entries
   and, after it, the queued expiries, the append-only file's pending bytes
   and the server's counts
-  ([firn under the shared-state design](../../research/investigations/shared-state/DESIGN.md#firn-under-the-design)),
+  ([firn under the shared-state design](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/investigations/shared-state/DESIGN.md#firn-under-the-design)),
   and beside it a second shared state, the server's, with what `CONFIG SET`
   changes, the count of accepted connections and the time the server
   started;

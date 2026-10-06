@@ -7,7 +7,7 @@ results, on Redis 7.0.15 itself and on firn at `cea9188d4`.
 
 ## Question
 
-How much of Redis's own test suite does [firn](../../../apps/firn/README.md)
+How much of Redis's own test suite does [firn](../../../firn/README.md)
 pass? firn is meant to be deployable in place of Redis
 ([firn](../../investigations/firn/DESIGN.md#the-owners-rulings)), and the suite
 Redis runs on itself is the widest description of Redis's behavior there is.
@@ -15,7 +15,7 @@ Its pass count, unit by unit, is a measure later work on firn can report as
 numbers and move.
 
 The bundle serves that measurement of firn and lives here, beside the firn
-measurements of [io-completion-bench](../io-completion-bench/). It goes when
+measurements of [io-completion-bench](https://github.com/Ming-Research/Whitefoot/tree/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench). It goes when
 a maintained test of firn's compatibility replaces it, or when firn no longer
 aims to be deployable in place of Redis.
 
@@ -161,7 +161,7 @@ From the repository root of a Linux host, with bash 4.4 or later, GNU
 coreutils and sed, curl, `tclsh` 8.5 or later (Ubuntu's `tcl` package),
 `redis-server` and `redis-cli` 7.0.15 (`redis-server` and `redis-tools`) and
 `python3`. firn is built as
-[its README](../../../apps/firn/README.md#build-and-run) says; the runs below
+[its README](../../../firn/README.md#build-and-run) says; the runs below
 used the compiler that `make -C compiler build` builds, which the gate profile
 places in `compiler/target/gate/`:
 
@@ -523,7 +523,7 @@ Redis 7.0 nor firn knows; it ignores the error.
   connection or unreadable reply, is a `wrong-reply`, whatever led to it.
 - firn was compiled by the gate-profile `whitefootc`, the release profile
   with debug assertions and overflow checks in the compiler itself
-  ([`compiler/Cargo.toml`](../../../compiler/Cargo.toml)), where firn's README
+  ([`compiler/Cargo.toml`](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/compiler/Cargo.toml)), where firn's README
   names the release build. The release compiler of the same revision emits
   byte-identical LLVM IR for firn, but its executable differs in 21 bytes of
   `.text` besides the build ID, all in one function,
