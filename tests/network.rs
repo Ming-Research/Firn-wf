@@ -3407,6 +3407,8 @@ fn firn_requires_its_password_as_redis_does() {
         vec!["CONFIG", "GET"],
         vec!["CONFIG", "GET", "save"],
         vec!["CLIENT", "FOO"],
+        vec!["CLIENT", "INFO"],
+        vec!["CLIENT", "INFO", "x"],
         vec!["FUNCTION", "NOPE"],
         vec!["FUNCTION", "FLUSH"],
         vec!["DEBUG"],
@@ -3433,7 +3435,7 @@ fn firn_requires_its_password_as_redis_does() {
     client.write_all(&batch).expect("send the locked batch");
     expect_replies(
         &mut client,
-        b"-NOAUTH Authentication required.\r\n-ERR unknown command 'NOPE', with args beginning with: 'a' \r\n-ERR wrong number of arguments for 'get' command\r\n-ERR wrong number of arguments for 'config|get' command\r\n-NOAUTH Authentication required.\r\n-ERR unknown subcommand 'FOO'. Try CLIENT HELP.\r\n-ERR unknown subcommand 'NOPE'. Try FUNCTION HELP.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'debug' command\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'config|resetstat' command\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n+OK\r\n+PONG\r\n-ERR wrong number of arguments for 'ping' command\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n+PONG\r\n*2\r\n$11\r\nrequirepass\r\n$6\r\nsecret\r\n:0\r\n",
+        b"-NOAUTH Authentication required.\r\n-ERR unknown command 'NOPE', with args beginning with: 'a' \r\n-ERR wrong number of arguments for 'get' command\r\n-ERR wrong number of arguments for 'config|get' command\r\n-NOAUTH Authentication required.\r\n-ERR unknown subcommand 'FOO'. Try CLIENT HELP.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'client|info' command\r\n-ERR unknown subcommand 'NOPE'. Try FUNCTION HELP.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'debug' command\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'config|resetstat' command\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n+OK\r\n+PONG\r\n-ERR wrong number of arguments for 'ping' command\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n+PONG\r\n*2\r\n$11\r\nrequirepass\r\n$6\r\nsecret\r\n:0\r\n",
         "the locked batch",
     );
     for command in ["MSET", "MSETNX", "LPOP", "RPOP"] {
@@ -3853,6 +3855,58 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
         "{hello3}_\r\n+OK\r\n*2\r\n$1\r\nv\r\n_\r\n_\r\n:1\r\n%1\r\n$1\r\nf\r\n$1\r\nv\r\n%0\r\n*1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n:1\r\n~1\r\n$1\r\na\r\n~0\r\n~1\r\n$1\r\na\r\n:3\r\n,1.5\r\n_\r\n*1\r\n*2\r\n$1\r\na\r\n,1.5\r\n*2\r\n$1\r\na\r\n,1.5\r\n*1\r\n*2\r\n$1\r\nb\r\n,2\r\n%1\r\n$10\r\nappendonly\r\n$2\r\nno\r\n=34\r\ntxt:# Cluster\r\ncluster_enabled:0\r\n\r\n~1\r\n$1\r\na\r\n{hello2}$-1\r\n*0\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the RESP3 batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers CLIENT INFO with the connection's line of facts in Redis
+/// 7.0.15's form, a bulk string under RESP2 and a verbatim string under RESP3,
+/// the name CLIENT SETNAME gave and the protocol HELLO selected in it, and
+/// CLIENT INFO with an argument is Redis's arity error. The line is
+/// redis-server 7.0.15's but for the fields firn leaves out, the addresses,
+/// descriptor, events and buffer sizes, and for the age, 0 or 1 as the second
+/// may turn between the connection and the command.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_client_info_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["CLIENT", "INFO"],
+        vec!["CLIENT", "SETNAME", "conn-1"],
+        vec!["CLIENT", "info", "x"],
+        vec!["HELLO", "3"],
+        vec!["CLIENT", "INFO"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client
+        .write_all(&batch)
+        .expect("send the CLIENT INFO batch");
+    let line = |name: &str, protocol: u32| {
+        format!(
+            "id=1 name={name} age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|info user=default redir=-1 resp={protocol}\n"
+        )
+    };
+    let first = line("", 2);
+    let second = line("conn-1", 3);
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let expected = format!(
+        "${}\r\n{first}\r\n+OK\r\n-ERR wrong number of arguments for 'client|info' command\r\n{hello3}={}\r\ntxt:{second}\r\n",
+        first.len(),
+        second.len() + 4
+    );
+    let mut returned = vec![0_u8; expected.len()];
+    client
+        .read_exact(&mut returned)
+        .expect("read the CLIENT INFO batch's replies");
+    let returned = String::from_utf8_lossy(&returned).replace(" age=1 ", " age=0 ");
+    assert_eq!(returned, expected, "the CLIENT INFO batch");
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);

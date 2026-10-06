@@ -43,8 +43,8 @@ clients send on their own:
   read and written as Redis 7.0.15 reads and writes them;
 - connection: `PING`, `ECHO`, `QUIT`, `AUTH`, `HELLO` with no version,
   version 2 or version 3, which switches the connection to RESP3, `SELECT 0`, firn
-  having one database, and `CLIENT ID`, `CLIENT GETNAME` and
-  `CLIENT SETNAME`;
+  having one database, and `CLIENT ID`, `CLIENT GETNAME`, `CLIENT SETNAME`
+  and `CLIENT INFO`, described below;
 - server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which
   describe no command. `COMMAND DOCS` is answered as an unknown subcommand,
@@ -108,6 +108,12 @@ processor time, per-command and per-error counts among them, is left out,
 so its CPU, Commandstats, Errorstats and Latencystats sections are empty,
 and the keyspace line's `expires` and `avg_ttl`, which firn does not count,
 are 0.
+
+`CLIENT INFO` answers the connection's line in Redis's form, with real
+values for the id, the name, the age and the protocol, and values fixed and
+true of firn for the others it gives. It leaves out what firn cannot report:
+the peer's and its own address, which Whitefoot's socket address does not
+show, the descriptor, the events and the sizes of Redis's buffers.
 
 `HELLO` and `INFO` report the server as `redis` version 7.0.15, the version
 whose replies firn follows.

@@ -484,4 +484,16 @@ written while firn lived in the Whitefoot repository; a path such as
 
 ## Whitefoot requirements
 
-None filed since firn left the Whitefoot repository.
+- **A program cannot read a socket address.** The specification (v0.93,
+  section 14, `std::net`) makes `SocketAddress` opaque, built only by
+  `socket_address_v4` and `socket_address_v6`; `tcp_accept` returns the
+  peer's address, but nothing reads it, and nothing gives an accepted
+  connection's own address. Minimal witness: after `tcp_accept` returns
+  `AcceptedConnection(connection: c, peer: p)` for a client at
+  127.0.0.1:50000, no program can compute the text `127.0.0.1:50000` from
+  `p`. Impact: Redis's `CLIENT INFO` and `CLIENT LIST` report both as `addr`
+  and `laddr`, which firn's `CLIENT INFO` leaves out; no selected consumer
+  reads them, and Redis's own `CLIENT INFO` test does. Change: a function
+  giving a socket address's family, address bytes and port, and one giving
+  an accepted connection's local address. Reopen when a consumer or a test
+  firn should pass needs `addr` or `laddr`.
