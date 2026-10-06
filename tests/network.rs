@@ -1270,10 +1270,10 @@ fn firn_replays_blocks_and_cuts_an_unloaded_end_as_redis_does() {
 }
 
 /// [PRE-2] firn stops with status 4 before it listens when its append-only
-/// file holds a record that is not a well-formed command, here a bulk length
-/// that is not a number between two whole commands, as Redis 7.0.15 stops
-/// loading at a format error and exits; the file stays as it was, neither cut
-/// nor appended to.
+/// file holds a record that is not a well-formed command, here an argument
+/// line that does not start with `$` between two whole commands, where
+/// Redis 7.0.15's loader takes its format-error path and exits; the file
+/// stays as it was, neither cut nor appended to.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_stops_on_an_append_only_file_that_does_not_parse() {
@@ -1283,7 +1283,7 @@ fn firn_stops_on_an_append_only_file_that_does_not_parse() {
     let path = fixture.path().join(name);
     let content = [
         resp(&["SET", "a", "1"]),
-        b"*1\r\n$x\r\nfoo\r\n".to_vec(),
+        b"*1\r\n:3\r\nfoo\r\n".to_vec(),
         resp(&["SET", "b", "2"]),
     ]
     .concat();

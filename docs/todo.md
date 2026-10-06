@@ -116,14 +116,25 @@ written while firn lived in the Whitefoot repository; a path such as
   (`firn/persistence/persistence.wf`). Two differences remain: an error
   opening the file other than its absence is treated as no file, where Redis
   exits on `AOF_OPEN_ERR`; and replay accepts inline commands, where Redis's
-  loader requires every record to start with `*` and stops at any other
-  byte. A block larger than the window's ceiling, 2 GiB, also stops firn
+  loader requires every record to start with `*`, apart from annotation
+  lines starting with `#`, and stops at any other byte. A block larger than the window's ceiling, 2 GiB, also stops firn
   where Redis loads it; replaying a block by re-reading it from its file
   offset instead of holding it would lift that limit. The change: tell an
-  absent file from an open failure, and refuse a record not starting with
-  `*`. Validate with an unreadable file and a file holding an inline
+  absent file from an open failure, and refuse a record starting with
+  neither `*` nor `#`, passing over `#` annotations as Redis does. Validate with an unreadable file and a file holding an inline
   command. Reopen before firn is offered to a deployment that keeps an
   append-only file.
+- **A script's noscript refusal checks only the command's own arity.**
+  `script_command` (`firn/commands/script.wf`) answers Redis's arity error
+  for AUTH, DEBUG, CONFIG, CLIENT and FUNCTION without an argument, then
+  refuses them as noscript. Redis 7.0.15's `scriptCall` first resolves a
+  container's subcommand, answering an unknown subcommand as an unknown
+  command and a subcommand short of its own arity, such as `CONFIG GET`
+  alone, with the arity error, and only then refuses it. The change: resolve
+  CONFIG's, CLIENT's and FUNCTION's subcommands with their arities before
+  the refusal. Validate against Redis's `scriptCall` with a bare
+  subcommand and an unknown one. Reopen when scripts run real
+  workloads' error paths.
 - **Close the current main-line Redis compatibility gaps.** The following
   gaps remain after the command integration of
   [PR #212](https://github.com/mbbill/Whitefoot/pull/212). Missing, among
