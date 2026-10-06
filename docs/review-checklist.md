@@ -14,10 +14,11 @@ Base and head: <...>; validation already run: <commands, results, revision>.
 Read the diff from the base (git diff <base>, plus untracked files) and the
 changed sections in context. Apply the owner-wide review checks G1–G3 and
 DC1–DC4 and engineering standards and each group of docs/review-checklist.md
-whose trigger applies, and run make design-lint. Do not rerun green suites. Report Scope (your model,
-base..head, groups checked and skipped), Checks (what you ran) and Findings
-(item ID, file:line, quoted text or missing evidence, reason; quote both
-sides of a contradiction), or "none within scope".
+whose trigger applies, and run make design-lint. Do not rerun green suites.
+Report Scope (your model, base..head, groups checked and skipped), Checks
+(what you ran) and Findings (item ID, file:line, quoted text or missing
+evidence, reason; quote both sides of a contradiction), or "none within
+scope".
 ```
 
 ## A. Every change
