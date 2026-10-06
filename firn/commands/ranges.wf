@@ -32,6 +32,8 @@ alias read_integer = pkg::bytes::read_integer;
 alias reply_array = pkg::protocol::reply_array;
 alias reply_error = pkg::protocol::reply_error;
 alias reply_integer = pkg::protocol::reply_integer;
+alias reply_pair = pkg::protocol::reply_pair;
+alias reply_pairs = pkg::protocol::reply_pairs;
 alias reply_score = pkg::scores::reply_score;
 alias reply_wrong_type = pkg::protocol::reply_wrong_type;
 alias reply_text = pkg::protocol::reply_text;
@@ -304,6 +306,7 @@ fn walk_visit(walk: &Walk, client: &Client, rank: &Rank) -> result: unit reads(r
   if walk^.act == 0_u64 {
     reply_text(client: client, text: &rank^.member.bytes);
   } else if walk^.act == 1_u64 {
+    reply_pair(client: client);
     reply_text(client: client, text: &rank^.member.bytes);
     reply_score(client: client, score: rank^.score);
   } else if walk^.act == 3_u64 {
@@ -486,7 +489,7 @@ fn range_open(sorted: &Sorted, walk: &Walk) -> possible: Bool reads(sorted), wri
 }
 
 fn range_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(value), writes(env), writes(walk) {
-  doc "Writes the members a walk takes from a live sorted set, with their scores when its act is 1, as an array, recording done; wrong for another kind and expired for an expired entry. A walk by position takes the ranks from position low to high, both inclusive and counted from the end when negative, as Redis sanitizes them, and writes how many before walking; a walk by score or member counts what it takes in a first walk, writes that count, then writes the ranks in a second. offset and limit in the walk give LIMIT's, limit 0 taking nothing.";
+  doc "Writes the members a walk takes from a live sorted set, with their scores when its act is 1, as an array, each member and its score nested as a pair under RESP3, recording done; wrong for another kind and expired for an expired entry. A walk by position takes the ranks from position low to high, both inclusive and counted from the end when negative, as Redis sanitizes them, and writes how many before walking; a walk by score or member counts what it takes in a first walk, writes that count, then writes the ranks in a second. offset and limit in the walk give LIMIT's, limit 0 taking nothing.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -525,11 +528,11 @@ fn range_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
         let last = cvt.wrap::<i64, u64>(stop);
         let span = last -wrap first;
         let count = span +wrap 1_u64;
-        let elements = count;
         if scored {
-          set elements = count *wrap 2_u64;
+          reply_pairs(client: env, pairs: count);
+        } else {
+          reply_array(client: env, count: count);
         }
-        reply_array(client: env, count: elements);
         let bounded = False();
         let walked = walk_from(order: &sorted^.order, walk: walk, client: env, offset: first, limit: count, unlimited: bounded, act: act);
         return 5_u64;
@@ -547,11 +550,11 @@ fn range_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
       if taking {
         set found = walk_from(order: &sorted^.order, walk: walk, client: env, offset: offset, limit: limit, unlimited: unlimited, act: 2_u64);
       }
-      let elements = found;
       if scored {
-        set elements = found *wrap 2_u64;
+        reply_pairs(client: env, pairs: found);
+      } else {
+        reply_array(client: env, count: found);
       }
-      reply_array(client: env, count: elements);
       if found > 0_u64 {
         let bounded = False();
         let written = walk_from(order: &sorted^.order, walk: walk, client: env, offset: offset, limit: found, unlimited: bounded, act: act);

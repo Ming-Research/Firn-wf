@@ -30,6 +30,7 @@ alias reply_array = pkg::protocol::reply_array;
 alias reply_error = pkg::protocol::reply_error;
 alias reply_integer = pkg::protocol::reply_integer;
 alias reply_nil = pkg::protocol::reply_nil;
+alias reply_set = pkg::protocol::reply_set;
 alias reply_wrong_type = pkg::protocol::reply_wrong_type;
 alias reply_text = pkg::protocol::reply_text;
 alias log_text = pkg::store::log_text;
@@ -338,7 +339,7 @@ fn pick_member(members: &HashMap<Key, unit, ceiling>, start: u64) -> found: Opti
 }
 
 fn pop_members(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(value) {
-  doc "Removes up to number members of a live set chosen from random, writing them as the reply, an array when high is 1, else the one bulk string, and keeping each removed member among the prepared keys. Records done, or emptied when the set is left empty; wrong for another kind and expired for an expired entry.";
+  doc "Removes up to number members of a live set chosen from random, writing them as the reply, a set, an array under RESP2, when high is 1, else the one bulk string, and keeping each removed member among the prepared keys. Records done, or emptied when the set is left empty; wrong for another kind and expired for an expired entry.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -349,7 +350,7 @@ fn pop_members(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(val
       let size = hash_map_len::<Key, unit, ceiling>(map: set_of);
       let taken = imin(env^.number, size);
       if env^.high == 1_i64 {
-        reply_array(client: env, count: taken);
+        reply_set(client: env, count: taken);
       }
       for @popping (step in 0_u64..taken) {
         set env^.random = next_random(state: env^.random);
@@ -474,7 +475,7 @@ fn run_spop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     return unit;
   }
   if counted {
-    reply_array(client: client, count: 0_u64);
+    reply_set(client: client, count: 0_u64);
     return unit;
   }
   reply_nil(client: client);
@@ -549,7 +550,7 @@ fn member_out(env: &Client, key: &Key, value: &unit) -> result: unit reads(key.b
 }
 
 fn members_out(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env) {
-  doc "Writes every member of a live set as an array reply, in the order of the set's buckets, recording done; records wrong for another kind and expired for an expired entry.";
+  doc "Writes every member of a live set as a set reply, an array under RESP2, in the order of the set's buckets, recording done; records wrong for another kind and expired for an expired entry.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -558,7 +559,7 @@ fn members_out(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
   match value^.value {
     Members(members: set_of) => {
       let size = hash_map_len::<Key, unit, ceiling>(map: set_of);
-      reply_array(client: env, count: size);
+      reply_set(client: env, count: size);
       hash_map_each::<Key, unit, Client, fn member_out, ceiling>(map: set_of, env: env);
       set env^.state = state_done;
       return 3_u64;
@@ -583,7 +584,7 @@ fn members_out(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
 }
 
 fn run_smembers(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "SMEMBERS key: answers the set's members, in no promised order, as in Redis, written into the reply inside the statement that finds the set; an absent key answers an empty array.";
+  doc "SMEMBERS key: answers the set's members as a set, an array under RESP2, in no promised order, as in Redis, written into the reply inside the statement that finds the set; an absent key answers an empty set.";
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
@@ -607,7 +608,7 @@ fn run_smembers(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
     reply_wrong_type(client: client);
     return unit;
   }
-  reply_array(client: client, count: 0_u64);
+  reply_set(client: client, count: 0_u64);
   return unit;
 }
 
@@ -1520,7 +1521,7 @@ fn run_combine(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     return unit;
   }
   let size = hash_map_len::<Key, unit, ceiling>(map: &result);
-  reply_array(client: client, count: size);
+  reply_set(client: client, count: size);
   hash_map_each::<Key, unit, Client, fn member_out, ceiling>(map: &result, env: client);
   return unit;
 }

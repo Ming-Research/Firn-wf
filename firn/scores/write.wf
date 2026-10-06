@@ -1,5 +1,7 @@
 alias Client = pkg::protocol::Client;
+alias byte_at = pkg::bytes::byte_at;
 alias reply_bulk_input = pkg::protocol::reply_bulk_input;
+alias reply_byte = pkg::protocol::reply_byte;
 
 const text_inf: Array<u8, 3> = "inf";
 
@@ -200,9 +202,19 @@ fn score_text(score: f64) -> text: ScoreText pure {
 }
 
 fn reply_score(client: &Client, score: f64) -> result: unit writes(client) {
-  doc "Writes a score as Redis 7.0.15 writes one under RESP2: a bulk string of inf or -inf for an infinity, and otherwise of C's %.17g, the value rounded to 17 significant digits with ties to even, in fixed notation when its decimal exponent is from -4 to 16 and in exponential notation otherwise, trailing zeros dropped.";
+  doc "Writes a score as Redis 7.0.15's addReplyDouble writes one, in the text of inf or -inf for an infinity and otherwise of C's %.17g, the value rounded to 17 significant digits with ties to even, in fixed notation when its decimal exponent is from -4 to 16 and in exponential notation otherwise, trailing zeros dropped: as a bulk string under RESP2, and under RESP3 as a double, a comma, the text and CR LF.";
   let text = score_text(score: score);
   let window = &text.bytes[0_u64..32_u64];
+  if client^.resp == 3_u64 {
+    reply_byte(client: client, value: 44_u8);
+    for @digits (index in 0_u64..text.length) {
+      let byte = byte_at(input: window, index: index);
+      reply_byte(client: client, value: byte);
+    }
+    reply_byte(client: client, value: 13_u8);
+    reply_byte(client: client, value: 10_u8);
+    return unit;
+  }
   reply_bulk_input(client: client, input: window, start: 0_u64, length: text.length);
   return unit;
 }

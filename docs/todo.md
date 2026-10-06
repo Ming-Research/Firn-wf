@@ -25,7 +25,7 @@ written while firn lived in the Whitefoot repository; a path such as
   queue is a candidate additional scenario, not yet a selected dependency.
   Complete the following work and remove this item when the deployment
   evidence meets that boundary:
-  - Complete the selected clients' connection behavior, RESP3, command
+  - Complete the selected clients' connection behavior, command
     metadata, ordinary pipelines, scans and application command gaps. Add
     `WATCH`/`UNWATCH`, and write as parts the commands a selected consumer
     queues or calls from a script that are not parts yet, since `EXEC` and
@@ -155,8 +155,7 @@ written while firn lived in the Whitefoot repository; a path such as
   answers as unknown, and a command table, which `COMMAND` and
   `COMMAND COUNT` report empty and `COMMAND DOCS`, `INFO`, `LIST` and
   `GETKEYS` answer as unknown subcommands; `KEYS` and `SCAN`, which can match
-  with `glob_match` (`firn/bytes/bytes.wf`), RESP3, which
-  `HELLO 3` refuses, `LMPOP` and the blocking list commands, `SSCAN`,
+  with `glob_match` (`firn/bytes/bytes.wf`), `LMPOP` and the blocking list commands, `SSCAN`,
   `WATCH`, publish and subscribe, and a random hash seed; and
   `RANDOMKEY`, `SORT`, `LCS`, `OBJECT`, `DUMP`, `RESTORE`, `MOVE`, `MIGRATE`,
   `WAIT`, `HSCAN`, `ZSCAN`, `ZRANGESTORE`, `ZRANDMEMBER`, `ZMPOP` and
@@ -419,6 +418,23 @@ written while firn lived in the Whitefoot repository; a path such as
   library's next ordered map change.
 
 ## Tests
+
+- **Thirteen of Redis's suite tests are lost to a connection left in
+  RESP3 or in deferred raw reading by a test firn cannot pass.** Since firn
+  answers `HELLO 3`, tests of `unit/type/zset` that run `r hello 3` and then
+  a command firn lacks stop before their `r hello 2`: `ZINTER RESP3` on
+  `ZINTER`, and the listpack iteration's `ZMPOP`, `BZPOPMIN`/`BZPOPMAX` and
+  `BZMPOP` RESP3 tests on those commands, so twelve later tests, four
+  `ZPOP` ones and eight of the skiplist iteration, read RESP2 replies as
+  RESP3 (`a -1.0` for `a -1`). In `unit/protocol`, `RESP3 attributes
+  readraw` fails on `DEBUG PROTOCOL` with deferred and raw reading on, and
+  `test large number of args` then returns without reading its reply. They
+  passed before only because `HELLO 3` failed first; the ratchet's lists
+  were recorded again without them (run 37460090430), which also added 106
+  tests RESP3 now passes. The change: implement `ZINTER`, `ZUNION` and
+  `ZDIFF` with their stores, `ZMPOP`, `BZPOPMIN`, `BZPOPMAX` and `BZMPOP`,
+  and `DEBUG PROTOCOL`, then record the lists again; the thirteen should
+  return. Reopen when firn adds those commands.
 
 - **firn's network cases now and then lose their first connection when many
   cases run at once on a 32-CPU host.** `cargo test --test corpus` on

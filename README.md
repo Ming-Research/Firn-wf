@@ -19,8 +19,8 @@ clients ([design](design/firn.md)).
 
 - **Commands:** the keys, strings, lists, sets, hashes and sorted-set
   commands, the server and connection commands, and the append-only file
-  that [firn/README.md](firn/README.md) lists, answered in RESP2 or inline,
-  pipelined or not.
+  that [firn/README.md](firn/README.md) lists, answered in RESP2 or RESP3,
+  or inline, pipelined or not.
 - **Compatibility:** judged against Redis 7.0.15 by differential runs and
   Redis's own test suite
   ([redis-compat](research/experiments/redis-compat/README.md)).
@@ -28,7 +28,7 @@ clients ([design](design/firn.md)).
   Dragonfly and Garnet ([measurements](research/investigations/firn/DESIGN.md)).
 - **Not yet:** scripting (`EVAL`, through the Halo engine), `WATCH` and
   transactions of commands beyond those `firn/README.md` lists,
-  RESP3, memory limits and eviction, replication and clustering, among the
+  memory limits and eviction, replication and clustering, among the
   gaps [docs/todo.md](docs/todo.md) lists. firn is a research server, not a
   production database.
 
