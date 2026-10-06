@@ -116,19 +116,6 @@ written while firn lived in the Whitefoot repository; a path such as
   with Redis's `unit/scripting` and `unit/multi` busy tests. Reopen before
   any deployment that accepts scripts from clients it does not control, or
   when the suite's time matters.
-- **A script's `pcall` returns an error table Redis would unwrap.** Redis
-  7.0.15 replaces Lua's `pcall` with `luaRedisPcall`, which returns the
-  `err` field of an error table that has a string one in place of the table.
-  firn applies that conversion only to the errors `redis.call` raises
-  (`redis_raised` in `firn/scripting/host.wf`); an error a script raises
-  itself reaches Halo's built-in `pcall`, which returns the value unchanged,
-  so `local ok,e = pcall(function() error({err='ERR x'},0) end) return
-  type(e)` answers `table` where Redis answers `string` (recorded on
-  redis-server 7.0.15: `string`, and `ERR x` for `e`). The change belongs to
-  Halo: its `pcall` unwraps the `err` field for an embedding that asks for
-  Redis's, and firn's `redis_raised` conversion then goes. Validate with
-  that case and a table without `err`, which stays a table in Redis. Reopen
-  when Halo-wf offers the option.
 - **Replay still differs from Redis's loader in two cases.** A file that
   does not parse, cannot be read or holds a block larger than the input
   window's ceiling now stops firn with status 4, as Redis 7.0.15 exits

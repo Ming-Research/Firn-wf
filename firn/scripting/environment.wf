@@ -135,7 +135,7 @@ fn prepare(engine: &Engine, input: &[u8], args: &Box<Slots<Span>>, keys: u64) ->
 
 fn raise(vm: &Vm, text: &[u8]) -> r: HostOutcome reads(text), writes(vm) {
   let message = literal(vm: vm, text: text);
-  let error = redis_raised(vm: vm, message: message);
+  let error = reply_table(vm: vm, field: &s_30[0_u64..3_u64], v: message);
   set vm^.error = error;
   return HostOutcome::Raised();
 }

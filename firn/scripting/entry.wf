@@ -80,6 +80,7 @@ fn take_engine(store: &Keyspace) -> pooled: PooledEngine reads(store) waits {
 fn new_pooled(generation: u64) -> pooled: PooledEngine pure {
   doc "A flush generation starts a fresh Lua environment as Redis scriptingReset does, dropping compiled constants and library configuration as well as the cache index.";
   let engine = halo::embed::new_engine(limit: 18446744073709551615_u64);
+  halo::embed::set_pcall_error_field(engine: &engine, field: &s_30[0_u64..3_u64]);
   install_host(engine: &engine);
   let cache = box_slots_new::<Cached>(capacity: 0_u64);
   return PooledEngine(engine: move engine, generation: generation, cache: move cache);
@@ -298,8 +299,7 @@ fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &Conc
     if id == 4096_u32 {
       let message = field(vm: &engine^.vm, table: value, name: &s_30[0_u64..3_u64]);
       if is_string(v: message) {
-        let error = redis_raised(vm: &engine^.vm, message: message);
-        return halo::embed::fail_call::<ScriptHost>(engine: engine, env: env, error: error, budget: budget);
+        return halo::embed::fail_call::<ScriptHost>(engine: engine, env: env, error: value, budget: budget);
       }
     }
   }
@@ -435,7 +435,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   let line = halo::embed::error_line(engine: &pooled.engine);
                   let value = halo::embed::error_value(engine: &pooled.engine);
                   let locate = readonly_message(vm: &pooled.engine.vm, value: value);
-                  let formatted = halo::embed::format_redis_error(engine: &pooled.engine, source: &source.inner[0_u64..n], line: line, locate: locate);
+                  let formatted = format_redis_error(engine: &pooled.engine, source: &source.inner[0_u64..n], line: line, locate: locate);
                   let length = formatted.inner.len;
                   reply_error(client: client, word: &formatted.inner[0_u64..length]);
                   if logged {
