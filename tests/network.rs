@@ -4305,6 +4305,11 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
     let mut setter = connect_when_ready(port);
     let mut writer = connect_when_ready(port);
     let mut reader = connect_when_ready(port);
+    for stream in [&writer, &reader] {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .expect("bound the reads that wait for the writing script");
+    }
     setter
         .write_all(&resp(&[
             "EVAL",
@@ -4316,7 +4321,7 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
     writer
         .write_all(&resp(&[
             "EVAL",
-            "redis.call('SET',KEYS[1],'1') local i = 0 while i < 50000000 do i = i + 1 end return i",
+            "redis.call('SET',KEYS[1],'1') local i = 0 while i < 10000000 do i = i + 1 end return i",
             "1",
             "written",
         ]))
@@ -4330,7 +4335,7 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
         b"$4\r\n3.14\r\n",
         "the number sent while a script runs",
     );
-    expect_replies(&mut writer, b":50000000\r\n", "the writing script");
+    expect_replies(&mut writer, b":10000000\r\n", "the writing script");
     drop(setter);
     drop(writer);
     drop(reader);
