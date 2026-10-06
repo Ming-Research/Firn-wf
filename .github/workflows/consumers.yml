@@ -5,9 +5,6 @@
 name: consumers
 
 on:
-  # Temporary: one run of the corrected capture, removed after it.
-  push:
-    branches: [claude/consumers]
   workflow_dispatch:
 
 defaults:

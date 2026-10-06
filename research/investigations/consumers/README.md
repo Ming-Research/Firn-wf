@@ -74,9 +74,11 @@ rate-limiter-flexible v11.2.1.
 
 ## Results
 
-CI runs [37456306284](https://github.com/Ming-Research/Firn-wf/actions/runs/37456306284)
-and [37456778784](https://github.com/Ming-Research/Firn-wf/actions/runs/37456778784),
-which agree in every count below, on GitHub's `ubuntu-24.04` runners, Redis 7.0.15 from Ubuntu's package, firn at
+CI runs [37456306284](https://github.com/Ming-Research/Firn-wf/actions/runs/37456306284),
+[37456778784](https://github.com/Ming-Research/Firn-wf/actions/runs/37456778784)
+and [37458118086](https://github.com/Ming-Research/Firn-wf/actions/runs/37458118086),
+which agree in every count below, the last with `MONITOR` started before the
+tests and giving the same profiles as the earlier two, on GitHub's `ubuntu-24.04` runners, Redis 7.0.15 from Ubuntu's package, firn at
 `6239de8c8` with Whitefoot `wf-364f86c2fd16`. The clients the consumers
 installed: redis-py 8.1.0 (Django), node-redis 6.3.0 (connect-redis), and
 ioredis 5.11.1 with node-redis 4.7.1 (rate-limiter-flexible). Every
