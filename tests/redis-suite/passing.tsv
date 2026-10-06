@@ -148,7 +148,16 @@ unit/protocol	raw protocol response - multiline	1
 unit/quit	Pipelined commands after QUIT must not be executed	1
 unit/quit	Pipelined commands after QUIT that exceed read buffer size	1
 unit/quit	QUIT returns OK	1
+unit/scripting	EVALSHA - Do we get an error on invalid SHA1?	1
+unit/scripting	EVALSHA - Do we get an error on non defined SHA1?	1
 unit/scripting	INCRBYFLOAT: We can call scripts expanding client->argv from Lua	1
+unit/scripting	LUA redis.status_reply API	1
+unit/scripting	LUA test pcall	1
+unit/scripting	LUA test pcall with error	1
+unit/scripting	SCRIPT EXISTS - can detect already defined scripts?	1
+unit/scripting	SCRIPT LOAD - is able to register scripts in the scripting cache	1
+unit/scripting	Scripting engine PRNG can be seeded correctly	1
+unit/scripting	random numbers are random now	1
 unit/sort	SETRANGE with huge offset	1
 unit/sort	SORT sorted set: +inf and -inf handling	1
 unit/type/hash	HSET/HLEN - Small hash creation	1

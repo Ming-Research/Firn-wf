@@ -4074,7 +4074,9 @@ fn firn_records_transactions_as_redis_propagates_them() {
 /// subcommands and the commands' arities are answered as Redis answers them;
 /// redis.error_reply and redis.pcall's argument check answer Redis's error
 /// tables; and a script's result is written in the client's protocol, as
-/// luaReplyToRedisReply writes it, booleans following redis.setresp. The
+/// luaReplyToRedisReply writes it, booleans following redis.setresp, and a
+/// result that contains itself ending in Redis's stack-limit error at the
+/// depth Redis reaches. The
 /// expected bytes are redis-server 7.0.15's but for redis.pcall('GET'),
 /// which firn answers with its interim error until a script's command can
 /// reach the keyspace.
@@ -4133,6 +4135,9 @@ fn firn_runs_scripts_as_redis_does() {
             "0",
         ],
         vec!["EVAL", "return redis.pcall('GET','key')", "0"],
+        vec!["EVAL", "local a={}; local b={a}; a[1]=b; return a", "0"],
+        vec!["EVAL", "local a={}; a.map={k=a}; return a", "0"],
+        vec!["EVAL", "local a={}; a.set={}; a.set[a]=true; return a", "0"],
         vec!["EVAL", "return {map={a=1}}", "0"],
         vec!["EVAL", "return {set={a=true}}", "0"],
         vec!["EVAL", "return {double=1.5}", "0"],
@@ -4160,8 +4165,15 @@ fn firn_runs_scripts_as_redis_does() {
     }
     client.write_all(&batch).expect("send the scripting batch");
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    // redis-server 7.0.15 writes a result that contains itself to these
+    // depths before its stack-limit error; a map's last level refuses both
+    // its key and its value.
+    let arrays = "*1\r\n".repeat(7995);
+    let maps = "*2\r\n$1\r\nk\r\n".repeat(2664) + "*2\r\n";
+    let sets = "*1\r\n".repeat(2665);
+    let limit = "-ERR reached lua stack limit\r\n";
     let expected = format!(
-        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n-ERR firn does not run commands from scripts yet\r\n*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n"
+        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n-ERR firn does not run commands from scripts yet\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the scripting batch");
     drop(client);

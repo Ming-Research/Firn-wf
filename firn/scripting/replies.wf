@@ -148,8 +148,65 @@ fn verbatim_reply(vm: &Vm, text: Value, format: Value, client: &Client) -> r: un
   return unit;
 }
 
+struct Pending {
+  value: Value;
+  height: u64;
+}
+
+fn pend(work: &Box<Slots<Pending>>, value: Value, height: u64) -> r: unit writes(work) {
+  doc "Adds a value to be written, at the height of Lua's stack Redis would convert it at.";
+  if work^.inner.len == work^.inner.cap {
+    let room = work^.inner.cap +sat 1_u64;
+    let twice = work^.inner.cap +sat work^.inner.cap;
+    let target = imax(room, twice);
+    grow(cell: work, capacity: target);
+  }
+  if work^.inner.len < work^.inner.cap {
+    let item = Pending(value: value, height: height);
+    place_back(window: &work^.inner, value: item);
+  }
+  return unit;
+}
+
 fn lua_to_protocol(vm: &Vm, value: Value, client: &Client, resp: u8) -> r: unit writes(vm), writes(client) {
-  doc "Redis 7.0.15's luaReplyToRedisReply: the script's value written to the requesting client in the client's protocol, resp being the script's own, which redis.setresp selects. Arrays stop at the first nil; special reply fields use raw lookup.";
+  doc "Redis 7.0.15's luaReplyToRedisReply: the script's value written to the requesting client in the client's protocol, resp being the script's own, which redis.setresp selects. Redis converts a table's elements by recursion on Lua's stack and answers ERR reached lua stack limit for a value it would reach with its stack within four slots of Lua's 8,000, so an array that contains itself ends after 7,995 levels and a map or a set after 2,665; firn keeps the values still to write on a stack of its own, each with the height Redis would reach it at, so that a script's nesting cannot exhaust the stack firn runs on.";
+  let work = box_slots_new::<Pending>(capacity: 16_u64);
+  let children = box_slots_new::<Pending>(capacity: 16_u64);
+  pend(work: &work, value: value, height: lua_reply_height);
+  loop @values {
+    if work.inner.len > 0_u64 {
+      let item = take_back(window: &work.inner);
+      let reach = item.height +sat 4_u64;
+      if reach > lua_stack_limit {
+        reply_error(client: client, word: &replies_stack_limit[0_u64..27_u64]);
+      } else {
+        loop @clearing {
+          if children.inner.len > 0_u64 {
+            let dropped = take_back(window: &children.inner);
+          } else {
+            break @clearing;
+          }
+        }
+        write_value(vm: vm, value: item.value, height: item.height, client: client, resp: resp, children: &children);
+        let n = children.inner.len;
+        for @reversed (i in 0_u64..n) {
+          let back = n -wrap i;
+          let at = back -wrap 1_u64;
+          if at < children.inner.len {
+            let child = children.inner[at];
+            pend(work: &work, value: child.value, height: child.height);
+          }
+        }
+      }
+    } else {
+      break @values;
+    }
+  }
+  return unit;
+}
+
+fn write_value(vm: &Vm, value: Value, height: u64, client: &Client, resp: u8, children: &Box<Slots<Pending>>) -> r: unit writes(vm), writes(client), writes(children) {
+  doc "Writes one value as luaReplyToRedisReply does, and for an array, a map or a set its header alone, adding its elements to children in the order Redis writes them, each at the height of Lua's stack Redis converts it at: an array's element one above the table, a map's key four above and its value three, a set's member three.";
   match value {
     Num(n: x) => {
       let n = ftrunc(x);
@@ -267,9 +324,13 @@ fn lua_to_protocol(vm: &Vm, value: Value, client: &Client, resp: u8) -> r: unit 
               match found {
                 Some(value: pair) => {
                   set key = pair.key;
-                  lua_to_protocol(vm: vm, value: key, client: client, resp: resp);
+                  let member = height +sat 3_u64;
                   if mapped {
-                    lua_to_protocol(vm: vm, value: pair.val, client: client, resp: resp);
+                    let keyed = height +sat 4_u64;
+                    pend(work: children, value: key, height: keyed);
+                    pend(work: children, value: pair.val, height: member);
+                  } else {
+                    pend(work: children, value: key, height: member);
                   }
                 }
                 None() => {
@@ -301,7 +362,8 @@ fn lua_to_protocol(vm: &Vm, value: Value, client: &Client, resp: u8) -> r: unit 
         let x = cvt.nearest::<u64, f64>(index);
         let key = num(x: x);
         let v = get(vm: vm, table: value, key: key);
-        lua_to_protocol(vm: vm, value: v, client: client, resp: resp);
+        let element = height +sat 1_u64;
+        pend(work: children, value: v, height: element);
       }
     }
     Nil() => {
@@ -505,3 +567,9 @@ const replies_text_11: Array<u8, 3> = "err";
 const replies_true: Array<u8, 4> = "#t\r\n";
 
 const replies_false: Array<u8, 4> = "#f\r\n";
+
+const replies_stack_limit: Array<u8, 27> = "ERR reached lua stack limit";
+
+const lua_stack_limit: u64 = 8000_u64;
+
+const lua_reply_height: u64 = 2_u64;
