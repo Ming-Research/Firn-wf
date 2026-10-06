@@ -25,6 +25,9 @@
 #   --retries N      times a unit is run again past a test that timed out,
 #                    default 5
 #   --reference TSV  tests.tsv of an earlier run, for the not-reached column
+#   --known-hangs TSV  tests already seen making no progress, as rows of unit,
+#                    test name and the evidence; each unit skips its rows from
+#                    the start instead of waiting out the timeout for each
 #   --tolerant       lets the calls the suite's framework makes at the start
 #                    and end of every block (FLUSHALL, FUNCTION FLUSH, and for
 #                    the block's overrides CONFIG GET, CONFIG SET and the INFO
@@ -51,7 +54,7 @@ usage() {
     exit 2
 }
 
-out= units= timeout=120 retries=5 reference= tolerant=0
+out= units= timeout=120 retries=5 reference= tolerant=0 known=
 while [ $# -gt 0 ]; do
     case $1 in
         --out) out=${2:?}; shift 2 ;;
@@ -59,6 +62,7 @@ while [ $# -gt 0 ]; do
         --timeout) timeout=${2:?}; shift 2 ;;
         --retries) retries=${2:?}; shift 2 ;;
         --reference) reference=$(realpath "${2:?}"); shift 2 ;;
+        --known-hangs) known=$(realpath "${2:?}"); shift 2 ;;
         --tolerant) tolerant=1; shift ;;
         -*) usage ;;
         *) break ;;
@@ -260,6 +264,9 @@ for unit in $units; do
     hung=$out/hung/$unit.txt
     mkdir -p "$(dirname "$hung")" "$(dirname "$out/logs/$unit")" "$(dirname "$out/servers/$unit")"
     : > "$hung"
+    if [ -n "$known" ]; then
+        awk -F '\t' -v unit="$unit" '$1 == unit { print $2 }' "$known" >> "$hung"
+    fi
     attempt=1
     starts=1
     while true; do
