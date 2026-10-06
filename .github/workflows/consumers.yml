@@ -66,9 +66,9 @@ jobs:
             echo "## ${{ matrix.consumer }} against ${{ matrix.server }}"
             echo
             echo '```text'
-            cat "$DIR/what.txt" 2>/dev/null
+            cat "$DIR/what.txt" 2>/dev/null || true
             echo "tests exited $(cat "$DIR/status" 2>/dev/null || echo '(not run)')"
-            tail -n 15 "$DIR/test.log" 2>/dev/null
+            tail -n 15 "$DIR/test.log" 2>/dev/null || true
             echo '```'
             if [ -f "$DIR/profile.tsv" ]; then
               echo

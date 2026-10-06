@@ -95,6 +95,7 @@ case $consumer in
     django)
         python3 -m venv "$out/venv" && . "$out/venv/bin/activate" &&
             pip install --quiet -e . redis > "$out/setup.log" 2>&1 || { cat "$out/setup.log"; exit 1; }
+        echo "client: redis-py $(python -c 'import redis; print(redis.__version__)')" | tee -a "$out/what.txt"
         # The server named in CACHES is all the configuration the suites
         # need; as the default cache it also backs the cache sessions.
         cat > tests/test_consumers_redis.py <<EOF
@@ -112,11 +113,17 @@ EOF
             cache sessions_tests) > "$out/test.log" 2>&1
         echo $? > "$out/status" ;;
     connect-redis)
-        npm install --no-audit --no-fund > "$out/setup.log" 2>&1 || { cat "$out/setup.log"; exit 1; }
+        # The tests import the built package, as the project's own CI
+        # builds it first.
+        { npm install --no-audit --no-fund && npm run build; } > "$out/setup.log" 2>&1 || { cat "$out/setup.log"; exit 1; }
+        echo "client: $(npm ls redis --depth=0 2>/dev/null | grep -o 'redis@[0-9.]*')" | tee -a "$out/what.txt"
         npx vitest run > "$out/test.log" 2>&1
         echo $? > "$out/status" ;;
     rate-limiter-flexible)
-        npm install --no-audit --no-fund > "$out/setup.log" 2>&1 || { cat "$out/setup.log"; exit 1; }
+        # The Redis tests need no native module; other stores' tests do,
+        # and their builds are skipped.
+        npm install --no-audit --no-fund --ignore-scripts > "$out/setup.log" 2>&1 || { cat "$out/setup.log"; exit 1; }
+        echo "clients: $(npm ls ioredis redis --depth=0 2>/dev/null | grep -o -E '(ioredis|redis)@[0-9.]*' | tr '\n' ' ')" | tee -a "$out/what.txt"
         start_server
         npx mocha --exit test/RateLimiterRedis.ioredis.test.js \
             test/RateLimiterRedis.redis.test.js \
