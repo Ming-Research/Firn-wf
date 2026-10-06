@@ -55,7 +55,7 @@ $(PINNED_WHITEFOOTC): $(PIN)
 	@rm -rf $(WHITEFOOT).part && mkdir -p $(WHITEFOOT).part
 	@cd $(WHITEFOOT).part && for file in $(ASSET) SHA256SUMS whitefoot-release.json; do \
 		curl -fsSL --retry 3 -o $$file $(RELEASES)/$(RELEASE)/$$file || { \
-			echo "cannot download $$file of $(RELEASE): dispatch Whitefoot's release workflow for that commit (AGENTS.md, Upgrading Whitefoot)" >&2; \
+			echo "cannot download $$file of $(RELEASE); make it with: gh workflow run compiler-release.yml -R Ming-Research/Whitefoot -f commit=$(RELEASE_COMMIT)$(if $(findstring wf-exp-,$(RELEASE)), -f experiment=true) (AGENTS.md, Upgrading Whitefoot)" >&2; \
 			exit 1; }; \
 	done
 	@cd $(WHITEFOOT).part && grep '  $(ASSET)$$' SHA256SUMS | shasum -a 256 -c -
