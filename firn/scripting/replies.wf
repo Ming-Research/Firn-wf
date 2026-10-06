@@ -166,14 +166,16 @@ fn lua_to_protocol(vm: &Vm, value: Value, client: &Client, resp: u8) -> r: unit 
       if resp == 2_u8 {
         reply_integer(client: client, value: 1_i64);
       } else {
-        reply_bool(client: client, value: True());
+        let flag = True();
+        reply_bool(client: client, value: flag);
       }
     }
     False() => {
       if resp == 2_u8 {
         reply_nil(client: client);
       } else {
-        reply_bool(client: client, value: False());
+        let flag = False();
+        reply_bool(client: client, value: flag);
       }
     }
     Tab(..) => {
