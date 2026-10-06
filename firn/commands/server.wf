@@ -1000,8 +1000,20 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   return unit;
 }
 
+const word_command_docs: Array<u8, 4> = "DOCS";
+
+const word_command_getkeys: Array<u8, 7> = "GETKEYS";
+
+const word_command_getkeysandflags: Array<u8, 15> = "GETKEYSANDFLAGS";
+
+const word_command_help: Array<u8, 4> = "HELP";
+
+const word_command_info: Array<u8, 4> = "INFO";
+
+const word_command_list: Array<u8, 4> = "LIST";
+
 fn command_plan(input: &[u8], args: &Box<Slots<Span>>) -> kind: u64 reads(input), reads(args) {
-  doc "COMMAND's parsing: 1 lists commands, 2 counts them, 3 refuses COUNT's arity, and 0 refuses an unknown subcommand. Firn's existing command description is empty, so the body and metadata have no state to touch.";
+  doc "COMMAND's shared parsing for the network, transactions and scripts: 1 lists commands, 2 counts them, 3 refuses COUNT's arity, 4 names a Redis 7.0.15 subcommand firn does not run, and 0 names no Redis subcommand. The unsupported names are DOCS, INFO and LIST (Redis arity -2), GETKEYS and GETKEYSANDFLAGS (-4), and HELP (2); their arities are not checked because they take the unsupported path regardless of argument count. Firn's existing command description is empty, so the body and metadata have no state to touch.";
   let count = args^.inner.len;
   if count == 1_u64 {
     return 1_u64;
@@ -1015,16 +1027,31 @@ fn command_plan(input: &[u8], args: &Box<Slots<Span>>) -> kind: u64 reads(input)
     }
     return 2_u64;
   }
+  let docs = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_docs[0_u64..4_u64]);
+  let getkeys = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_getkeys[0_u64..7_u64]);
+  let getkeysandflags = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_getkeysandflags[0_u64..15_u64]);
+  let help = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_help[0_u64..4_u64]);
+  let info = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_info[0_u64..4_u64]);
+  let listing = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_list[0_u64..4_u64]);
+  let descriptions = bor(docs, info);
+  let keys = bor(getkeys, getkeysandflags);
+  let guidance = bor(help, listing);
+  let details = bor(descriptions, keys);
+  if bor(details, guidance) {
+    return 4_u64;
+  }
   return 0_u64;
 }
 
 fn command_refused(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u64) -> refused: Bool reads(input), reads(args), writes(client) {
-  doc "COMMAND's refusals in network order: COUNT arity or unknown subcommand before authentication, then NOAUTH for a recognized command. Both callers use these same predicates and bytes.";
+  doc "COMMAND's refusals in network order: COUNT arity or the existing unknown-subcommand reply for both unknown and unsupported subcommands before authentication, then NOAUTH for a runnable command. Transactions call this only for unknown subcommands or COUNT outside its arity; unsupported subcommands instead queue as foreign.";
   if kind == 3_u64 {
     reply_arity_word(client: client, word: &word_command_count[0_u64..13_u64]);
     return True();
   }
-  if kind == 0_u64 {
+  let unknown = kind == 0_u64;
+  let unsupported = kind == 4_u64;
+  if bor(unknown, unsupported) {
     let sub = arg(args: args, index: 1_u64);
     reply_word(client: client, word: &text_unknown_subcommand[0_u64..25_u64]);
     let shown = imin(sub.length, 128_u64);

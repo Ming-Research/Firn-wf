@@ -95,6 +95,8 @@ const arity_noscript_with_argument: i64 = -2_i64;
 
 const text_script_arity: Array<u8, 58> = "ERR Wrong number of args calling Redis command from script";
 
+const text_script_unknown: Array<u8, 44> = "ERR Unknown Redis command called from script";
+
 const text_script_unknown_or_unsplit: Array<u8, 87> = "ERR Unknown Redis command called from script, or one firn does not yet run from scripts";
 
 const text_script_refused: Array<u8, 49> = "ERR This Redis command is not allowed from script";
@@ -705,7 +707,7 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
 }
 
 fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
-  doc "Runs one command a script calls, inside the script's statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the script's own record of what it changed, which the caller wraps in MULTI and EXEC when it holds more than one, as Redis 7.0.15 propagates a script's effects. time is the script's: its check is the instant the script began. COMMAND's subcommand and its arity are resolved by command_plan before it runs; an unsupported one receives the unknown-command refusal. The commands held_kind names run through held_run; a count of arguments outside a command's arity is refused as Redis refuses it from a script, and AUTH, HELLO, QUIT, DEBUG, CONFIG, CLIENT and FUNCTION, which Redis 7.0.15 marks noscript, as Redis refuses them, after the arity check of the command itself: AUTH, DEBUG, CONFIG, CLIENT and FUNCTION need an argument, HELLO and QUIT none; a subcommand's own arity, such as CONFIG GET's, is not checked, so a short subcommand gets the refusal where Redis answers the arity error. Every other name is answered with Redis's error for a name no command has, extended to say that firn may know the command and not yet run it from scripts: firn names its commands only in execute's rows, so a script cannot tell an unknown name from a command firn has not split into its parts, and the extended text keeps the words Redis's own tests match.";
+  doc "Runs one command a script calls, inside the script's statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the script's own record of what it changed, which the caller wraps in MULTI and EXEC when it holds more than one, as Redis 7.0.15 propagates a script's effects. time is the script's: its check is the instant the script began. COMMAND's subcommand is resolved by command_plan before it runs: an unknown one receives Redis's exact unknown-command refusal, a Redis subcommand firn does not run receives the extended refusal, and COUNT outside its arity receives Redis's script arity error. The commands held_kind names run through held_run; a count of arguments outside a command's arity is refused as Redis refuses it from a script, and AUTH, HELLO, QUIT, DEBUG, CONFIG, CLIENT and FUNCTION, which Redis 7.0.15 marks noscript, as Redis refuses them, after the arity check of the command itself: AUTH, DEBUG, CONFIG, CLIENT and FUNCTION need an argument, HELLO and QUIT none; a subcommand's own arity, such as CONFIG GET's, is not checked, so a short subcommand gets the refusal where Redis answers the arity error. Every other name is answered with Redis's error for a name no command has, extended to say that firn may know the command and not yet run it from scripts: firn names its commands only in execute's rows, so a script cannot tell an unknown name from a command firn has not split into its parts, and the extended text keeps the words Redis's own tests match.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
@@ -716,6 +718,10 @@ fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
       return 0_u64;
     }
     if command == 0_u64 {
+      reply_error(client: client, word: &text_script_unknown[0_u64..44_u64]);
+      return 0_u64;
+    }
+    if command == 4_u64 {
       reply_error(client: client, word: &text_script_unknown_or_unsplit[0_u64..87_u64]);
       return 0_u64;
     }

@@ -4875,7 +4875,50 @@ fn firn_answers_time_inside_transactions_and_scripts() {
     assert_eq!(status, 0);
 }
 
-/// firn runs TOUCH, SUBSTR, SELECT and COMMAND COUNT's arity refusal, written as parts, inside a transaction's EXEC and through a script as Redis 7.0.15 does. COMMAND with a subcommand firn does not know is left out: firn answers a script with the command-parts decision's extended unknown-command text, since it runs only COMMAND and COMMAND COUNT and cannot tell an unknown subcommand from one it does not run. The same requests, from the same keys, run in one transaction,
+/// firn answers COMMAND inside a transaction's EXEC and through a script as
+/// on the network path: firn describes no commands, so COMMAND answers an
+/// empty array and COMMAND COUNT zero wherever they run, where Redis lists
+/// its table. COMMAND DOCS, a subcommand Redis 7.0.15 has and firn does not
+/// run, is queued and refuses its transaction whole at EXEC, as any command
+/// firn does not run in transactions, and a script calling it gets the
+/// extended unknown-command text of the command-parts decision.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_command_inside_transactions_and_scripts_as_on_the_network() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["COMMAND"],
+        vec!["COMMAND", "COUNT"],
+        vec!["MULTI"],
+        vec!["COMMAND"],
+        vec!["COMMAND", "COUNT"],
+        vec!["EXEC"],
+        vec!["EVAL", "return redis.call('COMMAND')", "0"],
+        vec!["EVAL", "return redis.call('COMMAND', 'COUNT')", "0"],
+        vec!["MULTI"],
+        vec!["COMMAND", "DOCS"],
+        vec!["EXEC"],
+        vec!["EVAL", "return redis.pcall('COMMAND', 'DOCS')", "0"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send COMMAND");
+    expect_replies(
+        &mut client,
+        b"*0\r\n:0\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n*0\r\n:0\r\n*0\r\n:0\r\n+OK\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n-ERR Unknown Redis command called from script, or one firn does not yet run from scripts\r\n",
+        "COMMAND",
+    );
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn runs TOUCH, SUBSTR, SELECT and COMMAND's refusals, written as parts, inside a transaction's EXEC and through a script as Redis 7.0.15 does, a COMMAND subcommand Redis does not have refused before queueing and answered from a script with Redis's own text. The same requests, from the same keys, run in one transaction,
 /// each error or boundary request in a transaction of its own, then through
 /// a script's redis.call and the errors through redis.pcall, and give the
 /// replies redis-server 7.0.15 gives (Firn-wf probe run 37515932245).
@@ -4913,6 +4956,7 @@ fn firn_runs_rest_parts_as_redis_does() {
         &["SELECT", "0", "extra"],
         &["TIME", "extra"],
         &["COMMAND", "COUNT", "extra"],
+        &["COMMAND", "__unknown__"],
     ];
     const TRANSACTIONS: &[u8] =
         b"+OK\r\n+OK\r\n+OK\r\n:1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
@@ -4937,6 +4981,8 @@ $3\r\ndef\r\n$0\r\n\r\n$0\r\n\r\n$0\r\n\r\n+OK\r\n+OK\r\n:4\r\n+OK\r\n\
 -ERR wrong number of arguments for 'time' command\r\n\
 -EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
 -ERR wrong number of arguments for 'command|count' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR unknown subcommand '__unknown__'. Try COMMAND HELP.\r\n\
 -EXECABORT Transaction discarded because of previous errors.\r\n";
     const SCRIPTS: &[u8] =
         b"+OK\r\n+OK\r\n+OK\r\n:1\r\n:3\r\n$3\r\nbcd\r\n$3\r\ndef\r\n$0\r\n\r\n$0\r\n\r\n\
@@ -4952,7 +4998,8 @@ $0\r\n\r\n+OK\r\n+OK\r\n:4\r\n\
 -ERR value is out of range, value must between -2147483648 and 2147483647\r\n\
 -ERR Wrong number of args calling Redis command from script\r\n\
 -ERR Wrong number of args calling Redis command from script\r\n\
--ERR Wrong number of args calling Redis command from script\r\n";
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Unknown Redis command called from script\r\n";
     let program = firn();
     let port = free_port();
     let text = port.to_string();
