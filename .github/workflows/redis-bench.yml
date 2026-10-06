@@ -16,6 +16,21 @@
 name: redis-bench
 
 on:
+  # Temporary: lets the probe workflow call this one; removed with it.
+  workflow_call:
+    inputs:
+      runner: {type: string, required: true}
+      mode: {type: string, required: true}
+      revisions: {type: string, required: true}
+      cpus: {type: string, required: true}
+      tests: {type: string, required: true}
+      depths: {type: string, required: true}
+      passes: {type: string, required: true}
+      seconds: {type: string, required: true}
+      profile: {type: boolean, required: true}
+      profile_test: {type: string, required: true}
+      annotate: {type: string, required: true}
+      callers: {type: boolean, required: true}
   workflow_dispatch:
     inputs:
       runner:
@@ -74,17 +89,21 @@ defaults:
     shell: bash
 
 concurrency:
-  group: redis-bench-${{ github.ref }}-${{ inputs.runner || '14900k' }}
+  group: redis-bench-${{ github.ref }}-${{ inputs.runner }}
   cancel-in-progress: true
 
 jobs:
   bench:
-    name: redis-bench ${{ inputs.mode || 'compare' }} (${{ inputs.runner || '14900k' }})
-    runs-on: ${{ (inputs.runner || '14900k') == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
+    name: redis-bench ${{ inputs.mode }} (${{ inputs.runner }})
+    runs-on: ${{ inputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
     timeout-minutes: 150
     env:
-      MODE: ${{ inputs.mode || 'compare' }}
-      REVISIONS: ${{ inputs.revisions || 'base=origin/main head=HEAD head-twin=HEAD' }}
+      MODE: ${{ inputs.mode }}
+      REVISIONS: ${{ inputs.revisions }}
+      # The session of a measurement in progress, kept outside the job's temp
+      # directory, which the runner empties, so that the next run on the
+      # self-hosted machine can stop what a cancelled one left.
+      SESSION_FILE: ${{ inputs.runner == '14900k' && '~/.cache/firn-redis-bench/session' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,12 +127,16 @@ jobs:
           echo "OUT=$RUNNER_TEMP/redis-bench" >> "$GITHUB_ENV"
           OUT="$RUNNER_TEMP/redis-bench"
           # A cancelled run on the self-hosted machine can leave its servers
-          # and clients behind, which would load the host this run measures:
-          # stop them and say what was stopped.
-          if [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
-            ps -eo pid,args | grep -E 'redis-bench\.sh (compare|scale)|_temp/redis-bench/' |
-              grep -v grep | tee "$RUNNER_TEMP/leftover.txt" || true
-            awk '{print $1}' "$RUNNER_TEMP/leftover.txt" | xargs -r kill 2>/dev/null || true
+          # and clients behind, which would load the host this run measures.
+          # Each measurement runs in a session of its own whose id it records,
+          # so only that session's processes are stopped, and others' are left.
+          session_file=${SESSION_FILE/#\~/$HOME}
+          if [ -n "$session_file" ] && [ -f "$session_file" ]; then
+            sid=$(cat "$session_file")
+            echo "stopping session $sid left by an earlier run:"
+            ps -s "$sid" -o pid,args || true
+            pkill -s "$sid" || true
+            rm -f "$session_file"
             sleep 2
           fi
           missing=
@@ -136,6 +159,11 @@ jobs:
             done
             redis-server --version
             valkey-server --version 2>/dev/null || true
+            dragonfly --version 2>/dev/null | head -1 || true
+            garnet-server --version 2>/dev/null | head -1 || true
+            redis-benchmark --version
+            clang --version | head -1
+            ld.lld --version
           } | tee "$OUT/host.txt"
 
       - name: Build each revision's firn with its pinned compiler
@@ -166,20 +194,33 @@ jobs:
         if: ${{ env.MODE == 'compare' }}
         timeout-minutes: 110
         env:
-          COMPARE_CPUS: ${{ inputs.cpus || '1 2' }}
-          COMPARE_TESTS: ${{ inputs.tests || 'mset set get' }}
-          COMPARE_DEPTHS: ${{ inputs.depths || '16 1' }}
-          COMPARE_PASSES: ${{ inputs.passes || '2' }}
-          COMPARE_SECONDS: ${{ inputs.seconds || '5' }}
-          PROFILE: ${{ github.event_name != 'workflow_dispatch' || inputs.profile }}
-          COMPARE_PROFILE: ${{ inputs.profile_test || 'mset 16' }}
+          COMPARE_CPUS: ${{ inputs.cpus }}
+          COMPARE_TESTS: ${{ inputs.tests }}
+          COMPARE_DEPTHS: ${{ inputs.depths }}
+          COMPARE_PASSES: ${{ inputs.passes }}
+          COMPARE_SECONDS: ${{ inputs.seconds }}
+          PROFILE: ${{ inputs.profile }}
+          COMPARE_PROFILE: ${{ inputs.profile_test }}
           PERF_ANNOTATE: ${{ inputs.annotate }}
           PERF_CALLERS: ${{ inputs.callers && '1' || '' }}
           PERF_FREQUENCY: ${{ inputs.callers && '999' || '4999' }}
         run: |
           set -o pipefail
+          # Runs redis-bench.sh in a session of its own, recording the
+          # session's id while it runs on the self-hosted machine.
+          run_session() {
+            session_file=${SESSION_FILE/#\~/$HOME}
+            if [ -n "$session_file" ]; then
+              mkdir -p "$(dirname "$session_file")"
+              status=0
+              setsid --wait sh -c 'echo $$ > "$1"; shift; exec sh research/experiments/redis-bench/redis-bench.sh "$@"' run "$session_file" "$@" || status=$?
+              rm -f "$session_file"
+              return $status
+            fi
+            sh research/experiments/redis-bench/redis-bench.sh "$@"
+          }
           if [ "$PROFILE" = true ]; then
-            PERF=$(ls /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf 2>/dev/null | head -1)
+            PERF=$(ls /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf 2>/dev/null | head -1 || true)
             if [ -n "$PERF" ]; then
               if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
                 sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
@@ -189,22 +230,35 @@ jobs:
               echo "no perf for this kernel; profiles skipped" | tee -a "$OUT/host.txt"
             fi
           fi
-          sh research/experiments/redis-bench/redis-bench.sh compare 2>&1 | tee "$OUT/bench.txt"
+          run_session compare 2>&1 | tee "$OUT/bench.txt"
 
       - name: Measure firn against Redis and its competitors
         if: ${{ env.MODE == 'scale' }}
         timeout-minutes: 110
         env:
-          SCALE: ${{ inputs.cpus || '1 2' }}
-          SCALE_TESTS: ${{ inputs.tests || 'mset set get' }}
-          PASSES: ${{ inputs.passes || '2' }}
-          SECONDS_PER_RUN: ${{ inputs.seconds || '5' }}
+          SCALE: ${{ inputs.cpus }}
+          SCALE_TESTS: ${{ inputs.tests }}
+          PASSES: ${{ inputs.passes }}
+          SECONDS_PER_RUN: ${{ inputs.seconds }}
         run: |
           set -o pipefail
+          # Runs redis-bench.sh in a session of its own, recording the
+          # session's id while it runs on the self-hosted machine.
+          run_session() {
+            session_file=${SESSION_FILE/#\~/$HOME}
+            if [ -n "$session_file" ]; then
+              mkdir -p "$(dirname "$session_file")"
+              status=0
+              setsid --wait sh -c 'echo $$ > "$1"; shift; exec sh research/experiments/redis-bench/redis-bench.sh "$@"' run "$session_file" "$@" || status=$?
+              rm -f "$session_file"
+              return $status
+            fi
+            sh research/experiments/redis-bench/redis-bench.sh "$@"
+          }
           make compiler
           export FIRN_BASELINE="$OUT/base"
           echo "firn: $(git rev-parse HEAD)" | tee -a "$OUT/host.txt"
-          sh research/experiments/redis-bench/redis-bench.sh scale 2>&1 | tee "$OUT/scale.txt"
+          run_session scale 2>&1 | tee "$OUT/scale.txt"
 
       - name: Publish the host and the revisions
         if: always()
