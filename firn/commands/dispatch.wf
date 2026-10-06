@@ -243,11 +243,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: any);
     }
     if go {
-      if count <= 2_u64 {
-        run_ping(input: input, args: args, client: client);
-      } else {
-        reply_arity(client: client, input: input, name: name);
-      }
+      run_ping(input: input, args: args, client: client);
     }
     return unit;
   }
@@ -554,9 +550,8 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      let parity = count % 2_u64;
-      if parity == 0_u64 {
-        reply_arity(client: client, input: input, name: name);
+      let rejected = mset_pairs_refused(input: input, args: args, client: client);
+      if rejected {
         return unit;
       }
       run_mset(store: store, input: input, args: args, client: client, env: env, time: time);
@@ -581,9 +576,8 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      let parity = count % 2_u64;
-      if parity == 0_u64 {
-        reply_arity(client: client, input: input, name: name);
+      let rejected = mset_pairs_refused(input: input, args: args, client: client);
+      if rejected {
         return unit;
       }
       run_msetnx(store: store, input: input, args: args, client: client, env: env, time: time);

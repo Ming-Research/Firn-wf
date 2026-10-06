@@ -635,8 +635,8 @@ fn run_setnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   return unit;
 }
 
-fn run_setex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, invalid: &[u8]) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(client) waits {
-  doc "SETEX key seconds value (in_seconds) and PSETEX key milliseconds value: stores the value with the expiry the amount gives, counted from the command's time, as SET with EX or PX stores it; invalid is the reply to an amount out of range.";
+fn setex_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, in_seconds: Bool, invalid: &[u8]) -> parsed: Option<SetPlan> reads(input), reads(args), reads(time), reads(invalid), writes(client) {
+  doc "Reads SETEX or PSETEX's expiry before lookup, returning its SET plan or writing the command's refusal and returning None.";
   let flags = option_px;
   if in_seconds {
     set flags = option_ex;
@@ -645,13 +645,28 @@ fn run_setex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let deadline = string_deadline(input: input, span: amount, flags: flags, unix_ms: time^.unix_ms);
   if deadline.state == 0_u64 {
     reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
+    return None<SetPlan>();
   }
   if deadline.state == 2_u64 {
     reply_error(client: client, word: invalid);
-    return unit;
+    return None<SetPlan>();
   }
-  set_key(store: store, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 3_u64, flags: flags, at: deadline.at, mode: mode_set);
+  let plan = SetPlan(flags: flags, at: deadline.at, mode: mode_set, key_index: 1_u64, value_index: 3_u64);
+  return Some<SetPlan>(value: plan);
+}
+
+fn run_setex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, invalid: &[u8]) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(client) waits {
+  doc "SETEX key seconds value (in_seconds) and PSETEX key milliseconds value: stores the value with the expiry the amount gives, counted from the command's time, as SET with EX or PX stores it; invalid is the reply to an amount out of range.";
+  let parsed = setex_parse(input: input, args: args, client: client, time: time, in_seconds: in_seconds, invalid: invalid);
+  let plan = match parsed {
+    Some(value: accepted) => {
+      give accepted;
+    }
+    None() => {
+      return unit;
+    }
+  }
+  set_key(store: store, input: input, args: args, client: client, env: env, time: time, key_index: plan.key_index, value_index: plan.value_index, flags: plan.flags, at: plan.at, mode: plan.mode);
   return unit;
 }
 
@@ -680,11 +695,8 @@ fn run_getdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
 
 fn run_getex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
   doc "GETEX key [EX seconds | PX milliseconds | EXAT unix-seconds | PXAT unix-milliseconds | PERSIST]: answers a live string as GET does and gives it the expiry the option names, or removes its expiry with PERSIST, in one atomic statement on the key, as Redis 7.0.15 does; an absolute expiry already past removes the key instead. The options are read before the key and their amount after it, so that an absent key answers nil, and a key of another kind is refused, whatever the amount. The file records the change as Redis propagates it: PEXPIREAT key at, DEL key, or PERSIST key when an expiry was removed, after the removal of a key found expired, as log_removal records it.";
-  let setting = False();
-  let options = string_options(input: input, args: args, first: 2_u64, setting: setting);
-  if options.valid {
-  } else {
-    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  let options = getex_options(input: input, args: args, client: client);
+  if bnot(options.valid) {
     return unit;
   }
   let plan = getex_plan(input: input, args: args, options: &options, time: time);
@@ -714,6 +726,18 @@ fn held_lapsed(slot: &Option<Entry>, now: u64) -> lapsed: Bool reads(slot) {
       return False();
     }
   }
+}
+
+fn mset_pairs_refused(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> rejected: Bool reads(input), reads(args), writes(client) {
+  doc "Refuses an incomplete key/value pair with MSET or MSETNX's command-local arity reply, after the dispatcher has checked minimum arity.";
+  let count = args^.inner.len;
+  let parity = count % 2_u64;
+  if parity == 0_u64 {
+    let name = arg(args: args, index: 0_u64);
+    reply_arity(client: client, input: input, name: name);
+    return True();
+  }
+  return False();
 }
 
 fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
@@ -1248,9 +1272,8 @@ fn run_strlen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
 fn run_getrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "GETRANGE key start end and SUBSTR key start end: answers the bytes of a live string between the indices, as reply_text_range reads them, written into the reply inside the statement on the key; the empty bulk string for an absent or expired key, which is removed and its removal recorded as log_removal records it. Indices that are not integers are refused before the key is read, as is a key of another kind after.";
   let plan = getrange_plan(input: input, args: args);
-  if plan.valid {
-  } else {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  let rejected = getrange_refused(client: client, plan: &plan);
+  if rejected {
     return unit;
   }
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -1443,10 +1466,16 @@ fn log_float(log: &Box<Slots<u8>>, input: &[u8], key: Span, text: &Bytes) -> res
   return unit;
 }
 
+fn incrbyfloat_parse(input: &[u8], args: &Box<Slots<Span>>) -> increment: Reading reads(input), reads(args) {
+  doc "Reads INCRBYFLOAT's increment before lookup; its body checks the key's type before refusing an invalid number.";
+  let amount = arg(args: args, index: 2_u64);
+  let parsed = extended_read(input: input, start: amount.start, length: amount.length);
+  return parsed;
+}
+
 fn run_incrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "INCRBYFLOAT key increment: adds the increment to the stored number in x87 long double arithmetic and stores the sum written as Redis 7.0.15 writes it, keeping the key's expiry, or stores the increment's sum with zero without one for an absent or expired key, in one atomic statement, and answers the sum as a bulk string. The increment is read before the statement and judged after the key, so that a key of another kind is refused first; a value or increment that is not a number and a sum that is not a number or is infinite are refused. The file records the change as SET key value KEEPTTL, as Redis propagates it, after a key found expired as log_removal records it.";
-  let amount = arg(args: args, index: 2_u64);
-  let increment = extended_read(input: input, start: amount.start, length: amount.length);
+  let increment = incrbyfloat_parse(input: input, args: args);
   let key_span = arg(args: args, index: 1_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
@@ -1686,6 +1715,16 @@ struct GetexWork {
   change: u64;
 }
 
+fn getex_options(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> options: StringOptions reads(input), reads(args), writes(client) {
+  doc "Reads GETEX's options and writes its syntax refusal before lookup; deadline errors remain subject to the body's key-type and presence checks.";
+  let setting = False();
+  let parsed = string_options(input: input, args: args, first: 2_u64, setting: setting);
+  if bnot(parsed.valid) {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  }
+  return parsed;
+}
+
 fn getex_plan(input: &[u8], args: &Box<Slots<Span>>, options: &StringOptions, time: &Time) -> plan: GetexPlan reads(input), reads(args), reads(options), reads(time) {
   doc "Reads GETEX's expiry amount and frozen deadline; the body checks type before reporting an invalid amount.";
   let flags = options^.flags;
@@ -1821,6 +1860,15 @@ fn getrange_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: GetrangePlan re
   let last_valid = end.state == 1_u64;
   let valid = band(first_valid, last_valid);
   return GetrangePlan(start: start.value, end: end.value, valid: valid);
+}
+
+fn getrange_refused(client: &Client, plan: &GetrangePlan) -> rejected: Bool reads(plan), writes(client) {
+  doc "Refuses GETRANGE's invalid bounds before lookup with its integer error.";
+  if plan^.valid {
+    return False();
+  }
+  reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  return True();
 }
 
 fn mget_body(slot: &Option<Entry>, client: &Client) -> kind: u64 writes(slot), writes(client) {
