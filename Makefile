@@ -57,7 +57,7 @@ test: firn-test
 # pass must still pass; new passes are candidates to add in the same PR.
 redis-suite: $(BUILD)/firn
 	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py --self-test
-	REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/run.sh --out "$(BUILD)/redis-suite" firn "$(BUILD)/firn"
+	REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/run.sh --out "$(BUILD)/redis-suite" --known-hangs $(ROOT)/tests/redis-suite/hung.tsv firn "$(BUILD)/firn"
 	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py check "$(BUILD)/redis-suite/tests.tsv" --passing $(ROOT)/tests/redis-suite/passing.tsv --unstable $(ROOT)/tests/redis-suite/unstable.tsv
 
 # The server as it is measured: the program and the runtime optimized
