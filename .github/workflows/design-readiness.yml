@@ -55,3 +55,8 @@ jobs:
 
       - name: Require owner approval of design-tree changes
         run: make design-ready
+
+      # An experiment release of an unmerged Whitefoot commit may be pinned
+      # on a work branch, never on a revision bound for main (rule 4).
+      - name: Refuse an experiment Whitefoot pin
+        run: make pin-ready

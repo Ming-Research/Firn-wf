@@ -21,7 +21,9 @@ DESIGN_REVIEW_BASE ?= origin/main
 # an experiment release on an experiment branch, naming a release of
 # Ming-Research/Whitefoot; `make compiler` downloads that release's
 # whitefootc for this host, checked against its SHA256SUMS and manifest, to
-# build/whitefoot/<release>/.
+# build/whitefoot/<release>/. Only a work branch may pin an experiment
+# release (AGENTS.md, rule 4; make pin-ready refuses it), and
+# `make WHITEFOOTC=<path> firn` builds with a locally built compiler instead.
 PIN := $(ROOT)/whitefoot.pin
 PIN_LINE := ^release = wf-(exp-)?[0-9a-f]{12}$$
 RELEASE := $(shell sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$$/\1/p' $(PIN) 2>/dev/null)
@@ -30,23 +32,24 @@ RELEASES := https://github.com/Ming-Research/Whitefoot/releases/download
 HOST := $(shell uname -s)-$(shell uname -m)
 ASSET := $(if $(filter Linux-x86_64,$(HOST)),whitefootc-linux-x86_64.tar.gz,$(if $(filter Darwin-arm64,$(HOST)),whitefootc-macos-arm64.tar.gz))
 WHITEFOOT := $(BUILD)/whitefoot/$(RELEASE)
-WHITEFOOTC := $(WHITEFOOT)/whitefootc
+PINNED_WHITEFOOTC := $(WHITEFOOT)/whitefootc
+WHITEFOOTC := $(PINNED_WHITEFOOTC)
 
 # firn is one module program; any of its sources changes the build.
 FIRN_GRAPH := $(ROOT)/firn/modules.wfg
 FIRN_SOURCES := $(shell find $(ROOT)/firn -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
 
-.PHONY: check compiler firn firn-test test firn-lto design-lint design-ready
+.PHONY: check compiler firn firn-test test firn-lto design-lint design-ready pin-ready
 
 check: compiler firn test design-lint
 
-compiler: $(WHITEFOOTC)
+compiler: $(PINNED_WHITEFOOTC)
 
 $(PIN):
 	@echo "whitefoot.pin is missing; it names the Whitefoot compiler release (AGENTS.md, Upgrading Whitefoot)" >&2
 	@exit 1
 
-$(WHITEFOOTC): $(PIN)
+$(PINNED_WHITEFOOTC): $(PIN)
 	@test "$$(grep -c '' $(PIN))" = 1 && grep -qE '$(PIN_LINE)' $(PIN) || { echo "whitefoot.pin must hold exactly one line: release = wf-<12-character commit hash>" >&2; exit 1; }
 	@test -n "$(ASSET)" || { echo "Whitefoot publishes no compiler for $(HOST)" >&2; exit 1; }
 	@rm -rf $(WHITEFOOT).part && mkdir -p $(WHITEFOOT).part
@@ -93,8 +96,13 @@ design-lint:
 	@$(PY) -B -m unittest discover -s $(ROOT)/design/skill -p 'test_lint.py'
 	@$(if $(DESIGN_TREES),$(PY) -B $(ROOT)/design/skill/lint.py --root $(ROOT)/design --trees $(DESIGN_TREES) --base "$(DESIGN_REVIEW_BASE)",echo "design lint: no live tree")
 
-# Readiness also holds rule 4 of AGENTS.md: a revision bound for main pins a
-# release of a Whitefoot main commit, never an experiment release.
 design-ready:
-	@! grep -qE '^release = wf-exp-' $(PIN) || { echo "whitefoot.pin names experiment release $(RELEASE); a revision bound for main pins a release of a Whitefoot main commit (AGENTS.md, rule 4)" >&2; exit 1; }
 	@$(if $(DESIGN_TREES),$(PY) -B $(ROOT)/design/skill/lint.py --root $(ROOT)/design --trees $(DESIGN_TREES) --base "$(DESIGN_REVIEW_BASE)" --require-approval,echo "design ready: no live tree")
+
+# A revision bound for main pins a release of a commit on Whitefoot's main,
+# never an experiment release (AGENTS.md, rule 4); CI runs this with
+# design-ready on ready pull requests and main.
+pin-ready:
+	@if grep -q '^release = wf-exp-' $(PIN); then \
+		echo "whitefoot.pin names the experiment release $(RELEASE); pin a release of a commit on Whitefoot's main before this reaches main" >&2; \
+		exit 1; fi
