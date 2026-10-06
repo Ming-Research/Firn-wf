@@ -170,8 +170,8 @@ These are the complete approval and merge rules:
    merge.
 4. A change that moves `whitefoot.pin` or a submodule names the revisions it
    adopts and why. A revision merged into `main` pins a Whitefoot release
-   built from a commit on Whitefoot's `main` and submodule commits on their
-   repositories' `main`.
+   `wf-<12 hex>` of a commit on Whitefoot's `main`, never an experiment
+   release, and submodule commits on their repositories' `main`.
 
 **Exact revision** is the complete tree that will enter `main`, the pins
 included; if it changes after approval or after its successful check, rules
@@ -187,8 +187,9 @@ merge precondition.
   (`git clone --recurse-submodules` or
   `git submodule update --init`) and the toolchain the compiler links with:
   `/usr/bin/clang`, and on Linux LLD, which CI installs.
-- `make design-ready`, before marking ready and in CI on ready PRs and main:
-  every design-tree change is approved in the log.
+- `make design-ready` and `make pin-ready`, before marking ready and in CI
+  on ready PRs and main: every design-tree change is approved in the log, and
+  `whitefoot.pin` names no experiment release.
 - Build and test through CI, not on a developer's machine; run a build or
   test locally only when CI cannot do it or the owner asks, and say so.
 - Precise timing and performance run on the owner's i9-14900K self-hosted
@@ -229,7 +230,10 @@ latest Whitefoot. For firn:
 6. Open the PR naming both commits, both specification versions and every
    change firn needed; it merges under rules 2 to 4.
 
-A pin whose release is gone gets the same commit dispatched again.
+A pin whose release is gone gets the same commit dispatched again. An
+experiment release, `wf-exp-<12 hex>`, is published for an unmerged Whitefoot
+commit with `-f experiment=true` and serves only a work branch
+([The Whitefoot boundary](#the-whitefoot-boundary)).
 
 ## The Whitefoot boundary
 
@@ -239,8 +243,13 @@ A pin whose release is gone gets the same commit dispatched again.
 - A change firn needs in Whitefoot is made in Whitefoot, under Whitefoot's
   own AGENTS.md, as a branch and PR in its repository. A main release exists
   only for a commit on Whitefoot's `main`, so firn's `main` adopts the change
-  after it merges there; an experiment branch may pin an experiment release
-  (`wf-exp-<hash>`) of the unmerged commit to try it first.
+  after it merges there. While the Whitefoot PR is open, a firn work branch
+  tries it in CI by pinning an experiment release of the PR's head,
+  `release = wf-exp-<12 hex>`, published with
+  `gh workflow run compiler-release.yml -R Ming-Research/Whitefoot -f commit=<hash> -f experiment=true`,
+  or locally with a compiler built from it (`make WHITEFOOTC=<path> firn`).
+  Before the branch is ready, the change is on Whitefoot's `main` and the pin
+  names its release; `make pin-ready` refuses an experiment pin.
 - When a missing Whitefoot feature would bend firn's implementation or
   architecture, add the feature to Whitefoot instead of working around it.
   State the gap as its minimal semantic example, apart from the server code
