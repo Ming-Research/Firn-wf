@@ -149,7 +149,8 @@ fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
   let administration = bor(settings, function);
   let refused = bor(connection, administration);
   if refused {
-    let argued = bor(bor(auth, debug), bor(settings, function));
+    let checked = bor(auth, debug);
+    let argued = bor(checked, administration);
     if argued {
       if arity_holds(arity: arity_noscript_with_argument, count: count) {
       } else {
