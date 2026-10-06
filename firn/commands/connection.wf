@@ -389,8 +389,8 @@ fn run_client_info(client: &Client) -> result: unit writes(client) {
   text_word(text: &text, word: &client_info_id[0_u64..3_u64]);
   text_number(text: &text, value: client^.id);
   text_word(text: &text, word: &client_info_name[0_u64..6_u64]);
-  let copy = bytes_copy(bytes: &client^.name);
-  let name = bytes_boxed(bytes: move copy);
+  let duplicate = bytes_copy(bytes: &client^.name);
+  let name = bytes_boxed(bytes: move duplicate);
   let named = name.inner.len;
   text_word(text: &text, word: &name.inner[0_u64..named]);
   text_word(text: &text, word: &client_info_age[0_u64..5_u64]);
