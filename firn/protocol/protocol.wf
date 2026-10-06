@@ -15,6 +15,10 @@ const reply_null: Array<u8, 5> =[36_u8, 45_u8, 49_u8, 13_u8, 10_u8];
 
 const reply_null_array: Array<u8, 5> =[42_u8, 45_u8, 49_u8, 13_u8, 10_u8];
 
+const reply_null_resp3: Array<u8, 3> =[95_u8, 13_u8, 10_u8];
+
+const reply_verbatim_text: Array<u8, 4> =[116_u8, 120_u8, 116_u8, 58_u8];
+
 const text_multibulk: Array<u8, 44> =[69_u8, 82_u8, 82_u8, 32_u8, 80_u8, 114_u8, 111_u8, 116_u8, 111_u8, 99_u8, 111_u8, 108_u8, 32_u8, 101_u8, 114_u8, 114_u8, 111_u8, 114_u8, 58_u8, 32_u8, 105_u8, 110_u8, 118_u8, 97_u8, 108_u8, 105_u8, 100_u8, 32_u8, 109_u8, 117_u8, 108_u8, 116_u8, 105_u8, 98_u8, 117_u8, 108_u8, 107_u8, 32_u8, 108_u8, 101_u8, 110_u8, 103_u8, 116_u8, 104_u8];
 
 const text_dollar: Array<u8, 39> =[69_u8, 82_u8, 82_u8, 32_u8, 80_u8, 114_u8, 111_u8, 116_u8, 111_u8, 99_u8, 111_u8, 108_u8, 32_u8, 101_u8, 114_u8, 114_u8, 111_u8, 114_u8, 58_u8, 32_u8, 101_u8, 120_u8, 112_u8, 101_u8, 99_u8, 116_u8, 101_u8, 100_u8, 32_u8, 39_u8, 36_u8, 39_u8, 44_u8, 32_u8, 103_u8, 111_u8, 116_u8, 32_u8, 39_u8];
@@ -693,7 +697,7 @@ fn client_new(capacity: u64) -> made: Client pure contract {
   let unlocked = False();
   let open = False();
   let settings = settings_empty();
-  return Client(bytes: move bytes, at: 0_u64, now: 0_u64, state: 0_u64, number: 0_u64, low: 0_i64, high: 0_i64, items: move items, scores: move scores, key_metadata: move key_metadata, keys: keys, random: 0_u64, id: 0_u64, name: move name, authenticated: trusted, locked: unlocked, closing: open, unix_us: 0_u64, settings: move settings);
+  return Client(bytes: move bytes, at: 0_u64, now: 0_u64, state: 0_u64, number: 0_u64, low: 0_i64, high: 0_i64, items: move items, scores: move scores, key_metadata: move key_metadata, keys: keys, random: 0_u64, id: 0_u64, name: move name, authenticated: trusted, locked: unlocked, closing: open, resp: 2_u64, unix_us: 0_u64, settings: move settings);
 }
 
 fn empty_text() -> made: Bytes pure {
@@ -1052,14 +1056,96 @@ fn reply_ok(client: &Client) -> result: unit writes(client) {
 }
 
 fn reply_nil(client: &Client) -> result: unit writes(client) {
-  doc "Writes the RESP2 null bulk string.";
+  doc "Writes a null bulk string in the client's protocol: $-1 under RESP2, _ under RESP3, as Redis's addReplyNull.";
+  if client^.resp == 3_u64 {
+    reply_word(client: client, word: &reply_null_resp3[0_u64..3_u64]);
+    return unit;
+  }
   reply_word(client: client, word: &reply_null[0_u64..5_u64]);
   return unit;
 }
 
 fn reply_nil_array(client: &Client) -> result: unit writes(client) {
-  doc "Writes the RESP2 null array.";
+  doc "Writes a null array in the client's protocol: *-1 under RESP2, _ under RESP3, as Redis's addReplyNullArray.";
+  if client^.resp == 3_u64 {
+    reply_word(client: client, word: &reply_null_resp3[0_u64..3_u64]);
+    return unit;
+  }
   reply_word(client: client, word: &reply_null_array[0_u64..5_u64]);
+  return unit;
+}
+
+fn reply_header(client: &Client, marker: u8, count: u64) -> result: unit writes(client) {
+  doc "Writes the header of an aggregate reply: its type's marker byte, its count in decimal, and CR LF.";
+  reply_room(client: client, needed: 24_u64);
+  put(client: client, value: marker);
+  put_decimal(client: client, value: count);
+  put(client: client, value: 13_u8);
+  put(client: client, value: 10_u8);
+  return unit;
+}
+
+fn reply_map(client: &Client, pairs: u64) -> result: unit writes(client) {
+  doc "Writes the header of a map of pairs entries in the client's protocol: an array of twice as many elements under RESP2, a map under RESP3, as Redis's addReplyMapLen.";
+  if client^.resp == 3_u64 {
+    reply_header(client: client, marker: 37_u8, count: pairs);
+    return unit;
+  }
+  let elements = pairs +wrap pairs;
+  reply_header(client: client, marker: 42_u8, count: elements);
+  return unit;
+}
+
+fn reply_set(client: &Client, count: u64) -> result: unit writes(client) {
+  doc "Writes the header of a set of count elements in the client's protocol: an array under RESP2, a set under RESP3, as Redis's addReplySetLen.";
+  if client^.resp == 3_u64 {
+    reply_header(client: client, marker: 126_u8, count: count);
+    return unit;
+  }
+  reply_header(client: client, marker: 42_u8, count: count);
+  return unit;
+}
+
+fn reply_pair(client: &Client) -> result: unit writes(client) {
+  doc "Starts one pair of a reply Redis nests under RESP3 only, a member with its score or a field with its value: an array of two under RESP3, nothing under RESP2, whose reply lists the pair's two elements flat.";
+  if client^.resp == 3_u64 {
+    reply_header(client: client, marker: 42_u8, count: 2_u64);
+  }
+  return unit;
+}
+
+fn reply_pairs(client: &Client, pairs: u64) -> result: unit writes(client) {
+  doc "Writes the header of an array of pairs that Redis nests under RESP3 only: pairs elements under RESP3, each started by reply_pair, and twice as many under RESP2.";
+  if client^.resp == 3_u64 {
+    reply_header(client: client, marker: 42_u8, count: pairs);
+    return unit;
+  }
+  let elements = pairs +wrap pairs;
+  reply_header(client: client, marker: 42_u8, count: elements);
+  return unit;
+}
+
+fn reply_verbatim(client: &Client, input: &[u8], start: u64, length: u64) -> result: unit reads(input), writes(client) {
+  doc "Writes bytes of the input as text in the client's protocol: a bulk string under RESP2, a verbatim string of format txt under RESP3, as Redis's addReplyVerbatim: an equals sign, the length with the format's four bytes, CR LF, txt:, the bytes and CR LF.";
+  if client^.resp == 3_u64 {
+    let framed = length +wrap 4_u64;
+    let needed = length +wrap 32_u64;
+    reply_room(client: client, needed: needed);
+    put(client: client, value: 61_u8);
+    put_decimal(client: client, value: framed);
+    put(client: client, value: 13_u8);
+    put(client: client, value: 10_u8);
+    reply_word(client: client, word: &reply_verbatim_text[0_u64..4_u64]);
+    for @bytes (offset in 0_u64..length) {
+      let position = start +wrap offset;
+      let byte = byte_at(input: input, index: position);
+      put(client: client, value: byte);
+    }
+    put(client: client, value: 13_u8);
+    put(client: client, value: 10_u8);
+    return unit;
+  }
+  reply_bulk_input(client: client, input: input, start: start, length: length);
   return unit;
 }
 

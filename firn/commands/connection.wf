@@ -15,6 +15,7 @@ alias reply_bulk_decimal = pkg::protocol::reply_bulk_decimal;
 alias reply_echoed = pkg::protocol::reply_echoed;
 alias reply_error = pkg::protocol::reply_error;
 alias reply_integer = pkg::protocol::reply_integer;
+alias reply_map = pkg::protocol::reply_map;
 alias reply_nil = pkg::protocol::reply_nil;
 alias reply_ok = pkg::protocol::reply_ok;
 alias reply_text = pkg::protocol::reply_text;
@@ -34,7 +35,9 @@ const text_proto_number: Array<u8, 54> =[69_u8, 82_u8, 82_u8, 32_u8, 80_u8, 114_
 
 const text_hello_option: Array<u8, 35> =[45_u8, 69_u8, 82_u8, 82_u8, 32_u8, 83_u8, 121_u8, 110_u8, 116_u8, 97_u8, 120_u8, 32_u8, 101_u8, 114_u8, 114_u8, 111_u8, 114_u8, 32_u8, 105_u8, 110_u8, 32_u8, 72_u8, 69_u8, 76_u8, 76_u8, 79_u8, 32_u8, 111_u8, 112_u8, 116_u8, 105_u8, 111_u8, 110_u8, 32_u8, 39_u8];
 
-const reply_hello_head: Array<u8, 76> =[42_u8, 49_u8, 52_u8, 13_u8, 10_u8, 36_u8, 54_u8, 13_u8, 10_u8, 115_u8, 101_u8, 114_u8, 118_u8, 101_u8, 114_u8, 13_u8, 10_u8, 36_u8, 53_u8, 13_u8, 10_u8, 114_u8, 101_u8, 100_u8, 105_u8, 115_u8, 13_u8, 10_u8, 36_u8, 55_u8, 13_u8, 10_u8, 118_u8, 101_u8, 114_u8, 115_u8, 105_u8, 111_u8, 110_u8, 13_u8, 10_u8, 36_u8, 54_u8, 13_u8, 10_u8, 55_u8, 46_u8, 48_u8, 46_u8, 49_u8, 53_u8, 13_u8, 10_u8, 36_u8, 53_u8, 13_u8, 10_u8, 112_u8, 114_u8, 111_u8, 116_u8, 111_u8, 13_u8, 10_u8, 58_u8, 50_u8, 13_u8, 10_u8, 36_u8, 50_u8, 13_u8, 10_u8, 105_u8, 100_u8, 13_u8, 10_u8];
+const reply_hello_server: Array<u8, 59> =[36_u8, 54_u8, 13_u8, 10_u8, 115_u8, 101_u8, 114_u8, 118_u8, 101_u8, 114_u8, 13_u8, 10_u8, 36_u8, 53_u8, 13_u8, 10_u8, 114_u8, 101_u8, 100_u8, 105_u8, 115_u8, 13_u8, 10_u8, 36_u8, 55_u8, 13_u8, 10_u8, 118_u8, 101_u8, 114_u8, 115_u8, 105_u8, 111_u8, 110_u8, 13_u8, 10_u8, 36_u8, 54_u8, 13_u8, 10_u8, 55_u8, 46_u8, 48_u8, 46_u8, 49_u8, 53_u8, 13_u8, 10_u8, 36_u8, 53_u8, 13_u8, 10_u8, 112_u8, 114_u8, 111_u8, 116_u8, 111_u8, 13_u8, 10_u8];
+
+const reply_hello_id: Array<u8, 8> =[36_u8, 50_u8, 13_u8, 10_u8, 105_u8, 100_u8, 13_u8, 10_u8];
 
 const reply_hello_tail: Array<u8, 66> =[36_u8, 52_u8, 13_u8, 10_u8, 109_u8, 111_u8, 100_u8, 101_u8, 13_u8, 10_u8, 36_u8, 49_u8, 48_u8, 13_u8, 10_u8, 115_u8, 116_u8, 97_u8, 110_u8, 100_u8, 97_u8, 108_u8, 111_u8, 110_u8, 101_u8, 13_u8, 10_u8, 36_u8, 52_u8, 13_u8, 10_u8, 114_u8, 111_u8, 108_u8, 101_u8, 13_u8, 10_u8, 36_u8, 54_u8, 13_u8, 10_u8, 109_u8, 97_u8, 115_u8, 116_u8, 101_u8, 114_u8, 13_u8, 10_u8, 36_u8, 55_u8, 13_u8, 10_u8, 109_u8, 111_u8, 100_u8, 117_u8, 108_u8, 101_u8, 115_u8, 13_u8, 10_u8, 42_u8, 48_u8, 13_u8, 10_u8];
 
@@ -198,8 +201,9 @@ fn run_auth(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
 }
 
 fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "HELLO [protover [AUTH username password] [SETNAME clientname]]: answers as Redis 7.0 answers under RESP2. A version that is not a number is refused with Redis's error, and one other than 2 as unsupported, 3 included, since firn speaks RESP2 alone. The options then apply in order, AUTH as AUTH with a user name applies, against the password the server's state holds now, SETNAME as CLIENT SETNAME does, each stopping the command at its error with the options before it applied, and any other option is a syntax error; an option's name is read up to a zero byte, as Redis's strcasecmp reads it. A connection still locked is then refused; any other is answered with Redis's map of the server's facts, an array under RESP2: server redis and version 7.0.15, the server and version whose replies firn follows, protocol 2, the connection's id, standalone mode, the master role and no modules.";
+  doc "HELLO [protover [AUTH username password] [SETNAME clientname]]: answers as Redis 7.0.15 answers. A version that is not a number is refused with Redis's error, and one other than 2 or 3 as unsupported. The options then apply in order, AUTH as AUTH with a user name applies, against the password the server's state holds now, SETNAME as CLIENT SETNAME does, each stopping the command at its error with the options before it applied, and any other option is a syntax error; an option's name is read up to a zero byte, as Redis's strcasecmp reads it. A connection still locked is then refused; any other switches to the version given, keeps its own when none is, and is answered in it with Redis's map of the server's facts, an array under RESP2: server redis and version 7.0.15, the server and version whose replies firn follows, the protocol now in use, the connection's id, standalone mode, the master role and no modules.";
   let count = args^.inner.len;
+  let requested = 0_u64;
   if count >= 2_u64 {
     let version = arg(args: args, index: 1_u64);
     let number = read_integer(input: input, start: version.start, length: version.length);
@@ -207,10 +211,14 @@ fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
       reply_error(client: client, word: &text_proto_number[0_u64..54_u64]);
       return unit;
     }
-    if number.value != 2_i64 {
+    let low = number.value < 2_i64;
+    let high = number.value > 3_i64;
+    let unsupported = bor(low, high);
+    if unsupported {
       reply_error(client: client, word: &text_noproto[0_u64..36_u64]);
       return unit;
     }
+    set requested = cvt.wrap::<i64, u64>(number.value);
   }
   let index = 2_u64;
   loop @options {
@@ -264,7 +272,14 @@ fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     reply_error(client: client, word: &text_hello_noauth[0_u64..205_u64]);
     return unit;
   }
-  reply_word(client: client, word: &reply_hello_head[0_u64..76_u64]);
+  if requested != 0_u64 {
+    set client^.resp = requested;
+  }
+  reply_map(client: client, pairs: 7_u64);
+  reply_word(client: client, word: &reply_hello_server[0_u64..59_u64]);
+  let proto = cvt.wrap::<u64, i64>(client^.resp);
+  reply_integer(client: client, value: proto);
+  reply_word(client: client, word: &reply_hello_id[0_u64..8_u64]);
   let id = cvt.wrap::<u64, i64>(client^.id);
   reply_integer(client: client, value: id);
   reply_word(client: client, word: &reply_hello_tail[0_u64..66_u64]);

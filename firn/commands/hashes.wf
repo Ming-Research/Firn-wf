@@ -35,8 +35,11 @@ alias reply_array = pkg::protocol::reply_array;
 alias reply_arity = pkg::protocol::reply_arity;
 alias reply_error = pkg::protocol::reply_error;
 alias reply_integer = pkg::protocol::reply_integer;
+alias reply_map = pkg::protocol::reply_map;
 alias reply_nil = pkg::protocol::reply_nil;
 alias reply_ok = pkg::protocol::reply_ok;
+alias reply_pair = pkg::protocol::reply_pair;
+alias reply_pairs = pkg::protocol::reply_pairs;
 alias reply_wrong_type = pkg::protocol::reply_wrong_type;
 alias Bytes = pkg::bytes::Bytes;
 alias Reading = pkg::extended::Reading;
@@ -732,6 +735,14 @@ fn pair_out(env: &Client, key: &Key, value: &Bytes) -> result: unit reads(key), 
   return unit;
 }
 
+fn nested_pair_out(env: &Client, key: &Key, value: &Bytes) -> result: unit reads(key), reads(value), writes(env) {
+  doc "Writes a field and its value as one pair of a reply Redis nests under RESP3: an array of the two under RESP3, the two bulk strings alone under RESP2.";
+  reply_pair(client: env);
+  reply_text(client: env, text: &key^.bytes);
+  reply_text(client: env, text: value);
+  return unit;
+}
+
 fn name_out(env: &Client, key: &Key, value: &Bytes) -> result: unit reads(key), writes(env) {
   doc "Writes a field as a bulk string.";
   reply_text(client: env, text: &key^.bytes);
@@ -745,7 +756,7 @@ fn value_out(env: &Client, key: &Key, value: &Bytes) -> result: unit reads(value
 }
 
 fn all_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env) {
-  doc "Writes every field of a live hash as an array, in no promised order: the fields when low is 0, their values when it is 1, and each field followed by its value when it is 2. Records done; wrong for another kind and expired for an expired entry.";
+  doc "Writes every field of a live hash, in no promised order: the fields as an array when low is 0, their values as an array when it is 1, and each field followed by its value as a map, an array under RESP2, when it is 2. Records done; wrong for another kind and expired for an expired entry.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -755,8 +766,7 @@ fn all_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
     Fields(fields: hash_of) => {
       let size = hash_map_len::<Key, Bytes, ceiling>(map: hash_of);
       if env^.low == 2_i64 {
-        let doubled = size *wrap 2_u64;
-        reply_array(client: env, count: doubled);
+        reply_map(client: env, pairs: size);
         hash_map_each::<Key, Bytes, Client, fn pair_out, ceiling>(map: hash_of, env: env);
       } else if env^.low == 1_i64 {
         reply_array(client: env, count: size);
@@ -788,7 +798,7 @@ fn all_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
 }
 
 fn run_hall(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, shown: i64) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "HKEYS key (shown 0), HVALS key (1) and HGETALL key (2): answers the hash's fields, their values, or each field followed by its value, as an array in no promised order, written inside the statement that finds the hash; an absent key answers an empty array.";
+  doc "HKEYS key (shown 0), HVALS key (1) and HGETALL key (2): answers the hash's fields or their values as an array, or each field followed by its value as a map, an array under RESP2, in no promised order, written inside the statement that finds the hash; an absent key answers an empty array, or for HGETALL an empty map, as Redis 7.0.15 does.";
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
@@ -811,6 +821,10 @@ fn run_hall(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   }
   if client^.state == state_wrong {
     reply_wrong_type(client: client);
+    return unit;
+  }
+  if shown == 2_i64 {
+    reply_map(client: client, pairs: 0_u64);
     return unit;
   }
   reply_array(client: client, count: 0_u64);
@@ -1128,7 +1142,7 @@ fn run_hincrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
 }
 
 fn random_field(fields: &HashMap<Key, Bytes, ceiling>, start: u64, client: &Client, with_values: Bool) -> found: Bool reads(fields), writes(client) {
-  doc "Writes the field of the first filled bucket at or after a start position, wrapping around the buckets, and its value when with_values is true; false for an empty hash, which writes nothing.";
+  doc "Writes the field of the first filled bucket at or after a start position, wrapping around the buckets, and its value when with_values is true, the two started as a pair; false for an empty hash, which writes nothing.";
   let buckets = fields^.cells.inner.len;
   if buckets == 0_u64 {
     return False();
@@ -1141,6 +1155,9 @@ fn random_field(fields: &HashMap<Key, Bytes, ceiling>, start: u64, client: &Clie
       let slot = &fields^.cells.inner[index];
       match slot^ {
         HashMapFilled(key: field, value: stored) => {
+          if with_values {
+            reply_pair(client: client);
+          }
           reply_text(client: client, text: &field^.bytes);
           if with_values {
             reply_text(client: client, text: stored);
@@ -1176,6 +1193,9 @@ fn distinct_fields(fields: &HashMap<Key, Bytes, ceiling>, wanted: u64, client: &
           set client^.random = next_random(state: client^.random);
           let draw = client^.random % remaining;
           if draw < needed {
+            if with_values {
+              reply_pair(client: client);
+            }
             reply_text(client: client, text: &field^.bytes);
             if with_values {
               reply_text(client: client, text: stored);
@@ -1195,7 +1215,7 @@ fn distinct_fields(fields: &HashMap<Key, Bytes, ceiling>, wanted: u64, client: &
 }
 
 fn random_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env) {
-  doc "Writes fields of a live hash chosen at random, each followed by its value when high is 1. When low is 0, one field as a bulk string; when it is 1, number distinct fields as an array, or every field once number reaches the hash's size; otherwise number fields as an array, each drawn alone, so that a field may repeat. Records done; wrong for another kind and expired for an expired entry.";
+  doc "Writes fields of a live hash chosen at random, each followed by its value when high is 1, the two nested as a pair under RESP3 as Redis 7.0.15 nests them. When low is 0, one field as a bulk string; when it is 1, number distinct fields as an array, or every field once number reaches the hash's size; otherwise number fields as an array, each drawn alone, so that a field may repeat. Records done; wrong for another kind and expired for an expired entry.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -1216,14 +1236,14 @@ fn random_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
         let written = random_field(fields: hash_of, start: start, client: env, with_values: one);
       } else if env^.low == 1_i64 {
         let shown = imin(wanted, size);
-        let elements = shown;
         if with_values {
-          set elements = shown *wrap 2_u64;
+          reply_pairs(client: env, pairs: shown);
+        } else {
+          reply_array(client: env, count: shown);
         }
-        reply_array(client: env, count: elements);
         if wanted >= size {
           if with_values {
-            hash_map_each::<Key, Bytes, Client, fn pair_out, ceiling>(map: hash_of, env: env);
+            hash_map_each::<Key, Bytes, Client, fn nested_pair_out, ceiling>(map: hash_of, env: env);
           } else {
             hash_map_each::<Key, Bytes, Client, fn name_out, ceiling>(map: hash_of, env: env);
           }
@@ -1231,11 +1251,11 @@ fn random_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
           distinct_fields(fields: hash_of, wanted: wanted, client: env, with_values: with_values);
         }
       } else {
-        let elements = wanted;
         if with_values {
-          set elements = wanted *wrap 2_u64;
+          reply_pairs(client: env, pairs: wanted);
+        } else {
+          reply_array(client: env, count: wanted);
         }
-        reply_array(client: env, count: elements);
         for @draws (step in 0_u64..wanted) {
           set env^.random = next_random(state: env^.random);
           let start = env^.random;
@@ -1265,7 +1285,7 @@ fn random_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
 }
 
 fn run_hrandfield(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "HRANDFIELD key [count [WITHVALUES]]: answers a field of the hash chosen at random, or the null bulk string for an absent key; with a count, an array of up to count distinct fields when it is positive and of count fields that may repeat when it is negative, each followed by its value with WITHVALUES, an absent key answering an empty array. The count is read and checked, then the option, before the key, as Redis checks them.";
+  doc "HRANDFIELD key [count [WITHVALUES]]: answers a field of the hash chosen at random, or a null for an absent key; with a count, an array of up to count distinct fields when it is positive and of count fields that may repeat when it is negative, each followed by its value with WITHVALUES, the two nested as a pair under RESP3, an absent key answering an empty array. The count is read and checked, then the option, before the key, as Redis checks them.";
   let count = args^.inner.len;
   let mode = 0_i64;
   let wanted = 1_u64;

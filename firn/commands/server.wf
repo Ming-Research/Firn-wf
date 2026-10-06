@@ -25,6 +25,7 @@ alias reply_bulk_decimal = pkg::protocol::reply_bulk_decimal;
 alias reply_bulk_input = pkg::protocol::reply_bulk_input;
 alias reply_echoed = pkg::protocol::reply_echoed;
 alias reply_error = pkg::protocol::reply_error;
+alias reply_map = pkg::protocol::reply_map;
 alias reply_text = pkg::protocol::reply_text;
 alias reply_word = pkg::protocol::reply_word;
 
@@ -731,13 +732,13 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
         }
       }
     }
-    let fields = 0_u64;
+    let pairs = 0_u64;
     for @counting (which in 0_u64..22_u64) {
       if found[which] != 0_u64 {
-        set fields = fields +wrap 2_u64;
+        set pairs = pairs +wrap 1_u64;
       }
     }
-    reply_array(client: client, count: fields);
+    reply_map(client: client, pairs: pairs);
     for @answers (which in 0_u64..22_u64) {
       let how = found[which];
       if how == 1_u64 {

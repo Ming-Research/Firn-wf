@@ -3596,7 +3596,7 @@ fn firn_requires_its_password_as_redis_does() {
 /// keyspace is empty; CONFIG RESETSTAT zeroes the connections INFO counts;
 /// and QUIT answers OK and closes the connection, leaving the request after it
 /// unanswered. The expected bytes are redis-server 7.0.15's, started with one
-/// database, but for the ids and HELLO 3, which Redis would answer in RESP3.
+/// database, but for the ids.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_connection_commands_as_redis_does() {
@@ -3646,8 +3646,9 @@ fn firn_answers_connection_commands_as_redis_does() {
     }
     client.write_all(&batch).expect("send the connection batch");
     let hello = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
-        ":1\r\n$-1\r\n+OK\r\n$6\r\nconn-1\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$6\r\nconn-1\r\n+OK\r\n$-1\r\n-ERR unknown subcommand 'SETINFO'. Try CLIENT HELP.\r\n-ERR wrong number of arguments for 'client|id' command\r\n-ERR wrong number of arguments for 'client' command\r\n{hello}-NOPROTO unsupported protocol version\r\n-NOPROTO unsupported protocol version\r\n-ERR Protocol version is not an integer or out of range\r\n{hello}$9\r\nvia-hello\r\n-ERR Syntax error in HELLO option 'FOO'\r\n{hello}$8\r\nvia-zero\r\n{hello}-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n+OK\r\n+OK\r\n-ERR DB index is out of range\r\n-ERR value is not an integer or out of range\r\n-ERR value is out of range, value must between -2147483648 and 2147483647\r\n*0\r\n:0\r\n-ERR wrong number of arguments for 'command|count' command\r\n-ERR unknown subcommand 'DOCS'. Try COMMAND HELP.\r\n-ERR wrong number of arguments for 'time' command\r\n$12\r\n# Keyspace\r\n\r\n"
+        ":1\r\n$-1\r\n+OK\r\n$6\r\nconn-1\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$6\r\nconn-1\r\n+OK\r\n$-1\r\n-ERR unknown subcommand 'SETINFO'. Try CLIENT HELP.\r\n-ERR wrong number of arguments for 'client|id' command\r\n-ERR wrong number of arguments for 'client' command\r\n{hello}{hello3}-NOPROTO unsupported protocol version\r\n-ERR Protocol version is not an integer or out of range\r\n{hello}$9\r\nvia-hello\r\n-ERR Syntax error in HELLO option 'FOO'\r\n{hello}$8\r\nvia-zero\r\n{hello}-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n+OK\r\n+OK\r\n-ERR DB index is out of range\r\n-ERR value is not an integer or out of range\r\n-ERR value is out of range, value must between -2147483648 and 2147483647\r\n*0\r\n:0\r\n-ERR wrong number of arguments for 'command|count' command\r\n-ERR unknown subcommand 'DOCS'. Try COMMAND HELP.\r\n-ERR wrong number of arguments for 'time' command\r\n$12\r\n# Keyspace\r\n\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the connection batch");
     let before = std::time::SystemTime::now()
@@ -3790,6 +3791,66 @@ fn firn_answers_connection_commands_as_redis_does() {
         .write_all(&resp(&["CLIENT", "ID"]))
         .expect("ask the third connection's id");
     expect_replies(&mut client, b":3\r\n", "the third connection's id");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers in RESP3 after HELLO 3 as Redis 7.0.15 does, and in RESP2
+/// again after HELLO 2: HELLO's map with protocol 3; the null for an absent
+/// string, an absent element of MGET and LPOP's count on an absent key; a map
+/// for HGETALL and CONFIG GET, an empty one for an absent hash; a set for
+/// SMEMBERS, set algebra and SPOP's count; doubles for scores; member and
+/// score pairs nested in ZRANGE WITHSCORES, ZPOPMIN with a count and
+/// HRANDFIELD WITHVALUES but not in ZPOPMIN without one; and INFO's text as a
+/// verbatim string. The expected bytes follow redis-server 7.0.15's reply
+/// writers (addReplyNull, addReplyNullArray, addReplyMapLen, addReplySetLen,
+/// addReplyDouble, addReplyVerbatim) for the same requests.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["HELLO", "3"],
+        vec!["GET", "absent"],
+        vec!["SET", "k", "v"],
+        vec!["MGET", "k", "absent"],
+        vec!["LPOP", "absent", "2"],
+        vec!["HSET", "h", "f", "v"],
+        vec!["HGETALL", "h"],
+        vec!["HGETALL", "absent"],
+        vec!["HRANDFIELD", "h", "1", "WITHVALUES"],
+        vec!["SADD", "s", "a"],
+        vec!["SMEMBERS", "s"],
+        vec!["SMEMBERS", "absent"],
+        vec!["SUNION", "s", "absent"],
+        vec!["ZADD", "z", "1.5", "a", "2", "b", "3", "c"],
+        vec!["ZSCORE", "z", "a"],
+        vec!["ZSCORE", "z", "absent"],
+        vec!["ZRANGE", "z", "0", "0", "WITHSCORES"],
+        vec!["ZPOPMIN", "z"],
+        vec!["ZPOPMIN", "z", "1"],
+        vec!["CONFIG", "GET", "appendonly"],
+        vec!["INFO", "cluster"],
+        vec!["SPOP", "s", "1"],
+        vec!["HELLO", "2"],
+        vec!["GET", "absent"],
+        vec!["HGETALL", "absent"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the RESP3 batch");
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let hello2 = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let expected = format!(
+        "{hello3}_\r\n+OK\r\n*2\r\n$1\r\nv\r\n_\r\n_\r\n:1\r\n%1\r\n$1\r\nf\r\n$1\r\nv\r\n%0\r\n*1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n:1\r\n~1\r\n$1\r\na\r\n~0\r\n~1\r\n$1\r\na\r\n:3\r\n,1.5\r\n_\r\n*1\r\n*2\r\n$1\r\na\r\n,1.5\r\n*2\r\n$1\r\na\r\n,1.5\r\n*1\r\n*2\r\n$1\r\nb\r\n,2\r\n%1\r\n$10\r\nappendonly\r\n$2\r\nno\r\n=34\r\ntxt:# Cluster\r\ncluster_enabled:0\r\n\r\n~1\r\n$1\r\na\r\n{hello2}$-1\r\n*0\r\n"
+    );
+    expect_replies(&mut client, expected.as_bytes(), "the RESP3 batch");
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);

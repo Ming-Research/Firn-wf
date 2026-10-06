@@ -25,7 +25,7 @@ written while firn lived in the Whitefoot repository; a path such as
   queue is a candidate additional scenario, not yet a selected dependency.
   Complete the following work and remove this item when the deployment
   evidence meets that boundary:
-  - Complete the selected clients' connection behavior, RESP3, command
+  - Complete the selected clients' connection behavior, command
     metadata, ordinary pipelines, scans and application command gaps. Add
     `MULTI`/`EXEC`/`DISCARD` and `WATCH`/`UNWATCH`, including queue-time and
     execution-time errors, expiry/eviction invalidation and Redis's lack of
@@ -156,8 +156,7 @@ written while firn lived in the Whitefoot repository; a path such as
   answers as unknown, and a command table, which `COMMAND` and
   `COMMAND COUNT` report empty and `COMMAND DOCS`, `INFO`, `LIST` and
   `GETKEYS` answer as unknown subcommands; `KEYS` and `SCAN`, which can match
-  with `glob_match` (`firn/bytes/bytes.wf`), RESP3, which
-  `HELLO 3` refuses, `LMPOP` and the blocking list commands, `SSCAN`,
+  with `glob_match` (`firn/bytes/bytes.wf`), `LMPOP` and the blocking list commands, `SSCAN`,
   `MULTI` and `EXEC`, publish and subscribe, and a random hash seed; and
   `RANDOMKEY`, `SORT`, `LCS`, `OBJECT`, `DUMP`, `RESTORE`, `MOVE`, `MIGRATE`,
   `WAIT`, `HSCAN`, `ZSCAN`, `ZRANGESTORE`, `ZRANDMEMBER`, `ZMPOP` and
