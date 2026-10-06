@@ -21,8 +21,6 @@ alias clear_items = pkg::protocol::clear_items;
 alias expired = pkg::store::expired;
 alias remove_expired = pkg::store::remove_expired;
 alias hash_map_remove = std::collections::hash_map::hash_map_remove;
-alias log_command = pkg::store::log_command;
-alias log_removal = pkg::store::log_removal;
 alias ordered_map_len = std::collections::ordered_map::ordered_map_len;
 alias ordered_map_remove = std::collections::ordered_map::ordered_map_remove;
 alias push_item = pkg::protocol::push_item;
@@ -580,8 +578,8 @@ fn range_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
   }
 }
 
-fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, kind: u64, direction: u64) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZRANGE key start stop [BYSCORE|BYLEX] [REV] [LIMIT offset count] [WITHSCORES] (kind 0, direction 0), ZREVRANGE (kind 1, direction 2), ZRANGEBYSCORE (2, 1), ZREVRANGEBYSCORE (2, 2), ZRANGEBYLEX (3, 1) and ZREVRANGEBYLEX (3, 2), as Redis's zrangeGenericCommand reads them: the options from the fourth argument on, letters in either case and compared up to a zero byte, where REV and BYSCORE or BYLEX are taken only when the command leaves them open and an unknown option is a syntax error; LIMIT with a rank range unless its count is -1, and WITHSCORES with BYLEX, are refused; the range, its two ends swapped for a reversed range by score or member, is read before the key; the members are written inside the statement that finds the set, an absent key answering an empty array.";
+fn zrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u64, direction: u64, plan: &Walk) -> valid: Bool reads(input), reads(args), writes(client), writes(plan) {
+  doc "Prepares ZRANGE's arguments and refusals before either path looks up its key.";
   let count = args^.inner.len;
   let withscores = False();
   let offset = 0_i64;
@@ -615,14 +613,14 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       let first = read_integer(input: input, start: first_span.start, length: first_span.length);
       if first.state != 1_u64 {
         reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-        return unit;
+        return False();
       }
       let second_index = after +wrap 1_u64;
       let second_span = arg(args: args, index: second_index);
       let second = read_integer(input: input, start: second_span.start, length: second_span.length);
       if second.state != 1_u64 {
         reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-        return unit;
+        return False();
       }
       set offset = first.value;
       set limit = second.value;
@@ -635,7 +633,7 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       set rangetype = 2_u64;
     } else {
       reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
-      return unit;
+      return False();
     }
     set index = index +wrap 1_u64;
   }
@@ -651,12 +649,12 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let rank_limited = band(limit_given, by_rank);
   if rank_limited {
     reply_error(client: client, word: &text_limit_rank[0_u64..85_u64]);
-    return unit;
+    return False();
   }
   let lex_scored = band(withscores, by_lex);
   if lex_scored {
     reply_error(client: client, word: &text_scores_lex[0_u64..68_u64]);
-    return unit;
+    return False();
   }
   let reverse = order == 2_u64;
   let act = 0_u64;
@@ -664,7 +662,9 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     set act = 1_u64;
   }
   let walk_kind = rangetype -wrap 1_u64;
-  let walk = walk_new(reverse: reverse, kind: walk_kind, act: act, input: input);
+  set plan^.reverse = reverse;
+  set plan^.kind = walk_kind;
+  set plan^.act = act;
   set client^.low = 0_i64;
   set client^.high = 0_i64;
   if by_rank {
@@ -672,13 +672,13 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     let first = read_integer(input: input, start: first_span.start, length: first_span.length);
     if first.state != 1_u64 {
       reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-      return unit;
+      return False();
     }
     let last_span = arg(args: args, index: 3_u64);
     let last = read_integer(input: input, start: last_span.start, length: last_span.length);
     if last.state != 1_u64 {
       reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-      return unit;
+      return False();
     }
     set client^.low = first.value;
     set client^.high = last.value;
@@ -689,7 +689,7 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       set low_index = 3_u64;
       set high_index = 2_u64;
     }
-    let valid = read_range(input: input, args: args, low_index: low_index, high_index: high_index, walk: &walk);
+    let valid = read_range(input: input, args: args, low_index: low_index, high_index: high_index, walk: plan);
     if valid {
     } else {
       if by_lex {
@@ -697,37 +697,39 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       } else {
         reply_error(client: client, word: &text_range_float[0_u64..29_u64]);
       }
-      return unit;
+      return False();
     }
     if offset < 0_i64 {
-      set walk.limit = 0_u64;
-      set walk.unlimited = False();
+      set plan^.limit = 0_u64;
+      set plan^.unlimited = False();
     } else {
-      set walk.offset = cvt.wrap::<i64, u64>(offset);
+      set plan^.offset = cvt.wrap::<i64, u64>(offset);
       if limit < 0_i64 {
-        set walk.unlimited = True();
+        set plan^.unlimited = True();
       } else {
-        set walk.limit = cvt.wrap::<i64, u64>(limit);
-        set walk.unlimited = False();
+        set plan^.limit = cvt.wrap::<i64, u64>(limit);
+        set plan^.unlimited = False();
       }
     }
   }
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
   set client^.state = state_absent;
-  atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = range_ranked(env: client, value: held, walk: &walk);
-      }
-      None() => {
-      }
+  return True();
+}
+
+fn zrange_body(slot: &Option<Entry>, client: &Client, walk: &Walk) -> result: unit reads(slot), writes(client), writes(walk) {
+  doc "Runs ZRANGE over its key's entry; the caller owns the statement.";
+  match slot^ {
+    Some(value: held) => {
+      let found = range_ranked(env: client, value: held, walk: walk);
+    }
+    None() => {
     }
   }
-  if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
-  }
+  return unit;
+}
+
+fn zrange_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZRANGE's network reply, retaining replies written while visiting the entry.";
   if client^.state == state_done {
     return unit;
   }
@@ -736,6 +738,27 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     return unit;
   }
   reply_array(client: client, count: 0_u64);
+  return unit;
+}
+
+fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, kind: u64, direction: u64) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZRANGE key start stop [BYSCORE|BYLEX] [REV] [LIMIT offset count] [WITHSCORES] (kind 0, direction 0), ZREVRANGE (kind 1, direction 2), ZRANGEBYSCORE (2, 1), ZREVRANGEBYSCORE (2, 2), ZRANGEBYLEX (3, 1) and ZREVRANGEBYLEX (3, 2), as Redis's zrangeGenericCommand reads them: the options from the fourth argument on, letters in either case and compared up to a zero byte, where REV and BYSCORE or BYLEX are taken only when the command leaves them open and an unknown option is a syntax error; LIMIT with a rank range unless its count is -1, and WITHSCORES with BYLEX, are refused; the range, its two ends swapped for a reversed range by score or member, is read before the key; the members are written inside the statement that finds the set, an absent key answering an empty array.";
+  let forward = False();
+  let walk = walk_new(reverse: forward, kind: 0_u64, act: 0_u64, input: input);
+  let valid = zrange_parse(input: input, args: args, client: client, kind: kind, direction: direction, plan: &walk);
+  if bnot(valid) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key] {
+    zrange_body(slot: slot, client: client, walk: &walk);
+  }
+  if client^.state == state_expired {
+    remove_expired(store: store, key: key, now: client^.now);
+  }
+  zrange_finish(client: client);
   return unit;
 }
 
@@ -776,11 +799,11 @@ fn count_ranked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 reads(val
   }
 }
 
-fn run_zcount(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, kind: u64) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZCOUNT key min max (kind 1) and ZLEXCOUNT key min max (kind 2): answers how many members lie in the range of scores or of members, read before the key, 0 for an absent key.";
-  let forward = False();
-  let walk = walk_new(reverse: forward, kind: kind, act: 2_u64, input: input);
-  let valid = read_range(input: input, args: args, low_index: 2_u64, high_index: 3_u64, walk: &walk);
+fn zcount_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u64, plan: &Walk) -> valid: Bool reads(input), reads(args), writes(client), writes(plan) {
+  doc "Prepares ZCOUNT's arguments and refusals before either path looks up its key.";
+  set plan^.kind = kind;
+  set plan^.act = 2_u64;
+  let valid = read_range(input: input, args: args, low_index: 2_u64, high_index: 3_u64, walk: plan);
   if valid {
   } else {
     if kind == 2_u64 {
@@ -788,32 +811,55 @@ fn run_zcount(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     } else {
       reply_error(client: client, word: &text_range_float[0_u64..29_u64]);
     }
-    return unit;
+    return False();
   }
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
   set client^.state = state_absent;
   set client^.number = 0_u64;
-  atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = count_ranked(env: client, value: held, walk: &walk);
-      }
-      None() => {
-      }
+  return True();
+}
+
+fn zcount_body(slot: &Option<Entry>, client: &Client, walk: &Walk) -> result: unit reads(slot), writes(client), writes(walk) {
+  doc "Runs ZCOUNT over its key's entry; the caller owns the statement.";
+  match slot^ {
+    Some(value: held) => {
+      let found = count_ranked(env: client, value: held, walk: walk);
+    }
+    None() => {
     }
   }
-  if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
-    set client^.number = 0_u64;
-  }
+  return unit;
+}
+
+fn zcount_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZCOUNT's network reply, retaining replies written while visiting the entry.";
   if client^.state == state_wrong {
     reply_wrong_type(client: client);
     return unit;
   }
   let counted = cvt.wrap::<u64, i64>(client^.number);
   reply_integer(client: client, value: counted);
+  return unit;
+}
+
+fn run_zcount(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, kind: u64) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZCOUNT key min max (kind 1) and ZLEXCOUNT key min max (kind 2): answers how many members lie in the range of scores or of members, read before the key, 0 for an absent key.";
+  let forward = False();
+  let walk = walk_new(reverse: forward, kind: 0_u64, act: 0_u64, input: input);
+  let valid = zcount_parse(input: input, args: args, client: client, kind: kind, plan: &walk);
+  if bnot(valid) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key] {
+    zcount_body(slot: slot, client: client, walk: &walk);
+  }
+  if client^.state == state_expired {
+    remove_expired(store: store, key: key, now: client^.now);
+    set client^.number = 0_u64;
+  }
+  zcount_finish(client: client);
   return unit;
 }
 
@@ -907,10 +953,10 @@ fn remove_walked(env: &Client, value: &Entry, walk: &Walk) -> kind: u64 writes(e
   }
 }
 
-fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, kind: u64) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZREMRANGEBYRANK key start stop (kind 0), ZREMRANGEBYSCORE key min max (1) and ZREMRANGEBYLEX key min max (2): removes the members in the range, read before the key, removing the key when the set is left empty, and answers how many it removed, 0 for an absent key.";
-  let forward = False();
-  let walk = walk_new(reverse: forward, kind: kind, act: 3_u64, input: input);
+fn zremrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u64, plan: &Walk) -> valid: Bool reads(input), reads(args), writes(client), writes(plan) {
+  doc "Prepares ZREMRANGE's arguments and refusals before either path looks up its key.";
+  set plan^.kind = kind;
+  set plan^.act = 3_u64;
   set client^.low = 0_i64;
   set client^.high = 0_i64;
   if kind == 0_u64 {
@@ -918,18 +964,18 @@ fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client
     let first = read_integer(input: input, start: first_span.start, length: first_span.length);
     if first.state != 1_u64 {
       reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-      return unit;
+      return False();
     }
     let last_span = arg(args: args, index: 3_u64);
     let last = read_integer(input: input, start: last_span.start, length: last_span.length);
     if last.state != 1_u64 {
       reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-      return unit;
+      return False();
     }
     set client^.low = first.value;
     set client^.high = last.value;
   } else {
-    let valid = read_range(input: input, args: args, low_index: 2_u64, high_index: 3_u64, walk: &walk);
+    let valid = read_range(input: input, args: args, low_index: 2_u64, high_index: 3_u64, walk: plan);
     if valid {
     } else {
       if kind == 2_u64 {
@@ -937,40 +983,42 @@ fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client
       } else {
         reply_error(client: client, word: &text_range_float[0_u64..29_u64]);
       }
-      return unit;
+      return False();
     }
   }
   clear_items(client: client);
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
   set client^.state = state_absent;
   set client^.number = 0_u64;
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = remove_walked(env: client, value: held, walk: &walk);
-      }
-      None() => {
-      }
+  return True();
+}
+
+fn zremrange_body(slot: &Option<Entry>, client: &Client, walk: &Walk) -> lapsed: Bool writes(slot), writes(client), writes(walk) {
+  doc "Runs ZREMRANGE over its key's entry; the caller owns the statement.";
+  match slot^ {
+    Some(value: held) => {
+      let edited = remove_walked(env: client, value: held, walk: walk);
     }
-    let emptied = client^.state == state_emptied;
-    let lapsed = client^.state == state_expired;
-    let removing = bor(emptied, lapsed);
-    if removing {
-      set slot^ = None<Entry>();
-    }
-    if lapsed {
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if client^.number > 0_u64 {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
+    None() => {
     }
   }
+  let emptied = client^.state == state_emptied;
+  let lapsed = client^.state == state_expired;
+  let removing = bor(emptied, lapsed);
+  if removing {
+    set slot^ = None<Entry>();
+  }
+  return lapsed;
+}
+
+fn zremrange_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log) {
+  doc "Records an expired removal followed by a changed command, returning the propagated record count.";
+  let changed = client^.number > 0_u64;
+  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key);
+  return appended;
+}
+
+fn zremrange_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZREMRANGE's network reply, retaining replies written while visiting the entry.";
   clear_items(client: client);
   if client^.state == state_wrong {
     reply_wrong_type(client: client);
@@ -978,5 +1026,24 @@ fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client
   }
   let removed = cvt.wrap::<u64, i64>(client^.number);
   reply_integer(client: client, value: removed);
+  return unit;
+}
+
+fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, kind: u64) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZREMRANGEBYRANK key start stop (kind 0), ZREMRANGEBYSCORE key min max (1) and ZREMRANGEBYLEX key min max (2): removes the members in the range, read before the key, removing the key when the set is left empty, and answers how many it removed, 0 for an absent key.";
+  let forward = False();
+  let walk = walk_new(reverse: forward, kind: 0_u64, act: 0_u64, input: input);
+  let valid = zremrange_parse(input: input, args: args, client: client, kind: kind, plan: &walk);
+  if bnot(valid) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let lapsed = zremrange_body(slot: slot, client: client, walk: &walk);
+    let appended = zremrange_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
+  }
+  zremrange_finish(client: client);
   return unit;
 }
