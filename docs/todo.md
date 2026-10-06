@@ -31,8 +31,8 @@ written while firn lived in the Whitefoot repository; a path such as
     execution-time errors, expiry/eviction invalidation and Redis's lack of
     transaction rollback. Provide command semantics that transactions and
     the Lua work below can compose without separately committing each call.
-  - Make AOF persistence usable through write/sync error handling, rewrite,
-    interrupted-write recovery and orderly `SHUTDOWN`/signal handling; verify
+  - Make AOF persistence usable through write/sync error handling, rewrite
+    and orderly `SHUTDOWN`/signal handling; verify
     a practical data migration path. File replacement and signal delivery
     may require Whitefoot library/runtime work; AOF presence alone is not
     durable-recovery evidence. RDB compatibility is not assumed by this item.
@@ -97,6 +97,34 @@ written while firn lived in the Whitefoot repository; a path such as
   Redis scripting surface and application workloads have correctness and
   performance evidence, recording any remaining incompatibilities separately.
 
+- **A script can hold the whole keyspace without limit.** A firn script
+  runs inside one atomic statement holding every key and the keyspace's
+  metadata (`script_command` in `firn/commands/script.wf`), and the
+  first scripting version stops no script: one that loops forever stalls
+  every client and the append-only file's writer until firn is killed, where
+  Redis 7.0.15 answers other clients `BUSY` once `busy-reply-threshold`
+  (5 seconds) passes and lets `SCRIPT KILL` stop a script that has not
+  written. The change: count the engine's steps and, past the threshold,
+  answer other clients `BUSY` and accept `SCRIPT KILL` and `SHUTDOWN NOSAVE`,
+  which needs a way for the clients' contexts to run while the script's
+  statement holds the keyspace. Validate with Redis's `unit/scripting` busy
+  tests. Reopen when the Lua engine runs real scripts, before any deployment
+  that accepts scripts from clients it does not control.
+- **An append-only file that does not parse, or cannot be read, is replayed
+  only up to the fault, and firn then appends after the fault.** `replay`
+  (`firn/persistence/persistence.wf`) stops at a record that is not a
+  well-formed command, and at a read that fails other than at the file's end,
+  without cutting the file, and the server opens it for appending and
+  serves; every command appended afterwards sits behind the bytes that
+  stopped the replay, so no later restart reaches it. As far as this item's
+  author recalls, without having re-read the source for it, Redis 7.0.15
+  refuses to start on a format error and on a read error that is not an
+  unexpected end, and `aof-load-truncated` covers only the unexpected end.
+  The change: confirm Redis's behavior in `aof.c` and its tests, then stop
+  firn with an error status on both, as it already does when the cut
+  fails. Validate with a file holding garbage before a valid command, and
+  with an unreadable file. Reopen before firn is offered to a deployment
+  that keeps an append-only file.
 - **Close the current main-line Redis compatibility gaps.** The following
   gaps remain after the command integration of
   [PR #212](https://github.com/mbbill/Whitefoot/pull/212). Missing, among
