@@ -16,6 +16,21 @@
 name: redis-bench
 
 on:
+  # Temporary: lets the probe workflow call this one; removed with it.
+  workflow_call:
+    inputs:
+      runner: {type: string, required: true}
+      mode: {type: string, required: true}
+      revisions: {type: string, required: true}
+      cpus: {type: string, required: true}
+      tests: {type: string, required: true}
+      depths: {type: string, required: true}
+      passes: {type: string, required: true}
+      seconds: {type: string, required: true}
+      profile: {type: boolean, required: true}
+      profile_test: {type: string, required: true}
+      annotate: {type: string, required: true}
+      callers: {type: boolean, required: true}
   workflow_dispatch:
     inputs:
       runner:
@@ -115,39 +130,25 @@ jobs:
           # what it leaves, sourced by this step and the measurement.
           cat > "$RUNNER_TEMP/redis-bench-session.sh" <<'HELPERS'
           session_file=${SESSION_FILE/#\~/$HOME}
-          # Stops the processes of the recorded session that carry its token,
-          # so that a session number reused by another program is left alone,
-          # then removes the record.
+          session_py="$GITHUB_WORKSPACE/research/experiments/redis-bench/session.py"
+          # Stops what the recorded session left, as session.py describes;
+          # fails, keeping the record, when a process of it outlives KILL.
           stop_recorded() {
-            [ -n "$session_file" ] && [ -f "$session_file" ] || return 0
-            sid= token=
-            read -r sid token < "$session_file" || true
-            if [ -n "$sid" ] && [ -n "$token" ]; then
-              for pid in $(ps -s "$sid" -o pid= 2>/dev/null); do
-                if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx "FIRN_REDIS_BENCH_TOKEN=$token"; then
-                  echo "stopping $(ps -p "$pid" -o pid=,args= 2>/dev/null || echo "$pid")"
-                  kill "$pid" 2>/dev/null || true
-                fi
-              done
-              sleep 1
-            fi
-            rm -f "$session_file"
+            [ -z "$session_file" ] || python3 "$session_py" stop "$session_file"
           }
-          # Runs redis-bench.sh in a session of its own on the self-hosted
-          # machine: records the session's id and a token every process of it
-          # carries before the measurement starts, refusing to start without
-          # the record, and stops what it left when it ends, however it ends.
+          # Runs redis-bench.sh, on the self-hosted machine in a session of its
+          # own whose identity it records before the measurement starts,
+          # refusing to start without the record, and stops what the session
+          # left when it ends, however it ends.
           run_session() {
             if [ -z "$session_file" ]; then
               sh research/experiments/redis-bench/redis-bench.sh "$@"
               return
             fi
             mkdir -p "$(dirname "$session_file")"
-            FIRN_REDIS_BENCH_TOKEN=$(cat /proc/sys/kernel/random/uuid)
-            export FIRN_REDIS_BENCH_TOKEN
             status=0
-            setsid --wait sh -c 'echo "$$ $FIRN_REDIS_BENCH_TOKEN" > "$1" || exit 1; shift; exec sh research/experiments/redis-bench/redis-bench.sh "$@"' run "$session_file" "$@" || status=$?
-            stop_recorded
+            setsid --wait sh -c 'python3 "$1" record "$2" $$ || exit 1; shift 2; exec sh research/experiments/redis-bench/redis-bench.sh "$@"' run "$session_py" "$session_file" "$@" || status=$?
+            stop_recorded || { [ "$status" -ne 0 ] || status=1; }
             return $status
           }
           HELPERS

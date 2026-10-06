@@ -1,0 +1,128 @@
+# Temporary: checks redis-bench.yml's session helpers and session.py on the
+# 14900K, each path once, and one small comparison that stops a planted
+# leftover holding a real redis-server; removed after it runs.
+name: redis-bench-probe
+
+on:
+  push:
+    branches: [claude/redis-bench]
+
+jobs:
+  helpers:
+    runs-on: [self-hosted, 14900k]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check each path of the session helpers
+        run: |
+          awk '/<<.HELPERS./{f=1;next} /^ *HELPERS$/{f=0} f' .github/workflows/redis-bench.yml | sed 's/^          //' > "$RUNNER_TEMP/h.sh"
+          export SESSION_FILE="$RUNNER_TEMP/s/session"
+          . "$RUNNER_TEMP/h.sh"
+          py=research/experiments/redis-bench/session.py
+          mkdir -p "$RUNNER_TEMP/s"
+          gone() { ! ps -s "$1" -o pid= | grep -q .; }
+          echo "1. a session whose number the record names but whose leader started at another time is left alone"
+          RUNNER_TRACKING_ID= setsid sh -c 'echo $$ > "$1"; exec sleep 901' run "$RUNNER_TEMP/s/foreign" > /dev/null 2>&1 &
+          sleep 1
+          foreign=$(cat "$RUNNER_TEMP/s/foreign")
+          echo "$(cat /proc/sys/kernel/random/boot_id) $foreign 1" > "$SESSION_FILE"
+          stop_recorded
+          kill -0 "$foreign" && echo "   left alone: $foreign" || { echo "   FAIL: stopped"; exit 1; }
+          test ! -e "$SESSION_FILE" || { echo "   FAIL: record kept"; exit 1; }
+          kill "$foreign"
+          echo "2. a record from an earlier boot is removed and nothing is signalled"
+          RUNNER_TRACKING_ID= setsid sh -c 'echo $$ > "$1"; exec sleep 904' run "$RUNNER_TEMP/s/other" > /dev/null 2>&1 &
+          sleep 1
+          other=$(cat "$RUNNER_TEMP/s/other")
+          start=$(sed 's/^.*) //' /proc/$other/stat | cut -d' ' -f20)
+          echo "00000000-0000-0000-0000-000000000000 $other $start" > "$SESSION_FILE"
+          stop_recorded
+          kill -0 "$other" || { echo "   FAIL: stopped"; exit 1; }
+          test ! -e "$SESSION_FILE" || { echo "   FAIL: record kept"; exit 1; }
+          kill "$other"
+          echo "   left alone: $other"
+          echo "3. a cancelled session's redis-server is stopped by TERM and a process ignoring TERM by KILL"
+          RUNNER_TRACKING_ID= setsid sh -c 'python3 "$1" record "$2" $$ || exit 1; redis-server --port 0 --save "" --appendonly no --daemonize no > /dev/null 2>&1 & (trap "" TERM; exec sleep 902) & exec sleep 905' run "$py" "$SESSION_FILE" > /dev/null 2>&1 &
+          sleep 2
+          owned=$(cut -d' ' -f2 "$SESSION_FILE")
+          ps -s "$owned" -o pid,args
+          tr '\0' '\n' < "/proc/$(pgrep -s "$owned" redis-server)/environ" | head -3 || true
+          kill -KILL "$owned"
+          sleep 1
+          ps -s "$owned" -o pid,args
+          stop_recorded
+          gone "$owned" || { echo "   FAIL: survived"; ps -s "$owned" -o pid,args; exit 1; }
+          test ! -e "$SESSION_FILE" || { echo "   FAIL: record kept"; exit 1; }
+          echo "   session $owned stopped, record removed"
+          echo "4. a measurement that fails after starting a process leaves nothing"
+          fake="$RUNNER_TEMP/fake"
+          mkdir -p "$fake/research/experiments/redis-bench"
+          printf 'sleep 903 &\necho started > "%s/marker"\nexit 3\n' "$fake" > "$fake/research/experiments/redis-bench/redis-bench.sh"
+          status=0
+          (cd "$fake" && run_session compare) || status=$?
+          [ "$status" = 3 ] || { echo "   FAIL: status $status"; exit 1; }
+          test -e "$fake/marker" || { echo "   FAIL: never started"; exit 1; }
+          if pgrep -f 'sleep 903' > /dev/null; then echo "   FAIL: its process survived"; pgrep -af 'sleep 903'; exit 1; fi
+          test ! -e "$SESSION_FILE" || { echo "   FAIL: record kept"; exit 1; }
+          echo "   status 3, its process stopped, no record left"
+          echo "5. a record that cannot be written stops the measurement before it starts"
+          rm -f "$fake/marker"
+          export SESSION_FILE=/proc/1/firn-redis-bench/session
+          . "$RUNNER_TEMP/h.sh"
+          status=0
+          (cd "$fake" && run_session compare) || status=$?
+          [ "$status" != 0 ] || { echo "   FAIL: status 0"; exit 1; }
+          test ! -e "$fake/marker" || { echo "   FAIL: the measurement started"; exit 1; }
+          echo "   status $status, nothing started"
+      - name: Whether the runner's account can make a PID namespace or a scope
+        run: |
+          id
+          unshare --user --map-root-user --pid --fork --kill-child true && echo "unshare: yes" || echo "unshare: no"
+          systemd-run --user --scope true && echo "systemd-run --user: yes" || echo "systemd-run --user: no"
+          sudo -n true && echo "sudo: yes" || echo "sudo: no"
+
+  leftover:
+    needs: helpers
+    runs-on: [self-hosted, 14900k]
+    outputs:
+      sid: ${{ steps.plant.outputs.sid }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plant
+        run: |
+          mkdir -p ~/.cache/firn-redis-bench
+          RUNNER_TRACKING_ID= setsid sh -c 'python3 "$1" record ~/.cache/firn-redis-bench/session $$ || exit 1; redis-server --port 0 --save "" --appendonly no --daemonize no & exec sleep 900' run "$PWD/research/experiments/redis-bench/session.py" > /dev/null 2>&1 &
+          sleep 2
+          sid=$(cut -d' ' -f2 ~/.cache/firn-redis-bench/session)
+          echo "sid=$sid" >> "$GITHUB_OUTPUT"
+          ps -s "$sid" -o pid,args
+
+  bench:
+    needs: leftover
+    uses: ./.github/workflows/redis-bench.yml
+    with:
+      runner: 14900k
+      mode: compare
+      revisions: "head=HEAD head-twin=HEAD"
+      cpus: "1"
+      tests: "set"
+      depths: "16"
+      passes: "1"
+      seconds: "2"
+      profile: false
+      profile_test: "set 16"
+      annotate: ""
+      callers: false
+
+  verify:
+    needs: [leftover, bench]
+    runs-on: [self-hosted, 14900k]
+    steps:
+      - run: |
+          sid=${{ needs.leftover.outputs.sid }}
+          if ps -s "$sid" -o pid= | grep -q .; then
+            echo "the planted session $sid survived"
+            ps -s "$sid" -o pid,args
+            exit 1
+          fi
+          test ! -e ~/.cache/firn-redis-bench/session
+          echo "the planted session $sid was stopped and no session file is left"
