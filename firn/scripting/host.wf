@@ -20,8 +20,6 @@ struct Env {
   error: Bool;
   reply: Box<Slots<u8>>;
   appended: u64;
-  failed: Value;
-  failed_line: u64;
 }
 
 fn raw(vm: &Vm, table: Value, key: Value, value: Value) -> r: unit writes(vm) {

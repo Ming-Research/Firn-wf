@@ -248,61 +248,14 @@ fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64)
   return unit;
 }
 
-fn call_line(vm: &Vm, return_pc: u64) -> line: u64 reads(vm) {
-  doc "The line of the call a pending host call returns after, which Redis's error handler names for an error a command raised.";
-  if return_pc > 0_u64 {
-    let at = return_pc - 1_u64;
-    if at < vm^.lineinfo.inner.len {
-      return cvt::<u32, u64>(vm^.lineinfo.inner[at]);
-    }
-  }
-  return 0_u64;
-}
-
-fn table_handle(value: Value) -> handle: u64 pure {
-  doc "A table's handle plus one, or 0 for a value that is not a table.";
-  match value {
-    Tab(h: hv) => {
-      let wide = cvt::<u32, u64>(hv);
-      return wide +sat 1_u64;
-    }
-    Nil() => {
-    }
-    False() => {
-    }
-    True() => {
-    }
-    Num(..) => {
-    }
-    Str(..) => {
-    }
-    Fun(..) => {
-    }
-    Builtin(..) => {
-    }
-  }
-  return 0_u64;
-}
-
-fn same_table(left: Value, right: Value) -> same: Bool pure {
-  doc "Whether two values are one table.";
-  let a = table_handle(value: left);
-  let b = table_handle(value: right);
-  let tables = a != 0_u64;
-  let equal = a == b;
-  return band(tables, equal);
-}
-
 fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(engine), writes(env), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "Runs the command a script's redis.call or redis.pcall left pending, inside the script's statement, and continues the script with its reply: the arguments, numbers formatted as Redis formats them, are laid out as the network's input; the command runs through ScriptCommands with the client answering in the script's protocol, which redis.setresp selects, its records counted in the script's effects; its reply is converted to a Lua value from the bytes it wrote, which are then taken back; and an error reply is raised at redis.call, while redis.pcall returns it as its error table, as Redis 7.0.15's luaRedisGenericCommand does. budget is what the script's attempt has left.";
   let id = 0_u32;
   let argc = 0_u64;
-  let return_pc = 0_u64;
   match halo::embed::pending_call(engine: engine) {
     Some(value: call) => {
       set id = call.id;
       set argc = call.argc;
-      set return_pc = call.return_pc;
     }
     None() => {
       return Outcome::HostStopped();
@@ -346,8 +299,6 @@ fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &Conc
       let message = field(vm: &engine^.vm, table: value, name: &s_30[0_u64..3_u64]);
       if is_string(v: message) {
         let error = redis_raised(vm: &engine^.vm, message: message);
-        set env^.failed = error;
-        set env^.failed_line = call_line(vm: &engine^.vm, return_pc: return_pc);
         return halo::embed::fail_call::<ScriptHost>(engine: engine, env: env, error: error, budget: budget);
       }
     }
@@ -434,8 +385,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
           let reply = box_slots_new::<u8>(capacity: 0_u64);
           let no = False();
           let held = HeldState(start_ms: time^.check, start_us: client^.unix_us, wrote: no, command_ran: no);
-          let nothing = Value::Nil();
-          let env = Env(held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64, failed: nothing, failed_line: 0_u64);
+          let env = Env(held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64);
           let effects = box_slots_new::<u8>(capacity: 64_u64);
           let logged = store^.logging;
           let random = pooled.engine.vm.random_state;
@@ -484,10 +434,6 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                 Error() => {
                   let line = callback_line(vm: &pooled.engine.vm);
                   let value = halo::embed::error_value(engine: &pooled.engine);
-                  let raised_here = same_table(left: value, right: env.failed);
-                  if raised_here {
-                    set line = env.failed_line;
-                  }
                   let locate = readonly_message(vm: &pooled.engine.vm, value: value);
                   let formatted = halo::embed::format_redis_error(engine: &pooled.engine, source: &source.inner[0_u64..n], line: line, locate: locate);
                   let length = formatted.inner.len;
