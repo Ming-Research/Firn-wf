@@ -20,17 +20,17 @@ written while firn lived in the Whitefoot repository; a path such as
   [deployment direction](../research/investigations/firn/DESIGN.md#deployment-direction)
   requires usable cache/session storage and scripted conditional updates,
   with an existing application using its ordinary client and unchanged
-  business logic. Select the consumers and their required command behavior
-  before treating a feature inventory as release coverage; a leaderboard or
-  queue is a candidate additional scenario, not yet a selected dependency.
+  business logic. The selected consumers and the gaps their tests expose are
+  in the [consumers investigation](../research/investigations/consumers/README.md#what-the-milestone-needs-from-firn),
+  which orders the work below; a leaderboard or queue is a candidate
+  additional scenario, not yet a selected dependency.
   Complete the following work and remove this item when the deployment
   evidence meets that boundary:
-  - Complete the selected clients' connection behavior, RESP3, command
+  - Complete the selected clients' connection behavior, command
     metadata, ordinary pipelines, scans and application command gaps. Add
-    `MULTI`/`EXEC`/`DISCARD` and `WATCH`/`UNWATCH`, including queue-time and
-    execution-time errors, expiry/eviction invalidation and Redis's lack of
-    transaction rollback. Provide command semantics that transactions and
-    the Lua work below can compose without separately committing each call.
+    `WATCH`/`UNWATCH`, and write as parts the commands a selected consumer
+    queues or calls from a script that are not parts yet, since `EXEC` and
+    scripts run only those `held_kind` (`firn/commands/script.wf`) names.
   - Make AOF persistence usable through write/sync error handling, rewrite
     and orderly `SHUTDOWN`/signal handling; verify
     a practical data migration path. File replacement and signal delivery
@@ -97,19 +97,49 @@ written while firn lived in the Whitefoot repository; a path such as
   Redis scripting surface and application workloads have correctness and
   performance evidence, recording any remaining incompatibilities separately.
 
-- **A script can hold the whole keyspace without limit.** A firn script
-  runs inside one atomic statement holding every key and the keyspace's
-  metadata (`script_command` in `firn/commands/script.wf`), and the
-  first scripting version stops no script: one that loops forever stalls
-  every client and the append-only file's writer until firn is killed, where
-  Redis 7.0.15 answers other clients `BUSY` once `busy-reply-threshold`
-  (5 seconds) passes and lets `SCRIPT KILL` stop a script that has not
-  written. The change: count the engine's steps and, past the threshold,
-  answer other clients `BUSY` and accept `SCRIPT KILL` and `SHUTDOWN NOSAVE`,
-  which needs a way for the clients' contexts to run while the script's
-  statement holds the keyspace. Validate with Redis's `unit/scripting` busy
-  tests. Reopen when the Lua engine runs real scripts, before any deployment
-  that accepts scripts from clients it does not control.
+- **A busy script gets no BUSY reply, and one that has written cannot be
+  stopped.** A firn script runs in attempts, each in one atomic statement
+  holding every key and the keyspace's metadata (`eval` in
+  `firn/scripting/entry.wf`). `SCRIPT KILL` stops a script that has written
+  nothing at the end of its current attempt; one that has written runs to
+  its end holding the keyspace, so an endless one stalls every client and
+  the append-only file's writer until firn is killed. Redis 7.0.15 answers
+  other clients `BUSY` once `busy-reply-threshold` (`lua-time-limit`, 5
+  seconds) has passed, leaving them `SCRIPT KILL` and `SHUTDOWN NOSAVE`,
+  which stops even a script that has written. firn has no threshold: a
+  command that needs the keyspace waits for the attempt to end. Redis's
+  suite test `just EXEC and script timeout` waits for `BUSY` before it sends
+  `SCRIPT KILL`, so on firn it hangs until the suite's 120-second timeout
+  and its retry. The change: the pool records when the running script
+  began, a command that would take the keyspace answers `BUSY` past the
+  threshold, which adds a check of the pool to every such command, a cost to
+  measure on the 14900K first, and `SHUTDOWN NOSAVE` ends firn. Validate
+  with Redis's `unit/scripting` and `unit/multi` busy tests. Reopen before
+  any deployment that accepts scripts from clients it does not control, or
+  when the suite's time matters.
+- **SPOP with a count records one SREM where Redis records one per
+  member.** For a count smaller than the set, firn records one SREM naming
+  every member it popped (`spop_meta` in `firn/commands/sets.wf`); Redis
+  7.0.15 records an SREM for each member (`spopWithCountCommand`, cases 2
+  and 3), which a transaction or a script then wraps with the rest of its
+  records. Both replay to the same set, so only the file's bytes differ.
+  The change: one SREM record per member. Validate with a records case
+  through `check_held_records` or the network path, against Redis's file.
+  Reopen when the file's bytes are compared with Redis's for sets, or when
+  a consumer replays firn's file into Redis.
+- **A list at 2^32 elements drops what is pushed onto it.** firn's lists
+  live in a deque whose ceiling is 2^32 elements (`pkg::store::ceiling`);
+  a push or a move onto a list at the ceiling drops the element and
+  answers as if it were stored, and LINSERT drops it and answers -1 as for
+  a missing pivot (`firn/commands/lists.wf`, `list_room` and its callers),
+  so LMOVE from another list onto a full one removes the source's element
+  and stores it nowhere. Redis 7.0.15 has no such ceiling
+  on a 64-bit host. The change: refuse the command before it changes
+  anything, with an error naming the limit, and check LMOVE's destination
+  before popping its source. Validate with a list built at the ceiling in
+  a unit test of the deque helpers, since a network case would need tens of
+  gigabytes. Reopen when a workload approaches a billion elements in one
+  list, or with the next change to the list representation.
 - **Replay still differs from Redis's loader in two cases.** A file that
   does not parse, cannot be read or holds a block larger than the input
   window's ceiling now stops firn with status 4, as Redis 7.0.15 exits
@@ -156,9 +186,8 @@ written while firn lived in the Whitefoot repository; a path such as
   answers as unknown, and a command table, which `COMMAND` and
   `COMMAND COUNT` report empty and `COMMAND DOCS`, `INFO`, `LIST` and
   `GETKEYS` answer as unknown subcommands; `KEYS` and `SCAN`, which can match
-  with `glob_match` (`firn/bytes/bytes.wf`), RESP3, which
-  `HELLO 3` refuses, `LMPOP` and the blocking list commands, `SSCAN`,
-  `MULTI` and `EXEC`, publish and subscribe, and a random hash seed; and
+  with `glob_match` (`firn/bytes/bytes.wf`), `LMPOP` and the blocking list commands, `SSCAN`,
+  `WATCH`, publish and subscribe, and a random hash seed; and
   `RANDOMKEY`, `SORT`, `LCS`, `OBJECT`, `DUMP`, `RESTORE`, `MOVE`, `MIGRATE`,
   `WAIT`, `HSCAN`, `ZSCAN`, `ZRANGESTORE`, `ZRANDMEMBER`, `ZMPOP` and
   `BZMPOP`, `BZPOPMIN` and `BZPOPMAX`, and `ZDIFF`, `ZINTER`, `ZUNION`,
@@ -202,13 +231,26 @@ written while firn lived in the Whitefoot repository; a path such as
   where Redis wraps them in `MULTI` and `EXEC`, and no `SELECT 0`.** When
   one command propagates more than one record, a key it found expired and
   the command itself, or several expired keys, Redis 7.0.15 brackets them
-  in `MULTI` and `EXEC`; firn has no transactions to replay, so it writes
-  the records alone, which replays to the same state. Nor does firn, with
+  in `MULTI` and `EXEC`; firn writes such a command's records alone, which
+  replays to the same state. Nor does firn, with
   one database, write the `SELECT 0` Redis writes before its first record.
   `firn_records_its_writes_as_redis_propagates_them` compares firn's file
-  with Redis's but for both. The change: write each where Redis does. Reopen
-  when firn answers `MULTI` and `EXEC`, or `SELECT` with more than one
-  database.
+  with Redis's but for both. The change: write each where Redis does, as
+  `EXEC` already wraps a transaction's records. Reopen now for the brackets,
+  since firn answers `MULTI` and `EXEC` and replays them; the `SELECT 0`
+  waits for more than one database.
+
+- **firn reads the calendar clock once for each read of a connection,
+  where Redis reads it before each command.** `serve`
+  (`firn/server/server.wf`) reads the time once after a read and gives it to
+  every command of that read, `EXEC` and its queued commands among them;
+  Redis 7.0.15's `call` refreshes its cached time before each top-level
+  command. The difference shows only when a read's commands take long
+  enough for the clock to move, as a long pipeline can, and then in expiry
+  checks, relative deadlines and TTL replies. The change: read the clock
+  before each command, after measuring what the read costs per command.
+  Reopen when a consumer's commands depend on it or a measurement shows the
+  read is cheap.
 
 - **No case checks that the expiring context keeps a key through its
   expiry's millisecond.** `take_due` (`firn/store/store.wf`) leaves a
@@ -325,8 +367,8 @@ written while firn lived in the Whitefoot repository; a path such as
   that are true of firn, but no memory used, processor time, commands or
   errors counted, keyspace hits or misses, keys expired or changes since a
   save, so its CPU, Commandstats, Errorstats and Latencystats sections are
-  empty; the keyspace line's `expires` and `avg_ttl` are 0 whatever the keys
-  hold. Tests of Redis's suite that read those fields fail on firn: all three
+  empty, and the keyspace line leaves out `expires` and `avg_ttl`. Tests of
+  Redis's suite that read those fields fail on firn: all three
   of `unit/info-command`, which expect `rejected_calls` in Commandstats, and
   those reading `used_memory`, `total_error_replies` or `expired_keys`.
   Counting `expires` needs the statements that set, clear or remove an
@@ -406,7 +448,46 @@ written while firn lived in the Whitefoot repository; a path such as
   Reopen when a workload ranks or counts in large sorted sets, or with the
   library's next ordered map change.
 
+- **INFO cannot yet run under EXEC or a script's held command interface.**
+  `info_plan`, `info_body` and `info_finish` in `firn/commands/info.wf`
+  now share the network implementation, but `ScriptCommands.call` has no
+  `ServerState`: `INFO server` needs `started`, and `INFO stats` needs
+  `connections`. Neither value is in `Client`, `Time` or `Meta`. A server
+  snapshot passed by the outer caller, or a server-state target held beside
+  the keyspace, needs an architecture-approved interface change, including
+  `held_run`, EXEC and the scripting caller. Do not supply invented counts
+  or silently omit these sections. Reopen when that interface is extended;
+  validate section selection, uptime and connection counters against Redis
+  7.0.15, and INFO keyspace after earlier writes in the same statement.
+
+- **TIME uses the connection's last clock reading.** The network path and
+  held code 162 both call `run_time`, which reads `Client.unix_us`; Redis
+  7.0.15's `timeCommand` calls `gettimeofday` for each invocation, even
+  inside EXEC or Lua. Expiry time remains frozen independently. A long
+  script can therefore report stale time in firn. Fixing this needs a clock
+  capability in the held interface and a nonwaiting calendar read, without
+  changing expiry's frozen `Time`. Reopen with the held-interface work;
+  validate TIME's two decimal bulk strings and microsecond range, and
+  compare two calls around substantial script work without changing expiry.
+
 ## Tests
+
+- **Thirteen of Redis's suite tests are lost to a connection left in
+  RESP3 or in deferred raw reading by a test firn cannot pass.** Since firn
+  answers `HELLO 3`, tests of `unit/type/zset` that run `r hello 3` and then
+  a command firn lacks stop before their `r hello 2`: `ZINTER RESP3` on
+  `ZINTER`, and the listpack iteration's `ZMPOP`, `BZPOPMIN`/`BZPOPMAX` and
+  `BZMPOP` RESP3 tests on those commands, so twelve later tests, four
+  `ZPOP` ones and eight of the skiplist iteration, read RESP2 replies as
+  RESP3 (`a -1.0` for `a -1`). In `unit/protocol`, `RESP3 attributes
+  readraw` fails on `DEBUG PROTOCOL` with deferred and raw reading on, and
+  `test large number of args` then returns without reading its reply. They
+  passed before only because `HELLO 3` failed first; the ratchet's lists
+  were recorded again without them (run 37460090430), which also added 106
+  tests RESP3 now passes. The change: implement `ZINTER`, `ZUNION` and
+  `ZDIFF` with their stores, `ZMPOP`, `BZPOPMIN`, `BZPOPMAX` and `BZMPOP`,
+  and `DEBUG PROTOCOL`, then record the lists again; the thirteen should
+  return. Reopen when firn adds those commands.
 
 - **firn's network cases now and then lose their first connection when many
   cases run at once on a 32-CPU host.** `cargo test --test corpus` on
@@ -468,4 +549,53 @@ written while firn lived in the Whitefoot repository; a path such as
 
 ## Whitefoot requirements
 
-None filed since firn left the Whitefoot repository.
+- **A program cannot enumerate the keys of a `ConcurrentHashMap`.** The
+  specification (v0.93, the concurrent map paragraph of [SHARE-1] and
+  [SHARE-2]) gives a map keyed access, key-set access and `map_count`, and
+  no way to learn which keys it holds. Minimal witness: given
+  `m: Shared<ConcurrentHashMap<u64>>` after `m["a"] = Some(1)` and
+  `m["b"] = Some(2)`, no program can compute the list `["a", "b"]` without
+  knowing those keys already. Redis's `SCAN`, `KEYS` and `RANDOMKEY` need
+  it; connect-redis, a selected consumer, lists and clears its sessions with
+  `SCAN MATCH COUNT`
+  ([consumers](../research/investigations/consumers/README.md#what-the-milestone-needs-from-firn)).
+  `SCAN` also needs a resumable cursor that returns every key present for
+  the whole scan at least once while the map grows, shrinks or is written by
+  other contexts, as Redis's reverse-binary cursor over its table does. The
+  change: a map operation that visits a bounded range of the map's slots
+  from a cursor and returns the next cursor, under the same guarantee.
+  Keeping a second index of keys beside the map in firn would double every
+  write's bookkeeping, so the gap belongs to Whitefoot. Reopen when
+  Whitefoot specifies it.
+
+- **A held concurrent map cannot be emptied without another held map.**
+  At pin `364f86c2fd16151103ac3947e5bf069727686733`, the minimal operation
+  needed is a nonwaiting function taking `keys: &ConcurrentHashMap<V>`
+  with `writes(keys)` that leaves every entry `None`. SHARE-1/PRE-1 expose
+  `map_count`, per-key access and `shared_map_new`, but no clear or iterator;
+  TYPE-9 admits maps only as shared state. `swap` needs a second held map,
+  reached through another atomic target, and SHARE-2 makes that acquisition
+  waiting. `ScriptCommands.call` cannot wait. Consequently FLUSHALL/FLUSHDB
+  (reserved held codes 164/165) have shared network parts but remain
+  unavailable inside EXEC and scripts. A fixed supply of fresh maps cannot
+  support an arbitrary number of Lua flush calls. Add a map-clear operation
+  in Whitefoot, a neighbor of the whole-map iteration Q64 asks for, then
+  write FLUSHALL's body over the held map with it, keeping prior effects
+  and the outer statement. Reopen for these commands; validate two
+  flushes separated by writes, expiry-queue removal, empty-map propagation,
+  concurrent atomicity, and AOF replay against Redis 7.0.15. No compiler
+  change or pin upgrade has been made here.
+
+- **A program cannot read a socket address.** The specification (v0.93,
+  section 14, `std::net`) makes `SocketAddress` opaque, built only by
+  `socket_address_v4` and `socket_address_v6`; `tcp_accept` returns the
+  peer's address, but nothing reads it, and nothing gives an accepted
+  connection's own address. Minimal witness: after `tcp_accept` returns
+  `AcceptedConnection(connection: c, peer: p)` for a client at
+  127.0.0.1:50000, no program can compute the text `127.0.0.1:50000` from
+  `p`. Impact: Redis's `CLIENT INFO` and `CLIENT LIST` report both as `addr`
+  and `laddr`, which firn's `CLIENT INFO` leaves out; no selected consumer
+  reads them, and Redis's own `CLIENT INFO` test does. Change: a function
+  giving a socket address's family, address bytes and port, and one giving
+  an accepted connection's local address. Reopen when a consumer or a test
+  firn should pass needs `addr` or `laddr`.

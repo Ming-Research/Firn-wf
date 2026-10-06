@@ -46,6 +46,9 @@ alias log_input = pkg::store::log_input;
 alias log_removal = pkg::store::log_removal;
 alias log_word = pkg::store::log_word;
 alias queue_expiry = pkg::store::queue_expiry;
+alias queue_due = pkg::store::queue_due;
+alias Due = pkg::store::Due;
+alias PriorityQueue = std::collections::priority_queue::PriorityQueue;
 alias read_integer = pkg::bytes::read_integer;
 alias reply_byte = pkg::protocol::reply_byte;
 alias reply_echoed = pkg::protocol::reply_echoed;
@@ -166,6 +169,16 @@ struct ExpireOptions {
   flags: u64;
   error: u64;
   at: u64;
+}
+
+struct ExpirePlan {
+  error: u64;
+  at: u64;
+  flags: u64;
+  deadline: i64;
+  expires: u64;
+  remove_now: Bool;
+  as_sent: Bool;
 }
 
 fn key_at(input: &[u8], args: &Box<Slots<Span>>, index: u64) -> made: Key reads(input), reads(args) {
@@ -368,18 +381,18 @@ fn run_del(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
           let payload = key_position(positions: &client^.key_metadata, index: at);
           let place = named_bounds(input: input, args: args, payload: payload);
           let key = &input^[place.start..place.end];
-          log_removal(log: &m^.log, key: key);
+          let lapsed = True();
+          let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key);
         }
       }
     }
     if removed > 0_u64 {
       if logged {
-        log_command(log: &m^.log, input: input, args: args);
+        let appended = mset_meta(log: &m^.log, logged: logged, input: input, args: args);
       }
     }
   }
-  let answer = cvt.wrap::<u64, i64>(removed);
-  reply_integer(client: client, value: answer);
+  count_finish(client: client, count: removed);
   return unit;
 }
 
@@ -402,13 +415,13 @@ fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
         if logged {
           let place = named_bounds(input: input, args: args, payload: payload);
           let key = &input^[place.start..place.end];
-          log_removal(log: &m^.log, key: key);
+          let lapsed = True();
+          let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key);
         }
       }
     }
   }
-  let answer = cvt.wrap::<u64, i64>(live);
-  reply_integer(client: client, value: answer);
+  count_finish(client: client, count: live);
   return unit;
 }
 
@@ -421,25 +434,10 @@ fn run_type(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     set kind = entry_kind(slot: slot, client: client);
-    if client^.state == state_expired {
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
+    let removed = client^.state == state_expired;
+    let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: removed, key: key);
   }
-  if kind == 1_u64 {
-    reply_word(client: client, word: &reply_type_string[0_u64..9_u64]);
-  } else if kind == 2_u64 {
-    reply_word(client: client, word: &reply_type_list[0_u64..7_u64]);
-  } else if kind == 3_u64 {
-    reply_word(client: client, word: &reply_type_set[0_u64..6_u64]);
-  } else if kind == 4_u64 {
-    reply_word(client: client, word: &reply_type_hash[0_u64..7_u64]);
-  } else if kind == 5_u64 {
-    reply_word(client: client, word: &reply_type_zset[0_u64..7_u64]);
-  } else {
-    reply_word(client: client, word: &reply_type_none[0_u64..7_u64]);
-  }
+  type_finish(client: client, kind: kind);
   return unit;
 }
 
@@ -619,28 +617,19 @@ fn reply_unsupported(client: &Client, input: &[u8], span: Span) -> result: unit 
   return unit;
 }
 
-fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, scale: u64, absolute: Bool, invalid: &[u8]) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(client) waits {
-  doc "EXPIRE key seconds (scale 1000), PEXPIRE key milliseconds (scale 1), EXPIREAT key unix-seconds (absolute, scale 1000) and PEXPIREAT key unix-milliseconds (absolute), each with NX, XX, GT or LT: gives a live key the expiry at those calendar milliseconds, a relative amount counting from the command's time, when the options allow it, or removes the key when that time has passed, and answers 1 when it did either and 0 otherwise, as Redis 7.0.15's expireGenericCommand does. The options are judged first, then the amount: one whose milliseconds, or their sum with the command's time, leave the range of i64 is answered with invalid. The file records an expiry as PEXPIREAT key at with the options as they were sent, a PEXPIREAT as it was sent, a removal as DEL key, and a key found expired as log_removal does. While a file is replayed an expiry already past is kept as one already reached, as Redis keeps it while loading, so a later PERSIST in the file still finds the key.";
+fn expire_plan(input: &[u8], args: &Box<Slots<Span>>, unix_ms: u64, loading: Bool, scale: u64, absolute: Bool) -> plan: ExpirePlan reads(input), reads(args) {
+  doc "EXPIRE's parsing, before any key is read: the options are judged first, then the amount, and the plan records the first refusal in error, 1 an unknown option at the argument at, 2 NX with XX, GT or LT, 3 GT with LT, 4 an amount that is not an integer and 5 one whose milliseconds, or their sum with the command's calendar time unix_ms, leave the range of i64, or otherwise the deadline in calendar milliseconds, the expiry to hold, at least 1, whether the deadline has passed so the key is removed instead, never while a file is replayed, and whether the file records the command as sent, a PEXPIREAT.";
   let options = expire_options(input: input, args: args);
-  if options.error == 1_u64 {
-    let option = arg(args: args, index: options.at);
-    reply_unsupported(client: client, input: input, span: option);
-    return unit;
+  let no = False();
+  let plan = ExpirePlan(error: options.error, at: options.at, flags: options.flags, deadline: 0_i64, expires: 1_u64, remove_now: no, as_sent: no);
+  if options.error != 0_u64 {
+    return plan;
   }
-  if options.error == 2_u64 {
-    reply_error(client: client, word: &text_expire_nx[0_u64..67_u64]);
-    return unit;
-  }
-  if options.error == 3_u64 {
-    reply_error(client: client, word: &text_expire_gt[0_u64..57_u64]);
-    return unit;
-  }
-  let key_span = arg(args: args, index: 1_u64);
   let amount = arg(args: args, index: 2_u64);
   let number = read_integer(input: input, start: amount.start, length: amount.length);
   if number.state != 1_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
+    set plan.error = 4_u64;
+    return plan;
   }
   let deadline = number.value;
   if scale == 1000_u64 {
@@ -648,106 +637,172 @@ fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     let below = deadline < -9223372036854775_i64;
     let outside = bor(above, below);
     if outside {
-      reply_error(client: client, word: invalid);
-      return unit;
+      set plan.error = 5_u64;
+      return plan;
     }
     set deadline = deadline *wrap 1000_i64;
   }
-  let now = cvt.wrap::<u64, i64>(time^.unix_ms);
+  let now = cvt.wrap::<u64, i64>(unix_ms);
   let base = now;
   if absolute {
     set base = 0_i64;
   }
   let room = 9223372036854775807_i64 -wrap base;
   if deadline > room {
-    reply_error(client: client, word: invalid);
-    return unit;
+    set plan.error = 5_u64;
+    return plan;
   }
   set deadline = deadline +wrap base;
-  let remove_now = deadline <= now;
-  if time^.loading {
-    set remove_now = False();
+  set plan.deadline = deadline;
+  set plan.remove_now = deadline <= now;
+  if loading {
+    set plan.remove_now = False();
   }
-  let expires = 1_u64;
   if deadline > 0_i64 {
-    set expires = cvt.wrap::<i64, u64>(deadline);
+    set plan.expires = cvt.wrap::<i64, u64>(deadline);
   }
-  let as_sent = False();
   if absolute {
-    set as_sent = scale == 1_u64;
+    set plan.as_sent = scale == 1_u64;
+  }
+  return plan;
+}
+
+fn expire_refused(client: &Client, input: &[u8], args: &Box<Slots<Span>>, plan: &ExpirePlan, invalid: &[u8]) -> refused: Bool reads(input), reads(args), reads(plan), reads(invalid), writes(client) {
+  doc "Writes the reply to a refused EXPIRE as Redis 7.0.15 writes it, invalid being the error for an amount out of range, and answers whether the plan was refused.";
+  if plan^.error == 0_u64 {
+    return False();
+  }
+  if plan^.error == 1_u64 {
+    let option = arg(args: args, index: plan^.at);
+    reply_unsupported(client: client, input: input, span: option);
+  } else if plan^.error == 2_u64 {
+    reply_error(client: client, word: &text_expire_nx[0_u64..67_u64]);
+  } else if plan^.error == 3_u64 {
+    reply_error(client: client, word: &text_expire_gt[0_u64..57_u64]);
+  } else if plan^.error == 4_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  } else {
+    reply_error(client: client, word: invalid);
+  }
+  return True();
+}
+
+fn expire_body(slot: &Option<Entry>, client: &Client, plan: &ExpirePlan) -> outcome: u64 reads(plan), writes(slot), writes(client) {
+  doc "EXPIRE's work on its key's entry, held by the caller: when the entry is live and the options allow the deadline, removes it if the deadline has passed and answers 2, or gives it the expiry and answers 1; otherwise 0. An entry found expired is removed, client's state recording it for the file.";
+  let kind = entry_kind(slot: slot, client: client);
+  if kind == 0_u64 {
+    return 0_u64;
+  }
+  let current = held_expiry(slot: slot);
+  let allowed = expire_allowed(flags: plan^.flags, current: current, deadline: plan^.deadline);
+  if allowed {
+    if plan^.remove_now {
+      set slot^ = None<Entry>();
+      return 2_u64;
+    }
+    hold_expiry(slot: slot, expires: plan^.expires);
+    return 1_u64;
+  }
+  return 0_u64;
+}
+
+fn expire_meta(due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, plan: &ExpirePlan, outcome: u64, lapsed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log) {
+  doc "EXPIRE's metadata after its work: queues a new expiry, and when logged appends what changed and answers how many commands it appended: a key found expired as log_removal records it, an expiry as PEXPIREAT key at with the options as they were sent or a PEXPIREAT as it was sent, and a removal as DEL key.";
+  let appended = 0_u64;
+  if lapsed {
+    if logged {
+      log_removal(log: log, key: key);
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  if outcome == 1_u64 {
+    queue_due(due: due, key: key, at: plan^.expires, env: env);
+    if logged {
+      if plan^.as_sent {
+        log_command(log: log, input: input, args: args);
+      } else {
+        log_expire_options(log: log, input: input, args: args, at_ms: plan^.expires);
+      }
+      set appended = appended +wrap 1_u64;
+    }
+  } else if outcome == 2_u64 {
+    if logged {
+      let key_span = arg(args: args, index: 1_u64);
+      log_key_word(log: log, word: &word_del[0_u64..3_u64], input: input, key: key_span);
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  return appended;
+}
+
+fn expire_finish(client: &Client, outcome: u64) -> result: unit writes(client) {
+  doc "EXPIRE's reply after its work: 1 when it gave the key the expiry or removed it, 0 otherwise.";
+  if outcome == 0_u64 {
+    reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+    return unit;
+  }
+  reply_word(client: client, word: &reply_one[0_u64..4_u64]);
+  return unit;
+}
+
+fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, scale: u64, absolute: Bool, invalid: &[u8]) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(client) waits {
+  doc "EXPIRE key seconds (scale 1000), PEXPIRE key milliseconds (scale 1), EXPIREAT key unix-seconds (absolute, scale 1000) and PEXPIREAT key unix-milliseconds (absolute), each with NX, XX, GT or LT: gives a live key the expiry at those calendar milliseconds, a relative amount counting from the command's time, when the options allow it, or removes the key when that time has passed, and answers 1 when it did either and 0 otherwise, as Redis 7.0.15's expireGenericCommand does, in its four parts: expire_plan, expire_body, expire_meta and expire_finish. The options are judged first, then the amount: one whose milliseconds, or their sum with the command's time, leave the range of i64 is answered with invalid. The file records an expiry as PEXPIREAT key at with the options as they were sent, a PEXPIREAT as it was sent, a removal as DEL key, and a key found expired as log_removal does. While a file is replayed an expiry already past is kept as one already reached, as Redis keeps it while loading, so a later PERSIST in the file still finds the key.";
+  let plan = expire_plan(input: input, args: args, unix_ms: time^.unix_ms, loading: time^.loading, scale: scale, absolute: absolute);
+  let refused = expire_refused(client: client, input: input, args: args, plan: &plan, invalid: invalid);
+  if refused {
+    return unit;
   }
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   set client^.now = time^.check;
-  let done = False();
+  let outcome = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let kind = entry_kind(slot: slot, client: client);
-    if client^.state == state_expired {
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if kind != 0_u64 {
-      let current = held_expiry(slot: slot);
-      let allowed = expire_allowed(flags: options.flags, current: current, deadline: deadline);
-      if allowed {
-        if remove_now {
-          set slot^ = None<Entry>();
-          if logged {
-            log_key_word(log: &m^.log, word: &word_del[0_u64..3_u64], input: input, key: key_span);
-          }
-        } else {
-          hold_expiry(slot: slot, expires: expires);
-          queue_expiry(meta: m, key: key, at: expires, env: env);
-          if logged {
-            if as_sent {
-              log_command(log: &m^.log, input: input, args: args);
-            } else {
-              log_expire_options(log: &m^.log, input: input, args: args, at_ms: expires);
-            }
-          }
-        }
-        set done = True();
-      }
-    }
+    set outcome = expire_body(slot: slot, client: client, plan: &plan);
+    let lapsed = client^.state == state_expired;
+    let appended = expire_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, outcome: outcome, lapsed: lapsed, input: input, args: args, key: key, env: env);
   }
-  if done {
-    reply_word(client: client, word: &reply_one[0_u64..4_u64]);
-    return unit;
-  }
-  reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+  expire_finish(client: client, outcome: outcome);
   return unit;
 }
 
-fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, absolute: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "TTL key and PTTL key: answers the time a live key has left, in seconds rounded as Redis rounds them or in milliseconds; EXPIRETIME key and PEXPIRETIME key (absolute): its expiry's calendar time, in seconds rounded so or in milliseconds; -1 for a key without an expiry and -2 for an absent or expired one, removing an expired key, which the file records as log_removal does.";
-  let remaining = Remaining(at: 0_u64, now: time^.check, state: 3_u64);
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let found = read_expiry(env: &remaining, value: held);
-      }
-      None() => {
-      }
+fn ttl_body(slot: &Option<Entry>, remaining: &Remaining) -> removed: Bool writes(slot), writes(remaining) {
+  doc "TTL's work on its key's entry, held by the caller: records in remaining whether the entry has an expiry, none, or is absent or expired, and removes an expired entry, answering whether it did, whose removal the file records.";
+  match slot^ {
+    Some(value: held) => {
+      let found = read_expiry(env: remaining, value: held);
     }
-    if remaining.state == 0_u64 {
-      set slot^ = None<Entry>();
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
+    None() => {
     }
   }
-  if remaining.state == 1_u64 {
+  if remaining^.state == 0_u64 {
+    set slot^ = None<Entry>();
+    return True();
+  }
+  return False();
+}
+
+fn ttl_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, key: &[u8]) -> appended: u64 reads(key), writes(log) {
+  doc "TTL's metadata after its work: when it removed an expired entry and the keyspace keeps a file, appends the removal as log_removal records it and answers 1; otherwise 0.";
+  if removed {
+    if logged {
+      log_removal(log: log, key: key);
+      return 1_u64;
+    }
+  }
+  return 0_u64;
+}
+
+fn ttl_finish(client: &Client, remaining: &Remaining, now: u64, in_seconds: Bool, absolute: Bool) -> result: unit reads(remaining), writes(client) {
+  doc "TTL's reply after its work: the time left from now, or the expiry's calendar time when absolute, in seconds rounded as Redis rounds them or in milliseconds; -1 for a key without an expiry and -2 for an absent or expired one.";
+  if remaining^.state == 1_u64 {
     reply_word(client: client, word: &reply_no_expiry[0_u64..5_u64]);
     return unit;
   }
-  if remaining.state == 2_u64 {
-    let answer = remaining.at -wrap time^.check;
+  if remaining^.state == 2_u64 {
+    let answer = remaining^.at -wrap now;
     if absolute {
-      set answer = remaining.at;
+      set answer = remaining^.at;
     }
     if in_seconds {
       let rounded = answer +wrap 500_u64;
@@ -761,6 +816,20 @@ fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   return unit;
 }
 
+fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, absolute: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "TTL key and PTTL key: answers the time a live key has left, in seconds rounded as Redis rounds them or in milliseconds; EXPIRETIME key and PEXPIRETIME key (absolute): its expiry's calendar time, in seconds rounded so or in milliseconds; -1 for a key without an expiry and -2 for an absent or expired one, removing an expired key, which the file records as log_removal does; in the parts ttl_body, ttl_meta and ttl_finish.";
+  let remaining = Remaining(at: 0_u64, now: time^.check, state: 3_u64);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let logged = store^.logging;
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let removed = ttl_body(slot: slot, remaining: &remaining);
+    let appended = ttl_meta(log: &m^.log, logged: logged, removed: removed, key: key);
+  }
+  ttl_finish(client: client, remaining: &remaining, now: time^.check, in_seconds: in_seconds, absolute: absolute);
+  return unit;
+}
+
 fn run_persist(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "PERSIST key: removes a live key's expiry and answers 1 when it had one, 0 otherwise, removing an expired key, which the file records as log_removal does.";
   let expiry = Expiry(at: 0_u64, now: time^.check, state: state_absent);
@@ -768,30 +837,10 @@ fn run_persist(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let outcome = clear_expiry(env: &expiry, value: held);
-      }
-      None() => {
-      }
-    }
-    if expiry.state == state_expired {
-      set slot^ = None<Entry>();
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if expiry.state == state_done {
-      if store^.logging {
-        log_key_word(log: &m^.log, word: &word_persist[0_u64..7_u64], input: input, key: key_span);
-      }
-    }
+    persist_body(slot: slot, expiry: &expiry);
+    let appended = persist_meta(log: &m^.log, logged: store^.logging, expiry: &expiry, input: input, key_span: key_span, key: key);
   }
-  if expiry.state == state_done {
-    reply_word(client: client, word: &reply_one[0_u64..4_u64]);
-    return unit;
-  }
-  reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+  persist_finish(client: client, expiry: &expiry);
   return unit;
 }
 
@@ -799,10 +848,9 @@ fn run_dbsize(store: &Keyspace, client: &Client) -> result: unit reads(store), w
   doc "DBSIZE: answers how many keys the keyspace holds, counting an expired key not yet removed, as Redis does, in one statement that holds the keyspace's map whole.";
   let size = 0_u64;
   atomic t = &store^.keys {
-    set size = map_count::<Entry>(map: t);
+    set size = dbsize_body(keys: t);
   }
-  let answer = cvt.wrap::<u64, i64>(size);
-  reply_integer(client: client, value: answer);
+  count_finish(client: client, count: size);
   return unit;
 }
 
@@ -959,56 +1007,84 @@ fn held_copy(slot: &Option<Entry>) -> made: Option<Entry> reads(slot) {
   }
 }
 
-fn run_rename(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, fresh: Bool) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
-  doc "RENAME key newkey and RENAMENX key newkey (fresh): moves a live key's value and expiry to newkey, replacing any value newkey held, or for RENAMENX only when newkey is absent, in one statement on both keys' entries, as Redis 7.0.15's renameGenericCommand does: an absent source is refused as no such key, one key named as both is left as it is, answering OK or 0, and RENAMENX over a live key answers 0. The file records the command as it was sent when it moved the value, after each key found expired as log_removal records it, and the expiry is queued under the new name.";
+struct KeyPair {
+  source: u64;
+  target: u64;
+}
+
+struct TransferWork {
+  outcome: u64;
+  at: u64;
+  source_expired: Bool;
+  target_expired: Bool;
+}
+
+struct CopyPlan {
+  replace: Bool;
+  error: u64;
+}
+
+fn rename_parse(input: &[u8], args: &Box<Slots<Span>>, keys: &KeySet) -> pair: KeyPair reads(input), reads(args), writes(keys) {
+  doc "Inserts the source and destination arguments of RENAME, RENAMENX or COPY into the caller's key set and returns their insertion indices; equal keys have one index.";
   let source_place = key_bounds(input: input, args: args, index: 1_u64);
   let source_key = &input^[source_place.start..source_place.end];
   let target_place = key_bounds(input: input, args: args, index: 2_u64);
   let target_key = &input^[target_place.start..target_place.end];
-  let keys = key_set_new(capacity: 2_u64);
-  let source = key_set_insert(keys: &keys, key: source_key);
-  let target = key_set_insert(keys: &keys, key: target_key);
-  set client^.now = time^.check;
-  let logged = store^.logging;
-  let outcome = rename_missing;
-  atomic slots = &store^.keys[keys], m = &store^.meta {
-    if source < slots^.len {
-      let kind = entry_kind(slot: &slots^[source], client: client);
-      if client^.state == state_expired {
-        if logged {
-          log_removal(log: &m^.log, key: source_key);
-        }
-      }
-      if kind == 0_u64 {
-      } else if keys.len == 1_u64 {
-        set outcome = rename_same;
-      } else if target < slots^.len {
-        let held = entry_kind(slot: &slots^[target], client: client);
-        if client^.state == state_expired {
-          if logged {
-            log_removal(log: &m^.log, key: target_key);
-          }
-        }
-        let occupied = held != 0_u64;
-        let refused = band(fresh, occupied);
-        if refused {
-          set outcome = rename_occupied;
-        } else {
-          let moved = None<Entry>();
-          swap(first: &slots^[source], second: &moved);
-          let at = held_expiry(slot: &moved);
-          set slots^[target] = move moved;
-          if at != 0_u64 {
-            queue_expiry(meta: m, key: target_key, at: at, env: env);
-          }
-          if logged {
-            log_command(log: &m^.log, input: input, args: args);
-          }
-          set outcome = rename_done;
-        }
+  let source = key_set_insert(keys: keys, key: source_key);
+  let target = key_set_insert(keys: keys, key: target_key);
+  return KeyPair(source: source, target: target);
+}
+
+fn rename_body(slots: &Entries<Entry>, source: u64, target: u64, client: &Client, fresh: Bool) -> work: TransferWork writes(slots), writes(client) {
+  doc "RENAME and RENAMENX over the named entries, checking the source before an equal or occupied target, moving the value with its expiry, and recording which lookups removed expired entries. The caller sets client.now to its statement's time.";
+  let no = False();
+  let work = TransferWork(outcome: rename_missing, at: 0_u64, source_expired: no, target_expired: no);
+  if source < slots^.len {
+    let kind = entry_kind(slot: &slots^[source], client: client);
+    set work.source_expired = client^.state == state_expired;
+    if kind == 0_u64 {
+    } else if source == target {
+      set work.outcome = rename_same;
+    } else if target < slots^.len {
+      let held = entry_kind(slot: &slots^[target], client: client);
+      set work.target_expired = client^.state == state_expired;
+      let occupied = held != 0_u64;
+      let refused = band(fresh, occupied);
+      if refused {
+        set work.outcome = rename_occupied;
+      } else {
+        let moved = None<Entry>();
+        swap(first: &slots^[source], second: &moved);
+        set work.at = held_expiry(slot: &moved);
+        set slots^[target] = move moved;
+        set work.outcome = rename_done;
       }
     }
   }
+  return work;
+}
+
+fn transfer_meta(due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, work: &TransferWork, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(input), reads(args), reads(env), writes(due), writes(log) {
+  doc "RENAME, RENAMENX and COPY metadata: records source then destination removals, queues a transferred expiry and records a successful command exactly as sent, returning the record count for a script or transaction's effects wrapper.";
+  let source_place = key_bounds(input: input, args: args, index: 1_u64);
+  let source_key = &input^[source_place.start..source_place.end];
+  let target_place = key_bounds(input: input, args: args, index: 2_u64);
+  let target_key = &input^[target_place.start..target_place.end];
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: work^.source_expired, key: source_key);
+  let removed = mset_lapse_meta(log: log, logged: logged, lapsed: work^.target_expired, key: target_key);
+  set appended = appended +wrap removed;
+  if work^.outcome == rename_done {
+    if work^.at != 0_u64 {
+      queue_due(due: due, key: target_key, at: work^.at, env: env);
+    }
+    let recorded = mset_meta(log: log, logged: logged, input: input, args: args);
+    set appended = appended +wrap recorded;
+  }
+  return appended;
+}
+
+fn rename_finish(client: &Client, outcome: u64, fresh: Bool) -> result: unit writes(client) {
+  doc "RENAME's OK or no-such-key error, and RENAMENX's 1 or 0 or no-such-key error.";
   if outcome == rename_missing {
     reply_error(client: client, word: &text_no_key[0_u64..15_u64]);
     return unit;
@@ -1025,8 +1101,8 @@ fn run_rename(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   return unit;
 }
 
-fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
-  doc "COPY source destination [DB destination-db] [REPLACE]: copies a live key's value and expiry to destination, answering 1, unless destination is live and REPLACE is absent, answering 0, as does an absent source, in one statement on both keys' entries, as Redis 7.0.15's copyCommand does with one database. The options are read in order, each word compared in either case up to a zero byte: REPLACE, and DB followed by an integer of the int range, of which only 0, the one database, is in range; any other word, DB with nothing after it, and one key named as both are refused. The file records the command as it was sent when it copied, after each key found expired as log_removal records it, and the expiry is queued under the destination.";
+fn copy_parse(input: &[u8], args: &Box<Slots<Span>>) -> plan: CopyPlan reads(input), reads(args) {
+  doc "COPY's options in their sent order, then the same-key check, before any lookup: REPLACE and DB 0, case insensitive up to a zero byte. Errors are 1 invalid integer, 2 outside int range, 3 unavailable database, 4 syntax, 5 equal source and destination.";
   let count = args^.inner.len;
   let replace = False();
   let index = 3_u64;
@@ -1046,24 +1122,20 @@ fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       let amount = arg(args: args, index: following);
       let number = read_integer(input: input, start: amount.start, length: amount.length);
       if number.state != 1_u64 {
-        reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-        return unit;
+        return CopyPlan(replace: replace, error: 1_u64);
       }
       let above = number.value > 2147483647_i64;
       let below = number.value < -2147483648_i64;
       let outside = bor(above, below);
       if outside {
-        reply_error(client: client, word: &text_int_range[0_u64..72_u64]);
-        return unit;
+        return CopyPlan(replace: replace, error: 2_u64);
       }
       if number.value != 0_i64 {
-        reply_error(client: client, word: &text_db_range[0_u64..28_u64]);
-        return unit;
+        return CopyPlan(replace: replace, error: 3_u64);
       }
       set index = following;
     } else {
-      reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
-      return unit;
+      return CopyPlan(replace: replace, error: 4_u64);
     }
     set index = index +wrap 1_u64;
   }
@@ -1071,55 +1143,179 @@ fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let source_key = &input^[source_place.start..source_place.end];
   let target_place = key_bounds(input: input, args: args, index: 2_u64);
   let target_key = &input^[target_place.start..target_place.end];
-  let keys = key_set_new(capacity: 2_u64);
-  let source = key_set_insert(keys: &keys, key: source_key);
-  let target = key_set_insert(keys: &keys, key: target_key);
   let same = windows_order(left: source_key, right: target_key);
   if same == 0_i32 {
-    reply_error(client: client, word: &text_same_object[0_u64..47_u64]);
-    return unit;
+    return CopyPlan(replace: replace, error: 5_u64);
   }
-  set client^.now = time^.check;
-  let logged = store^.logging;
-  let done = False();
-  atomic slots = &store^.keys[keys], m = &store^.meta {
-    if source < slots^.len {
-      let kind = entry_kind(slot: &slots^[source], client: client);
-      if client^.state == state_expired {
-        if logged {
-          log_removal(log: &m^.log, key: source_key);
-        }
-      }
-      if kind != 0_u64 {
-        if target < slots^.len {
-          let held = entry_kind(slot: &slots^[target], client: client);
-          if client^.state == state_expired {
-            if logged {
-              log_removal(log: &m^.log, key: target_key);
-            }
-          }
-          let vacant = held == 0_u64;
-          let allowed = bor(vacant, replace);
-          if allowed {
-            let copied = held_copy(slot: &slots^[source]);
-            let at = held_expiry(slot: &copied);
-            set slots^[target] = move copied;
-            if at != 0_u64 {
-              queue_expiry(meta: m, key: target_key, at: at, env: env);
-            }
-            if logged {
-              log_command(log: &m^.log, input: input, args: args);
-            }
-            set done = True();
-          }
+  return CopyPlan(replace: replace, error: 0_u64);
+}
+
+fn copy_body(slots: &Entries<Entry>, source: u64, target: u64, client: &Client, replace: Bool) -> work: TransferWork writes(slots), writes(client) {
+  doc "COPY over the distinct entries copy_parse accepted, looking up the source before the target, retaining the source and copying its value and expiry when the target is vacant or REPLACE was given. Records expired removals for transfer_meta; rename_done means a copy was made. The caller sets client.now to its statement's time.";
+  let no = False();
+  let work = TransferWork(outcome: rename_missing, at: 0_u64, source_expired: no, target_expired: no);
+  if source < slots^.len {
+    let kind = entry_kind(slot: &slots^[source], client: client);
+    set work.source_expired = client^.state == state_expired;
+    if kind != 0_u64 {
+      if target < slots^.len {
+        let held = entry_kind(slot: &slots^[target], client: client);
+        set work.target_expired = client^.state == state_expired;
+        let vacant = held == 0_u64;
+        let allowed = bor(vacant, replace);
+        if allowed {
+          let copied = held_copy(slot: &slots^[source]);
+          set work.at = held_expiry(slot: &copied);
+          set slots^[target] = move copied;
+          set work.outcome = rename_done;
         }
       }
     }
   }
-  if done {
+  return work;
+}
+
+fn copy_finish(client: &Client, error: u64, outcome: u64) -> result: unit writes(client) {
+  doc "COPY's parse error, or 1 for a completed copy and 0 for an absent source or occupied destination without REPLACE.";
+  if error == 1_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  } else if error == 2_u64 {
+    reply_error(client: client, word: &text_int_range[0_u64..72_u64]);
+  } else if error == 3_u64 {
+    reply_error(client: client, word: &text_db_range[0_u64..28_u64]);
+  } else if error == 4_u64 {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  } else if error == 5_u64 {
+    reply_error(client: client, word: &text_same_object[0_u64..47_u64]);
+  } else if outcome == rename_done {
+    reply_word(client: client, word: &reply_one[0_u64..4_u64]);
+  } else {
+    reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+  }
+  return unit;
+}
+
+fn run_rename(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, fresh: Bool) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
+  doc "RENAME and RENAMENX by rename_parse, rename_body, transfer_meta and rename_finish, in one statement on both named entries and the metadata.";
+  let keys = key_set_new(capacity: 2_u64);
+  let pair = rename_parse(input: input, args: args, keys: &keys);
+  set client^.now = time^.check;
+  let logged = store^.logging;
+  let outcome = rename_missing;
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let work = rename_body(slots: slots, source: pair.source, target: pair.target, client: client, fresh: fresh);
+    let appended = transfer_meta(due: &m^.due, log: &m^.log, logged: logged, work: &work, input: input, args: args, env: env);
+    set outcome = work.outcome;
+  }
+  rename_finish(client: client, outcome: outcome, fresh: fresh);
+  return unit;
+}
+
+fn copy_refused(client: &Client, plan: &CopyPlan) -> rejected: Bool reads(plan), writes(client) {
+  doc "Writes COPY's parse refusal before either entry is reached, and answers whether the command was refused.";
+  if plan^.error == 0_u64 {
+    return False();
+  }
+  copy_finish(client: client, error: plan^.error, outcome: rename_missing);
+  return True();
+}
+
+fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
+  doc "COPY by copy_parse and rename_parse, copy_body, transfer_meta and copy_finish, in one statement on both named entries and the metadata; parse errors reach neither entry.";
+  let plan = copy_parse(input: input, args: args);
+  let rejected = copy_refused(client: client, plan: &plan);
+  if rejected {
+    return unit;
+  }
+  let keys = key_set_new(capacity: 2_u64);
+  let pair = rename_parse(input: input, args: args, keys: &keys);
+  set client^.now = time^.check;
+  let logged = store^.logging;
+  let outcome = rename_missing;
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let work = copy_body(slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
+    let appended = transfer_meta(due: &m^.due, log: &m^.log, logged: logged, work: &work, input: input, args: args, env: env);
+    set outcome = work.outcome;
+  }
+  copy_finish(client: client, error: 0_u64, outcome: outcome);
+  return unit;
+}
+
+fn changed_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(input), reads(args), reads(key), writes(log) {
+  doc "Records a lookup's expired removal and then a changed command as sent, returning the number of records for the caller's effects wrapper.";
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+  if changed {
+    let recorded = mset_meta(log: log, logged: logged, input: input, args: args);
+    set appended = appended +wrap recorded;
+  }
+  return appended;
+}
+
+fn type_finish(client: &Client, kind: u64) -> result: unit writes(client) {
+  doc "TYPE's reply for the kind entry_kind read.";
+  if kind == 1_u64 {
+    reply_word(client: client, word: &reply_type_string[0_u64..9_u64]);
+  } else if kind == 2_u64 {
+    reply_word(client: client, word: &reply_type_list[0_u64..7_u64]);
+  } else if kind == 3_u64 {
+    reply_word(client: client, word: &reply_type_set[0_u64..6_u64]);
+  } else if kind == 4_u64 {
+    reply_word(client: client, word: &reply_type_hash[0_u64..7_u64]);
+  } else if kind == 5_u64 {
+    reply_word(client: client, word: &reply_type_zset[0_u64..7_u64]);
+  } else {
+    reply_word(client: client, word: &reply_type_none[0_u64..7_u64]);
+  }
+  return unit;
+}
+
+fn persist_body(slot: &Option<Entry>, expiry: &Expiry) -> result: unit writes(slot), writes(expiry) {
+  doc "PERSIST's work on a held entry, including removal when expired.";
+  match slot^ {
+    Some(value: held) => {
+      let outcome = clear_expiry(env: expiry, value: held);
+    }
+    None() => {
+    }
+  }
+  if expiry^.state == state_expired {
+    set slot^ = None<Entry>();
+  }
+  return unit;
+}
+
+fn persist_meta(log: &Box<Slots<u8>>, logged: Bool, expiry: &Expiry, input: &[u8], key_span: Span, key: &[u8]) -> appended: u64 reads(expiry), reads(input), reads(key), writes(log) {
+  doc "PERSIST's expired removal or successful expiry removal, in Redis's propagated form.";
+  let removed = expiry^.state == state_expired;
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+  if expiry^.state == state_done {
+    if logged {
+      log_key_word(log: log, word: &word_persist[0_u64..7_u64], input: input, key: key_span);
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  return appended;
+}
+
+fn persist_finish(client: &Client, expiry: &Expiry) -> result: unit reads(expiry), writes(client) {
+  doc "PERSIST answers whether it removed an expiry.";
+  if expiry^.state == state_done {
     reply_word(client: client, word: &reply_one[0_u64..4_u64]);
     return unit;
   }
   reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+  return unit;
+}
+
+fn dbsize_body(keys: &ConcurrentHashMap<Entry>) -> size: u64 reads(keys) {
+  doc "DBSIZE counts every entry, including expired entries not yet removed.";
+  let size = map_count::<Entry>(map: keys);
+  return size;
+}
+
+fn count_finish(client: &Client, count: u64) -> result: unit writes(client) {
+  doc "Writes an unsigned command count as Redis's integer reply.";
+  let answer = cvt.wrap::<u64, i64>(count);
+  reply_integer(client: client, value: answer);
   return unit;
 }

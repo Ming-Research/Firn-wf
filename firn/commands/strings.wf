@@ -28,6 +28,7 @@ alias reply_error = pkg::protocol::reply_error;
 alias reply_integer = pkg::protocol::reply_integer;
 alias reply_nil = pkg::protocol::reply_nil;
 alias reply_ok = pkg::protocol::reply_ok;
+alias reply_arity = pkg::protocol::reply_arity;
 alias reply_echoed = pkg::protocol::reply_echoed;
 alias reply_word = pkg::protocol::reply_word;
 alias reply_wrong_type = pkg::protocol::reply_wrong_type;
@@ -122,6 +123,11 @@ struct Counted {
   state: u64;
 }
 
+struct Delta {
+  state: u64;
+  value: i64;
+}
+
 struct StringOptions {
   flags: u64;
   amount: u64;
@@ -142,6 +148,11 @@ struct FloatSum {
 
 fn run_ping(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
   doc "PING [message]: answers PONG, or the message as a bulk string.";
+  if args^.inner.len > 2_u64 {
+    let name = arg(args: args, index: 0_u64);
+    reply_arity(client: client, input: input, name: name);
+    return unit;
+  }
   if args^.inner.len == 2_u64 {
     let message = arg(args: args, index: 1_u64);
     reply_bulk_input(client: client, input: input, start: message.start, length: message.length);
@@ -624,8 +635,8 @@ fn run_setnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   return unit;
 }
 
-fn run_setex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, invalid: &[u8]) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(client) waits {
-  doc "SETEX key seconds value (in_seconds) and PSETEX key milliseconds value: stores the value with the expiry the amount gives, counted from the command's time, as SET with EX or PX stores it; invalid is the reply to an amount out of range.";
+fn setex_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, in_seconds: Bool, invalid: &[u8]) -> parsed: Option<SetPlan> reads(input), reads(args), reads(time), reads(invalid), writes(client) {
+  doc "Reads SETEX or PSETEX's expiry before lookup, returning its SET plan or writing the command's refusal and returning None.";
   let flags = option_px;
   if in_seconds {
     set flags = option_ex;
@@ -634,13 +645,28 @@ fn run_setex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let deadline = string_deadline(input: input, span: amount, flags: flags, unix_ms: time^.unix_ms);
   if deadline.state == 0_u64 {
     reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
+    return None<SetPlan>();
   }
   if deadline.state == 2_u64 {
     reply_error(client: client, word: invalid);
-    return unit;
+    return None<SetPlan>();
   }
-  set_key(store: store, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 3_u64, flags: flags, at: deadline.at, mode: mode_set);
+  let plan = SetPlan(flags: flags, at: deadline.at, mode: mode_set, key_index: 1_u64, value_index: 3_u64);
+  return Some<SetPlan>(value: plan);
+}
+
+fn run_setex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, invalid: &[u8]) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(client) waits {
+  doc "SETEX key seconds value (in_seconds) and PSETEX key milliseconds value: stores the value with the expiry the amount gives, counted from the command's time, as SET with EX or PX stores it; invalid is the reply to an amount out of range.";
+  let parsed = setex_parse(input: input, args: args, client: client, time: time, in_seconds: in_seconds, invalid: invalid);
+  let plan = match parsed {
+    Some(value: accepted) => {
+      give accepted;
+    }
+    None() => {
+      return unit;
+    }
+  }
+  set_key(store: store, input: input, args: args, client: client, env: env, time: time, key_index: plan.key_index, value_index: plan.value_index, flags: plan.flags, at: plan.at, mode: plan.mode);
   return unit;
 }
 
@@ -659,115 +685,33 @@ fn run_getdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.now = time^.check;
   let kind = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set kind = entry_kind(slot: slot, client: client);
-    if client^.state == state_expired {
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if kind == 1_u64 {
-      reply_held_text(slot: slot, client: client);
-      set slot^ = None<Entry>();
-      if logged {
-        log_key_word(log: &m^.log, word: &word_del[0_u64..3_u64], input: input, key: key_span);
-      }
-    }
+    set kind = getdel_body(slot: slot, client: client);
+    let removed = client^.state == state_expired;
+    let appended = getdel_meta(log: &m^.log, logged: logged, removed: removed, kind: kind, input: input, key_span: key_span, key: key);
   }
-  if kind == 0_u64 {
-    reply_nil(client: client);
-    return unit;
-  }
-  if kind != 1_u64 {
-    reply_wrong_type(client: client);
-  }
+  getdel_finish(client: client, kind: kind);
   return unit;
 }
 
 fn run_getex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
   doc "GETEX key [EX seconds | PX milliseconds | EXAT unix-seconds | PXAT unix-milliseconds | PERSIST]: answers a live string as GET does and gives it the expiry the option names, or removes its expiry with PERSIST, in one atomic statement on the key, as Redis 7.0.15 does; an absolute expiry already past removes the key instead. The options are read before the key and their amount after it, so that an absent key answers nil, and a key of another kind is refused, whatever the amount. The file records the change as Redis propagates it: PEXPIREAT key at, DEL key, or PERSIST key when an expiry was removed, after the removal of a key found expired, as log_removal records it.";
-  let setting = False();
-  let options = string_options(input: input, args: args, first: 2_u64, setting: setting);
-  if options.valid {
-  } else {
-    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  let options = getex_options(input: input, args: args, client: client);
+  if bnot(options.valid) {
     return unit;
   }
-  let flags = options.flags;
-  let timed_flag = iand(flags, options_expiry);
-  let timed = timed_flag != 0_u64;
-  let persist_flag = iand(flags, option_persist);
-  let persisting = persist_flag != 0_u64;
-  let deadline = Deadline(at: 0_u64, state: 1_u64);
-  if timed {
-    let amount = arg(args: args, index: options.amount);
-    set deadline = string_deadline(input: input, span: amount, flags: flags, unix_ms: time^.unix_ms);
-  }
-  let calendar = ior(option_exat, option_pxat);
-  let absolute_flag = iand(flags, calendar);
-  let absolute = absolute_flag != 0_u64;
-  let passed = deadline.at <= time^.unix_ms;
-  let lapsed = band(absolute, passed);
-  if time^.loading {
-    set lapsed = False();
-  }
-  let readable = deadline.state == 1_u64;
-  let at = deadline.at;
+  let plan = getex_plan(input: input, args: args, options: &options, time: time);
   let key_span = arg(args: args, index: 1_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   set client^.now = time^.check;
-  let kind = 0_u64;
+  let none = False();
+  let work = GetexWork(kind: 0_u64, removed: none, change: 0_u64);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set kind = entry_kind(slot: slot, client: client);
-    if client^.state == state_expired {
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    let text = kind == 1_u64;
-    let go = band(text, readable);
-    if go {
-      reply_held_text(slot: slot, client: client);
-      if timed {
-        if lapsed {
-          set slot^ = None<Entry>();
-          if logged {
-            log_key_word(log: &m^.log, word: &word_del[0_u64..3_u64], input: input, key: key_span);
-          }
-        } else {
-          hold_expiry(slot: slot, expires: at);
-          queue_expiry(meta: m, key: key, at: at, env: env);
-          if logged {
-            log_expire_at(log: &m^.log, input: input, key: key_span, at_ms: at);
-          }
-        }
-      } else if persisting {
-        let had = held_expiry(slot: slot);
-        if had != 0_u64 {
-          hold_expiry(slot: slot, expires: 0_u64);
-          if logged {
-            log_key_word(log: &m^.log, word: &word_persist[0_u64..7_u64], input: input, key: key_span);
-          }
-        }
-      }
-    }
+    set work = getex_body(slot: slot, client: client, plan: &plan);
+    let appended = getex_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, work: &work, input: input, key_span: key_span, key: key, env: env);
   }
-  if kind == 0_u64 {
-    reply_nil(client: client);
-    return unit;
-  }
-  if kind != 1_u64 {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  if deadline.state == 0_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
-  }
-  if deadline.state == 2_u64 {
-    reply_error(client: client, word: &text_expire_getex[0_u64..42_u64]);
-  }
+  getex_finish(client: client, plan: &plan, work: &work);
   return unit;
 }
 
@@ -782,6 +726,18 @@ fn held_lapsed(slot: &Option<Entry>, now: u64) -> lapsed: Bool reads(slot) {
       return False();
     }
   }
+}
+
+fn mset_pairs_refused(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> rejected: Bool reads(input), reads(args), writes(client) {
+  doc "Refuses an incomplete key/value pair with MSET or MSETNX's command-local arity reply, after the dispatcher has checked minimum arity.";
+  let count = args^.inner.len;
+  let parity = count % 2_u64;
+  if parity == 0_u64 {
+    let name = arg(args: args, index: 0_u64);
+    reply_arity(client: client, input: input, name: name);
+    return True();
+  }
+  return False();
 }
 
 fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
@@ -805,25 +761,47 @@ fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   atomic slots = &store^.keys[keys], m = &store^.meta {
     for @stored (at in 0_u64..keys.len) {
       let position = key_position(positions: &client^.key_metadata, index: at);
-      let lapsed = held_lapsed(slot: &slots^[at], now: time^.check);
+      let lapsed = mset_body(slot: &slots^[at], input: input, args: args, value_index: position, now: time^.check);
       if lapsed {
-        if logged {
-          let index = position -wrap 1_u64;
-          let place = key_bounds(input: input, args: args, index: index);
-          let key = &input^[place.start..place.end];
-          log_removal(log: &m^.log, key: key);
-        }
+        let index = position -wrap 1_u64;
+        let place = key_bounds(input: input, args: args, index: index);
+        let key = &input^[place.start..place.end];
+        let removal = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key);
       }
-      let value_span = arg(args: args, index: position);
-      let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
-      put_text(slot: &slots^[at], value: move value, expires: 0_u64);
     }
-    if logged {
-      log_command(log: &m^.log, input: input, args: args);
-    }
+    let recorded = mset_meta(log: &m^.log, logged: logged, input: input, args: args);
   }
   reply_ok(client: client);
   return unit;
+}
+
+fn mset_lapse_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, key: &[u8]) -> appended: u64 reads(key), writes(log) {
+  doc "MSET's metadata for one key after mset_body: when the entry it replaced had expired and the keyspace keeps a file, appends the removal as log_removal records it, as Redis propagates the removal when it overwrites such a key, and answers 1; otherwise 0.";
+  if lapsed {
+    if logged {
+      log_removal(log: log, key: key);
+      return 1_u64;
+    }
+  }
+  return 0_u64;
+}
+
+fn mset_meta(log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(input), reads(args), writes(log) {
+  doc "MSET's metadata after its work on every key: when the keyspace keeps a file, appends the command as it was sent and answers 1; otherwise 0.";
+  if logged {
+    log_command(log: log, input: input, args: args);
+    return 1_u64;
+  }
+  return 0_u64;
+}
+
+fn mset_body(slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, value_index: u64, now: u64) -> lapsed: Bool reads(input), reads(args), writes(slot) {
+  doc "MSET's work on one key's entry, held by the caller: stores the value the argument at value_index holds, without an expiry, and answers whether the entry it replaced had expired, whose removal the file records first.";
+  let lapsed = held_lapsed(slot: slot, now: now);
+  let value_span = arg(args: args, index: value_index);
+  let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
+  put_text(slot: slot, value: move value, expires: 0_u64);
+  return lapsed;
 }
 
 fn bump_value(env: &Counted, value: &Entry) -> result: u64 writes(env), writes(value) {
@@ -940,24 +918,45 @@ fn incr_finish(client: &Client, counted: &Counted) -> result: unit reads(counted
   return unit;
 }
 
-fn run_incrby(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, negate: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INCRBY key increment and DECRBY key decrement (negate): reads the amount as Redis reads one, refusing text that is not an integer before the key is read, and for DECRBY the least i64, whose negation would overflow, then adds it, or its negation, as run_incr does.";
+fn incrby_delta(input: &[u8], args: &Box<Slots<Span>>, negate: Bool) -> delta: Delta reads(input), reads(args) {
+  doc "INCRBY's and DECRBY's parsing (negate), before the key is read: the amount as Redis reads one, state 0 with the delta to add, its negation for DECRBY, 1 for text that is not an integer, and 2 for DECRBY of the least i64, whose negation would overflow.";
   let amount = arg(args: args, index: 2_u64);
   let number = read_integer(input: input, start: amount.start, length: amount.length);
   if number.state != 1_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
+    return Delta(state: 1_u64, value: 0_i64);
   }
-  let delta = number.value;
+  let value = number.value;
   if negate {
     let least = cvt.wrap::<u64, i64>(9223372036854775808_u64);
-    if delta == least {
-      reply_error(client: client, word: &text_decrement[0_u64..28_u64]);
-      return unit;
+    if value == least {
+      return Delta(state: 2_u64, value: 0_i64);
     }
-    set delta = 0_i64 -wrap delta;
+    set value = 0_i64 -wrap value;
   }
-  run_incr(store: store, input: input, args: args, client: client, env: env, time: time, delta: delta);
+  return Delta(state: 0_u64, value: value);
+}
+
+fn delta_refused(client: &Client, delta: &Delta) -> refused: Bool reads(delta), writes(client) {
+  doc "Writes the reply to a refused INCRBY or DECRBY amount as Redis writes it and answers whether it was refused.";
+  if delta^.state == 1_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return True();
+  }
+  if delta^.state == 2_u64 {
+    reply_error(client: client, word: &text_decrement[0_u64..28_u64]);
+    return True();
+  }
+  return False();
+}
+
+fn run_incrby(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, negate: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "INCRBY key increment and DECRBY key decrement (negate): reads the amount as incrby_delta does, refusing it before the key is read, then adds it, or its negation, as run_incr does.";
+  let delta = incrby_delta(input: input, args: args, negate: negate);
+  let refused = delta_refused(client: client, delta: &delta);
+  if refused {
+    return unit;
+  }
+  run_incr(store: store, input: input, args: args, client: client, env: env, time: time, delta: delta.value);
   return unit;
 }
 
@@ -1219,114 +1218,38 @@ fn run_append(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let value_span = arg(args: args, index: 2_u64);
   let logged = store^.logging;
   set client^.now = time^.check;
-  let outcome = state_absent;
-  let length = 0_u64;
+  let none = False();
+  let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let kind = entry_kind(slot: slot, client: client);
-    if client^.state == state_expired {
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if kind == 0_u64 {
-      let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
-      put_text(slot: slot, value: move value, expires: 0_u64);
-      set length = value_span.length;
-      set outcome = state_done;
-    } else if kind == 1_u64 {
-      let held = held_text_length(slot: slot);
-      let total = held +wrap value_span.length;
-      if total > string_limit {
-        set outcome = state_long;
-      } else {
-        set length = held_text_write(slot: slot, input: input, span: value_span, offset: held);
-        set outcome = state_done;
-      }
-    } else {
-      set outcome = state_wrong;
-    }
-    if outcome == state_done {
-      if logged {
-        log_command(log: &m^.log, input: input, args: args);
-      }
-    }
+    set work = append_body(slot: slot, input: input, client: client, value_span: value_span);
+    let changed = work.outcome == state_done;
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key);
   }
-  if outcome == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  if outcome == state_long {
-    reply_error(client: client, word: &text_too_long[0_u64..60_u64]);
-    return unit;
-  }
-  let answer = cvt.wrap::<u64, i64>(length);
-  reply_integer(client: client, value: answer);
+  string_write_finish(client: client, work: &work);
   return unit;
 }
 
 fn run_setrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "SETRANGE key offset value: writes the value into a live string from offset on, keeping its expiry, zero bytes filling any gap, or into a new string of zero bytes for an absent or expired key, and answers the string's length, in one atomic statement, as Redis 7.0.15 does. An empty value changes nothing, answering the length or 0 for an absent key; an offset that is not an integer, a negative one, a key of another kind and a string that would pass proto-max-bulk-len's 512 MiB are refused. The file records a change as it was sent, after a key found expired as log_removal records it.";
-  let amount = arg(args: args, index: 2_u64);
-  let number = read_integer(input: input, start: amount.start, length: amount.length);
-  if number.state != 1_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  let plan = setrange_plan(input: input, args: args);
+  let refused = setrange_refused(client: client, plan: &plan);
+  if refused {
     return unit;
   }
-  if number.value < 0_i64 {
-    reply_error(client: client, word: &text_offset_range[0_u64..26_u64]);
-    return unit;
-  }
-  let offset = cvt.wrap::<i64, u64>(number.value);
+  let offset = cvt.wrap::<i64, u64>(plan.value);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let value_span = arg(args: args, index: 3_u64);
-  let empty = value_span.length == 0_u64;
-  let total = offset +wrap value_span.length;
-  let beyond = total > string_limit;
   let logged = store^.logging;
   set client^.now = time^.check;
-  let outcome = state_absent;
-  let length = 0_u64;
+  let none = False();
+  let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let kind = entry_kind(slot: slot, client: client);
-    if client^.state == state_expired {
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if kind > 1_u64 {
-      set outcome = state_wrong;
-    } else if empty {
-      set length = held_text_length(slot: slot);
-    } else if beyond {
-      set outcome = state_long;
-    } else if kind == 0_u64 {
-      let nothing = slots_new::<u8, 24>();
-      let prefix = &nothing[0_u64..0_u64];
-      let value = text_with(input: input, span: value_span, offset: offset, prefix: prefix);
-      put_text(slot: slot, value: move value, expires: 0_u64);
-      set length = total;
-      set outcome = state_done;
-    } else {
-      set length = held_text_write(slot: slot, input: input, span: value_span, offset: offset);
-      set outcome = state_done;
-    }
-    if outcome == state_done {
-      if logged {
-        log_command(log: &m^.log, input: input, args: args);
-      }
-    }
+    set work = setrange_body(slot: slot, input: input, client: client, value_span: value_span, offset: offset);
+    let changed = work.outcome == state_done;
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key);
   }
-  if outcome == state_wrong {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  if outcome == state_long {
-    reply_error(client: client, word: &text_too_long[0_u64..60_u64]);
-    return unit;
-  }
-  let answer = cvt.wrap::<u64, i64>(length);
-  reply_integer(client: client, value: answer);
+  string_write_finish(client: client, work: &work);
   return unit;
 }
 
@@ -1336,38 +1259,21 @@ fn run_strlen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   set client^.now = time^.check;
-  let kind = 0_u64;
-  let length = 0_u64;
+  let none = False();
+  let work = StringWork(outcome: 0_u64, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set kind = entry_kind(slot: slot, client: client);
-    if client^.state == state_expired {
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    set length = held_text_length(slot: slot);
+    set work = strlen_body(slot: slot, client: client);
+    let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: work.removed, key: key);
   }
-  if kind > 1_u64 {
-    reply_wrong_type(client: client);
-    return unit;
-  }
-  let answer = cvt.wrap::<u64, i64>(length);
-  reply_integer(client: client, value: answer);
+  strlen_finish(client: client, work: &work);
   return unit;
 }
 
 fn run_getrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "GETRANGE key start end and SUBSTR key start end: answers the bytes of a live string between the indices, as reply_text_range reads them, written into the reply inside the statement on the key; the empty bulk string for an absent or expired key, which is removed and its removal recorded as log_removal records it. Indices that are not integers are refused before the key is read, as is a key of another kind after.";
-  let first = arg(args: args, index: 2_u64);
-  let start = read_integer(input: input, start: first.start, length: first.length);
-  if start.state != 1_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
-  }
-  let last = arg(args: args, index: 3_u64);
-  let end = read_integer(input: input, start: last.start, length: last.length);
-  if end.state != 1_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  let plan = getrange_plan(input: input, args: args);
+  let rejected = getrange_refused(client: client, plan: &plan);
+  if rejected {
     return unit;
   }
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -1376,21 +1282,11 @@ fn run_getrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
   set client^.now = time^.check;
   let kind = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set kind = entry_kind(slot: slot, client: client);
-    if client^.state == state_expired {
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    reply_held_range(slot: slot, client: client, start: start.value, end: end.value);
+    set kind = getrange_body(slot: slot, client: client, start: plan.start, end: plan.end);
+    let removed = client^.state == state_expired;
+    let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: removed, key: key);
   }
-  if kind == 0_u64 {
-    reply_word(client: client, word: &reply_empty[0_u64..6_u64]);
-    return unit;
-  }
-  if kind > 1_u64 {
-    reply_wrong_type(client: client);
-  }
+  getrange_finish(client: client, kind: kind);
   return unit;
 }
 
@@ -1417,20 +1313,17 @@ fn run_mget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       if step < client^.key_metadata.inner.len {
         let rank = client^.key_metadata.inner[step];
         if rank < slots^.len {
-          let kind = entry_kind(slot: &slots^[rank], client: client);
+          let kind = mget_body(slot: &slots^[rank], client: client);
           if client^.state == state_expired {
             if logged {
               let index = step +wrap 1_u64;
               let place = key_bounds(input: input, args: args, index: index);
               let key = &input^[place.start..place.end];
-              log_removal(log: &m^.log, key: key);
+              let lapsed = True();
+              let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key);
             }
           }
-          if kind == 1_u64 {
-            reply_held_text(slot: &slots^[rank], client: client);
-          } else {
-            reply_nil(client: client);
-          }
+          mget_finish(client: client, kind: kind);
         } else {
           reply_nil(client: client);
         }
@@ -1471,7 +1364,8 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
             let index = position -wrap 1_u64;
             let place = key_bounds(input: input, args: args, index: index);
             let key = &input^[place.start..place.end];
-            log_removal(log: &m^.log, key: key);
+            let lapsed = True();
+            let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key);
           }
         }
         if kind != 0_u64 {
@@ -1484,21 +1378,15 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     } else {
       for @stored (at in 0_u64..keys.len) {
         let position = key_position(positions: &client^.key_metadata, index: at);
-        let value_span = arg(args: args, index: position);
-        let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
-        put_text(slot: &slots^[at], value: move value, expires: 0_u64);
+        let replaced = mset_body(slot: &slots^[at], input: input, args: args, value_index: position, now: time^.check);
       }
       if logged {
-        log_command(log: &m^.log, input: input, args: args);
+        let appended = mset_meta(log: &m^.log, logged: logged, input: input, args: args);
       }
       set stored = True();
     }
   }
-  if stored {
-    reply_word(client: client, word: &reply_one[0_u64..4_u64]);
-    return unit;
-  }
-  reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+  msetnx_finish(client: client, stored: stored);
   return unit;
 }
 
@@ -1578,10 +1466,16 @@ fn log_float(log: &Box<Slots<u8>>, input: &[u8], key: Span, text: &Bytes) -> res
   return unit;
 }
 
+fn incrbyfloat_parse(input: &[u8], args: &Box<Slots<Span>>) -> increment: Reading reads(input), reads(args) {
+  doc "Reads INCRBYFLOAT's increment before lookup; its body checks the key's type before refusing an invalid number.";
+  let amount = arg(args: args, index: 2_u64);
+  let parsed = extended_read(input: input, start: amount.start, length: amount.length);
+  return parsed;
+}
+
 fn run_incrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "INCRBYFLOAT key increment: adds the increment to the stored number in x87 long double arithmetic and stores the sum written as Redis 7.0.15 writes it, keeping the key's expiry, or stores the increment's sum with zero without one for an absent or expired key, in one atomic statement, and answers the sum as a bulk string. The increment is read before the statement and judged after the key, so that a key of another kind is refused first; a value or increment that is not a number and a sum that is not a number or is infinite are refused. The file records the change as SET key value KEEPTTL, as Redis propagates it, after a key found expired as log_removal records it.";
-  let amount = arg(args: args, index: 2_u64);
-  let increment = extended_read(input: input, start: amount.start, length: amount.length);
+  let increment = incrbyfloat_parse(input: input, args: args);
   let key_span = arg(args: args, index: 1_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
@@ -1590,53 +1484,416 @@ fn run_incrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
   let empty = Bytes::Short(bytes: move nothing);
   let summed = FloatSum(increment: increment, text: move empty, now: time^.check, state: state_absent);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let fresh_needed = True();
-    match slot^ {
-      Some(value: held) => {
-        let outcome = float_value(env: &summed, value: held);
-        set fresh_needed = False();
-      }
-      None() => {
-      }
+    let removed = incrbyfloat_body(slot: slot, summed: &summed);
+    let appended = incrbyfloat_meta(log: &m^.log, logged: logged, removed: removed, summed: &summed, input: input, key_span: key_span, key: key);
+  }
+  incrbyfloat_finish(client: client, summed: &summed);
+  return unit;
+}
+
+struct StringWork {
+  outcome: u64;
+  length: u64;
+  removed: Bool;
+}
+
+fn append_body(slot: &Option<Entry>, input: &[u8], client: &Client, value_span: Span) -> work: StringWork reads(input), writes(slot), writes(client) {
+  doc "APPEND's work on a held entry, preserving its expiry and returning its outcome, length and expired removal.";
+  let outcome = state_absent;
+  let length = 0_u64;
+  let kind = entry_kind(slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  if kind == 0_u64 {
+    let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
+    put_text(slot: slot, value: move value, expires: 0_u64);
+    set length = value_span.length;
+    set outcome = state_done;
+  } else if kind == 1_u64 {
+    let held = held_text_length(slot: slot);
+    let total = held +wrap value_span.length;
+    if total > string_limit {
+      set outcome = state_long;
+    } else {
+      set length = held_text_write(slot: slot, input: input, span: value_span, offset: held);
+      set outcome = state_done;
     }
-    if summed.state == state_expired {
-      set fresh_needed = True();
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
+  } else {
+    set outcome = state_wrong;
+  }
+  return StringWork(outcome: outcome, length: length, removed: removed);
+}
+
+fn string_write_finish(client: &Client, work: &StringWork) -> result: unit reads(work), writes(client) {
+  doc "APPEND and SETRANGE answer the resulting length or their type or size refusal.";
+  if work^.outcome == state_wrong {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if work^.outcome == state_long {
+    reply_error(client: client, word: &text_too_long[0_u64..60_u64]);
+    return unit;
+  }
+  let answer = cvt.wrap::<u64, i64>(work^.length);
+  reply_integer(client: client, value: answer);
+  return unit;
+}
+
+fn setrange_body(slot: &Option<Entry>, input: &[u8], client: &Client, value_span: Span, offset: u64) -> work: StringWork reads(input), writes(slot), writes(client) {
+  doc "SETRANGE's work on a held entry, preserving its expiry and returning its outcome, length and expired removal.";
+  let outcome = state_absent;
+  let length = 0_u64;
+  let empty = value_span.length == 0_u64;
+  let total = offset +wrap value_span.length;
+  let beyond = total > string_limit;
+  let kind = entry_kind(slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  if kind > 1_u64 {
+    set outcome = state_wrong;
+  } else if empty {
+    set length = held_text_length(slot: slot);
+  } else if beyond {
+    set outcome = state_long;
+  } else if kind == 0_u64 {
+    let nothing = slots_new::<u8, 24>();
+    let prefix = &nothing[0_u64..0_u64];
+    let value = text_with(input: input, span: value_span, offset: offset, prefix: prefix);
+    put_text(slot: slot, value: move value, expires: 0_u64);
+    set length = total;
+    set outcome = state_done;
+  } else {
+    set length = held_text_write(slot: slot, input: input, span: value_span, offset: offset);
+    set outcome = state_done;
+  }
+  return StringWork(outcome: outcome, length: length, removed: removed);
+}
+
+fn getdel_body(slot: &Option<Entry>, client: &Client) -> kind: u64 writes(slot), writes(client) {
+  doc "GETDEL reads a live string into the reply and removes it; entry_kind records expired removal.";
+  let kind = entry_kind(slot: slot, client: client);
+  if kind == 1_u64 {
+    reply_held_text(slot: slot, client: client);
+    set slot^ = None<Entry>();
+  }
+  return kind;
+}
+
+fn getdel_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, kind: u64, input: &[u8], key_span: Span, key: &[u8]) -> appended: u64 reads(input), reads(key), writes(log) {
+  doc "GETDEL propagates its expired removal, or DEL for a removed live string.";
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+  if kind == 1_u64 {
+    if logged {
+      log_key_word(log: log, word: &word_del[0_u64..3_u64], input: input, key: key_span);
+      set appended = appended +wrap 1_u64;
     }
-    if fresh_needed {
-      let zero = &word_zero[0_u64..1_u64];
-      let sum = extended_sum(value: zero, increment: &summed.increment);
-      let Sum(text: made, state: outcome) = move sum;
-      if outcome == 1_u64 {
-        let kept = bytes_copy(bytes: &made);
-        put_text(slot: slot, value: move kept, expires: 0_u64);
-        set summed.text = move made;
-        set summed.state = state_done;
+  }
+  return appended;
+}
+
+fn getdel_finish(client: &Client, kind: u64) -> result: unit writes(client) {
+  doc "Finishes GETDEL after a live string's reply was written by its body.";
+  if kind == 0_u64 {
+    reply_nil(client: client);
+    return unit;
+  }
+  if kind != 1_u64 {
+    reply_wrong_type(client: client);
+  }
+  return unit;
+}
+
+fn strlen_body(slot: &Option<Entry>, client: &Client) -> work: StringWork writes(slot), writes(client) {
+  doc "STRLEN reads the kind and length, removing expired entries.";
+  let kind = entry_kind(slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  let length = held_text_length(slot: slot);
+  return StringWork(outcome: kind, length: length, removed: removed);
+}
+
+fn strlen_finish(client: &Client, work: &StringWork) -> result: unit reads(work), writes(client) {
+  doc "STRLEN answers zero for absence and refuses another kind.";
+  if work^.outcome > 1_u64 {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  let answer = cvt.wrap::<u64, i64>(work^.length);
+  reply_integer(client: client, value: answer);
+  return unit;
+}
+
+fn getrange_body(slot: &Option<Entry>, client: &Client, start: i64, end: i64) -> kind: u64 writes(slot), writes(client) {
+  doc "GETRANGE reads a live string's requested range into the reply, removing expired entries.";
+  let kind = entry_kind(slot: slot, client: client);
+  reply_held_range(slot: slot, client: client, start: start, end: end);
+  return kind;
+}
+
+fn getrange_finish(client: &Client, kind: u64) -> result: unit writes(client) {
+  doc "GETRANGE finishes an absent or wrongly typed key's reply.";
+  if kind == 0_u64 {
+    reply_word(client: client, word: &reply_empty[0_u64..6_u64]);
+    return unit;
+  }
+  if kind > 1_u64 {
+    reply_wrong_type(client: client);
+  }
+  return unit;
+}
+
+fn incrbyfloat_body(slot: &Option<Entry>, summed: &FloatSum) -> removed: Bool writes(slot), writes(summed) {
+  doc "INCRBYFLOAT's work on a held entry, returning whether its previous value expired. An expired entry is removed before the increment is judged, as Redis 7.0.15's lookupKeyWrite removes it, so that a refused increment leaves no entry the file's DEL says is gone.";
+  let fresh_needed = True();
+  match slot^ {
+    Some(value: held) => {
+      let outcome = float_value(env: summed, value: held);
+      set fresh_needed = False();
+    }
+    None() => {
+    }
+  }
+  let removed = summed^.state == state_expired;
+  if removed {
+    set slot^ = None<Entry>();
+    set fresh_needed = True();
+  }
+  if fresh_needed {
+    let zero = &word_zero[0_u64..1_u64];
+    let sum = extended_sum(value: zero, increment: &summed^.increment);
+    let Sum(text: made, state: outcome) = move sum;
+    if outcome == 1_u64 {
+      let kept = bytes_copy(bytes: &made);
+      put_text(slot: slot, value: move kept, expires: 0_u64);
+      set summed^.text = move made;
+      set summed^.state = state_done;
+    } else {
+      let unused = move made;
+      if outcome == 2_u64 {
+        set summed^.state = 6_u64;
       } else {
-        let unused = move made;
-        if outcome == 2_u64 {
-          set summed.state = 6_u64;
-        } else {
-          set summed.state = 5_u64;
-        }
-      }
-    }
-    if summed.state == state_done {
-      if logged {
-        log_float(log: &m^.log, input: input, key: key_span, text: &summed.text);
+        set summed^.state = 5_u64;
       }
     }
   }
-  if summed.state == state_done {
-    reply_text(client: client, text: &summed.text);
-  } else if summed.state == state_wrong {
+  return removed;
+}
+
+fn incrbyfloat_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, summed: &FloatSum, input: &[u8], key_span: Span, key: &[u8]) -> appended: u64 reads(summed), reads(input), reads(key), writes(log) {
+  doc "INCRBYFLOAT propagates the expired removal and SET with KEEPTTL for its computed value.";
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+  if summed^.state == state_done {
+    if logged {
+      log_float(log: log, input: input, key: key_span, text: &summed^.text);
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  return appended;
+}
+
+fn incrbyfloat_finish(client: &Client, summed: &FloatSum) -> result: unit reads(summed), writes(client) {
+  doc "INCRBYFLOAT answers its computed decimal or the existing type or numeric error.";
+  if summed^.state == state_done {
+    reply_text(client: client, text: &summed^.text);
+  } else if summed^.state == state_wrong {
     reply_wrong_type(client: client);
-  } else if summed.state == 6_u64 {
+  } else if summed^.state == 6_u64 {
     reply_error(client: client, word: &text_nan[0_u64..43_u64]);
   } else {
     reply_error(client: client, word: &text_not_float[0_u64..30_u64]);
   }
+  return unit;
+}
+
+struct GetexPlan {
+  timed: Bool;
+  persisting: Bool;
+  lapsed: Bool;
+  deadline: Deadline;
+}
+
+struct GetexWork {
+  kind: u64;
+  removed: Bool;
+  change: u64;
+}
+
+fn getex_options(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> options: StringOptions reads(input), reads(args), writes(client) {
+  doc "Reads GETEX's options and writes its syntax refusal before lookup; deadline errors remain subject to the body's key-type and presence checks.";
+  let setting = False();
+  let parsed = string_options(input: input, args: args, first: 2_u64, setting: setting);
+  if bnot(parsed.valid) {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  }
+  return parsed;
+}
+
+fn getex_plan(input: &[u8], args: &Box<Slots<Span>>, options: &StringOptions, time: &Time) -> plan: GetexPlan reads(input), reads(args), reads(options), reads(time) {
+  doc "Reads GETEX's expiry amount and frozen deadline; the body checks type before reporting an invalid amount.";
+  let flags = options^.flags;
+  let timed_flag = iand(flags, options_expiry);
+  let timed = timed_flag != 0_u64;
+  let persist_flag = iand(flags, option_persist);
+  let persisting = persist_flag != 0_u64;
+  let deadline = Deadline(at: 0_u64, state: 1_u64);
+  if timed {
+    let amount = arg(args: args, index: options^.amount);
+    set deadline = string_deadline(input: input, span: amount, flags: flags, unix_ms: time^.unix_ms);
+  }
+  let calendar = ior(option_exat, option_pxat);
+  let absolute_flag = iand(flags, calendar);
+  let absolute = absolute_flag != 0_u64;
+  let passed = deadline.at <= time^.unix_ms;
+  let lapsed = band(absolute, passed);
+  if time^.loading {
+    set lapsed = False();
+  }
+  return GetexPlan(timed: timed, persisting: persisting, lapsed: lapsed, deadline: deadline);
+}
+
+fn getex_body(slot: &Option<Entry>, client: &Client, plan: &GetexPlan) -> work: GetexWork reads(plan), writes(slot), writes(client) {
+  doc "GETEX reads a live string and applies its expiry change; change 1 deletes, 2 sets expiry, and 3 removes expiry.";
+  let kind = entry_kind(slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  let change = 0_u64;
+  let text = kind == 1_u64;
+  let readable = plan^.deadline.state == 1_u64;
+  let go = band(text, readable);
+  if go {
+    reply_held_text(slot: slot, client: client);
+    if plan^.timed {
+      if plan^.lapsed {
+        set slot^ = None<Entry>();
+        set change = 1_u64;
+      } else {
+        hold_expiry(slot: slot, expires: plan^.deadline.at);
+        set change = 2_u64;
+      }
+    } else if plan^.persisting {
+      let had = held_expiry(slot: slot);
+      if had != 0_u64 {
+        hold_expiry(slot: slot, expires: 0_u64);
+        set change = 3_u64;
+      }
+    }
+  }
+  return GetexWork(kind: kind, removed: removed, change: change);
+}
+
+fn getex_meta(due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, plan: &GetexPlan, work: &GetexWork, input: &[u8], key_span: Span, key: &[u8], env: &KeyEnv) -> appended: u64 reads(plan), reads(work), reads(input), reads(key), reads(env), writes(due), writes(log) {
+  doc "Queues GETEX's new expiry and propagates its expired removal and DEL, PEXPIREAT or PERSIST change.";
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: work^.removed, key: key);
+  if work^.change == 2_u64 {
+    queue_due(due: due, key: key, at: plan^.deadline.at, env: env);
+  }
+  if logged {
+    if work^.change == 1_u64 {
+      log_key_word(log: log, word: &word_del[0_u64..3_u64], input: input, key: key_span);
+    } else if work^.change == 2_u64 {
+      log_expire_at(log: log, input: input, key: key_span, at_ms: plan^.deadline.at);
+    } else if work^.change == 3_u64 {
+      log_key_word(log: log, word: &word_persist[0_u64..7_u64], input: input, key: key_span);
+    }
+    if work^.change != 0_u64 {
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  return appended;
+}
+
+fn getex_finish(client: &Client, plan: &GetexPlan, work: &GetexWork) -> result: unit reads(plan), reads(work), writes(client) {
+  doc "Finishes GETEX with absence or type taking precedence over an invalid expiry amount.";
+  if work^.kind == 0_u64 {
+    reply_nil(client: client);
+    return unit;
+  }
+  if work^.kind != 1_u64 {
+    reply_wrong_type(client: client);
+    return unit;
+  }
+  if plan^.deadline.state == 0_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return unit;
+  }
+  if plan^.deadline.state == 2_u64 {
+    reply_error(client: client, word: &text_expire_getex[0_u64..42_u64]);
+  }
+  return unit;
+}
+
+fn setrange_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: Delta reads(input), reads(args) {
+  doc "Reads SETRANGE's integer offset, distinguishing malformed and negative offsets.";
+  let amount = arg(args: args, index: 2_u64);
+  let number = read_integer(input: input, start: amount.start, length: amount.length);
+  if number.state != 1_u64 {
+    return Delta(state: 1_u64, value: 0_i64);
+  }
+  if number.value < 0_i64 {
+    return Delta(state: 2_u64, value: 0_i64);
+  }
+  return Delta(state: 0_u64, value: number.value);
+}
+
+fn setrange_refused(client: &Client, plan: &Delta) -> refused: Bool reads(plan), writes(client) {
+  doc "Writes SETRANGE's offset refusal before lookup.";
+  if plan^.state == 1_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return True();
+  }
+  if plan^.state == 2_u64 {
+    reply_error(client: client, word: &text_offset_range[0_u64..26_u64]);
+    return True();
+  }
+  return False();
+}
+
+struct GetrangePlan {
+  start: i64;
+  end: i64;
+  valid: Bool;
+}
+
+fn getrange_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: GetrangePlan reads(input), reads(args) {
+  doc "Reads GETRANGE's two integer bounds before lookup.";
+  let first = arg(args: args, index: 2_u64);
+  let start = read_integer(input: input, start: first.start, length: first.length);
+  let last = arg(args: args, index: 3_u64);
+  let end = read_integer(input: input, start: last.start, length: last.length);
+  let first_valid = start.state == 1_u64;
+  let last_valid = end.state == 1_u64;
+  let valid = band(first_valid, last_valid);
+  return GetrangePlan(start: start.value, end: end.value, valid: valid);
+}
+
+fn getrange_refused(client: &Client, plan: &GetrangePlan) -> rejected: Bool reads(plan), writes(client) {
+  doc "Refuses GETRANGE's invalid bounds before lookup with its integer error.";
+  if plan^.valid {
+    return False();
+  }
+  reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  return True();
+}
+
+fn mget_body(slot: &Option<Entry>, client: &Client) -> kind: u64 writes(slot), writes(client) {
+  doc "Reads one MGET entry; strings write their bulk reply, other kinds and absence leave the nil reply to mget_finish.";
+  let kind = entry_kind(slot: slot, client: client);
+  if kind == 1_u64 {
+    reply_held_text(slot: slot, client: client);
+  }
+  return kind;
+}
+
+fn mget_finish(client: &Client, kind: u64) -> result: unit writes(client) {
+  doc "MGET answers nil for absent entries and values of another kind.";
+  if kind != 1_u64 {
+    reply_nil(client: client);
+  }
+  return unit;
+}
+
+fn msetnx_finish(client: &Client, stored: Bool) -> result: unit writes(client) {
+  doc "MSETNX answers whether every pair was stored.";
+  if stored {
+    reply_word(client: client, word: &reply_one[0_u64..4_u64]);
+    return unit;
+  }
+  reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
   return unit;
 }

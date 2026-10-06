@@ -124,8 +124,8 @@ standalone Redis replacement. Cache/session storage and scripted conditional
 updates are the core scenarios. Select existing applications or components
 whose business logic stays unchanged when pointed at firn through their
 ordinary clients; a leaderboard or queue can broaden the evidence once its
-consumer is selected. The specific consumers remain to be selected, not
-assumed supported. A count of implemented commands or passing tests does not
+consumer is selected. The [consumers investigation](../consumers/README.md)
+selects the consumers and records what they need. A count of implemented commands or passing tests does not
 by itself establish that these scenarios work.
 
 Release evidence must cover the selected applications end to end, the Redis
@@ -297,7 +297,8 @@ Redis's observable behavior on the suite's commands and says what it refused.
   version whose replies firn follows; and nothing for what firn does not
   measure, memory, processor time and per-command counts, rather than a zero
   that would read as a measurement, but for the keyspace line's `expires`
-  and `avg_ttl`, which the line's form requires.
+  and `avg_ttl`, given as 0 for the line's form when this was written; INFO
+  now gives the line's keys alone, leaving those two out as well.
 
 Building firn found four things outside the program, recorded under
 [docs/todo.md](../../../docs/todo.md) unless fixed:

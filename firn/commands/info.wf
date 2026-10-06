@@ -5,7 +5,7 @@ alias Span = pkg::protocol::Span;
 alias Time = pkg::store::Time;
 alias arg = pkg::protocol::arg;
 alias name_is = pkg::bytes::name_is;
-alias reply_bulk = pkg::protocol::reply_bulk;
+alias reply_verbatim = pkg::protocol::reply_verbatim;
 
 const section_default: Array<u8, 7> = "DEFAULT";
 
@@ -61,7 +61,7 @@ const info_keyspace: Array<u8, 12> = "# Keyspace\r\n";
 
 const info_db0: Array<u8, 9> = "db0:keys=";
 
-const info_db0_tail: Array<u8, 22> = ",expires=0,avg_ttl=0\r\n";
+const info_db0_tail: Array<u8, 2> = "\r\n";
 
 const info_gap: Array<u8, 2> = "\r\n";
 
@@ -151,8 +151,8 @@ fn text_number(text: &Box<Slots<u8>>, value: u64) -> result: unit writes(text) {
   return unit;
 }
 
-fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INFO [section [section ...]]: answers a bulk string of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no memory limit and so no eviction, no scripts or functions, no replica, background save, rewrite, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0, and the keyspace's expires and avg_ttl, which firn does not count, given as 0. Fields firn cannot measure, memory used and processor time among them, and the per-command and per-error counts, are left out, their sections empty.";
+fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> reads(input), reads(args) {
+  doc "INFO's section parsing, shared independently of how the caller obtains the server counters. Unknown sections add no output; there are no option refusals.";
   let count = args^.inner.len;
   let chosen = array_filled::<u64, 13>(value: 0_u64);
   if count == 1_u64 {
@@ -195,34 +195,15 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       }
     }
   }
-  let clients = 0_u64;
-  if chosen[1_u64] == 1_u64 {
-    atomic m = &store^.meta {
-      set clients = m^.clients;
-    }
-  }
-  let started = 0_u64;
-  if chosen[0_u64] == 1_u64 {
-    atomic v = &store^.server {
-      set started = v^.started;
-    }
-  }
-  let connections = 0_u64;
-  if chosen[4_u64] == 1_u64 {
-    atomic v = &store^.server {
-      set connections = v^.connections;
-    }
-  }
-  let keys = 0_u64;
-  if chosen[12_u64] == 1_u64 {
-    atomic t = &store^.keys {
-      set keys = map_count::<Entry>(map: t);
-    }
-  }
+  return chosen;
+}
+
+fn info_body(chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(client), reads(time) {
+  doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
   for @sections (which in 0_u64..13_u64) {
-    if chosen[which] == 1_u64 {
+    if chosen^[which] == 1_u64 {
       if written > 0_u64 {
         text_word(text: &text, word: &info_gap[0_u64..2_u64]);
       }
@@ -249,7 +230,7 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       } else if which == 3_u64 {
         text_word(text: &text, word: &info_persistence_head[0_u64..121_u64]);
         let kept = 0_u64;
-        if store^.logging {
+        if logged {
           set kept = 1_u64;
         }
         text_number(text: &text, value: kept);
@@ -277,11 +258,50 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
         if keys > 0_u64 {
           text_word(text: &text, word: &info_db0[0_u64..9_u64]);
           text_number(text: &text, value: keys);
-          text_word(text: &text, word: &info_db0_tail[0_u64..22_u64]);
+          text_word(text: &text, word: &info_db0_tail[0_u64..2_u64]);
         }
       }
     }
   }
-  reply_bulk(client: client, stored: &text);
+  return move text;
+}
+
+fn info_finish(client: &Client, text: &Box<Slots<u8>>) -> result: unit reads(text), writes(client) {
+  doc "INFO's shared reply: a bulk string under RESP2 or a verbatim string under RESP3.";
+  let length = text^.inner.len;
+  let window = &text^.inner[0_u64..length];
+  reply_verbatim(client: client, input: window, start: 0_u64, length: length);
+  return unit;
+}
+
+fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no memory limit and so no eviction, no scripts or functions, no replica, background save, rewrite, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, memory used and processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
+  let chosen = info_plan(input: input, args: args);
+  let clients = 0_u64;
+  if chosen[1_u64] == 1_u64 {
+    atomic m = &store^.meta {
+      set clients = m^.clients;
+    }
+  }
+  let started = 0_u64;
+  if chosen[0_u64] == 1_u64 {
+    atomic v = &store^.server {
+      set started = v^.started;
+    }
+  }
+  let connections = 0_u64;
+  if chosen[4_u64] == 1_u64 {
+    atomic v = &store^.server {
+      set connections = v^.connections;
+    }
+  }
+  let keys = 0_u64;
+  if chosen[12_u64] == 1_u64 {
+    atomic t = &store^.keys {
+      set keys = map_count::<Entry>(map: t);
+    }
+  }
+  let text = info_body(chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, client: client, time: time);
+  info_finish(client: client, text: &text);
   return unit;
 }

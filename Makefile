@@ -24,9 +24,10 @@ DESIGN_REVIEW_BASE ?= origin/main
 # projects written in Whitefoot (whitefoot-kit/downstream.md).
 include $(ROOT)/whitefoot-kit/whitefoot.mk
 
-# firn is one module program; any of its sources changes the build.
+# firn is one module program; any of its sources changes the build, Halo's
+# among them, which deps/halo-wf brings.
 FIRN_GRAPH := $(ROOT)/firn/modules.wfg
-FIRN_SOURCES := $(shell find $(ROOT)/firn -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
+FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
 
 .PHONY: check firn firn-test test redis-suite firn-lto design-lint design-ready
 
@@ -56,7 +57,7 @@ test: firn-test
 # pass must still pass; new passes are candidates to add in the same PR.
 redis-suite: $(BUILD)/firn
 	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py --self-test
-	REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/run.sh --out "$(BUILD)/redis-suite" firn "$(BUILD)/firn"
+	REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/run.sh --out "$(BUILD)/redis-suite" --known-hangs $(ROOT)/tests/redis-suite/hung.tsv firn "$(BUILD)/firn"
 	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py check "$(BUILD)/redis-suite/tests.tsv" --passing $(ROOT)/tests/redis-suite/passing.tsv --unstable $(ROOT)/tests/redis-suite/unstable.tsv
 
 # The server as it is measured: the program and the runtime optimized

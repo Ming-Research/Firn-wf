@@ -1,0 +1,353 @@
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Keyspace = pkg::store::Keyspace;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+alias arg = pkg::protocol::arg;
+alias byte_at = pkg::bytes::byte_at;
+alias clear_args = pkg::protocol::clear_args;
+alias log_append = pkg::store::log_append;
+alias log_count = pkg::store::log_count;
+alias log_word = pkg::store::log_word;
+alias name_code = pkg::bytes::name_code;
+alias push_arg = pkg::protocol::push_arg;
+alias reply_array = pkg::protocol::reply_array;
+alias reply_arity = pkg::protocol::reply_arity;
+alias reply_error = pkg::protocol::reply_error;
+alias reply_nil_array = pkg::protocol::reply_nil_array;
+alias reply_ok = pkg::protocol::reply_ok;
+alias reply_word = pkg::protocol::reply_word;
+
+const code_multi: u64 = 314946901325_u64;
+
+const code_exec: u64 = 1128618053_u64;
+
+const code_discard: u64 = 19230738672208196_u64;
+
+const code_watch: u64 = 310367240535_u64;
+
+const text_nested: Array<u8, 33> = "ERR MULTI calls can not be nested";
+
+const text_exec_without: Array<u8, 22> = "ERR EXEC without MULTI";
+
+const text_discard_without: Array<u8, 25> = "ERR DISCARD without MULTI";
+
+const text_watch_inside: Array<u8, 37> = "ERR WATCH inside MULTI is not allowed";
+
+const text_execabort: Array<u8, 59> = "EXECABORT Transaction discarded because of previous errors.";
+
+const text_foreign_abort: Array<u8, 92> = "EXECABORT Transaction discarded because it holds a command firn does not run in transactions";
+
+const reply_queued: Array<u8, 9> = "+QUEUED\r\n";
+
+const text_exec_arity_abort: Array<u8, 88> = "EXECABORT Transaction discarded because of: wrong number of arguments for 'exec' command";
+
+const text_exec_noauth_abort: Array<u8, 75> = "EXECABORT Transaction discarded because of: NOAUTH Authentication required.";
+
+const text_queue_full: Array<u8, 67> = "ERR firn cannot queue more than 1 GiB of arguments in a transaction";
+
+const queue_limit: u64 = 1073741824_u64;
+
+const word_multi_log: Array<u8, 5> = "MULTI";
+
+const word_exec_log: Array<u8, 4> = "EXEC";
+
+fn transaction_new() -> made: Transaction pure {
+  doc "A connection's transaction state before any MULTI: closed, clean and empty.";
+  let bytes = box_slots_new::<u8>(capacity: 256_u64);
+  let spans = box_slots_new::<Span>(capacity: 16_u64);
+  let counts = box_slots_new::<u64>(capacity: 8_u64);
+  let closed = False();
+  let clean = False();
+  let runnable = False();
+  return Transaction(open: closed, dirty: clean, foreign: runnable, bytes: move bytes, spans: move spans, counts: move counts);
+}
+
+fn transaction_reset(transaction: &Transaction) -> result: unit writes(transaction) {
+  doc "Closes a transaction and drops what it queued, keeping the space, as Redis's discardTransaction does after EXEC or DISCARD.";
+  set transaction^.open = False();
+  set transaction^.dirty = False();
+  set transaction^.foreign = False();
+  loop @bytes {
+    if transaction^.bytes.inner.len > 0_u64 {
+      let dropped = take_back(window: &transaction^.bytes.inner);
+    } else {
+      break @bytes;
+    }
+  }
+  clear_args(args: &transaction^.spans);
+  loop @counts {
+    if transaction^.counts.inner.len > 0_u64 {
+      let dropped = take_back(window: &transaction^.counts.inner);
+    } else {
+      break @counts;
+    }
+  }
+  return unit;
+}
+
+fn queue_byte(transaction: &Transaction, value: u8) -> result: unit writes(transaction) {
+  doc "Appends one byte to the queued arguments, doubling their space when it is full; a transaction past 2^30 bytes keeps no more.";
+  let capacity = transaction^.bytes.inner.cap;
+  if transaction^.bytes.inner.len >= capacity {
+    let doubled = capacity +wrap capacity;
+    let target = imax(doubled, 256_u64);
+    let fits = target <= 1073741824_u64;
+    if fits {
+      if target >= transaction^.bytes.inner.cap {
+        grow(cell: &transaction^.bytes, capacity: target);
+      }
+    }
+  }
+  if transaction^.bytes.inner.len < transaction^.bytes.inner.cap {
+    place_back(window: &transaction^.bytes.inner, value: value);
+  }
+  return unit;
+}
+
+fn queue_count(transaction: &Transaction, count: u64) -> result: unit writes(transaction) {
+  doc "Records how many arguments a queued command has, doubling the space for the counts when it is full.";
+  let capacity = transaction^.counts.inner.cap;
+  if transaction^.counts.inner.len >= capacity {
+    let doubled = capacity +wrap capacity;
+    let target = imax(doubled, 8_u64);
+    let fits = target <= 1073741824_u64;
+    if fits {
+      if target >= transaction^.counts.inner.cap {
+        grow(cell: &transaction^.counts, capacity: target);
+      }
+    }
+  }
+  if transaction^.counts.inner.len < transaction^.counts.inner.cap {
+    place_back(window: &transaction^.counts.inner, value: count);
+  }
+  return unit;
+}
+
+fn queue_command(transaction: &Transaction, input: &[u8], args: &Box<Slots<Span>>) -> result: unit reads(input), reads(args), writes(transaction) {
+  doc "Copies a command's arguments to the end of the transaction's queue, since the connection's input is reused for the next request.";
+  let count = args^.inner.len;
+  for @arguments (index in 0_u64..count) {
+    let span = arg(args: args, index: index);
+    let start = transaction^.bytes.inner.len;
+    for @bytes (offset in 0_u64..span.length) {
+      let position = span.start +wrap offset;
+      let byte = byte_at(input: input, index: position);
+      queue_byte(transaction: transaction, value: byte);
+    }
+    push_arg(args: &transaction^.spans, start: start, length: span.length);
+  }
+  queue_count(transaction: transaction, count: count);
+  return unit;
+}
+
+fn queue_fits(transaction: &Transaction, args: &Box<Slots<Span>>) -> fits: Bool reads(transaction), reads(args) {
+  doc "Whether the queue can hold a command's arguments whole: their bytes, their spans and their count each within the 2^30 its spaces grow to.";
+  let count = args^.inner.len;
+  let needed = 0_u64;
+  for @arguments (index in 0_u64..count) {
+    let span = arg(args: args, index: index);
+    set needed = needed +sat span.length;
+  }
+  let bytes = transaction^.bytes.inner.len +sat needed;
+  let spans = transaction^.spans.inner.len +sat count;
+  let counts = transaction^.counts.inner.len +sat 1_u64;
+  let bytes_fit = bytes <= queue_limit;
+  let spans_fit = spans <= queue_limit;
+  let counts_fit = counts <= queue_limit;
+  let both = band(bytes_fit, spans_fit);
+  return band(both, counts_fit);
+}
+
+fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(transaction), writes(client) {
+  doc "A command sent inside a transaction, other than EXEC, DISCARD, MULTI, WATCH and QUIT: checked in the order Redis 7.0.15's processCommand checks it before queueing, and either queued and answered QUEUED, or refused, marking the transaction dirty so that EXEC aborts it. COMMAND's subcommand is resolved by command_plan, an unknown one or COUNT outside its arity refused before queueing; a Redis subcommand firn does not run takes the same foreign path as a command without parts, regardless of argument count. A command held_kind names with a count of arguments outside its arity is answered Redis's arity error, then a connection that must authenticate first NOAUTH; a command that would take the queue past 1 GiB of arguments is refused, firn's queue growing no further. A command held_kind does not name, which firn either does not know or does not run by its parts, is queued and answered QUEUED, marking the transaction foreign so that EXEC refuses it whole: firn names its commands only in execute's rows, and a client that stops at an error reply would otherwise be left inside the transaction.";
+  let name = arg(args: args, index: 0_u64);
+  let kind = held_kind(input: input, name: name);
+  let count = args^.inner.len;
+  if kind != 0_u64 {
+    let arity = held_arity(kind: kind);
+    if arity_holds(arity: arity, count: count) {
+    } else {
+      reply_arity(client: client, input: input, name: name);
+      set transaction^.dirty = True();
+      return unit;
+    }
+  }
+  if kind == 166_u64 {
+    let command = command_plan(input: input, args: args);
+    let unknown = command == 0_u64;
+    let wrong_count = command == 3_u64;
+    if bor(unknown, wrong_count) {
+      let refused = command_refused(input: input, args: args, client: client, kind: command);
+      set transaction^.dirty = True();
+      return unit;
+    }
+    if command == 4_u64 {
+      set kind = 0_u64;
+    }
+  }
+  if client^.locked {
+    let stopped = denied(client: client);
+    set transaction^.dirty = True();
+    return unit;
+  }
+  let fits = queue_fits(transaction: transaction, args: args);
+  if bnot(fits) {
+    reply_error(client: client, word: &text_queue_full[0_u64..67_u64]);
+    set transaction^.dirty = True();
+    return unit;
+  }
+  queue_command(transaction: transaction, input: input, args: args);
+  if kind == 0_u64 {
+    set transaction^.foreign = True();
+  }
+  reply_word(client: client, word: &reply_queued[0_u64..9_u64]);
+  return unit;
+}
+
+fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transaction: &Transaction) -> result: unit reads(store), reads(env), reads(time), writes(client), writes(transaction) waits {
+  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order by its parts, in one statement holding every key and the keyspace's metadata so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. The transaction then closes.";
+  if transaction^.dirty {
+    reply_error(client: client, word: &text_execabort[0_u64..59_u64]);
+    transaction_reset(transaction: transaction);
+    return unit;
+  }
+  if transaction^.foreign {
+    reply_error(client: client, word: &text_foreign_abort[0_u64..92_u64]);
+    transaction_reset(transaction: transaction);
+    return unit;
+  }
+  let commands = transaction^.counts.inner.len;
+  reply_array(client: client, count: commands);
+  let effects = box_slots_new::<u8>(capacity: 64_u64);
+  let args = box_slots_new::<Span>(capacity: 16_u64);
+  let logged = store^.logging;
+  let total = transaction^.bytes.inner.len;
+  let queued = &transaction^.bytes.inner[0_u64..total];
+  set client^.now = time^.check;
+  atomic t = &store^.keys, m = &store^.meta {
+    let appended = 0_u64;
+    let first = 0_u64;
+    for @commands (index in 0_u64..commands) {
+      let count = transaction^.counts.inner[index];
+      clear_args(args: &args);
+      for @arguments (offset in 0_u64..count) {
+        let position = first +wrap offset;
+        if position < transaction^.spans.inner.len {
+          let span = transaction^.spans.inner[position];
+          push_arg(args: &args, start: span.start, length: span.length);
+        }
+      }
+      set first = first +wrap count;
+      let name = arg(args: &args, index: 0_u64);
+      let kind = held_kind(input: queued, name: name);
+      if kind != 0_u64 {
+        let ran = held_run(kind: kind, keys: t, meta: m, effects: &effects, logged: logged, input: queued, args: &args, client: client, env: env, time: time);
+        set appended = appended +wrap ran;
+      } else {
+        reply_error(client: client, word: &text_foreign_abort[0_u64..92_u64]);
+      }
+    }
+    if appended > 1_u64 {
+      log_count(log: &m^.log, count: 1_u64, room: 16_u64);
+      log_word(log: &m^.log, word: &word_multi_log[0_u64..5_u64]);
+    }
+    let length = effects.inner.len;
+    log_append(log: &m^.log, bytes: &effects.inner[0_u64..length]);
+    if appended > 1_u64 {
+      log_count(log: &m^.log, count: 1_u64, room: 16_u64);
+      log_word(log: &m^.log, word: &word_exec_log[0_u64..4_u64]);
+    }
+  }
+  transaction_reset(transaction: transaction);
+  return unit;
+}
+
+fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock, transaction: &Transaction) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock), writes(transaction) waits {
+  doc "Answers one command a connection sent, keeping its transaction as Redis 7.0.15's MULTI, EXEC and DISCARD do: MULTI opens one and answers OK, or is refused inside one; inside one, EXEC runs it as run_exec does, DISCARD drops it and answers OK, WATCH is refused, QUIT is answered as outside, and every other command is queued or refused as queue_or_refuse decides; outside one, EXEC and DISCARD are refused and every other command is answered as execute answers it. MULTI, EXEC and DISCARD take no argument. As Redis rejects a command before running it, an EXEC with arguments, or from a connection that must authenticate first, discards any transaction and answers EXECABORT with the reason, inside a transaction or not; MULTI and DISCARD so are answered Redis's arity error or NOAUTH, marking an open transaction, and so is WATCH inside one before it is refused.";
+  let count = args^.inner.len;
+  let name = arg(args: args, index: 0_u64);
+  let code = name_code(input: input, start: name.start, length: name.length);
+  let multi = code == code_multi;
+  let exec = code == code_exec;
+  let discard = code == code_discard;
+  let ending = bor(exec, discard);
+  let control = bor(multi, ending);
+  if control {
+    if count != 1_u64 {
+      if exec {
+        reply_error(client: client, word: &text_exec_arity_abort[0_u64..88_u64]);
+        transaction_reset(transaction: transaction);
+        return unit;
+      }
+      reply_arity(client: client, input: input, name: name);
+      if transaction^.open {
+        set transaction^.dirty = True();
+      }
+      return unit;
+    }
+    if client^.locked {
+      if exec {
+        reply_error(client: client, word: &text_exec_noauth_abort[0_u64..75_u64]);
+        transaction_reset(transaction: transaction);
+        return unit;
+      }
+      let stopped = denied(client: client);
+      if transaction^.open {
+        set transaction^.dirty = True();
+      }
+      return unit;
+    }
+  }
+  if multi {
+    if transaction^.open {
+      reply_error(client: client, word: &text_nested[0_u64..33_u64]);
+      return unit;
+    }
+    set transaction^.open = True();
+    reply_ok(client: client);
+    return unit;
+  }
+  if transaction^.open {
+    if exec {
+      run_exec(store: store, client: client, env: env, time: time, transaction: transaction);
+      return unit;
+    }
+    if discard {
+      transaction_reset(transaction: transaction);
+      reply_ok(client: client);
+      return unit;
+    }
+    if code == code_watch {
+      if count < 2_u64 {
+        reply_arity(client: client, input: input, name: name);
+        set transaction^.dirty = True();
+        return unit;
+      }
+      if client^.locked {
+        let stopped = denied(client: client);
+        set transaction^.dirty = True();
+        return unit;
+      }
+      reply_error(client: client, word: &text_watch_inside[0_u64..37_u64]);
+      return unit;
+    }
+    if code == code_quit {
+      execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      return unit;
+    }
+    queue_or_refuse(transaction: transaction, input: input, args: args, client: client);
+    return unit;
+  }
+  if exec {
+    reply_error(client: client, word: &text_exec_without[0_u64..22_u64]);
+    return unit;
+  }
+  if discard {
+    reply_error(client: client, word: &text_discard_without[0_u64..25_u64]);
+    return unit;
+  }
+  execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+  return unit;
+}

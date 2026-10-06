@@ -1,0 +1,5 @@
+Decision: Where firn reports facts about itself in Redis's form, as INFO and CLIENT INFO do, a field firn has carries its real value, a field whose value is fixed for firn carries that value, and a field firn cannot measure is left out, because clients already read these replies field by field and allow for fields that differ between Redis versions, ssub added in 7.0 and lib-name in 7.2 among them, while an invented value would be a false report that a client or an operator could act on, instead of a placeholder for every field Redis gives or a refusal until firn measures them all.
+
+Rejected:
+- Placeholder values for the fields firn cannot measure, such as addr=?:0 or used_memory:0: rejected because nothing tells a reader them from measurements.
+- Refusing INFO or CLIENT INFO until firn measures every field: rejected because a selected consumer's client sends CLIENT INFO ([consumers](https://github.com/Ming-Research/Firn-wf/blob/fab3ed5b411f61bd2f8eb85f4a2c29f4582f4a91/research/investigations/consumers/README.md#what-the-milestone-needs-from-firn)) and Django's test fails on the refusal, while it reads no field firn leaves out.

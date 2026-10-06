@@ -22,7 +22,7 @@ public struct Settings {
 }
 
 public struct Client {
-  doc "What one connection's commands work with. Replies are written into bytes, a window filled to its capacity, up to at, where the next reply starts. A command that changes or reads the keyspace in an atomic statement passes the client as its visitor's environment: now is the instant expiries are read against, low, high and number carry the command's numbers in and a visitor's results out, state reports what the visitor found, items and scores hold the owned keys and scores the command prepared, each key hashed when it was made so that no hash is computed inside an atomic statement, and a list push's elements unhashed, since no map holds them, the last to be used first; key_metadata is reusable zeroed command metadata indexed by key-set insertion position or argument position, keys is the environment the key protocols take, and random is the state SPOP draws from while it runs. The connection's own state follows: id is its number, counted from 1 in the order the server accepted it; name is the name CLIENT SETNAME gave it, empty for none; authenticated is true once the connection has given the password, or from its start when it was accepted with no password required, as Redis's authenticated flag; locked is true while a password is required and the connection has not authenticated, the server reading the password again before each request while authenticated is false; closing is set by QUIT, after whose reply the connection ends; unix_us is the calendar time in microseconds as the clocks were last read; and settings is the server's configuration that does not change while it runs.";
+  doc "What one connection's commands work with. Replies are written into bytes, a window filled to its capacity, up to at, where the next reply starts. A command that changes or reads the keyspace in an atomic statement passes the client as its visitor's environment: now is the instant expiries are read against, low, high and number carry the command's numbers in and a visitor's results out, state reports what the visitor found, items and scores hold the owned keys and scores the command prepared, each key hashed when it was made so that no hash is computed inside an atomic statement, and a list push's elements unhashed, since no map holds them, the last to be used first; key_metadata is reusable zeroed command metadata indexed by key-set insertion position or argument position, keys is the environment the key protocols take, and random is the state SPOP draws from while it runs. The connection's own state follows: id is its number, counted from 1 in the order the server accepted it; name is the name CLIENT SETNAME gave it, empty for none; authenticated is true once the connection has given the password, or from its start when it was accepted with no password required, as Redis's authenticated flag; locked is true while a password is required and the connection has not authenticated, the server reading the password again before each request while authenticated is false; closing is set by QUIT, after whose reply the connection ends; resp is the version of the protocol its replies use, 2 until HELLO selects 3, as Redis's resp; unix_us is the calendar time in microseconds as the clocks were last read, and since_us as they were read when the server began serving the connection; and settings is the server's configuration that does not change while it runs.";
   public bytes: Box<Slots<u8>>;
   public at: u64;
   public now: u64;
@@ -40,7 +40,9 @@ public struct Client {
   public authenticated: Bool;
   public locked: Bool;
   public closing: Bool;
+  public resp: u64;
   public unix_us: u64;
+  public since_us: u64;
   public settings: Settings;
 }
 
@@ -58,6 +60,10 @@ public fn input_new(capacity: u64) -> made: Box<Slots<u8>> pure contract {
 public fn input_grow(input: &Box<Slots<u8>>) -> result: unit writes(input) doc "Doubles a full input window, filling its new bytes; one of 2^31 bytes or more stays as it is.";
 
 public fn keep_rest(input: &Box<Slots<u8>>, from: u64, held: u64) -> kept: u64 writes(input) doc "Moves the bytes from a position up to held, an incomplete request, to the front of the input and returns how many it moved.";
+
+public fn clear_args(args: &Box<Slots<Span>>) -> result: unit writes(args) doc "Empties the argument spans, keeping their capacity.";
+
+public fn push_arg(args: &Box<Slots<Span>>, start: u64, length: u64) -> result: unit writes(args) doc "Appends one argument's span, doubling the spans' capacity when they are full.";
 
 public fn arg(args: &Box<Slots<Span>>, index: u64) -> span: Span reads(args) doc "The span of one argument, or an empty span past the last.";
 
@@ -95,9 +101,19 @@ public fn reply_bulk_decimal(client: &Client, value: i64) -> result: unit writes
 
 public fn reply_ok(client: &Client) -> result: unit writes(client) doc "Writes +OK.";
 
-public fn reply_nil(client: &Client) -> result: unit writes(client) doc "Writes the RESP2 null bulk string.";
+public fn reply_nil(client: &Client) -> result: unit writes(client) doc "Writes a null bulk string in the client's protocol: $-1 under RESP2, _ under RESP3, as Redis's addReplyNull.";
 
-public fn reply_nil_array(client: &Client) -> result: unit writes(client) doc "Writes the RESP2 null array.";
+public fn reply_nil_array(client: &Client) -> result: unit writes(client) doc "Writes a null array in the client's protocol: *-1 under RESP2, _ under RESP3, as Redis's addReplyNullArray.";
+
+public fn reply_map(client: &Client, pairs: u64) -> result: unit writes(client) doc "Writes the header of a map of pairs entries in the client's protocol: an array of twice as many elements under RESP2, a map under RESP3, as Redis's addReplyMapLen.";
+
+public fn reply_set(client: &Client, count: u64) -> result: unit writes(client) doc "Writes the header of a set of count elements in the client's protocol: an array under RESP2, a set under RESP3, as Redis's addReplySetLen.";
+
+public fn reply_pair(client: &Client) -> result: unit writes(client) doc "Starts one pair of a reply Redis nests under RESP3 only, a member with its score or a field with its value: an array of two under RESP3, nothing under RESP2, whose reply lists the pair's two elements flat.";
+
+public fn reply_pairs(client: &Client, pairs: u64) -> result: unit writes(client) doc "Writes the header of an array of pairs that Redis nests under RESP3 only: pairs elements under RESP3, each started by reply_pair, and twice as many under RESP2.";
+
+public fn reply_verbatim(client: &Client, input: &[u8], start: u64, length: u64) -> result: unit reads(input), writes(client) doc "Writes bytes of the input as text in the client's protocol: a bulk string under RESP2, a verbatim string of format txt under RESP3, as Redis's addReplyVerbatim.";
 
 public fn reply_error(client: &Client, word: &[u8]) -> result: unit reads(word), writes(client) doc "Writes a RESP error: a minus sign, the word, which carries its own ERR or WRONGTYPE prefix, and CR LF.";
 
