@@ -5879,6 +5879,292 @@ fn firn_records_held_setstore_commands_as_redis_propagates_them() {
     );
 }
 
+/// firn runs the sorted sets commands written as parts, ZADD to ZREMRANGEBYLEX, inside a transaction's EXEC and through a script as Redis 7.0.15 does. The same requests, from the same keys, run in one transaction,
+/// each error or boundary request in a transaction of its own, then through
+/// a script's redis.call and the errors through redis.pcall, and give the
+/// replies redis-server 7.0.15 gives (Firn-wf probe run 37503178190).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_sorted_parts_as_redis_does() {
+    const SETUP: &[&[&str]] = &[
+        &["FLUSHALL"],
+        &["SET", "wrong", "text"],
+        &["ZADD", "z", "1", "a", "2", "b", "2", "c", "4", "d"],
+        &["ZADD", "lex", "0", "a", "0", "b", "0", "c", "0", "d"],
+        &["ZADD", "pop", "1", "a", "2", "b", "3", "c", "4", "d"],
+        &["ZADD", "remove", "1", "a", "2", "b", "3", "c", "4", "d"],
+        &["ZADD", "infinite", "inf", "a"],
+    ];
+    const VALID: &[&[&str]] = &[
+        &["ZADD", "z", "NX", "9", "a"],
+        &["ZADD", "missing", "XX", "1", "a"],
+        &["ZADD", "z", "CH", "3", "b", "5", "e"],
+        &["ZADD", "z", "XX", "GT", "2", "b"],
+        &["ZADD", "z", "XX", "LT", "2", "b"],
+        &["ZADD", "z", "NX", "INCR", "1", "a"],
+        &["ZADD", "z", "INCR", "0.5", "a"],
+        &["ZINCRBY", "z", "0.5", "a"],
+        &["ZCARD", "z"],
+        &["ZSCORE", "z", "a"],
+        &["ZMSCORE", "z", "a", "absent", "b", "a"],
+        &["ZRANK", "z", "a"],
+        &["ZREVRANK", "z", "a"],
+        &["ZRANGE", "z", "0", "-1", "WITHSCORES"],
+        &[
+            "ZRANGE",
+            "z",
+            "5",
+            "(2",
+            "BYSCORE",
+            "REV",
+            "LIMIT",
+            "0",
+            "2",
+            "WITHSCORES",
+        ],
+        &["ZRANGE", "lex", "[b", "[d", "BYLEX"],
+        &["ZREVRANGE", "z", "-3", "-1", "WITHSCORES"],
+        &["ZRANGEBYSCORE", "z", "(2", "+inf", "WITHSCORES"],
+        &["ZREVRANGEBYSCORE", "z", "+inf", "-inf", "LIMIT", "1", "2"],
+        &["ZRANGEBYLEX", "lex", "(a", "[d", "LIMIT", "1", "2"],
+        &["ZREVRANGEBYLEX", "lex", "+", "-", "LIMIT", "0", "2"],
+        &["ZCOUNT", "z", "(2", "+inf"],
+        &["ZLEXCOUNT", "lex", "[b", "(d"],
+        &["ZREM", "z", "e", "e", "absent"],
+        &["ZPOPMIN", "pop"],
+        &["ZPOPMAX", "pop", "2"],
+        &["ZPOPMIN", "pop", "99"],
+        &["EXISTS", "pop"],
+        &["ZREMRANGEBYRANK", "remove", "0", "0"],
+        &["ZREMRANGEBYSCORE", "remove", "(1", "2"],
+        &["ZREMRANGEBYLEX", "lex", "[b", "[c"],
+        &["ZRANGE", "remove", "0", "-1", "WITHSCORES"],
+        &["ZRANGE", "lex", "0", "-1"],
+        &["ZREMRANGEBYRANK", "remove", "0", "-1"],
+        &["TYPE", "remove"],
+        &["ZCARD", "missing"],
+        &["ZSCORE", "missing", "a"],
+        &["ZMSCORE", "missing", "a", "b"],
+        &["ZRANK", "missing", "a"],
+        &["ZRANGE", "missing", "0", "-1"],
+        &["ZCOUNT", "missing", "-inf", "+inf"],
+        &["ZPOPMAX", "missing"],
+        &["ZREM", "missing", "a"],
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["ZADD", "z", "1", "a", "2"],
+        &["ZADD", "z", "NX", "XX", "1", "a"],
+        &["ZADD", "z", "NX", "GT", "1", "a"],
+        &["ZADD", "z", "GT", "LT", "1", "a"],
+        &["ZADD", "z", "INCR", "1", "a", "2", "b"],
+        &["ZADD", "wrong", "nan", "a"],
+        &["ZADD", "wrong", "1", "a"],
+        &["ZADD", "infinite", "INCR", "-inf", "a"],
+        &["ZINCRBY", "infinite", "-inf", "a"],
+        &["ZINCRBY", "z", "bad", "a"],
+        &["ZPOPMIN", "wrong", "-1"],
+        &["ZPOPMAX", "z", "bad"],
+        &["ZPOPMIN", "z", "1", "extra"],
+        &["ZPOPMAX", "wrong", "0"],
+        &["ZPOPMIN", "z", "0"],
+        &["ZCARD", "wrong"],
+        &["ZSCORE", "wrong", "a"],
+        &["ZMSCORE", "wrong", "a", "b"],
+        &["ZRANK", "wrong", "a"],
+        &["ZREM", "wrong", "a"],
+        &["ZRANGE", "wrong", "bad", "-1"],
+        &["ZRANGE", "wrong", "0", "-1"],
+        &["ZRANGE", "z", "0", "-1", "LIMIT", "0", "1"],
+        &["ZRANGE", "z", "0", "-1", "LIMIT", "1", "-1"],
+        &["ZRANGE", "lex", "-", "+", "BYLEX", "WITHSCORES"],
+        &["ZRANGE", "z", "0", "-1", "REV", "REV"],
+        &["ZRANGEBYSCORE", "wrong", "bad", "+inf"],
+        &["ZRANGEBYSCORE", "z", "-inf", "+inf", "LIMIT", "-1", "2"],
+        &["ZRANGEBYSCORE", "z", "-inf", "+inf", "LIMIT", "0", "0"],
+        &["ZRANGEBYLEX", "lex", "a", "+"],
+        &["ZCOUNT", "wrong", "bad", "+inf"],
+        &["ZLEXCOUNT", "wrong", "a", "+"],
+        &["ZREMRANGEBYRANK", "wrong", "bad", "-1"],
+        &["ZREMRANGEBYSCORE", "wrong", "nan", "+inf"],
+        &["ZREMRANGEBYLEX", "wrong", "a", "+"],
+        &["ZREMRANGEBYRANK", "z", "10", "0"],
+    ];
+    const TRANSACTIONS: &[u8] =
+        b"+OK\r\n+OK\r\n:4\r\n:4\r\n:4\r\n:4\r\n:1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*43\r\n:0\r\n\
+:0\r\n:2\r\n:0\r\n:0\r\n$-1\r\n$3\r\n1.5\r\n$1\r\n2\r\n:5\r\n$1\r\n2\r\n*4\r\n\
+$1\r\n2\r\n$-1\r\n$1\r\n2\r\n$1\r\n2\r\n:0\r\n:4\r\n*10\r\n$1\r\na\r\n$1\r\n\
+2\r\n$1\r\nb\r\n$1\r\n2\r\n$1\r\nc\r\n$1\r\n2\r\n$1\r\nd\r\n$1\r\n4\r\n$1\r\n\
+e\r\n$1\r\n5\r\n*4\r\n$1\r\ne\r\n$1\r\n5\r\n$1\r\nd\r\n$1\r\n4\r\n*3\r\n$1\r\n\
+b\r\n$1\r\nc\r\n$1\r\nd\r\n*6\r\n$1\r\nc\r\n$1\r\n2\r\n$1\r\nb\r\n$1\r\n2\r\n\
+$1\r\na\r\n$1\r\n2\r\n*4\r\n$1\r\nd\r\n$1\r\n4\r\n$1\r\ne\r\n$1\r\n5\r\n*2\r\n\
+$1\r\nd\r\n$1\r\nc\r\n*2\r\n$1\r\nc\r\n$1\r\nd\r\n*2\r\n$1\r\nd\r\n$1\r\nc\r\n\
+:2\r\n:2\r\n:1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n*4\r\n$1\r\nd\r\n$1\r\n4\r\n$1\r\n\
+c\r\n$1\r\n3\r\n*2\r\n$1\r\nb\r\n$1\r\n2\r\n:0\r\n:1\r\n:1\r\n:2\r\n*4\r\n$1\r\n\
+c\r\n$1\r\n3\r\n$1\r\nd\r\n$1\r\n4\r\n*2\r\n$1\r\na\r\n$1\r\nd\r\n:2\r\n\
++none\r\n:0\r\n$-1\r\n*2\r\n$-1\r\n$-1\r\n$-1\r\n*0\r\n:0\r\n*0\r\n:0\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR XX and NX options at the same time are not compatible\r\n+OK\r\n+QUEUED\r\n\
+*1\r\n-ERR GT, LT, and/or NX options at the same time are not compatible\r\n\
++OK\r\n+QUEUED\r\n*1\r\n\
+-ERR GT, LT, and/or NX options at the same time are not compatible\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR INCR option supports a single increment-element pair\r\n\
++OK\r\n+QUEUED\r\n*1\r\n-ERR value is not a valid float\r\n+OK\r\n+QUEUED\r\n\
+*1\r\n-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
++OK\r\n+QUEUED\r\n*1\r\n-ERR resulting score is not a number (NaN)\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR resulting score is not a number (NaN)\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not a valid float\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is out of range, must be positive\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is out of range, must be positive\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX\r\n\
++OK\r\n+QUEUED\r\n*1\r\n*4\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n\
++OK\r\n+QUEUED\r\n*1\r\n\
+-ERR syntax error, WITHSCORES not supported in combination with BYLEX\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR min or max is not a float\r\n+OK\r\n+QUEUED\r\n*1\r\n*0\r\n+OK\r\n\
++QUEUED\r\n*1\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR min or max not valid string range item\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR min or max is not a float\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR min or max not valid string range item\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is not an integer or out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR min or max is not a float\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR min or max not valid string range item\r\n+OK\r\n+QUEUED\r\n*1\r\n:0\r\n";
+    const SCRIPTS: &[u8] =
+        b"+OK\r\n+OK\r\n:4\r\n:4\r\n:4\r\n:4\r\n:1\r\n:0\r\n:0\r\n:2\r\n:0\r\n:0\r\n\
+$-1\r\n$3\r\n1.5\r\n$1\r\n2\r\n:5\r\n$1\r\n2\r\n*4\r\n$1\r\n2\r\n$-1\r\n$1\r\n\
+2\r\n$1\r\n2\r\n:0\r\n:4\r\n*10\r\n$1\r\na\r\n$1\r\n2\r\n$1\r\nb\r\n$1\r\n2\r\n\
+$1\r\nc\r\n$1\r\n2\r\n$1\r\nd\r\n$1\r\n4\r\n$1\r\ne\r\n$1\r\n5\r\n*4\r\n$1\r\n\
+e\r\n$1\r\n5\r\n$1\r\nd\r\n$1\r\n4\r\n*3\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n\
+*6\r\n$1\r\nc\r\n$1\r\n2\r\n$1\r\nb\r\n$1\r\n2\r\n$1\r\na\r\n$1\r\n2\r\n*4\r\n\
+$1\r\nd\r\n$1\r\n4\r\n$1\r\ne\r\n$1\r\n5\r\n*2\r\n$1\r\nd\r\n$1\r\nc\r\n*2\r\n\
+$1\r\nc\r\n$1\r\nd\r\n*2\r\n$1\r\nd\r\n$1\r\nc\r\n:2\r\n:2\r\n:1\r\n*2\r\n$1\r\n\
+a\r\n$1\r\n1\r\n*4\r\n$1\r\nd\r\n$1\r\n4\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$1\r\n\
+b\r\n$1\r\n2\r\n:0\r\n:1\r\n:1\r\n:2\r\n*4\r\n$1\r\nc\r\n$1\r\n3\r\n$1\r\nd\r\n\
+$1\r\n4\r\n*2\r\n$1\r\na\r\n$1\r\nd\r\n:2\r\n+none\r\n:0\r\n$-1\r\n*2\r\n$-1\r\n\
+$-1\r\n$-1\r\n*0\r\n:0\r\n*0\r\n:0\r\n-ERR syntax error\r\n\
+-ERR XX and NX options at the same time are not compatible\r\n\
+-ERR GT, LT, and/or NX options at the same time are not compatible\r\n\
+-ERR GT, LT, and/or NX options at the same time are not compatible\r\n\
+-ERR INCR option supports a single increment-element pair\r\n\
+-ERR value is not a valid float\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR resulting score is not a number (NaN)\r\n\
+-ERR resulting score is not a number (NaN)\r\n\
+-ERR value is not a valid float\r\n\
+-ERR value is out of range, must be positive\r\n\
+-ERR value is out of range, must be positive\r\n-ERR syntax error\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n*0\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is not an integer or out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX\r\n\
+*4\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n\
+-ERR syntax error, WITHSCORES not supported in combination with BYLEX\r\n\
+-ERR syntax error\r\n-ERR min or max is not a float\r\n*0\r\n*0\r\n\
+-ERR min or max not valid string range item\r\n\
+-ERR min or max is not a float\r\n\
+-ERR min or max not valid string range item\r\n\
+-ERR value is not an integer or out of range\r\n\
+-ERR min or max is not a float\r\n\
+-ERR min or max not valid string range item\r\n:0\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    transactions.push(resp(&["MULTI"]));
+    for request in VALID {
+        transactions.push(resp(request));
+    }
+    transactions.push(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.push(resp(&["MULTI"]));
+        transactions.push(resp(request));
+        transactions.push(resp(&["EXEC"]));
+    }
+    let mut scripts: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.push(resp(&call));
+        }
+    }
+    for (requests, expected, what) in [
+        (transactions, TRANSACTIONS, "the transactions"),
+        (scripts, SCRIPTS, "the scripts"),
+    ] {
+        client
+            .write_all(&requests.concat())
+            .expect("send the requests");
+        expect_replies(&mut client, expected, what);
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn records the sorted sets commands run inside a transaction's EXEC and a script as Redis 7.0.15 propagates them over sorted sets found expired: a read records the removal alone, ZADD and ZINCRBY the removal and then themselves, and a script whose one effect is a removal records it bare. The expected
+/// records are redis-server 7.0.15's (Firn-wf probe run 37504720562).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_sorted_commands_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["ZADD", "z1", "1", "a"],
+            &["PEXPIREAT", "z1", "1"],
+            &["ZADD", "z2", "1", "a", "2", "b"],
+            &["PEXPIREAT", "z2", "1"],
+            &["ZADD", "z3", "1", "a"],
+            &["PEXPIREAT", "z3", "1"],
+            &["ZADD", "z4", "1", "a"],
+            &["PEXPIREAT", "z4", "1"],
+        ],
+        &[
+            &["MULTI"],
+            &["ZCARD", "z1"],
+            &["ZADD", "z2", "5", "n"],
+            &["ZINCRBY", "z3", "2", "m"],
+            &["EXEC"],
+            &["EVAL", "return redis.call('ZPOPMIN', KEYS[1])", "1", "z4"],
+            &["ZRANGE", "z2", "0", "-1", "WITHSCORES"],
+            &["ZRANGE", "z3", "0", "-1", "WITHSCORES"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n:0\r\n:1\r\n$1\r\n2\r\n*0\r\n*2\r\n$1\r\nn\r\n$1\r\n5\r\n*2\r\n$1\r\nm\r\n$1\r\n2\r\n:2\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nz1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nz2\r\n*4\r\n$4\r\nZADD\r\n$2\r\nz2\r\n$1\r\n5\r\n$1\r\nn\r\n*2\r\n$3\r\nDEL\r\n$2\r\nz3\r\n*4\r\n$7\r\nZINCRBY\r\n$2\r\nz3\r\n$1\r\n2\r\n$1\r\nm\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$3\r\nDEL\r\n$2\r\nz4\r\n",
+    );
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to

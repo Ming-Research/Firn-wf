@@ -25,8 +25,6 @@ alias hash_map_new = std::collections::hash_map::hash_map_new;
 alias hash_map_put = std::collections::hash_map::hash_map_put;
 alias hash_map_remove = std::collections::hash_map::hash_map_remove;
 alias kept_score = pkg::scores::kept_score;
-alias log_command = pkg::store::log_command;
-alias log_removal = pkg::store::log_removal;
 alias name_is = pkg::bytes::name_is;
 alias ordered_map_len = std::collections::ordered_map::ordered_map_len;
 alias ordered_map_new = std::collections::ordered_map::ordered_map_new;
@@ -295,8 +293,21 @@ fn add_scores(env: &Client, value: &Entry, adding: &Adding) -> kind: u64 writes(
   }
 }
 
-fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, increment: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...] and ZINCRBY key increment member (increment): reads the options, letters in either case and compared up to a zero byte, then checks the pairs and the options together and reads every score, all before the key is read, in Redis's order; then gives each member its score as add_ranked does, creating the set for an absent key unless XX is given. ZADD answers how many members it added, or added or rescored with CH; with INCR or as ZINCRBY it answers the member's new score, or the null bulk string when it passed over the member. A change is appended to the file as the command was sent, as Redis propagates it.";
+struct ZaddPlan {
+  adding: Adding;
+  pairs: u64;
+  ch: Bool;
+}
+
+fn zadd_plan() -> plan: ZaddPlan pure {
+  doc "Empty work record for ZADD and ZINCRBY before their shared parser fills it.";
+  let no = False();
+  let adding = Adding(nx: no, xx: no, gt: no, lt: no, incr: no, added: 0_u64, updated: 0_u64, processed: 0_u64, score: 0.0_f64, nan: no);
+  return ZaddPlan(adding: adding, pairs: 0_u64, ch: no);
+}
+
+fn zadd_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, increment: Bool, plan: &ZaddPlan) -> valid: Bool reads(input), reads(args), writes(client), writes(plan) {
+  doc "Prepares ZADD's arguments and refusals before either path looks up its key.";
   let count = args^.inner.len;
   let nx = False();
   let xx = False();
@@ -350,13 +361,13 @@ fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let malformed = bor(unpaired, none);
   if malformed {
     reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
-    return unit;
+    return False();
   }
   let pairs = elements / 2_u64;
   let both_exclusive = band(nx, xx);
   if both_exclusive {
     reply_error(client: client, word: &text_nx_xx[0_u64..57_u64]);
-    return unit;
+    return False();
   }
   let gt_nx = band(gt, nx);
   let lt_nx = band(lt, nx);
@@ -365,13 +376,13 @@ fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let conflicting = bor(either, gt_lt);
   if conflicting {
     reply_error(client: client, word: &text_gt_lt_nx[0_u64..65_u64]);
-    return unit;
+    return False();
   }
   let several = pairs > 1_u64;
   let too_many = band(incr, several);
   if too_many {
     reply_error(client: client, word: &text_incr_pair[0_u64..56_u64]);
-    return unit;
+    return False();
   }
   clear_items(client: client);
   for @pairs (step in 0_u64..pairs) {
@@ -386,81 +397,107 @@ fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     } else {
       clear_items(client: client);
       reply_error(client: client, word: &text_not_float[0_u64..30_u64]);
-      return unit;
+      return False();
     }
     let member = key_at(input: input, args: args, index: member_index);
     push_item(client: client, item: move member);
     push_score(client: client, score: score.value);
   }
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
-  set client^.state = state_absent;
   let unset = False();
   let adding = Adding(nx: nx, xx: xx, gt: gt, lt: lt, incr: incr, added: 0_u64, updated: 0_u64, processed: 0_u64, score: 0.0_f64, nan: unset);
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = add_scores(env: client, value: held, adding: &adding);
-      }
-      None() => {
-      }
+  set plan^.adding = adding;
+  set plan^.pairs = pairs;
+  set plan^.ch = ch;
+  set client^.state = state_absent;
+  return True();
+}
+
+fn zadd_body(slot: &Option<Entry>, client: &Client, plan: &ZaddPlan) -> lapsed: Bool writes(slot), writes(client), writes(plan) {
+  doc "Runs ZADD over its key's entry; the caller owns the statement.";
+  match slot^ {
+    Some(value: held) => {
+      let edited = add_scores(env: client, value: held, adding: &plan^.adding);
     }
-    let create = client^.state == state_absent;
-    if client^.state == state_expired {
-      set slot^ = None<Entry>();
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-      set create = True();
+    None() => {
     }
-    if create {
-      if xx {
+  }
+  let create = client^.state == state_absent;
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+    set create = True();
+  }
+  if create {
+    if plan^.adding.xx {
+      set client^.state = state_done;
+    } else {
+      let capacity = imax(plan^.pairs, 4_u64);
+      if capacity <= ceiling {
+        let order = ordered_map_new::<Rank, unit, ceiling>();
+        let scores = hash_map_new::<Key, f64, ceiling>(capacity: capacity);
+        let sorted = Sorted(order: move order, scores: move scores);
+        add_ranked(sorted: &sorted, client: client, adding: &plan^.adding);
+        let made = Value::Ranked(ranked: move sorted);
+        let fresh = Entry(value: move made, expires: 0_u64);
+        set slot^ = Some<Entry>(value: move fresh);
         set client^.state = state_done;
-      } else {
-        let capacity = imax(pairs, 4_u64);
-        if capacity <= ceiling {
-          let order = ordered_map_new::<Rank, unit, ceiling>();
-          let scores = hash_map_new::<Key, f64, ceiling>(capacity: capacity);
-          let sorted = Sorted(order: move order, scores: move scores);
-          add_ranked(sorted: &sorted, client: client, adding: &adding);
-          let made = Value::Ranked(ranked: move sorted);
-          let fresh = Entry(value: move made, expires: 0_u64);
-          set slot^ = Some<Entry>(value: move fresh);
-          set client^.state = state_done;
-        }
-      }
-    }
-    let changes = adding.added +wrap adding.updated;
-    if changes > 0_u64 {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
       }
     }
   }
+  return lapsed;
+}
+
+fn zadd_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, plan: &ZaddPlan, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(log) {
+  doc "Records an expired removal followed by a changed command, returning the propagated record count.";
+  let changes = plan^.adding.added +wrap plan^.adding.updated;
+  let changed = changes > 0_u64;
+  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key);
+  return appended;
+}
+
+fn zadd_finish(client: &Client, plan: &ZaddPlan) -> result: unit reads(plan), writes(client) {
+  doc "Completes ZADD's network reply, retaining replies written while visiting the entry.";
   clear_items(client: client);
   if client^.state == state_wrong {
     reply_wrong_type(client: client);
     return unit;
   }
-  if adding.nan {
+  if plan^.adding.nan {
     reply_error(client: client, word: &text_score_nan[0_u64..41_u64]);
     return unit;
   }
-  if incr {
-    if adding.processed > 0_u64 {
-      reply_score(client: client, score: adding.score);
+  if plan^.adding.incr {
+    if plan^.adding.processed > 0_u64 {
+      reply_score(client: client, score: plan^.adding.score);
     } else {
       reply_nil(client: client);
     }
     return unit;
   }
-  let answer = adding.added;
-  if ch {
-    set answer = adding.added +wrap adding.updated;
+  let answer = plan^.adding.added;
+  if plan^.ch {
+    set answer = plan^.adding.added +wrap plan^.adding.updated;
   }
   let signed = cvt.wrap::<u64, i64>(answer);
   reply_integer(client: client, value: signed);
+  return unit;
+}
+
+fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, increment: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...] and ZINCRBY key increment member (increment): reads the options, letters in either case and compared up to a zero byte, then checks the pairs and the options together and reads every score, all before the key is read, in Redis's order; then gives each member its score as add_ranked does, creating the set for an absent key unless XX is given. ZADD answers how many members it added, or added or rescored with CH; with INCR or as ZINCRBY it answers the member's new score, or the null bulk string when it passed over the member. A change is appended to the file as the command was sent, as Redis propagates it.";
+  let plan = zadd_plan();
+  let valid = zadd_parse(input: input, args: args, client: client, increment: increment, plan: &plan);
+  if bnot(valid) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let lapsed = zadd_body(slot: slot, client: client, plan: &plan);
+    let appended = zadd_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, plan: &plan, input: input, args: args, key: key);
+  }
+  zadd_finish(client: client, plan: &plan);
   return unit;
 }
 
@@ -520,39 +557,41 @@ fn remove_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(v
   }
 }
 
-fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZREM key member [member ...]: removes the members from the sorted set, removing the key when the set is left empty, and answers how many it held.";
+fn zrem_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> valid: Bool reads(input), reads(args), writes(client) {
+  doc "Prepares ZREM's arguments and refusals before either path looks up its key.";
   prepare_keys(input: input, args: args, client: client, first: 2_u64);
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
   set client^.state = state_absent;
   set client^.number = 0_u64;
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = remove_ranked(env: client, value: held);
-      }
-      None() => {
-      }
+  return True();
+}
+
+fn zrem_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool writes(slot), writes(client) {
+  doc "Runs ZREM over its key's entry; the caller owns the statement.";
+  match slot^ {
+    Some(value: held) => {
+      let edited = remove_ranked(env: client, value: held);
     }
-    let emptied = client^.state == state_emptied;
-    let lapsed = client^.state == state_expired;
-    let removing = bor(emptied, lapsed);
-    if removing {
-      set slot^ = None<Entry>();
-    }
-    if lapsed {
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if client^.number > 0_u64 {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
+    None() => {
     }
   }
+  let emptied = client^.state == state_emptied;
+  let lapsed = client^.state == state_expired;
+  let removing = bor(emptied, lapsed);
+  if removing {
+    set slot^ = None<Entry>();
+  }
+  return lapsed;
+}
+
+fn zrem_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log) {
+  doc "Records an expired removal followed by a changed command, returning the propagated record count.";
+  let changed = client^.number > 0_u64;
+  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key);
+  return appended;
+}
+
+fn zrem_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZREM's network reply, retaining replies written while visiting the entry.";
   clear_items(client: client);
   if client^.state == state_wrong {
     reply_wrong_type(client: client);
@@ -560,6 +599,23 @@ fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   }
   let removed = cvt.wrap::<u64, i64>(client^.number);
   reply_integer(client: client, value: removed);
+  return unit;
+}
+
+fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZREM key member [member ...]: removes the members from the sorted set, removing the key when the set is left empty, and answers how many it held.";
+  let valid = zrem_parse(input: input, args: args, client: client);
+  if bnot(valid) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let lapsed = zrem_body(slot: slot, client: client);
+    let appended = zrem_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
+  }
+  zrem_finish(client: client);
   return unit;
 }
 
@@ -701,12 +757,12 @@ fn pop_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
   }
 }
 
-fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, from_top: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZPOPMIN key [count] and ZPOPMAX (from_top): removes and answers the sorted set's lowest member, or its highest, and its score, or up to count of them, as one array, each member and score nested as a pair under RESP3 when a count is given, as Redis 7.0.15 nests them, removing the key when the set is left empty; an absent key answers an empty array. More than one count is a syntax error, and a count that is not an integer or is negative is out of range, as Redis's getPositiveLongFromObjectOrReply reads it, before the key is read; only a pop that removed a member is appended to the file.";
+fn zpop_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, from_top: Bool) -> valid: Bool reads(input), reads(args), writes(client) {
+  doc "Prepares ZPOP's arguments and refusals before either path looks up its key.";
   let count = args^.inner.len;
   if count > 3_u64 {
     reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
-    return unit;
+    return False();
   }
   let wanted = 1_u64;
   if count == 3_u64 {
@@ -717,13 +773,10 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     let refused = bor(invalid, negative);
     if refused {
       reply_error(client: client, word: &text_positive[0_u64..43_u64]);
-      return unit;
+      return False();
     }
     set wanted = cvt.wrap::<i64, u64>(number.value);
   }
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
   set client^.state = state_absent;
   set client^.number = wanted;
   set client^.low = 0_i64;
@@ -734,35 +787,40 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   if count == 3_u64 {
     set client^.high = 1_i64;
   }
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let edited = pop_ranked(env: client, value: held);
-      }
-      None() => {
-      }
+  return True();
+}
+
+fn zpop_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool writes(slot), writes(client) {
+  doc "Runs ZPOP over its key's entry; the caller owns the statement.";
+  match slot^ {
+    Some(value: held) => {
+      let edited = pop_ranked(env: client, value: held);
     }
-    let emptied = client^.state == state_emptied;
-    let lapsed = client^.state == state_expired;
-    let removing = bor(emptied, lapsed);
-    if removing {
-      set slot^ = None<Entry>();
-    }
-    if lapsed {
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    let done = client^.state == state_done;
-    let changed = bor(done, emptied);
-    let popped = client^.number > 0_u64;
-    let logged = band(changed, popped);
-    if logged {
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
+    None() => {
     }
   }
+  let emptied = client^.state == state_emptied;
+  let lapsed = client^.state == state_expired;
+  let removing = bor(emptied, lapsed);
+  if removing {
+    set slot^ = None<Entry>();
+  }
+  return lapsed;
+}
+
+fn zpop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log) {
+  doc "Records an expired removal followed by a changed command, returning the propagated record count.";
+  let done = client^.state == state_done;
+  let emptied = client^.state == state_emptied;
+  let changed_state = bor(done, emptied);
+  let popped = client^.number > 0_u64;
+  let changed = band(changed_state, popped);
+  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key);
+  return appended;
+}
+
+fn zpop_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZPOP's network reply, retaining replies written while visiting the entry.";
   let done = client^.state == state_done;
   let emptied = client^.state == state_emptied;
   let answered = bor(done, emptied);
@@ -774,6 +832,23 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     return unit;
   }
   reply_array(client: client, count: 0_u64);
+  return unit;
+}
+
+fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, from_top: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZPOPMIN key [count] and ZPOPMAX (from_top): removes and answers the sorted set's lowest member, or its highest, and its score, or up to count of them, as one array, each member and score nested as a pair under RESP3 when a count is given, as Redis 7.0.15 nests them, removing the key when the set is left empty; an absent key answers an empty array. More than one count is a syntax error, and a count that is not an integer or is negative is out of range, as Redis's getPositiveLongFromObjectOrReply reads it, before the key is read; only a pop that removed a member is appended to the file.";
+  let valid = zpop_parse(input: input, args: args, client: client, from_top: from_top);
+  if bnot(valid) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let lapsed = zpop_body(slot: slot, client: client);
+    let appended = zpop_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
+  }
+  zpop_finish(client: client);
   return unit;
 }
 
@@ -809,32 +884,53 @@ fn sorted_size(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
   }
 }
 
-fn run_zcard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZCARD key: answers the sorted set's size, 0 for an absent key.";
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
+fn zcard_parse(client: &Client) -> valid: Bool writes(client) {
+  doc "Prepares ZCARD's arguments and refusals before either path looks up its key.";
   set client^.state = state_absent;
   set client^.number = 0_u64;
-  atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = sorted_size(env: client, value: held);
-      }
-      None() => {
-      }
+  return True();
+}
+
+fn zcard_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+  doc "Runs ZCARD over its key's entry; the caller owns the statement.";
+  match slot^ {
+    Some(value: held) => {
+      let found = sorted_size(env: client, value: held);
+    }
+    None() => {
     }
   }
-  if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
-    set client^.number = 0_u64;
-  }
+  return unit;
+}
+
+fn zcard_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZCARD's network reply, retaining replies written while visiting the entry.";
   if client^.state == state_wrong {
     reply_wrong_type(client: client);
     return unit;
   }
   let size = cvt.wrap::<u64, i64>(client^.number);
   reply_integer(client: client, value: size);
+  return unit;
+}
+
+fn run_zcard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZCARD key: answers the sorted set's size, 0 for an absent key.";
+  let valid = zcard_parse(client: client);
+  if bnot(valid) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key] {
+    zcard_body(slot: slot, client: client);
+  }
+  if client^.state == state_expired {
+    remove_expired(store: store, key: key, now: client^.now);
+    set client^.number = 0_u64;
+  }
+  zcard_finish(client: client);
   return unit;
 }
 
@@ -879,27 +975,29 @@ fn member_score(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(e
   }
 }
 
-fn run_zscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZSCORE key member: answers the member's score, or the null bulk string when the key or the member is absent.";
+fn zscore_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> valid: Bool reads(input), reads(args), writes(client) {
+  doc "Prepares ZSCORE's arguments and refusals before either path looks up its key.";
   clear_items(client: client);
   let member = key_at(input: input, args: args, index: 2_u64);
   push_item(client: client, item: move member);
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
   set client^.state = state_absent;
-  atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = member_score(env: client, value: held);
-      }
-      None() => {
-      }
+  return True();
+}
+
+fn zscore_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+  doc "Runs ZSCORE over its key's entry; the caller owns the statement.";
+  match slot^ {
+    Some(value: held) => {
+      let found = member_score(env: client, value: held);
+    }
+    None() => {
     }
   }
-  if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
-  }
+  return unit;
+}
+
+fn zscore_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZSCORE's network reply, retaining replies written while visiting the entry.";
   clear_items(client: client);
   if client^.state == state_done {
     return unit;
@@ -909,6 +1007,25 @@ fn run_zscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     return unit;
   }
   reply_nil(client: client);
+  return unit;
+}
+
+fn run_zscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZSCORE key member: answers the member's score, or the null bulk string when the key or the member is absent.";
+  let valid = zscore_parse(input: input, args: args, client: client);
+  if bnot(valid) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key] {
+    zscore_body(slot: slot, client: client);
+  }
+  if client^.state == state_expired {
+    remove_expired(store: store, key: key, now: client^.now);
+  }
+  zscore_finish(client: client);
   return unit;
 }
 
@@ -961,26 +1078,27 @@ fn member_scores(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
   }
 }
 
-fn run_zmscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZMSCORE key member [member ...]: answers each member's score as an array, the null bulk string for a member the set does not hold and for every member of an absent key.";
+fn zmscore_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> valid: Bool reads(input), reads(args), writes(client) {
+  doc "Prepares ZMSCORE's arguments and refusals before either path looks up its key.";
   prepare_keys(input: input, args: args, client: client, first: 2_u64);
-  let members = args^.inner.len -sat 2_u64;
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
   set client^.state = state_absent;
-  atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = member_scores(env: client, value: held);
-      }
-      None() => {
-      }
+  return True();
+}
+
+fn zmscore_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+  doc "Runs ZMSCORE over its key's entry; the caller owns the statement.";
+  match slot^ {
+    Some(value: held) => {
+      let found = member_scores(env: client, value: held);
+    }
+    None() => {
     }
   }
-  if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
-  }
+  return unit;
+}
+
+fn zmscore_finish(client: &Client, members: u64) -> result: unit writes(client) {
+  doc "Completes ZMSCORE's network reply, retaining replies written while visiting the entry.";
   clear_items(client: client);
   if client^.state == state_done {
     return unit;
@@ -993,6 +1111,26 @@ fn run_zmscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   for @absent (step in 0_u64..members) {
     reply_nil(client: client);
   }
+  return unit;
+}
+
+fn run_zmscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZMSCORE key member [member ...]: answers each member's score as an array, the null bulk string for a member the set does not hold and for every member of an absent key.";
+  let valid = zmscore_parse(input: input, args: args, client: client);
+  if bnot(valid) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let members = args^.inner.len -sat 2_u64;
+  atomic slot = &store^.keys[key] {
+    zmscore_body(slot: slot, client: client);
+  }
+  if client^.state == state_expired {
+    remove_expired(store: store, key: key, now: client^.now);
+  }
+  zmscore_finish(client: client, members: members);
   return unit;
 }
 
@@ -1101,32 +1239,34 @@ fn member_rank(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
   }
 }
 
-fn run_zrank(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, reverse: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZRANK key member and ZREVRANK (reverse): answers the member's rank, counted from 0 at the lowest member, or at the highest, or the null bulk string when the key or the member is absent.";
+fn zrank_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, reverse: Bool) -> valid: Bool reads(input), reads(args), writes(client) {
+  doc "Prepares ZRANK's arguments and refusals before either path looks up its key.";
   clear_items(client: client);
   let member = key_at(input: input, args: args, index: 2_u64);
   push_item(client: client, item: move member);
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  set client^.now = time^.check;
   set client^.state = state_absent;
   set client^.number = 0_u64;
   set client^.low = 0_i64;
   if reverse {
     set client^.low = 1_i64;
   }
-  atomic slot = &store^.keys[key] {
-    match slot^ {
-      Some(value: held) => {
-        let found = member_rank(env: client, value: held);
-      }
-      None() => {
-      }
+  return True();
+}
+
+fn zrank_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+  doc "Runs ZRANK over its key's entry; the caller owns the statement.";
+  match slot^ {
+    Some(value: held) => {
+      let found = member_rank(env: client, value: held);
+    }
+    None() => {
     }
   }
-  if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
-  }
+  return unit;
+}
+
+fn zrank_finish(client: &Client) -> result: unit writes(client) {
+  doc "Completes ZRANK's network reply, retaining replies written while visiting the entry.";
   clear_items(client: client);
   if client^.state == state_done {
     let rank = cvt.wrap::<u64, i64>(client^.number);
@@ -1141,6 +1281,25 @@ fn run_zrank(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   return unit;
 }
 
+fn run_zrank(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, reverse: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "ZRANK key member and ZREVRANK (reverse): answers the member's rank, counted from 0 at the lowest member, or at the highest, or the null bulk string when the key or the member is absent.";
+  let valid = zrank_parse(input: input, args: args, client: client, reverse: reverse);
+  if bnot(valid) {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key] {
+    zrank_body(slot: slot, client: client);
+  }
+  if client^.state == state_expired {
+    remove_expired(store: store, key: key, now: client^.now);
+  }
+  zrank_finish(client: client);
+  return unit;
+}
+
 fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, code: u64, name: Span) -> handled: Bool reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "Answers the sorted-set command code names, when it names one, and returns whether it did. Each command is first given the number of arguments Redis's command table admits, checked before authentication as execute checks every command's; names longer than eight bytes, whose codes several names share, are compared whole.";
   let count = args^.inner.len;
@@ -1148,7 +1307,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   let yes = True();
   let no = False();
   if code == code_zadd {
-    let fits = count >= 4_u64;
+    let fits = arity_holds(arity: arity_zadd, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1159,7 +1318,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zincrby {
-    let fits = count == 4_u64;
+    let fits = arity_holds(arity: arity_zincrby, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1170,7 +1329,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zcard {
-    let fits = count == 2_u64;
+    let fits = arity_holds(arity: arity_zcard, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1181,7 +1340,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zscore {
-    let fits = count == 3_u64;
+    let fits = arity_holds(arity: arity_zscore, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1192,7 +1351,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zmscore {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_zmscore, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1203,7 +1362,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zpopmin {
-    let fits = count >= 2_u64;
+    let fits = arity_holds(arity: arity_zpopmin, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1214,7 +1373,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zpopmax {
-    let fits = count >= 2_u64;
+    let fits = arity_holds(arity: arity_zpopmax, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1225,7 +1384,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zrem {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_zrem, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1236,7 +1395,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zrank {
-    let fits = count == 3_u64;
+    let fits = arity_holds(arity: arity_zrank, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1247,7 +1406,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zrevrank {
-    let fits = count == 3_u64;
+    let fits = arity_holds(arity: arity_zrevrank, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1258,7 +1417,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zcount {
-    let fits = count == 4_u64;
+    let fits = arity_holds(arity: arity_zcount, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1269,7 +1428,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return True();
   }
   if code == code_zrange {
-    let fits = count >= 4_u64;
+    let fits = arity_holds(arity: arity_zrange, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1292,7 +1451,14 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       set kind = 3_u64;
     }
     if kind != 0_u64 {
-      let fits = count >= 4_u64;
+      let arity = arity_zrevrange;
+      if score {
+        set arity = arity_zrevrangebyscore;
+      }
+      if lex {
+        set arity = arity_zrevrangebylex;
+      }
+      let fits = arity_holds(arity: arity, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -1313,7 +1479,11 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       set kind = 3_u64;
     }
     if kind != 0_u64 {
-      let fits = count >= 4_u64;
+      let arity = arity_zrangebyscore;
+      if lex {
+        set arity = arity_zrangebylex;
+      }
+      let fits = arity_holds(arity: arity, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -1337,7 +1507,14 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       set kind = 2_u64;
     }
     if kind != 3_u64 {
-      let fits = count == 4_u64;
+      let arity = arity_zremrangebyrank;
+      if score {
+        set arity = arity_zremrangebyscore;
+      }
+      if lex {
+        set arity = arity_zremrangebylex;
+      }
+      let fits = arity_holds(arity: arity, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -1351,7 +1528,7 @@ fn sorted_command(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   if code == code_zlexcount {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zlexcount[0_u64..9_u64]);
     if spelled {
-      let fits = count == 4_u64;
+      let fits = arity_holds(arity: arity_zlexcount, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);

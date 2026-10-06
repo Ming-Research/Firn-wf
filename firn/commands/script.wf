@@ -177,6 +177,48 @@ const arity_sunionstore: i64 = -3_i64;
 
 const arity_sdiffstore: i64 = -3_i64;
 
+const arity_zadd: i64 = -4_i64;
+
+const arity_zincrby: i64 = 4_i64;
+
+const arity_zrem: i64 = -3_i64;
+
+const arity_zpopmin: i64 = -2_i64;
+
+const arity_zpopmax: i64 = -2_i64;
+
+const arity_zcard: i64 = 2_i64;
+
+const arity_zscore: i64 = 3_i64;
+
+const arity_zmscore: i64 = -3_i64;
+
+const arity_zrank: i64 = 3_i64;
+
+const arity_zrevrank: i64 = 3_i64;
+
+const arity_zrange: i64 = -4_i64;
+
+const arity_zrevrange: i64 = -4_i64;
+
+const arity_zrangebyscore: i64 = -4_i64;
+
+const arity_zrevrangebyscore: i64 = -4_i64;
+
+const arity_zrangebylex: i64 = -4_i64;
+
+const arity_zrevrangebylex: i64 = -4_i64;
+
+const arity_zcount: i64 = 4_i64;
+
+const arity_zlexcount: i64 = 4_i64;
+
+const arity_zremrangebyrank: i64 = 4_i64;
+
+const arity_zremrangebyscore: i64 = 4_i64;
+
+const arity_zremrangebylex: i64 = 4_i64;
+
 const arity_noscript_with_argument: i64 = -2_i64;
 
 const text_script_arity: Array<u8, 58> = "ERR Wrong number of args calling Redis command from script";
@@ -638,6 +680,96 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
       return 105_u64;
     }
   }
+  if code == code_zadd {
+    return 120_u64;
+  }
+  if code == code_zincrby {
+    return 121_u64;
+  }
+  if code == code_zrem {
+    return 122_u64;
+  }
+  if code == code_zpopmin {
+    return 123_u64;
+  }
+  if code == code_zpopmax {
+    return 124_u64;
+  }
+  if code == code_zcard {
+    return 125_u64;
+  }
+  if code == code_zscore {
+    return 126_u64;
+  }
+  if code == code_zmscore {
+    return 127_u64;
+  }
+  if code == code_zrank {
+    return 128_u64;
+  }
+  if code == code_zrevrank {
+    return 129_u64;
+  }
+  if code == code_zrange {
+    return 130_u64;
+  }
+  if code == code_zrevrang {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zrevrange[0_u64..9_u64]);
+    if spelled {
+      return 131_u64;
+    }
+  }
+  if code == code_zrangeby {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zrangebyscore[0_u64..13_u64]);
+    if spelled {
+      return 132_u64;
+    }
+  }
+  if code == code_zrevrang {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zrevrangebyscore[0_u64..16_u64]);
+    if spelled {
+      return 133_u64;
+    }
+  }
+  if code == code_zrangeby {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zrangebylex[0_u64..11_u64]);
+    if spelled {
+      return 134_u64;
+    }
+  }
+  if code == code_zrevrang {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zrevrangebylex[0_u64..14_u64]);
+    if spelled {
+      return 135_u64;
+    }
+  }
+  if code == code_zcount {
+    return 136_u64;
+  }
+  if code == code_zlexcount {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zlexcount[0_u64..9_u64]);
+    if spelled {
+      return 137_u64;
+    }
+  }
+  if code == code_zremrang {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zremrangebyrank[0_u64..15_u64]);
+    if spelled {
+      return 138_u64;
+    }
+  }
+  if code == code_zremrang {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zremrangebyscore[0_u64..16_u64]);
+    if spelled {
+      return 139_u64;
+    }
+  }
+  if code == code_zremrang {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_zremrangebylex[0_u64..14_u64]);
+    if spelled {
+      return 140_u64;
+    }
+  }
   return 0_u64;
 }
 
@@ -880,6 +1012,69 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   }
   if kind == 105_u64 {
     return arity_sdiffstore;
+  }
+  if kind == 120_u64 {
+    return arity_zadd;
+  }
+  if kind == 121_u64 {
+    return arity_zincrby;
+  }
+  if kind == 122_u64 {
+    return arity_zrem;
+  }
+  if kind == 123_u64 {
+    return arity_zpopmin;
+  }
+  if kind == 124_u64 {
+    return arity_zpopmax;
+  }
+  if kind == 125_u64 {
+    return arity_zcard;
+  }
+  if kind == 126_u64 {
+    return arity_zscore;
+  }
+  if kind == 127_u64 {
+    return arity_zmscore;
+  }
+  if kind == 128_u64 {
+    return arity_zrank;
+  }
+  if kind == 129_u64 {
+    return arity_zrevrank;
+  }
+  if kind == 130_u64 {
+    return arity_zrange;
+  }
+  if kind == 131_u64 {
+    return arity_zrevrange;
+  }
+  if kind == 132_u64 {
+    return arity_zrangebyscore;
+  }
+  if kind == 133_u64 {
+    return arity_zrevrangebyscore;
+  }
+  if kind == 134_u64 {
+    return arity_zrangebylex;
+  }
+  if kind == 135_u64 {
+    return arity_zrevrangebylex;
+  }
+  if kind == 136_u64 {
+    return arity_zcount;
+  }
+  if kind == 137_u64 {
+    return arity_zlexcount;
+  }
+  if kind == 138_u64 {
+    return arity_zremrangebyrank;
+  }
+  if kind == 139_u64 {
+    return arity_zremrangebyscore;
+  }
+  if kind == 140_u64 {
+    return arity_zremrangebylex;
   }
   return 0_i64;
 }
@@ -1243,6 +1438,90 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
   if kind == 105_u64 {
     let storing = True();
     let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
+    return appended;
+  }
+  if kind == 120_u64 {
+    let appended = script_zadd(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, increment: relative);
+    return appended;
+  }
+  if kind == 121_u64 {
+    let appended = script_zadd(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, increment: calendar);
+    return appended;
+  }
+  if kind == 122_u64 {
+    let appended = script_zrem(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 123_u64 {
+    let appended = script_zpop(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, from_top: relative);
+    return appended;
+  }
+  if kind == 124_u64 {
+    let appended = script_zpop(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, from_top: calendar);
+    return appended;
+  }
+  if kind == 125_u64 {
+    let appended = script_zcard(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 126_u64 {
+    let appended = script_zscore(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 127_u64 {
+    let appended = script_zmscore(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 128_u64 {
+    let appended = script_zrank(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, reverse: relative);
+    return appended;
+  }
+  if kind == 129_u64 {
+    let appended = script_zrank(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, reverse: calendar);
+    return appended;
+  }
+  if kind == 130_u64 {
+    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 0_u64, direction: 0_u64);
+    return appended;
+  }
+  if kind == 131_u64 {
+    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64, direction: 2_u64);
+    return appended;
+  }
+  if kind == 132_u64 {
+    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64, direction: 1_u64);
+    return appended;
+  }
+  if kind == 133_u64 {
+    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64, direction: 2_u64);
+    return appended;
+  }
+  if kind == 134_u64 {
+    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 3_u64, direction: 1_u64);
+    return appended;
+  }
+  if kind == 135_u64 {
+    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 3_u64, direction: 2_u64);
+    return appended;
+  }
+  if kind == 136_u64 {
+    let appended = script_zcount(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64);
+    return appended;
+  }
+  if kind == 137_u64 {
+    let appended = script_zcount(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64);
+    return appended;
+  }
+  if kind == 138_u64 {
+    let appended = script_zremrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 0_u64);
+    return appended;
+  }
+  if kind == 139_u64 {
+    let appended = script_zremrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64);
+    return appended;
+  }
+  if kind == 140_u64 {
+    let appended = script_zremrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64);
     return appended;
   }
   return 0_u64;
@@ -2157,5 +2436,203 @@ fn script_sintercard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, 
   let changed = False();
   let appended = set_operands_meta(log: effects, logged: logged, removed: &removed, changed: changed, input: input, args: args);
   sintercard_finish(client: client);
+  return appended;
+}
+
+fn script_zadd(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, increment: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "Runs the same ZADD parts while EXEC or a script holds every key.";
+  let plan = zadd_plan();
+  let valid = zadd_parse(input: input, args: args, client: client, increment: increment, plan: &plan);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let slot = &keys^[key];
+  let lapsed = zadd_body(slot: slot, client: client, plan: &plan);
+  let appended = zadd_meta(log: effects, logged: logged, lapsed: lapsed, plan: &plan, input: input, args: args, key: key);
+  zadd_finish(client: client, plan: &plan);
+  return appended;
+}
+
+fn script_zrem(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "Runs the same ZREM parts while EXEC or a script holds every key.";
+  let valid = zrem_parse(input: input, args: args, client: client);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let slot = &keys^[key];
+  let lapsed = zrem_body(slot: slot, client: client);
+  let appended = zrem_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
+  zrem_finish(client: client);
+  return appended;
+}
+
+fn script_zpop(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, from_top: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "Runs the same ZPOP parts while EXEC or a script holds every key.";
+  let valid = zpop_parse(input: input, args: args, client: client, from_top: from_top);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let slot = &keys^[key];
+  let lapsed = zpop_body(slot: slot, client: client);
+  let appended = zpop_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
+  zpop_finish(client: client);
+  return appended;
+}
+
+fn script_zcard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "Runs the same ZCARD parts while EXEC or a script holds every key.";
+  let valid = zcard_parse(client: client);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let slot = &keys^[key];
+  zcard_body(slot: slot, client: client);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  if client^.state == state_expired {
+    set client^.number = 0_u64;
+  }
+  zcard_finish(client: client);
+  return appended;
+}
+
+fn script_zscore(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "Runs the same ZSCORE parts while EXEC or a script holds every key.";
+  let valid = zscore_parse(input: input, args: args, client: client);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let slot = &keys^[key];
+  zscore_body(slot: slot, client: client);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  zscore_finish(client: client);
+  return appended;
+}
+
+fn script_zmscore(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "Runs the same ZMSCORE parts while EXEC or a script holds every key.";
+  let valid = zmscore_parse(input: input, args: args, client: client);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let members = args^.inner.len -sat 2_u64;
+  let slot = &keys^[key];
+  zmscore_body(slot: slot, client: client);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  zmscore_finish(client: client, members: members);
+  return appended;
+}
+
+fn script_zrank(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, reverse: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "Runs the same ZRANK parts while EXEC or a script holds every key.";
+  let valid = zrank_parse(input: input, args: args, client: client, reverse: reverse);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let slot = &keys^[key];
+  zrank_body(slot: slot, client: client);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  zrank_finish(client: client);
+  return appended;
+}
+
+fn script_zrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64, direction: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "Runs the same ZRANGE parts while EXEC or a script holds every key.";
+  let forward = False();
+  let walk = walk_new(reverse: forward, kind: 0_u64, act: 0_u64, input: input);
+  let valid = zrange_parse(input: input, args: args, client: client, kind: kind, direction: direction, plan: &walk);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let slot = &keys^[key];
+  zrange_body(slot: slot, client: client, walk: &walk);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  zrange_finish(client: client);
+  return appended;
+}
+
+fn script_zcount(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "Runs the same ZCOUNT parts while EXEC or a script holds every key.";
+  let forward = False();
+  let walk = walk_new(reverse: forward, kind: 0_u64, act: 0_u64, input: input);
+  let valid = zcount_parse(input: input, args: args, client: client, kind: kind, plan: &walk);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let slot = &keys^[key];
+  zcount_body(slot: slot, client: client, walk: &walk);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  if client^.state == state_expired {
+    set client^.number = 0_u64;
+  }
+  zcount_finish(client: client);
+  return appended;
+}
+
+fn script_zremrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "Runs the same ZREMRANGE parts while EXEC or a script holds every key.";
+  let forward = False();
+  let walk = walk_new(reverse: forward, kind: 0_u64, act: 0_u64, input: input);
+  let valid = zremrange_parse(input: input, args: args, client: client, kind: kind, plan: &walk);
+  if bnot(valid) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let slot = &keys^[key];
+  let lapsed = zremrange_body(slot: slot, client: client, walk: &walk);
+  let appended = zremrange_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
+  zremrange_finish(client: client);
   return appended;
 }
