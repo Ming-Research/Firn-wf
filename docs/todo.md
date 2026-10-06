@@ -549,8 +549,9 @@ written while firn lived in the Whitefoot repository; a path such as
   (reserved held codes 164/165) have shared network parts but remain
   unavailable inside EXEC and scripts. A fixed supply of fresh maps cannot
   support an arbitrary number of Lua flush calls. Add a map-clear operation
-  in Whitefoot, then adapt `flush_body` without dropping prior effects or
-  reopening the outer statement. Reopen for these commands; validate two
+  in Whitefoot, a neighbor of the whole-map iteration Q64 asks for, then
+  write FLUSHALL's body over the held map with it, keeping prior effects
+  and the outer statement. Reopen for these commands; validate two
   flushes separated by writes, expiry-queue removal, empty-map propagation,
   concurrent atomicity, and AOF replay against Redis 7.0.15. No compiler
   change or pin upgrade has been made here.
