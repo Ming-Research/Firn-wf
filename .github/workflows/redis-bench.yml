@@ -16,6 +16,9 @@
 name: redis-bench
 
 on:
+  # Temporary: one probe of the scale mode, removed after it runs.
+  push:
+    branches: [claude/redis-bench]
   workflow_dispatch:
     inputs:
       runner:
@@ -83,7 +86,7 @@ jobs:
     runs-on: ${{ (inputs.runner || '14900k') == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
     timeout-minutes: 150
     env:
-      MODE: ${{ inputs.mode || 'compare' }}
+      MODE: ${{ inputs.mode || 'scale' }}
       REVISIONS: ${{ inputs.revisions || 'base=origin/main head=HEAD head-twin=HEAD' }}
     steps:
       - uses: actions/checkout@v4
