@@ -16,6 +16,21 @@
 name: redis-bench
 
 on:
+  # Temporary: lets the probe workflow call this one; removed with it.
+  workflow_call:
+    inputs:
+      runner: {type: string, required: true}
+      mode: {type: string, required: true}
+      revisions: {type: string, required: true}
+      cpus: {type: string, required: true}
+      tests: {type: string, required: true}
+      depths: {type: string, required: true}
+      passes: {type: string, required: true}
+      seconds: {type: string, required: true}
+      profile: {type: boolean, required: true}
+      profile_test: {type: string, required: true}
+      annotate: {type: string, required: true}
+      callers: {type: boolean, required: true}
   workflow_dispatch:
     inputs:
       runner:

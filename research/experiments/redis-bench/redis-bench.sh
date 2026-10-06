@@ -113,6 +113,16 @@ cpu_count() {
 }
 # Each start takes a fresh port: a stopped server's accepted connections wait
 # out TIME_WAIT on its port, which a server without SO_REUSEADDR cannot bind.
+# Registers the subshell that calls it, which then becomes a server by exec,
+# in redis-bench.yml's record on the shared machine (session.py), so that
+# every server a cancelled run leaves is named before it runs.
+registered() {
+    if [ -n "${FIRN_REDIS_BENCH_RECORD:-}" ]; then
+        python3 "$ROOT/research/experiments/redis-bench/session.py" register \
+            "$FIRN_REDIS_BENCH_RECORD" parent || exit 1
+    fi
+}
+
 start() {
     PORT=$((PORT + 1))
     cpus=$(cpu_count "$SERVER_CPUS")
@@ -121,66 +131,60 @@ start() {
     fi
     case $1 in
         reference)
-            taskset -c "$SERVER_CPUS" redis-server --port "$PORT" --save "" \
+            (registered; exec taskset -c "$SERVER_CPUS" redis-server --port "$PORT" --save "" \
                 --appendonly no --timeout "${IDLE:-0}" --daemonize no \
-                >"$OUT/server.log" 2>&1 &
+                ) >"$OUT/server.log" 2>&1 &
             ;;
         reference-aof)
-            taskset -c "$SERVER_CPUS" redis-server --port "$PORT" --save "" \
+            (registered; exec taskset -c "$SERVER_CPUS" redis-server --port "$PORT" --save "" \
                 --appendonly yes --appendfsync everysec --dir "$OUT" \
                 --timeout "${IDLE:-0}" --daemonize no \
-                >"$OUT/server.log" 2>&1 &
+                ) >"$OUT/server.log" 2>&1 &
             ;;
         valkey)
-            taskset -c "$SERVER_CPUS" valkey-server --port "$PORT" --save "" \
-                --appendonly no --daemonize no >"$OUT/server.log" 2>&1 &
+            (registered; exec taskset -c "$SERVER_CPUS" valkey-server --port "$PORT" --save "" \
+                --appendonly no --daemonize no ) >"$OUT/server.log" 2>&1 &
             ;;
         valkey-io)
-            taskset -c "$SERVER_CPUS" valkey-server --port "$PORT" --save "" \
+            (registered; exec taskset -c "$SERVER_CPUS" valkey-server --port "$PORT" --save "" \
                 --appendonly no --io-threads "$cpus" --io-threads-do-reads yes \
-                --daemonize no >"$OUT/server.log" 2>&1 &
+                --daemonize no ) >"$OUT/server.log" 2>&1 &
             ;;
         dragonfly-*)
-            taskset -c "$SERVER_CPUS" "$DRAGONFLY" --port="$PORT" \
+            (registered; exec taskset -c "$SERVER_CPUS" "$DRAGONFLY" --port="$PORT" \
                 --proactor_threads="${1#dragonfly-}" --dbfilename= \
-                --logtostderr >"$OUT/server.log" 2>&1 &
+                --logtostderr ) >"$OUT/server.log" 2>&1 &
             ;;
         garnet-*)
-            taskset -c "$SERVER_CPUS" "$GARNET" --port "$PORT" \
-                --bind 127.0.0.1 >"$OUT/server.log" 2>&1 &
+            (registered; exec taskset -c "$SERVER_CPUS" "$GARNET" --port "$PORT" \
+                --bind 127.0.0.1 ) >"$OUT/server.log" 2>&1 &
             ;;
         firn-base-*)
-            WF_DRIVERS=${1#firn-base-} taskset -c "$SERVER_CPUS" \
+            (registered; WF_DRIVERS=${1#firn-base-} exec taskset -c "$SERVER_CPUS" \
                 "$FIRN_BASELINE" "$PORT" 0 - "${IDLE:-0}" \
-                >"$OUT/server.log" 2>&1 &
+                ) >"$OUT/server.log" 2>&1 &
             ;;
         firn-aof-*)
-            (cd "$OUT" && WF_DRIVERS=${1##*-} exec taskset -c "$SERVER_CPUS" \
+            (registered && cd "$OUT" && WF_DRIVERS=${1##*-} exec taskset -c "$SERVER_CPUS" \
                 ./firn "$PORT" 0 firn.aof "${IDLE:-0}") \
                 >"$OUT/server.log" 2>&1 &
             ;;
         firn-*)
-            WF_DRIVERS=${1#firn-} taskset -c "$SERVER_CPUS" \
+            (registered; WF_DRIVERS=${1#firn-} exec taskset -c "$SERVER_CPUS" \
                 "$OUT/firn" "$PORT" 0 - "${IDLE:-0}" \
-                >"$OUT/server.log" 2>&1 &
+                ) >"$OUT/server.log" 2>&1 &
             ;;
         image-*)
-            WF_DRIVERS=$(cpu_count "$SERVER_CPUS") taskset -c "$SERVER_CPUS" \
+            (registered; WF_DRIVERS=$(cpu_count "$SERVER_CPUS") exec taskset -c "$SERVER_CPUS" \
                 "$(image_path "${1#image-}")" "$PORT" 0 - "${IDLE:-0}" \
-                >"$OUT/server.log" 2>&1 &
+                ) >"$OUT/server.log" 2>&1 &
             ;;
         baseline-*)
-            WF_DRIVERS=${1#baseline-} taskset -c "$SERVER_CPUS" \
-                "$OUT/redis_baseline" "$PORT" 0 >"$OUT/server.log" 2>&1 &
+            (registered; WF_DRIVERS=${1#baseline-} exec taskset -c "$SERVER_CPUS" \
+                "$OUT/redis_baseline" "$PORT" 0 ) >"$OUT/server.log" 2>&1 &
             ;;
     esac
     server=$!
-    # On the shared machine redis-bench.yml stops what a cancelled run left
-    # by this registration (session.py).
-    if [ -n "${FIRN_REDIS_BENCH_RECORD:-}" ]; then
-        python3 "$ROOT/research/experiments/redis-bench/session.py" register \
-            "$FIRN_REDIS_BENCH_RECORD" "$server" || exit 1
-    fi
     tries=0
     until redis-cli -p "$PORT" PING 2>/dev/null | grep -q PONG; do
         tries=$((tries + 1))

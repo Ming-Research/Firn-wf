@@ -9,10 +9,13 @@ environment the kernel shows when they set their process titles.
 
 `record PATH PID` writes the session's first line before the measurement
 starts: the boot, the session's number, which is its leader's process id, and
-the leader's start time. `register PATH PID` adds a line naming one server
-redis-bench.sh started. `stop PATH` stops what the session left:
+the leader's start time. `register PATH parent` adds a line naming the
+caller's parent: redis-bench.sh starts each server in a subshell that
+registers itself so and then becomes the server by exec, so that a server is
+named before it runs. `stop PATH` stops what the session left:
 
-- while its leader runs, the leader and every process of its session, since
+- while its leader runs, the leader and every process of its session, found
+  by a scan between two checks that the leader is the recorded one, since
   Linux keeps a session's number from being reused while any process of the
   session lives;
 - once the leader has ended, only the servers the record names that still
@@ -76,6 +79,9 @@ def record(path, pid):
 
 
 def register(path, pid):
+    if pid == "parent":
+        pid = os.getppid()
+    pid = int(pid)
     found = identity(pid)
     if found is None:
         return
@@ -115,19 +121,27 @@ def stop(path):
         os.remove(path)
         return
 
-    # Every process shown to be the session's, by its leader running or by
-    # its registration, stays named by its identity through the rounds, so
-    # that one which outlives TERM after its leader has gone still gets KILL.
-    named = {pid: (session, started) for pid, started in servers}
+    # Every process shown to be the session's, by its registration or by a
+    # scan its leader was running across, stays named by its identity through
+    # the rounds, so that one which outlives TERM after its leader has gone
+    # still gets KILL. The record is read again each round, for a server
+    # registered while the session was being stopped.
+    named = {}
 
     def targets():
+        again = read_record(path)
+        for pid, started in (again[3] if again is not None else servers):
+            named.setdefault(pid, (session, started))
         if identity(session) == (session, start):
+            found = {}
             for name in os.listdir("/proc"):
                 if name.isdigit() and int(name) != os.getpid():
                     pid = int(name)
                     known = identity(pid)
                     if known is not None and known[0] == session:
-                        named[pid] = known
+                        found[pid] = known
+            if identity(session) == (session, start):
+                named.update(found)
         return [(pid, known) for pid, known in named.items()
                 if identity(pid) == known]
 
@@ -164,13 +178,14 @@ def stop(path):
 
 
 def main():
-    if len(sys.argv) == 4 and sys.argv[1] in ("record", "register"):
-        action = record if sys.argv[1] == "record" else register
-        action(sys.argv[2], int(sys.argv[3]))
+    if len(sys.argv) == 4 and sys.argv[1] == "record":
+        record(sys.argv[2], int(sys.argv[3]))
+    elif len(sys.argv) == 4 and sys.argv[1] == "register":
+        register(sys.argv[2], sys.argv[3])
     elif len(sys.argv) == 3 and sys.argv[1] == "stop":
         stop(sys.argv[2])
     else:
-        sys.exit("usage: session.py record PATH PID | register PATH PID | stop PATH")
+        sys.exit("usage: session.py record PATH PID | register PATH PID|parent | stop PATH")
 
 
 if __name__ == "__main__":

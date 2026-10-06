@@ -1,0 +1,70 @@
+# Temporary: checks that redis-bench.sh's servers register before they run
+# and that a cancelled session's registered server is stopped, then one small
+# comparison through the changed starts; removed after it runs.
+name: redis-bench-probe
+
+on:
+  push:
+    branches: [claude/redis-bench]
+
+jobs:
+  register:
+    runs-on: [self-hosted, 14900k]
+    steps:
+      - uses: actions/checkout@v4
+      - name: A server started as redis-bench.sh starts one is registered before it runs and stopped after a cancel
+        run: |
+          awk '/<<.HELPERS./{f=1;next} /^ *HELPERS$/{f=0} f' .github/workflows/redis-bench.yml | sed 's/^          //' > "$RUNNER_TEMP/h.sh"
+          awk '/^registered\(\) \{/,/^}/' research/experiments/redis-bench/redis-bench.sh > "$RUNNER_TEMP/registered.sh"
+          cat "$RUNNER_TEMP/registered.sh"
+          export SESSION_FILE="$RUNNER_TEMP/s/session"
+          . "$RUNNER_TEMP/h.sh"
+          mkdir -p "$RUNNER_TEMP/s"
+          sock="$RUNNER_TEMP/s/redis.sock"
+          export ROOT=$PWD
+          RUNNER_TRACKING_ID= FIRN_REDIS_BENCH_RECORD=$SESSION_FILE setsid sh -c 'python3 "$1" record "$FIRN_REDIS_BENCH_RECORD" $$ || exit 1; . "$2"; (registered; exec redis-server --port 0 --unixsocket "$3" --save "" --appendonly no --daemonize no) > /dev/null 2>&1 & echo $! > "$4"; exec sleep 909' run "$PWD/research/experiments/redis-bench/session.py" "$RUNNER_TEMP/registered.sh" "$sock" "$RUNNER_TEMP/s/server" > /dev/null 2>&1 &
+          sleep 2
+          cat "$SESSION_FILE"
+          leader=$(head -1 "$SESSION_FILE" | cut -d' ' -f2)
+          server=$(cat "$RUNNER_TEMP/s/server")
+          redis-cli -s "$sock" ping || { echo "FAIL: no live redis-server"; exit 1; }
+          ps -o pid,args -p "$server"
+          start=$(sed 's/^.*) //' "/proc/$server/stat" | cut -d' ' -f20)
+          grep -qx "$server $start" "$SESSION_FILE" || { echo "FAIL: redis-server $server (start $start) is not registered as itself"; exit 1; }
+          echo "registered as itself: $server $start"
+          kill -KILL "$leader"
+          sleep 1
+          stop_recorded
+          ! kill -0 "$server" 2>/dev/null || { echo "FAIL: redis-server $server survived"; exit 1; }
+          test ! -e "$SESSION_FILE" || { echo "FAIL: record kept"; exit 1; }
+          echo "the cancelled session's registered redis-server $server was stopped and the record removed"
+
+  bench:
+    needs: register
+    uses: ./.github/workflows/redis-bench.yml
+    with:
+      runner: 14900k
+      mode: compare
+      revisions: "head=HEAD head-twin=HEAD"
+      cpus: "1"
+      tests: "set"
+      depths: "16"
+      passes: "1"
+      seconds: "2"
+      profile: false
+      profile_test: "set 16"
+      annotate: ""
+      callers: false
+
+  verify:
+    needs: bench
+    runs-on: [self-hosted, 14900k]
+    steps:
+      - run: |
+          test ! -e ~/.cache/firn-redis-bench/session
+          if pgrep -u "$(id -u)" -f 'firn-lto|redis-bench/head' > /dev/null; then
+            echo "a measured image survived the run"
+            pgrep -af 'firn-lto|redis-bench/head'
+            exit 1
+          fi
+          echo "the comparison left no record and no image running"
