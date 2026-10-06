@@ -1,0 +1,7 @@
+# unit	test name	evidence; the gate skips each listed test, and redis-suite-record.yml runs without this list so that one that stops hanging is reported
+unit/multi	just EXEC and script timeout	waits for a BUSY reply firn does not send (docs/todo.md, "A busy script gets no BUSY reply")
+unit/multi	EXEC with only read commands should not be rejected when OOM	no progress for 120 s, check run 37500279009
+unit/multi	exec with read commands and stale replica state change	no progress for 120 s, check run 37500279009
+unit/multi	exec with write commands and state change	no progress for 120 s, check run 37500279009
+unit/multi	Blocking commands ignores the timeout	no progress for 120 s, check run 37500279009
+unit/scripting	Script return recursive object	no progress for 120 s in function mode, check run 37500279009
