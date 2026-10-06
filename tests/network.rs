@@ -4944,19 +4944,6 @@ $0\r\n\r\n+OK\r\n+OK\r\n:4\r\n\
     assert_eq!(status, 0);
 }
 
-/// Reads one line of a reply, without its CRLF.
-#[cfg(target_os = "linux")]
-fn reply_line(stream: &mut TcpStream) -> String {
-    let mut line = Vec::new();
-    let mut byte = [0_u8; 1];
-    while !line.ends_with(b"\r\n") {
-        stream.read_exact(&mut byte).expect("read a reply line");
-        line.push(byte[0]);
-    }
-    line.truncate(line.len() - 2);
-    String::from_utf8(line).expect("a reply line in UTF-8")
-}
-
 /// firn answers TIME inside a transaction's EXEC and through a script as
 /// Redis 7.0.15 shapes it: two bulk strings, the seconds since the epoch
 /// near the host's clock and the microseconds below one million. The values
@@ -4981,11 +4968,17 @@ fn firn_answers_time_inside_transactions_and_scripts() {
     client.write_all(&batch).expect("send TIME");
     expect_replies(&mut client, b"+OK\r\n+QUEUED\r\n*1\r\n", "the transaction");
     for what in ["the transaction's TIME", "the script's TIME"] {
-        assert_eq!(reply_line(&mut client), "*2", "{what}");
+        assert_eq!(
+            reply_line(&mut client, what).trim_end().to_string(),
+            "*2",
+            "{what}"
+        );
         let mut values = Vec::new();
         for _ in 0..2 {
-            let length: usize = reply_line(&mut client)[1..].parse().expect("a bulk length");
-            let value = reply_line(&mut client);
+            let length: usize = reply_line(&mut client, what).trim_end().to_string()[1..]
+                .parse()
+                .expect("a bulk length");
+            let value = reply_line(&mut client, what).trim_end().to_string();
             assert_eq!(value.len(), length, "{what}");
             values.push(value.parse::<u64>().expect("a decimal number"));
         }
