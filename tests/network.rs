@@ -4342,6 +4342,37 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// firn removes a key INCRBYFLOAT finds expired before it refuses an
+/// increment that is not a number, as Redis 7.0.15's incrbyfloatCommand
+/// looks the key up for writing first: DBSIZE, which counts entries not
+/// yet removed, then counts none. A refusal that kept the entry would count
+/// it while the file records its removal.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_removes_an_expired_key_incrbyfloat_refuses_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    client
+        .write_all(&resp(&["SET", "lapsing", "1", "PX", "1"]))
+        .expect("set a key that lapses");
+    expect_replies(&mut client, b"+OK\r\n", "the key set");
+    std::thread::sleep(Duration::from_millis(5));
+    let mut batch = resp(&["INCRBYFLOAT", "lapsing", "bad"]);
+    batch.extend(resp(&["DBSIZE"]));
+    client.write_all(&batch).expect("refuse the increment");
+    expect_replies(
+        &mut client,
+        b"-ERR value is not a valid float\r\n:0\r\n",
+        "the refusal and the count",
+    );
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn runs the keys and strings commands written as parts, from DEL to
 /// INCRBYFLOAT, inside a transaction's EXEC and through a script's
 /// redis.call, and their errors through redis.pcall, as Redis 7.0.15 does:

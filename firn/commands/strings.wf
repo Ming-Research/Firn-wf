@@ -1611,7 +1611,7 @@ fn getrange_finish(client: &Client, kind: u64) -> result: unit writes(client) {
 }
 
 fn incrbyfloat_body(slot: &Option<Entry>, summed: &FloatSum) -> removed: Bool writes(slot), writes(summed) {
-  doc "INCRBYFLOAT's work on a held entry, returning whether its previous value expired.";
+  doc "INCRBYFLOAT's work on a held entry, returning whether its previous value expired. An expired entry is removed before the increment is judged, as Redis 7.0.15's lookupKeyWrite removes it, so that a refused increment leaves no entry the file's DEL says is gone.";
   let fresh_needed = True();
   match slot^ {
     Some(value: held) => {
@@ -1623,6 +1623,7 @@ fn incrbyfloat_body(slot: &Option<Entry>, summed: &FloatSum) -> removed: Bool wr
   }
   let removed = summed^.state == state_expired;
   if removed {
+    set slot^ = None<Entry>();
     set fresh_needed = True();
   }
   if fresh_needed {
