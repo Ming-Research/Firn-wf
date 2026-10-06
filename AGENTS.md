@@ -182,7 +182,7 @@ merge precondition.
 
 - `make check`, the gate, in CI on every push and on the revision to merge.
   It downloads the pinned compiler (`make compiler`), builds firn and runs
-  every firn check and the design lint. It needs git, curl, Python 3, the
+  the design lint. It needs git, curl, Python 3, the
   submodules (`git clone --recurse-submodules` or
   `git submodule update --init`) and the toolchain the compiler links with:
   `/usr/bin/clang`, and on Linux LLD, which CI installs.

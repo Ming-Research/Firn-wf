@@ -56,7 +56,7 @@
 set -e
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}
-RELEASE=${RELEASE:-$(sed -n 's/^release = \(wf-[0-9a-f]\{12\}\)$/\1/p' "$ROOT/whitefoot.pin")}
+RELEASE=${RELEASE:-$(sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$/\1/p' "$ROOT/whitefoot.pin")}
 OUT=${OUT:-/tmp/redis-bench}
 WHITEFOOTC=${WHITEFOOTC:-$ROOT/build/whitefoot/$RELEASE/whitefootc}
 BASELINE_ROOT=${BASELINE_ROOT:-}
