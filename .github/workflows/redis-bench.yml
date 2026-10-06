@@ -186,7 +186,7 @@ jobs:
             git worktree prune
             rm -rf "$tree"
             git worktree add --detach "$tree" "${pair#*=}"
-            git -C "$tree" submodule update --init whitefoot-kit deps/halo-wf
+            git -C "$tree" submodule update --init
             echo "revision,$name,$(git -C "$tree" rev-parse HEAD),$(cat "$tree/whitefoot.pin")" | tee -a "$OUT/revisions.csv"
             make -C "$tree" firn-lto
             cp "$tree/build/firn-lto" "$OUT/$name"

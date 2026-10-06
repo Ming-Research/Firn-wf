@@ -62,8 +62,9 @@ clients send on their own:
   `SCAN`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`, `COMMAND`
   and `COMMAND COUNT`; `FLUSHALL`, `FLUSHDB` and `INFO` are not among them.
   Any other command sent inside a transaction is queued, and `EXEC` then
-  refuses the whole transaction; `WATCH` is refused inside one and unknown
-  outside;
+  refuses the whole transaction, but for a `COMMAND` subcommand Redis does
+  not have, or `COUNT` outside its arity, which is refused when sent, as
+  Redis refuses it; `WATCH` is refused inside one and unknown outside;
 - server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which
   describe no command. `COMMAND DOCS` is answered as an unknown subcommand,
