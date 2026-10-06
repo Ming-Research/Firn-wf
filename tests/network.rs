@@ -5075,6 +5075,38 @@ $-1\r\n$-1\r\n*0\r\n:0\r\n*0\r\n:0\r\n-ERR syntax error\r\n\
     assert_eq!(status, 0);
 }
 
+/// firn records the sorted sets commands run inside a transaction's EXEC and a script as Redis 7.0.15 propagates them over sorted sets found expired: a read records the removal alone, ZADD and ZINCRBY the removal and then themselves, and a script whose one effect is a removal records it bare. The expected
+/// records are redis-server 7.0.15's (Firn-wf probe run 37504720562).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_sorted_commands_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["ZADD", "z1", "1", "a"],
+            &["PEXPIREAT", "z1", "1"],
+            &["ZADD", "z2", "1", "a", "2", "b"],
+            &["PEXPIREAT", "z2", "1"],
+            &["ZADD", "z3", "1", "a"],
+            &["PEXPIREAT", "z3", "1"],
+            &["ZADD", "z4", "1", "a"],
+            &["PEXPIREAT", "z4", "1"],
+        ],
+        &[
+            &["MULTI"],
+            &["ZCARD", "z1"],
+            &["ZADD", "z2", "5", "n"],
+            &["ZINCRBY", "z3", "2", "m"],
+            &["EXEC"],
+            &["EVAL", "return redis.call('ZPOPMIN', KEYS[1])", "1", "z4"],
+            &["ZRANGE", "z2", "0", "-1", "WITHSCORES"],
+            &["ZRANGE", "z3", "0", "-1", "WITHSCORES"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n:0\r\n:1\r\n$1\r\n2\r\n*0\r\n*2\r\n$1\r\nn\r\n$1\r\n5\r\n*2\r\n$1\r\nm\r\n$1\r\n2\r\n:2\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nz1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nz2\r\n*4\r\n$4\r\nZADD\r\n$2\r\nz2\r\n$1\r\n5\r\n$1\r\nn\r\n*2\r\n$3\r\nDEL\r\n$2\r\nz3\r\n*4\r\n$7\r\nZINCRBY\r\n$2\r\nz3\r\n$1\r\n2\r\n$1\r\nm\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$3\r\nDEL\r\n$2\r\nz4\r\n",
+    );
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
