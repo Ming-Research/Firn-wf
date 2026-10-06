@@ -110,21 +110,20 @@ written while firn lived in the Whitefoot repository; a path such as
   statement holds the keyspace. Validate with Redis's `unit/scripting` busy
   tests. Reopen when the Lua engine runs real scripts, before any deployment
   that accepts scripts from clients it does not control.
-- **An append-only file that does not parse, or cannot be read, is replayed
-  only up to the fault, and firn then appends after the fault.** `replay`
-  (`firn/persistence/persistence.wf`) stops at a record that is not a
-  well-formed command, and at a read that fails other than at the file's end,
-  without cutting the file, and the server opens it for appending and
-  serves; every command appended afterwards sits behind the bytes that
-  stopped the replay, so no later restart reaches it. As far as this item's
-  author recalls, without having re-read the source for it, Redis 7.0.15
-  refuses to start on a format error and on a read error that is not an
-  unexpected end, and `aof-load-truncated` covers only the unexpected end.
-  The change: confirm Redis's behavior in `aof.c` and its tests, then stop
-  firn with an error status on both, as it already does when the cut
-  fails. Validate with a file holding garbage before a valid command, and
-  with an unreadable file. Reopen before firn is offered to a deployment
-  that keeps an append-only file.
+- **Replay still differs from Redis's loader in two cases.** A file that
+  does not parse, cannot be read or holds a block larger than the input
+  window's ceiling now stops firn with status 4, as Redis 7.0.15 exits
+  (`firn/persistence/persistence.wf`). Two differences remain: an error
+  opening the file other than its absence is treated as no file, where Redis
+  exits on `AOF_OPEN_ERR`; and replay accepts inline commands, where Redis's
+  loader requires every record to start with `*` and stops at any other
+  byte. A block larger than the window's ceiling, 2 GiB, also stops firn
+  where Redis loads it; replaying a block by re-reading it from its file
+  offset instead of holding it would lift that limit. The change: tell an
+  absent file from an open failure, and refuse a record not starting with
+  `*`. Validate with an unreadable file and a file holding an inline
+  command. Reopen before firn is offered to a deployment that keeps an
+  append-only file.
 - **Close the current main-line Redis compatibility gaps.** The following
   gaps remain after the command integration of
   [PR #212](https://github.com/mbbill/Whitefoot/pull/212). Missing, among
