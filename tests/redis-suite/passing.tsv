@@ -1,0 +1,463 @@
+# unit	test name	rows; all its rows passed in every recorded run
+integration/redis-cli	Interactive CLI: Bulk reply	1
+integration/redis-cli	Interactive CLI: INFO response should be printed raw	1
+integration/redis-cli	Interactive CLI: Integer reply	1
+integration/redis-cli	Interactive CLI: Multi-bulk reply	1
+integration/redis-cli	Interactive CLI: Parsing quotes	1
+integration/redis-cli	Interactive CLI: Status reply	1
+integration/redis-cli	Non-interactive TTY CLI: Bulk reply	1
+integration/redis-cli	Non-interactive TTY CLI: Integer reply	1
+integration/redis-cli	Non-interactive TTY CLI: Multi-bulk reply	1
+integration/redis-cli	Non-interactive TTY CLI: Read last argument from file	1
+integration/redis-cli	Non-interactive TTY CLI: Read last argument from pipe	1
+integration/redis-cli	Non-interactive TTY CLI: Status reply	1
+integration/redis-cli	Non-interactive non-TTY CLI: ASK redirect test	1
+integration/redis-cli	Non-interactive non-TTY CLI: Bulk reply	1
+integration/redis-cli	Non-interactive non-TTY CLI: Integer reply	1
+integration/redis-cli	Non-interactive non-TTY CLI: Invalid quoted input arguments	1
+integration/redis-cli	Non-interactive non-TTY CLI: Multi-bulk reply	1
+integration/redis-cli	Non-interactive non-TTY CLI: No accidental unquoting of input arguments	1
+integration/redis-cli	Non-interactive non-TTY CLI: Quoted input arguments	1
+integration/redis-cli	Non-interactive non-TTY CLI: Read last argument from file	1
+integration/redis-cli	Non-interactive non-TTY CLI: Read last argument from pipe	1
+integration/redis-cli	Non-interactive non-TTY CLI: Status reply	1
+integration/redis-cli	Options -X with illegal argument	1
+integration/redis-cli	Piping raw protocol	1
+integration/replication-buffer	Partial resynchronization is successful even client-output-buffer-limit is less than repl-backlog-size	1
+integration/replication-buffer	Replica client-output-buffer size is limited to backlog_limit/16 when no replication data is pending	1
+unit/dump	MIGRATE cached connections are released after some time	1
+unit/expire	EXPIRE - After 2.1 seconds the key should no longer be here	1
+unit/expire	EXPIRE - It should be still possible to read 'x'	1
+unit/expire	EXPIRE - set timeouts multiple times	1
+unit/expire	EXPIRE - write on expire should work	1
+unit/expire	EXPIRE precision is now the millisecond	1
+unit/expire	EXPIRE with GT option on a key with higher ttl	1
+unit/expire	EXPIRE with GT option on a key with lower ttl	1
+unit/expire	EXPIRE with GT option on a key without ttl	1
+unit/expire	EXPIRE with LT and XX option on a key with ttl	1
+unit/expire	EXPIRE with LT and XX option on a key without ttl	1
+unit/expire	EXPIRE with LT option on a key with higher ttl	1
+unit/expire	EXPIRE with LT option on a key with lower ttl	1
+unit/expire	EXPIRE with LT option on a key without ttl	1
+unit/expire	EXPIRE with NX option on a key with ttl	1
+unit/expire	EXPIRE with NX option on a key without ttl	1
+unit/expire	EXPIRE with XX option on a key with ttl	1
+unit/expire	EXPIRE with XX option on a key without ttl	1
+unit/expire	EXPIRE with big integer overflows when converted to milliseconds	1
+unit/expire	EXPIRE with big negative integer	1
+unit/expire	EXPIRE with conflicting options: LT GT	1
+unit/expire	EXPIRE with conflicting options: NX GT	1
+unit/expire	EXPIRE with conflicting options: NX LT	1
+unit/expire	EXPIRE with conflicting options: NX XX	1
+unit/expire	EXPIRE with empty string as TTL should report an error	1
+unit/expire	EXPIRE with negative expiry	1
+unit/expire	EXPIRE with negative expiry on a non-valitale key	1
+unit/expire	EXPIRE with non-existed key	1
+unit/expire	EXPIRE with unsupported options	2
+unit/expire	EXPIREAT - Check for EXPIRE alike behavior	1
+unit/expire	EXPIRETIME returns absolute expiration time in seconds	1
+unit/expire	GETEX use of PERSIST option should remove TTL	1
+unit/expire	GETEX with big integer should report an error	1
+unit/expire	GETEX with smallest integer should report an error	1
+unit/expire	PERSIST can undo an EXPIRE	1
+unit/expire	PERSIST returns 0 against non existing or non volatile keys	1
+unit/expire	PEXPIRE can set sub-second expires	1
+unit/expire	PEXPIRE with big integer overflow when basetime is added	1
+unit/expire	PEXPIREAT can set sub-second expires	1
+unit/expire	PEXPIREAT with big integer works	1
+unit/expire	PEXPIREAT with big negative integer works	1
+unit/expire	PEXPIRETIME returns absolute expiration time in milliseconds	1
+unit/expire	PSETEX can set sub-second expires	1
+unit/expire	PTTL returns time to live in milliseconds	1
+unit/expire	Redis should actively expire keys incrementally	1
+unit/expire	SET - use KEEPTTL option, TTL should not be removed	1
+unit/expire	SET command will remove expire	1
+unit/expire	SET with EX with big integer should report an error	1
+unit/expire	SET with EX with smallest integer should report an error	1
+unit/expire	SETEX - Check value	1
+unit/expire	SETEX - Overwrite old key	1
+unit/expire	SETEX - Set + Expire combo operation. Check for TTL	1
+unit/expire	SETEX - Wait for the key to expire	1
+unit/expire	SETEX - Wrong time parameter	1
+unit/expire	TTL / PTTL / EXPIRETIME / PEXPIRETIME return -1 if key has no expire	1
+unit/expire	TTL / PTTL / EXPIRETIME / PEXPIRETIME return -2 if key does not exit	1
+unit/expire	TTL returns time to live in seconds	1
+unit/functions	FUNCTION - test function wrong argument	1
+unit/functions	FUNCTION - test wrong subcommand	1
+unit/introspection	CLIENT GETNAME should return NIL if name is not assigned	1
+unit/introspection	CLIENT SETNAME does not accept spaces	1
+unit/introspection	CONFIG sanity	1
+unit/introspection	PING	1
+unit/introspection-2	TOUCH returns the number of existing keys specified	1
+unit/keyspace	COPY can copy key expire metadata as well	1
+unit/keyspace	COPY does not create an expire if it does not exist	1
+unit/keyspace	COPY for string does not copy data to no-integer DB	1
+unit/keyspace	Commands pipelining	1
+unit/keyspace	DBSIZE	1
+unit/keyspace	DEL against a single item	1
+unit/keyspace	EXISTS	1
+unit/keyspace	Non existing command	1
+unit/keyspace	RENAME against already existing key	1
+unit/keyspace	RENAME against non existing source key	1
+unit/keyspace	RENAME basic usage	1
+unit/keyspace	RENAME source key should no longer exist	1
+unit/keyspace	RENAME where source and dest key are the same (existing)	1
+unit/keyspace	RENAME where source and dest key are the same (non existing)	1
+unit/keyspace	RENAME with volatile key, should move the TTL as well	1
+unit/keyspace	RENAME with volatile key, should not inherit TTL of target key	1
+unit/keyspace	RENAMENX against already existing key	1
+unit/keyspace	RENAMENX against already existing key (2)	1
+unit/keyspace	RENAMENX basic usage	1
+unit/keyspace	RENAMENX where source and dest key are the same (existing)	1
+unit/keyspace	Untagged multi-key commands	1
+unit/keyspace	Vararg DEL	1
+unit/keyspace	Zero length value in key. SET/GET/EXISTS	1
+unit/other	APPEND basics	1
+unit/other	APPEND basics, integer encoded values	1
+unit/other	APPEND fuzzing	1
+unit/other	FLUSHDB	1
+unit/other	FUZZ stresser with data model alpha	1
+unit/other	FUZZ stresser with data model binary	1
+unit/other	FUZZ stresser with data model compr	1
+unit/other	PIPELINING stresser (also a regression for the old epoll bug)	1
+unit/other	SELECT an out of range DB	1
+unit/other	Same dataset digest if saving/reloading as AOF?	1
+unit/other	Subcommand syntax error crash (issue #10070)	1
+unit/protocol	Generic wrong number of args	1
+unit/protocol	Handle an empty query	1
+unit/protocol	Multi bulk request not followed by bulk arguments	1
+unit/protocol	Negative multibulk length	1
+unit/protocol	Negative multibulk payload length	1
+unit/protocol	Non-number multibulk payload length	1
+unit/protocol	Out of range multibulk length	1
+unit/protocol	Out of range multibulk payload length	1
+unit/protocol	Protocol desync regression test #1	1
+unit/protocol	Protocol desync regression test #2	1
+unit/protocol	Protocol desync regression test #3	1
+unit/protocol	Regression for a crash with blocking ops and pipelining	1
+unit/protocol	Unbalanced number of quotes	1
+unit/protocol	Wrong multibulk payload header	1
+unit/protocol	raw protocol response	1
+unit/protocol	raw protocol response - deferred	1
+unit/protocol	raw protocol response - multiline	1
+unit/protocol	test large number of args	1
+unit/quit	Pipelined commands after QUIT must not be executed	1
+unit/quit	Pipelined commands after QUIT that exceed read buffer size	1
+unit/quit	QUIT returns OK	1
+unit/scripting	INCRBYFLOAT: We can call scripts expanding client->argv from Lua	1
+unit/sort	SETRANGE with huge offset	1
+unit/sort	SORT sorted set: +inf and -inf handling	1
+unit/type/hash	HSET/HLEN - Small hash creation	1
+unit/type/hash	Is the small hash encoded with a listpack?	1
+unit/type/incr	DECRBY negation overflow	1
+unit/type/incr	DECRBY over 32bit value with over 32bit increment, negative res	1
+unit/type/incr	INCR against key created by incr itself	1
+unit/type/incr	INCR against key originally set with SET	1
+unit/type/incr	INCR against non existing key	1
+unit/type/incr	INCR fails against a key holding a list	1
+unit/type/incr	INCR fails against key with spaces (both)	1
+unit/type/incr	INCR fails against key with spaces (left)	1
+unit/type/incr	INCR fails against key with spaces (right)	1
+unit/type/incr	INCR over 32bit value	1
+unit/type/incr	INCRBY over 32bit value with over 32bit increment	1
+unit/type/incr	INCRBYFLOAT against key originally set with SET	1
+unit/type/incr	INCRBYFLOAT against non existing key	1
+unit/type/incr	INCRBYFLOAT decrement	1
+unit/type/incr	INCRBYFLOAT does not allow NaN or Infinity	1
+unit/type/incr	INCRBYFLOAT fails against a key holding a list	1
+unit/type/incr	INCRBYFLOAT fails against key with spaces (both)	1
+unit/type/incr	INCRBYFLOAT fails against key with spaces (left)	1
+unit/type/incr	INCRBYFLOAT fails against key with spaces (right)	1
+unit/type/incr	INCRBYFLOAT over 32bit value	1
+unit/type/incr	INCRBYFLOAT over 32bit value with over 32bit increment	1
+unit/type/incr	No negative zero	1
+unit/type/incr	string to double with null terminator	1
+unit/type/list	LPOP/RPOP with wrong number of arguments	1
+unit/type/list	LPOS COUNT + RANK option	1
+unit/type/list	LPOS COUNT option	1
+unit/type/list	LPOS MAXLEN	1
+unit/type/list	LPOS RANK (positive, negative and zero rank) option	1
+unit/type/list	LPOS basic usage	1
+unit/type/list	LPOS no match	1
+unit/type/list	LPOS non existing key	1
+unit/type/list	LPOS when RANK is greater than matches	1
+unit/type/list	LPUSH, RPUSH, LLENGTH, LINDEX, LPOP - regular list	1
+unit/type/list	LPUSH, RPUSH, LLENGTH, LINDEX, LPOP - ziplist	1
+unit/type/list	RPOP/LPOP with the optional count argument	1
+unit/type/list	reg node check compression combined with trim	1
+unit/type/list	reg node check compression with insert and pop	1
+unit/type/list	reg node check compression with lset	1
+unit/type/list-2	LTRIM stress testing - linkedlist	1
+unit/type/list-2	LTRIM stress testing - ziplist	1
+unit/type/list-3	Check compression with recompress	1
+unit/type/list-3	Crash due to wrongly recompress after lrem	1
+unit/type/list-3	Explicit regression for a list bug	1
+unit/type/list-3	LINSERT correctly recompress full quicklistNode after inserting a element after it	1
+unit/type/list-3	LINSERT correctly recompress full quicklistNode after inserting a element before it	1
+unit/type/list-3	Regression for quicklist #3343 bug	1
+unit/type/list-3	Stress tester for #3343-alike bugs comp: 0	1
+unit/type/list-3	Stress tester for #3343-alike bugs comp: 1	1
+unit/type/list-3	Stress tester for #3343-alike bugs comp: 2	1
+unit/type/list-3	ziplist implementation: encoding stress testing	1
+unit/type/list-3	ziplist implementation: value encoding and backlink	1
+unit/type/set	Generated sets must be encoded as hashtable	1
+unit/type/set	Generated sets must be encoded as intset	1
+unit/type/set	SADD a non-integer against an intset	1
+unit/type/set	SADD against non set	1
+unit/type/set	SADD an integer larger than 64 bits	1
+unit/type/set	SADD overflows the maximum allowed integers in an intset	1
+unit/type/set	SADD, SCARD, SISMEMBER, SMISMEMBER, SMEMBERS basics - intset	1
+unit/type/set	SADD, SCARD, SISMEMBER, SMISMEMBER, SMEMBERS basics - regular set	1
+unit/type/set	SDIFF against non-set should throw error	1
+unit/type/set	SDIFF fuzzing	1
+unit/type/set	SDIFF should handle non existing key as empty	1
+unit/type/set	SDIFF with first set empty	1
+unit/type/set	SDIFF with same set two times	1
+unit/type/set	SDIFF with three sets - hashtable	1
+unit/type/set	SDIFF with three sets - intset	1
+unit/type/set	SDIFF with two sets - hashtable	1
+unit/type/set	SDIFF with two sets - intset	1
+unit/type/set	SDIFFSTORE against non-set should throw error	1
+unit/type/set	SDIFFSTORE should handle non existing key as empty	1
+unit/type/set	SDIFFSTORE with three sets - hashtable	1
+unit/type/set	SDIFFSTORE with three sets - intset	1
+unit/type/set	SINTER against non-set should throw error	1
+unit/type/set	SINTER against three sets - hashtable	1
+unit/type/set	SINTER against three sets - intset	1
+unit/type/set	SINTER should handle non existing key as empty	1
+unit/type/set	SINTER with same integer elements but different encoding	1
+unit/type/set	SINTER with two sets - hashtable	1
+unit/type/set	SINTER with two sets - intset	1
+unit/type/set	SINTER/SUNION/SDIFF with three same sets - hashtable	1
+unit/type/set	SINTER/SUNION/SDIFF with three same sets - intset	1
+unit/type/set	SINTERCARD against non-existing key	1
+unit/type/set	SINTERCARD against non-set should throw error	1
+unit/type/set	SINTERCARD against three sets - hashtable	1
+unit/type/set	SINTERCARD against three sets - intset	1
+unit/type/set	SINTERCARD with illegal arguments	1
+unit/type/set	SINTERCARD with two sets - hashtable	1
+unit/type/set	SINTERCARD with two sets - intset	1
+unit/type/set	SINTERSTORE against non existing keys should delete dstkey	1
+unit/type/set	SINTERSTORE against non-set should throw error	1
+unit/type/set	SINTERSTORE with three sets - hashtable	1
+unit/type/set	SINTERSTORE with three sets - intset	1
+unit/type/set	SINTERSTORE with two sets - hashtable	1
+unit/type/set	SINTERSTORE with two sets - intset	1
+unit/type/set	SMISMEMBER against non set	1
+unit/type/set	SMISMEMBER non existing key	1
+unit/type/set	SMISMEMBER requires one or more members	1
+unit/type/set	SMOVE basics - from intset to regular set	1
+unit/type/set	SMOVE basics - from regular set to intset	1
+unit/type/set	SMOVE from intset to non existing destination set	1
+unit/type/set	SMOVE from regular set to non existing destination set	1
+unit/type/set	SMOVE non existing key	1
+unit/type/set	SMOVE non existing src set	1
+unit/type/set	SMOVE with identical source and destination	1
+unit/type/set	SMOVE wrong dst key type	1
+unit/type/set	SMOVE wrong src key type	1
+unit/type/set	SPOP basics - hashtable	1
+unit/type/set	SPOP basics - intset	1
+unit/type/set	SPOP new implementation: code path #1	1
+unit/type/set	SPOP new implementation: code path #2	1
+unit/type/set	SPOP new implementation: code path #3	1
+unit/type/set	SPOP using integers with Knuth's algorithm	1
+unit/type/set	SPOP using integers, testing Knuth's and Floyd's algorithm	1
+unit/type/set	SPOP with <count>	2
+unit/type/set	SPOP with <count>=1 - hashtable	1
+unit/type/set	SPOP with <count>=1 - intset	1
+unit/type/set	SRANDMEMBER - hashtable	1
+unit/type/set	SRANDMEMBER - intset	1
+unit/type/set	SRANDMEMBER count of 0 is handled correctly	1
+unit/type/set	SRANDMEMBER count of 0 is handled correctly - emptyarray	1
+unit/type/set	SRANDMEMBER count overflow	1
+unit/type/set	SRANDMEMBER with <count> - hashtable	1
+unit/type/set	SRANDMEMBER with <count> - intset	1
+unit/type/set	SRANDMEMBER with <count> against non existing key	1
+unit/type/set	SRANDMEMBER with <count> against non existing key - emptyarray	1
+unit/type/set	SREM basics - intset	1
+unit/type/set	SREM basics - regular set	1
+unit/type/set	SREM variadic version with more args needed to destroy the key	1
+unit/type/set	SREM with multiple arguments	1
+unit/type/set	SUNION against non-set should throw error	1
+unit/type/set	SUNION should handle non existing key as empty	1
+unit/type/set	SUNION with non existing keys - hashtable	1
+unit/type/set	SUNION with non existing keys - intset	1
+unit/type/set	SUNION with two sets - hashtable	1
+unit/type/set	SUNION with two sets - intset	1
+unit/type/set	SUNIONSTORE against non existing keys should delete dstkey	1
+unit/type/set	SUNIONSTORE against non-set should throw error	1
+unit/type/set	SUNIONSTORE should handle non existing key as empty	1
+unit/type/set	SUNIONSTORE with two sets - hashtable	1
+unit/type/set	SUNIONSTORE with two sets - intset	1
+unit/type/set	Variadic SADD	1
+unit/type/set	intsets implementation stress testing	1
+unit/type/stream	XADD with ID 0-0	1
+unit/type/stream-cgroups	XGROUP CREATE: automatic stream creation fails without MKSTREAM	1
+unit/type/string	DBSIZE should be 10000 now	1
+unit/type/string	Extended SET EX option	1
+unit/type/string	Extended SET EXAT option	1
+unit/type/string	Extended SET GET option	1
+unit/type/string	Extended SET GET option with NX	1
+unit/type/string	Extended SET GET option with NX and previous value	1
+unit/type/string	Extended SET GET option with XX	1
+unit/type/string	Extended SET GET option with XX and no previous value	1
+unit/type/string	Extended SET GET option with no previous value	1
+unit/type/string	Extended SET GET with incorrect type should result in wrong type error	1
+unit/type/string	Extended SET NX option	1
+unit/type/string	Extended SET PX option	1
+unit/type/string	Extended SET PXAT option	1
+unit/type/string	Extended SET XX option	1
+unit/type/string	Extended SET can detect syntax errors	1
+unit/type/string	Extended SET using multiple options at once	1
+unit/type/string	GETDEL command	1
+unit/type/string	GETEX EX option	1
+unit/type/string	GETEX EXAT option	1
+unit/type/string	GETEX PERSIST option	1
+unit/type/string	GETEX PX option	1
+unit/type/string	GETEX PXAT option	1
+unit/type/string	GETEX no arguments	1
+unit/type/string	GETEX no option	1
+unit/type/string	GETEX syntax errors	1
+unit/type/string	GETRANGE against integer-encoded value	1
+unit/type/string	GETRANGE against non-existing key	1
+unit/type/string	GETRANGE against string value	1
+unit/type/string	GETRANGE fuzzing	1
+unit/type/string	GETRANGE with huge ranges, Github issue #1844	1
+unit/type/string	GETSET (replace old value)	1
+unit/type/string	GETSET (set new value)	1
+unit/type/string	MGET	1
+unit/type/string	MGET against non existing key	1
+unit/type/string	MGET against non-string key	1
+unit/type/string	MSET base case	1
+unit/type/string	MSET/MSETNX wrong number of args	1
+unit/type/string	MSETNX with already existent key	1
+unit/type/string	MSETNX with already existing keys - same key twice	1
+unit/type/string	MSETNX with not existing keys	1
+unit/type/string	MSETNX with not existing keys - same key twice	1
+unit/type/string	SET 10000 numeric keys and access all them in reverse order	1
+unit/type/string	SET and GET an empty item	1
+unit/type/string	SET and GET an item	1
+unit/type/string	SETNX against expired volatile key	1
+unit/type/string	SETNX against not-expired volatile key	1
+unit/type/string	SETNX target key exists	1
+unit/type/string	SETNX target key missing	1
+unit/type/string	SETRANGE against integer-encoded key	1
+unit/type/string	SETRANGE against key with wrong type	1
+unit/type/string	SETRANGE against non-existing key	1
+unit/type/string	SETRANGE against string-encoded key	1
+unit/type/string	SETRANGE with huge offset	1
+unit/type/string	SETRANGE with out of range offset	1
+unit/type/string	STRLEN against integer-encoded value	1
+unit/type/string	STRLEN against non-existing key	1
+unit/type/string	STRLEN against plain string	1
+unit/type/string	Very big payload in GET/SET	1
+unit/type/string	Very big payload random access	1
+unit/type/zset	Basic ZPOPMIN/ZPOPMAX with a single key - listpack	1
+unit/type/zset	Basic ZPOPMIN/ZPOPMAX with a single key - skiplist	1
+unit/type/zset	Check encoding - listpack	1
+unit/type/zset	Check encoding - skiplist	1
+unit/type/zset	ZADD - Return value is the number of actually added items - $encoding	2
+unit/type/zset	ZADD - Variadic version base case - $encoding	2
+unit/type/zset	ZADD - Variadic version does not add nothing on single parsing err - $encoding	2
+unit/type/zset	ZADD - Variadic version will raise error on missing arg - $encoding	2
+unit/type/zset	ZADD CH option changes return value to all changed elements - listpack	1
+unit/type/zset	ZADD CH option changes return value to all changed elements - skiplist	1
+unit/type/zset	ZADD GT XX updates existing elements when new scores are greater and skips new elements - listpack	1
+unit/type/zset	ZADD GT XX updates existing elements when new scores are greater and skips new elements - skiplist	1
+unit/type/zset	ZADD GT and NX are not compatible - listpack	1
+unit/type/zset	ZADD GT and NX are not compatible - skiplist	1
+unit/type/zset	ZADD GT updates existing elements when new scores are greater - listpack	1
+unit/type/zset	ZADD GT updates existing elements when new scores are greater - skiplist	1
+unit/type/zset	ZADD INCR LT/GT replies with nill if score not updated - listpack	1
+unit/type/zset	ZADD INCR LT/GT replies with nill if score not updated - skiplist	1
+unit/type/zset	ZADD INCR LT/GT with inf - listpack	1
+unit/type/zset	ZADD INCR LT/GT with inf - skiplist	1
+unit/type/zset	ZADD INCR works like ZINCRBY - listpack	1
+unit/type/zset	ZADD INCR works like ZINCRBY - skiplist	1
+unit/type/zset	ZADD INCR works with a single score-elemenet pair - listpack	1
+unit/type/zset	ZADD INCR works with a single score-elemenet pair - skiplist	1
+unit/type/zset	ZADD LT XX updates existing elements when new scores are lower and skips new elements - listpack	1
+unit/type/zset	ZADD LT XX updates existing elements when new scores are lower and skips new elements - skiplist	1
+unit/type/zset	ZADD LT and GT are not compatible - listpack	1
+unit/type/zset	ZADD LT and GT are not compatible - skiplist	1
+unit/type/zset	ZADD LT and NX are not compatible - listpack	1
+unit/type/zset	ZADD LT and NX are not compatible - skiplist	1
+unit/type/zset	ZADD LT updates existing elements when new scores are lower - listpack	1
+unit/type/zset	ZADD LT updates existing elements when new scores are lower - skiplist	1
+unit/type/zset	ZADD NX only add new elements without updating old ones - listpack	1
+unit/type/zset	ZADD NX only add new elements without updating old ones - skiplist	1
+unit/type/zset	ZADD NX with non existing key - listpack	1
+unit/type/zset	ZADD NX with non existing key - skiplist	1
+unit/type/zset	ZADD XX and NX are not compatible - listpack	1
+unit/type/zset	ZADD XX and NX are not compatible - skiplist	1
+unit/type/zset	ZADD XX existing key - listpack	1
+unit/type/zset	ZADD XX existing key - skiplist	1
+unit/type/zset	ZADD XX option without key - listpack	1
+unit/type/zset	ZADD XX option without key - skiplist	1
+unit/type/zset	ZADD XX returns the number of elements actually added - listpack	1
+unit/type/zset	ZADD XX returns the number of elements actually added - skiplist	1
+unit/type/zset	ZADD XX updates existing elements score - listpack	1
+unit/type/zset	ZADD XX updates existing elements score - skiplist	1
+unit/type/zset	ZADD with options syntax error with incomplete pair - listpack	1
+unit/type/zset	ZADD with options syntax error with incomplete pair - skiplist	1
+unit/type/zset	ZCARD basics - listpack	1
+unit/type/zset	ZCARD basics - skiplist	1
+unit/type/zset	ZINCRBY - can create a new sorted set - listpack	1
+unit/type/zset	ZINCRBY - can create a new sorted set - skiplist	1
+unit/type/zset	ZINCRBY - increment and decrement - listpack	1
+unit/type/zset	ZINCRBY - increment and decrement - skiplist	1
+unit/type/zset	ZINCRBY calls leading to NaN result in error - listpack	1
+unit/type/zset	ZINCRBY calls leading to NaN result in error - skiplist	1
+unit/type/zset	ZINCRBY does not work variadic even if shares ZADD implementation - $encoding	2
+unit/type/zset	ZINCRBY return value - listpack	1
+unit/type/zset	ZINCRBY return value - skiplist	1
+unit/type/zset	ZLEXCOUNT advanced - listpack	1
+unit/type/zset	ZLEXCOUNT advanced - skiplist	1
+unit/type/zset	ZPOPMAX with negative count	2
+unit/type/zset	ZPOPMAX with the count 0 returns an empty array	2
+unit/type/zset	ZPOPMIN with negative count	2
+unit/type/zset	ZPOPMIN with the count 0 returns an empty array	2
+unit/type/zset	ZPOPMIN/ZPOPMAX with count - listpack	1
+unit/type/zset	ZPOPMIN/ZPOPMAX with count - skiplist	1
+unit/type/zset	ZRANGE basics - listpack	1
+unit/type/zset	ZRANGE basics - skiplist	1
+unit/type/zset	ZRANGEBYLEX with invalid lex range specifiers - listpack	1
+unit/type/zset	ZRANGEBYLEX with invalid lex range specifiers - skiplist	1
+unit/type/zset	ZRANGEBYLEX/ZREVRANGEBYLEX/ZLEXCOUNT basics - listpack	1
+unit/type/zset	ZRANGEBYLEX/ZREVRANGEBYLEX/ZLEXCOUNT basics - skiplist	1
+unit/type/zset	ZRANGEBYSCORE with LIMIT - listpack	1
+unit/type/zset	ZRANGEBYSCORE with LIMIT - skiplist	1
+unit/type/zset	ZRANGEBYSCORE with LIMIT and WITHSCORES - listpack	1
+unit/type/zset	ZRANGEBYSCORE with LIMIT and WITHSCORES - skiplist	1
+unit/type/zset	ZRANGEBYSCORE with WITHSCORES - listpack	1
+unit/type/zset	ZRANGEBYSCORE with WITHSCORES - skiplist	1
+unit/type/zset	ZRANGEBYSCORE with non-value min or max - listpack	1
+unit/type/zset	ZRANGEBYSCORE with non-value min or max - skiplist	1
+unit/type/zset	ZRANGEBYSCORE/ZREVRANGEBYSCORE/ZCOUNT basics - listpack	1
+unit/type/zset	ZRANGEBYSCORE/ZREVRANGEBYSCORE/ZCOUNT basics - skiplist	1
+unit/type/zset	ZRANGEBYSLEX with LIMIT - listpack	1
+unit/type/zset	ZRANGEBYSLEX with LIMIT - skiplist	1
+unit/type/zset	ZRANK - after deletion - listpack	1
+unit/type/zset	ZRANK - after deletion - skiplist	1
+unit/type/zset	ZRANK/ZREVRANK basics - listpack	1
+unit/type/zset	ZRANK/ZREVRANK basics - skiplist	1
+unit/type/zset	ZREM removes key after last element is removed - listpack	1
+unit/type/zset	ZREM removes key after last element is removed - skiplist	1
+unit/type/zset	ZREM variadic version - listpack	1
+unit/type/zset	ZREM variadic version - skiplist	1
+unit/type/zset	ZREM variadic version -- remove elements after key deletion - listpack	1
+unit/type/zset	ZREM variadic version -- remove elements after key deletion - skiplist	1
+unit/type/zset	ZREMRANGEBYRANK basics - listpack	1
+unit/type/zset	ZREMRANGEBYRANK basics - skiplist	1
+unit/type/zset	ZREMRANGEBYSCORE basics - listpack	1
+unit/type/zset	ZREMRANGEBYSCORE basics - skiplist	1
+unit/type/zset	ZREMRANGEBYSCORE with non-value min or max - listpack	1
+unit/type/zset	ZREMRANGEBYSCORE with non-value min or max - skiplist	1
+unit/type/zset	ZREVRANGE basics - listpack	1
+unit/type/zset	ZREVRANGE basics - skiplist	1
+unit/type/zset	ZSET basic ZADD and score update - listpack	1
+unit/type/zset	ZSET basic ZADD and score update - skiplist	1
+unit/type/zset	ZSET element can't be set to NaN with ZADD - listpack	1
+unit/type/zset	ZSET element can't be set to NaN with ZADD - skiplist	1
+unit/type/zset	ZSET element can't be set to NaN with ZINCRBY - listpack	1
+unit/type/zset	ZSET element can't be set to NaN with ZINCRBY - skiplist	1

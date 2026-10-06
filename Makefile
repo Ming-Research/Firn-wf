@@ -8,6 +8,9 @@ PY ?= python3
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 BUILD := $(ROOT)/build
 
+# Redis's source archive is shared between suite runs and checked on reuse.
+REDIS_COMPAT_CACHE ?= $(BUILD)/redis-compat-cache
+
 # The live design trees: every root node file directly under design/ except
 # the log, so a tree is linted in the same change that adds it.
 DESIGN_TREES := $(filter-out log,$(basename $(notdir $(wildcard $(ROOT)/design/*.md))))
@@ -39,9 +42,9 @@ WHITEFOOTC := $(PINNED_WHITEFOOTC)
 FIRN_GRAPH := $(ROOT)/firn/modules.wfg
 FIRN_SOURCES := $(shell find $(ROOT)/firn -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
 
-.PHONY: check compiler firn firn-test test firn-lto design-lint design-ready pin-ready
+.PHONY: check compiler firn firn-test test redis-suite firn-lto design-lint design-ready pin-ready
 
-check: compiler firn test design-lint
+check: compiler firn test redis-suite design-lint
 
 compiler: $(PINNED_WHITEFOOTC)
 
@@ -83,6 +86,13 @@ $(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 
 test: firn-test
 	FIRN=$(BUILD)/firn-test cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked
+
+# Redis's released suite runs against the cached server build. Every listed
+# pass must still pass; new passes are candidates to add in the same PR.
+redis-suite: $(BUILD)/firn
+	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py --self-test
+	REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/run.sh --out "$(BUILD)/redis-suite" firn "$(BUILD)/firn"
+	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py check "$(BUILD)/redis-suite/tests.tsv" --passing $(ROOT)/tests/redis-suite/passing.tsv --unstable $(ROOT)/tests/redis-suite/unstable.tsv
 
 # The server as it is measured: the program and the runtime optimized
 # together under full link-time optimization.

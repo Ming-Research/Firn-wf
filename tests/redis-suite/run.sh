@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the test suite of Redis 7.0.15 against one server in the suite's
 # external mode, one unit at a time, then summarizes the outcome with
-# summarize.py. README.md describes the method and the results.
+# summarize.py. research/experiments/redis-compat/README.md describes the
+# method and the historical results.
 #
 # usage: run.sh --out DIR [options] redis [SERVER_ARGUMENT ...]
 #        run.sh --out DIR [options] firn FIRN_EXECUTABLE

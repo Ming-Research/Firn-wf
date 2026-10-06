@@ -19,10 +19,13 @@ measurements of [io-completion-bench](https://github.com/Ming-Research/Whitefoot
 a maintained test of firn's compatibility replaces it, or when firn no longer
 aims to be deployable in place of Redis.
 
-- [`run.sh`](run.sh) is the entry point: it fetches and checks the suite,
+The instruments moved to `tests/redis-suite/` for the CI ratchet; the result
+files and the runs below remain here as historical evidence.
+
+- [`run.sh`](../../../tests/redis-suite/run.sh) is the entry point: it fetches and checks the suite,
   starts the server under test anew for every unit, runs the unit, runs it
   again past a test that hangs, and calls `summarize.py`.
-- [`summarize.py`](summarize.py) reads a run directory and writes `tests.tsv`,
+- [`summarize.py`](../../../tests/redis-suite/summarize.py) reads a run directory and writes `tests.tsv`,
   `units.tsv` and a report. The suite prints only a log meant for people,
   whose closing list of failed tests has neither counts per unit nor causes,
   so the counting needs a parser; it reads only the suite's output and does
@@ -156,6 +159,11 @@ the empty directory above. The last flag is a setting of the suite's own
 refuses `DEBUG` unless it is enabled, and the suite's tests use it.
 
 ## Commands
+
+The commands below record the historical runs in Whitefoot. The maintained
+runner and summarizer now live at `tests/redis-suite/run.sh` and
+`tests/redis-suite/summarize.py`; Firn-wf's CI runs `make redis-suite` as
+part of `make check`.
 
 From the repository root of a Linux host, with bash 4.4 or later, GNU
 coreutils and sed, curl, `tclsh` 8.5 or later (Ubuntu's `tcl` package),

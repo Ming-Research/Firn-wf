@@ -1,0 +1,77 @@
+# Record the ratchet on one firn build. Commit the generated lists after
+# reviewing the runs; this workflow never changes the checked-in baseline.
+name: redis-suite-record
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Number of suite runs on the same firn build
+        type: number
+        required: true
+        default: 3
+
+jobs:
+  record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      RECORD_RUNS: ${{ inputs.runs }}
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # One run cannot tell a stable pass from a flaky one; ratchet.py
+      # record refuses fewer than three as well.
+      - name: Check the run count
+        run: '[[ "$RECORD_RUNS" =~ ^[1-9][0-9]*$ ]] && (( RECORD_RUNS >= 3 ))'
+
+      - name: Install the host toolchain and suite tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld tcl redis-tools
+          ld.lld --version
+          /usr/bin/clang --version
+          python3 --version
+
+      - name: Read the Redis archive pin
+        id: redis
+        run: |
+          sha256=$(sed -n 's/^sha256=//p' tests/redis-suite/run.sh)
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-source-${{ steps.redis.outputs.sha256 }}
+
+      - name: Build firn once
+        run: make firn
+
+      - name: Record repeated runs and generate the lists
+        run: |
+          python3 -B tests/redis-suite/ratchet.py --self-test
+          results=()
+          for ((i = 1; i <= RECORD_RUNS; i++)); do
+            out="build/redis-suite/run-$i"
+            started=$SECONDS
+            tests/redis-suite/run.sh --out "$out" firn build/firn
+            echo "Run $i of $RECORD_RUNS took $((SECONDS - started)) seconds"
+            results+=("$out/tests.tsv")
+          done
+          python3 -B tests/redis-suite/ratchet.py record "${results[@]}" --out build/redis-suite
+
+      - name: Upload the recorded runs and proposed lists
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-suite-record-${{ github.sha }}
+          path: |
+            build/redis-suite/run-*/tests.tsv
+            build/redis-suite/run-*/meta.txt
+            build/redis-suite/run-*/summary.txt
+            build/redis-suite/passing.tsv
+            build/redis-suite/unstable.tsv
