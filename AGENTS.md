@@ -36,7 +36,8 @@ When priorities conflict, first:
 
 - Research record: `research/investigations/` (`firn/` holds the server's
   design, rulings, criteria and measurements) and `research/experiments/`
-  (the instruments and their results).
+  (the instruments and their results). Records from before firn moved here
+  cite Whitefoot's paths of their time, such as `apps/firn/`.
 - Maintained TODO: `docs/todo.md`, with Whitefoot's gaps under *Whitefoot
   requirements*.
 - Review checklist: [docs/review-checklist.md](docs/review-checklist.md).

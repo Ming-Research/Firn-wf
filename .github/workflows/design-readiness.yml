@@ -58,6 +58,7 @@ jobs:
         run: make design-ready
 
       # An experiment release of an unmerged Whitefoot commit may be pinned
-      # on a work branch, never on a revision bound for main (rule 4).
+      # on a work branch, never on a revision bound for main
+      # (whitefoot-kit/downstream.md, "Main pins a main release").
       - name: Refuse an experiment Whitefoot pin
         run: make pin-ready
