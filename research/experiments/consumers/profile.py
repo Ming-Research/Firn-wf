@@ -41,6 +41,27 @@ LINE = re.compile(r'^\d+\.\d+ \[\d+ ([^ ]+)\] (.*)$')
 WORD = re.compile(r'"((?:[^"\\]|\\.)*)"')
 # A command a script's source calls: redis.call('name', ...) or pcall.
 CALL = re.compile(r"""redis\.p?call\(\s*['"]([A-Za-z_]+)['"]""")
+# The escapes MONITOR writes inside a quoted word, as Redis's sdscatrepr does.
+ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "a": "\a", "b": "\b", "\\": "\\", '"': '"'}
+
+
+def unescape(word):
+    """A quoted MONITOR word's text, its escapes decoded."""
+    out = []
+    i = 0
+    while i < len(word):
+        if word[i] == "\\" and i + 1 < len(word):
+            nxt = word[i + 1]
+            if nxt == "x" and i + 3 < len(word):
+                out.append(chr(int(word[i + 2:i + 4], 16)))
+                i += 4
+                continue
+            out.append(ESCAPES.get(nxt, nxt))
+            i += 2
+            continue
+        out.append(word[i])
+        i += 1
+    return "".join(out)
 
 
 def forms(path):
@@ -73,7 +94,7 @@ def forms(path):
             form.extend(word.upper() for word in rest if word.upper() in OPTIONS)
             counts[(source, " ".join(form))] += 1
     for script in scripts:
-        for name in sorted(set(call.upper() for call in CALL.findall(script))):
+        for name in sorted(set(call.upper() for call in CALL.findall(unescape(script)))):
             counts[("script", name)] += 1
     return counts, total
 
