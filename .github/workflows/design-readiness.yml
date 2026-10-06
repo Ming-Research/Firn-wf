@@ -1,0 +1,57 @@
+# Nothing unapproved reaches main.
+#
+# On a draft branch the agent changes the design tree freely. `make
+# design-ready` fails while it differs from its base without a new
+# owner-approved entry in `design/log.md`, which the agent writes only after
+# the owner approves. A draft shows the job as skipped, so work in progress
+# never turns it red; it runs where its answer decides something: a pull
+# request that is ready for review, and main.
+name: design-readiness
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: design-readiness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  design-readiness:
+    name: Design readiness
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The readiness check runs the design-tree skill's lint, a submodule.
+      - name: Check out the design-tree skill
+        run: git submodule update --init design/skill
+
+      - name: Name main as a local ref
+        run: |
+          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          if git symbolic-ref -q HEAD | grep -qx refs/heads/main; then
+            echo "checkout is on main"
+          else
+            git branch -f main origin/main
+          fi
+
+      # A pull request checks out its merge commit, so the review base is
+      # main's tip; a main push compares with its previous tip.
+      - name: Select the design review base
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          design_review_base=$(sh design/skill/review-base.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$PUSH_BEFORE")
+          echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
+          git log --oneline -1 "$design_review_base"
+
+      - name: Require owner approval of design-tree changes
+        run: make design-ready

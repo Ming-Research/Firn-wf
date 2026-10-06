@@ -1,0 +1,50 @@
+# firn's gate: every push runs `make check`, which downloads the pinned
+# Whitefoot compiler release, builds firn and runs every firn check. The
+# exact revision that merges into main passes this first (AGENTS.md, rule 3).
+name: check
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: make check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Name main as a local ref
+        run: git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+
+      # A work branch is reviewed against its fork point from main; a main
+      # push against its previous tip.
+      - name: Select the design review base
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          design_review_base=$(sh design/skill/review-base.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$PUSH_BEFORE")
+          echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
+          git log --oneline -1 "$design_review_base"
+
+      # The pinned compiler links with /usr/bin/clang, and a cached build
+      # links its ThinLTO fragments with LLD on Linux, as Whitefoot's own
+      # gate installs them.
+      - name: Install the host toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld
+          ld.lld --version
+          /usr/bin/clang --version
+          python3 --version
+
+      - name: Check
+        run: make check
