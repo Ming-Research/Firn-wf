@@ -31,8 +31,8 @@ written while firn lived in the Whitefoot repository; a path such as
     execution-time errors, expiry/eviction invalidation and Redis's lack of
     transaction rollback. Provide command semantics that transactions and
     the Lua work below can compose without separately committing each call.
-  - Make AOF persistence usable through write/sync error handling, rewrite,
-    interrupted-write recovery and orderly `SHUTDOWN`/signal handling; verify
+  - Make AOF persistence usable through write/sync error handling, rewrite
+    and orderly `SHUTDOWN`/signal handling; verify
     a practical data migration path. File replacement and signal delivery
     may require Whitefoot library/runtime work; AOF presence alone is not
     durable-recovery evidence. RDB compatibility is not assumed by this item.
@@ -97,6 +97,44 @@ written while firn lived in the Whitefoot repository; a path such as
   Redis scripting surface and application workloads have correctness and
   performance evidence, recording any remaining incompatibilities separately.
 
+- **A script can hold the whole keyspace without limit.** A firn script
+  runs inside one atomic statement holding every key and the keyspace's
+  metadata (`script_command` in `firn/commands/script.wf`), and the
+  first scripting version stops no script: one that loops forever stalls
+  every client and the append-only file's writer until firn is killed, where
+  Redis 7.0.15 answers other clients `BUSY` once `busy-reply-threshold`
+  (5 seconds) passes and lets `SCRIPT KILL` stop a script that has not
+  written. The change: count the engine's steps and, past the threshold,
+  answer other clients `BUSY` and accept `SCRIPT KILL` and `SHUTDOWN NOSAVE`,
+  which needs a way for the clients' contexts to run while the script's
+  statement holds the keyspace. Validate with Redis's `unit/scripting` busy
+  tests. Reopen when the Lua engine runs real scripts, before any deployment
+  that accepts scripts from clients it does not control.
+- **Replay still differs from Redis's loader in two cases.** A file that
+  does not parse, cannot be read or holds a block larger than the input
+  window's ceiling now stops firn with status 4, as Redis 7.0.15 exits
+  (`firn/persistence/persistence.wf`). Two differences remain: an error
+  opening the file other than its absence is treated as no file, where Redis
+  exits on `AOF_OPEN_ERR`; and replay accepts inline commands, where Redis's
+  loader requires every record to start with `*`, apart from annotation
+  lines starting with `#`, and stops at any other byte. A block larger than the window's ceiling, 2 GiB, also stops firn
+  where Redis loads it; replaying a block by re-reading it from its file
+  offset instead of holding it would lift that limit. The change: tell an
+  absent file from an open failure, and refuse a record starting with
+  neither `*` nor `#`, passing over `#` annotations as Redis does. Validate with an unreadable file and a file holding an inline
+  command. Reopen before firn is offered to a deployment that keeps an
+  append-only file.
+- **A script's noscript refusal checks only the command's own arity.**
+  `script_command` (`firn/commands/script.wf`) answers Redis's arity error
+  for AUTH, DEBUG, CONFIG, CLIENT and FUNCTION without an argument, then
+  refuses them as noscript. Redis 7.0.15's `scriptCall` first resolves a
+  container's subcommand, answering an unknown subcommand as an unknown
+  command and a subcommand short of its own arity, such as `CONFIG GET`
+  alone, with the arity error, and only then refuses it. The change: resolve
+  CONFIG's, CLIENT's and FUNCTION's subcommands with their arities before
+  the refusal. Validate against Redis's `scriptCall` with a bare
+  subcommand and an unknown one. Reopen when scripts run real
+  workloads' error paths.
 - **Close the current main-line Redis compatibility gaps.** The following
   gaps remain after the command integration of
   [PR #212](https://github.com/mbbill/Whitefoot/pull/212). Missing, among
