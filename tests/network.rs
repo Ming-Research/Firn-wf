@@ -3354,7 +3354,8 @@ fn firn_listens_again_on_its_port_after_a_restart() {
 /// connection that changed it stays authenticated, a new one is refused the
 /// old password, and removing the password lets that one in at once, but only
 /// until a password is set again, since it has not authenticated, as Redis's
-/// flag of authentication has it; AUTH as the user default while no password
+/// flag of authentication has it, and HELLO, which checks that flag, still
+/// refuses it; AUTH as the user default while no password
 /// is set authenticates it, so that a password set afterwards leaves it in.
 /// A connection accepted while no password is set has authenticated too, and
 /// stays in once it sets one. The expected bytes are redis-server 7.0.15's
@@ -3509,13 +3510,14 @@ fn firn_requires_its_password_as_redis_does() {
         .expect("remove the password");
     expect_replies(&mut setter, b"+OK\r\n", "the password removed");
     let mut batch = resp(&["PING"]);
+    batch.extend(resp(&["HELLO", "3"]));
     batch.extend(resp(&["AUTH", "x"]));
     waiting
         .write_all(&batch)
         .expect("send once the password is removed");
     expect_replies(
         &mut waiting,
-        b"+PONG\r\n-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
+        b"+PONG\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
         "once the password is removed",
     );
     setter

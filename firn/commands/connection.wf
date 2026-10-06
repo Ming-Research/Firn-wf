@@ -201,7 +201,7 @@ fn run_auth(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
 }
 
 fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "HELLO [protover [AUTH username password] [SETNAME clientname]]: answers as Redis 7.0.15 answers. A version that is not a number is refused with Redis's error, and one other than 2 or 3 as unsupported. The options then apply in order, AUTH as AUTH with a user name applies, against the password the server's state holds now, SETNAME as CLIENT SETNAME does, each stopping the command at its error with the options before it applied, and any other option is a syntax error; an option's name is read up to a zero byte, as Redis's strcasecmp reads it. A connection still locked is then refused; any other switches to the version given, keeps its own when none is, and is answered in it with Redis's map of the server's facts, an array under RESP2: server redis and version 7.0.15, the server and version whose replies firn follows, the protocol now in use, the connection's id, standalone mode, the master role and no modules.";
+  doc "HELLO [protover [AUTH username password] [SETNAME clientname]]: answers as Redis 7.0.15 answers. A version that is not a number is refused with Redis's error, and one other than 2 or 3 as unsupported. The options then apply in order, AUTH as AUTH with a user name applies, against the password the server's state holds now, SETNAME as CLIENT SETNAME does, each stopping the command at its error with the options before it applied, and any other option is a syntax error; an option's name is read up to a zero byte, as Redis's strcasecmp reads it. A connection that has not authenticated is then refused, as Redis checks its flag of authentication even once no password is required; any other switches to the version given, keeps its own when none is, and is answered in it with Redis's map of the server's facts, an array under RESP2: server redis and version 7.0.15, the server and version whose replies firn follows, the protocol now in use, the connection's id, standalone mode, the master role and no modules.";
   let count = args^.inner.len;
   let requested = 0_u64;
   if count >= 2_u64 {
@@ -268,7 +268,7 @@ fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
       return unit;
     }
   }
-  if client^.locked {
+  if bnot(client^.authenticated) {
     reply_error(client: client, word: &text_hello_noauth[0_u64..205_u64]);
     return unit;
   }

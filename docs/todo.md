@@ -408,17 +408,20 @@ written while firn lived in the Whitefoot repository; a path such as
 ## Tests
 
 - **Thirteen of Redis's suite tests are lost to a connection left in
-  RESP3 or in raw reading by a test firn cannot pass.** Since firn answers
-  `HELLO 3`, the suite's `ZINTER RESP3` test switches its connection to
-  RESP3 and then fails on `ZINTER`, which firn lacks, before it switches
-  back, so twelve later `unit/type/zset` tests read RESP2 replies as RESP3
-  (`a -1.0` for `a -1`); `RESP3 attributes readraw` likewise fails on
-  `DEBUG PROTOCOL` with raw reading on, and `test large number of args`
-  reads raw replies. They passed before only because `HELLO 3` failed
-  first; the ratchet's lists were recorded again without them (run
-  37460090430), which also added 106 tests RESP3 now passes. The change:
-  implement `ZINTER`, `ZUNION` and `ZDIFF` with their stores, and
-  `DEBUG PROTOCOL`, then record the lists again; the thirteen should
+  RESP3 or in deferred raw reading by a test firn cannot pass.** Since firn
+  answers `HELLO 3`, tests of `unit/type/zset` that run `r hello 3` and then
+  a command firn lacks stop before their `r hello 2`: `ZINTER RESP3` on
+  `ZINTER`, and the listpack iteration's `ZMPOP`, `BZPOPMIN`/`BZPOPMAX` and
+  `BZMPOP` RESP3 tests on those commands, so twelve later tests, four
+  `ZPOP` ones and eight of the skiplist iteration, read RESP2 replies as
+  RESP3 (`a -1.0` for `a -1`). In `unit/protocol`, `RESP3 attributes
+  readraw` fails on `DEBUG PROTOCOL` with deferred and raw reading on, and
+  `test large number of args` then returns without reading its reply. They
+  passed before only because `HELLO 3` failed first; the ratchet's lists
+  were recorded again without them (run 37460090430), which also added 106
+  tests RESP3 now passes. The change: implement `ZINTER`, `ZUNION` and
+  `ZDIFF` with their stores, `ZMPOP`, `BZPOPMIN`, `BZPOPMAX` and `BZMPOP`,
+  and `DEBUG PROTOCOL`, then record the lists again; the thirteen should
   return. Reopen when firn adds those commands.
 
 - **firn's network cases now and then lose their first connection when many
