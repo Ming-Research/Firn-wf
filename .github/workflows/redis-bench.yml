@@ -10,6 +10,14 @@
 #                 and Redis, Valkey, Dragonfly and Garnet where the host has
 #                 them, on each server CPU count in `cpus`
 #                 (redis-bench.sh scale)
+#   mode build    the images built and kept as the run's artifact
+#                 redis-bench-images, measuring nothing
+#
+# `images_run` names a run of mode build whose kept images stand in for the
+# revisions of the same names, which are then not built. A compiler built
+# with one LLVM major compiles only under that /usr/bin/clang, and the
+# self-hosted machine runs one, so a comparison across an LLVM change builds
+# the old image before the machine moves and the new one after.
 #
 # An investigation names the run and copies the tables it relies on into its
 # record, because job logs and artifacts expire.
@@ -26,12 +34,16 @@ on:
       mode:
         description: compare the revisions' images, or scale them against Redis and its competitors
         type: choice
-        options: [compare, scale]
+        options: [compare, scale, build]
         default: compare
       revisions:
         description: "name=revision pairs; a name ending in -twin measures its stem's image again; scale uses base"
         type: string
         default: "base=origin/main head=HEAD head-twin=HEAD"
+      images_run:
+        description: A run of mode build whose images stand in for the revisions of the same names
+        type: string
+        default: ""
       cpus:
         description: Server CPU counts
         type: string
@@ -77,6 +89,9 @@ concurrency:
   group: redis-bench-${{ github.ref }}-${{ inputs.runner }}
   cancel-in-progress: true
 
+permissions:
+  actions: read
+  contents: read
 jobs:
   bench:
     name: redis-bench ${{ inputs.mode }} (${{ inputs.runner }})
@@ -107,12 +122,6 @@ jobs:
           make toolchain
           sudo apt-get install -y --no-install-recommends linux-tools-common \
             linux-tools-generic "linux-tools-$(uname -r)" || true
-
-      # The self-hosted machine keeps its own LLVM; it must be the major the
-      # pinned release was built with.
-      - name: Check the self-hosted LLVM
-        if: ${{ runner.environment != 'github-hosted' }}
-        run: make toolchain-check
 
       - name: Check the host's tools
         run: |
@@ -177,14 +186,32 @@ jobs:
             ld.lld --version || true
           } | tee "$OUT/host.txt"
 
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.images_run != '' }}
+        with:
+          name: redis-bench-images
+          run-id: ${{ inputs.images_run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/images-run
+
+      # Each tree's own pin names the LLVM major its compiler needs, which
+      # the host's /usr/bin/clang must be (make toolchain-check).
       - name: Build each revision's firn with its pinned compiler
         run: |
           images=
+          kept="$RUNNER_TEMP/images-run"
           for pair in $REVISIONS; do
             name=${pair%%=*}
             stem=${name%-twin}
             if [ "$stem" != "$name" ]; then
               images="$images $name=$OUT/$stem"
+              continue
+            fi
+            if [ -f "$kept/$name" ]; then
+              cp "$kept/$name" "$OUT/$name"
+              chmod +x "$OUT/$name"
+              grep "^revision,$name," "$kept/revisions.csv" | sed 's/$/,kept from run ${{ inputs.images_run }}/' | tee -a "$OUT/revisions.csv"
+              images="$images $name=$OUT/$name"
               continue
             fi
             tree="$RUNNER_TEMP/tree-$name"
@@ -195,13 +222,32 @@ jobs:
             git worktree add --detach "$tree" "${pair#*=}"
             git -C "$tree" submodule update --init
             echo "revision,$name,$(git -C "$tree" rev-parse HEAD),$(cat "$tree/whitefoot.pin")" | tee -a "$OUT/revisions.csv"
+            # A tree whose kit predates the target pins a release that names
+            # no LLVM major, which any clang builds.
+            if make -C "$tree" -n toolchain-check > /dev/null 2>&1; then
+              make -C "$tree" toolchain-check
+            fi
             make -C "$tree" firn-lto
             cp "$tree/build/firn-lto" "$OUT/$name"
             images="$images $name=$OUT/$name"
           done
           echo "IMAGES=$images" >> "$GITHUB_ENV"
 
+      - name: Keep the images
+        if: ${{ inputs.mode == 'build' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/images"
+          for pair in $IMAGES; do cp "${pair#*=}" "$RUNNER_TEMP/images/${pair%%=*}"; done
+          cp "$OUT/revisions.csv" "$RUNNER_TEMP/images/"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.mode == 'build' }}
+        with:
+          name: redis-bench-images
+          path: ${{ runner.temp }}/images/
+
       - name: Measure
+        if: ${{ inputs.mode != 'build' }}
         timeout-minutes: 110
         env:
           COMPARE_CPUS: ${{ inputs.cpus }}
