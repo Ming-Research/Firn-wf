@@ -118,10 +118,11 @@ written while firn lived in the Whitefoot repository; a path such as
   when the suite's time matters.
 - **A list at 2^32 elements drops what is pushed onto it.** firn's lists
   live in a deque whose ceiling is 2^32 elements (`pkg::store::ceiling`);
-  a push, an insert or a move onto a list at the ceiling drops the element
-  and answers as if it were stored (`firn/commands/lists.wf`, `list_room`
-  and its callers), so LMOVE from another list onto a full one removes the
-  source's element and stores it nowhere. Redis 7.0.15 has no such ceiling
+  a push or a move onto a list at the ceiling drops the element and
+  answers as if it were stored, and LINSERT drops it and answers -1 as for
+  a missing pivot (`firn/commands/lists.wf`, `list_room` and its callers),
+  so LMOVE from another list onto a full one removes the source's element
+  and stores it nowhere. Redis 7.0.15 has no such ceiling
   on a 64-bit host. The change: refuse the command before it changes
   anything, with an error naming the limit, and check LMOVE's destination
   before popping its source. Validate with a list built at the ceiling in
