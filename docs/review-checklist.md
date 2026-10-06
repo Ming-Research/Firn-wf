@@ -27,8 +27,7 @@
 
 ## R. Measurements — changes under `research/`, or a performance claim
 
-- [ ] **R1 — firn's comparison.** A performance claim about firn names the
-  engine versions compared, and an attribution compares `make firn-lto`
+- [ ] **R1 — firn's comparison.** An attribution compares `make firn-lto`
   builds on the 14900K.
 
 ## D. Documents — changed Markdown

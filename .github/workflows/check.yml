@@ -1,7 +1,7 @@
 # firn's gate: every push runs `make check`, which downloads the pinned
 # Whitefoot compiler release, builds firn and runs its network cases, Redis
 # suite ratchet and design lint. The exact revision that merges into main
-# passes this first (AGENTS.md, rule 3).
+# passes this first.
 name: check
 
 on:
