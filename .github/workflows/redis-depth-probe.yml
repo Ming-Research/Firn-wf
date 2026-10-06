@@ -1,0 +1,37 @@
+# Temporary: counts how deep Redis 7.0.15 converts a script's self-containing
+# array, map and set before "reached lua stack limit"; removed after it runs.
+name: redis-depth-probe
+
+on:
+  push:
+    branches: [claude/scripting]
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q redis-server
+          redis-server --version
+          redis-server --port 6390 --save "" --daemonize yes
+          sleep 1
+          python3 - <<'PY'
+          import socket
+          def run(script, header):
+              s = socket.create_connection(("127.0.0.1", 6390))
+              body = f"*3\r\n$4\r\nEVAL\r\n${len(script)}\r\n{script}\r\n$1\r\n0\r\n".encode()
+              s.sendall(body)
+              data = b""
+              while b"reached lua stack limit" not in data:
+                  chunk = s.recv(1 << 20)
+                  if not chunk:
+                      break
+                  data += chunk
+              cut = data.index(b"-ERR reached lua stack limit")
+              print(script, "| headers before the error:", data[:cut].count(header), "| reply starts:", data[:40])
+              s.close()
+          run("local a={}; local b={a}; a[1]=b; return a", b"*1\r\n")
+          run("local a={}; a.map={k=a}; return a", b"*2\r\n")
+          run("local a={}; a.set={}; a.set[a]=true; return a", b"*1\r\n")
+          PY
