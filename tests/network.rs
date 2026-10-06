@@ -4677,6 +4677,275 @@ $3\r\ntwo\r\n+OK\r\n+OK\r\n:0\r\n:1\r\n:1\r\n+OK\r\n+OK\r\n:4102444800000\r\n\
     assert_eq!(status, 0);
 }
 
+/// firn runs the sets commands written as parts, SADD to SDIFFSTORE, inside a transaction's EXEC and through a script as Redis 7.0.15 does, SMOVE and the commands over several sets among them, sets of one member keeping SPOP's, SRANDMEMBER's and SMEMBERS's replies in one order. The same requests, from the same keys, run in one transaction,
+/// each error or boundary request in a transaction of its own, then through
+/// a script's redis.call and the errors through redis.pcall, and give the
+/// replies redis-server 7.0.15 gives (Firn-wf probe run 37503178190).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_sets_parts_as_redis_does() {
+    const SETUP: &[&[&str]] = &[
+        &["FLUSHALL"],
+        &["SET", "wrong", "text"],
+        &["SET", "out", "old"],
+        &["SADD", "a", "x"],
+        &["SADD", "b", "x"],
+        &["SADD", "c", "y"],
+        &["SADD", "pop_one", "p"],
+        &["SADD", "pop_all", "q"],
+        &["SADD", "move", "x"],
+        &["SADD", "card", "x", "y"],
+    ];
+    const VALID: &[&[&str]] = &[
+        &["SADD", "a", "x", "x"],
+        &["SADD", "new", "n", "n"],
+        &["SCARD", "new"],
+        &["SISMEMBER", "a", "x"],
+        &["SMISMEMBER", "a", "x", "y", "x"],
+        &["SMEMBERS", "a"],
+        &["SRANDMEMBER", "a"],
+        &["SRANDMEMBER", "a", "0"],
+        &["SRANDMEMBER", "a", "8"],
+        &["SRANDMEMBER", "a", "-3"],
+        &["SPOP", "pop_one"],
+        &["SPOP", "pop_all", "8"],
+        &["SPOP", "missing"],
+        &["SPOP", "missing", "0"],
+        &["SPOP", "a", "0"],
+        &["SREM", "new", "missing", "n", "n"],
+        &["EXISTS", "new"],
+        &["SMOVE", "move", "b", "x"],
+        &["SMOVE", "b", "b", "x"],
+        &["SMOVE", "b", "b", "absent"],
+        &["SMOVE", "b", "moved", "x"],
+        &["SMOVE", "missing", "wrong", "x"],
+        &["SINTER", "a", "moved"],
+        &["SUNION", "a", "moved", "a"],
+        &["SDIFF", "a", "c"],
+        &["SDIFF", "a", "a"],
+        &["SINTER", "a", "card"],
+        &["SDIFF", "card", "a"],
+        &["SUNIONSTORE", "union_card", "a", "c"],
+        &["SCARD", "union_card"],
+        &["SINTERCARD", "1", "card", "LIMIT", "1"],
+        &["SINTERCARD", "2", "card", "card", "LIMIT", "0"],
+        &["SINTERCARD", "2", "a", "moved", "LIMIT", "1"],
+        &["SINTERCARD", "2", "a", "moved", "LIMIT", "0", "LIMIT", "3"],
+        &["SINTERSTORE", "out", "a", "moved"],
+        &["SMEMBERS", "out"],
+        &["PEXPIREAT", "out", "4102444800000"],
+        &["SADD", "out", "x"],
+        &["PEXPIRETIME", "out"],
+        &["SREM", "out", "absent"],
+        &["PEXPIRETIME", "out"],
+        &["SUNIONSTORE", "out", "out", "a"],
+        &["PEXPIRETIME", "out"],
+        &["SDIFFSTORE", "out", "out", "a"],
+        &["EXISTS", "out"],
+        &["SINTERSTORE", "a", "a", "moved"],
+        &["SMEMBERS", "a"],
+        &["SUNIONSTORE", "missing_out", "missing"],
+        &["SINTER", "a", "missing"],
+        &["SDIFF", "missing", "a"],
+        &["SINTERCARD", "2", "a", "missing"],
+        &["SCARD", "missing"],
+        &["SMEMBERS", "missing"],
+        &["SISMEMBER", "missing", "x"],
+        &["SMISMEMBER", "missing", "x", "y"],
+        &["SRANDMEMBER", "missing"],
+        &["SRANDMEMBER", "missing", "-3"],
+        &["PEXPIREAT", "moved", "1"],
+        &["SCARD", "moved"],
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["SADD", "wrong", "x"],
+        &["SREM", "wrong", "x"],
+        &["SPOP", "wrong"],
+        &["SPOP", "wrong", "0"],
+        &["SCARD", "wrong"],
+        &["SMEMBERS", "wrong"],
+        &["SISMEMBER", "wrong", "x"],
+        &["SMISMEMBER", "wrong", "x", "y"],
+        &["SRANDMEMBER", "wrong"],
+        &["SRANDMEMBER", "wrong", "0"],
+        &["SMOVE", "a", "wrong", "x"],
+        &["SMOVE", "wrong", "missing", "x"],
+        &["SINTER", "a", "wrong"],
+        &["SUNION", "missing", "wrong"],
+        &["SDIFF", "missing", "wrong"],
+        &["SINTERCARD", "2", "missing", "wrong"],
+        &["SINTERSTORE", "out", "a", "wrong"],
+        &["SUNIONSTORE", "out", "wrong"],
+        &["SDIFFSTORE", "out", "a", "wrong"],
+        &["SPOP", "a", "-1"],
+        &["SPOP", "a", "nope"],
+        &["SPOP", "a", "9223372036854775808"],
+        &["SPOP", "a", "1", "extra"],
+        &["SRANDMEMBER", "a", "nope"],
+        &["SRANDMEMBER", "a", "-9223372036854775808"],
+        &["SRANDMEMBER", "a", "9223372036854775808"],
+        &["SRANDMEMBER", "a", "1", "extra"],
+        &["SINTERCARD", "0", "a"],
+        &["SINTERCARD", "nope", "a"],
+        &["SINTERCARD", "2", "a"],
+        &["SINTERCARD", "1", "a", "LIMIT", "-1"],
+        &["SINTERCARD", "1", "a", "LIMIT", "nope"],
+        &["SINTERCARD", "1", "a", "LIMIT"],
+        &["SINTERCARD", "1", "a", "unknown"],
+        &["SINTERCARD", "1", "wrong", "LIMIT", "nope"],
+    ];
+    const TRANSACTIONS: &[u8] =
+        b"+OK\r\n+OK\r\n+OK\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:2\r\n+OK\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*59\r\n:0\r\n:1\r\n:1\r\n:1\r\n*3\r\n:1\r\n\
+:0\r\n:1\r\n*1\r\n$1\r\nx\r\n$1\r\nx\r\n*0\r\n*1\r\n$1\r\nx\r\n*3\r\n$1\r\nx\r\n\
+$1\r\nx\r\n$1\r\nx\r\n$1\r\np\r\n*1\r\n$1\r\nq\r\n$-1\r\n*0\r\n*0\r\n:1\r\n\
+:0\r\n:1\r\n:1\r\n:0\r\n:1\r\n:0\r\n*1\r\n$1\r\nx\r\n*1\r\n$1\r\nx\r\n*1\r\n\
+$1\r\nx\r\n*0\r\n*1\r\n$1\r\nx\r\n*1\r\n$1\r\ny\r\n:2\r\n:2\r\n:1\r\n:2\r\n\
+:1\r\n:1\r\n:1\r\n*1\r\n$1\r\nx\r\n:1\r\n:0\r\n:4102444800000\r\n:0\r\n\
+:4102444800000\r\n:1\r\n:-1\r\n:0\r\n:0\r\n:1\r\n*1\r\n$1\r\nx\r\n:0\r\n*0\r\n\
+*0\r\n:0\r\n:0\r\n*0\r\n:0\r\n*2\r\n:0\r\n:0\r\n$-1\r\n*0\r\n:1\r\n:0\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is out of range, must be positive\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is out of range, must be positive\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is out of range, must be positive\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is not an integer or out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n\
++OK\r\n+QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR numkeys should be greater than 0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR numkeys should be greater than 0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR Number of keys can't be greater than number of args\r\n+OK\r\n+QUEUED\r\n\
+*1\r\n-ERR LIMIT can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR LIMIT can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n\
++OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR LIMIT can't be negative\r\n";
+    const SCRIPTS: &[u8] =
+        b"+OK\r\n+OK\r\n+OK\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:2\r\n:0\r\n:1\r\n\
+:1\r\n:1\r\n*3\r\n:1\r\n:0\r\n:1\r\n*1\r\n$1\r\nx\r\n$1\r\nx\r\n*0\r\n*1\r\n\
+$1\r\nx\r\n*3\r\n$1\r\nx\r\n$1\r\nx\r\n$1\r\nx\r\n$1\r\np\r\n*1\r\n$1\r\nq\r\n\
+$-1\r\n*0\r\n*0\r\n:1\r\n:0\r\n:1\r\n:1\r\n:0\r\n:1\r\n:0\r\n*1\r\n$1\r\nx\r\n\
+*1\r\n$1\r\nx\r\n*1\r\n$1\r\nx\r\n*0\r\n*1\r\n$1\r\nx\r\n*1\r\n$1\r\ny\r\n:2\r\n\
+:2\r\n:1\r\n:2\r\n:1\r\n:1\r\n:1\r\n*1\r\n$1\r\nx\r\n:1\r\n:0\r\n\
+:4102444800000\r\n:0\r\n:4102444800000\r\n:1\r\n:-1\r\n:0\r\n:0\r\n:1\r\n*1\r\n\
+$1\r\nx\r\n:0\r\n*0\r\n*0\r\n:0\r\n:0\r\n*0\r\n:0\r\n*2\r\n:0\r\n:0\r\n$-1\r\n\
+*0\r\n:1\r\n:0\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is out of range, must be positive\r\n\
+-ERR value is out of range, must be positive\r\n\
+-ERR value is out of range, must be positive\r\n-ERR syntax error\r\n\
+-ERR value is not an integer or out of range\r\n\
+-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n\
+-ERR value is not an integer or out of range\r\n-ERR syntax error\r\n\
+-ERR numkeys should be greater than 0\r\n\
+-ERR numkeys should be greater than 0\r\n\
+-ERR Number of keys can't be greater than number of args\r\n\
+-ERR LIMIT can't be negative\r\n-ERR LIMIT can't be negative\r\n\
+-ERR syntax error\r\n-ERR syntax error\r\n-ERR LIMIT can't be negative\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    transactions.push(resp(&["MULTI"]));
+    for request in VALID {
+        transactions.push(resp(request));
+    }
+    transactions.push(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.push(resp(&["MULTI"]));
+        transactions.push(resp(request));
+        transactions.push(resp(&["EXEC"]));
+    }
+    let mut scripts: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.push(resp(&call));
+        }
+    }
+    for (requests, expected, what) in [
+        (transactions, TRANSACTIONS, "the transactions"),
+        (scripts, SCRIPTS, "the scripts"),
+    ] {
+        client
+            .write_all(&requests.concat())
+            .expect("send the requests");
+        expect_replies(&mut client, expected, what);
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
