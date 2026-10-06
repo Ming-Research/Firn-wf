@@ -3,8 +3,7 @@
 Firn-wf holds firn, a server of Redis's protocol written in Whitefoot
 (`firn/`, one module program, `firn/modules.wfg`), growing toward Redis
 scripting through Halo, the Lua engine of
-[Halo-wf](https://github.com/Ming-Research/Halo-wf). Where the owner-wide
-agent instructions are not loaded, `design/skill/SKILL.md` holds a copy.
+[Halo-wf](https://github.com/Ming-Research/Halo-wf).
 
 ## Goal and priorities
 
