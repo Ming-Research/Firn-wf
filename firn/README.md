@@ -41,6 +41,13 @@ clients send on their own:
   `ZSCORE`, `ZMSCORE`, `ZCARD`, `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count,
   `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores
   read and written as Redis 7.0.15 reads and writes them;
+- scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS` and
+  `SCRIPT FLUSH [SYNC|ASYNC]`, running Lua 5.1 scripts on the Halo engine
+  of [Halo-wf](https://github.com/Ming-Research/Halo-wf), `deps/halo-wf`,
+  with Redis's `KEYS`, `ARGV`, `redis` library and reply conversions, in
+  either protocol. A compiled script is kept until `SCRIPT FLUSH`, as in
+  Redis 7.0.15. `redis.call` and `redis.pcall` do not yet run commands:
+  each answers an error until a script's command can reach the keyspace;
 - connection: `PING`, `ECHO`, `QUIT`, `AUTH`, `HELLO` with no version,
   version 2 or version 3, which switches the connection to RESP3, `SELECT 0`, firn
   having one database, and `CLIENT ID`, `CLIENT GETNAME` and
@@ -206,5 +213,8 @@ default.
   started;
 - `commands`: one file per kind of value, sorted sets' ranges in a second,
   the connection and server commands, and the dispatch;
+- `scripting`: `EVAL`, `EVALSHA` and `SCRIPT`, the Redis Lua environment
+  and the conversions between replies and Lua values; `script_pool` holds
+  the engines and the registry of scripts the keyspace shares;
 - `persistence`: the append-only file's writer and its replay;
 - `server`: connections, active expiry, the invocation's options and `main`.

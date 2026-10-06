@@ -254,7 +254,7 @@ fn lua_to_protocol(vm: &Vm, value: Value, client: &Client, resp: u8) -> r: unit 
           }
         }
         if mapped {
-          reply_map(client: client, count: count);
+          reply_map(client: client, pairs: count);
         } else {
           reply_set(client: client, count: count);
         }

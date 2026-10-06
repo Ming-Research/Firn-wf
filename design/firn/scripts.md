@@ -3,3 +3,16 @@ Decision: A script's commands read the clock as it was when the script began, as
 Decision: A key a script's command finds expired is removed at once and its `DEL` appended to the script's effects, as Redis 7.0.15 removes a key a script's lookup finds expired, because the effects must replay to the state the script left.
 
 Decision: The records a script appends are wrapped in `MULTI` and `EXEC` by the script's caller when it appended more than one, as Redis 7.0.15 propagates a script's effects, because the append-only file must apply a script whole or not at all, instead of each command part wrapping its own records.
+
+Decision: A script runs in one atomic statement holding every key and the keyspace's metadata, in attempts with a budget of interpreter steps: an attempt that exhausts its budget before its first write ends the statement having changed nothing and runs again from the start with twice the budget, and one that has written runs to its end, because Redis 7.0.15 lets no other client's command come between a script's commands while a write cannot be taken back, and an attempt that has written nothing has no effect, as the direction selected for Halo's scripts has it (direction C of the [Halo design](https://github.com/Ming-Research/Whitefoot/blob/c3c604fdf73970822975b5666c9386d5cf10c024/research/investigations/halo/DESIGN.md)'s selected direction), instead of releasing the statement around each of a script's commands or keeping a written script's progress between statements.
+
+Decision: Idle engines and the registry of scripts by SHA1 are kept beside the keyspace in one pool every connection shares, an engine taken and returned in short statements of their own outside the script's, and SCRIPT FLUSH empties the registry and advances a generation that makes each engine drop its compiled scripts before its next use, because an engine and a script's identity outlive one connection, as Redis's script registry is the server's, while taking the pool inside a script's statement would hold it for the script's whole run, instead of one interpreter every script shares or a registry per connection.
+
+Decision: A script compiled by EVAL or SCRIPT LOAD is kept until SCRIPT FLUSH, with no limit on their number and no eviction, and FLUSH frees their sources at once whether SYNC or ASYNC is given, because Redis 7.0.15 keeps every compiled script until its scripting is reset and its FLUSH answers the same either way, instead of the eviction of later Redis versions or a release in the background.
+
+Decision: A command a script calls writes its reply into the client's reply buffer as on the network, and the script receives it converted from those bytes by Redis 7.0.15's redisProtocolToLuaType, while a script's result is written by luaReplyToRedisReply's rules in the client's protocol, because a script's command then runs the network path's own reply writers, instead of a second, Lua-specific result for every command.
+
+Rejected:
+- Releasing the statement around each of a script's commands: rejected because another client's command could then come between them, which Redis does not allow.
+- A registry of scripts per connection: rejected because EVALSHA on one connection must find a script another loaded, as Redis's registry is the server's.
+

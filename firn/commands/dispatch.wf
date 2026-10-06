@@ -8,8 +8,16 @@ alias name_code = pkg::bytes::name_code;
 alias name_is = pkg::bytes::name_is;
 alias reply_arity = pkg::protocol::reply_arity;
 alias reply_unknown = pkg::protocol::reply_unknown;
+alias run_eval = pkg::scripting::eval;
+alias run_script = pkg::scripting::script;
 
 const code_ping: u64 = 1196312912_u64;
+
+const code_eval: u64 = 1279350341_u64;
+
+const code_evalsha: u64 = 18375396085028421_u64;
+
+const code_script: u64 = 92703804244819_u64;
 
 const code_echo: u64 = 1330135877_u64;
 
@@ -207,6 +215,27 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let milliseconds = False();
   let head = True();
   let tail = False();
+  let evaluating = code == code_eval;
+  let by_sha = code == code_evalsha;
+  if bor(evaluating, by_sha) {
+    let fits = count >= 3_u64;
+    let go = band(fits, open);
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      run_eval(store: store, input: input, args: args, client: client, time: time, by_sha: by_sha);
+    }
+    return unit;
+  }
+  if code == code_script {
+    if count < 2_u64 {
+      reply_arity(client: client, input: input, name: name);
+      return unit;
+    }
+    run_script(store: store, input: input, args: args, client: client);
+    return unit;
+  }
   if code == code_ping {
     let any = True();
     let go = band(any, open);

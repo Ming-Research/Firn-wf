@@ -4065,6 +4065,110 @@ fn firn_records_transactions_as_redis_propagates_them() {
     assert!(output.status.success(), "firn: {:?}", output.status);
 }
 
+/// firn runs scripts as Redis 7.0.15's EVAL, EVALSHA and SCRIPT do: a script
+/// compiled by EVAL or SCRIPT LOAD is cached under its SHA1 until SCRIPT
+/// FLUSH, EVALSHA finds it in either case and SCRIPT EXISTS in lower case
+/// only; KEYS and ARGV reach the script; the number of keys is checked as
+/// Redis checks it; a script that runs past its first budget is run again
+/// with a larger one; the globals' metatable is read-only; SCRIPT's
+/// subcommands and the commands' arities are answered as Redis answers them;
+/// redis.error_reply and redis.pcall's argument check answer Redis's error
+/// tables; and a script's result is written in the client's protocol, as
+/// luaReplyToRedisReply writes it, booleans following redis.setresp. The
+/// expected bytes are redis-server 7.0.15's but for redis.pcall('GET'),
+/// which firn answers with its interim error until a script's command can
+/// reach the keyspace.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_scripts_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let sha = "1fa00e76656cc152ad327c13fe365858fd7be306";
+    let upper = sha.to_ascii_uppercase();
+    let mut batch = Vec::new();
+    for request in [
+        vec!["EVAL", "return 42", "0"],
+        vec!["SCRIPT", "EXISTS", sha],
+        vec!["EVALSHA", sha, "0"],
+        vec!["SCRIPT", "LOAD", "return 42"],
+        vec!["SCRIPT", "FLUSH", "ASYNC"],
+        vec!["SCRIPT", "EXISTS", sha],
+        vec!["EVALSHA", sha, "0"],
+        vec![
+            "EVAL",
+            "return {KEYS[1],ARGV[1],false,true}",
+            "1",
+            "key",
+            "arg",
+        ],
+        vec!["EVAL", "return 0", "-1"],
+        vec!["EVAL", "return 0", "1"],
+        vec!["EVAL", "return 0", "+0"],
+        vec!["SCRIPT", "EXISTS"],
+        vec!["SCRIPT", "FLUSH", "wrong"],
+        vec!["SCRIPT", "FLUSH", "SYNC", "extra"],
+        vec!["EVAL", "redis.setresp(3);return {false,true}", "0"],
+        vec!["EVAL", "local n=0;for i=1,3000 do n=n+1 end;return n", "0"],
+        vec![
+            "EVAL",
+            "local m=getmetatable(_G);return pcall(function()m.__index=nil end)",
+            "0",
+        ],
+        vec!["SCRIPT", "LOAD"],
+        vec!["EVALSHA", "short", "wrong"],
+        vec!["EVAL", "return 42", "0"],
+        vec!["EVALSHA", &upper, "0"],
+        vec!["SCRIPT", "EXISTS", &upper],
+        vec!["EVAL"],
+        vec!["EVALSHA"],
+        vec!["SCRIPT"],
+        vec!["SCRIPT", "unknown"],
+        vec!["EVAL", "return redis.pcall().err", "0"],
+        vec![
+            "EVAL",
+            "return redis.error_reply('ERR \\r\\nprobe\\r\\n').err",
+            "0",
+        ],
+        vec!["EVAL", "return redis.pcall('GET','key')", "0"],
+        vec!["EVAL", "return {map={a=1}}", "0"],
+        vec!["EVAL", "return {set={a=true}}", "0"],
+        vec!["EVAL", "return {double=1.5}", "0"],
+        vec!["EVAL", "return {big_number='123'}", "0"],
+        vec![
+            "EVAL",
+            "return {verbatim_string={format='txt',string='hi'}}",
+            "0",
+        ],
+        vec!["HELLO", "3"],
+        vec!["EVAL", "return {false,true}", "0"],
+        vec!["EVAL", "redis.setresp(3);return {false,true}", "0"],
+        vec!["EVAL", "return {map={a=1}}", "0"],
+        vec!["EVAL", "return {set={a=true}}", "0"],
+        vec!["EVAL", "return {double=1.5}", "0"],
+        vec!["EVAL", "return {big_number='123'}", "0"],
+        vec![
+            "EVAL",
+            "return {verbatim_string={format='md',string='hi'}}",
+            "0",
+        ],
+        vec!["EVAL", "return nil", "0"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the scripting batch");
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let expected = format!(
+        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n-ERR firn does not run commands from scripts yet\r\n*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n"
+    );
+    expect_replies(&mut client, expected.as_bytes(), "the scripting batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// Reads one RESP2 reply of bulk strings: a bulk string, none for the null
 /// bulk string, or each element of an array of bulk strings.
 #[cfg(target_os = "linux")]

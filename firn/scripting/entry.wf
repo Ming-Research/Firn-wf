@@ -299,7 +299,7 @@ fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client
 }
 
 fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> r: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "SYNC and ASYNC both invalidate the visible registry before replying OK in Redis 7.0.15. Firn frees registry sources synchronously for either option; engines discard stale environments before reuse.";
+  doc "SCRIPT LOAD, EXISTS and FLUSH as Redis 7.0.15 answers them: an unknown subcommand is answered as Redis answers one, its name echoed to 128 bytes, and a subcommand outside its arity with Redis's arity error, both before a connection that must authenticate is answered NOAUTH. SYNC and ASYNC both invalidate the visible registry before replying OK, as in Redis; firn frees the registry's sources at once for either, and engines discard their stale environments before reuse.";
   let count = args^.inner.len;
   let sub = pkg::protocol::arg(args: args, index: 1_u64);
   let exists = pkg::bytes::name_is(input: input, start: sub.start, length: sub.length, word: &entry_text_8[0_u64..6_u64]);
@@ -314,6 +314,12 @@ fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Clie
   if loading {
     if count != 3_u64 {
       reply_error(client: client, word: &load_arity_error[0_u64..55_u64]);
+      return unit;
+    }
+  }
+  if exists {
+    if count < 3_u64 {
+      reply_error(client: client, word: &exists_arity_error[0_u64..57_u64]);
       return unit;
     }
   }
@@ -388,7 +394,7 @@ fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Clie
 }
 
 fn script_unknown(client: &Client, input: &[u8], sub: Span) -> r: unit reads(input), writes(client) {
-  reply_word(client: client, word: &entry_text_14[0_u64..58_u64]);
+  reply_word(client: client, word: &entry_text_14[0_u64..25_u64]);
   let shown = imin(sub.length, 128_u64);
   let echoed = pkg::protocol::reply_echoed(client: client, input: input, span: sub, limit: shown);
   reply_word(client: client, word: &entry_text_15[0_u64..21_u64]);
@@ -423,9 +429,11 @@ const entry_text_12: Array<u8, 47> = "ERR SCRIPT FLUSH only support SYNC|ASYNC o
 
 const entry_text_13: Array<u8, 4> = "LOAD";
 
-const entry_text_14: Array<u8, 58> = "-ERR unknown subcommand or wrong number of arguments for '";
+const entry_text_14: Array<u8, 25> = "-ERR unknown subcommand '";
 
 const entry_text_15: Array<u8, 21> = "'. Try SCRIPT HELP.\r\n";
+
+const exists_arity_error: Array<u8, 57> = "ERR wrong number of arguments for 'script|exists' command";
 
 const load_arity_error: Array<u8, 55> = "ERR wrong number of arguments for 'script|load' command";
 
