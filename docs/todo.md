@@ -201,14 +201,26 @@ written while firn lived in the Whitefoot repository; a path such as
   where Redis wraps them in `MULTI` and `EXEC`, and no `SELECT 0`.** When
   one command propagates more than one record, a key it found expired and
   the command itself, or several expired keys, Redis 7.0.15 brackets them
-  in `MULTI` and `EXEC`; firn has no transactions to replay, so it writes
-  the records alone, which replays to the same state. Nor does firn, with
+  in `MULTI` and `EXEC`; firn writes such a command's records alone, which
+  replays to the same state. Nor does firn, with
   one database, write the `SELECT 0` Redis writes before its first record.
   `firn_records_its_writes_as_redis_propagates_them` compares firn's file
   with Redis's but for both. The change: write each where Redis does, as
   `EXEC` already wraps a transaction's records. Reopen now for the brackets,
   since firn answers `MULTI` and `EXEC` and replays them; the `SELECT 0`
   waits for more than one database.
+
+- **firn reads the calendar clock once for each read of a connection,
+  where Redis reads it before each command.** `serve`
+  (`firn/server/server.wf`) reads the time once after a read and gives it to
+  every command of that read, `EXEC` and its queued commands among them;
+  Redis 7.0.15's `call` refreshes its cached time before each top-level
+  command. The difference shows only when a read's commands take long
+  enough for the clock to move, as a long pipeline can, and then in expiry
+  checks, relative deadlines and TTL replies. The change: read the clock
+  before each command, after measuring what the read costs per command.
+  Reopen when a consumer's commands depend on it or a measurement shows the
+  read is cheap.
 
 - **No case checks that the expiring context keeps a key through its
   expiry's millisecond.** `take_due` (`firn/store/store.wf`) leaves a

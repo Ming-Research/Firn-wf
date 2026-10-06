@@ -3800,7 +3800,10 @@ fn firn_answers_connection_commands_as_redis_does() {
 /// commands answer QUEUED and EXEC answers an array of their replies, a
 /// runtime error among them leaving the others done; a command refused while
 /// queueing for its arity makes EXEC abort the transaction; WATCH inside one
-/// is refused without aborting it; DISCARD drops what was queued. The expected
+/// is refused without aborting it, unless its arity is wrong; DISCARD drops
+/// what was queued; an EXEC with an argument, inside a transaction or not,
+/// discards it and answers EXECABORT with the reason, so that a command after
+/// it runs at once. The expected
 /// bytes are redis-server 7.0.15's, but for FOO and EXPIRETIMEX, which firn
 /// queues and then refuses whole at EXEC as a command it does not run in
 /// transactions, where Redis refuses it as unknown when it is sent and EXEC
@@ -3856,15 +3859,88 @@ fn firn_keeps_transactions_as_redis_does() {
         vec!["MULTI"],
         vec!["EXPIRETIMEX", "absent"],
         vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["EXEC", "extra"],
+        vec!["SET", "k", "v"],
+        vec!["GET", "k"],
+        vec!["MULTI"],
+        vec!["WATCH"],
+        vec!["EXEC"],
     ] {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the transaction batch");
-    let expected = "-ERR EXEC without MULTI\r\n-ERR DISCARD without MULTI\r\n+OK\r\n-ERR MULTI calls can not be nested\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*6\r\n+OK\r\n:6\r\n:1\r\n:100\r\n+OK\r\n$1\r\n2\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR value is not an integer or out of range\r\n$3\r\nabc\r\n+OK\r\n+QUEUED\r\n-ERR wrong number of arguments for 'get' command\r\n-EXECABORT Transaction discarded because of previous errors.\r\n$-1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n+OK\r\n-ERR WATCH inside MULTI is not allowed\r\n*0\r\n+OK\r\n+QUEUED\r\n+OK\r\n$-1\r\n-ERR wrong number of arguments for 'exec' command\r\n+OK\r\n+QUEUED\r\n*1\r\n:-2\r\n+OK\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n";
+    let expected = "-ERR EXEC without MULTI\r\n-ERR DISCARD without MULTI\r\n+OK\r\n-ERR MULTI calls can not be nested\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*6\r\n+OK\r\n:6\r\n:1\r\n:100\r\n+OK\r\n$1\r\n2\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR value is not an integer or out of range\r\n$3\r\nabc\r\n+OK\r\n+QUEUED\r\n-ERR wrong number of arguments for 'get' command\r\n-EXECABORT Transaction discarded because of previous errors.\r\n$-1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n+OK\r\n-ERR WATCH inside MULTI is not allowed\r\n*0\r\n+OK\r\n+QUEUED\r\n+OK\r\n$-1\r\n-EXECABORT Transaction discarded because of: wrong number of arguments for 'exec' command\r\n+OK\r\n+QUEUED\r\n*1\r\n:-2\r\n+OK\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n+OK\r\n-EXECABORT Transaction discarded because of: wrong number of arguments for 'exec' command\r\n+OK\r\n$1\r\nv\r\n+OK\r\n-ERR wrong number of arguments for 'watch' command\r\n-EXECABORT Transaction discarded because of previous errors.\r\n";
     expect_replies(&mut client, expected.as_bytes(), "the transaction batch");
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
+}
+
+/// firn records a transaction's writes as Redis 7.0.15 propagates them: a
+/// transaction of two writes bracketed in MULTI and EXEC, one of one write as
+/// that write alone, and one that only reads not at all; a restart replays
+/// the file to the same keys. The expected file is redis-server 7.0.15's for
+/// the same requests but for the SELECT 0 it writes first.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_transactions_as_redis_propagates_them() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let port = free_port();
+    let text = port.to_string();
+    let client = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port);
+        let mut batch = Vec::new();
+        for request in [
+            vec!["MULTI"],
+            vec!["SET", "a", "1"],
+            vec!["SET", "b", "2"],
+            vec!["EXEC"],
+            vec!["MULTI"],
+            vec!["SET", "c", "3"],
+            vec!["EXEC"],
+            vec!["MULTI"],
+            vec!["GET", "a"],
+            vec!["EXEC"],
+            vec!["MULTI"],
+            vec!["INCR", "a"],
+            vec!["GET", "a"],
+            vec!["EXEC"],
+        ] {
+            batch.extend(resp(&request));
+        }
+        client.write_all(&batch).expect("send the transactions");
+        expect_replies(
+            &mut client,
+            b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n$1\r\n1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n:2\r\n$1\r\n2\r\n",
+            "the transactions",
+        );
+    });
+    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"transactions.aof"]);
+    client.join().expect("the client's exchange");
+    assert!(output.status.success(), "firn: {:?}", output.status);
+    let file = std::fs::read(fixture.path().join("transactions.aof")).expect("read firn's file");
+    assert_eq!(
+        String::from_utf8_lossy(&file),
+        "*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
+    );
+    let port = free_port();
+    let text = port.to_string();
+    let client = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port);
+        client
+            .write_all(&resp(&["MGET", "a", "b", "c"]))
+            .expect("read the replayed keys");
+        expect_replies(
+            &mut client,
+            b"*3\r\n$1\r\n2\r\n$1\r\n2\r\n$1\r\n3\r\n",
+            "the replayed keys",
+        );
+    });
+    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"transactions.aof"]);
+    client.join().expect("the replay's exchange");
+    assert!(output.status.success(), "firn: {:?}", output.status);
 }
 
 /// Reads one RESP2 reply of bulk strings: a bulk string, none for the null
