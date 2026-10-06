@@ -224,7 +224,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_eval(store: store, input: input, args: args, client: client, time: time, clock: clock, by_sha: by_sha);
+      run_eval::<FirnCommands>(store: store, input: input, args: args, client: client, keys_env: env, time: time, clock: clock, by_sha: by_sha);
     }
     return unit;
   }

@@ -2,7 +2,7 @@ alias Value = halo::value::Value;
 alias Vm = halo::vm::Vm;
 
 fn command(env: &Env, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64) -> r: Value reads(stack), writes(env), writes(vm) {
-  doc "redis.call and redis.pcall: checks the arguments as Redis 7.0.15's luaRedisGenericCommand does, at least one and each a string or a number, and answers the error table of a command firn cannot yet run from a script. The commands run once Halo's host call lets a script's command reach the keyspace its statement holds; until then every command is refused with this interim error.";
+  doc "redis.call and redis.pcall: checks the arguments as Redis 7.0.15's luaRedisGenericCommand does, at least one and each a string or a number, answering the error table of a call that fails; a call that passes leaves its host call pending, for eval to run the command inside the script's statement.";
   set env^.error = False();
   if argc == 0_u64 {
     return fail(env: env, vm: vm, text: &commands_text_0[0_u64..64_u64]);
@@ -16,7 +16,7 @@ fn command(env: &Env, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64) 
       }
     }
   }
-  return fail(env: env, vm: vm, text: &commands_interim[0_u64..47_u64]);
+  return Value::Nil();
 }
 
 fn command_argument(vm: &Vm, v: Value) -> text: Value writes(vm) {
@@ -35,5 +35,3 @@ fn command_argument(vm: &Vm, v: Value) -> text: Value writes(vm) {
 }
 
 const commands_text_0: Array<u8, 64> = "ERR Please specify at least one argument for this redis lib call";
-
-const commands_interim: Array<u8, 47> = "ERR firn does not run commands from scripts yet";

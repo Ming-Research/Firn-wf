@@ -4076,10 +4076,11 @@ fn firn_records_transactions_as_redis_propagates_them() {
 /// tables; and a script's result is written in the client's protocol, as
 /// luaReplyToRedisReply writes it, booleans following redis.setresp, and a
 /// result that contains itself ending in Redis's stack-limit error at the
-/// depth Redis reaches. The
-/// expected bytes are redis-server 7.0.15's but for redis.pcall('GET'),
-/// which firn answers with its interim error until a script's command can
-/// reach the keyspace.
+/// depth Redis reaches; redis.call and redis.pcall run the commands written
+/// as parts, numbers formatted as Redis formats them, an error reply raised
+/// at redis.call and returned by redis.pcall, and the reply read in the
+/// script's protocol whatever the client's. The expected bytes are
+/// redis-server 7.0.15's.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_runs_scripts_as_redis_does() {
@@ -4135,6 +4136,39 @@ fn firn_runs_scripts_as_redis_does() {
             "0",
         ],
         vec!["EVAL", "return redis.pcall('GET','key')", "0"],
+        vec![
+            "EVAL",
+            "redis.call('SET',KEYS[1],ARGV[1]); return redis.call('GET',KEYS[1])",
+            "1",
+            "sk",
+            "sv",
+        ],
+        vec!["EVAL", "return redis.call('INCR',KEYS[1])", "1", "counter"],
+        vec![
+            "EVAL",
+            "return redis.call('INCRBY',KEYS[1],ARGV[1])",
+            "1",
+            "counter",
+            "41",
+        ],
+        vec![
+            "EVAL",
+            "return redis.call('INCRBY',KEYS[1],5)",
+            "1",
+            "counter",
+        ],
+        vec!["EVAL", "return redis.pcall('INCR',KEYS[1])", "1", "sk"],
+        vec!["EVAL", "return redis.call('INCR',KEYS[1])", "1", "sk"],
+        vec![
+            "EVAL",
+            "return redis.call('SET',KEYS[1],'v','EX',100,'NX')",
+            "1",
+            "sk2",
+        ],
+        vec!["EVAL", "return redis.call('TTL',KEYS[1])", "1", "sk2"],
+        vec!["EVAL", "return redis.call('EXPIRE',KEYS[1],50)", "1", "sk2"],
+        vec!["EVAL", "return redis.call('MSET','m1','a','m2','b')", "0"],
+        vec!["EVAL", "return redis.call('GET','m2')", "0"],
         vec!["EVAL", "local a={}; local b={a}; a[1]=b; return a", "0"],
         vec!["EVAL", "local a={}; a.map={k=a}; return a", "0"],
         vec!["EVAL", "local a={}; a.set={}; a.set[a]=true; return a", "0"],
@@ -4160,6 +4194,13 @@ fn firn_runs_scripts_as_redis_does() {
             "0",
         ],
         vec!["EVAL", "return nil", "0"],
+        vec!["EVAL", "return redis.call('GET',KEYS[1])", "1", "sk"],
+        vec![
+            "EVAL",
+            "redis.setresp(3); return redis.call('GET','absent')",
+            "0",
+        ],
+        vec!["EVAL", "return redis.call('GET','absent')", "0"],
     ] {
         batch.extend(resp(&request));
     }
@@ -4173,7 +4214,7 @@ fn firn_runs_scripts_as_redis_does() {
     let sets = "*1\r\n".repeat(2665);
     let limit = "-ERR reached lua stack limit\r\n";
     let expected = format!(
-        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n-ERR firn does not run commands from scripts yet\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n"
+        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n$-1\r\n$2\r\nsv\r\n:1\r\n:42\r\n:47\r\n-ERR value is not an integer or out of range\r\n-ERR value is not an integer or out of range script: da8455f0535fd532821b3713a4eccd80fc4b8457, on @user_script:1.\r\n+OK\r\n:100\r\n:1\r\n+OK\r\n$1\r\nb\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n$2\r\nsv\r\n_\r\n_\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the scripting batch");
     drop(client);
@@ -4231,6 +4272,61 @@ fn firn_kills_a_looping_script_as_redis_does() {
     drop(other);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
+}
+
+/// firn records a script's writes as Redis 7.0.15 propagates them: a script
+/// of two writes bracketed in MULTI and EXEC, one of one write as that write
+/// alone, and one that only reads not at all; a restart replays the file to
+/// the same keys. The expected file is redis-server 7.0.15's for the same
+/// scripts with one database, without the SELECT it begins with.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_scripts_as_redis_propagates_them() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let port = free_port();
+    let text = port.to_string();
+    let client = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port);
+        let mut batch = Vec::new();
+        for request in [
+            vec![
+                "EVAL",
+                "redis.call('SET','a','1'); redis.call('SET','b','2')",
+                "0",
+            ],
+            vec!["EVAL", "return redis.call('GET','a')", "0"],
+            vec!["EVAL", "return redis.call('INCR','a')", "0"],
+        ] {
+            batch.extend(resp(&request));
+        }
+        client.write_all(&batch).expect("send the scripts");
+        expect_replies(&mut client, b"$-1\r\n$1\r\n1\r\n:2\r\n", "the scripts");
+    });
+    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]);
+    client.join().expect("the client's exchange");
+    assert!(output.status.success(), "firn: {:?}", output.status);
+    let file = std::fs::read(fixture.path().join("scripts.aof")).expect("read firn's file");
+    assert_eq!(
+        String::from_utf8_lossy(&file),
+        "*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
+    );
+    let port = free_port();
+    let text = port.to_string();
+    let client = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port);
+        client
+            .write_all(&resp(&["MGET", "a", "b"]))
+            .expect("read the replayed keys");
+        expect_replies(
+            &mut client,
+            b"*2\r\n$1\r\n2\r\n$1\r\n2\r\n",
+            "the replayed keys",
+        );
+    });
+    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]);
+    client.join().expect("the replay's exchange");
+    assert!(output.status.success(), "firn: {:?}", output.status);
 }
 
 /// Reads one RESP2 reply of bulk strings: a bulk string, none for the null

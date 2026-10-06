@@ -14,6 +14,14 @@ alias PooledEngine = pkg::script_pool::PooledEngine;
 alias Cached = pkg::script_pool::Cached;
 alias Registered = pkg::script_pool::Registered;
 alias EnginePool = pkg::script_pool::EnginePool;
+alias Entry = pkg::store::Entry;
+alias Meta = pkg::store::Meta;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Outcome = halo::vm::Outcome;
+alias log_count = pkg::store::log_count;
+alias log_word = pkg::store::log_word;
+alias log_append = pkg::store::log_append;
+alias push_arg = pkg::protocol::push_arg;
 
 fn same_sha(left: &Array<u8, 40>, right: &Array<u8, 40>) -> yes: Bool reads(left), reads(right) {
   for (i in 0_u64..40_u64) {
@@ -221,7 +229,81 @@ fn reply_killed(client: &Client, sha: &Array<u8, 40>, line: u64) -> r: unit read
   return unit;
 }
 
-fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(time), writes(client), writes(clock) waits {
+fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64) -> r: unit reads(effects), writes(log) {
+  doc "Appends the records a script's commands made to the append-only file's pending bytes, wrapped in MULTI and EXEC when they are more than one, as Redis 7.0.15 propagates a script's effects.";
+  if appended > 1_u64 {
+    log_count(log: log, count: 1_u64, room: 16_u64);
+    log_word(log: log, word: &effects_multi[0_u64..5_u64]);
+  }
+  let length = effects^.inner.len;
+  log_append(log: log, bytes: &effects^.inner[0_u64..length]);
+  if appended > 1_u64 {
+    log_count(log: log, count: 1_u64, room: 16_u64);
+    log_word(log: log, word: &effects_exec[0_u64..4_u64]);
+  }
+  return unit;
+}
+
+fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(engine), writes(env), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "Runs the command a script's redis.call or redis.pcall left pending, inside the script's statement, and continues the script with its reply: the arguments, numbers formatted as Redis formats them, are laid out as the network's input; the command runs through ScriptCommands with the client answering in the script's protocol, which redis.setresp selects, its records counted in the script's effects; its reply is converted to a Lua value from the bytes it wrote, which are then taken back; and an error reply is raised at redis.call, while redis.pcall returns it as its error table, as Redis 7.0.15's luaRedisGenericCommand does. budget is what the script's attempt has left.";
+  let id = 0_u32;
+  let argc = 0_u64;
+  match halo::embed::pending_call(engine: engine) {
+    Some(value: call) => {
+      set id = call.id;
+      set argc = call.argc;
+    }
+    None() => {
+      return Outcome::HostStopped();
+    }
+  }
+  let input = box_slots_new::<u8>(capacity: 64_u64);
+  let spans = box_slots_new::<Span>(capacity: 8_u64);
+  for @arguments (i in 0_u64..argc) {
+    let v = halo::embed::pending_argument(engine: engine, index: i);
+    let text = command_argument(vm: &engine^.vm, v: v);
+    let start = input.inner.len;
+    value_bytes(vm: &engine^.vm, v: text, out: &input);
+    let end = input.inner.len;
+    let length = end -sat start;
+    push_arg(args: &spans, start: start, length: length);
+  }
+  let n = input.inner.len;
+  let reply_start = client^.at;
+  let protocol = client^.resp;
+  let scripted = cvt::<u8, u64>(env^.resp);
+  set client^.resp = scripted;
+  set client^.now = time^.check;
+  let logged = True();
+  let appended = ScriptCommands::call(keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
+  set client^.resp = protocol;
+  if appended > 0_u64 {
+    set env^.held.wrote = True();
+    set env^.appended = env^.appended +sat appended;
+  }
+  let reply_end = client^.at;
+  let value = Value::Nil();
+  if reply_start <= reply_end {
+    if reply_end <= client^.bytes.inner.len {
+      set value = command_reply(vm: &engine^.vm, bytes: &client^.bytes.inner[0_u64..reply_end], start: reply_start, end: reply_end, resp: env^.resp);
+    }
+  }
+  set client^.at = reply_start;
+  let tag = kind(v: value);
+  if tag == 4_u8 {
+    if id == 4096_u32 {
+      let message = field(vm: &engine^.vm, table: value, name: &s_30[0_u64..3_u64]);
+      if is_string(v: message) {
+        let error = redis_raised(vm: &engine^.vm, message: message);
+        return halo::embed::fail_call::<ScriptHost>(engine: engine, env: env, error: error, budget: budget);
+      }
+    }
+  }
+  let results = array_filled::<Value, 1>(value: value);
+  return halo::embed::complete_call::<ScriptHost>(engine: engine, env: env, results: &results[0_u64..1_u64], budget: budget);
+}
+
+fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, keys_env: &KeyEnv, time: &Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(keys_env), reads(time), writes(client), writes(clock) waits {
   doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. An attempt that runs out of its budget having written nothing is abandoned, and between attempts the script stops with Redis's error if SCRIPT KILL was sent since it began, and otherwise waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, before running again with twice the budget. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
   let count = args^.inner.len;
   let body = pkg::protocol::arg(args: args, index: 1_u64);
@@ -290,7 +372,9 @@ fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client
         let reply = box_slots_new::<u8>(capacity: 0_u64);
         let no = False();
         let held = HeldState(start_ms: time^.check, start_us: client^.unix_us, wrote: no, command_ran: no);
-        let env = Env(held: held, resp: 2_u8, error: no, reply: move reply);
+        let env = Env(held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64);
+        let effects = box_slots_new::<u8>(capacity: 64_u64);
+        let logged = store^.logging;
         let random = pooled.engine.vm.random_state;
         let configs = config_snapshot(vm: &pooled.engine.vm);
         let config_active = pooled.engine.vm.cjson_active_config;
@@ -312,6 +396,13 @@ fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client
                   break;
                 }
               }
+              HostCall() => {
+                let more = pooled.engine.vm.budget;
+                if env.held.wrote {
+                  set more = 18446744073709551615_u64;
+                }
+                set outcome = answer_call::<ScriptCommands>(engine: &pooled.engine, env: &env, keys: t, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+              }
               Done(..) => {
                 let v = Value::Nil();
                 match halo::embed::result(engine: &pooled.engine, index: 0_u64) {
@@ -322,6 +413,9 @@ fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client
                   }
                 }
                 lua_to_protocol(vm: &pooled.engine.vm, value: v, client: client, resp: env.resp);
+                if logged {
+                  record_effects(log: &m^.log, effects: &effects, appended: env.appended);
+                }
                 break;
               }
               Error() => {
@@ -331,6 +425,9 @@ fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client
                 let formatted = halo::embed::format_redis_error(engine: &pooled.engine, source: &source.inner[0_u64..n], line: line, locate: locate);
                 let length = formatted.inner.len;
                 reply_error(client: client, word: &formatted.inner[0_u64..length]);
+                if logged {
+                  record_effects(log: &m^.log, effects: &effects, appended: env.appended);
+                }
                 break;
               }
               HostStopped() => {
@@ -535,3 +632,7 @@ const killed_text: Array<u8, 45> = "ERR Script killed by user with SCRIPT KILL..
 const killed_script: Array<u8, 9> = " script: ";
 
 const killed_on: Array<u8, 18> = ", on @user_script:";
+
+const effects_multi: Array<u8, 5> = "MULTI";
+
+const effects_exec: Array<u8, 4> = "EXEC";

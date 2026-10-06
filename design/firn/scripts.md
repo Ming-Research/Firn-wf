@@ -14,6 +14,8 @@ Decision: A command a script calls writes its reply into the client's reply buff
 
 Decision: SCRIPT KILL stops a script that has written nothing at the end of its current attempt, the script checking between its attempts for a kill requested since it began and waiting a millisecond there, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, and answers OK while any script is in progress and NOTBUSY while none is, because an attempt holds the keyspace's statement and the pool that records the request is reachable only between attempts, as the selected direction checks for a kill between statements, instead of checking within an attempt, which would nest the pool's statement inside the keyspace's; a script that has written runs to its end, and SCRIPT KILL sent while it does answers OK where Redis answers UNKILLABLE, since the pool does not learn that the script wrote.
 
+Decision: The commands a script calls reach the scripting module as an interface, ScriptCommands, that the commands module binds to script_command, because the commands module already depends on the scripting module for EVAL's dispatch and a call back into it would close a cycle of modules, instead of moving the script's statement out of the scripting module into the commands module, which would split the Lua environment's handling between the two.
+
 Rejected:
 - Releasing the statement around each of a script's commands: rejected because another client's command could then come between them, which Redis does not allow.
 - A registry of scripts per connection: rejected because EVALSHA on one connection must find a script another loaded, as Redis's registry is the server's.

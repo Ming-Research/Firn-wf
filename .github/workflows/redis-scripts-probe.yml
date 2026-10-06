@@ -1,0 +1,83 @@
+# Temporary: Redis 7.0.15's replies to the scripting cases' new requests and
+# the append-only file its scripts write; removed after it runs.
+name: redis-scripts-probe
+
+on:
+  push:
+    branches: [claude/scripting]
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q redis-server
+          redis-server --version
+          mkdir -p "$RUNNER_TEMP/r"
+          redis-server --port 6391 --save "" --appendonly yes --dir "$RUNNER_TEMP/r" --daemonize yes
+          sleep 1
+          python3 - <<'PY'
+          import socket, time
+          def req(*parts):
+              out = b"*%d\r\n" % len(parts)
+              for p in parts:
+                  p = p.encode() if isinstance(p, str) else p
+                  out += b"$%d\r\n%s\r\n" % (len(p), p)
+              return out
+          def run(name, requests):
+              s = socket.create_connection(("127.0.0.1", 6391))
+              s.sendall(b"".join(req(*r) for r in requests))
+              time.sleep(1)
+              s.settimeout(1)
+              data = b""
+              try:
+                  while True:
+                      chunk = s.recv(1 << 20)
+                      if not chunk: break
+                      data += chunk
+              except socket.timeout:
+                  pass
+              print(name, repr(data))
+              s.close()
+          run("resp2", [
+              ["EVAL", "return redis.pcall('GET','key')", "0"],
+              ["EVAL", "redis.call('SET',KEYS[1],ARGV[1]); return redis.call('GET',KEYS[1])", "1", "sk", "sv"],
+              ["EVAL", "return redis.call('INCR',KEYS[1])", "1", "counter"],
+              ["EVAL", "return redis.call('INCRBY',KEYS[1],ARGV[1])", "1", "counter", "41"],
+              ["EVAL", "return redis.call('INCRBY',KEYS[1],5)", "1", "counter"],
+              ["EVAL", "return redis.pcall('INCR',KEYS[1])", "1", "sk"],
+              ["EVAL", "return redis.call('INCR',KEYS[1])", "1", "sk"],
+              ["EVAL", "return redis.call('SET',KEYS[1],'v','EX',100,'NX')", "1", "sk2"],
+              ["EVAL", "return redis.call('TTL',KEYS[1])", "1", "sk2"],
+              ["EVAL", "return redis.call('EXPIRE',KEYS[1],50)", "1", "sk2"],
+              ["EVAL", "return redis.call('MSET','m1','a','m2','b')", "0"],
+              ["EVAL", "return redis.call('GET','m2')", "0"],
+          ])
+          run("resp3", [
+              ["HELLO", "3"],
+              ["EVAL", "return redis.call('GET',KEYS[1])", "1", "sk"],
+              ["EVAL", "redis.setresp(3); return redis.call('GET','absent')", "0"],
+              ["EVAL", "return redis.call('GET','absent')", "0"],
+          ])
+          run("flush", [["FLUSHALL"]])
+          PY
+          redis-cli -p 6391 config set appendonly no > /dev/null
+          redis-cli -p 6391 config set appendonly yes > /dev/null
+          sleep 2
+          python3 - <<'PY'
+          import socket, time
+          def req(*parts):
+              out = b"*%d\r\n" % len(parts)
+              for p in parts:
+                  p = p.encode()
+                  out += b"$%d\r\n%s\r\n" % (len(p), p)
+              return out
+          s = socket.create_connection(("127.0.0.1", 6391))
+          s.sendall(req("EVAL", "redis.call('SET','a','1'); redis.call('SET','b','2')", "0") + req("EVAL", "return redis.call('GET','a')", "0") + req("EVAL", "return redis.call('INCR','a')", "0"))
+          time.sleep(1)
+          print("aof replies", repr(s.recv(1 << 20)))
+          PY
+          sleep 2
+          ls -la "$RUNNER_TEMP/r/appendonlydir"
+          for f in "$RUNNER_TEMP"/r/appendonlydir/*.incr.aof; do echo "== $f"; python3 -c "import sys; print(repr(open(sys.argv[1],'rb').read()))" "$f"; done

@@ -1,4 +1,5 @@
 alias Client = pkg::protocol::Client;
+alias ScriptCommands = pkg::scripting::ScriptCommands;
 alias Entry = pkg::store::Entry;
 alias KeyEnv = pkg::bytes::KeyEnv;
 alias Meta = pkg::store::Meta;
@@ -386,4 +387,9 @@ fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
   }
   reply_error(client: client, word: &text_script_unknown_or_unsplit[0_u64..87_u64]);
   return 0_u64;
+}
+
+binding FirnCommands : ScriptCommands {
+  doc "The commands a script calls are firn's commands written as parts, run by script_command.";
+  call = script_command;
 }

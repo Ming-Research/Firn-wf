@@ -19,6 +19,7 @@ struct Env {
   resp: u8;
   error: Bool;
   reply: Box<Slots<u8>>;
+  appended: u64;
 }
 
 fn raw(vm: &Vm, table: Value, key: Value, value: Value) -> r: unit writes(vm) {
@@ -347,6 +348,9 @@ fn host_call(env: &Env, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64
   let protected_v218 = id == 4097_u32;
   if bor(call_v217, protected_v218) {
     set value_v216 = command(env: env, vm: vm, stack: stack, func: func, argc: argc);
+    if bnot(env^.error) {
+      return HostOutcome::Pending();
+    }
     if env^.error {
       if id == 4096_u32 {
         let message = field(vm: vm, table: value_v216, name: &s_30[0_u64..3_u64]);
