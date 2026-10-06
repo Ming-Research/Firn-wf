@@ -33,9 +33,9 @@ WHITEFOOTC := $(WHITEFOOT)/whitefootc
 FIRN_GRAPH := $(ROOT)/firn/modules.wfg
 FIRN_SOURCES := $(shell find $(ROOT)/firn -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
 
-.PHONY: check compiler firn firn-lto design-lint design-ready
+.PHONY: check compiler firn firn-test test firn-lto design-lint design-ready
 
-check: compiler firn design-lint
+check: compiler firn test design-lint
 
 compiler: $(WHITEFOOTC)
 
@@ -64,6 +64,16 @@ firn: $(BUILD)/firn
 
 $(BUILD)/firn: $(WHITEFOOTC) $(FIRN_SOURCES)
 	$(WHITEFOOTC) --graph $(FIRN_GRAPH) --entry firn --cache $(BUILD)/firn-cache -o $@
+
+# The network cases use the overlap lowering with every eligible call
+# offered, as they did in Whitefoot's program tests.
+firn-test: $(BUILD)/firn-test
+
+$(BUILD)/firn-test: $(WHITEFOOTC) $(FIRN_SOURCES)
+	$(WHITEFOOTC) --par --par-call-grain off --graph $(FIRN_GRAPH) --entry firn --cache $(BUILD)/firn-test-cache -o $@
+
+test: firn-test
+	FIRN=$(BUILD)/firn-test cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked
 
 # The server as it is measured: the program and the runtime optimized
 # together under full link-time optimization.

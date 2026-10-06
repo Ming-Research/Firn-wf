@@ -46,5 +46,8 @@ jobs:
           /usr/bin/clang --version
           python3 --version
 
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
       - name: Check
         run: make check
