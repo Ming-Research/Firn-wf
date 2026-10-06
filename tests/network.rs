@@ -3583,8 +3583,8 @@ fn firn_requires_its_password_as_redis_does() {
 /// same id; CLIENT SETNAME gives a name, refuses one with a space keeping the
 /// old one, and removes it with the empty name; CLIENT SETINFO, which Redis
 /// 7.0 does not have, is an unknown subcommand; HELLO answers RESP2's map with
-/// no version or version 2 and refuses 1 and 3 as unsupported, since firn
-/// speaks RESP2 alone, and its SETNAME names the connection, an option's name
+/// no version or version 2 and RESP3's with 3, and refuses 1 as unsupported,
+/// and its SETNAME names the connection, an option's name
 /// read up to a zero byte as Redis's strcasecmp reads it; AUTH without a
 /// configured password is answered with Redis's error for the password alone
 /// and succeeds for the user default; SELECT takes 0 alone, as Redis does with
