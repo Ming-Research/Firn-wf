@@ -16,6 +16,21 @@
 name: redis-bench
 
 on:
+  # Temporary: lets the probe workflow call this one; removed with it.
+  workflow_call:
+    inputs:
+      runner: {type: string, required: true}
+      mode: {type: string, required: true}
+      revisions: {type: string, required: true}
+      cpus: {type: string, required: true}
+      tests: {type: string, required: true}
+      depths: {type: string, required: true}
+      passes: {type: string, required: true}
+      seconds: {type: string, required: true}
+      profile: {type: boolean, required: true}
+      profile_test: {type: string, required: true}
+      annotate: {type: string, required: true}
+      callers: {type: boolean, required: true}
   workflow_dispatch:
     inputs:
       runner:
@@ -123,8 +138,9 @@ jobs:
           }
           # Runs redis-bench.sh, on the self-hosted machine in a session of its
           # own whose identity it records before the measurement starts,
-          # refusing to start without the record, and stops what the session
-          # left when it ends, however it ends.
+          # refusing to start without the record, with the record's path for
+          # redis-bench.sh to register each server it starts, and stops what
+          # the session left when it ends, however it ends.
           run_session() {
             if [ -z "$session_file" ]; then
               sh research/experiments/redis-bench/redis-bench.sh "$@"
@@ -132,7 +148,7 @@ jobs:
             fi
             mkdir -p "$(dirname "$session_file")"
             status=0
-            setsid --wait sh -c 'python3 "$1" record "$2" $$ || exit 1; shift 2; exec sh research/experiments/redis-bench/redis-bench.sh "$@"' run "$session_py" "$session_file" "$@" || status=$?
+            FIRN_REDIS_BENCH_RECORD=$session_file setsid --wait sh -c 'python3 "$1" record "$2" $$ || exit 1; shift 2; exec sh research/experiments/redis-bench/redis-bench.sh "$@"' run "$session_py" "$session_file" "$@" || status=$?
             stop_recorded || { [ "$status" -ne 0 ] || status=1; }
             return $status
           }

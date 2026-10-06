@@ -175,6 +175,12 @@ start() {
             ;;
     esac
     server=$!
+    # On the shared machine redis-bench.yml stops what a cancelled run left
+    # by this registration (session.py).
+    if [ -n "${FIRN_REDIS_BENCH_RECORD:-}" ]; then
+        python3 "$ROOT/research/experiments/redis-bench/session.py" register \
+            "$FIRN_REDIS_BENCH_RECORD" "$server" || exit 1
+    fi
     tries=0
     until redis-cli -p "$PORT" PING 2>/dev/null | grep -q PONG; do
         tries=$((tries + 1))
