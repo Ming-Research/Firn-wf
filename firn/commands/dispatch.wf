@@ -203,7 +203,7 @@ fn refused(client: &Client, input: &[u8], name: Span, fits: Bool) -> result: uni
   return unit;
 }
 
-fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
+fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
   doc "Answers one command, whose arguments are spans of the input, by appending its reply to the client's. A command that changes the keyspace does so in one atomic statement, which also appends the change to the append-only file's pending bytes when the keyspace keeps them. As in Redis, an unknown command or a known one outside its command-table arity is answered so whether or not the connection has authenticated, and every other command but AUTH, HELLO and QUIT from a connection that must authenticate first is answered NOAUTH.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
@@ -224,7 +224,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_eval(store: store, input: input, args: args, client: client, time: time, by_sha: by_sha);
+      run_eval(store: store, input: input, args: args, client: client, time: time, clock: clock, by_sha: by_sha);
     }
     return unit;
   }

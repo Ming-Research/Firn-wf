@@ -221,8 +221,8 @@ fn reply_killed(client: &Client, sha: &Array<u8, 40>, line: u64) -> r: unit read
   return unit;
 }
 
-fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "Read both states before dispatch to take the entire keys and metadata holds even while command bodies are refused. Engine allocation follows Redis's default of no script-specific memory cap; host resource exhaustion remains the environment's limit.";
+fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(time), writes(client), writes(clock) waits {
+  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. An attempt that runs out of its budget having written nothing is abandoned, and between attempts the script stops with Redis's error if SCRIPT KILL was sent since it began, and otherwise waits a microsecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, before running again with twice the budget. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
   let count = args^.inner.len;
   let body = pkg::protocol::arg(args: args, index: 1_u64);
   if by_sha {
@@ -351,6 +351,9 @@ fn eval(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client
       reply_killed(client: client, sha: &sha, line: stopped_at);
       break;
     }
+    let paused = std::time::now(clock: clock);
+    let resumed = std::time::instant_after(instant: paused, nanoseconds: 1000_u64);
+    std::time::sleep_until(deadline: resumed);
     set budget = budget +sat budget;
   }
   script_ends(store: store);
