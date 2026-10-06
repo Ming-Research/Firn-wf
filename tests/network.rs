@@ -5072,6 +5072,39 @@ $1\r\nz\r\n:0\r\n$-1\r\n$-1\r\n$-1\r\n:0\r\n+OK\r\n*0\r\n\
     assert_eq!(status, 0);
 }
 
+/// firn records the lists commands run inside a transaction's EXEC and a script as Redis 7.0.15 propagates them over lists found expired: a read records the removal alone, a push the removal and then itself, LMOVE onto an expired list the destination's removal and then itself, and a script whose one effect is a removal records it bare. The expected
+/// records are redis-server 7.0.15's (Firn-wf probe run 37504720562).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_lists_commands_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["RPUSH", "l1", "a"],
+            &["PEXPIREAT", "l1", "1"],
+            &["RPUSH", "l2", "a", "b"],
+            &["PEXPIREAT", "l2", "1"],
+            &["RPUSH", "l3", "a"],
+            &["PEXPIREAT", "l3", "1"],
+            &["RPUSH", "l4", "a"],
+            &["PEXPIREAT", "l4", "1"],
+            &["RPUSH", "src", "x"],
+        ],
+        &[
+            &["MULTI"],
+            &["LLEN", "l1"],
+            &["LPUSH", "l2", "n"],
+            &["LMOVE", "src", "l3", "LEFT", "RIGHT"],
+            &["EXEC"],
+            &["EVAL", "return redis.call('RPOP', KEYS[1])", "1", "l4"],
+            &["LRANGE", "l2", "0", "-1"],
+            &["LRANGE", "l3", "0", "-1"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n:0\r\n:1\r\n$1\r\nx\r\n$-1\r\n*1\r\n$1\r\nn\r\n*1\r\n$1\r\nx\r\n:2\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nl1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nl2\r\n*3\r\n$5\r\nLPUSH\r\n$2\r\nl2\r\n$1\r\nn\r\n*2\r\n$3\r\nDEL\r\n$2\r\nl3\r\n*5\r\n$5\r\nLMOVE\r\n$3\r\nsrc\r\n$2\r\nl3\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$3\r\nDEL\r\n$2\r\nl4\r\n",
+    );
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
