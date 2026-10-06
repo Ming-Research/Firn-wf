@@ -296,6 +296,17 @@ fn log_count(log: &Box<Slots<u8>>, count: u64, room: u64) -> result: unit writes
   return unit;
 }
 
+fn log_append(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), writes(log) {
+  doc "Appends bytes already in the file's form, such as the commands a transaction recorded, as they are.";
+  let count = bytes^.len;
+  log_reserve(log: log, needed: count);
+  for @bytes (offset in 0_u64..count) {
+    let byte = bytes^[offset];
+    log_byte(log: log, value: byte);
+  }
+  return unit;
+}
+
 fn log_word(log: &Box<Slots<u8>>, word: &[u8]) -> result: unit reads(word), writes(log) {
   doc "Appends a constant word as a RESP bulk string.";
   let count = word^.len;

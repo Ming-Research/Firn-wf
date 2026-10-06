@@ -26,7 +26,8 @@ clients ([design](design/firn.md)).
   ([redis-compat](research/experiments/redis-compat/README.md)).
 - **Performance:** measured with `redis-benchmark` against Redis, Valkey,
   Dragonfly and Garnet ([measurements](research/investigations/firn/DESIGN.md)).
-- **Not yet:** scripting (`EVAL`, through the Halo engine), transactions,
+- **Not yet:** scripting (`EVAL`, through the Halo engine), `WATCH` and
+  transactions of commands beyond those `firn/README.md` lists,
   RESP3, memory limits and eviction, replication and clustering, among the
   gaps [docs/todo.md](docs/todo.md) lists. firn is a research server, not a
   production database.

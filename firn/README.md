@@ -45,6 +45,13 @@ clients send on their own:
   version 2, version 3 being refused as unsupported, `SELECT 0`, firn
   having one database, and `CLIENT ID`, `CLIENT GETNAME` and
   `CLIENT SETNAME`;
+- transactions: `MULTI`, `EXEC` and `DISCARD`. `EXEC` runs the queued
+  commands in order in one atomic statement, their time frozen at its start,
+  for the commands written as parts: `GET`, `SET`, `INCR`, `DECR`, `INCRBY`,
+  `DECRBY`, `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`,
+  `EXPIRETIME`, `PEXPIRETIME` and `MSET`. Any other command sent inside a
+  transaction is refused, and `EXEC` then aborts it; `WATCH` is refused
+  inside one and unknown outside;
 - server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which
   describe no command. `COMMAND DOCS` is answered as an unknown subcommand,

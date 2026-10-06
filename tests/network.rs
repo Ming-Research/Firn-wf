@@ -3795,6 +3795,69 @@ fn firn_answers_connection_commands_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// firn keeps a transaction as Redis 7.0.15's MULTI, EXEC and DISCARD do:
+/// EXEC and DISCARD outside one and a nested MULTI are refused; queued
+/// commands answer QUEUED and EXEC answers an array of their replies, a
+/// runtime error among them leaving the others done; a command refused while
+/// queueing, for its arity or because firn cannot queue it, makes EXEC abort
+/// the transaction; WATCH inside one is refused without aborting it; DISCARD
+/// drops what was queued. The expected bytes are redis-server 7.0.15's, but
+/// for the refusal of FOO, which firn names a command it cannot queue where
+/// Redis names an unknown one.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_keeps_transactions_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["EXEC"],
+        vec!["DISCARD"],
+        vec!["MULTI"],
+        vec!["MULTI"],
+        vec!["SET", "a", "1"],
+        vec!["INCRBY", "a", "5"],
+        vec!["EXPIRE", "a", "100"],
+        vec!["TTL", "a"],
+        vec!["MSET", "b", "2", "c", "3"],
+        vec!["GET", "b"],
+        vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["SET", "s", "abc"],
+        vec!["INCR", "s"],
+        vec!["GET", "s"],
+        vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["SET", "x", "1"],
+        vec!["GET", "x", "y"],
+        vec!["EXEC"],
+        vec!["GET", "x"],
+        vec!["MULTI"],
+        vec!["SET", "x", "1"],
+        vec!["FOO"],
+        vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["WATCH", "x"],
+        vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["SET", "x", "2"],
+        vec!["DISCARD"],
+        vec!["GET", "x"],
+        vec!["EXEC", "now"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the transaction batch");
+    let expected = "-ERR EXEC without MULTI\r\n-ERR DISCARD without MULTI\r\n+OK\r\n-ERR MULTI calls can not be nested\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*6\r\n+OK\r\n:6\r\n:1\r\n:100\r\n+OK\r\n$1\r\n2\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR value is not an integer or out of range\r\n$3\r\nabc\r\n+OK\r\n+QUEUED\r\n-ERR wrong number of arguments for 'get' command\r\n-EXECABORT Transaction discarded because of previous errors.\r\n$-1\r\n+OK\r\n+QUEUED\r\n-ERR unknown command, or one firn does not yet run in transactions\r\n-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n-ERR WATCH inside MULTI is not allowed\r\n*0\r\n+OK\r\n+QUEUED\r\n+OK\r\n$-1\r\n-ERR wrong number of arguments for 'exec' command\r\n";
+    expect_replies(&mut client, expected.as_bytes(), "the transaction batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// Reads one RESP2 reply of bulk strings: a bulk string, none for the null
 /// bulk string, or each element of an array of bulk strings.
 #[cfg(target_os = "linux")]

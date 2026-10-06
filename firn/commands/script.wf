@@ -200,110 +200,172 @@ fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   return appended;
 }
 
-fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
-  doc "Runs one command a script calls, inside the script's statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the script's own record of what it changed, which the caller wraps in MULTI and EXEC when it holds more than one, as Redis 7.0.15 propagates a script's effects. time is the script's: its check is the instant the script began. A count of arguments outside a command's arity is refused as Redis refuses it from a script, and AUTH, HELLO, QUIT, DEBUG, CONFIG, CLIENT and FUNCTION, which Redis 7.0.15 marks noscript, as Redis refuses them, after the arity check of the command itself: AUTH, DEBUG, CONFIG, CLIENT and FUNCTION need an argument, HELLO and QUIT none; a subcommand's own arity, such as CONFIG GET's, is not checked, so a short subcommand gets the refusal where Redis answers the arity error. Every other name is answered with Redis's error for a name no command has, extended to say that firn may know the command and not yet run it from scripts: firn names its commands only in execute's rows, so a script cannot tell an unknown name from a command firn has not split into its parts, and the extended text keeps the words Redis's own tests match.";
-  let count = args^.inner.len;
-  let name = arg(args: args, index: 0_u64);
+fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
+  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME and 15 MSET, the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
   let code = name_code(input: input, start: name.start, length: name.length);
   if code == code_get {
-    if arity_holds(arity: arity_get, count: count) {
-      let got = script_get(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
-      return got;
-    }
-    reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
-    return 0_u64;
+    return 1_u64;
   }
   if code == code_set {
-    if arity_holds(arity: arity_set, count: count) {
-      let stored = script_set(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
-      return stored;
-    }
-    reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
-    return 0_u64;
+    return 2_u64;
   }
   if code == code_incr {
-    if arity_holds(arity: arity_incr, count: count) {
-      let bumped = script_incr(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: 1_i64);
-      return bumped;
-    }
-    reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
-    return 0_u64;
+    return 3_u64;
   }
   if code == code_decr {
-    if arity_holds(arity: arity_incr, count: count) {
-      let lowered = script_incr(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: -1_i64);
-      return lowered;
-    }
-    reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
-    return 0_u64;
+    return 4_u64;
   }
-  let by_amount = code == code_incrby;
-  let down_by_amount = code == code_decrby;
-  let amounted = bor(by_amount, down_by_amount);
-  if amounted {
-    if arity_holds(arity: arity_incrby, count: count) {
-      let added = script_incrby(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: down_by_amount);
-      return added;
-    }
-    reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
-    return 0_u64;
+  if code == code_incrby {
+    return 5_u64;
   }
-  let relative = False();
-  let calendar = True();
-  let whole_seconds = True();
-  let milliseconds = False();
-  let pexpireat = False();
-  let pexpiretime = False();
+  if code == code_decrby {
+    return 6_u64;
+  }
+  if code == code_expire {
+    return 7_u64;
+  }
+  if code == code_pexpire {
+    return 8_u64;
+  }
+  if code == code_expireat {
+    return 9_u64;
+  }
   if code == code_pexpireat {
-    set pexpireat = name_is(input: input, start: name.start, length: name.length, word: &word_pexpireat[0_u64..9_u64]);
-    set pexpiretime = name_is(input: input, start: name.start, length: name.length, word: &word_pexpiretime[0_u64..11_u64]);
-  }
-  let expiring = code == code_expire;
-  let expiring_ms = code == code_pexpire;
-  let expiring_at = code == code_expireat;
-  let seconds_form = bor(expiring, expiring_at);
-  let milliseconds_form = bor(expiring_ms, pexpireat);
-  let setting_expiry = bor(seconds_form, milliseconds_form);
-  if setting_expiry {
-    if arity_holds(arity: arity_expire, count: count) {
-      let set_expiry = 0_u64;
-      if expiring {
-        set set_expiry = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: relative, invalid: &text_expire_expire[0_u64..43_u64]);
-      } else if expiring_ms {
-        set set_expiry = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: relative, invalid: &text_expire_pexpire[0_u64..44_u64]);
-      } else if expiring_at {
-        set set_expiry = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: calendar, invalid: &text_expire_expireat[0_u64..45_u64]);
-      } else {
-        set set_expiry = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: calendar, invalid: &text_expire_pexpireat[0_u64..46_u64]);
-      }
-      return set_expiry;
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_pexpireat[0_u64..9_u64]);
+    if spelled {
+      return 10_u64;
     }
-    reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
+    let timed = name_is(input: input, start: name.start, length: name.length, word: &word_pexpiretime[0_u64..11_u64]);
+    if timed {
+      return 14_u64;
+    }
     return 0_u64;
   }
-  let ttl = code == code_ttl;
-  let pttl = code == code_pttl;
-  let expiretime = code == code_expiretime;
-  let reading_seconds = bor(ttl, expiretime);
-  let reading_milliseconds = bor(pttl, pexpiretime);
-  let reading_expiry = bor(reading_seconds, reading_milliseconds);
-  if reading_expiry {
-    if arity_holds(arity: arity_ttl, count: count) {
-      let absolute = bor(expiretime, pexpiretime);
-      let read = script_ttl(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: reading_seconds, absolute: absolute);
-      return read;
-    }
-    reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
-    return 0_u64;
+  if code == code_ttl {
+    return 11_u64;
+  }
+  if code == code_pttl {
+    return 12_u64;
+  }
+  if code == code_expiretime {
+    return 13_u64;
   }
   if code == code_mset {
-    if arity_holds(arity: arity_mset, count: count) {
-      let stored = script_mset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
-      return stored;
+    return 15_u64;
+  }
+  return 0_u64;
+}
+
+fn held_arity(kind: u64) -> arity: i64 pure {
+  doc "The arity Redis 7.0.15's command table gives a command held_kind names, positive for exactly that many arguments with its name and negative for at least its magnitude.";
+  if kind == 1_u64 {
+    return arity_get;
+  }
+  if kind == 2_u64 {
+    return arity_set;
+  }
+  let counter = kind <= 4_u64;
+  if counter {
+    return arity_incr;
+  }
+  let amount = kind <= 6_u64;
+  if amount {
+    return arity_incrby;
+  }
+  let setter = kind <= 10_u64;
+  if setter {
+    return arity_expire;
+  }
+  let reader = kind <= 14_u64;
+  if reader {
+    return arity_ttl;
+  }
+  return arity_mset;
+}
+
+fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "Runs a command held_kind names, its arity already checked, by its parts inside a statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the caller's record of what it changed. time is the statement's: its check is the instant the script or the transaction began, and its calendar time is frozen with it.";
+  let relative = False();
+  let calendar = True();
+  if kind == 1_u64 {
+    let got = script_get(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return got;
+  }
+  if kind == 2_u64 {
+    let stored = script_set(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    return stored;
+  }
+  if kind == 3_u64 {
+    let bumped = script_incr(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: 1_i64);
+    return bumped;
+  }
+  if kind == 4_u64 {
+    let lowered = script_incr(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: -1_i64);
+    return lowered;
+  }
+  if kind == 5_u64 {
+    let added = script_incrby(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: relative);
+    return added;
+  }
+  if kind == 6_u64 {
+    let taken = script_incrby(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: calendar);
+    return taken;
+  }
+  if kind == 7_u64 {
+    let expiring = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: relative, invalid: &text_expire_expire[0_u64..43_u64]);
+    return expiring;
+  }
+  if kind == 8_u64 {
+    let expiring = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: relative, invalid: &text_expire_pexpire[0_u64..44_u64]);
+    return expiring;
+  }
+  if kind == 9_u64 {
+    let expiring = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: calendar, invalid: &text_expire_expireat[0_u64..45_u64]);
+    return expiring;
+  }
+  if kind == 10_u64 {
+    let expiring = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: calendar, invalid: &text_expire_pexpireat[0_u64..46_u64]);
+    return expiring;
+  }
+  if kind == 11_u64 {
+    let whole_seconds = True();
+    let read = script_ttl(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: whole_seconds, absolute: relative);
+    return read;
+  }
+  if kind == 12_u64 {
+    let milliseconds = False();
+    let read = script_ttl(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: milliseconds, absolute: relative);
+    return read;
+  }
+  if kind == 13_u64 {
+    let whole_seconds = True();
+    let read = script_ttl(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: whole_seconds, absolute: calendar);
+    return read;
+  }
+  if kind == 14_u64 {
+    let milliseconds = False();
+    let read = script_ttl(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: milliseconds, absolute: calendar);
+    return read;
+  }
+  let stored = script_mset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+  return stored;
+}
+
+fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "Runs one command a script calls, inside the script's statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the script's own record of what it changed, which the caller wraps in MULTI and EXEC when it holds more than one, as Redis 7.0.15 propagates a script's effects. time is the script's: its check is the instant the script began. The commands held_kind names run through held_run; a count of arguments outside a command's arity is refused as Redis refuses it from a script, and AUTH, HELLO, QUIT, DEBUG, CONFIG, CLIENT and FUNCTION, which Redis 7.0.15 marks noscript, as Redis refuses them, after the arity check of the command itself: AUTH, DEBUG, CONFIG, CLIENT and FUNCTION need an argument, HELLO and QUIT none; a subcommand's own arity, such as CONFIG GET's, is not checked, so a short subcommand gets the refusal where Redis answers the arity error. Every other name is answered with Redis's error for a name no command has, extended to say that firn may know the command and not yet run it from scripts: firn names its commands only in execute's rows, so a script cannot tell an unknown name from a command firn has not split into its parts, and the extended text keeps the words Redis's own tests match.";
+  let count = args^.inner.len;
+  let name = arg(args: args, index: 0_u64);
+  let kind = held_kind(input: input, name: name);
+  if kind != 0_u64 {
+    let arity = held_arity(kind: kind);
+    if arity_holds(arity: arity, count: count) {
+      let appended = held_run(kind: kind, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+      return appended;
     }
     reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
     return 0_u64;
   }
+  let code = name_code(input: input, start: name.start, length: name.length);
   let auth = code == code_auth;
   let hello = code == code_hello;
   let quit = code == code_quit;

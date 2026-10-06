@@ -109,6 +109,8 @@ public fn log_removal(log: &Box<Slots<u8>>, key: &[u8]) -> result: unit reads(ke
 
 public fn log_count(log: &Box<Slots<u8>>, count: u64, room: u64) -> result: unit writes(log) doc "Makes room for a command of about room bytes and appends the header of a RESP array of count elements.";
 
+public fn log_append(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), writes(log) doc "Appends bytes already in the file's form, such as the commands a transaction recorded, as they are.";
+
 public fn log_word(log: &Box<Slots<u8>>, word: &[u8]) -> result: unit reads(word), writes(log) doc "Appends a constant word as a RESP bulk string.";
 
 public fn log_input(log: &Box<Slots<u8>>, input: &[u8], span: Span) -> result: unit reads(input), writes(log) doc "Appends an argument of the input as a RESP bulk string.";

@@ -27,10 +27,9 @@ written while firn lived in the Whitefoot repository; a path such as
   evidence meets that boundary:
   - Complete the selected clients' connection behavior, RESP3, command
     metadata, ordinary pipelines, scans and application command gaps. Add
-    `MULTI`/`EXEC`/`DISCARD` and `WATCH`/`UNWATCH`, including queue-time and
-    execution-time errors, expiry/eviction invalidation and Redis's lack of
-    transaction rollback. Provide command semantics that transactions and
-    the Lua work below can compose without separately committing each call.
+    `WATCH`/`UNWATCH`, and write as parts the commands a selected consumer
+    queues or calls from a script that are not parts yet, since `EXEC` and
+    scripts run only those `held_kind` (`firn/commands/script.wf`) names.
   - Make AOF persistence usable through write/sync error handling, rewrite
     and orderly `SHUTDOWN`/signal handling; verify
     a practical data migration path. File replacement and signal delivery
@@ -158,7 +157,7 @@ written while firn lived in the Whitefoot repository; a path such as
   `GETKEYS` answer as unknown subcommands; `KEYS` and `SCAN`, which can match
   with `glob_match` (`firn/bytes/bytes.wf`), RESP3, which
   `HELLO 3` refuses, `LMPOP` and the blocking list commands, `SSCAN`,
-  `MULTI` and `EXEC`, publish and subscribe, and a random hash seed; and
+  `WATCH`, publish and subscribe, and a random hash seed; and
   `RANDOMKEY`, `SORT`, `LCS`, `OBJECT`, `DUMP`, `RESTORE`, `MOVE`, `MIGRATE`,
   `WAIT`, `HSCAN`, `ZSCAN`, `ZRANGESTORE`, `ZRANDMEMBER`, `ZMPOP` and
   `BZMPOP`, `BZPOPMIN` and `BZPOPMAX`, and `ZDIFF`, `ZINTER`, `ZUNION`,
@@ -206,9 +205,10 @@ written while firn lived in the Whitefoot repository; a path such as
   the records alone, which replays to the same state. Nor does firn, with
   one database, write the `SELECT 0` Redis writes before its first record.
   `firn_records_its_writes_as_redis_propagates_them` compares firn's file
-  with Redis's but for both. The change: write each where Redis does. Reopen
-  when firn answers `MULTI` and `EXEC`, or `SELECT` with more than one
-  database.
+  with Redis's but for both. The change: write each where Redis does, as
+  `EXEC` already wraps a transaction's records. Reopen now for the brackets,
+  since firn answers `MULTI` and `EXEC` and replays them; the `SELECT 0`
+  waits for more than one database.
 
 - **No case checks that the expiring context keeps a key through its
   expiry's millisecond.** `take_due` (`firn/store/store.wf`) leaves a
