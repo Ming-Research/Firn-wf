@@ -56,8 +56,10 @@ passes.
   `whitefoot-kit/`, a submodule of
   [Whitefoot-kit](https://github.com/Ming-Research/Whitefoot-kit), fetches
   and checks it.
-- `design/`: the decisions firn is built on, and their approval log; the
-  `design-tree` skill is the `design/skill` submodule.
+- `design/`: the decisions firn is built on, and their approval log;
+  `design/skill/`, a submodule of
+  [Design-skill](https://github.com/Ming-Research/Design-skill), holds the
+  tree's lint.
 - `research/`: the server's design and measurements
   (`research/investigations/firn/`) and the instruments behind them
   (`research/experiments/`).
