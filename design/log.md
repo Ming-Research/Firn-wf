@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`;
 `skill/SKILL.md` owns the form.
 
+## 2026-10-06 Command parts, scripts' commands and the append-only file's blocks and cut
+
+Nodes: firn/command-parts, firn/scripts, firn/append-only-file
+
+Owner-approved: Approved in the firn session of Whitefoot PR #245 (2026-10-05) as the scripting groundwork plan S1-S6, its follow-ups 1-5, and rulings Q39 and Q40, and in this session on 2026-10-05, written in Chinese, as Q42 A (the owner answered "OK", in Chinese, to the proposal that Q41 and Q42 go with option A). Whitefoot PR #245's description records each ruling; its code moved here as Firn-wf #3.
+
+Summary: A command is four parts, parsing, a body over its key's entry, a metadata step and a reply, shared by the network path and `script_command` (S5, follow-up 1). Scripts refuse Redis's noscript commands and answer a command not yet split with Redis's unknown-command text plus a firn note, instead of a second name table (S4, Q42 A). A script's commands see the clock as it was when the script began (S2); a key a script finds expired is removed at once with its `DEL` in the effects (follow-up 2); the caller wraps more than one appended record in `MULTI`/`EXEC` (Q39). Replay applies a block only once its `EXEC` is read (S3), and a file whose end did not load is cut as Redis cuts it, with `std::fs::truncate_file` (Q40).
+
 ## 2026-10-06 The firn tree moves here from Whitefoot
 
 Nodes: firn
