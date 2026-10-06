@@ -4536,6 +4536,142 @@ abcdef\x00\x00Z\r\n:1\r\n*2\r\n$4\r\nlast\r\n$5\r\nother\r\n:0\r\n:0\r\n$3\r\n\
     assert_eq!(status, 0);
 }
 
+/// firn runs RENAME, RENAMENX and COPY, written as parts over the entries
+/// of the keys they name, inside a transaction's EXEC and through a
+/// script's redis.call, and their errors through redis.pcall, as Redis
+/// 7.0.15 does: a key renamed onto another and onto itself, RENAMENX onto a
+/// live key, COPY with and without REPLACE and DB 0, an expiry carried to
+/// the new key, a list copied, a key found expired, and the refusals, the
+/// arity errors among them aborting a transaction. The expected bytes are
+/// redis-server 7.0.15's (Firn-wf probe run 37494816783).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_rename_and_copy_parts_as_redis_does() {
+    const SETUP: &[&[&str]] = &[
+        &["FLUSHALL"],
+        &["RPUSH", "l", "a", "b"],
+        &["SET", "e", "1", "PX", "1"],
+    ];
+    const VALID: &[&[&str]] = &[
+        &["SET", "s", "one"],
+        &["RENAME", "s", "d"],
+        &["GET", "d"],
+        &["EXISTS", "s"],
+        &["SET", "s", "two"],
+        &["RENAMENX", "s", "d"],
+        &["RENAMENX", "s", "n"],
+        &["GET", "n"],
+        &["COPY", "n", "d"],
+        &["COPY", "n", "d", "REPLACE"],
+        &["GET", "d"],
+        &["SET", "s", "one"],
+        &["RENAME", "s", "s"],
+        &["RENAMENX", "s", "s"],
+        &["COPY", "s", "d", "DB", "0", "REPLACE"],
+        &["COPY", "s", "d", "rePlace", "db", "0", "REPLACE", "DB", "0"],
+        &["SET", "t", "one", "PXAT", "4102444800000"],
+        &["RENAME", "t", "t2"],
+        &["PEXPIRETIME", "t2"],
+        &["COPY", "t2", "t3"],
+        &["PEXPIRETIME", "t3"],
+        &["COPY", "l", "l2"],
+        &["TYPE", "l2"],
+        &["EXISTS", "e"],
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["RENAME", "e", "f"],
+        &["RENAME", "absent", "d"],
+        &["RENAMENX", "absent", "d"],
+        &["COPY", "absent", "d"],
+        &["COPY", "s", "s"],
+        &["COPY", "s", "d", "DB"],
+        &["COPY", "s", "d", "UNKNOWN"],
+        &["COPY", "s", "d", "DB", "bad"],
+        &["COPY", "s", "d", "DB", "-1"],
+        &["RENAME", "s"],
+        &["RENAME", "s", "d", "extra"],
+        &["RENAMENX", "s"],
+        &["COPY", "s"],
+    ];
+    const SET_UP: &[u8] = b"+OK\r\n:2\r\n+OK\r\n";
+    const TRANSACTIONS: &[u8] =
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*24\r\n+OK\r\n+OK\r\n$3\r\none\r\n\
+:0\r\n+OK\r\n:0\r\n:1\r\n$3\r\ntwo\r\n:0\r\n:1\r\n$3\r\ntwo\r\n+OK\r\n+OK\r\n\
+:0\r\n:1\r\n:1\r\n+OK\r\n+OK\r\n:4102444800000\r\n:1\r\n:4102444800000\r\n:1\r\n\
++list\r\n:0\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR no such key\r\n+OK\r\n+QUEUED\r\n\
+*1\r\n-ERR no such key\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR no such key\r\n+OK\r\n\
++QUEUED\r\n*1\r\n:0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR source and destination objects are the same\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR DB index is out of range\r\n+OK\r\n\
+-ERR wrong number of arguments for 'rename' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'rename' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'renamenx' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'copy' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n";
+    const SCRIPTS: &[u8] =
+        b"+OK\r\n+OK\r\n$3\r\none\r\n:0\r\n+OK\r\n:0\r\n:1\r\n$3\r\ntwo\r\n:0\r\n:1\r\n\
+$3\r\ntwo\r\n+OK\r\n+OK\r\n:0\r\n:1\r\n:1\r\n+OK\r\n+OK\r\n:4102444800000\r\n\
+:1\r\n:4102444800000\r\n:1\r\n+list\r\n:0\r\n-ERR no such key\r\n\
+-ERR no such key\r\n-ERR no such key\r\n:0\r\n\
+-ERR source and destination objects are the same\r\n-ERR syntax error\r\n\
+-ERR syntax error\r\n-ERR value is not an integer or out of range\r\n\
+-ERR DB index is out of range\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut transactions = vec![resp(&["MULTI"])];
+    for request in VALID {
+        transactions.push(resp(request));
+    }
+    transactions.push(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.push(resp(&["MULTI"]));
+        transactions.push(resp(request));
+        transactions.push(resp(&["EXEC"]));
+    }
+    let mut scripts = Vec::new();
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.push(resp(&call));
+        }
+    }
+    for (requests, expected, what) in [
+        (transactions, TRANSACTIONS, "the transactions"),
+        (scripts, SCRIPTS, "the scripts"),
+    ] {
+        let set_up: Vec<u8> = SETUP.iter().flat_map(|request| resp(request)).collect();
+        client.write_all(&set_up).expect("set the keys up");
+        expect_replies(&mut client, SET_UP, "the keys set up");
+        std::thread::sleep(Duration::from_millis(50));
+        client
+            .write_all(&requests.concat())
+            .expect("send the requests");
+        expect_replies(&mut client, expected, what);
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
