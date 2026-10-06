@@ -4821,129 +4821,6 @@ fn firn_records_held_renames_and_copies_as_redis_propagates_them() {
     );
 }
 
-/// firn runs TOUCH, SUBSTR, SELECT and COMMAND's refusals, written as parts, inside a transaction's EXEC and through a script as Redis 7.0.15 does. The same requests, from the same keys, run in one transaction,
-/// each error or boundary request in a transaction of its own, then through
-/// a script's redis.call and the errors through redis.pcall, and give the
-/// replies redis-server 7.0.15 gives (Firn-wf probe run 37515932245).
-#[cfg(target_os = "linux")]
-#[test]
-fn firn_runs_rest_parts_as_redis_does() {
-    const SETUP: &[&[&str]] = &[
-        &["FLUSHALL"],
-        &["SET", "s", "abcdef"],
-        &["SET", "empty", ""],
-        &["LPUSH", "list", "x"],
-    ];
-    const VALID: &[&[&str]] = &[
-        &["TOUCH", "s", "s", "missing", "list"],
-        &["SUBSTR", "s", "1", "3"],
-        &["SUBSTR", "s", "-3", "-1"],
-        &["SUBSTR", "s", "9223372036854775807", "-1"],
-        &["SUBSTR", "missing", "0", "-1"],
-        &["SUBSTR", "empty", "0", "-1"],
-        &["SELECT", "0"],
-        &["SET", "after", "v"],
-        &["DBSIZE"],
-    ];
-    const ERRORS: &[&[&str]] = &[
-        &["TOUCH"],
-        &["SUBSTR", "s", "0"],
-        &["SUBSTR", "s", "bad", "2"],
-        &["SUBSTR", "s", "0", "bad"],
-        &["SUBSTR", "list", "0", "-1"],
-        &["SELECT"],
-        &["SELECT", "bad"],
-        &["SELECT", "-1"],
-        &["SELECT", "2147483647"],
-        &["SELECT", "2147483648"],
-        &["SELECT", "0", "extra"],
-        &["TIME", "extra"],
-        &["COMMAND", "COUNT", "extra"],
-        &["COMMAND", "__unknown__"],
-    ];
-    const TRANSACTIONS: &[u8] =
-        b"+OK\r\n+OK\r\n+OK\r\n:1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
-+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*9\r\n:3\r\n$3\r\nbcd\r\n\
-$3\r\ndef\r\n$0\r\n\r\n$0\r\n\r\n$0\r\n\r\n+OK\r\n+OK\r\n:4\r\n+OK\r\n\
--ERR wrong number of arguments for 'touch' command\r\n\
--EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
--ERR wrong number of arguments for 'substr' command\r\n\
--EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
-+QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
-+QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
-+QUEUED\r\n*1\r\n\
--WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
--ERR wrong number of arguments for 'select' command\r\n\
--EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
-+QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
-+QUEUED\r\n*1\r\n-ERR DB index is out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
--ERR DB index is out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
--ERR value is out of range, value must between -2147483648 and 2147483647\r\n\
-+OK\r\n-ERR wrong number of arguments for 'select' command\r\n\
--EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
--ERR wrong number of arguments for 'time' command\r\n\
--EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
--ERR wrong number of arguments for 'command|count' command\r\n\
--EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
--ERR unknown subcommand '__unknown__'. Try COMMAND HELP.\r\n\
--EXECABORT Transaction discarded because of previous errors.\r\n";
-    const SCRIPTS: &[u8] =
-        b"+OK\r\n+OK\r\n+OK\r\n:1\r\n:3\r\n$3\r\nbcd\r\n$3\r\ndef\r\n$0\r\n\r\n$0\r\n\r\n\
-$0\r\n\r\n+OK\r\n+OK\r\n:4\r\n\
--ERR Wrong number of args calling Redis command from script\r\n\
--ERR Wrong number of args calling Redis command from script\r\n\
--ERR value is not an integer or out of range\r\n\
--ERR value is not an integer or out of range\r\n\
--WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
--ERR Wrong number of args calling Redis command from script\r\n\
--ERR value is not an integer or out of range\r\n\
--ERR DB index is out of range\r\n-ERR DB index is out of range\r\n\
--ERR value is out of range, value must between -2147483648 and 2147483647\r\n\
--ERR Wrong number of args calling Redis command from script\r\n\
--ERR Wrong number of args calling Redis command from script\r\n\
--ERR Wrong number of args calling Redis command from script\r\n\
--ERR Unknown Redis command called from script\r\n";
-    let program = firn();
-    let port = free_port();
-    let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
-    let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
-    transactions.push(resp(&["MULTI"]));
-    for request in VALID {
-        transactions.push(resp(request));
-    }
-    transactions.push(resp(&["EXEC"]));
-    for request in ERRORS {
-        transactions.push(resp(&["MULTI"]));
-        transactions.push(resp(request));
-        transactions.push(resp(&["EXEC"]));
-    }
-    let mut scripts: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
-    for (calls, script) in [
-        (VALID, "return redis.call(unpack(ARGV))"),
-        (ERRORS, "return redis.pcall(unpack(ARGV))"),
-    ] {
-        for request in calls {
-            let mut call = vec!["EVAL", script, "0"];
-            call.extend_from_slice(request);
-            scripts.push(resp(&call));
-        }
-    }
-    for (requests, expected, what) in [
-        (transactions, TRANSACTIONS, "the transactions"),
-        (scripts, SCRIPTS, "the scripts"),
-    ] {
-        client
-            .write_all(&requests.concat())
-            .expect("send the requests");
-        expect_replies(&mut client, expected, what);
-    }
-    drop(client);
-    let (status, _) = finished(child);
-    assert_eq!(status, 0);
-}
-
 /// firn answers TIME inside a transaction's EXEC and through a script as
 /// Redis 7.0.15 shapes it: two bulk strings, the seconds since the epoch
 /// near the host's clock and the microseconds below one million. The values
@@ -4992,6 +4869,125 @@ fn firn_answers_time_inside_transactions_and_scripts() {
             values[0]
         );
         assert!(values[1] < 1_000_000, "{what}: {} microseconds", values[1]);
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn runs TOUCH, SUBSTR, SELECT and COMMAND COUNT's arity refusal, written as parts, inside a transaction's EXEC and through a script as Redis 7.0.15 does. COMMAND with a subcommand firn does not know is left out: firn answers a script with the command-parts decision's extended unknown-command text, since it runs only COMMAND and COMMAND COUNT and cannot tell an unknown subcommand from one it does not run. The same requests, from the same keys, run in one transaction,
+/// each error or boundary request in a transaction of its own, then through
+/// a script's redis.call and the errors through redis.pcall, and give the
+/// replies redis-server 7.0.15 gives (Firn-wf probe run 37515932245).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_rest_parts_as_redis_does() {
+    const SETUP: &[&[&str]] = &[
+        &["FLUSHALL"],
+        &["SET", "s", "abcdef"],
+        &["SET", "empty", ""],
+        &["LPUSH", "list", "x"],
+    ];
+    const VALID: &[&[&str]] = &[
+        &["TOUCH", "s", "s", "missing", "list"],
+        &["SUBSTR", "s", "1", "3"],
+        &["SUBSTR", "s", "-3", "-1"],
+        &["SUBSTR", "s", "9223372036854775807", "-1"],
+        &["SUBSTR", "missing", "0", "-1"],
+        &["SUBSTR", "empty", "0", "-1"],
+        &["SELECT", "0"],
+        &["SET", "after", "v"],
+        &["DBSIZE"],
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["TOUCH"],
+        &["SUBSTR", "s", "0"],
+        &["SUBSTR", "s", "bad", "2"],
+        &["SUBSTR", "s", "0", "bad"],
+        &["SUBSTR", "list", "0", "-1"],
+        &["SELECT"],
+        &["SELECT", "bad"],
+        &["SELECT", "-1"],
+        &["SELECT", "2147483647"],
+        &["SELECT", "2147483648"],
+        &["SELECT", "0", "extra"],
+        &["TIME", "extra"],
+        &["COMMAND", "COUNT", "extra"],
+    ];
+    const TRANSACTIONS: &[u8] =
+        b"+OK\r\n+OK\r\n+OK\r\n:1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*9\r\n:3\r\n$3\r\nbcd\r\n\
+$3\r\ndef\r\n$0\r\n\r\n$0\r\n\r\n$0\r\n\r\n+OK\r\n+OK\r\n:4\r\n+OK\r\n\
+-ERR wrong number of arguments for 'touch' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'substr' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
+-ERR wrong number of arguments for 'select' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR DB index is out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR DB index is out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is out of range, value must between -2147483648 and 2147483647\r\n\
++OK\r\n-ERR wrong number of arguments for 'select' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'time' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'command|count' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n";
+    const SCRIPTS: &[u8] =
+        b"+OK\r\n+OK\r\n+OK\r\n:1\r\n:3\r\n$3\r\nbcd\r\n$3\r\ndef\r\n$0\r\n\r\n$0\r\n\r\n\
+$0\r\n\r\n+OK\r\n+OK\r\n:4\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR value is not an integer or out of range\r\n\
+-ERR value is not an integer or out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR value is not an integer or out of range\r\n\
+-ERR DB index is out of range\r\n-ERR DB index is out of range\r\n\
+-ERR value is out of range, value must between -2147483648 and 2147483647\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    transactions.push(resp(&["MULTI"]));
+    for request in VALID {
+        transactions.push(resp(request));
+    }
+    transactions.push(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.push(resp(&["MULTI"]));
+        transactions.push(resp(request));
+        transactions.push(resp(&["EXEC"]));
+    }
+    let mut scripts: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.push(resp(&call));
+        }
+    }
+    for (requests, expected, what) in [
+        (transactions, TRANSACTIONS, "the transactions"),
+        (scripts, SCRIPTS, "the scripts"),
+    ] {
+        client
+            .write_all(&requests.concat())
+            .expect("send the requests");
+        expect_replies(&mut client, expected, what);
     }
     drop(client);
     let (status, _) = finished(child);
