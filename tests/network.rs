@@ -3920,7 +3920,9 @@ fn firn_keeps_transactions_as_redis_does() {
     ] {
         batch.extend(resp(&request));
     }
-    client.write_all(&batch).expect("send the transaction batch");
+    client
+        .write_all(&batch)
+        .expect("send the transaction batch");
     let expected = "-ERR EXEC without MULTI\r\n-ERR DISCARD without MULTI\r\n+OK\r\n-ERR MULTI calls can not be nested\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*6\r\n+OK\r\n:6\r\n:1\r\n:100\r\n+OK\r\n$1\r\n2\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR value is not an integer or out of range\r\n$3\r\nabc\r\n+OK\r\n+QUEUED\r\n-ERR wrong number of arguments for 'get' command\r\n-EXECABORT Transaction discarded because of previous errors.\r\n$-1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n+OK\r\n-ERR WATCH inside MULTI is not allowed\r\n*0\r\n+OK\r\n+QUEUED\r\n+OK\r\n$-1\r\n-EXECABORT Transaction discarded because of: wrong number of arguments for 'exec' command\r\n+OK\r\n+QUEUED\r\n*1\r\n:-2\r\n+OK\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n+OK\r\n-EXECABORT Transaction discarded because of: wrong number of arguments for 'exec' command\r\n+OK\r\n$1\r\nv\r\n+OK\r\n-ERR wrong number of arguments for 'watch' command\r\n-EXECABORT Transaction discarded because of previous errors.\r\n";
     expect_replies(&mut client, expected.as_bytes(), "the transaction batch");
     drop(client);
@@ -3968,7 +3970,10 @@ fn firn_records_transactions_as_redis_propagates_them() {
             "the transactions",
         );
     });
-    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"transactions.aof"]);
+    let output = program.run(
+        fixture.path(),
+        &[text.as_bytes(), b"1", b"transactions.aof"],
+    );
     client.join().expect("the client's exchange");
     assert!(output.status.success(), "firn: {:?}", output.status);
     let file = std::fs::read(fixture.path().join("transactions.aof")).expect("read firn's file");
@@ -3989,7 +3994,10 @@ fn firn_records_transactions_as_redis_propagates_them() {
             "the replayed keys",
         );
     });
-    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"transactions.aof"]);
+    let output = program.run(
+        fixture.path(),
+        &[text.as_bytes(), b"1", b"transactions.aof"],
+    );
     client.join().expect("the replay's exchange");
     assert!(output.status.success(), "firn: {:?}", output.status);
 }
