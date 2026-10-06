@@ -23,8 +23,10 @@ jobs:
         with:
           submodules: true
 
+      # One run cannot tell a stable pass from a flaky one; ratchet.py
+      # record refuses fewer than three as well.
       - name: Check the run count
-        run: '[[ "$RECORD_RUNS" =~ ^[1-9][0-9]*$ ]]'
+        run: '[[ "$RECORD_RUNS" =~ ^[1-9][0-9]*$ ]] && (( RECORD_RUNS >= 3 ))'
 
       - name: Install the host toolchain and suite tools
         run: |
