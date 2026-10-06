@@ -20,9 +20,10 @@ written while firn lived in the Whitefoot repository; a path such as
   [deployment direction](../research/investigations/firn/DESIGN.md#deployment-direction)
   requires usable cache/session storage and scripted conditional updates,
   with an existing application using its ordinary client and unchanged
-  business logic. Select the consumers and their required command behavior
-  before treating a feature inventory as release coverage; a leaderboard or
-  queue is a candidate additional scenario, not yet a selected dependency.
+  business logic. The selected consumers and the gaps their tests expose are
+  in the [consumers investigation](../research/investigations/consumers/README.md#what-the-milestone-needs-from-firn),
+  which orders the work below; a leaderboard or queue is a candidate
+  additional scenario, not yet a selected dependency.
   Complete the following work and remove this item when the deployment
   evidence meets that boundary:
   - Complete the selected clients' connection behavior, RESP3, command

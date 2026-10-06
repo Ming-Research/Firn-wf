@@ -124,8 +124,8 @@ standalone Redis replacement. Cache/session storage and scripted conditional
 updates are the core scenarios. Select existing applications or components
 whose business logic stays unchanged when pointed at firn through their
 ordinary clients; a leaderboard or queue can broaden the evidence once its
-consumer is selected. The specific consumers remain to be selected, not
-assumed supported. A count of implemented commands or passing tests does not
+consumer is selected. The [consumers investigation](../consumers/README.md)
+selects the consumers and records what they need. A count of implemented commands or passing tests does not
 by itself establish that these scenarios work.
 
 Release evidence must cover the selected applications end to end, the Redis
