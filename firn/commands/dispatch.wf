@@ -442,7 +442,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_rename {
-    let fits = count == 3_u64;
+    let fits = arity_holds(arity: arity_rename, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -454,7 +454,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_renamenx {
-    let fits = count == 3_u64;
+    let fits = arity_holds(arity: arity_renamenx, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -466,7 +466,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_copy {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_copy, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);

@@ -74,6 +74,12 @@ const arity_msetnx: i64 = -3_i64;
 
 const arity_incrbyfloat: i64 = 3_i64;
 
+const arity_rename: i64 = 3_i64;
+
+const arity_renamenx: i64 = 3_i64;
+
+const arity_copy: i64 = -3_i64;
+
 const arity_noscript_with_argument: i64 = -2_i64;
 
 const text_script_arity: Array<u8, 58> = "ERR Wrong number of args calling Redis command from script";
@@ -235,7 +241,7 @@ fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
 }
 
 fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
+  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY, the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
   let code = name_code(input: input, start: name.start, length: name.length);
   if code == code_get {
     return 1_u64;
@@ -357,6 +363,15 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
       return 36_u64;
     }
   }
+  if code == code_rename {
+    return 37_u64;
+  }
+  if code == code_renamenx {
+    return 38_u64;
+  }
+  if code == code_copy {
+    return 39_u64;
+  }
   return 0_u64;
 }
 
@@ -449,6 +464,15 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   }
   if kind == 36_u64 {
     return arity_incrbyfloat;
+  }
+  if kind == 37_u64 {
+    return arity_rename;
+  }
+  if kind == 38_u64 {
+    return arity_renamenx;
+  }
+  if kind == 39_u64 {
+    return arity_copy;
   }
   return 0_i64;
 }
@@ -604,6 +628,18 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
   }
   if kind == 36_u64 {
     let appended = script_incrbyfloat(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 37_u64 {
+    let appended = script_rename(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, fresh: relative);
+    return appended;
+  }
+  if kind == 38_u64 {
+    let appended = script_rename(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, fresh: calendar);
+    return appended;
+  }
+  if kind == 39_u64 {
+    let appended = script_copy(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     return appended;
   }
   return 0_u64;
@@ -968,5 +1004,34 @@ fn script_msetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   set appended = appended +wrap recorded;
   let stored = True();
   msetnx_finish(client: client, stored: stored);
+  return appended;
+}
+
+fn script_rename(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, fresh: Bool) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "RENAME and RENAMENX under a statement holding every key: the same parts as the network, with entries selected by the same key set and records appended to the caller's effects.";
+  let ks = key_set_new(capacity: 2_u64);
+  let pair = rename_parse(input: input, args: args, keys: &ks);
+  set client^.now = time^.check;
+  let slots = &keys^[ks];
+  let work = rename_body(slots: slots, source: pair.source, target: pair.target, client: client, fresh: fresh);
+  let appended = transfer_meta(due: &meta^.due, log: effects, logged: logged, work: &work, input: input, args: args, env: env);
+  rename_finish(client: client, outcome: work.outcome, fresh: fresh);
+  return appended;
+}
+
+fn script_copy(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "COPY under a statement holding every key: the same parsing, entries body, metadata and reply as the network, with records appended to the caller's effects.";
+  let plan = copy_parse(input: input, args: args);
+  if plan.error != 0_u64 {
+    copy_finish(client: client, error: plan.error, outcome: rename_missing);
+    return 0_u64;
+  }
+  let ks = key_set_new(capacity: 2_u64);
+  let pair = rename_parse(input: input, args: args, keys: &ks);
+  set client^.now = time^.check;
+  let slots = &keys^[ks];
+  let work = copy_body(slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
+  let appended = transfer_meta(due: &meta^.due, log: effects, logged: logged, work: &work, input: input, args: args, env: env);
+  copy_finish(client: client, error: 0_u64, outcome: work.outcome);
   return appended;
 }
