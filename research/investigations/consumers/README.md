@@ -70,4 +70,56 @@ rate-limiter-flexible v11.2.1.
 
 ## Results
 
-Pending the first runs.
+CI runs [37456306284](https://github.com/Ming-Research/Firn-wf/actions/runs/37456306284)
+and [37456778784](https://github.com/Ming-Research/Firn-wf/actions/runs/37456778784),
+which agree in every count below, on GitHub's `ubuntu-24.04` runners, Redis 7.0.15 from Ubuntu's package, firn at
+`6239de8c8` with Whitefoot `wf-364f86c2fd16`. The clients the consumers
+installed: redis-py 8.1.0 (Django), node-redis 6.3.0 (connect-redis), and
+ioredis 5.11.1 with node-redis 4.7.1 (rate-limiter-flexible). Every
+consumer's tests pass against Redis.
+
+| Consumer | Against Redis | Against firn | What firn refused |
+|---|---|---|---|
+| Django | 1,338 tests, all pass (145 skipped) | 230 errors | `HELLO 3`: all 230 are `NOPROTO` |
+| connect-redis | 4 of 4 pass | 2 of 4 fail | `HELLO 3`: `NOPROTO` |
+| rate-limiter-flexible | 100 of 100 pass | 69 of 100 fail | `EVAL`, `EVALSHA`, `EXEC`; 12 time out behind them |
+
+The commands each consumer sent Redis, by form (`profile.py`; `lua` marks a
+command a script ran), with how often:
+
+- **Django** (982 commands): `GET` 238, `SET EX` 160, `EXISTS` 144, `DEL`
+  135, `FLUSHDB` 72, `SET NX EX` 50, `EXPIRE` 49, `MGET` 31, `INCRBY` 22,
+  `MULTI`/`EXEC` 20 (each around `MSET` and one `EXPIRE` per key), `HELLO 3`
+  11, `SET NX` 5, `SET` 2, `CLIENT INFO` 1, `PERSIST` 1.
+- **connect-redis** (1,048): `SET EX` 1,003, `SCAN MATCH COUNT` 31, `DEL` 4,
+  `TTL` 3, `HELLO 3` 2, `EXPIRE`, `GET` and `MGET` 1 each.
+- **rate-limiter-flexible** (730): from scripts `SET EX NX`, `INCRBY` and
+  `PTTL` 86 each and `PEXPIRE` 8; from the client `EVAL` 73, `QUIT` 55,
+  `INFO` 54, `FLUSHDB` 53, `FLUSHALL` 47, `PTTL` 42, `GET` 37,
+  `MULTI`/`EXEC` 29 (around `SET` or `GET` or `INCRBY`, then `PTTL`), `SET EX`
+  17, `EVALSHA` 13, `SET` 6, `DEL` 4, `INCRBY` 4.
+
+## What the milestone needs from firn
+
+Ordered by how many selected consumers each gap stops:
+
+1. **RESP3.** redis-py 8 and node-redis 6 open every connection with
+   `HELLO 3` and do not fall back; firn answers `NOPROTO`, so two of the
+   three consumers stop at their first command. Redis 7.0.15's RESP3 replies
+   (null, map, set, double and the rest) follow, for every command the
+   consumers send.
+2. **Transactions: `MULTI` and `EXEC`.** Django's `set_many` and
+   rate-limiter-flexible's non-scripted paths queue two to five commands
+   (`MSET`, `EXPIRE`, `SET`, `GET`, `INCRBY`, `PTTL`) and run them with
+   `EXEC`. No consumer sent `WATCH` or `DISCARD`.
+3. **Scripts: `EVAL` and `EVALSHA`.** rate-limiter-flexible's scripts call
+   `SET` with `EX` and `NX`, `INCRBY`, `PTTL` and `PEXPIRE`; scripts run
+   only `GET`, `INCR` and `SET` today.
+4. **`SCAN` with `MATCH` and `COUNT`**, which connect-redis uses to list and
+   clear sessions, and **`CLIENT INFO`**, which Django sent once.
+
+Every other form the consumers sent is one firn already answers. Transactions
+and scripts both run several commands as one atomic step, so both need the
+commands they queue or call written as the parts of the
+[command-parts decision](../../../design/firn/command-parts.md): the commands
+above first, the others as consumers need them.

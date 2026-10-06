@@ -5,10 +5,6 @@
 name: consumers
 
 on:
-  # Temporary: runs on this branch's pushes until the investigation records
-  # its first results, removed before the pull request is ready.
-  push:
-    branches: [claude/consumers]
   workflow_dispatch:
 
 defaults:
