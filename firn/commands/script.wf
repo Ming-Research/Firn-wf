@@ -1,4 +1,3 @@
-alias extended_read = pkg::extended::extended_read;
 alias Bytes = pkg::bytes::Bytes;
 alias reply_array = pkg::protocol::reply_array;
 alias Client = pkg::protocol::Client;
@@ -215,10 +214,8 @@ fn script_ttl(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged:
 fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
   doc "MSET inside a script holding every key: the work, effects and reply of run_mset, its pairs stored in order so that a key named twice keeps its last value. An even count of arguments is answered with MSET's own arity error, as Redis's msetGenericCommand answers it inside a script.";
   let count = args^.inner.len;
-  let parity = count % 2_u64;
-  if parity == 0_u64 {
-    let name = arg(args: args, index: 0_u64);
-    reply_arity(client: client, input: input, name: name);
+  let rejected = mset_pairs_refused(input: input, args: args, client: client);
+  if rejected {
     return 0_u64;
   }
   let pairs = count / 2_u64;
@@ -746,11 +743,8 @@ fn script_getdel(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
 fn script_getex(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "run_getex through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
-  let setting = False();
-  let options = string_options(input: input, args: args, first: 2_u64, setting: setting);
-  if options.valid {
-  } else {
-    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  let options = getex_options(input: input, args: args, client: client);
+  if bnot(options.valid) {
     return 0_u64;
   }
   let plan = getex_plan(input: input, args: args, options: &options, time: time);
@@ -830,9 +824,8 @@ fn script_getrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, lo
   doc "run_getrange through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
   let plan = getrange_plan(input: input, args: args);
-  if plan.valid {
-  } else {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  let rejected = getrange_refused(client: client, plan: &plan);
+  if rejected {
     return 0_u64;
   }
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -851,8 +844,7 @@ fn script_getrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, lo
 fn script_incrbyfloat(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
   doc "run_incrbyfloat through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
-  let amount = arg(args: args, index: 2_u64);
-  let increment = extended_read(input: input, start: amount.start, length: amount.length);
+  let increment = incrbyfloat_parse(input: input, args: args);
   let key_span = arg(args: args, index: 1_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
@@ -897,21 +889,16 @@ fn script_set_key(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
 
 fn script_setex(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, invalid: &[u8]) -> appended: u64 reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "SETEX and PSETEX read their expiry before lookup and use SET's shared parts.";
-  let flags = option_px;
-  if in_seconds {
-    set flags = option_ex;
+  let parsed = setex_parse(input: input, args: args, client: client, time: time, in_seconds: in_seconds, invalid: invalid);
+  let plan = match parsed {
+    Some(value: accepted) => {
+      give accepted;
+    }
+    None() => {
+      return 0_u64;
+    }
   }
-  let amount = arg(args: args, index: 2_u64);
-  let deadline = string_deadline(input: input, span: amount, flags: flags, unix_ms: time^.unix_ms);
-  if deadline.state == 0_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return 0_u64;
-  }
-  if deadline.state == 2_u64 {
-    reply_error(client: client, word: invalid);
-    return 0_u64;
-  }
-  let appended = script_set_key(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 3_u64, flags: flags, at: deadline.at, mode: mode_set);
+  let appended = script_set_key(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: plan.key_index, value_index: plan.value_index, flags: plan.flags, at: plan.at, mode: plan.mode);
   return appended;
 }
 
@@ -966,10 +953,8 @@ fn script_named(kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<
 fn script_msetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
   doc "MSETNX probes entries in argument order, stopping at the first live entry, then stores each pair through mset_body only if all were absent.";
   let count = args^.inner.len;
-  let parity = count % 2_u64;
-  if parity == 0_u64 {
-    let name = arg(args: args, index: 0_u64);
-    reply_arity(client: client, input: input, name: name);
+  let rejected = mset_pairs_refused(input: input, args: args, client: client);
+  if rejected {
     return 0_u64;
   }
   let pairs = count / 2_u64;
@@ -1022,8 +1007,8 @@ fn script_rename(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slo
 fn script_copy(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "COPY under a statement holding every key: the same parsing, entries body, metadata and reply as the network, with records appended to the caller's effects.";
   let plan = copy_parse(input: input, args: args);
-  if plan.error != 0_u64 {
-    copy_finish(client: client, error: plan.error, outcome: rename_missing);
+  let rejected = copy_refused(client: client, plan: &plan);
+  if rejected {
     return 0_u64;
   }
   let ks = key_set_new(capacity: 2_u64);

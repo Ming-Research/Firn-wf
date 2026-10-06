@@ -1211,11 +1211,20 @@ fn run_rename(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   return unit;
 }
 
+fn copy_refused(client: &Client, plan: &CopyPlan) -> rejected: Bool reads(plan), writes(client) {
+  doc "Writes COPY's parse refusal before either entry is reached, and answers whether the command was refused.";
+  if plan^.error == 0_u64 {
+    return False();
+  }
+  copy_finish(client: client, error: plan^.error, outcome: rename_missing);
+  return True();
+}
+
 fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
   doc "COPY by copy_parse and rename_parse, copy_body, transfer_meta and copy_finish, in one statement on both named entries and the metadata; parse errors reach neither entry.";
   let plan = copy_parse(input: input, args: args);
-  if plan.error != 0_u64 {
-    copy_finish(client: client, error: plan.error, outcome: rename_missing);
+  let rejected = copy_refused(client: client, plan: &plan);
+  if rejected {
     return unit;
   }
   let keys = key_set_new(capacity: 2_u64);
