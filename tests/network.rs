@@ -4936,6 +4936,278 @@ fn firn_records_held_renames_and_copies_as_redis_propagates_them() {
     );
 }
 
+/// firn runs the hashes commands written as parts, HSET to HRANDFIELD, inside a transaction's EXEC and through a script as Redis 7.0.15 does, singleton hashes keeping HRANDFIELD's and HGETALL's replies in one order. The same requests, from the same keys, run in one transaction,
+/// each error or boundary request in a transaction of its own, then through
+/// a script's redis.call and the errors through redis.pcall, and give the
+/// replies redis-server 7.0.15 gives (Firn-wf probe run 37499945138).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_hashes_parts_as_redis_does() {
+    const SETUP: &[&[&str]] = &[
+        &["FLUSHALL"],
+        &["SET", "wrong", "text"],
+        &["HSET", "h", "f", "7"],
+        &["HSET", "one", "f", "value"],
+        &["HSET", "erase", "f", "value"],
+        &[
+            "HSET",
+            "bad",
+            "integer",
+            "1.5",
+            "float",
+            "nope",
+            "max",
+            "9223372036854775807",
+            "min",
+            "-9223372036854775808",
+            "huge",
+            "1e4932",
+        ],
+        &["HSET", "timed", "f", "1"],
+        &["PEXPIREAT", "timed", "4102444800000"],
+    ];
+    const VALID: &[&[&str]] = &[
+        &["HSET", "h", "f", "8", "f", "9"],
+        &["HMSET", "h", "f", "10"],
+        &["HSETNX", "h", "f", "ignored"],
+        &["HSETNX", "nx", "f", "created"],
+        &["HGET", "h", "f"],
+        &["HMGET", "h", "f", "absent", "f"],
+        &["HEXISTS", "h", "f"],
+        &["HSTRLEN", "h", "f"],
+        &["HLEN", "h"],
+        &["HGETALL", "one"],
+        &["HKEYS", "one"],
+        &["HVALS", "one"],
+        &["HINCRBY", "h", "f", "-2"],
+        &["HINCRBY", "counter", "f", "5"],
+        &["HINCRBYFLOAT", "floating", "f", "0.1"],
+        &["HINCRBYFLOAT", "floating", "f", "0.2"],
+        &["HGET", "floating", "f"],
+        &["HRANDFIELD", "one"],
+        &["HRANDFIELD", "one", "9", "WITHVALUES"],
+        &["HRANDFIELD", "one", "-2", "WITHVALUES"],
+        &["HRANDFIELD", "one", "0"],
+        &["HDEL", "erase", "f", "f", "absent"],
+        &["EXISTS", "erase"],
+        &["HGET", "missing", "f"],
+        &["HMGET", "missing", "f", "g"],
+        &["HEXISTS", "missing", "f"],
+        &["HSTRLEN", "missing", "f"],
+        &["HLEN", "missing"],
+        &["HGETALL", "missing"],
+        &["HRANDFIELD", "missing"],
+        &["HRANDFIELD", "missing", "2", "WITHVALUES"],
+        &["HSET", "binary", "", "", "f\0x", "v\0x"],
+        &["HMGET", "binary", "", "f\0x"],
+        &["HSET", "timed", "f", "2"],
+        &["HINCRBY", "timed", "f", "1"],
+        &["HINCRBYFLOAT", "timed", "f", "0.5"],
+        &["PEXPIRETIME", "timed"],
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["HSET", "wrong", "f", "v"],
+        &["HMSET", "wrong", "f", "v"],
+        &["HSETNX", "wrong", "f", "v"],
+        &["HGET", "wrong", "f"],
+        &["HMGET", "wrong", "f", "g"],
+        &["HDEL", "wrong", "f"],
+        &["HEXISTS", "wrong", "f"],
+        &["HSTRLEN", "wrong", "f"],
+        &["HLEN", "wrong"],
+        &["HGETALL", "wrong"],
+        &["HKEYS", "wrong"],
+        &["HVALS", "wrong"],
+        &["HINCRBY", "wrong", "f", "1"],
+        &["HINCRBYFLOAT", "wrong", "f", "1"],
+        &["HRANDFIELD", "wrong", "0"],
+        &["HSET", "h", "f", "v", "unpaired"],
+        &["HMSET", "h", "f", "v", "unpaired"],
+        &["HINCRBY", "wrong", "f", "nope"],
+        &["HINCRBY", "bad", "integer", "1"],
+        &["HINCRBY", "bad", "max", "1"],
+        &["HINCRBY", "bad", "min", "-1"],
+        &["HINCRBYFLOAT", "wrong", "f", "nope"],
+        &["HINCRBYFLOAT", "wrong", "f", "inf"],
+        &["HINCRBYFLOAT", "bad", "float", "1"],
+        &["HINCRBYFLOAT", "bad", "huge", "1e4932"],
+        &["HRANDFIELD", "wrong", "nope", "bad"],
+        &["HRANDFIELD", "one", "-9223372036854775808"],
+        &["HRANDFIELD", "one", "9223372036854775808"],
+        &["HRANDFIELD", "one", "1", "bad"],
+        &["HRANDFIELD", "one", "1", "WITHVALUES", "extra"],
+        &["HRANDFIELD", "one", "4611686018427387904", "WITHVALUES"],
+        &["HRANDFIELD", "one", "-4611686018427387904", "WITHVALUES"],
+    ];
+    const TRANSACTIONS: &[u8] =
+        b"+OK\r\n+OK\r\n:1\r\n:1\r\n:1\r\n:5\r\n:1\r\n:1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
+*37\r\n:0\r\n+OK\r\n:0\r\n:1\r\n$2\r\n10\r\n*3\r\n$2\r\n10\r\n$-1\r\n$2\r\n\
+10\r\n:1\r\n:2\r\n:1\r\n*2\r\n$1\r\nf\r\n$5\r\nvalue\r\n*1\r\n$1\r\nf\r\n*1\r\n\
+$5\r\nvalue\r\n:8\r\n:5\r\n$3\r\n0.1\r\n$3\r\n0.3\r\n$3\r\n0.3\r\n$1\r\nf\r\n\
+*2\r\n$1\r\nf\r\n$5\r\nvalue\r\n*4\r\n$1\r\nf\r\n$5\r\nvalue\r\n$1\r\nf\r\n\
+$5\r\nvalue\r\n*0\r\n:1\r\n:0\r\n$-1\r\n*2\r\n$-1\r\n$-1\r\n:0\r\n:0\r\n:0\r\n\
+*0\r\n$-1\r\n*0\r\n:2\r\n*2\r\n$0\r\n\r\n$3\r\nv\x00x\r\n:0\r\n:3\r\n$3\r\n\
+3.5\r\n:4102444800000\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR wrong number of arguments for 'hset' command\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR wrong number of arguments for 'hmset' command\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR hash value is not an integer\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR increment or decrement would overflow\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR increment or decrement would overflow\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is not a valid float\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is NaN or Infinity\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR hash value is not a float\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR increment would produce NaN or Infinity\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is not an integer or out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n\
++OK\r\n+QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR value is out of range\r\n\
++OK\r\n+QUEUED\r\n*1\r\n-ERR value is out of range\r\n";
+    const SCRIPTS: &[u8] =
+        b"+OK\r\n+OK\r\n:1\r\n:1\r\n:1\r\n:5\r\n:1\r\n:1\r\n:0\r\n+OK\r\n:0\r\n:1\r\n\
+$2\r\n10\r\n*3\r\n$2\r\n10\r\n$-1\r\n$2\r\n10\r\n:1\r\n:2\r\n:1\r\n*2\r\n$1\r\n\
+f\r\n$5\r\nvalue\r\n*1\r\n$1\r\nf\r\n*1\r\n$5\r\nvalue\r\n:8\r\n:5\r\n$3\r\n\
+0.1\r\n$3\r\n0.3\r\n$3\r\n0.3\r\n$1\r\nf\r\n*2\r\n$1\r\nf\r\n$5\r\nvalue\r\n\
+*4\r\n$1\r\nf\r\n$5\r\nvalue\r\n$1\r\nf\r\n$5\r\nvalue\r\n*0\r\n:1\r\n:0\r\n\
+$-1\r\n*2\r\n$-1\r\n$-1\r\n:0\r\n:0\r\n:0\r\n*0\r\n$-1\r\n*0\r\n:2\r\n*2\r\n\
+$0\r\n\r\n$3\r\nv\x00x\r\n:0\r\n:3\r\n$3\r\n3.5\r\n:4102444800000\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR wrong number of arguments for 'hset' command\r\n\
+-ERR wrong number of arguments for 'hmset' command\r\n\
+-ERR value is not an integer or out of range\r\n\
+-ERR hash value is not an integer\r\n\
+-ERR increment or decrement would overflow\r\n\
+-ERR increment or decrement would overflow\r\n\
+-ERR value is not a valid float\r\n-ERR value is NaN or Infinity\r\n\
+-ERR hash value is not a float\r\n\
+-ERR increment would produce NaN or Infinity\r\n\
+-ERR value is not an integer or out of range\r\n\
+-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n\
+-ERR value is not an integer or out of range\r\n-ERR syntax error\r\n\
+-ERR syntax error\r\n-ERR value is out of range\r\n\
+-ERR value is out of range\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    transactions.push(resp(&["MULTI"]));
+    for request in VALID {
+        transactions.push(resp(request));
+    }
+    transactions.push(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.push(resp(&["MULTI"]));
+        transactions.push(resp(request));
+        transactions.push(resp(&["EXEC"]));
+    }
+    let mut scripts: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.push(resp(&call));
+        }
+    }
+    for (requests, expected, what) in [
+        (transactions, TRANSACTIONS, "the transactions"),
+        (scripts, SCRIPTS, "the scripts"),
+    ] {
+        client
+            .write_all(&requests.concat())
+            .expect("send the requests");
+        expect_replies(&mut client, expected, what);
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn records the hashes commands run inside a transaction's EXEC and a script as Redis 7.0.15 propagates them over hashes found expired: a read records the removal alone, a write the removal and then itself, HINCRBYFLOAT as HSET with the sum, inside the transaction's MULTI and EXEC, and a script whose one effect is a removal records it bare. The expected
+/// records are redis-server 7.0.15's (Firn-wf probe run 37504720562).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_hashes_commands_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["HSET", "h1", "f", "1"],
+            &["PEXPIREAT", "h1", "1"],
+            &["HSET", "h2", "f", "2"],
+            &["PEXPIREAT", "h2", "1"],
+            &["HSET", "h3", "f", "3"],
+            &["PEXPIREAT", "h3", "1"],
+            &["HSET", "h4", "f", "4"],
+            &["PEXPIREAT", "h4", "1"],
+        ],
+        &[
+            &["MULTI"],
+            &["HGET", "h1", "f"],
+            &["HSET", "h2", "g", "v"],
+            &["HINCRBYFLOAT", "h3", "f", "1.5"],
+            &["EXEC"],
+            &["EVAL", "return redis.call('HDEL', KEYS[1], 'f')", "1", "h4"],
+            &["HGETALL", "h2"],
+            &["HGETALL", "h3"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n$-1\r\n:1\r\n$3\r\n1.5\r\n:0\r\n*2\r\n$1\r\ng\r\n$1\r\nv\r\n*2\r\n$1\r\nf\r\n$3\r\n1.5\r\n:2\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nh1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nh2\r\n*4\r\n$4\r\nHSET\r\n$2\r\nh2\r\n$1\r\ng\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\nh3\r\n*4\r\n$4\r\nHSET\r\n$2\r\nh3\r\n$1\r\nf\r\n$3\r\n1.5\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$3\r\nDEL\r\n$2\r\nh4\r\n",
+    );
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
