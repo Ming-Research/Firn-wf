@@ -4,10 +4,11 @@
 
 Can a server written in Whitefoot run Redis's own benchmark and lead Redis and
 its competitors on it, and what language, library, compiler or runtime gaps
-does reaching that expose? The server is `apps/firn`, which grows out of the
+does reaching that expose? The server is `firn/` in this repository, which lived in
+Whitefoot's `apps/firn` until it moved to Firn-wf, and which grows out of the
 Redis subset of Experiments 7 and 8
-([SHARED.md](../io-model/SHARED.md#experiment-7-a-redis-subset),
-[TIME-AND-FILES.md](../io-model/TIME-AND-FILES.md)).
+([SHARED.md](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/investigations/io-model/SHARED.md#experiment-7-a-redis-subset),
+[TIME-AND-FILES.md](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/investigations/io-model/TIME-AND-FILES.md)).
 
 ## The owner's rulings
 
@@ -89,7 +90,7 @@ answers them.
 On the commands it has, measured against the competitors at depth 16 with
 16-byte values and keys drawn from 100,000, requests per second, two passes;
 the raw lines, with the exact settings, are
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv):
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv):
 
 | Server CPUs | Test | Subset | Redis | Valkey | Valkey, I/O threads | Dragonfly |
 |---|---|---|---|---|---|---|
@@ -113,7 +114,7 @@ slowest there.
    criteria and close what they find.
 2. **Deployment.** Complete standalone application workloads under the
    [deployment direction](#deployment-direction), with the remaining work
-   tracked under [firn in the TODO](../../../docs/todo.md#firn).
+   tracked under [firn in the TODO](../../../docs/todo.md).
 3. **Scaling.** The keyspace past two cores, measured on the i9-14900K.
 
 ## Deployment direction
@@ -155,14 +156,14 @@ Redis's Lua and complete script requests with Redis; use LuaJIT as an
 additional comparison with its mode reported, not a JIT requirement for
 release. A result that exposes a Whitefoot gap is evidence to address that
 gap, not a reason to substitute native Lua and credit the result to
-Whitefoot. The [Lua TODO](../../../docs/todo.md#firn) holds the unfinished
+Whitefoot. The [Lua TODO](../../../docs/todo.md) holds the unfinished
 work; no VM representation, GC algorithm or locking mechanism is selected
 here.
 
 ## Design of the program
 
-`apps/firn` is a module program;
-[its README](../../../apps/firn/README.md) lists its modules. Each choice below keeps
+`firn/` is a module program;
+[its README](../../../firn/README.md) lists its modules. Each choice below keeps
 Redis's observable behavior on the suite's commands and says what it refused.
 
 - **Keys and values are byte strings of their own length**, where the
@@ -257,7 +258,7 @@ Redis's observable behavior on the suite's commands and says what it refused.
   decides on its idle limit. Fields in the keyspace's `Meta` were refused:
   `Meta` is one lock unit with the expiry queue and the append-only file's
   pending bytes
-  ([state locks](../../../design/compiler/waiting-contexts/state-locks.md)),
+  ([state locks](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/design/compiler/waiting-contexts/state-locks.md)),
   so each of those reads would wait on every statement that logs a change or
   queues an expiry.
 - **Each connection keeps its own idle deadline**: while a limit is set, a
@@ -283,7 +284,7 @@ Redis's observable behavior on the suite's commands and says what it refused.
 - **`FLUSHALL` and `FLUSHDB` exchange the table whole for an empty one**, and
   the expiry queue for an empty one, with `swap` in one atomic statement,
   which exchanges the tables' entries
-  ([state locks](../../../design/compiler/waiting-contexts/state-locks.md)),
+  ([state locks](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/design/compiler/waiting-contexts/state-locks.md)),
   rather than removing each key inside the statement. The old table is
   released by the command's own context when the command returns, where
   Redis's `ASYNC` frees it in another thread; no statement waits on that
@@ -357,7 +358,7 @@ The *Correct* criterion rests on four observations:
 A build a result names by commit is on the branch. A refused variant's code
 was not kept; its section describes it, and the drivers that ran the rounds
 were scratch scripts whose settings each block of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv)
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv)
 states in its header.
 
 ## Closing the gaps
@@ -366,7 +367,7 @@ states in its header.
 
 One pass of the default suite on two server CPUs, firn at `e1e37b100`
 against Redis and Dragonfly (the `quick look` lines of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv)),
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv)),
 found firn at depth 16 ahead of the faster of Redis and Dragonfly on `GET`,
 the pops, the lists' pushes and ranges and `PING_INLINE`, level with it on
 `PING_MBULK` and `SADD`, and behind on the commands that store: `SET`,
@@ -404,7 +405,7 @@ keyspace on most requests.
 ### The hash map's growth: results
 
 Requests per second, rounds 1 to 3 (the `growth` lines of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv);
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv);
 the third round of *presized* and *new* ran after the third of *old* rather
 than interleaved with it, since the first run was stopped by a time limit):
 
@@ -458,7 +459,7 @@ to every key and member and would buy nothing measured.
 ### Keys that carry their hash: the first two runs
 
 Requests per second, medians of five interleaved rounds (the `keyed` lines
-of [firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv),
+of [firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv),
 rounds `round` and `rerun`):
 
 | Test | run | hashed | keyed | control | keyed / hashed | control / hashed |
@@ -513,7 +514,7 @@ above 0.90 of *keyed* on all three. Otherwise it is reverted.
 ### The third run, and one atomic statement per read: results
 
 Depth 16, medians of five interleaved rounds (the `third` lines of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv)):
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv)):
 
 | Test | hashed | keyed | control | batched | keyed / hashed | control / hashed | batched / keyed |
 |---|---|---|---|---|---|---|---|
@@ -561,7 +562,7 @@ has been reduced.
 
 One pass of the suite with the keyed build against Redis and Dragonfly on
 two server CPUs and on one (the `quick look 2` lines of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv)).
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv)).
 Its runs are short, 300,000 requests at depth 1 and 1,500,000 at depth 16,
 so the benchmark's 250 ms clock step is a share of a rate that grows with the
 rate: at most 10% at depth 1 and 25% at depth 16 (`PING_MBULK`), 1.3 to 5.6%
@@ -611,7 +612,7 @@ server after its `SET` test is recorded beside the rates.
 ### Short strings inside the keyspace: results
 
 Depth 16, the `inline` lines of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv):
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv):
 medians of the five rounds' rates, and medians of each round's ratio to that
 round's *keyed*:
 
@@ -642,7 +643,7 @@ on the cache line the lock itself lives on.
 One pass as the second look, with the inline build, runs of about six
 seconds (600,000 requests at depth 1 and 5,000,000 at depth 16) and without
 the list ranges, which led by more than twice (the `quick look 3` lines of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv)).
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv)).
 At depth 16 on two CPUs every storing and reading command now leads by 1.47
 to 2.10 times except `ZADD`, at 1.25, and `SPOP`, at 1.17; `PING_INLINE`
 reached the same rate as Dragonfly, 1,537,515, which suggests that the
@@ -717,7 +718,7 @@ any test; otherwise it is reverted.
 ### List elements inline, and maps that shrink: results
 
 Medians of the five rounds (the `ls` lines of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv)):
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv)):
 *inline*'s rate, and each line's ratio to that round's *inline*. A first run
 stopped in its second round when a server could not bind its port: the port
 lay in the kernel's range for outgoing connections, where a client
@@ -760,7 +761,7 @@ depth 16, where `SPOP` already meets them.
 ### One descent for a rank known to be absent: results
 
 Medians of five rounds (the `ins` lines of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv)):
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv)):
 *inline*'s rate, and each line's ratio to that round's *inline*.
 
 | Test | inline | insert | control |
@@ -782,7 +783,7 @@ this measurement does not bear on it.
 ### The full suite: results
 
 The criteria's measurement is `redis-bench.sh suite` (the `suite` lines of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv)):
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv)):
 firn at `636cdacc8`, whose binary a rebuild of that commit's compiler, library
 and program reproduces byte for byte; three interleaved passes of the suite
 at depths 1 and 16, on two server CPUs against Redis, Valkey, Valkey with I/O
@@ -977,7 +978,7 @@ server CPUs of `PING_MBULK`, `SET`, `GET` and `INCR` at depths 16 and 1, the
 median ratio of the head's firn to the measured one's lies within 0.95 to
 1.05 on every test; otherwise each difference is reported. The rounds ran on
 the machine the second restart left (the `head` lines of
-[firn-samples.csv](../../experiments/io-completion-bench/firn-samples.csv)),
+[firn-samples.csv](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/experiments/io-completion-bench/firn-samples.csv)),
 with 12,000,000 requests at depth 16 and 1,300,000 at depth 1, runs of five
 to seven seconds, where a clock step is 4 to 5% of a rate. The rates are
 medians of the three rounds; each round's ratio compares the two lines of
