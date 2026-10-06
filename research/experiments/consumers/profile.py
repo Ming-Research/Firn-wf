@@ -32,8 +32,9 @@ OPTIONS = {
 }
 
 # A MONITOR line: a timestamp, the database and the source in brackets, then
-# the command's words, each quoted with backslash escapes.
-LINE = re.compile(r'^\d+\.\d+ \[\d+ ([^\]]+)\] (.*)$')
+# the command's words, each quoted with backslash escapes. The source has no
+# space but may hold brackets itself, as an IPv6 address does: [::1]:5000.
+LINE = re.compile(r'^\d+\.\d+ \[\d+ ([^ ]+)\] (.*)$')
 WORD = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 
