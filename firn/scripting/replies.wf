@@ -1,0 +1,575 @@
+alias Value = halo::value::Value;
+alias Vm = halo::vm::Vm;
+alias Client = pkg::protocol::Client;
+alias reply_word = pkg::protocol::reply_word;
+alias reply_byte = pkg::protocol::reply_byte;
+alias reply_nil = pkg::protocol::reply_nil;
+alias reply_integer = pkg::protocol::reply_integer;
+alias reply_array = pkg::protocol::reply_array;
+alias reply_map = pkg::protocol::reply_map;
+alias reply_set = pkg::protocol::reply_set;
+alias reply_bulk_input = pkg::protocol::reply_bulk_input;
+alias reply_error = pkg::protocol::reply_error;
+
+fn value_reply(vm: &Vm, value: Value, client: &Client, mode: u8) -> r: unit reads(vm), writes(client) {
+  let bytes = box_slots_new::<u8>(capacity: 0_u64);
+  value_bytes(vm: vm, v: value, out: &bytes);
+  let n = bytes.inner.len;
+  if mode == 3_u8 {
+    for (i in 0_u64..n) {
+      let b = bytes.inner[i];
+      let cr = b == 13_u8;
+      let lf = b == 10_u8;
+      if bor(cr, lf) {
+        set bytes.inner[i] = 32_u8;
+      }
+    }
+  }
+  let bulk = mode == 0_u8;
+  let big = mode == 3_u8;
+  let typed = client^.resp == 3_u64;
+  if band(big, typed) {
+    reply_byte(client: client, value: 40_u8);
+    for @digits (i in 0_u64..n) {
+      let b = bytes.inner[i];
+      reply_byte(client: client, value: b);
+    }
+    reply_word(client: client, word: &replies_text_0[0_u64..2_u64]);
+    return unit;
+  }
+  if bor(bulk, big) {
+    reply_bulk_input(client: client, input: &bytes.inner[0_u64..n], start: 0_u64, length: n);
+  } else {
+    if mode == 1_u8 {
+      reply_byte(client: client, value: 45_u8);
+    } else {
+      reply_byte(client: client, value: 43_u8);
+    }
+    let end = n;
+    for (i in 0_u64..n) {
+      if bytes.inner[i] == 0_u8 {
+        set end = i;
+        break;
+      }
+    }
+    if mode == 1_u8 {
+      loop {
+        if end == 0_u64 {
+          break;
+        }
+        let last = end - 1_u64;
+        if last < bytes.inner.len {
+          let b = bytes.inner[last];
+          let cr = b == 13_u8;
+          let lf = b == 10_u8;
+          if bor(cr, lf) {
+            set end = last;
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+    }
+    for (i in 0_u64..end) {
+      if i < bytes.inner.len {
+        let b = bytes.inner[i];
+        let lf = b == 10_u8;
+        let cr = b == 13_u8;
+        if bor(lf, cr) {
+          set b = 32_u8;
+        }
+        reply_byte(client: client, value: b);
+      }
+    }
+    reply_word(client: client, word: &replies_text_0[0_u64..2_u64]);
+  }
+  return unit;
+}
+
+fn field(vm: &Vm, table: Value, name: &[u8]) -> v: Value reads(name), writes(vm) {
+  let key = literal(vm: vm, text: name);
+  return get(vm: vm, table: table, key: key);
+}
+
+fn reply_bool(client: &Client, value: Bool) -> r: unit writes(client) {
+  doc "Redis's addReplyBool: 1 or 0 under RESP2, RESP3's true or false otherwise.";
+  if client^.resp == 3_u64 {
+    if value {
+      reply_word(client: client, word: &replies_true[0_u64..4_u64]);
+    } else {
+      reply_word(client: client, word: &replies_false[0_u64..4_u64]);
+    }
+    return unit;
+  }
+  if value {
+    reply_integer(client: client, value: 1_i64);
+  } else {
+    reply_integer(client: client, value: 0_i64);
+  }
+  return unit;
+}
+
+fn verbatim_reply(vm: &Vm, text: Value, format: Value, client: &Client) -> r: unit reads(vm), writes(client) {
+  doc "Redis's addReplyVerbatim: a bulk string under RESP2; under RESP3 a verbatim string whose format is the format's first three bytes, read as a C string up to a zero byte, with spaces for the rest.";
+  let bytes = box_slots_new::<u8>(capacity: 0_u64);
+  value_bytes(vm: vm, v: text, out: &bytes);
+  let n = bytes.inner.len;
+  if client^.resp != 3_u64 {
+    reply_bulk_input(client: client, input: &bytes.inner[0_u64..n], start: 0_u64, length: n);
+    return unit;
+  }
+  let shape = box_slots_new::<u8>(capacity: 0_u64);
+  value_bytes(vm: vm, v: format, out: &shape);
+  let framed = n +sat 4_u64;
+  reply_byte(client: client, value: 61_u8);
+  let digits = box_slots_new::<u8>(capacity: 0_u64);
+  decimal(out: &digits, n: framed);
+  let d = digits.inner.len;
+  reply_word(client: client, word: &digits.inner[0_u64..d]);
+  reply_word(client: client, word: &replies_text_0[0_u64..2_u64]);
+  let ended = False();
+  for @format (i in 0_u64..3_u64) {
+    let b = 32_u8;
+    if i < shape.inner.len {
+      if shape.inner[i] == 0_u8 {
+        set ended = True();
+      }
+      if bnot(ended) {
+        set b = shape.inner[i];
+      }
+    }
+    reply_byte(client: client, value: b);
+  }
+  reply_byte(client: client, value: 58_u8);
+  reply_word(client: client, word: &bytes.inner[0_u64..n]);
+  reply_word(client: client, word: &replies_text_0[0_u64..2_u64]);
+  return unit;
+}
+
+struct Pending {
+  value: Value;
+  height: u64;
+}
+
+fn pend(work: &Box<Slots<Pending>>, value: Value, height: u64) -> r: unit writes(work) {
+  doc "Adds a value to be written, at the height of Lua's stack Redis would convert it at.";
+  if work^.inner.len == work^.inner.cap {
+    let room = work^.inner.cap +sat 1_u64;
+    let twice = work^.inner.cap +sat work^.inner.cap;
+    let target = imax(room, twice);
+    grow(cell: work, capacity: target);
+  }
+  if work^.inner.len < work^.inner.cap {
+    let item = Pending(value: value, height: height);
+    place_back(window: &work^.inner, value: item);
+  }
+  return unit;
+}
+
+fn lua_to_protocol(vm: &Vm, value: Value, client: &Client, resp: u8) -> r: unit writes(vm), writes(client) {
+  doc "Redis 7.0.15's luaReplyToRedisReply: the script's value written to the requesting client in the client's protocol, resp being the script's own, which redis.setresp selects. Redis converts a table's elements by recursion on Lua's stack and answers ERR reached lua stack limit for a value it would reach with its stack within four slots of Lua's 8,000, so an array that contains itself ends after 7,995 levels and a map or a set after 2,665; firn keeps the values still to write on a stack of its own, each with the height Redis would reach it at, so that a script's nesting cannot exhaust the stack firn runs on.";
+  let work = box_slots_new::<Pending>(capacity: 16_u64);
+  let children = box_slots_new::<Pending>(capacity: 16_u64);
+  pend(work: &work, value: value, height: lua_reply_height);
+  loop @values {
+    if work.inner.len > 0_u64 {
+      let item = take_back(window: &work.inner);
+      let reach = item.height +sat 4_u64;
+      if reach > lua_stack_limit {
+        reply_error(client: client, word: &replies_stack_limit[0_u64..27_u64]);
+      } else {
+        loop @clearing {
+          if children.inner.len > 0_u64 {
+            let dropped = take_back(window: &children.inner);
+          } else {
+            break @clearing;
+          }
+        }
+        write_value(vm: vm, value: item.value, height: item.height, client: client, resp: resp, children: &children);
+        let n = children.inner.len;
+        for @reversed (i in 0_u64..n) {
+          let back = n -wrap i;
+          let at = back -wrap 1_u64;
+          if at < children.inner.len {
+            let child = children.inner[at];
+            pend(work: &work, value: child.value, height: child.height);
+          }
+        }
+      }
+    } else {
+      break @values;
+    }
+  }
+  return unit;
+}
+
+fn write_value(vm: &Vm, value: Value, height: u64, client: &Client, resp: u8, children: &Box<Slots<Pending>>) -> r: unit writes(vm), writes(client), writes(children) {
+  doc "Writes one value as luaReplyToRedisReply does, and for an array, a map or a set its header alone, adding its elements to children in the order Redis writes them, each at the height of Lua's stack Redis converts it at: an array's element one above the table, a map's key four above and its value three, a set's member three.";
+  match value {
+    Num(n: x) => {
+      let n = ftrunc(x);
+      let integer = -9223372036854775808_i64;
+      if cvt.defined::<f64, i64>(n) {
+        set integer = cvt::<f64, i64>(n);
+      }
+      reply_integer(client: client, value: integer);
+    }
+    Str(..) => {
+      value_reply(vm: vm, value: value, client: client, mode: 0_u8);
+    }
+    True() => {
+      if resp == 2_u8 {
+        reply_integer(client: client, value: 1_i64);
+      } else {
+        let flag = True();
+        reply_bool(client: client, value: flag);
+      }
+    }
+    False() => {
+      if resp == 2_u8 {
+        reply_nil(client: client);
+      } else {
+        let flag = False();
+        reply_bool(client: client, value: flag);
+      }
+    }
+    Tab(..) => {
+      let err = field(vm: vm, table: value, name: &replies_text_1[0_u64..3_u64]);
+      if is_string(v: err) {
+        value_reply(vm: vm, value: err, client: client, mode: 1_u8);
+        return unit;
+      }
+      let ok = field(vm: vm, table: value, name: &replies_text_2[0_u64..2_u64]);
+      if is_string(v: ok) {
+        value_reply(vm: vm, value: ok, client: client, mode: 2_u8);
+        return unit;
+      }
+      let double = field(vm: vm, table: value, name: &replies_text_3[0_u64..6_u64]);
+      match double {
+        Num(n: x) => {
+          pkg::scores::reply_score(client: client, score: x);
+          return unit;
+        }
+        Nil() => {
+        }
+        False() => {
+        }
+        True() => {
+        }
+        Str(..) => {
+        }
+        Tab(..) => {
+        }
+        Fun(..) => {
+        }
+        Builtin(..) => {
+        }
+      }
+      let big = field(vm: vm, table: value, name: &replies_text_4[0_u64..10_u64]);
+      if is_string(v: big) {
+        value_reply(vm: vm, value: big, client: client, mode: 3_u8);
+        return unit;
+      }
+      let verb = field(vm: vm, table: value, name: &replies_text_5[0_u64..15_u64]);
+      let format = field(vm: vm, table: verb, name: &replies_text_6[0_u64..6_u64]);
+      let text = field(vm: vm, table: verb, name: &replies_text_7[0_u64..6_u64]);
+      let is_format = is_string(v: format);
+      let is_text = is_string(v: text);
+      if band(is_format, is_text) {
+        verbatim_reply(vm: vm, text: text, format: format, client: client);
+        return unit;
+      }
+      let map = field(vm: vm, table: value, name: &replies_text_8[0_u64..3_u64]);
+      let set_table = field(vm: vm, table: value, name: &replies_text_9[0_u64..3_u64]);
+      let map_kind = kind(v: map);
+      let mapped = map_kind == 4_u8;
+      let set_kind = kind(v: set_table);
+      let setted = set_kind == 4_u8;
+      if bor(mapped, setted) {
+        let table = set_table;
+        if mapped {
+          set table = map;
+        }
+        let count = 0_u64;
+        let key = Value::Nil();
+        loop {
+          match halo::heap::table_next(heap: &vm^.heap, t: table, key: key) {
+            Ok(value: found) => {
+              match found {
+                Some(value: pair) => {
+                  set key = pair.key;
+                  set count = count +sat 1_u64;
+                }
+                None() => {
+                  break;
+                }
+              }
+            }
+            Err(..) => {
+              break;
+            }
+          }
+        }
+        if mapped {
+          reply_map(client: client, pairs: count);
+        } else {
+          reply_set(client: client, count: count);
+        }
+        set key = Value::Nil();
+        loop {
+          match halo::heap::table_next(heap: &vm^.heap, t: table, key: key) {
+            Ok(value: found) => {
+              match found {
+                Some(value: pair) => {
+                  set key = pair.key;
+                  let member = height +sat 3_u64;
+                  if mapped {
+                    let keyed = height +sat 4_u64;
+                    pend(work: children, value: key, height: keyed);
+                    pend(work: children, value: pair.val, height: member);
+                  } else {
+                    pend(work: children, value: key, height: member);
+                  }
+                }
+                None() => {
+                  break;
+                }
+              }
+            }
+            Err(..) => {
+              break;
+            }
+          }
+        }
+        return unit;
+      }
+      let count = 0_u64;
+      loop {
+        let index = count +sat 1_u64;
+        let x = cvt.nearest::<u64, f64>(index);
+        let key = num(x: x);
+        let v = get(vm: vm, table: value, key: key);
+        if is_nil(v: v) {
+          break;
+        }
+        set count = index;
+      }
+      reply_array(client: client, count: count);
+      for (i in 0_u64..count) {
+        let index = i + 1_u64;
+        let x = cvt.nearest::<u64, f64>(index);
+        let key = num(x: x);
+        let v = get(vm: vm, table: value, key: key);
+        let element = height +sat 1_u64;
+        pend(work: children, value: v, height: element);
+      }
+    }
+    Nil() => {
+      reply_nil(client: client);
+    }
+    Fun(..) => {
+      reply_nil(client: client);
+    }
+    Builtin(..) => {
+      reply_nil(client: client);
+    }
+  }
+  return unit;
+}
+
+fn command_reply(vm: &Vm, bytes: &[u8], start: u64, end: u64, resp: u8) -> v: Value reads(bytes), writes(vm) {
+  doc "Convert exactly the captured RESP byte range by Redis redisProtocolToLuaType rules. The host records the connection reply start, calls a body, converts [start,end), then rewinds its write offset; prior and subsequent replies are outside this view.";
+  if start <= end {
+    if end <= bytes^.len {
+      let pos = Position(at: 0_u64);
+      return protocol_to_lua(vm: vm, bytes: &bytes^[start..end], pos: &pos, resp: resp);
+    }
+  }
+  return Value::Nil();
+}
+
+fn protocol_error(vm: &Vm, message: Value) -> v: Value writes(vm) {
+  let table = error_reply_value(vm: vm, v: message);
+  let key = literal(vm: vm, text: &error_stats_field[0_u64..25_u64]);
+  let yes = Value::True();
+  raw(vm: vm, table: table, key: key, value: yes);
+  return table;
+}
+
+const error_stats_field: Array<u8, 25> = "ignore_error_stats_update";
+
+struct Position {
+  at: u64;
+}
+
+fn protocol_to_lua(vm: &Vm, bytes: &[u8], pos: &Position, resp: u8) -> v: Value reads(bytes), writes(vm), writes(pos) {
+  doc "Redis redisProtocolToLuaType for RESP command bytes, including RESP3 structured reply forms. Command replies remain bytes until this boundary.";
+  let tag = pkg::bytes::byte_at(input: bytes, index: pos^.at);
+  set pos^.at = pos^.at +sat 1_u64;
+  let start = pos^.at;
+  loop {
+    if pos^.at >= bytes^.len {
+      break;
+    }
+    let next_byte = pkg::bytes::byte_at(input: bytes, index: pos^.at);
+    if next_byte == 13_u8 {
+      break;
+    }
+    set pos^.at = pos^.at +sat 1_u64;
+  }
+  let end = pos^.at;
+  set pos^.at = pos^.at +sat 2_u64;
+  if start <= end {
+    if end <= bytes^.len {
+      let status = tag == 43_u8;
+      let error = tag == 45_u8;
+      if bor(status, error) {
+        let text = literal(vm: vm, text: &bytes^[start..end]);
+        if tag == 43_u8 {
+          return reply_table(vm: vm, field: &replies_text_10[0_u64..2_u64], v: text);
+        }
+        return protocol_error(vm: vm, message: text);
+      }
+      if tag == 95_u8 {
+        return Value::Nil();
+      }
+      if tag == 35_u8 {
+        let b = pkg::bytes::byte_at(input: bytes, index: start);
+        if b == 116_u8 {
+          return Value::True();
+        }
+        return Value::False();
+      }
+      if tag == 44_u8 {
+        let x = 0.0_f64;
+        match halo::number::str2number(bytes: &bytes^[start..end]) {
+          Some(value: number) => {
+            set x = number;
+          }
+          None() => {
+          }
+        }
+        let value = num(x: x);
+        return reply_table(vm: vm, field: &replies_text_3[0_u64..6_u64], v: value);
+      }
+      if tag == 40_u8 {
+        let value = literal(vm: vm, text: &bytes^[start..end]);
+        return reply_table(vm: vm, field: &replies_text_4[0_u64..10_u64], v: value);
+      }
+      let length = end - start;
+      let parsed = pkg::bytes::read_integer(input: bytes, start: start, length: length);
+      if tag == 58_u8 {
+        let x = cvt.nearest::<i64, f64>(parsed.value);
+        return num(x: x);
+      }
+      if parsed.value < 0_i64 {
+        return Value::False();
+      }
+      let n = cvt.wrap::<i64, u64>(parsed.value);
+      let bulk = tag == 36_u8;
+      let blob_error = tag == 33_u8;
+      let verbatim = tag == 61_u8;
+      let string_tag = bor(bulk, blob_error);
+      if bor(string_tag, verbatim) {
+        let first = pos^.at;
+        let last = first +sat n;
+        set pos^.at = last +sat 2_u64;
+        if first <= last {
+          if last <= bytes^.len {
+            let value = literal(vm: vm, text: &bytes^[first..last]);
+            if blob_error {
+              return protocol_error(vm: vm, message: value);
+            }
+            if verbatim {
+              let form_end = first +sat 3_u64;
+              let text_start = first +sat 4_u64;
+              if form_end <= text_start {
+                if text_start <= last {
+                  let format = literal(vm: vm, text: &bytes^[first..form_end]);
+                  let text = literal(vm: vm, text: &bytes^[text_start..last]);
+                  let table = reply_table(vm: vm, field: &replies_text_6[0_u64..6_u64], v: format);
+                  let key = literal(vm: vm, text: &replies_text_7[0_u64..6_u64]);
+                  raw(vm: vm, table: table, key: key, value: text);
+                  return reply_table(vm: vm, field: &replies_text_5[0_u64..15_u64], v: table);
+                }
+              }
+            }
+            return value;
+          }
+        }
+      }
+      let mapped = tag == 37_u8;
+      let setted = tag == 126_u8;
+      let attribute = tag == 124_u8;
+      let associated = bor(mapped, attribute);
+      if bor(associated, setted) {
+        let table = halo::heap::new_table(heap: &vm^.heap, asize: 0_u32, hsize: 0_u32);
+        for (i in 0_u64..n) {
+          let key = protocol_to_lua(vm: vm, bytes: bytes, pos: pos, resp: resp);
+          let value = Value::True();
+          if associated {
+            set value = protocol_to_lua(vm: vm, bytes: bytes, pos: pos, resp: resp);
+          }
+          if bnot(attribute) {
+            raw(vm: vm, table: table, key: key, value: value);
+          }
+        }
+        if attribute {
+          return protocol_to_lua(vm: vm, bytes: bytes, pos: pos, resp: resp);
+        }
+        if mapped {
+          return reply_table(vm: vm, field: &replies_text_8[0_u64..3_u64], v: table);
+        }
+        return reply_table(vm: vm, field: &replies_text_9[0_u64..3_u64], v: table);
+      }
+      if tag == 42_u8 {
+        let table = halo::heap::new_table(heap: &vm^.heap, asize: 0_u32, hsize: 0_u32);
+        for (i in 0_u64..n) {
+          let item = protocol_to_lua(vm: vm, bytes: bytes, pos: pos, resp: resp);
+          let index = i + 1_u64;
+          let x = cvt.nearest::<u64, f64>(index);
+          let key = num(x: x);
+          raw(vm: vm, table: table, key: key, value: item);
+        }
+        return table;
+      }
+    }
+  }
+  return Value::Nil();
+}
+
+const replies_text_0: Array<u8, 2> = "\r\n";
+
+const replies_text_1: Array<u8, 3> = "err";
+
+const replies_text_2: Array<u8, 2> = "ok";
+
+const replies_text_3: Array<u8, 6> = "double";
+
+const replies_text_4: Array<u8, 10> = "big_number";
+
+const replies_text_5: Array<u8, 15> = "verbatim_string";
+
+const replies_text_6: Array<u8, 6> = "format";
+
+const replies_text_7: Array<u8, 6> = "string";
+
+const replies_text_8: Array<u8, 3> = "map";
+
+const replies_text_9: Array<u8, 3> = "set";
+
+const replies_text_10: Array<u8, 2> = "ok";
+
+const replies_text_11: Array<u8, 3> = "err";
+
+const replies_true: Array<u8, 4> = "#t\r\n";
+
+const replies_false: Array<u8, 4> = "#f\r\n";
+
+const replies_stack_limit: Array<u8, 27> = "ERR reached lua stack limit";
+
+const lua_stack_limit: u64 = 8000_u64;
+
+const lua_reply_height: u64 = 2_u64;

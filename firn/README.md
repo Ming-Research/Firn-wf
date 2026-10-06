@@ -41,10 +41,27 @@ clients send on their own:
   `ZSCORE`, `ZMSCORE`, `ZCARD`, `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count,
   `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores
   read and written as Redis 7.0.15 reads and writes them;
+- scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
+  `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
+  has written nothing, running Lua 5.1 scripts on the Halo engine
+  of [Halo-wf](https://github.com/Ming-Research/Halo-wf), `deps/halo-wf`,
+  with Redis's `KEYS`, `ARGV`, `redis` library and reply conversions, in
+  either protocol. A compiled script is kept until `SCRIPT FLUSH`, as in
+  Redis 7.0.15. `redis.call` and `redis.pcall` run the commands written as
+  parts, those `MULTI` runs, inside the script's statement, through Halo's
+  resumable host call; any other command is answered with Redis's error for
+  an unknown one, noting that firn may not run it from scripts yet;
 - connection: `PING`, `ECHO`, `QUIT`, `AUTH`, `HELLO` with no version,
   version 2 or version 3, which switches the connection to RESP3, `SELECT 0`, firn
   having one database, and `CLIENT ID`, `CLIENT GETNAME`, `CLIENT SETNAME`
   and `CLIENT INFO`, described below;
+- transactions: `MULTI`, `EXEC` and `DISCARD`. `EXEC` runs the queued
+  commands in order in one atomic statement, their time frozen at its start,
+  for the commands written as parts: `GET`, `SET`, `INCR`, `DECR`, `INCRBY`,
+  `DECRBY`, `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`,
+  `EXPIRETIME`, `PEXPIRETIME` and `MSET`. Any other command sent inside a
+  transaction is queued, and `EXEC` then refuses the whole transaction;
+  `WATCH` is refused inside one and unknown outside;
 - server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which
   describe no command. `COMMAND DOCS` is answered as an unknown subcommand,
@@ -205,5 +222,9 @@ default.
   started;
 - `commands`: one file per kind of value, sorted sets' ranges in a second,
   the connection and server commands, and the dispatch;
+- `scripting`: `EVAL`, `EVALSHA` and `SCRIPT`, the Redis Lua environment
+  and the conversions between replies and Lua values; `script_pool` holds
+  the one Lua engine every script takes in turn and the registry of
+  scripts the keyspace shares;
 - `persistence`: the append-only file's writer and its replay;
 - `server`: connections, active expiry, the invocation's options and `main`.

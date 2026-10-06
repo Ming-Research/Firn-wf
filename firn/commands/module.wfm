@@ -4,4 +4,18 @@ alias Span = pkg::protocol::Span;
 alias Keyspace = pkg::store::Keyspace;
 alias Time = pkg::store::Time;
 
-public fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits doc "Answers one command, whose arguments are spans of the input, by appending its reply to the client's. A command that changes the keyspace does so in one atomic statement, which also appends the change to the append-only file's pending bytes when the keyspace keeps them. A connection that must authenticate first is answered NOAUTH for every command but AUTH, HELLO and QUIT, once the command is known and its arguments counted, as in Redis.";
+public fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits doc "Answers one command, whose arguments are spans of the input, by appending its reply to the client's. A command that changes the keyspace does so in one atomic statement, which also appends the change to the append-only file's pending bytes when the keyspace keeps them. A connection that must authenticate first is answered NOAUTH for every command but AUTH, HELLO and QUIT, once the command is known and its arguments counted, as in Redis.";
+
+public struct Transaction {
+  doc "One connection's MULTI state, as Redis 7.0.15 keeps it in the client: open between MULTI and EXEC or DISCARD; dirty once a command sent inside it was refused, and foreign once it queued a command firn does not run in transactions, either making EXEC abort it; and the commands queued so far, their arguments one after another in bytes, each argument's place in bytes in spans, and each command's count of arguments in counts.";
+  open: Bool;
+  dirty: Bool;
+  foreign: Bool;
+  bytes: Box<Slots<u8>>;
+  spans: Box<Slots<Span>>;
+  counts: Box<Slots<u64>>;
+}
+
+public fn transaction_new() -> made: Transaction pure doc "A connection's transaction state before any MULTI: closed, clean and empty.";
+
+public fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock, transaction: &Transaction) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock), writes(transaction) waits doc "Answers one command a connection sent as execute does, keeping the connection's transaction as Redis 7.0.15's MULTI, EXEC and DISCARD do: inside a transaction a command is queued, or refused so that EXEC aborts it, and EXEC runs the queued commands in order in one statement holding every key and the metadata, answering an array of their replies.";

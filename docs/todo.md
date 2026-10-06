@@ -28,10 +28,9 @@ written while firn lived in the Whitefoot repository; a path such as
   evidence meets that boundary:
   - Complete the selected clients' connection behavior, command
     metadata, ordinary pipelines, scans and application command gaps. Add
-    `MULTI`/`EXEC`/`DISCARD` and `WATCH`/`UNWATCH`, including queue-time and
-    execution-time errors, expiry/eviction invalidation and Redis's lack of
-    transaction rollback. Provide command semantics that transactions and
-    the Lua work below can compose without separately committing each call.
+    `WATCH`/`UNWATCH`, and write as parts the commands a selected consumer
+    queues or calls from a script that are not parts yet, since `EXEC` and
+    scripts run only those `held_kind` (`firn/commands/script.wf`) names.
   - Make AOF persistence usable through write/sync error handling, rewrite
     and orderly `SHUTDOWN`/signal handling; verify
     a practical data migration path. File replacement and signal delivery
@@ -98,19 +97,26 @@ written while firn lived in the Whitefoot repository; a path such as
   Redis scripting surface and application workloads have correctness and
   performance evidence, recording any remaining incompatibilities separately.
 
-- **A script can hold the whole keyspace without limit.** A firn script
-  runs inside one atomic statement holding every key and the keyspace's
-  metadata (`script_command` in `firn/commands/script.wf`), and the
-  first scripting version stops no script: one that loops forever stalls
-  every client and the append-only file's writer until firn is killed, where
-  Redis 7.0.15 answers other clients `BUSY` once `busy-reply-threshold`
-  (5 seconds) passes and lets `SCRIPT KILL` stop a script that has not
-  written. The change: count the engine's steps and, past the threshold,
-  answer other clients `BUSY` and accept `SCRIPT KILL` and `SHUTDOWN NOSAVE`,
-  which needs a way for the clients' contexts to run while the script's
-  statement holds the keyspace. Validate with Redis's `unit/scripting` busy
-  tests. Reopen when the Lua engine runs real scripts, before any deployment
-  that accepts scripts from clients it does not control.
+- **A busy script gets no BUSY reply, and one that has written cannot be
+  stopped.** A firn script runs in attempts, each in one atomic statement
+  holding every key and the keyspace's metadata (`eval` in
+  `firn/scripting/entry.wf`). `SCRIPT KILL` stops a script that has written
+  nothing at the end of its current attempt; one that has written runs to
+  its end holding the keyspace, so an endless one stalls every client and
+  the append-only file's writer until firn is killed. Redis 7.0.15 answers
+  other clients `BUSY` once `busy-reply-threshold` (`lua-time-limit`, 5
+  seconds) has passed, leaving them `SCRIPT KILL` and `SHUTDOWN NOSAVE`,
+  which stops even a script that has written. firn has no threshold: a
+  command that needs the keyspace waits for the attempt to end. Redis's
+  suite test `just EXEC and script timeout` waits for `BUSY` before it sends
+  `SCRIPT KILL`, so on firn it hangs until the suite's 120-second timeout
+  and its retry. The change: the pool records when the running script
+  began, a command that would take the keyspace answers `BUSY` past the
+  threshold, which adds a check of the pool to every such command, a cost to
+  measure on the 14900K first, and `SHUTDOWN NOSAVE` ends firn. Validate
+  with Redis's `unit/scripting` and `unit/multi` busy tests. Reopen before
+  any deployment that accepts scripts from clients it does not control, or
+  when the suite's time matters.
 - **Replay still differs from Redis's loader in two cases.** A file that
   does not parse, cannot be read or holds a block larger than the input
   window's ceiling now stops firn with status 4, as Redis 7.0.15 exits
@@ -158,7 +164,7 @@ written while firn lived in the Whitefoot repository; a path such as
   `COMMAND COUNT` report empty and `COMMAND DOCS`, `INFO`, `LIST` and
   `GETKEYS` answer as unknown subcommands; `KEYS` and `SCAN`, which can match
   with `glob_match` (`firn/bytes/bytes.wf`), `LMPOP` and the blocking list commands, `SSCAN`,
-  `MULTI` and `EXEC`, publish and subscribe, and a random hash seed; and
+  `WATCH`, publish and subscribe, and a random hash seed; and
   `RANDOMKEY`, `SORT`, `LCS`, `OBJECT`, `DUMP`, `RESTORE`, `MOVE`, `MIGRATE`,
   `WAIT`, `HSCAN`, `ZSCAN`, `ZRANGESTORE`, `ZRANDMEMBER`, `ZMPOP` and
   `BZMPOP`, `BZPOPMIN` and `BZPOPMAX`, and `ZDIFF`, `ZINTER`, `ZUNION`,
@@ -202,13 +208,26 @@ written while firn lived in the Whitefoot repository; a path such as
   where Redis wraps them in `MULTI` and `EXEC`, and no `SELECT 0`.** When
   one command propagates more than one record, a key it found expired and
   the command itself, or several expired keys, Redis 7.0.15 brackets them
-  in `MULTI` and `EXEC`; firn has no transactions to replay, so it writes
-  the records alone, which replays to the same state. Nor does firn, with
+  in `MULTI` and `EXEC`; firn writes such a command's records alone, which
+  replays to the same state. Nor does firn, with
   one database, write the `SELECT 0` Redis writes before its first record.
   `firn_records_its_writes_as_redis_propagates_them` compares firn's file
-  with Redis's but for both. The change: write each where Redis does. Reopen
-  when firn answers `MULTI` and `EXEC`, or `SELECT` with more than one
-  database.
+  with Redis's but for both. The change: write each where Redis does, as
+  `EXEC` already wraps a transaction's records. Reopen now for the brackets,
+  since firn answers `MULTI` and `EXEC` and replays them; the `SELECT 0`
+  waits for more than one database.
+
+- **firn reads the calendar clock once for each read of a connection,
+  where Redis reads it before each command.** `serve`
+  (`firn/server/server.wf`) reads the time once after a read and gives it to
+  every command of that read, `EXEC` and its queued commands among them;
+  Redis 7.0.15's `call` refreshes its cached time before each top-level
+  command. The difference shows only when a read's commands take long
+  enough for the clock to move, as a long pipeline can, and then in expiry
+  checks, relative deadlines and TTL replies. The change: read the clock
+  before each command, after measuring what the read costs per command.
+  Reopen when a consumer's commands depend on it or a measurement shows the
+  read is cheap.
 
 - **No case checks that the expiring context keeps a key through its
   expiry's millisecond.** `take_due` (`firn/store/store.wf`) leaves a

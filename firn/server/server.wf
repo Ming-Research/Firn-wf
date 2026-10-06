@@ -28,7 +28,8 @@ alias close_directory_write = std::fs::close_directory_write;
 alias close_listener = std::net::close_listener;
 alias close_receive = std::net::close_receive;
 alias close_send = std::net::close_send;
-alias execute = pkg::commands::execute;
+alias execute_client = pkg::commands::execute_client;
+alias transaction_new = pkg::commands::transaction_new;
 alias exit_status = std::process::exit_status;
 alias expire_batch = pkg::store::expire_batch;
 alias factory_share = std::io::factory_share;
@@ -259,6 +260,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   }
   let args = box_slots_new::<Span>(capacity: 16_u64);
   let input = input_new(capacity: 16384_u64);
+  let transaction = transaction_new();
   set client.id = id;
   set client.authenticated = bnot(required);
   set client.locked = required;
@@ -362,7 +364,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
         break @commands;
       }
       if parsed.state == 1_u64 {
-        execute(store: &store, input: bytes, args: &args, client: &client, env: &env, time: &time);
+        execute_client(store: &store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: &clock, transaction: &transaction);
         if client.closing {
           set closing = True();
           break @commands;
@@ -864,7 +866,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
     let read = read_time(wall: &wall_clock);
     let replaying = True();
     let time = Time(unix_ms: read.time.unix_ms, check: 0_u64, loading: replaying);
-    let loaded = replay(store: &root, factory: &handles, root: &cwd, name: name, name_length: name_length, time: &time);
+    let loaded = replay(store: &root, factory: &handles, root: &cwd, name: name, name_length: name_length, time: &time, clock: &clock);
     if loaded.stopped {
       set failed = True();
     } else {

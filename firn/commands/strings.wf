@@ -122,6 +122,11 @@ struct Counted {
   state: u64;
 }
 
+struct Delta {
+  state: u64;
+  value: i64;
+}
+
 struct StringOptions {
   flags: u64;
   amount: u64;
@@ -805,25 +810,47 @@ fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   atomic slots = &store^.keys[keys], m = &store^.meta {
     for @stored (at in 0_u64..keys.len) {
       let position = key_position(positions: &client^.key_metadata, index: at);
-      let lapsed = held_lapsed(slot: &slots^[at], now: time^.check);
+      let lapsed = mset_body(slot: &slots^[at], input: input, args: args, value_index: position, now: time^.check);
       if lapsed {
-        if logged {
-          let index = position -wrap 1_u64;
-          let place = key_bounds(input: input, args: args, index: index);
-          let key = &input^[place.start..place.end];
-          log_removal(log: &m^.log, key: key);
-        }
+        let index = position -wrap 1_u64;
+        let place = key_bounds(input: input, args: args, index: index);
+        let key = &input^[place.start..place.end];
+        let removal = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key);
       }
-      let value_span = arg(args: args, index: position);
-      let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
-      put_text(slot: &slots^[at], value: move value, expires: 0_u64);
     }
-    if logged {
-      log_command(log: &m^.log, input: input, args: args);
-    }
+    let recorded = mset_meta(log: &m^.log, logged: logged, input: input, args: args);
   }
   reply_ok(client: client);
   return unit;
+}
+
+fn mset_lapse_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, key: &[u8]) -> appended: u64 reads(key), writes(log) {
+  doc "MSET's metadata for one key after mset_body: when the entry it replaced had expired and the keyspace keeps a file, appends the removal as log_removal records it, as Redis propagates the removal when it overwrites such a key, and answers 1; otherwise 0.";
+  if lapsed {
+    if logged {
+      log_removal(log: log, key: key);
+      return 1_u64;
+    }
+  }
+  return 0_u64;
+}
+
+fn mset_meta(log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(input), reads(args), writes(log) {
+  doc "MSET's metadata after its work on every key: when the keyspace keeps a file, appends the command as it was sent and answers 1; otherwise 0.";
+  if logged {
+    log_command(log: log, input: input, args: args);
+    return 1_u64;
+  }
+  return 0_u64;
+}
+
+fn mset_body(slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, value_index: u64, now: u64) -> lapsed: Bool reads(input), reads(args), writes(slot) {
+  doc "MSET's work on one key's entry, held by the caller: stores the value the argument at value_index holds, without an expiry, and answers whether the entry it replaced had expired, whose removal the file records first.";
+  let lapsed = held_lapsed(slot: slot, now: now);
+  let value_span = arg(args: args, index: value_index);
+  let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
+  put_text(slot: slot, value: move value, expires: 0_u64);
+  return lapsed;
 }
 
 fn bump_value(env: &Counted, value: &Entry) -> result: u64 writes(env), writes(value) {
@@ -940,24 +967,45 @@ fn incr_finish(client: &Client, counted: &Counted) -> result: unit reads(counted
   return unit;
 }
 
-fn run_incrby(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, negate: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INCRBY key increment and DECRBY key decrement (negate): reads the amount as Redis reads one, refusing text that is not an integer before the key is read, and for DECRBY the least i64, whose negation would overflow, then adds it, or its negation, as run_incr does.";
+fn incrby_delta(input: &[u8], args: &Box<Slots<Span>>, negate: Bool) -> delta: Delta reads(input), reads(args) {
+  doc "INCRBY's and DECRBY's parsing (negate), before the key is read: the amount as Redis reads one, state 0 with the delta to add, its negation for DECRBY, 1 for text that is not an integer, and 2 for DECRBY of the least i64, whose negation would overflow.";
   let amount = arg(args: args, index: 2_u64);
   let number = read_integer(input: input, start: amount.start, length: amount.length);
   if number.state != 1_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
+    return Delta(state: 1_u64, value: 0_i64);
   }
-  let delta = number.value;
+  let value = number.value;
   if negate {
     let least = cvt.wrap::<u64, i64>(9223372036854775808_u64);
-    if delta == least {
-      reply_error(client: client, word: &text_decrement[0_u64..28_u64]);
-      return unit;
+    if value == least {
+      return Delta(state: 2_u64, value: 0_i64);
     }
-    set delta = 0_i64 -wrap delta;
+    set value = 0_i64 -wrap value;
   }
-  run_incr(store: store, input: input, args: args, client: client, env: env, time: time, delta: delta);
+  return Delta(state: 0_u64, value: value);
+}
+
+fn delta_refused(client: &Client, delta: &Delta) -> refused: Bool reads(delta), writes(client) {
+  doc "Writes the reply to a refused INCRBY or DECRBY amount as Redis writes it and answers whether it was refused.";
+  if delta^.state == 1_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return True();
+  }
+  if delta^.state == 2_u64 {
+    reply_error(client: client, word: &text_decrement[0_u64..28_u64]);
+    return True();
+  }
+  return False();
+}
+
+fn run_incrby(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, negate: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "INCRBY key increment and DECRBY key decrement (negate): reads the amount as incrby_delta does, refusing it before the key is read, then adds it, or its negation, as run_incr does.";
+  let delta = incrby_delta(input: input, args: args, negate: negate);
+  let refused = delta_refused(client: client, delta: &delta);
+  if refused {
+    return unit;
+  }
+  run_incr(store: store, input: input, args: args, client: client, env: env, time: time, delta: delta.value);
   return unit;
 }
 

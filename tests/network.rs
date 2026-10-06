@@ -1287,8 +1287,7 @@ fn firn_stops_on_an_append_only_file_that_does_not_parse() {
         resp(&["SET", "b", "2"]),
     ]
     .concat();
-    std::fs::write(&path, &content)
-        .unwrap_or_else(|error| panic!("write the fixture: {error}"));
+    std::fs::write(&path, &content).unwrap_or_else(|error| panic!("write the fixture: {error}"));
     let port = free_port();
     let text = port.to_string();
     let output = program.run(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]);
@@ -3355,7 +3354,12 @@ fn firn_listens_again_on_its_port_after_a_restart() {
 /// old password, and removing the password lets that one in at once, but only
 /// until a password is set again, since it has not authenticated, as Redis's
 /// flag of authentication has it, and HELLO, which checks that flag, still
-/// refuses it; AUTH as the user default while no password
+/// refuses it. A transaction it opens while no password is set is checked
+/// as Redis checks each command once one is set again: a queued command's
+/// arity, then its authentication, WATCH's own arity and authentication
+/// before its refusal, and EXEC discards the transaction with EXECABORT and
+/// NOAUTH, so that what follows runs outside it and nothing queued ran.
+/// AUTH as the user default while no password
 /// is set authenticates it, so that a password set afterwards leaves it in.
 /// A connection accepted while no password is set has authenticated too, and
 /// stays in once it sets one. The expected bytes are redis-server 7.0.15's
@@ -3522,6 +3526,52 @@ fn firn_requires_its_password_as_redis_does() {
         b"+PONG\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
         "once the password is removed",
     );
+    waiting
+        .write_all(&resp(&["MULTI"]))
+        .expect("open a transaction with no password set");
+    expect_replies(
+        &mut waiting,
+        b"+OK\r\n",
+        "a transaction with no password set",
+    );
+    setter
+        .write_all(&resp(&["CONFIG", "SET", "requirepass", "again"]))
+        .expect("set a password inside the transaction");
+    expect_replies(
+        &mut setter,
+        b"+OK\r\n",
+        "a password set inside the transaction",
+    );
+    let mut batch = Vec::new();
+    for request in [
+        vec!["SET", "k"],
+        vec!["SET", "k", "v"],
+        vec!["WATCH"],
+        vec!["WATCH", "k"],
+        vec!["EXEC"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    waiting
+        .write_all(&batch)
+        .expect("queue while a password is required");
+    expect_replies(
+        &mut waiting,
+        b"-ERR wrong number of arguments for 'set' command\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'watch' command\r\n-NOAUTH Authentication required.\r\n-EXECABORT Transaction discarded because of: NOAUTH Authentication required.\r\n",
+        "a transaction a password set inside it refuses",
+    );
+    setter
+        .write_all(&resp(&["CONFIG", "SET", "requirepass", ""]))
+        .expect("remove the password after the transaction");
+    expect_replies(
+        &mut setter,
+        b"+OK\r\n",
+        "the password removed after the transaction",
+    );
+    waiting
+        .write_all(&resp(&["GET", "k"]))
+        .expect("read after the discarded transaction");
+    expect_replies(&mut waiting, b"$-1\r\n", "after the discarded transaction");
     setter
         .write_all(&resp(&["CONFIG", "SET", "requirepass", "again"]))
         .expect("set a password again");
@@ -3801,6 +3851,90 @@ fn firn_answers_connection_commands_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// firn keeps a transaction as Redis 7.0.15's MULTI, EXEC and DISCARD do:
+/// EXEC and DISCARD outside one and a nested MULTI are refused; queued
+/// commands answer QUEUED and EXEC answers an array of their replies, a
+/// runtime error among them leaving the others done; a command refused while
+/// queueing for its arity makes EXEC abort the transaction; WATCH inside one
+/// is refused without aborting it, unless its arity is wrong; DISCARD drops
+/// what was queued; an EXEC with an argument, inside a transaction or not,
+/// discards it and answers EXECABORT with the reason, so that a command after
+/// it runs at once. The expected
+/// bytes are redis-server 7.0.15's, but for FOO and EXPIRETIMEX, which firn
+/// queues and then refuses whole at EXEC as a command it does not run in
+/// transactions, where Redis refuses it as unknown when it is sent and EXEC
+/// then aborts. EXPIRETIMEX shares EXPIRETIME's eight-byte code, so its case
+/// shows that a transaction, and a script through the same held_kind, tells
+/// the two names apart.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_keeps_transactions_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["EXEC"],
+        vec!["DISCARD"],
+        vec!["MULTI"],
+        vec!["MULTI"],
+        vec!["SET", "a", "1"],
+        vec!["INCRBY", "a", "5"],
+        vec!["EXPIRE", "a", "100"],
+        vec!["TTL", "a"],
+        vec!["MSET", "b", "2", "c", "3"],
+        vec!["GET", "b"],
+        vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["SET", "s", "abc"],
+        vec!["INCR", "s"],
+        vec!["GET", "s"],
+        vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["SET", "x", "1"],
+        vec!["GET", "x", "y"],
+        vec!["EXEC"],
+        vec!["GET", "x"],
+        vec!["MULTI"],
+        vec!["SET", "x", "1"],
+        vec!["FOO"],
+        vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["WATCH", "x"],
+        vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["SET", "x", "2"],
+        vec!["DISCARD"],
+        vec!["GET", "x"],
+        vec!["EXEC", "now"],
+        vec!["MULTI"],
+        vec!["EXPIRETIME", "absent"],
+        vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["EXPIRETIMEX", "absent"],
+        vec!["EXEC"],
+        vec!["MULTI"],
+        vec!["EXEC", "extra"],
+        vec!["SET", "k", "v"],
+        vec!["GET", "k"],
+        vec!["MULTI"],
+        vec!["WATCH"],
+        vec!["EXEC"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client
+        .write_all(&batch)
+        .expect("send the transaction batch");
+    let expected = "-ERR EXEC without MULTI\r\n-ERR DISCARD without MULTI\r\n+OK\r\n-ERR MULTI calls can not be nested\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*6\r\n+OK\r\n:6\r\n:1\r\n:100\r\n+OK\r\n$1\r\n2\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR value is not an integer or out of range\r\n$3\r\nabc\r\n+OK\r\n+QUEUED\r\n-ERR wrong number of arguments for 'get' command\r\n-EXECABORT Transaction discarded because of previous errors.\r\n$-1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n+OK\r\n-ERR WATCH inside MULTI is not allowed\r\n*0\r\n+OK\r\n+QUEUED\r\n+OK\r\n$-1\r\n-EXECABORT Transaction discarded because of: wrong number of arguments for 'exec' command\r\n+OK\r\n+QUEUED\r\n*1\r\n:-2\r\n+OK\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n+OK\r\n-EXECABORT Transaction discarded because of: wrong number of arguments for 'exec' command\r\n+OK\r\n$1\r\nv\r\n+OK\r\n-ERR wrong number of arguments for 'watch' command\r\n-EXECABORT Transaction discarded because of previous errors.\r\n";
+    expect_replies(&mut client, expected.as_bytes(), "the transaction batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn answers in RESP3 after HELLO 3 as Redis 7.0.15 does, and in RESP2
 /// again after HELLO 2: HELLO's map with protocol 3; the null for an absent
 /// string, an absent element of MGET and LPOP's count on an absent key; a map
@@ -3942,6 +4076,441 @@ fn firn_answers_client_info_as_redis_does() {
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
+}
+
+/// firn records a transaction's writes as Redis 7.0.15 propagates them: a
+/// transaction of two writes bracketed in MULTI and EXEC, one of one write as
+/// that write alone, and one that only reads not at all; a restart replays
+/// the file to the same keys. The expected file is redis-server 7.0.15's for
+/// the same requests but for the SELECT 0 it writes first.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_transactions_as_redis_propagates_them() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let port = free_port();
+    let text = port.to_string();
+    let client = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port);
+        let mut batch = Vec::new();
+        for request in [
+            vec!["MULTI"],
+            vec!["SET", "a", "1"],
+            vec!["SET", "b", "2"],
+            vec!["EXEC"],
+            vec!["MULTI"],
+            vec!["SET", "c", "3"],
+            vec!["EXEC"],
+            vec!["MULTI"],
+            vec!["GET", "a"],
+            vec!["EXEC"],
+            vec!["MULTI"],
+            vec!["INCR", "a"],
+            vec!["GET", "a"],
+            vec!["EXEC"],
+        ] {
+            batch.extend(resp(&request));
+        }
+        client.write_all(&batch).expect("send the transactions");
+        expect_replies(
+            &mut client,
+            b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n$1\r\n1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n:2\r\n$1\r\n2\r\n",
+            "the transactions",
+        );
+    });
+    let output = program.run(
+        fixture.path(),
+        &[text.as_bytes(), b"1", b"transactions.aof"],
+    );
+    client.join().expect("the client's exchange");
+    assert!(output.status.success(), "firn: {:?}", output.status);
+    let file = std::fs::read(fixture.path().join("transactions.aof")).expect("read firn's file");
+    assert_eq!(
+        String::from_utf8_lossy(&file),
+        "*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
+    );
+    let port = free_port();
+    let text = port.to_string();
+    let client = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port);
+        client
+            .write_all(&resp(&["MGET", "a", "b", "c"]))
+            .expect("read the replayed keys");
+        expect_replies(
+            &mut client,
+            b"*3\r\n$1\r\n2\r\n$1\r\n2\r\n$1\r\n3\r\n",
+            "the replayed keys",
+        );
+    });
+    let output = program.run(
+        fixture.path(),
+        &[text.as_bytes(), b"1", b"transactions.aof"],
+    );
+    client.join().expect("the replay's exchange");
+    assert!(output.status.success(), "firn: {:?}", output.status);
+}
+
+/// firn runs scripts as Redis 7.0.15's EVAL, EVALSHA and SCRIPT do: a script
+/// compiled by EVAL or SCRIPT LOAD is cached under its SHA1 until SCRIPT FLUSH,
+/// EVALSHA finds it in either case and SCRIPT EXISTS in lower case only; KEYS
+/// and ARGV reach the script; the number of keys is checked as Redis checks it;
+/// a script that runs past its first budget is run again with a larger one; the
+/// globals' metatable is read-only; SCRIPT's subcommands and the commands'
+/// arities are answered as Redis answers them; redis.error_reply and
+/// redis.pcall's argument check answer Redis's error tables; and a script's
+/// result is written in the client's protocol, as luaReplyToRedisReply writes
+/// it, booleans following redis.setresp, and a result that contains itself
+/// ending in Redis's stack-limit error at the depth Redis reaches; redis.call
+/// and redis.pcall run the commands written as parts, numbers formatted as
+/// Redis formats them, an error reply raised at redis.call, at the line of the
+/// call or of a rethrow, through a local alias of error included, as Redis's
+/// error handler reports it, and returned by redis.pcall, Lua's pcall
+/// returning an error table's err field as Redis's replacement does, and the
+/// reply read in the script's protocol whatever the client's. The expected
+/// bytes are redis-server 7.0.15's.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_scripts_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let sha = "1fa00e76656cc152ad327c13fe365858fd7be306";
+    let upper = sha.to_ascii_uppercase();
+    let mut batch = Vec::new();
+    for request in [
+        vec!["EVAL", "return 42", "0"],
+        vec!["SCRIPT", "EXISTS", sha],
+        vec!["EVALSHA", sha, "0"],
+        vec!["SCRIPT", "LOAD", "return 42"],
+        vec!["SCRIPT", "FLUSH", "ASYNC"],
+        vec!["SCRIPT", "EXISTS", sha],
+        vec!["EVALSHA", sha, "0"],
+        vec![
+            "EVAL",
+            "return {KEYS[1],ARGV[1],false,true}",
+            "1",
+            "key",
+            "arg",
+        ],
+        vec!["EVAL", "return 0", "-1"],
+        vec!["EVAL", "return 0", "1"],
+        vec!["EVAL", "return 0", "+0"],
+        vec!["SCRIPT", "EXISTS"],
+        vec!["SCRIPT", "FLUSH", "wrong"],
+        vec!["SCRIPT", "FLUSH", "SYNC", "extra"],
+        vec!["EVAL", "redis.setresp(3);return {false,true}", "0"],
+        vec!["EVAL", "local n=0;for i=1,3000 do n=n+1 end;return n", "0"],
+        vec![
+            "EVAL",
+            "local m=getmetatable(_G);return pcall(function()m.__index=nil end)",
+            "0",
+        ],
+        vec!["SCRIPT", "LOAD"],
+        vec!["EVALSHA", "short", "wrong"],
+        vec!["EVAL", "return 42", "0"],
+        vec!["EVALSHA", &upper, "0"],
+        vec!["SCRIPT", "EXISTS", &upper],
+        vec!["EVAL"],
+        vec!["EVALSHA"],
+        vec!["SCRIPT"],
+        vec!["SCRIPT", "unknown"],
+        vec!["EVAL", "return redis.pcall().err", "0"],
+        vec![
+            "EVAL",
+            "return redis.error_reply('ERR \\r\\nprobe\\r\\n').err",
+            "0",
+        ],
+        vec!["EVAL", "return redis.pcall('GET','key')", "0"],
+        vec![
+            "EVAL",
+            "redis.call('SET',KEYS[1],ARGV[1]); return redis.call('GET',KEYS[1])",
+            "1",
+            "sk",
+            "sv",
+        ],
+        vec!["EVAL", "return redis.call('INCR',KEYS[1])", "1", "counter"],
+        vec![
+            "EVAL",
+            "return redis.call('INCRBY',KEYS[1],ARGV[1])",
+            "1",
+            "counter",
+            "41",
+        ],
+        vec![
+            "EVAL",
+            "return redis.call('INCRBY',KEYS[1],5)",
+            "1",
+            "counter",
+        ],
+        vec!["EVAL", "return redis.pcall('INCR',KEYS[1])", "1", "sk"],
+        vec!["EVAL", "return redis.call('INCR',KEYS[1])", "1", "sk"],
+        vec![
+            "EVAL",
+            "local f = redis.call\nreturn f('INCR',KEYS[1])",
+            "1",
+            "sk",
+        ],
+        vec![
+            "EVAL",
+            "local _, e = xpcall(function()\n  redis.call('INCR', KEYS[1])\nend, function(e) return e end)\nerror(e, 0)",
+            "1",
+            "sk",
+        ],
+        vec!["EVAL", "local err = error\nerr('boom')", "0"],
+        vec![
+            "EVAL",
+            "local err = error\nlocal _, e = xpcall(function()\n  redis.call('INCR', KEYS[1])\nend, function(e) return e end)\nerr(e, 0)",
+            "1",
+            "sk",
+        ],
+        vec![
+            "EVAL",
+            "local f = redis.call\nlocal t = {}\nreturn f('INCR', KEYS[1])",
+            "1",
+            "sk",
+        ],
+        vec![
+            "EVAL",
+            "local ok,e = pcall(function() error({err='ERR x'},0) end) return type(e)",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local ok,e = pcall(function() error({err='ERR x'},0) end) return e",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local ok,e = pcall(function() error({x=1},0) end) return type(e)",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "return redis.call('SET',KEYS[1],'v','EX',100,'NX')",
+            "1",
+            "sk2",
+        ],
+        vec!["EVAL", "return redis.call('TTL',KEYS[1])", "1", "sk2"],
+        vec!["EVAL", "return redis.call('EXPIRE',KEYS[1],50)", "1", "sk2"],
+        vec!["EVAL", "return redis.call('MSET','m1','a','m2','b')", "0"],
+        vec!["EVAL", "return redis.call('GET','m2')", "0"],
+        vec!["EVAL", "local a={}; local b={a}; a[1]=b; return a", "0"],
+        vec!["EVAL", "local a={}; a.map={k=a}; return a", "0"],
+        vec!["EVAL", "local a={}; a.set={}; a.set[a]=true; return a", "0"],
+        vec!["EVAL", "return {map={a=1}}", "0"],
+        vec!["EVAL", "return {set={a=true}}", "0"],
+        vec!["EVAL", "return {double=1.5}", "0"],
+        vec!["EVAL", "return {big_number='123'}", "0"],
+        vec![
+            "EVAL",
+            "return {verbatim_string={format='txt',string='hi'}}",
+            "0",
+        ],
+        vec!["HELLO", "3"],
+        vec!["EVAL", "return {false,true}", "0"],
+        vec!["EVAL", "redis.setresp(3);return {false,true}", "0"],
+        vec!["EVAL", "return {map={a=1}}", "0"],
+        vec!["EVAL", "return {set={a=true}}", "0"],
+        vec!["EVAL", "return {double=1.5}", "0"],
+        vec!["EVAL", "return {big_number='123'}", "0"],
+        vec![
+            "EVAL",
+            "return {verbatim_string={format='md',string='hi'}}",
+            "0",
+        ],
+        vec!["EVAL", "return nil", "0"],
+        vec!["EVAL", "return redis.call('GET',KEYS[1])", "1", "sk"],
+        vec![
+            "EVAL",
+            "redis.setresp(3); return redis.call('GET','absent')",
+            "0",
+        ],
+        vec!["EVAL", "return redis.call('GET','absent')", "0"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the scripting batch");
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    // redis-server 7.0.15 writes a result that contains itself to these
+    // depths before its stack-limit error; a map's last level refuses both
+    // its key and its value.
+    let arrays = "*1\r\n".repeat(7995);
+    let maps = "*2\r\n$1\r\nk\r\n".repeat(2664) + "*2\r\n";
+    let sets = "*1\r\n".repeat(2665);
+    let limit = "-ERR reached lua stack limit\r\n";
+    let expected = format!(
+        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n$-1\r\n$2\r\nsv\r\n:1\r\n:42\r\n:47\r\n-ERR value is not an integer or out of range\r\n-ERR value is not an integer or out of range script: da8455f0535fd532821b3713a4eccd80fc4b8457, on @user_script:1.\r\n-ERR value is not an integer or out of range script: 8225a61dd7e7b8c6f60bf49e74d2d38d8fbd695f, on @user_script:2.\r\n-ERR value is not an integer or out of range script: 6793b20f57c81afc3e867639a73e30ff2bd19609, on @user_script:4.\r\n-ERR user_script:2: boom script: 443852b874bae87a7a4b0129daea4709fa17a0f1, on @user_script:2.\r\n-ERR value is not an integer or out of range script: d3a069bf51964f7e9ac333589ead69a481f56199, on @user_script:5.\r\n-ERR value is not an integer or out of range script: 3676a1037fb941aa22fb13a86e521811d4392a31, on @user_script:3.\r\n$6\r\nstring\r\n$5\r\nERR x\r\n$5\r\ntable\r\n+OK\r\n:100\r\n:1\r\n+OK\r\n$1\r\nb\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n$2\r\nsv\r\n_\r\n_\r\n"
+    );
+    expect_replies(&mut client, expected.as_bytes(), "the scripting batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn's SCRIPT KILL stops a script that has written nothing at the end of
+/// its current attempt and answers it Redis 7.0.15's error, naming the
+/// script's SHA1 and the line it ran, and SCRIPT KILL answers NOTBUSY when no
+/// script runs and Redis's arity error for an argument. SCRIPT KILL needs
+/// only the scripts' pool, so it is answered while the script holds the
+/// keyspace.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_kills_a_looping_script_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]);
+    let mut looping = connect_when_ready(port);
+    let mut other = connect_when_ready(port);
+    let mut batch = resp(&["SCRIPT", "KILL"]);
+    batch.extend(resp(&["SCRIPT", "KILL", "x"]));
+    other
+        .write_all(&batch)
+        .expect("send SCRIPT KILL with no script");
+    expect_replies(
+        &mut other,
+        b"-NOTBUSY No scripts in execution right now.\r\n-ERR wrong number of arguments for 'script|kill' command\r\n",
+        "SCRIPT KILL with no script",
+    );
+    looping
+        .write_all(&resp(&["EVAL", "while true do end", "0"]))
+        .expect("start the looping script");
+    std::thread::sleep(Duration::from_millis(300));
+    other
+        .write_all(&resp(&["SCRIPT", "KILL"]))
+        .expect("kill the script");
+    expect_replies(&mut other, b"+OK\r\n", "SCRIPT KILL");
+    expect_replies(
+        &mut looping,
+        b"-ERR Script killed by user with SCRIPT KILL... script: 694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7, on @user_script:1.\r\n",
+        "the killed script",
+    );
+    other
+        .write_all(&resp(&["SCRIPT", "KILL"]))
+        .expect("kill again");
+    expect_replies(
+        &mut other,
+        b"-NOTBUSY No scripts in execution right now.\r\n",
+        "SCRIPT KILL once the script ended",
+    );
+    drop(looping);
+    drop(other);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn's scripts share one Lua state as Redis 7.0.15's do: the cjson
+/// precision one connection's script sets reaches another connection's
+/// script sent while a third connection's script runs. That script has
+/// written, so it runs to its end holding the one engine and the later
+/// script waits for both; with a pool of engines the later script, served
+/// on another of the four drivers meanwhile, would take a second engine and
+/// encode 3.14159 at the default precision of 14 digits. The expected bytes
+/// are redis-server 7.0.15's (Firn-wf probe run 37487261232), the running
+/// script's count its loop's.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_scripts_share_one_lua_state_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), b"3"]);
+    let mut setter = connect_when_ready(port);
+    let mut writer = connect_when_ready(port);
+    let mut reader = connect_when_ready(port);
+    for stream in [&writer, &reader] {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .expect("bound the reads that wait for the writing script");
+    }
+    setter
+        .write_all(&resp(&[
+            "EVAL",
+            "cjson.encode_number_precision(3) return 1",
+            "0",
+        ]))
+        .expect("set the precision");
+    expect_replies(&mut setter, b":1\r\n", "the precision set");
+    writer
+        .write_all(&resp(&[
+            "EVAL",
+            "redis.call('SET',KEYS[1],'1') local i = 0 while i < 10000000 do i = i + 1 end return i",
+            "1",
+            "written",
+        ]))
+        .expect("start the writing script");
+    std::thread::sleep(Duration::from_millis(100));
+    reader
+        .write_all(&resp(&["EVAL", "return cjson.encode(3.14159)", "0"]))
+        .expect("encode a number");
+    expect_replies(
+        &mut reader,
+        b"$4\r\n3.14\r\n",
+        "the number sent while a script runs",
+    );
+    expect_replies(&mut writer, b":10000000\r\n", "the writing script");
+    drop(setter);
+    drop(writer);
+    drop(reader);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn records a script's writes as Redis 7.0.15 propagates them: a script
+/// of two writes bracketed in MULTI and EXEC, one of one write as that write
+/// alone, and one that only reads not at all; a restart replays the file to
+/// the same keys. The expected file is redis-server 7.0.15's for the same
+/// scripts with one database, without the SELECT it begins with.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_scripts_as_redis_propagates_them() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let port = free_port();
+    let text = port.to_string();
+    let client = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port);
+        let mut batch = Vec::new();
+        for request in [
+            vec![
+                "EVAL",
+                "redis.call('SET','a','1'); redis.call('SET','b','2')",
+                "0",
+            ],
+            vec!["EVAL", "return redis.call('GET','a')", "0"],
+            vec!["EVAL", "return redis.call('INCR','a')", "0"],
+        ] {
+            batch.extend(resp(&request));
+        }
+        client.write_all(&batch).expect("send the scripts");
+        expect_replies(&mut client, b"$-1\r\n$1\r\n1\r\n:2\r\n", "the scripts");
+    });
+    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]);
+    client.join().expect("the client's exchange");
+    assert!(output.status.success(), "firn: {:?}", output.status);
+    let file = std::fs::read(fixture.path().join("scripts.aof")).expect("read firn's file");
+    assert_eq!(
+        String::from_utf8_lossy(&file),
+        "*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
+    );
+    let port = free_port();
+    let text = port.to_string();
+    let client = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port);
+        client
+            .write_all(&resp(&["MGET", "a", "b"]))
+            .expect("read the replayed keys");
+        expect_replies(
+            &mut client,
+            b"*2\r\n$1\r\n2\r\n$1\r\n2\r\n",
+            "the replayed keys",
+        );
+    });
+    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]);
+    client.join().expect("the replay's exchange");
+    assert!(output.status.success(), "firn: {:?}", output.status);
 }
 
 /// Reads one RESP2 reply of bulk strings: a bulk string, none for the null

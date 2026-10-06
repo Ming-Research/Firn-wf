@@ -8,8 +8,16 @@ alias name_code = pkg::bytes::name_code;
 alias name_is = pkg::bytes::name_is;
 alias reply_arity = pkg::protocol::reply_arity;
 alias reply_unknown = pkg::protocol::reply_unknown;
+alias run_eval = pkg::scripting::eval;
+alias run_script = pkg::scripting::script;
 
 const code_ping: u64 = 1196312912_u64;
+
+const code_eval: u64 = 1279350341_u64;
+
+const code_evalsha: u64 = 18375396085028421_u64;
+
+const code_script: u64 = 92703804244819_u64;
 
 const code_echo: u64 = 1330135877_u64;
 
@@ -195,7 +203,7 @@ fn refused(client: &Client, input: &[u8], name: Span, fits: Bool) -> result: uni
   return unit;
 }
 
-fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
+fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
   doc "Answers one command, whose arguments are spans of the input, by appending its reply to the client's. A command that changes the keyspace does so in one atomic statement, which also appends the change to the append-only file's pending bytes when the keyspace keeps them. As in Redis, an unknown command or a known one outside its command-table arity is answered so whether or not the connection has authenticated, and every other command but AUTH, HELLO and QUIT from a connection that must authenticate first is answered NOAUTH.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
@@ -207,6 +215,27 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let milliseconds = False();
   let head = True();
   let tail = False();
+  let evaluating = code == code_eval;
+  let by_sha = code == code_evalsha;
+  if bor(evaluating, by_sha) {
+    let fits = count >= 3_u64;
+    let go = band(fits, open);
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      run_eval::<FirnCommands>(store: store, input: input, args: args, client: client, keys_env: env, time: time, clock: clock, by_sha: by_sha);
+    }
+    return unit;
+  }
+  if code == code_script {
+    if count < 2_u64 {
+      reply_arity(client: client, input: input, name: name);
+      return unit;
+    }
+    run_script(store: store, input: input, args: args, client: client);
+    return unit;
+  }
   if code == code_ping {
     let any = True();
     let go = band(any, open);
@@ -470,7 +499,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_decr {
-    let fits = count == 2_u64;
+    let fits = arity_holds(arity: arity_incr, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -481,7 +510,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_incrby {
-    let fits = count == 3_u64;
+    let fits = arity_holds(arity: arity_incrby, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -493,7 +522,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_decrby {
-    let fits = count == 3_u64;
+    let fits = arity_holds(arity: arity_incrby, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -519,7 +548,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
   }
   if code == code_mset {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_mset, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -562,7 +591,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_expire {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_expire, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -573,7 +602,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_pexpire {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_expire, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -584,7 +613,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_expireat {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_expire, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -597,7 +626,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_pexpireat {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_pexpireat[0_u64..9_u64]);
     if spelled {
-      let fits = count >= 3_u64;
+      let fits = arity_holds(arity: arity_expire, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -609,7 +638,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
     let timed = name_is(input: input, start: name.start, length: name.length, word: &word_pexpiretime[0_u64..11_u64]);
     if timed {
-      let fits = count == 2_u64;
+      let fits = arity_holds(arity: arity_ttl, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -623,7 +652,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_expiretime {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_expiretime[0_u64..10_u64]);
     if spelled {
-      let fits = count == 2_u64;
+      let fits = arity_holds(arity: arity_ttl, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -635,7 +664,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
   }
   if code == code_ttl {
-    let fits = count == 2_u64;
+    let fits = arity_holds(arity: arity_ttl, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -646,7 +675,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_pttl {
-    let fits = count == 2_u64;
+    let fits = arity_holds(arity: arity_ttl, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);

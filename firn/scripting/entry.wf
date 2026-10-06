@@ -1,0 +1,651 @@
+alias Client = pkg::protocol::Client;
+alias reply_word = pkg::protocol::reply_word;
+alias reply_bulk_input = pkg::protocol::reply_bulk_input;
+alias reply_error = pkg::protocol::reply_error;
+alias reply_integer = pkg::protocol::reply_integer;
+alias Value = halo::value::Value;
+alias Vm = halo::vm::Vm;
+alias Keyspace = pkg::store::Keyspace;
+alias Time = pkg::store::Time;
+alias Span = pkg::protocol::Span;
+alias Engine = halo::embed::Engine;
+alias ScriptId = halo::embed::ScriptId;
+alias PooledEngine = pkg::script_pool::PooledEngine;
+alias Cached = pkg::script_pool::Cached;
+alias Registered = pkg::script_pool::Registered;
+alias EnginePool = pkg::script_pool::EnginePool;
+alias Entry = pkg::store::Entry;
+alias Meta = pkg::store::Meta;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Outcome = halo::vm::Outcome;
+alias log_count = pkg::store::log_count;
+alias log_word = pkg::store::log_word;
+alias log_append = pkg::store::log_append;
+alias push_arg = pkg::protocol::push_arg;
+
+fn same_sha(left: &Array<u8, 40>, right: &Array<u8, 40>) -> yes: Bool reads(left), reads(right) {
+  for (i in 0_u64..40_u64) {
+    if left^[i] != right^[i] {
+      return False();
+    }
+  }
+  return True();
+}
+
+fn registry_find(pool: &EnginePool, sha: &Array<u8, 40>) -> index: u64 reads(pool), reads(sha) {
+  for (i in 0_u64..pool^.registry.inner.len) {
+    if same_sha(left: &pool^.registry.inner[i].sha, right: sha) {
+      return i;
+    }
+  }
+  return pool^.registry.inner.len;
+}
+
+fn copy_source(input: &[u8], span: Span) -> bytes: Box<Slots<u8>> reads(input) {
+  let bytes = box_slots_new::<u8>(capacity: 0_u64);
+  for (i in 0_u64..span.length) {
+    let at = span.start +sat i;
+    let b = pkg::bytes::byte_at(input: input, index: at);
+    push(out: &bytes, byte: b);
+  }
+  return move bytes;
+}
+
+fn take_engine(store: &Keyspace) -> pooled: PooledEngine reads(store) waits {
+  doc "Takes the one engine, waiting while another script has it, or makes it if none was made since the last SCRIPT FLUSH.";
+  let held = None<PooledEngine>();
+  let generation = 0_u64;
+  atomic p = &store^.scripts when p^.out == 0_u64 {
+    set p^.out = 1_u64;
+    set generation = p^.generation;
+    if p^.idle.inner.len > 0_u64 {
+      let engine = take_back(window: &p^.idle.inner);
+      set held = Some<PooledEngine>(value: move engine);
+    }
+  }
+  match move held {
+    Some(value: engine) => {
+      if engine.generation != generation {
+        let stale = move engine;
+        return new_pooled(generation: generation);
+      }
+      return move engine;
+    }
+    None() => {
+      return new_pooled(generation: generation);
+    }
+  }
+}
+
+fn new_pooled(generation: u64) -> pooled: PooledEngine pure {
+  doc "A flush generation starts a fresh Lua environment as Redis scriptingReset does, dropping compiled constants and library configuration as well as the cache index.";
+  let engine = halo::embed::new_engine(limit: 18446744073709551615_u64);
+  halo::embed::set_pcall_error_field(engine: &engine, field: &s_30[0_u64..3_u64]);
+  install_host(engine: &engine);
+  let cache = box_slots_new::<Cached>(capacity: 0_u64);
+  return PooledEngine(engine: move engine, generation: generation, cache: move cache);
+}
+
+fn return_engine(store: &Keyspace, pooled: PooledEngine) -> r: unit reads(store) waits {
+  doc "Puts the engine back for the next script, which then may take it.";
+  halo::embed::reset(engine: &pooled.engine);
+  atomic p = &store^.scripts {
+    set p^.out = 0_u64;
+    if p^.idle.inner.len == p^.idle.inner.cap {
+      let room = p^.idle.inner.cap +sat 1_u64;
+      let twice = p^.idle.inner.cap +sat p^.idle.inner.cap;
+      let target = imax(room, twice);
+      grow(cell: &p^.idle, capacity: target);
+    }
+    if p^.idle.inner.len < p^.idle.inner.cap {
+      place_back(window: &p^.idle.inner, value: move pooled);
+    } else {
+      let exhausted = move pooled;
+    }
+  }
+  return unit;
+}
+
+fn register(store: &Keyspace, sha: &Array<u8, 40>, source: &[u8]) -> r: unit reads(store), reads(sha), reads(source) waits {
+  doc "Redis 7.0.15 luaCreateFunction retains every successfully compiled EVAL/LOAD source until scriptingReset; duplicate SHA1 does not grow the registry. No script-count cap or LRU eviction. Source/hash payload accounting is separate from allocator overhead and the engine heap.";
+  let span = Span(start: 0_u64, length: source^.len);
+  let copied = copy_source(input: source, span: span);
+  atomic p = &store^.scripts {
+    let index = registry_find(pool: p, sha: sha);
+    if index == p^.registry.inner.len {
+      if p^.registry.inner.len == p^.registry.inner.cap {
+        let room = p^.registry.inner.cap +sat 1_u64;
+        let twice = p^.registry.inner.cap +sat p^.registry.inner.cap;
+        let target = imax(room, twice);
+        grow(cell: &p^.registry, capacity: target);
+      }
+      if p^.registry.inner.len < p^.registry.inner.cap {
+        let payload = source^.len +sat 40_u64;
+        set p^.source_bytes = p^.source_bytes +sat payload;
+        let row = Registered(sha: sha^, source: move copied);
+        place_back(window: &p^.registry.inner, value: move row);
+      } else {
+        let exhausted = move copied;
+      }
+    } else {
+      let duplicate = move copied;
+    }
+  }
+  return unit;
+}
+
+fn cached(pooled: &PooledEngine, sha: &Array<u8, 40>, source: &[u8]) -> id: Result<ScriptId, halo::compile::CompileError> reads(sha), reads(source), writes(pooled) {
+  for (i in 0_u64..pooled^.cache.inner.len) {
+    if same_sha(left: &pooled^.cache.inner[i].sha, right: sha) {
+      return Ok<ScriptId, halo::compile::CompileError>(value: pooled^.cache.inner[i].id);
+    }
+  }
+  let compiled = halo::embed::compile(engine: &pooled^.engine, chunk_name: &entry_text_0[0_u64..12_u64], source: source);
+  match move compiled {
+    Err(error: e) => {
+      return Err<ScriptId, halo::compile::CompileError>(error: move e);
+    }
+    Ok(value: id) => {
+      if pooled^.cache.inner.len == pooled^.cache.inner.cap {
+        let room = pooled^.cache.inner.cap +sat 1_u64;
+        let twice = pooled^.cache.inner.cap +sat pooled^.cache.inner.cap;
+        let target = imax(room, twice);
+        grow(cell: &pooled^.cache, capacity: target);
+      }
+      if pooled^.cache.inner.len < pooled^.cache.inner.cap {
+        let row = Cached(sha: sha^, id: id);
+        place_back(window: &pooled^.cache.inner, value: row);
+      }
+      return Ok<ScriptId, halo::compile::CompileError>(value: id);
+    }
+  }
+}
+
+fn compile_error(client: &Client, error: &halo::compile::CompileError) -> r: unit reads(error), writes(client) {
+  reply_word(client: client, word: &entry_text_1[0_u64..44_u64]);
+  let n = error^.message.inner.len;
+  reply_word(client: client, word: &error^.message.inner[0_u64..n]);
+  reply_word(client: client, word: &entry_text_2[0_u64..2_u64]);
+  return unit;
+}
+
+fn read_sha(input: &[u8], span: Span, fold: Bool) -> sha: Array<u8, 40> reads(input) {
+  let sha = array_filled::<u8, 40>(value: 0_u8);
+  if span.length == 40_u64 {
+    for (i in 0_u64..40_u64) {
+      let at = span.start +sat i;
+      let b = pkg::bytes::byte_at(input: input, index: at);
+      if fold {
+        set b = pkg::bytes::lower(byte: b);
+      }
+      set sha[i] = b;
+    }
+  }
+  return sha;
+}
+
+fn script_begins(store: &Keyspace) -> mark: u64 reads(store) waits {
+  doc "Counts a script in progress once it first has the engine and returns the kills requested so far, against which its later attempts are checked.";
+  let mark = 0_u64;
+  atomic p = &store^.scripts {
+    set p^.running = p^.running +sat 1_u64;
+    set mark = p^.kills;
+  }
+  return mark;
+}
+
+fn script_ends(store: &Keyspace) -> r: unit reads(store) waits {
+  doc "Counts a script in progress no longer.";
+  atomic p = &store^.scripts {
+    set p^.running = p^.running -sat 1_u64;
+  }
+  return unit;
+}
+
+fn kill_requested(store: &Keyspace, mark: u64) -> killed: Bool reads(store) waits {
+  doc "Whether SCRIPT KILL was sent since a script began.";
+  let killed = False();
+  atomic p = &store^.scripts {
+    set killed = p^.kills != mark;
+  }
+  return killed;
+}
+
+fn paused_line(vm: &Vm) -> line: u64 reads(vm) {
+  doc "The line of the instruction an attempt that ran out of budget would have run next, where Redis's hook names a killed script's line.";
+  let pc = vm^.saved_pc;
+  if pc < vm^.lineinfo.inner.len {
+    return cvt::<u32, u64>(vm^.lineinfo.inner[pc]);
+  }
+  return 0_u64;
+}
+
+fn reply_killed(client: &Client, sha: &Array<u8, 40>, line: u64) -> r: unit reads(sha), writes(client) {
+  doc "The error Redis 7.0.15 answers a script SCRIPT KILL stopped: its message, the script's SHA1 and the line its hook stopped at.";
+  let text = box_slots_new::<u8>(capacity: 128_u64);
+  text_bytes(out: &text, bytes: &killed_text[0_u64..45_u64]);
+  text_bytes(out: &text, bytes: &killed_script[0_u64..9_u64]);
+  text_bytes(out: &text, bytes: &sha^[0_u64..40_u64]);
+  text_bytes(out: &text, bytes: &killed_on[0_u64..18_u64]);
+  decimal(out: &text, n: line);
+  push(out: &text, byte: 46_u8);
+  let n = text.inner.len;
+  reply_error(client: client, word: &text.inner[0_u64..n]);
+  return unit;
+}
+
+fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64) -> r: unit reads(effects), writes(log) {
+  doc "Appends the records a script's commands made to the append-only file's pending bytes, wrapped in MULTI and EXEC when they are more than one, as Redis 7.0.15 propagates a script's effects.";
+  if appended > 1_u64 {
+    log_count(log: log, count: 1_u64, room: 16_u64);
+    log_word(log: log, word: &effects_multi[0_u64..5_u64]);
+  }
+  let length = effects^.inner.len;
+  log_append(log: log, bytes: &effects^.inner[0_u64..length]);
+  if appended > 1_u64 {
+    log_count(log: log, count: 1_u64, room: 16_u64);
+    log_word(log: log, word: &effects_exec[0_u64..4_u64]);
+  }
+  return unit;
+}
+
+fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(engine), writes(env), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "Runs the command a script's redis.call or redis.pcall left pending, inside the script's statement, and continues the script with its reply: the arguments, numbers formatted as Redis formats them, are laid out as the network's input; the command runs through ScriptCommands with the client answering in the script's protocol, which redis.setresp selects, its records counted in the script's effects; its reply is converted to a Lua value from the bytes it wrote, which are then taken back; and an error reply is raised at redis.call, while redis.pcall returns it as its error table, as Redis 7.0.15's luaRedisGenericCommand does. budget is what the script's attempt has left.";
+  let id = 0_u32;
+  let argc = 0_u64;
+  match halo::embed::pending_call(engine: engine) {
+    Some(value: call) => {
+      set id = call.id;
+      set argc = call.argc;
+    }
+    None() => {
+      return Outcome::HostStopped();
+    }
+  }
+  let input = box_slots_new::<u8>(capacity: 64_u64);
+  let spans = box_slots_new::<Span>(capacity: 8_u64);
+  for @arguments (i in 0_u64..argc) {
+    let v = halo::embed::pending_argument(engine: engine, index: i);
+    let text = command_argument(vm: &engine^.vm, v: v);
+    let start = input.inner.len;
+    value_bytes(vm: &engine^.vm, v: text, out: &input);
+    let end = input.inner.len;
+    let length = end -sat start;
+    push_arg(args: &spans, start: start, length: length);
+  }
+  let n = input.inner.len;
+  let reply_start = client^.at;
+  let protocol = client^.resp;
+  let scripted = cvt::<u8, u64>(env^.resp);
+  set client^.resp = scripted;
+  set client^.now = time^.check;
+  let logged = True();
+  let appended = ScriptCommands::call(keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
+  set client^.resp = protocol;
+  if appended > 0_u64 {
+    set env^.held.wrote = True();
+    set env^.appended = env^.appended +sat appended;
+  }
+  let reply_end = client^.at;
+  let value = Value::Nil();
+  if reply_start <= reply_end {
+    if reply_end <= client^.bytes.inner.len {
+      set value = command_reply(vm: &engine^.vm, bytes: &client^.bytes.inner[0_u64..reply_end], start: reply_start, end: reply_end, resp: env^.resp);
+    }
+  }
+  set client^.at = reply_start;
+  let tag = kind(v: value);
+  if tag == 4_u8 {
+    if id == 4096_u32 {
+      let message = field(vm: &engine^.vm, table: value, name: &s_30[0_u64..3_u64]);
+      if is_string(v: message) {
+        return halo::embed::fail_call::<ScriptHost>(engine: engine, env: env, error: value, budget: budget);
+      }
+    }
+  }
+  let results = array_filled::<Value, 1>(value: value);
+  return halo::embed::complete_call::<ScriptHost>(engine: engine, env: env, results: &results[0_u64..1_u64], budget: budget);
+}
+
+fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, keys_env: &KeyEnv, time: &Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(keys_env), reads(time), writes(client), writes(clock) waits {
+  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. An attempt that runs out of its budget having written nothing is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits for the engine is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
+  let count = args^.inner.len;
+  let body = pkg::protocol::arg(args: args, index: 1_u64);
+  if by_sha {
+    if body.length != 40_u64 {
+      reply_error(client: client, word: &entry_text_6[0_u64..45_u64]);
+      return unit;
+    }
+  }
+  let number = pkg::protocol::arg(args: args, index: 2_u64);
+  let parsed = pkg::bytes::read_integer(input: input, start: number.start, length: number.length);
+  if parsed.state != 1_u64 {
+    reply_error(client: client, word: &entry_text_3[0_u64..43_u64]);
+    return unit;
+  }
+  if parsed.value < 0_i64 {
+    reply_error(client: client, word: &entry_text_4[0_u64..36_u64]);
+    return unit;
+  }
+  let keys = cvt.wrap::<i64, u64>(parsed.value);
+  let remaining = count -sat 3_u64;
+  if keys > remaining {
+    reply_error(client: client, word: &entry_text_5[0_u64..55_u64]);
+    return unit;
+  }
+  let source = box_slots_new::<u8>(capacity: 0_u64);
+  let yes_fold = True();
+  let sha = read_sha(input: input, span: body, fold: yes_fold);
+  let present = bnot(by_sha);
+  if by_sha {
+    atomic p = &store^.scripts {
+      let index = registry_find(pool: p, sha: &sha);
+      if index < p^.registry.inner.len {
+        let n = p^.registry.inner[index].source.inner.len;
+        text_bytes(out: &source, bytes: &p^.registry.inner[index].source.inner[0_u64..n]);
+        set present = True();
+      }
+    }
+  } else {
+    let copied = copy_source(input: input, span: body);
+    set source = move copied;
+    let n = source.inner.len;
+    set sha = halo::embed::sha1hex(bytes: &source.inner[0_u64..n]);
+  }
+  if bnot(present) {
+    reply_error(client: client, word: &entry_text_6[0_u64..45_u64]);
+    return unit;
+  }
+  let budget = 1000_u64;
+  let mark = 0_u64;
+  let begun = False();
+  let stopped_at = 0_u64;
+  loop {
+    let pooled = take_engine(store: store);
+    let killed = False();
+    if begun {
+      set killed = kill_requested(store: store, mark: mark);
+    } else {
+      set mark = script_begins(store: store);
+      set begun = True();
+    }
+    let retry = False();
+    if bnot(killed) {
+      let n = source.inner.len;
+      let compiled = cached(pooled: &pooled, sha: &sha, source: &source.inner[0_u64..n]);
+      match move compiled {
+        Err(error: e) => {
+          compile_error(client: client, error: &e);
+        }
+        Ok(value: id) => {
+          if bnot(by_sha) {
+            register(store: store, sha: &sha, source: &source.inner[0_u64..n]);
+          }
+          prepare(engine: &pooled.engine, input: input, args: args, keys: keys);
+          let reply = box_slots_new::<u8>(capacity: 0_u64);
+          let no = False();
+          let held = HeldState(start_ms: time^.check, start_us: client^.unix_us, wrote: no, command_ran: no);
+          let env = Env(held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64);
+          let effects = box_slots_new::<u8>(capacity: 64_u64);
+          let logged = store^.logging;
+          let random = pooled.engine.vm.random_state;
+          let configs = config_snapshot(vm: &pooled.engine.vm);
+          let config_active = pooled.engine.vm.cjson_active_config;
+          atomic t = &store^.keys, m = &store^.meta {
+            let held_keys = map_count::<pkg::store::Entry>(map: t);
+            let held_clients = m^.clients;
+            let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
+            loop {
+              match outcome {
+                Budget() => {
+                  if env.held.wrote {
+                    set outcome = halo::embed::resume::<ScriptHost>(engine: &pooled.engine, env: &env, budget: 18446744073709551615_u64);
+                  } else {
+                    set retry = True();
+                    set stopped_at = paused_line(vm: &pooled.engine.vm);
+                    set pooled.engine.vm.random_state = random;
+                    halo::embed::reset(engine: &pooled.engine);
+                    config_restore(vm: &pooled.engine.vm, saved: &configs, active: config_active);
+                    break;
+                  }
+                }
+                HostCall() => {
+                  let more = pooled.engine.vm.budget;
+                  if env.held.wrote {
+                    set more = 18446744073709551615_u64;
+                  }
+                  set outcome = answer_call::<ScriptCommands>(engine: &pooled.engine, env: &env, keys: t, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                }
+                Done(..) => {
+                  let v = Value::Nil();
+                  match halo::embed::result(engine: &pooled.engine, index: 0_u64) {
+                    Some(value: result) => {
+                      set v = result;
+                    }
+                    None() => {
+                    }
+                  }
+                  lua_to_protocol(vm: &pooled.engine.vm, value: v, client: client, resp: env.resp);
+                  if logged {
+                    record_effects(log: &m^.log, effects: &effects, appended: env.appended);
+                  }
+                  break;
+                }
+                Error() => {
+                  let line = halo::embed::error_line(engine: &pooled.engine);
+                  let value = halo::embed::error_value(engine: &pooled.engine);
+                  let locate = readonly_message(vm: &pooled.engine.vm, value: value);
+                  let formatted = format_redis_error(engine: &pooled.engine, source: &source.inner[0_u64..n], line: line, locate: locate);
+                  let length = formatted.inner.len;
+                  reply_error(client: client, word: &formatted.inner[0_u64..length]);
+                  if logged {
+                    record_effects(log: &m^.log, effects: &effects, appended: env.appended);
+                  }
+                  break;
+                }
+                HostStopped() => {
+                  reply_error(client: client, word: &entry_text_7[0_u64..23_u64]);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return_engine(store: store, pooled: move pooled);
+    if killed {
+      reply_killed(client: client, sha: &sha, line: stopped_at);
+      break;
+    }
+    if bnot(retry) {
+      break;
+    }
+    let paused = std::time::now(clock: clock);
+    let resumed = std::time::instant_after(instant: paused, nanoseconds: 1000000_u64);
+    std::time::sleep_until(deadline: resumed);
+    set budget = budget +sat budget;
+  }
+  script_ends(store: store);
+  return unit;
+}
+
+fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> r: unit reads(store), reads(input), reads(args), writes(client) waits {
+  doc "SCRIPT LOAD, EXISTS and FLUSH as Redis 7.0.15 answers them: an unknown subcommand is answered as Redis answers one, its name echoed to 128 bytes, and a subcommand outside its arity with Redis's arity error, both before a connection that must authenticate is answered NOAUTH. SYNC and ASYNC both invalidate the visible registry before replying OK, as in Redis; firn frees the registry's sources at once for either, and the engine discards its stale environment before its next use.";
+  let count = args^.inner.len;
+  let sub = pkg::protocol::arg(args: args, index: 1_u64);
+  let exists = pkg::bytes::name_is(input: input, start: sub.start, length: sub.length, word: &entry_text_8[0_u64..6_u64]);
+  let flushing = pkg::bytes::name_is(input: input, start: sub.start, length: sub.length, word: &entry_text_9[0_u64..5_u64]);
+  let loading = pkg::bytes::name_is(input: input, start: sub.start, length: sub.length, word: &entry_text_13[0_u64..4_u64]);
+  let killing = pkg::bytes::name_is(input: input, start: sub.start, length: sub.length, word: &word_kill[0_u64..4_u64]);
+  let known = bor(exists, flushing);
+  set known = bor(known, loading);
+  set known = bor(known, killing);
+  if bnot(known) {
+    script_unknown(client: client, input: input, sub: sub);
+    return unit;
+  }
+  if loading {
+    if count != 3_u64 {
+      reply_error(client: client, word: &load_arity_error[0_u64..55_u64]);
+      return unit;
+    }
+  }
+  if exists {
+    if count < 3_u64 {
+      reply_error(client: client, word: &exists_arity_error[0_u64..57_u64]);
+      return unit;
+    }
+  }
+  if killing {
+    if count != 2_u64 {
+      reply_error(client: client, word: &kill_arity_error[0_u64..55_u64]);
+      return unit;
+    }
+  }
+  if client^.locked {
+    reply_error(client: client, word: &script_noauth[0_u64..31_u64]);
+    return unit;
+  }
+  if killing {
+    let busy = False();
+    atomic p = &store^.scripts {
+      if p^.running > 0_u64 {
+        set p^.kills = p^.kills +wrap 1_u64;
+        set busy = True();
+      }
+    }
+    if busy {
+      pkg::protocol::reply_ok(client: client);
+    } else {
+      reply_error(client: client, word: &notbusy_error[0_u64..42_u64]);
+    }
+    return unit;
+  }
+  if exists {
+    let replies = count -sat 2_u64;
+    pkg::protocol::reply_array(client: client, count: replies);
+    for (i in 2_u64..count) {
+      let span = pkg::protocol::arg(args: args, index: i);
+      let no_fold = False();
+      let sha = read_sha(input: input, span: span, fold: no_fold);
+      let yes = False();
+      if span.length == 40_u64 {
+        atomic p = &store^.scripts {
+          let index = registry_find(pool: p, sha: &sha);
+          set yes = index < p^.registry.inner.len;
+        }
+      }
+      let value = 0_i64;
+      if yes {
+        set value = 1_i64;
+      }
+      reply_integer(client: client, value: value);
+    }
+    return unit;
+  }
+  if flushing {
+    let valid = count == 2_u64;
+    if count == 3_u64 {
+      let option = pkg::protocol::arg(args: args, index: 2_u64);
+      let sync = pkg::bytes::name_is(input: input, start: option.start, length: option.length, word: &entry_text_10[0_u64..4_u64]);
+      let async = pkg::bytes::name_is(input: input, start: option.start, length: option.length, word: &entry_text_11[0_u64..5_u64]);
+      set valid = bor(sync, async);
+    }
+    if bnot(valid) {
+      reply_error(client: client, word: &entry_text_12[0_u64..47_u64]);
+      return unit;
+    }
+    atomic p = &store^.scripts {
+      let empty = box_slots_new::<Registered>(capacity: 0_u64);
+      set p^.registry = move empty;
+      set p^.source_bytes = 0_u64;
+      set p^.generation = p^.generation +wrap 1_u64;
+    }
+    pkg::protocol::reply_ok(client: client);
+    return unit;
+  }
+  let load_arity = count == 3_u64;
+  if band(loading, load_arity) {
+    let body = pkg::protocol::arg(args: args, index: 2_u64);
+    let source = copy_source(input: input, span: body);
+    let n = source.inner.len;
+    let sha = halo::embed::sha1hex(bytes: &source.inner[0_u64..n]);
+    let pooled = take_engine(store: store);
+    let compiled = cached(pooled: &pooled, sha: &sha, source: &source.inner[0_u64..n]);
+    match move compiled {
+      Err(error: e) => {
+        compile_error(client: client, error: &e);
+      }
+      Ok(..) => {
+        register(store: store, sha: &sha, source: &source.inner[0_u64..n]);
+        reply_bulk_input(client: client, input: &sha[0_u64..40_u64], start: 0_u64, length: 40_u64);
+      }
+    }
+    return_engine(store: store, pooled: move pooled);
+    return unit;
+  }
+  return unit;
+}
+
+fn script_unknown(client: &Client, input: &[u8], sub: Span) -> r: unit reads(input), writes(client) {
+  reply_word(client: client, word: &entry_text_14[0_u64..25_u64]);
+  let shown = imin(sub.length, 128_u64);
+  let echoed = pkg::protocol::reply_echoed(client: client, input: input, span: sub, limit: shown);
+  reply_word(client: client, word: &entry_text_15[0_u64..21_u64]);
+  return unit;
+}
+
+const entry_text_0: Array<u8, 12> = "@user_script";
+
+const entry_text_1: Array<u8, 44> = "-ERR Error compiling script (new function): ";
+
+const entry_text_2: Array<u8, 2> = "\r\n";
+
+const entry_text_3: Array<u8, 43> = "ERR value is not an integer or out of range";
+
+const entry_text_4: Array<u8, 36> = "ERR Number of keys can't be negative";
+
+const entry_text_5: Array<u8, 55> = "ERR Number of keys can't be greater than number of args";
+
+const entry_text_6: Array<u8, 45> = "NOSCRIPT No matching script. Please use EVAL.";
+
+const entry_text_7: Array<u8, 23> = "ERR script host stopped";
+
+const entry_text_8: Array<u8, 6> = "EXISTS";
+
+const entry_text_9: Array<u8, 5> = "FLUSH";
+
+const entry_text_10: Array<u8, 4> = "SYNC";
+
+const entry_text_11: Array<u8, 5> = "ASYNC";
+
+const entry_text_12: Array<u8, 47> = "ERR SCRIPT FLUSH only support SYNC|ASYNC option";
+
+const entry_text_13: Array<u8, 4> = "LOAD";
+
+const entry_text_14: Array<u8, 25> = "-ERR unknown subcommand '";
+
+const entry_text_15: Array<u8, 21> = "'. Try SCRIPT HELP.\r\n";
+
+const exists_arity_error: Array<u8, 57> = "ERR wrong number of arguments for 'script|exists' command";
+
+const load_arity_error: Array<u8, 55> = "ERR wrong number of arguments for 'script|load' command";
+
+const script_noauth: Array<u8, 31> = "NOAUTH Authentication required.";
+
+const word_kill: Array<u8, 4> = "KILL";
+
+const kill_arity_error: Array<u8, 55> = "ERR wrong number of arguments for 'script|kill' command";
+
+const notbusy_error: Array<u8, 42> = "NOTBUSY No scripts in execution right now.";
+
+const killed_text: Array<u8, 45> = "ERR Script killed by user with SCRIPT KILL...";
+
+const killed_script: Array<u8, 9> = " script: ";
+
+const killed_on: Array<u8, 18> = ", on @user_script:";
+
+const effects_multi: Array<u8, 5> = "MULTI";
+
+const effects_exec: Array<u8, 4> = "EXEC";

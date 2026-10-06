@@ -4,3 +4,6 @@
 [submodule "whitefoot-kit"]
 	path = whitefoot-kit
 	url = https://github.com/Ming-Research/Whitefoot-kit.git
+[submodule "deps/halo-wf"]
+	path = deps/halo-wf
+	url = https://github.com/Ming-Research/Halo-wf.git

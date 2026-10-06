@@ -1,0 +1,28 @@
+public struct Cached {
+  public sha: Array<u8, 40>;
+  public id: halo::embed::ScriptId;
+}
+
+public struct PooledEngine {
+  public engine: halo::embed::Engine;
+  public generation: u64;
+  public cache: Box<Slots<Cached>>;
+}
+
+public struct Registered {
+  public sha: Array<u8, 40>;
+  public source: Box<Slots<u8>>;
+}
+
+public struct EnginePool {
+  doc "The one engine scripts run on and the SHA1-to-source registry. A script takes the engine in a short statement that waits while out is 1, keeps it outside the pool's statements while one of its attempts runs, and puts it back after the attempt, so that scripts use the engine in turn and see the state earlier ones left in it, as Redis's scripts share one Lua state; idle holds it while no script has it. running counts the scripts in progress, which SCRIPT KILL answers by, and kills the kills requested, which a script compares, between its attempts, with the count it saw when it first took the engine.";
+  public idle: Box<Slots<PooledEngine>>;
+  public out: u64;
+  public registry: Box<Slots<Registered>>;
+  public source_bytes: u64;
+  public generation: u64;
+  public running: u64;
+  public kills: u64;
+}
+
+public fn new_pool() -> pool: EnginePool pure doc "A pool with no engine yet, the engine made when first taken.";

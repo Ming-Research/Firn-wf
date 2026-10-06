@@ -24,9 +24,10 @@ DESIGN_REVIEW_BASE ?= origin/main
 # projects written in Whitefoot (whitefoot-kit/downstream.md).
 include $(ROOT)/whitefoot-kit/whitefoot.mk
 
-# firn is one module program; any of its sources changes the build.
+# firn is one module program; any of its sources changes the build, Halo's
+# among them, which deps/halo-wf brings.
 FIRN_GRAPH := $(ROOT)/firn/modules.wfg
-FIRN_SOURCES := $(shell find $(ROOT)/firn -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
+FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
 
 .PHONY: check firn firn-test test redis-suite firn-lto design-lint design-ready
 
