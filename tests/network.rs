@@ -3867,14 +3867,15 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
 /// CLIENT INFO with an argument is Redis's arity error. The line is
 /// redis-server 7.0.15's but for the fields firn leaves out, the addresses,
 /// descriptor, events and buffer sizes, and for the age, 0 or 1 as the second
-/// may turn between the connection and the command, and from 2 after more
-/// than two seconds.
+/// may turn between the connection and the command, and at least 2 after
+/// more than two seconds, though no more than firn has run.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_client_info_as_redis_does() {
     let program = firn();
     let port = free_port();
     let text = port.to_string();
+    let spawned = Instant::now();
     let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
     let mut client = connect_when_ready(port);
     let mut batch = Vec::new();
@@ -3925,9 +3926,13 @@ fn firn_answers_client_info_as_redis_does() {
         .and_then(|rest| rest.split(' ').next())
         .and_then(|digits| digits.parse::<u64>().ok())
         .unwrap_or_else(|| panic!("no age in {returned:?}"));
+    // At least 2.2 seconds passed between serving the connection and this
+    // read, and fewer than firn has run, so the whole seconds between the
+    // two clock readings lie in that range.
+    let running = spawned.elapsed().as_secs() + 1;
     assert!(
-        (2..=4).contains(&age),
-        "the age after two seconds: {returned:?}"
+        (2..=running).contains(&age),
+        "the age after two seconds, firn having run under {running} s: {returned:?}"
     );
     assert_eq!(
         returned.replace(&format!(" age={age} "), " age=0 "),
