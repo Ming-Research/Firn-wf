@@ -1,26 +1,5 @@
 # Review checklist
 
-firn's own review items, checked with the owner-wide review checks G1–G3 and
-DC1–DC4 and against the owner-wide engineering standards.
-
-## How to review
-
-Start the reviewer with this prompt, filled in:
-
-```text
-You are reviewing a firn change you did not write. Do not edit files.
-Task outcome and constraints: <...>
-Base and head: <...>; validation already run: <commands, results, revision>.
-Read the diff from the base (git diff <base>, plus untracked files) and the
-changed sections in context. Apply the owner-wide review checks G1–G3 and
-DC1–DC4 and engineering standards and each group of docs/review-checklist.md
-whose trigger applies, and run make design-lint. Do not rerun green suites.
-Report Scope (your model, base..head, groups checked and skipped), Checks
-(what you ran) and Findings (item ID, file:line, quoted text or missing
-evidence, reason; quote both sides of a contradiction), or "none within
-scope".
-```
-
 ## A. Every change
 
 - [ ] **A1 — No vendored Whitefoot.** Whitefoot enters only through
@@ -28,15 +7,12 @@ scope".
 
 ## C. Code and cases — changes to Whitefoot sources or tests
 
-- [ ] **C1 — Reference expectation.** Expected results come from the
-  [reference](../AGENTS.md#references-and-correctness), Redis 7.0.15, never
-  firn's current output; a fix's case fails before the fix and passes after.
-- [ ] **C2 — General path.** The change implements the command's general
-  behavior as Redis does. No test, client or benchmark selects a special
-  path, and no fallback conceals an unsupported feature.
-- [ ] **C3 — Interface fidelity.** Module bodies implement their `.wfm`
-  interfaces as written. An interface, contract or effect row changed only
-  with the architecture's approval, and none was weakened to let a body pass.
+- [ ] **C1 — Reference expectation.** Expected results come from Redis
+  7.0.15's replies and files, observed or read from its source, or its own
+  test suite.
+- [ ] **C2 — Interface fidelity.** Module bodies implement their `.wfm`
+  interfaces as written, and no contract or effect row was weakened to let a
+  body pass.
 
 ## T. Checks and pins — changes to tests, the Makefile, `.github/`, `whitefoot.pin` or a submodule
 
@@ -51,10 +27,8 @@ scope".
 
 ## R. Measurements — changes under `research/`, or a performance claim
 
-- [ ] **R1 — Performance claims.** A claim names the workload, the machine,
-  the engine versions compared and the comparison; an attribution follows the
-  [method](../AGENTS.md#design-tree) of interleaved `make firn-lto` builds on
-  the 14900K.
+- [ ] **R1 — firn's comparison.** An attribution compares `make firn-lto`
+  builds on the 14900K.
 
 ## D. Documents — changed Markdown
 
