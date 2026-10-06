@@ -1269,6 +1269,38 @@ fn firn_replays_blocks_and_cuts_an_unloaded_end_as_redis_does() {
     }
 }
 
+/// [PRE-2] firn stops with status 4 before it listens when its append-only
+/// file holds a record that is not a well-formed command, here an argument
+/// line that does not start with `$` between two whole commands, where
+/// Redis 7.0.15's loader takes its format-error path and exits; the file
+/// stays as it was, neither cut nor appended to.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_stops_on_an_append_only_file_that_does_not_parse() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let name = "malformed.aof";
+    let path = fixture.path().join(name);
+    let content = [
+        resp(&["SET", "a", "1"]),
+        b"*1\r\n:3\r\nfoo\r\n".to_vec(),
+        resp(&["SET", "b", "2"]),
+    ]
+    .concat();
+    std::fs::write(&path, &content)
+        .unwrap_or_else(|error| panic!("write the fixture: {error}"));
+    let port = free_port();
+    let text = port.to_string();
+    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]);
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "firn must stop with status 4: {output:?}"
+    );
+    let after = std::fs::read(&path).unwrap_or_else(|error| panic!("read the file: {error}"));
+    assert_eq!(after, content, "the file must stay as it was");
+}
+
 /// [PRE-2] a deadline on `receive_next` closes a client silent past
 /// firn's idle limit: with a limit of one second, the connection ends after
 /// at least 0.9 and at most two seconds of silence. A limit CONFIG SET
