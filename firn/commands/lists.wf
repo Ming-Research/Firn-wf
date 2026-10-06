@@ -1351,7 +1351,7 @@ fn lrange_finish(client: &Client) -> result: unit writes(client) {
   return unit;
 }
 
-fn llen_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(input), reads(args), reads(time), writes(client) {
+fn llen_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(time), writes(client) {
   doc "LLEN parsing and request state, shared by the network and held callers.";
   set client^.now = time^.check;
   set client^.state = state_absent;
