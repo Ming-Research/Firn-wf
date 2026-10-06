@@ -46,6 +46,9 @@ alias log_input = pkg::store::log_input;
 alias log_removal = pkg::store::log_removal;
 alias log_word = pkg::store::log_word;
 alias queue_expiry = pkg::store::queue_expiry;
+alias queue_due = pkg::store::queue_due;
+alias Due = pkg::store::Due;
+alias PriorityQueue = std::collections::priority_queue::PriorityQueue;
 alias read_integer = pkg::bytes::read_integer;
 alias reply_byte = pkg::protocol::reply_byte;
 alias reply_echoed = pkg::protocol::reply_echoed;
@@ -166,6 +169,16 @@ struct ExpireOptions {
   flags: u64;
   error: u64;
   at: u64;
+}
+
+struct ExpirePlan {
+  error: u64;
+  at: u64;
+  flags: u64;
+  deadline: i64;
+  expires: u64;
+  remove_now: Bool;
+  as_sent: Bool;
 }
 
 fn key_at(input: &[u8], args: &Box<Slots<Span>>, index: u64) -> made: Key reads(input), reads(args) {
@@ -619,28 +632,19 @@ fn reply_unsupported(client: &Client, input: &[u8], span: Span) -> result: unit 
   return unit;
 }
 
-fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, scale: u64, absolute: Bool, invalid: &[u8]) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(client) waits {
-  doc "EXPIRE key seconds (scale 1000), PEXPIRE key milliseconds (scale 1), EXPIREAT key unix-seconds (absolute, scale 1000) and PEXPIREAT key unix-milliseconds (absolute), each with NX, XX, GT or LT: gives a live key the expiry at those calendar milliseconds, a relative amount counting from the command's time, when the options allow it, or removes the key when that time has passed, and answers 1 when it did either and 0 otherwise, as Redis 7.0.15's expireGenericCommand does. The options are judged first, then the amount: one whose milliseconds, or their sum with the command's time, leave the range of i64 is answered with invalid. The file records an expiry as PEXPIREAT key at with the options as they were sent, a PEXPIREAT as it was sent, a removal as DEL key, and a key found expired as log_removal does. While a file is replayed an expiry already past is kept as one already reached, as Redis keeps it while loading, so a later PERSIST in the file still finds the key.";
+fn expire_plan(input: &[u8], args: &Box<Slots<Span>>, unix_ms: u64, loading: Bool, scale: u64, absolute: Bool) -> plan: ExpirePlan reads(input), reads(args) {
+  doc "EXPIRE's parsing, before any key is read: the options are judged first, then the amount, and the plan records the first refusal in error, 1 an unknown option at the argument at, 2 NX with XX, GT or LT, 3 GT with LT, 4 an amount that is not an integer and 5 one whose milliseconds, or their sum with the command's calendar time unix_ms, leave the range of i64, or otherwise the deadline in calendar milliseconds, the expiry to hold, at least 1, whether the deadline has passed so the key is removed instead, never while a file is replayed, and whether the file records the command as sent, a PEXPIREAT.";
   let options = expire_options(input: input, args: args);
-  if options.error == 1_u64 {
-    let option = arg(args: args, index: options.at);
-    reply_unsupported(client: client, input: input, span: option);
-    return unit;
+  let no = False();
+  let plan = ExpirePlan(error: options.error, at: options.at, flags: options.flags, deadline: 0_i64, expires: 1_u64, remove_now: no, as_sent: no);
+  if options.error != 0_u64 {
+    return plan;
   }
-  if options.error == 2_u64 {
-    reply_error(client: client, word: &text_expire_nx[0_u64..67_u64]);
-    return unit;
-  }
-  if options.error == 3_u64 {
-    reply_error(client: client, word: &text_expire_gt[0_u64..57_u64]);
-    return unit;
-  }
-  let key_span = arg(args: args, index: 1_u64);
   let amount = arg(args: args, index: 2_u64);
   let number = read_integer(input: input, start: amount.start, length: amount.length);
   if number.state != 1_u64 {
-    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
-    return unit;
+    set plan.error = 4_u64;
+    return plan;
   }
   let deadline = number.value;
   if scale == 1000_u64 {
@@ -648,106 +652,161 @@ fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     let below = deadline < -9223372036854775_i64;
     let outside = bor(above, below);
     if outside {
-      reply_error(client: client, word: invalid);
-      return unit;
+      set plan.error = 5_u64;
+      return plan;
     }
     set deadline = deadline *wrap 1000_i64;
   }
-  let now = cvt.wrap::<u64, i64>(time^.unix_ms);
+  let now = cvt.wrap::<u64, i64>(unix_ms);
   let base = now;
   if absolute {
     set base = 0_i64;
   }
   let room = 9223372036854775807_i64 -wrap base;
   if deadline > room {
-    reply_error(client: client, word: invalid);
-    return unit;
+    set plan.error = 5_u64;
+    return plan;
   }
   set deadline = deadline +wrap base;
-  let remove_now = deadline <= now;
-  if time^.loading {
-    set remove_now = False();
+  set plan.deadline = deadline;
+  set plan.remove_now = deadline <= now;
+  if loading {
+    set plan.remove_now = False();
   }
-  let expires = 1_u64;
   if deadline > 0_i64 {
-    set expires = cvt.wrap::<i64, u64>(deadline);
+    set plan.expires = cvt.wrap::<i64, u64>(deadline);
   }
-  let as_sent = False();
   if absolute {
-    set as_sent = scale == 1_u64;
+    set plan.as_sent = scale == 1_u64;
+  }
+  return plan;
+}
+
+fn expire_refused(client: &Client, input: &[u8], args: &Box<Slots<Span>>, plan: &ExpirePlan, invalid: &[u8]) -> refused: Bool reads(input), reads(args), reads(plan), reads(invalid), writes(client) {
+  doc "Writes the reply to a refused EXPIRE as Redis 7.0.15 writes it, invalid being the error for an amount out of range, and answers whether the plan was refused.";
+  if plan^.error == 0_u64 {
+    return False();
+  }
+  if plan^.error == 1_u64 {
+    let option = arg(args: args, index: plan^.at);
+    reply_unsupported(client: client, input: input, span: option);
+  } else if plan^.error == 2_u64 {
+    reply_error(client: client, word: &text_expire_nx[0_u64..67_u64]);
+  } else if plan^.error == 3_u64 {
+    reply_error(client: client, word: &text_expire_gt[0_u64..57_u64]);
+  } else if plan^.error == 4_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  } else {
+    reply_error(client: client, word: invalid);
+  }
+  return True();
+}
+
+fn expire_body(slot: &Option<Entry>, client: &Client, plan: &ExpirePlan) -> outcome: u64 reads(plan), writes(slot), writes(client) {
+  doc "EXPIRE's work on its key's entry, held by the caller: when the entry is live and the options allow the deadline, removes it if the deadline has passed and answers 2, or gives it the expiry and answers 1; otherwise 0. An entry found expired is removed, client's state recording it for the file.";
+  let kind = entry_kind(slot: slot, client: client);
+  if kind == 0_u64 {
+    return 0_u64;
+  }
+  let current = held_expiry(slot: slot);
+  let allowed = expire_allowed(flags: plan^.flags, current: current, deadline: plan^.deadline);
+  if allowed {
+    if plan^.remove_now {
+      set slot^ = None<Entry>();
+      return 2_u64;
+    }
+    hold_expiry(slot: slot, expires: plan^.expires);
+    return 1_u64;
+  }
+  return 0_u64;
+}
+
+fn expire_meta(due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, plan: &ExpirePlan, outcome: u64, lapsed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log) {
+  doc "EXPIRE's metadata after its work: queues a new expiry, and when logged appends what changed and answers how many commands it appended: a key found expired as log_removal records it, an expiry as PEXPIREAT key at with the options as they were sent or a PEXPIREAT as it was sent, and a removal as DEL key.";
+  let appended = 0_u64;
+  if lapsed {
+    if logged {
+      log_removal(log: log, key: key);
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  if outcome == 1_u64 {
+    queue_due(due: due, key: key, at: plan^.expires, env: env);
+    if logged {
+      if plan^.as_sent {
+        log_command(log: log, input: input, args: args);
+      } else {
+        log_expire_options(log: log, input: input, args: args, at_ms: plan^.expires);
+      }
+      set appended = appended +wrap 1_u64;
+    }
+  } else if outcome == 2_u64 {
+    if logged {
+      let key_span = arg(args: args, index: 1_u64);
+      log_key_word(log: log, word: &word_del[0_u64..3_u64], input: input, key: key_span);
+      set appended = appended +wrap 1_u64;
+    }
+  }
+  return appended;
+}
+
+fn expire_finish(client: &Client, outcome: u64) -> result: unit writes(client) {
+  doc "EXPIRE's reply after its work: 1 when it gave the key the expiry or removed it, 0 otherwise.";
+  if outcome == 0_u64 {
+    reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+    return unit;
+  }
+  reply_word(client: client, word: &reply_one[0_u64..4_u64]);
+  return unit;
+}
+
+fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, scale: u64, absolute: Bool, invalid: &[u8]) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(client) waits {
+  doc "EXPIRE key seconds (scale 1000), PEXPIRE key milliseconds (scale 1), EXPIREAT key unix-seconds (absolute, scale 1000) and PEXPIREAT key unix-milliseconds (absolute), each with NX, XX, GT or LT: gives a live key the expiry at those calendar milliseconds, a relative amount counting from the command's time, when the options allow it, or removes the key when that time has passed, and answers 1 when it did either and 0 otherwise, as Redis 7.0.15's expireGenericCommand does, in its four parts: expire_plan, expire_body, expire_meta and expire_finish. The options are judged first, then the amount: one whose milliseconds, or their sum with the command's time, leave the range of i64 is answered with invalid. The file records an expiry as PEXPIREAT key at with the options as they were sent, a PEXPIREAT as it was sent, a removal as DEL key, and a key found expired as log_removal does. While a file is replayed an expiry already past is kept as one already reached, as Redis keeps it while loading, so a later PERSIST in the file still finds the key.";
+  let plan = expire_plan(input: input, args: args, unix_ms: time^.unix_ms, loading: time^.loading, scale: scale, absolute: absolute);
+  let refused = expire_refused(client: client, input: input, args: args, plan: &plan, invalid: invalid);
+  if refused {
+    return unit;
   }
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   set client^.now = time^.check;
-  let done = False();
+  let outcome = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let kind = entry_kind(slot: slot, client: client);
-    if client^.state == state_expired {
-      if logged {
-        log_removal(log: &m^.log, key: key);
-      }
-    }
-    if kind != 0_u64 {
-      let current = held_expiry(slot: slot);
-      let allowed = expire_allowed(flags: options.flags, current: current, deadline: deadline);
-      if allowed {
-        if remove_now {
-          set slot^ = None<Entry>();
-          if logged {
-            log_key_word(log: &m^.log, word: &word_del[0_u64..3_u64], input: input, key: key_span);
-          }
-        } else {
-          hold_expiry(slot: slot, expires: expires);
-          queue_expiry(meta: m, key: key, at: expires, env: env);
-          if logged {
-            if as_sent {
-              log_command(log: &m^.log, input: input, args: args);
-            } else {
-              log_expire_options(log: &m^.log, input: input, args: args, at_ms: expires);
-            }
-          }
-        }
-        set done = True();
-      }
-    }
+    set outcome = expire_body(slot: slot, client: client, plan: &plan);
+    let lapsed = client^.state == state_expired;
+    let appended = expire_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, outcome: outcome, lapsed: lapsed, input: input, args: args, key: key, env: env);
   }
-  if done {
-    reply_word(client: client, word: &reply_one[0_u64..4_u64]);
-    return unit;
-  }
-  reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+  expire_finish(client: client, outcome: outcome);
   return unit;
 }
 
-fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, absolute: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "TTL key and PTTL key: answers the time a live key has left, in seconds rounded as Redis rounds them or in milliseconds; EXPIRETIME key and PEXPIRETIME key (absolute): its expiry's calendar time, in seconds rounded so or in milliseconds; -1 for a key without an expiry and -2 for an absent or expired one, removing an expired key, which the file records as log_removal does.";
-  let remaining = Remaining(at: 0_u64, now: time^.check, state: 3_u64);
-  let place = key_bounds(input: input, args: args, index: 1_u64);
-  let key = &input^[place.start..place.end];
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    match slot^ {
-      Some(value: held) => {
-        let found = read_expiry(env: &remaining, value: held);
-      }
-      None() => {
-      }
+fn ttl_body(slot: &Option<Entry>, remaining: &Remaining) -> removed: Bool writes(slot), writes(remaining) {
+  doc "TTL's work on its key's entry, held by the caller: records in remaining whether the entry has an expiry, none, or is absent or expired, and removes an expired entry, answering whether it did, whose removal the file records.";
+  match slot^ {
+    Some(value: held) => {
+      let found = read_expiry(env: remaining, value: held);
     }
-    if remaining.state == 0_u64 {
-      set slot^ = None<Entry>();
-      if store^.logging {
-        log_removal(log: &m^.log, key: key);
-      }
+    None() => {
     }
   }
-  if remaining.state == 1_u64 {
+  if remaining^.state == 0_u64 {
+    set slot^ = None<Entry>();
+    return True();
+  }
+  return False();
+}
+
+fn ttl_finish(client: &Client, remaining: &Remaining, now: u64, in_seconds: Bool, absolute: Bool) -> result: unit reads(remaining), writes(client) {
+  doc "TTL's reply after its work: the time left from now, or the expiry's calendar time when absolute, in seconds rounded as Redis rounds them or in milliseconds; -1 for a key without an expiry and -2 for an absent or expired one.";
+  if remaining^.state == 1_u64 {
     reply_word(client: client, word: &reply_no_expiry[0_u64..5_u64]);
     return unit;
   }
-  if remaining.state == 2_u64 {
-    let answer = remaining.at -wrap time^.check;
+  if remaining^.state == 2_u64 {
+    let answer = remaining^.at -wrap now;
     if absolute {
-      set answer = remaining.at;
+      set answer = remaining^.at;
     }
     if in_seconds {
       let rounded = answer +wrap 500_u64;
@@ -758,6 +817,23 @@ fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   reply_word(client: client, word: &reply_no_key[0_u64..5_u64]);
+  return unit;
+}
+
+fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, absolute: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "TTL key and PTTL key: answers the time a live key has left, in seconds rounded as Redis rounds them or in milliseconds; EXPIRETIME key and PEXPIRETIME key (absolute): its expiry's calendar time, in seconds rounded so or in milliseconds; -1 for a key without an expiry and -2 for an absent or expired one, removing an expired key, which the file records as log_removal does; in the parts ttl_body and ttl_finish.";
+  let remaining = Remaining(at: 0_u64, now: time^.check, state: 3_u64);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let removed = ttl_body(slot: slot, remaining: &remaining);
+    if removed {
+      if store^.logging {
+        log_removal(log: &m^.log, key: key);
+      }
+    }
+  }
+  ttl_finish(client: client, remaining: &remaining, now: time^.check, in_seconds: in_seconds, absolute: absolute);
   return unit;
 }
 
