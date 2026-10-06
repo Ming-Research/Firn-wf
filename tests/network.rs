@@ -4717,10 +4717,11 @@ fn file_records(mut bytes: &[u8]) -> Vec<Vec<Vec<u8>>> {
 /// is what redis-server 7.0.15 appends for the same keys expiring under it
 /// with active expiry off, less the SELECT it begins with. firn's active
 /// expiry first sweeps 100 ms after it starts; when that sweep removed the
-/// keys before the commands met them, its DEL records stand outside any
-/// MULTI and EXEC, the replies being the same, and the run starts over, up
-/// to five times. A held command that records a removal outside its block
-/// shows the same form on every run and fails.
+/// keys before the commands met them, the replies are the same and the
+/// sweep's DEL records stand outside any MULTI and EXEC for keys Redis
+/// removes inside one, and the run starts over, up to five times. A held
+/// command that records such a removal outside its block shows the same
+/// form on every run and fails.
 #[cfg(target_os = "linux")]
 fn check_held_records(
     loaded: &[&[&str]],
@@ -4752,16 +4753,23 @@ fn check_held_records(
         if recorded == records {
             return;
         }
-        let mut inside = false;
-        let mut swept = false;
-        for record in file_records(recorded) {
-            match record[0].as_slice() {
-                b"MULTI" => inside = true,
-                b"EXEC" => inside = false,
-                b"DEL" if !inside => swept = true,
-                _ => {}
+        let removals = |bytes: &[u8], within: bool| -> Vec<Vec<u8>> {
+            let mut inside = false;
+            let mut keys = Vec::new();
+            for record in file_records(bytes) {
+                match record[0].as_slice() {
+                    b"MULTI" => inside = true,
+                    b"EXEC" => inside = false,
+                    b"DEL" if inside == within => keys.push(record[1].clone()),
+                    _ => {}
+                }
             }
-        }
+            keys
+        };
+        let met = removals(records, true);
+        let swept = removals(recorded, false)
+            .iter()
+            .any(|key| met.contains(key));
         assert!(
             swept,
             "the records:\n{}\nwhere Redis appends:\n{}",
