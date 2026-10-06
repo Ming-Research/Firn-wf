@@ -37,12 +37,14 @@ jobs:
           git log --oneline -1 "$design_review_base"
 
       # The pinned compiler links with /usr/bin/clang, and a cached build
-      # links its ThinLTO fragments with LLD on Linux, as Whitefoot's own
-      # gate installs them.
+      # links its ThinLTO fragments with LLD on Linux, of the LLVM major the
+      # pinned release was built with, which Whitefoot-kit's `make toolchain`
+      # installs.
       - name: Install the host toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld tcl redis-tools
+          sudo apt-get install -y --no-install-recommends tcl redis-tools
+          make toolchain
           ld.lld --version
           /usr/bin/clang --version
           python3 --version

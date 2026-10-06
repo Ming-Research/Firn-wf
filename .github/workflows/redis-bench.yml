@@ -99,13 +99,20 @@ jobs:
 
       # The self-hosted machine keeps its tools installed and gives a job no
       # passwordless sudo.
-      - name: Install clang, LLD, Redis's tools and perf
+      - name: Install the pinned release's LLVM, Redis's tools and perf
         if: ${{ runner.environment == 'github-hosted' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld redis-server redis-tools
+          sudo apt-get install -y --no-install-recommends redis-server redis-tools
+          make toolchain
           sudo apt-get install -y --no-install-recommends linux-tools-common \
             linux-tools-generic "linux-tools-$(uname -r)" || true
+
+      # The self-hosted machine keeps its own LLVM; it must be the major the
+      # pinned release was built with.
+      - name: Check the self-hosted LLVM
+        if: ${{ runner.environment != 'github-hosted' }}
+        run: make toolchain-check
 
       - name: Check the host's tools
         run: |

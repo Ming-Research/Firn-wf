@@ -34,7 +34,8 @@ clients ([design](design/firn.md)).
 ## Build and run
 
 On Linux x86-64 or macOS arm64, with `git`, `curl`, Python 3,
-`/usr/bin/clang` and, on Linux, LLD:
+`/usr/bin/clang` and, on Linux, LLD, both of the LLVM major the pinned
+compiler release was built with, which `make toolchain` installs on Linux:
 
 ```sh
 git clone --recurse-submodules https://github.com/Ming-Research/Firn-wf.git
