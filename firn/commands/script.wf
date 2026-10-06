@@ -1360,16 +1360,11 @@ fn script_smove(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logge
 }
 
 fn script_set_combine(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, operation: u64, storing: Bool) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(effects), writes(client) {
-  doc "SINTER, SUNION, SDIFF and their STORE forms under a held statement, through the network parts; any expired operand still present is removed before the statement proceeds.";
+  doc "SINTER, SUNION, SDIFF and their STORE forms under a held statement, through the shared ordered operand lookup, removal records and reply, including wrong-type refusals.";
   let ks = set_combine_parse(input: input, args: args, client: client, storing: storing, now: time^.check);
   let members = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
   let slots = &keys^[ks];
   let work = set_combine_body(slots: slots, keys: &ks, client: client, env: env, operation: operation, storing: storing, members: &members);
-  let first = 1_u64;
-  if storing {
-    set first = 2_u64;
-  }
-  set_operands_lapse_body(slots: slots, keys: &ks, positions: &client^.key_metadata, first: first, now: time^.check, removed: &work.removed);
   let appended = set_operands_meta(log: effects, logged: logged, removed: &work.removed, changed: work.changed, input: input, args: args);
   set_combine_finish(client: client, storing: storing, members: &members);
   return appended;
@@ -1383,11 +1378,7 @@ fn script_sintercard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, 
   }
   let ks = sintercard_keys(input: input, args: args, client: client, end: plan.end, now: time^.check);
   let slots = &keys^[ks];
-  let lapsed = sintercard_body(slots: slots, keys: &ks, client: client, env: env, limit: plan.limit);
-  let removed = box_slots_new::<u64>(capacity: 0_u64);
-  if lapsed {
-    set_operands_lapse_body(slots: slots, keys: &ks, positions: &client^.key_metadata, first: 2_u64, now: time^.check, removed: &removed);
-  }
+  let removed = sintercard_body(slots: slots, keys: &ks, client: client, env: env, limit: plan.limit);
   let changed = False();
   let appended = set_operands_meta(log: effects, logged: logged, removed: &removed, changed: changed, input: input, args: args);
   sintercard_finish(client: client);

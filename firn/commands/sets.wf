@@ -86,7 +86,6 @@ struct Membership {
 struct Operands {
   wrong: Bool;
   missing: Bool;
-  lapsed: Bool;
   smallest: u64;
   least: u64;
   first: u64;
@@ -910,10 +909,10 @@ fn operand_argument(payload: u64, first: u64) -> position: u64 pure {
   return 1_u64;
 }
 
-fn survey(slots: &Entries<Entry>, keys: &KeySet, positions: &Box<Slots<u64>>, now: u64) -> found: Operands reads(slots), reads(keys), reads(positions) {
-  doc "What a set operation's keys hold: whether a set holds another kind (wrong), whether one is absent or expired (missing), whether one is expired (lapsed), the position of the smallest live set and its size, ties chosen by first operand occurrence, the first set's position and whether it is named again (repeated), and the destination's position, each position keys' length when there is none.";
+fn survey(slots: &Entries<Entry>, keys: &KeySet, positions: &Box<Slots<u64>>, first: u64, now: u64, removed: &Box<Slots<u64>>) -> found: Operands reads(keys), reads(positions), writes(slots), writes(removed) {
+  doc "Looks up operands in first-occurrence order, removing each expired entry and noting its argument for DEL before gathering, and stops at the first live wrong type. Duplicate operands need only one lookup at the command's fixed time. Reports missing operands, the smallest live set and its size with first-occurrence ties, the first set and whether it repeats, and the destination, using keys' length for no position. A destination not also an operand is not looked up.";
   let no = False();
-  let found = Operands(wrong: no, missing: no, lapsed: no, smallest: keys^.len, least: 18446744073709551615_u64, first: keys^.len, repeated: no, destination: keys^.len);
+  let found = Operands(wrong: no, missing: no, smallest: keys^.len, least: 18446744073709551615_u64, first: keys^.len, repeated: no, destination: keys^.len);
   for @entries (at in 0_u64..keys^.len) {
     let payload = key_position(positions: positions, index: at);
     let storing = iand(payload, operand_store);
@@ -934,8 +933,11 @@ fn survey(slots: &Entries<Entry>, keys: &KeySet, positions: &Box<Slots<u64>>, no
         let kind = set_kind(slot: &slots^[at], now: now);
         if kind == entry_other {
           set found.wrong = True();
+          return found;
         } else if kind == entry_lapsed {
-          set found.lapsed = True();
+          set slots^[at] = None<Entry>();
+          let position = operand_argument(payload: payload, first: first);
+          note_position(positions: removed, position: position);
           set found.missing = True();
         } else if kind == entry_none {
           set found.missing = True();
@@ -1107,25 +1109,12 @@ fn store_members(slot: &Option<Entry>, members: &HashMap<Key, unit, ceiling>) ->
 }
 
 fn run_combine(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, operation: u64, storing: Bool) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
-  doc "SINTER, SUNION and SDIFF key [key ...], operation_inter, operation_union and operation_diff, answer the intersection of the sets, their union, or the first set's members no other set holds, in no promised order, as in Redis, an absent key counting as an empty set; with storing, SINTERSTORE, SUNIONSTORE and SDIFFSTORE destination key [key ...] store that result at the destination, without an expiry, whatever it held, removing it for an empty result, and answer the result's size. One statement holds every key named through a key set, the destination among them, so that the operation takes effect at one point; a key holding another kind is refused before anything changes. A storing operation removes each set found expired, recording its removal before its own record, and is recorded only when it changes the destination; the others leave a set found expired to remove_expired after the statement.";
+  doc "SINTER, SUNION and SDIFF key [key ...], operation_inter, operation_union and operation_diff, answer the intersection of the sets, their union, or the first set's members no other set holds, in no promised order, as in Redis, an absent key counting as an empty set; with storing, SINTERSTORE, SUNIONSTORE and SDIFFSTORE destination key [key ...] store that result at the destination, without an expiry, whatever it held, removing it for an empty result, and answer the result's size. One statement holds every key named through a key set, the destination among them, so that the operation takes effect at one point. Operands are looked up in key order, removing expired entries before gathering and stopping at the first live wrong type. Their DEL records precede a STORE record, which is appended only when the destination changes.";
   let keys = set_combine_parse(input: input, args: args, client: client, storing: storing, now: time^.check);
   let members = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
-  let lapsed = False();
   atomic slots = &store^.keys[keys], m = &store^.meta {
     let work = set_combine_body(slots: slots, keys: &keys, client: client, env: env, operation: operation, storing: storing, members: &members);
-    set lapsed = work.lapsed;
     let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &work.removed, changed: work.changed, input: input, args: args);
-  }
-  if lapsed {
-    let first = 1_u64;
-    if storing {
-      set first = 2_u64;
-    }
-    for @lapsing (index in first..args^.inner.len) {
-      let place = key_bounds(input: input, args: args, index: index);
-      let key = &input^[place.start..place.end];
-      remove_expired(store: store, key: key, now: client^.now);
-    }
   }
   set_combine_finish(client: client, storing: storing, members: &members);
   return unit;
@@ -1138,16 +1127,10 @@ fn run_sintercard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     return unit;
   }
   let keys = sintercard_keys(input: input, args: args, client: client, end: plan.end, now: time^.check);
-  let lapsed = False();
-  atomic slots = &store^.keys[keys] {
-    set lapsed = sintercard_body(slots: slots, keys: &keys, client: client, env: env, limit: plan.limit);
-  }
-  if lapsed {
-    for @lapsing (position in 2_u64..plan.end) {
-      let place = key_bounds(input: input, args: args, index: position);
-      let key = &input^[place.start..place.end];
-      remove_expired(store: store, key: key, now: client^.now);
-    }
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let removed = sintercard_body(slots: slots, keys: &keys, client: client, env: env, limit: plan.limit);
+    let changed = False();
+    let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &removed, changed: changed, input: input, args: args);
   }
   sintercard_finish(client: client);
   return unit;
@@ -1651,28 +1634,8 @@ fn smove_finish(client: &Client) -> result: unit writes(client) {
 }
 
 struct SetCombineWork {
-  lapsed: Bool;
   changed: Bool;
   removed: Box<Slots<u64>>;
-}
-
-fn set_operands_lapse_body(slots: &Entries<Entry>, keys: &KeySet, positions: &Box<Slots<u64>>, first: u64, now: u64, removed: &Box<Slots<u64>>) -> result: unit reads(keys), reads(positions), writes(slots), writes(removed) {
-  doc "Removes expired operand entries in key-set insertion order, recording each argument index once for the metadata part.";
-  for @lapsing (at in 0_u64..keys^.len) {
-    let payload = key_position(positions: positions, index: at);
-    let named = iand(payload, operand_named);
-    if named != 0_u64 {
-      if at < slots^.len {
-        let kind = set_kind(slot: &slots^[at], now: now);
-        if kind == entry_lapsed {
-          set slots^[at] = None<Entry>();
-          let position = operand_argument(payload: payload, first: first);
-          note_position(positions: removed, position: position);
-        }
-      }
-    }
-  }
-  return unit;
 }
 
 fn set_operands_meta(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(removed), reads(input), reads(args), writes(log) {
@@ -1712,26 +1675,19 @@ fn set_combine_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, sto
 }
 
 fn set_combine_body(slots: &Entries<Entry>, keys: &KeySet, client: &Client, env: &KeyEnv, operation: u64, storing: Bool, members: &HashMap<Key, unit, ceiling>) -> work: SetCombineWork reads(keys), reads(env), writes(slots), writes(client), writes(members) {
-  doc "SINTER, SUNION and SDIFF, with or without STORE, over the named entries; retains the network's lookup, traversal and expiry-removal order.";
+  doc "SINTER, SUNION and SDIFF, with or without STORE, over the named entries; the shared survey removes expired operands before gathering or refusing a live wrong type.";
   let no = False();
   let removed = box_slots_new::<u64>(capacity: 0_u64);
-  let work = SetCombineWork(lapsed: no, changed: no, removed: move removed);
+  let work = SetCombineWork(changed: no, removed: move removed);
   let first = 1_u64;
   if storing {
     set first = 2_u64;
   }
-  let found = survey(slots: slots, keys: keys, positions: &client^.key_metadata, now: client^.now);
+  let found = survey(slots: slots, keys: keys, positions: &client^.key_metadata, first: first, now: client^.now, removed: &work.removed);
   if found.wrong {
     set client^.state = state_wrong;
   } else {
     set client^.state = state_done;
-    if storing {
-      if found.lapsed {
-        set_operands_lapse_body(slots: slots, keys: keys, positions: &client^.key_metadata, first: first, now: client^.now, removed: &work.removed);
-      }
-    } else {
-      set work.lapsed = found.lapsed;
-    }
     let size = gather(slots: slots, keys: keys, positions: &client^.key_metadata, found: found, operation: operation, env: env, now: client^.now, result: members);
     set client^.number = size;
     if storing {
@@ -1844,10 +1800,11 @@ fn sintercard_keys(input: &[u8], args: &Box<Slots<Span>>, client: &Client, end: 
   return move keys;
 }
 
-fn sintercard_body(slots: &Entries<Entry>, keys: &KeySet, client: &Client, env: &KeyEnv, limit: u64) -> lapsed: Bool reads(slots), reads(keys), reads(env), writes(client) {
-  doc "Counts the intersection over the key set's entries, preserving the existing survey and LIMIT behavior.";
+fn sintercard_body(slots: &Entries<Entry>, keys: &KeySet, client: &Client, env: &KeyEnv, limit: u64) -> removed: Box<Slots<u64>> reads(keys), reads(env), writes(slots), writes(client) {
+  doc "Counts the intersection after the shared ordered operand lookup, returning the removals to record even on a wrong-type refusal, and preserving LIMIT behavior.";
+  let removed = box_slots_new::<u64>(capacity: 0_u64);
   let unused = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
-  let found = survey(slots: slots, keys: keys, positions: &client^.key_metadata, now: client^.now);
+  let found = survey(slots: slots, keys: keys, positions: &client^.key_metadata, first: 2_u64, now: client^.now, removed: &removed);
   if found.wrong {
     set client^.state = state_wrong;
   } else if found.missing {
@@ -1857,7 +1814,7 @@ fn sintercard_body(slots: &Entries<Entry>, keys: &KeySet, client: &Client, env: 
     let counting = False();
     set client^.number = combine(slots: slots, keys: keys, positions: &client^.key_metadata, from: found.smallest, env: env, now: client^.now, every: every, wanted: filtered, limit: limit, keep: counting, result: &unused);
   }
-  return found.lapsed;
+  return move removed;
 }
 
 fn sintercard_finish(client: &Client) -> result: unit writes(client) {
