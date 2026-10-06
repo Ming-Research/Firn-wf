@@ -448,6 +448,28 @@ written while firn lived in the Whitefoot repository; a path such as
   Reopen when a workload ranks or counts in large sorted sets, or with the
   library's next ordered map change.
 
+- **INFO cannot yet run under EXEC or a script's held command interface.**
+  `info_plan`, `info_body` and `info_finish` in `firn/commands/info.wf`
+  now share the network implementation, but `ScriptCommands.call` has no
+  `ServerState`: `INFO server` needs `started`, and `INFO stats` needs
+  `connections`. Neither value is in `Client`, `Time` or `Meta`. A server
+  snapshot passed by the outer caller, or a server-state target held beside
+  the keyspace, needs an architecture-approved interface change, including
+  `held_run`, EXEC and the scripting caller. Do not supply invented counts
+  or silently omit these sections. Reopen when that interface is extended;
+  validate section selection, uptime and connection counters against Redis
+  7.0.15, and INFO keyspace after earlier writes in the same statement.
+
+- **TIME uses the connection's last clock reading.** The network path and
+  held code 162 both call `run_time`, which reads `Client.unix_us`; Redis
+  7.0.15's `timeCommand` calls `gettimeofday` for each invocation, even
+  inside EXEC or Lua. Expiry time remains frozen independently. A long
+  script can therefore report stale time in firn. Fixing this needs a clock
+  capability in the held interface and a nonwaiting calendar read, without
+  changing expiry's frozen `Time`. Reopen with the held-interface work;
+  validate TIME's two decimal bulk strings and microsecond range, and
+  compare two calls around substantial script work without changing expiry.
+
 ## Tests
 
 - **Thirteen of Redis's suite tests are lost to a connection left in

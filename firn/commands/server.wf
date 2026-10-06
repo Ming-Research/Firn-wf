@@ -12,6 +12,7 @@ alias reply_decimal = pkg::protocol::reply_decimal;
 alias ceiling = pkg::store::ceiling;
 alias keyspace_capacity = pkg::store::keyspace_capacity;
 alias log_command = pkg::store::log_command;
+alias PriorityQueue = std::collections::priority_queue::PriorityQueue;
 alias priority_queue_new = std::collections::priority_queue::priority_queue_new;
 alias reply_ok = pkg::protocol::reply_ok;
 alias byte_at = pkg::bytes::byte_at;
@@ -145,22 +146,35 @@ fn flush_mode(input: &[u8], args: &Box<Slots<Span>>, from: u64) -> known: Bool r
   return known;
 }
 
-fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "FLUSHALL and FLUSHDB [ASYNC | SYNC], firn's one database being all of them: empties the keyspace in one atomic statement, which exchanges the keyspace's map whole for a fresh one and the queued expiries for none, and appends the command as the client sent it to the append-only file's pending bytes when the keyspace keeps them, also when the keyspace was already empty, as Redis logs both. Any other argument, or more than one, is a syntax error. The map and queue taken out are released at the end of the successful branch, after the statement and before the reply is sent, whichever option was given: unlike Redis's ASYNC, no other context frees them, but no other statement waits for their release either.";
+fn flush_refused(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> refused: Bool reads(input), reads(args), writes(client) {
+  doc "FLUSHALL and FLUSHDB parsing and refusal: no option or one SYNC or ASYNC option, compared up to a zero byte, otherwise the syntax error.";
   let known = flush_mode(input: input, args: args, from: 1_u64);
   if known {
+    return False();
+  }
+  reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  return True();
+}
+
+fn flush_meta(due: &PriorityQueue<Due, ceiling>, none_due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(input), reads(args), writes(due), writes(none_due), writes(log) {
+  doc "FLUSHALL and FLUSHDB's metadata clears the expiry queue and appends the command exactly as sent, even for an empty database, returning its record count. Earlier records in the caller's log are preserved.";
+  swap(first: due, second: none_due);
+  let appended = mset_meta(log: log, logged: logged, input: input, args: args);
+  return appended;
+}
+
+fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
+  doc "FLUSHALL and FLUSHDB through flush_refused, a swap of the keyspace's map for a fresh one, flush_meta and reply_ok. The fresh map is held beside the keyspace and metadata, and the old map and expiries are released after that statement and before the reply, under either SYNC or ASYNC. A held caller would need a fresh held map; the pinned language cannot clear a map through its reference alone.";
+  let refused = flush_refused(input: input, args: args, client: client);
+  if refused {
+    return unit;
+  } else {
     let fresh = shared_map_new::<Entry>(capacity: keyspace_capacity);
     let none_due = priority_queue_new::<Due, ceiling>();
     atomic t = &store^.keys, f = &fresh, m = &store^.meta {
       swap(first: t, second: f);
-      swap(first: &m^.due, second: &none_due);
-      if store^.logging {
-        log_command(log: &m^.log, input: input, args: args);
-      }
+      let appended = flush_meta(due: &m^.due, none_due: &none_due, log: &m^.log, logged: store^.logging, input: input, args: args);
     }
-  } else {
-    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
-    return unit;
   }
   reply_ok(client: client);
   return unit;
@@ -986,34 +1000,86 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   return unit;
 }
 
-fn run_command(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
-  doc "COMMAND and COMMAND COUNT answer as a server that describes none of its commands: an empty array and 0. COMMAND COUNT with an argument is answered as Redis answers it, and then a connection that must authenticate first NOAUTH. Every other subcommand, COMMAND DOCS among them, is answered as Redis answers an unknown one, its name echoed to 128 bytes: redis-cli 7.0 asks for COMMAND DOCS when it starts and, given an error, takes its own built-in help, hints included, where an empty array of documents would leave it with none.";
+const word_command_docs: Array<u8, 4> = "DOCS";
+
+const word_command_getkeys: Array<u8, 7> = "GETKEYS";
+
+const word_command_getkeysandflags: Array<u8, 15> = "GETKEYSANDFLAGS";
+
+const word_command_help: Array<u8, 4> = "HELP";
+
+const word_command_info: Array<u8, 4> = "INFO";
+
+const word_command_list: Array<u8, 4> = "LIST";
+
+fn command_plan(input: &[u8], args: &Box<Slots<Span>>) -> kind: u64 reads(input), reads(args) {
+  doc "COMMAND's shared parsing for the network, transactions and scripts: 1 lists commands, 2 counts them, 3 refuses COUNT's arity, 4 names a Redis 7.0.15 subcommand firn does not run, and 0 names no Redis subcommand. The unsupported names are DOCS, INFO and LIST (Redis arity -2), GETKEYS and GETKEYSANDFLAGS (-4), and HELP (2); their arities are not checked because they take the unsupported path regardless of argument count. Firn's existing command description is empty, so the body and metadata have no state to touch.";
   let count = args^.inner.len;
   if count == 1_u64 {
-    let stopped = denied(client: client);
-    if stopped {
-      return unit;
-    }
-    reply_word(client: client, word: &reply_empty_array[0_u64..4_u64]);
-    return unit;
+    return 1_u64;
   }
   let sub = arg(args: args, index: 1_u64);
   let counting = name_is(input: input, start: sub.start, length: sub.length, word: &word_count[0_u64..5_u64]);
   if counting {
-    if count != 2_u64 {
-      reply_arity_word(client: client, word: &word_command_count[0_u64..13_u64]);
-      return unit;
+    let fits = arity_holds(arity: arity_command_count, count: count);
+    if bnot(fits) {
+      return 3_u64;
     }
-    let stopped = denied(client: client);
-    if stopped {
-      return unit;
-    }
+    return 2_u64;
+  }
+  let docs = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_docs[0_u64..4_u64]);
+  let getkeys = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_getkeys[0_u64..7_u64]);
+  let getkeysandflags = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_getkeysandflags[0_u64..15_u64]);
+  let help = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_help[0_u64..4_u64]);
+  let info = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_info[0_u64..4_u64]);
+  let listing = name_is(input: input, start: sub.start, length: sub.length, word: &word_command_list[0_u64..4_u64]);
+  let descriptions = bor(docs, info);
+  let keys = bor(getkeys, getkeysandflags);
+  let guidance = bor(help, listing);
+  let details = bor(descriptions, keys);
+  if bor(details, guidance) {
+    return 4_u64;
+  }
+  return 0_u64;
+}
+
+fn command_refused(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u64) -> refused: Bool reads(input), reads(args), writes(client) {
+  doc "COMMAND's refusals in network order: COUNT arity or the existing unknown-subcommand reply for both unknown and unsupported subcommands before authentication, then NOAUTH for a runnable command. Transactions call this only for unknown subcommands or COUNT outside its arity; unsupported subcommands instead queue as foreign.";
+  if kind == 3_u64 {
+    reply_arity_word(client: client, word: &word_command_count[0_u64..13_u64]);
+    return True();
+  }
+  let unknown = kind == 0_u64;
+  let unsupported = kind == 4_u64;
+  if bor(unknown, unsupported) {
+    let sub = arg(args: args, index: 1_u64);
+    reply_word(client: client, word: &text_unknown_subcommand[0_u64..25_u64]);
+    let shown = imin(sub.length, 128_u64);
+    let echoed = reply_echoed(client: client, input: input, span: sub, limit: shown);
+    reply_word(client: client, word: &text_try_command[0_u64..22_u64]);
+    return True();
+  }
+  let stopped = denied(client: client);
+  return stopped;
+}
+
+fn command_finish(client: &Client, kind: u64) -> result: unit writes(client) {
+  doc "COMMAND's existing successful replies: an empty array, or integer zero for COUNT.";
+  if kind == 1_u64 {
+    reply_word(client: client, word: &reply_empty_array[0_u64..4_u64]);
+  } else {
     reply_word(client: client, word: &reply_zero[0_u64..4_u64]);
+  }
+  return unit;
+}
+
+fn run_command(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
+  doc "COMMAND and COMMAND COUNT through their shared parsing, refusals and reply. Firn describes no commands; other subcommands, including DOCS, retain their unknown-subcommand reply so redis-cli uses its built-in help.";
+  let kind = command_plan(input: input, args: args);
+  let refused = command_refused(input: input, args: args, client: client, kind: kind);
+  if refused {
     return unit;
   }
-  reply_word(client: client, word: &text_unknown_subcommand[0_u64..25_u64]);
-  let shown = imin(sub.length, 128_u64);
-  let echoed = reply_echoed(client: client, input: input, span: sub, limit: shown);
-  reply_word(client: client, word: &text_try_command[0_u64..22_u64]);
+  command_finish(client: client, kind: kind);
   return unit;
 }

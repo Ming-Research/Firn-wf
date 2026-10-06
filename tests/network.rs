@@ -6165,6 +6165,226 @@ fn firn_records_held_sorted_commands_as_redis_propagates_them() {
     );
 }
 
+/// firn answers TIME inside a transaction's EXEC and through a script as
+/// Redis 7.0.15 shapes it: two bulk strings, the seconds since the epoch
+/// near the host's clock and the microseconds below one million. The values
+/// move with the clock, so the case checks their form rather than bytes.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_time_inside_transactions_and_scripts() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["MULTI"],
+        vec!["TIME"],
+        vec!["EXEC"],
+        vec!["EVAL", "return redis.call('TIME')", "0"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send TIME");
+    expect_replies(&mut client, b"+OK\r\n+QUEUED\r\n*1\r\n", "the transaction");
+    for what in ["the transaction's TIME", "the script's TIME"] {
+        assert_eq!(
+            reply_line(&mut client, what).trim_end().to_string(),
+            "*2",
+            "{what}"
+        );
+        let mut values = Vec::new();
+        for _ in 0..2 {
+            let length: usize = reply_line(&mut client, what).trim_end().to_string()[1..]
+                .parse()
+                .expect("a bulk length");
+            let value = reply_line(&mut client, what).trim_end().to_string();
+            assert_eq!(value.len(), length, "{what}");
+            values.push(value.parse::<u64>().expect("a decimal number"));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after the epoch")
+            .as_secs();
+        assert!(
+            values[0].abs_diff(now) <= 5,
+            "{what}: {} seconds against {now}",
+            values[0]
+        );
+        assert!(values[1] < 1_000_000, "{what}: {} microseconds", values[1]);
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers COMMAND inside a transaction's EXEC and through a script as
+/// on the network path: firn describes no commands, so COMMAND answers an
+/// empty array and COMMAND COUNT zero wherever they run, where Redis lists
+/// its table. COMMAND DOCS, a subcommand Redis 7.0.15 has and firn does not
+/// run, is queued and refuses its transaction whole at EXEC, as any command
+/// firn does not run in transactions, and a script calling it gets the
+/// extended unknown-command text of the command-parts decision.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_command_inside_transactions_and_scripts_as_on_the_network() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["COMMAND"],
+        vec!["COMMAND", "COUNT"],
+        vec!["MULTI"],
+        vec!["COMMAND"],
+        vec!["COMMAND", "COUNT"],
+        vec!["EXEC"],
+        vec!["EVAL", "return redis.call('COMMAND')", "0"],
+        vec!["EVAL", "return redis.call('COMMAND', 'COUNT')", "0"],
+        vec!["MULTI"],
+        vec!["COMMAND", "DOCS"],
+        vec!["EXEC"],
+        vec!["EVAL", "return redis.pcall('COMMAND', 'DOCS')", "0"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send COMMAND");
+    expect_replies(
+        &mut client,
+        b"*0\r\n:0\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n*0\r\n:0\r\n*0\r\n:0\r\n+OK\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n-ERR Unknown Redis command called from script, or one firn does not yet run from scripts\r\n",
+        "COMMAND",
+    );
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn runs TOUCH, SUBSTR, SELECT and COMMAND's refusals, written as parts, inside a transaction's EXEC and through a script as Redis 7.0.15 does, a COMMAND subcommand Redis does not have refused before queueing and answered from a script with Redis's own text. The same requests, from the same keys, run in one transaction,
+/// each error or boundary request in a transaction of its own, then through
+/// a script's redis.call and the errors through redis.pcall, and give the
+/// replies redis-server 7.0.15 gives (Firn-wf probe run 37515932245).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_rest_parts_as_redis_does() {
+    const SETUP: &[&[&str]] = &[
+        &["FLUSHALL"],
+        &["SET", "s", "abcdef"],
+        &["SET", "empty", ""],
+        &["LPUSH", "list", "x"],
+    ];
+    const VALID: &[&[&str]] = &[
+        &["TOUCH", "s", "s", "missing", "list"],
+        &["SUBSTR", "s", "1", "3"],
+        &["SUBSTR", "s", "-3", "-1"],
+        &["SUBSTR", "s", "9223372036854775807", "-1"],
+        &["SUBSTR", "missing", "0", "-1"],
+        &["SUBSTR", "empty", "0", "-1"],
+        &["SELECT", "0"],
+        &["SET", "after", "v"],
+        &["DBSIZE"],
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["TOUCH"],
+        &["SUBSTR", "s", "0"],
+        &["SUBSTR", "s", "bad", "2"],
+        &["SUBSTR", "s", "0", "bad"],
+        &["SUBSTR", "list", "0", "-1"],
+        &["SELECT"],
+        &["SELECT", "bad"],
+        &["SELECT", "-1"],
+        &["SELECT", "2147483647"],
+        &["SELECT", "2147483648"],
+        &["SELECT", "0", "extra"],
+        &["TIME", "extra"],
+        &["COMMAND", "COUNT", "extra"],
+        &["COMMAND", "__unknown__"],
+    ];
+    const TRANSACTIONS: &[u8] =
+        b"+OK\r\n+OK\r\n+OK\r\n:1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*9\r\n:3\r\n$3\r\nbcd\r\n\
+$3\r\ndef\r\n$0\r\n\r\n$0\r\n\r\n$0\r\n\r\n+OK\r\n+OK\r\n:4\r\n+OK\r\n\
+-ERR wrong number of arguments for 'touch' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'substr' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
+-ERR wrong number of arguments for 'select' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR DB index is out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR DB index is out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is out of range, value must between -2147483648 and 2147483647\r\n\
++OK\r\n-ERR wrong number of arguments for 'select' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'time' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'command|count' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR unknown subcommand '__unknown__'. Try COMMAND HELP.\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n";
+    const SCRIPTS: &[u8] =
+        b"+OK\r\n+OK\r\n+OK\r\n:1\r\n:3\r\n$3\r\nbcd\r\n$3\r\ndef\r\n$0\r\n\r\n$0\r\n\r\n\
+$0\r\n\r\n+OK\r\n+OK\r\n:4\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR value is not an integer or out of range\r\n\
+-ERR value is not an integer or out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR value is not an integer or out of range\r\n\
+-ERR DB index is out of range\r\n-ERR DB index is out of range\r\n\
+-ERR value is out of range, value must between -2147483648 and 2147483647\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Unknown Redis command called from script\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    transactions.push(resp(&["MULTI"]));
+    for request in VALID {
+        transactions.push(resp(request));
+    }
+    transactions.push(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.push(resp(&["MULTI"]));
+        transactions.push(resp(request));
+        transactions.push(resp(&["EXEC"]));
+    }
+    let mut scripts: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.push(resp(&call));
+        }
+    }
+    for (requests, expected, what) in [
+        (transactions, TRANSACTIONS, "the transactions"),
+        (scripts, SCRIPTS, "the scripts"),
+    ] {
+        client
+            .write_all(&requests.concat())
+            .expect("send the requests");
+        expect_replies(&mut client, expected, what);
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
