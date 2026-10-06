@@ -62,7 +62,9 @@ clients send on their own:
   `EXPIRETIME`, `PEXPIRETIME`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `TYPE`,
   `PERSIST`, `DBSIZE`, `PING`, `ECHO`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`,
   `GETDEL`, `GETEX`, `APPEND`, `SETRANGE`, `STRLEN`, `GETRANGE`, `MGET`,
-  `MSETNX`, `INCRBYFLOAT`, `RENAME`, `RENAMENX` and `COPY`. Any other command
+  `MSETNX`, `INCRBYFLOAT`, `RENAME`, `RENAMENX`, `COPY`, `LPUSH`, `RPUSH`,
+  `LPUSHX`, `RPUSHX`, `LPOP`, `RPOP`, `LRANGE`, `LLEN`, `LINDEX`, `LSET`,
+  `LREM`, `LTRIM`, `LINSERT`, `LPOS`, `LMOVE` and `RPOPLPUSH`. Any other command
   sent inside a transaction is queued, and `EXEC` then refuses the whole transaction;
   `WATCH` is refused inside one and unknown outside;
 - server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,

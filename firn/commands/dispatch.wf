@@ -762,7 +762,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_lpush {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_lpush, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -774,7 +774,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_rpush {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_rpush, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -786,37 +786,29 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_lpop {
-    let fits = count >= 2_u64;
+    let fits = arity_holds(arity: arity_lpop, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      if count > 3_u64 {
-        reply_arity(client: client, input: input, name: name);
-        return unit;
-      }
       run_pop(store: store, input: input, args: args, client: client, env: env, time: time, front: head);
     }
     return unit;
   }
   if code == code_rpop {
-    let fits = count >= 2_u64;
+    let fits = arity_holds(arity: arity_rpop, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      if count > 3_u64 {
-        reply_arity(client: client, input: input, name: name);
-        return unit;
-      }
       run_pop(store: store, input: input, args: args, client: client, env: env, time: time, front: tail);
     }
     return unit;
   }
   if code == code_lrange {
-    let fits = count == 4_u64;
+    let fits = arity_holds(arity: arity_lrange, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -827,7 +819,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_llen {
-    let fits = count == 2_u64;
+    let fits = arity_holds(arity: arity_llen, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -838,7 +830,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_lindex {
-    let fits = count == 3_u64;
+    let fits = arity_holds(arity: arity_lindex, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -849,7 +841,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_lset {
-    let fits = count == 4_u64;
+    let fits = arity_holds(arity: arity_lset, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -860,7 +852,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_lrem {
-    let fits = count == 4_u64;
+    let fits = arity_holds(arity: arity_lrem, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -871,7 +863,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_ltrim {
-    let fits = count == 4_u64;
+    let fits = arity_holds(arity: arity_ltrim, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -882,7 +874,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_linsert {
-    let fits = count == 5_u64;
+    let fits = arity_holds(arity: arity_linsert, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -893,7 +885,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_lpos {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_lpos, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -904,7 +896,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_lpushx {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_lpushx, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -916,7 +908,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_rpushx {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_rpushx, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -928,7 +920,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_lmove {
-    let fits = count == 5_u64;
+    let fits = arity_holds(arity: arity_lmove, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -941,7 +933,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_rpoplpush {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_rpoplpush[0_u64..9_u64]);
     if spelled {
-      let fits = count == 3_u64;
+      let fits = arity_holds(arity: arity_rpoplpush, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);

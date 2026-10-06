@@ -80,6 +80,38 @@ const arity_renamenx: i64 = 3_i64;
 
 const arity_copy: i64 = -3_i64;
 
+const arity_lpush: i64 = -3_i64;
+
+const arity_rpush: i64 = -3_i64;
+
+const arity_lpushx: i64 = -3_i64;
+
+const arity_rpushx: i64 = -3_i64;
+
+const arity_lpop: i64 = -2_i64;
+
+const arity_rpop: i64 = -2_i64;
+
+const arity_lrange: i64 = 4_i64;
+
+const arity_llen: i64 = 2_i64;
+
+const arity_lindex: i64 = 3_i64;
+
+const arity_lset: i64 = 4_i64;
+
+const arity_lrem: i64 = 4_i64;
+
+const arity_ltrim: i64 = 4_i64;
+
+const arity_linsert: i64 = 5_i64;
+
+const arity_lpos: i64 = -3_i64;
+
+const arity_lmove: i64 = 5_i64;
+
+const arity_rpoplpush: i64 = 3_i64;
+
 const arity_noscript_with_argument: i64 = -2_i64;
 
 const text_script_arity: Array<u8, 58> = "ERR Wrong number of args calling Redis command from script";
@@ -241,7 +273,7 @@ fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
 }
 
 fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY, the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
+  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH, the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
   let code = name_code(input: input, start: name.start, length: name.length);
   if code == code_get {
     return 1_u64;
@@ -372,6 +404,57 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   if code == code_copy {
     return 39_u64;
   }
+  if code == code_lpush {
+    return 60_u64;
+  }
+  if code == code_rpush {
+    return 61_u64;
+  }
+  if code == code_lpushx {
+    return 62_u64;
+  }
+  if code == code_rpushx {
+    return 63_u64;
+  }
+  if code == code_lpop {
+    return 64_u64;
+  }
+  if code == code_rpop {
+    return 65_u64;
+  }
+  if code == code_lrange {
+    return 66_u64;
+  }
+  if code == code_llen {
+    return 67_u64;
+  }
+  if code == code_lindex {
+    return 68_u64;
+  }
+  if code == code_lset {
+    return 69_u64;
+  }
+  if code == code_lrem {
+    return 70_u64;
+  }
+  if code == code_ltrim {
+    return 71_u64;
+  }
+  if code == code_linsert {
+    return 72_u64;
+  }
+  if code == code_lpos {
+    return 73_u64;
+  }
+  if code == code_lmove {
+    return 74_u64;
+  }
+  if code == code_rpoplpush {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_rpoplpush[0_u64..9_u64]);
+    if spelled {
+      return 75_u64;
+    }
+  }
   return 0_u64;
 }
 
@@ -473,6 +556,54 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   }
   if kind == 39_u64 {
     return arity_copy;
+  }
+  if kind == 60_u64 {
+    return arity_lpush;
+  }
+  if kind == 61_u64 {
+    return arity_rpush;
+  }
+  if kind == 62_u64 {
+    return arity_lpushx;
+  }
+  if kind == 63_u64 {
+    return arity_rpushx;
+  }
+  if kind == 64_u64 {
+    return arity_lpop;
+  }
+  if kind == 65_u64 {
+    return arity_rpop;
+  }
+  if kind == 66_u64 {
+    return arity_lrange;
+  }
+  if kind == 67_u64 {
+    return arity_llen;
+  }
+  if kind == 68_u64 {
+    return arity_lindex;
+  }
+  if kind == 69_u64 {
+    return arity_lset;
+  }
+  if kind == 70_u64 {
+    return arity_lrem;
+  }
+  if kind == 71_u64 {
+    return arity_ltrim;
+  }
+  if kind == 72_u64 {
+    return arity_linsert;
+  }
+  if kind == 73_u64 {
+    return arity_lpos;
+  }
+  if kind == 74_u64 {
+    return arity_lmove;
+  }
+  if kind == 75_u64 {
+    return arity_rpoplpush;
   }
   return 0_i64;
 }
@@ -640,6 +771,70 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
   }
   if kind == 39_u64 {
     let appended = script_copy(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    return appended;
+  }
+  if kind == 60_u64 {
+    let appended = script_push(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar, existing: relative);
+    return appended;
+  }
+  if kind == 61_u64 {
+    let appended = script_push(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative, existing: relative);
+    return appended;
+  }
+  if kind == 62_u64 {
+    let appended = script_push(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar, existing: calendar);
+    return appended;
+  }
+  if kind == 63_u64 {
+    let appended = script_push(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative, existing: calendar);
+    return appended;
+  }
+  if kind == 64_u64 {
+    let appended = script_pop(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar);
+    return appended;
+  }
+  if kind == 65_u64 {
+    let appended = script_pop(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative);
+    return appended;
+  }
+  if kind == 66_u64 {
+    let appended = script_lrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 67_u64 {
+    let appended = script_llen(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 68_u64 {
+    let appended = script_lindex(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 69_u64 {
+    let appended = script_lset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 70_u64 {
+    let appended = script_lrem(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 71_u64 {
+    let appended = script_ltrim(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 72_u64 {
+    let appended = script_linsert(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 73_u64 {
+    let appended = script_lpos(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 74_u64 {
+    let appended = script_lmove(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, named: calendar);
+    return appended;
+  }
+  if kind == 75_u64 {
+    let appended = script_lmove(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, named: relative);
     return appended;
   }
   return 0_u64;
@@ -1033,5 +1228,184 @@ fn script_copy(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots
   let work = copy_body(slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
   let appended = transfer_meta(due: &meta^.due, log: effects, logged: logged, work: &work, input: input, args: args, env: env);
   copy_finish(client: client, error: 0_u64, outcome: work.outcome);
+  return appended;
+}
+
+fn script_push(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool, existing: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
+  push_parse(input: input, args: args, client: client, time: time, front: front);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let work = push_body(slot: slot, client: client, front: front, existing: existing);
+  let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+  push_finish(client: client);
+  return appended;
+}
+
+fn script_pop(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
+  let ready = pop_parse(input: input, args: args, client: client, time: time, front: front);
+  if bnot(ready) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let work = pop_body(slot: slot, client: client);
+  let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+  pop_finish(client: client);
+  return appended;
+}
+
+fn script_lrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
+  let ready = lrange_parse(input: input, args: args, client: client, time: time);
+  if bnot(ready) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  lrange_body(slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  if removed {
+    set slot^ = None<Entry>();
+  }
+  let appended = ttl_meta(log: effects, logged: logged, removed: removed, key: key);
+  lrange_finish(client: client);
+  return appended;
+}
+
+fn script_llen(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
+  llen_parse(input: input, args: args, client: client, time: time);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  llen_body(slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  if removed {
+    set slot^ = None<Entry>();
+  }
+  let appended = ttl_meta(log: effects, logged: logged, removed: removed, key: key);
+  llen_finish(client: client);
+  return appended;
+}
+
+fn script_lindex(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
+  lindex_parse(input: input, args: args, client: client, time: time);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  lindex_body(slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  if removed {
+    set slot^ = None<Entry>();
+  }
+  let appended = ttl_meta(log: effects, logged: logged, removed: removed, key: key);
+  lindex_finish(client: client);
+  return appended;
+}
+
+fn script_lset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
+  lset_parse(input: input, args: args, client: client, time: time);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let work = lset_body(slot: slot, client: client, input: input, args: args);
+  let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+  lset_finish(client: client);
+  return appended;
+}
+
+fn script_lrem(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
+  let ready = lrem_parse(input: input, args: args, client: client, time: time);
+  if bnot(ready) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let work = lrem_body(slot: slot, client: client, input: input, args: args);
+  let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+  lrem_finish(client: client);
+  return appended;
+}
+
+fn script_ltrim(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
+  let ready = ltrim_parse(input: input, args: args, client: client, time: time);
+  if bnot(ready) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let work = ltrim_body(slot: slot, client: client);
+  let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+  ltrim_finish(client: client);
+  return appended;
+}
+
+fn script_linsert(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
+  let ready = linsert_parse(input: input, args: args, client: client, time: time);
+  if bnot(ready) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let work = linsert_body(slot: slot, client: client, input: input, args: args);
+  let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+  linsert_finish(client: client);
+  return appended;
+}
+
+fn script_lpos(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "LPOS by the network parts under EXEC or a script; expired keys are removed and recorded immediately.";
+  let no = False();
+  let seek = Seek(rank: 1_i64, count: 0_i64, counted: no, maxlen: 0_u64, now: time^.check, state: state_absent);
+  let ready = lpos_parse(input: input, args: args, client: client, time: time, seek: &seek);
+  if bnot(ready) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let positions = box_slots_new::<u64>(capacity: 0_u64);
+  let slot = &keys^[key];
+  lpos_body(slot: slot, input: input, args: args, seek: &seek, positions: &positions);
+  let removed = seek.state == state_expired;
+  if removed {
+    set slot^ = None<Entry>();
+  }
+  let appended = ttl_meta(log: effects, logged: logged, removed: removed, key: key);
+  lpos_finish(client: client, seek: &seek, positions: &positions);
+  return appended;
+}
+
+fn script_lmove(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, named: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "LMOVE or RPOPLPUSH through the same key-set body and metadata as the network, under the caller's statement.";
+  let from_head = False();
+  let to_head = True();
+  if named {
+    let ready = lmove_parse(input: input, args: args, client: client);
+    if bnot(ready) {
+      return 0_u64;
+    }
+    set from_head = client^.low == 0_i64;
+    set to_head = client^.high == 0_i64;
+  }
+  let ks = key_set_new(capacity: 2_u64);
+  let pair = rename_parse(input: input, args: args, keys: &ks);
+  set client^.now = time^.check;
+  let slots = &keys^[ks];
+  let work = lmove_body(slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
+  let appended = lmove_meta(log: effects, logged: logged, work: &work, input: input, args: args);
+  lmove_finish(client: client);
   return appended;
 }
