@@ -35,7 +35,9 @@ def boot_id():
 
 
 def identity(pid):
-    """A process's session and start time in clock ticks since boot, or None."""
+    """A live process's session and start time in clock ticks since boot, or
+    None for a process that has ended, a zombie included, since it holds
+    nothing and takes no signal."""
     try:
         with open(f"/proc/{pid}/stat") as f:
             text = f.read()
@@ -44,6 +46,8 @@ def identity(pid):
     # The command name, in parentheses, may hold spaces; the fields after it
     # start at the state, the third.
     fields = text[text.rindex(")") + 2 :].split()
+    if fields[0] == "Z":
+        return None
     return int(fields[3]), int(fields[19])
 
 
@@ -59,8 +63,11 @@ def record(path, pid):
     found = identity(pid)
     if found is None or found[0] != pid:
         sys.exit(f"process {pid} does not lead a session")
-    with open(path, "w") as f:
-        f.write(f"{boot_id()} {pid} {found[1]}\n")
+    try:
+        with open(path, "w") as f:
+            f.write(f"{boot_id()} {pid} {found[1]}\n")
+    except OSError as error:
+        sys.exit(f"cannot record session {pid} in {path}: {error.strerror}")
 
 
 def stop(path):

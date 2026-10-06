@@ -41,16 +41,20 @@ jobs:
           kill "$other"
           echo "   left alone: $other"
           echo "3. a cancelled session's redis-server is stopped by TERM and a process ignoring TERM by KILL"
-          RUNNER_TRACKING_ID= setsid sh -c 'python3 "$1" record "$2" $$ || exit 1; redis-server --port 0 --save "" --appendonly no --daemonize no > /dev/null 2>&1 & (trap "" TERM; exec sleep 902) & exec sleep 905' run "$py" "$SESSION_FILE" > /dev/null 2>&1 &
+          RUNNER_TRACKING_ID= setsid sh -c 'python3 "$1" record "$2" $$ || exit 1; redis-server --port 0 --unixsocket "$3" --save "" --appendonly no --daemonize no > /dev/null 2>&1 & (trap "" TERM; exec sleep 902) & exec sleep 905' run "$py" "$SESSION_FILE" "$RUNNER_TEMP/s/redis.sock" > /dev/null 2>&1 &
           sleep 2
           owned=$(cut -d' ' -f2 "$SESSION_FILE")
           ps -s "$owned" -o pid,args
-          tr '\0' '\n' < "/proc/$(pgrep -s "$owned" redis-server)/environ" | head -3 || true
+          server=$(pgrep -s "$owned" redis-server)
+          redis-cli -s "$RUNNER_TEMP/s/redis.sock" ping || { echo "   FAIL: no live redis-server"; exit 1; }
+          echo "   redis-server $server environment as /proc shows it:"
+          tr '\0' '\n' < "/proc/$server/environ" | head -3 || true
           kill -KILL "$owned"
           sleep 1
           ps -s "$owned" -o pid,args
           stop_recorded
           gone "$owned" || { echo "   FAIL: survived"; ps -s "$owned" -o pid,args; exit 1; }
+          ! kill -0 "$server" 2>/dev/null || { echo "   FAIL: redis-server $server survived"; exit 1; }
           test ! -e "$SESSION_FILE" || { echo "   FAIL: record kept"; exit 1; }
           echo "   session $owned stopped, record removed"
           echo "4. a measurement that fails after starting a process leaves nothing"
@@ -90,11 +94,12 @@ jobs:
       - id: plant
         run: |
           mkdir -p ~/.cache/firn-redis-bench
-          RUNNER_TRACKING_ID= setsid sh -c 'python3 "$1" record ~/.cache/firn-redis-bench/session $$ || exit 1; redis-server --port 0 --save "" --appendonly no --daemonize no & exec sleep 900' run "$PWD/research/experiments/redis-bench/session.py" > /dev/null 2>&1 &
+          RUNNER_TRACKING_ID= setsid sh -c 'python3 "$1" record ~/.cache/firn-redis-bench/session $$ || exit 1; redis-server --port 0 --unixsocket "$2" --save "" --appendonly no --daemonize no & exec sleep 900' run "$PWD/research/experiments/redis-bench/session.py" ~/.cache/firn-redis-bench/probe.sock > /dev/null 2>&1 &
           sleep 2
           sid=$(cut -d' ' -f2 ~/.cache/firn-redis-bench/session)
           echo "sid=$sid" >> "$GITHUB_OUTPUT"
-          ps -s "$sid" -o pid,args
+          ps -s "$sid" -o pid,stat,args
+          redis-cli -s ~/.cache/firn-redis-bench/probe.sock ping
 
   bench:
     needs: leftover
@@ -125,4 +130,9 @@ jobs:
             exit 1
           fi
           test ! -e ~/.cache/firn-redis-bench/session
-          echo "the planted session $sid was stopped and no session file is left"
+          if redis-cli -s ~/.cache/firn-redis-bench/probe.sock ping > /dev/null 2>&1; then
+            echo "the planted redis-server survived"
+            exit 1
+          fi
+          rm -f ~/.cache/firn-redis-bench/probe.sock
+          echo "the planted session $sid and its redis-server were stopped and no session file is left"
