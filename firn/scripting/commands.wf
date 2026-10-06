@@ -1,0 +1,39 @@
+alias Value = halo::value::Value;
+alias Vm = halo::vm::Vm;
+
+fn command(env: &Env, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64) -> r: Value reads(stack), writes(env), writes(vm) {
+  doc "redis.call and redis.pcall: checks the arguments as Redis 7.0.15's luaRedisGenericCommand does, at least one and each a string or a number, and answers the error table of a command firn cannot yet run from a script. The commands run once Halo's host call lets a script's command reach the keyspace its statement holds; until then every command is refused with this interim error.";
+  set env^.error = False();
+  if argc == 0_u64 {
+    return fail(env: env, vm: vm, text: &commands_text_0[0_u64..64_u64]);
+  }
+  for @arguments (i in 0_u64..argc) {
+    let v = arg(stack: stack, func: func, argc: argc, index: i);
+    let k = kind(v: v);
+    if k != 2_u8 {
+      if k != 3_u8 {
+        return fail(env: env, vm: vm, text: &s_2[0_u64..63_u64]);
+      }
+    }
+  }
+  return fail(env: env, vm: vm, text: &commands_interim[0_u64..47_u64]);
+}
+
+fn command_argument(vm: &Vm, v: Value) -> text: Value writes(vm) {
+  doc "Redis luaArgsToRedisArgv formats numeric command arguments with %.17g, separately from Lua tostring's %.14g. Reuse firn's Redis score formatter and decode its bulk reply.";
+  let tag = kind(v: v);
+  if tag == 2_u8 {
+    let x = number(vm: vm, v: v);
+    let client = pkg::protocol::client_new(capacity: 64_u64);
+    pkg::scores::reply_score(client: &client, score: x);
+    let n = client.at;
+    if n <= client.bytes.inner.len {
+      return command_reply(vm: vm, bytes: &client.bytes.inner[0_u64..n], start: 0_u64, end: n, resp: 2_u8);
+    }
+  }
+  return v;
+}
+
+const commands_text_0: Array<u8, 64> = "ERR Please specify at least one argument for this redis lib call";
+
+const commands_interim: Array<u8, 47> = "ERR firn does not run commands from scripts yet";
