@@ -38,7 +38,7 @@ When priorities conflict:
 - The language is the pinned Whitefoot commit: read its specification,
   maintained programs and standard-library interfaces at that commit as
   [whitefoot-kit/downstream.md](whitefoot-kit/downstream.md#reading-the-language)
-  describes.
+  describes; the compiler's diagnostics and repairs are the other source.
 - Research records written while firn lived in the Whitefoot repository cite
   Whitefoot paths and commands of their time; they are evidence, not current
   instructions.
@@ -54,16 +54,15 @@ form and readiness checks are `make design-lint` and `make design-ready`,
 which run `lint.py` from the `design/skill/` submodule.
 
 A design decision here is a choice between viable alternatives that changes
-accepted requests or replies, persisted state, a safety condition, a shared
-interface or representation, a performance commitment or a standing project
-rule. These decisions are firn's implementation rules: read the nodes a
-change touches and their ancestors before changing code.
+accepted requests or replies, persisted state, a safety or trust condition,
+a shared interface or representation, a significant performance commitment
+or a standing project rule. These decisions are firn's implementation rules:
+read the nodes a change touches and their ancestors before changing code.
 
-An investigation writes in `research/investigations/<name>/`, before
-measuring, the question, the comparison that could answer it either way and
-the result that would reject the proposal. A performance change is attributed
-with a same-source before-and-after comparison of interleaved runs of
-`make firn-lto` builds on the 14900K, with a twin of the base as a noise
+An investigation's question, comparison and rejecting result go in
+`research/investigations/<name>/` before it measures. A performance change is
+attributed with a same-source before-and-after comparison of interleaved runs
+of `make firn-lto` builds on the 14900K, with a twin of the base as a noise
 control, and a falsifier.
 
 ## Architecture
@@ -112,16 +111,14 @@ merge precondition.
   later, `redis-cli` and `redis-benchmark`, the submodules
   (`git submodule update --init`), `/usr/bin/clang` and, on Linux, LLD; the
   Redis suite runner needs Linux's GNU tools.
-- `make design-ready` and `make pin-ready` run in CI on ready PRs and main:
-  every design-tree change is approved in the log, and `whitefoot.pin` names
-  no experiment release.
+- `make design-ready` and `make pin-ready`, before marking ready and in CI on
+  ready PRs and main: every design-tree change is approved in the log, and
+  `whitefoot.pin` names no experiment release.
 
 ## Review
 
 The completion review's reviewer gets the prompt in
-[the review checklist](docs/review-checklist.md#how-to-review) and checks
-every applicable group, or groups A, D and V, plus R for a material choice,
-when only research records or other prose changed. Its scope and the findings
+[the review checklist](docs/review-checklist.md); its scope and the findings
 fixed go in the PR's review section.
 
 ## Whitefoot
