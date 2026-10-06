@@ -50,18 +50,22 @@ Stars as GitHub reported them on 2026-10-06.
 
 The three selected components span two ecosystems (Python and Node.js) and
 three clients, and cover the cache, the session and the scripted update.
-A component's own tests are not production traffic: they also exercise edge
-cases a deployment seldom reaches, so the command profile they give bounds
-what the component can send rather than measuring how often it sends it.
+A component's own tests are not production traffic: they exercise edge cases
+a deployment seldom reaches and may leave other paths unexercised, so the
+command profile they give shows what the tests reached, not how often a
+deployment sends each command; the commands a recorded script can call are
+read from its source as well.
 
 ## Method
 
 `research/experiments/consumers/` runs each consumer's Redis tests, pinned to
 a release, in CI against two servers:
 
-- **Redis 7.0.15**, with `MONITOR` recording every command the tests send,
-  including those a script runs; `profile.py` reduces the record to each
-  command and the option words it was sent with, and their counts.
+- **Redis 7.0.15**, with `MONITOR` started before the tests and recording
+  every command they send, including those a script runs; `profile.py`
+  reduces the record to each command and the option words it was sent with,
+  and their counts, and names the commands each recorded script's source can
+  call.
 - **firn**, built at the same revision, whose test results name the
   behavior the consumer needs and firn lacks.
 
@@ -80,24 +84,28 @@ consumer's tests pass against Redis.
 
 | Consumer | Against Redis | Against firn | What firn refused |
 |---|---|---|---|
-| Django | 1,338 tests, all pass (145 skipped) | 230 errors | `HELLO 3`: all 230 are `NOPROTO` |
+| Django | 1,338 tests: OK, 145 of them skipped and 1 an expected failure | 230 errors | `HELLO 3`: all 230 are `NOPROTO` |
 | connect-redis | 4 of 4 pass | 2 of 4 fail | `HELLO 3`: `NOPROTO` |
 | rate-limiter-flexible | 100 of 100 pass | 69 of 100 fail | `EVAL`, `EVALSHA`, `EXEC`; 12 time out behind them |
 
 The commands each consumer sent Redis, by form (`profile.py`; `lua` marks a
 command a script ran), with how often:
 
-- **Django** (982 commands): `GET` 238, `SET EX` 160, `EXISTS` 144, `DEL`
+- **Django** (981 commands): `GET` 238, `SET EX` 160, `EXISTS` 144, `DEL`
   135, `FLUSHDB` 72, `SET NX EX` 50, `EXPIRE` 49, `MGET` 31, `INCRBY` 22,
-  `MULTI`/`EXEC` 20 (each around `MSET` and one `EXPIRE` per key), `HELLO 3`
-  11, `SET NX` 5, `SET` 2, `CLIENT INFO` 1, `PERSIST` 1.
-- **connect-redis** (1,048): `SET EX` 1,003, `SCAN MATCH COUNT` 31, `DEL` 4,
+  `MULTI`/`EXEC` 20, `HELLO 3` 11, `SET NX` 5, `SET` 2, `CLIENT INFO` 1,
+  `PERSIST` 1. Each transaction queues one `MSET`, followed in 19 of the 20
+  by one `EXPIRE` per key.
+- **connect-redis** (1,046): `SET EX` 1,003, `SCAN MATCH COUNT` 31, `DEL` 4,
   `TTL` 3, `HELLO 3` 2, `EXPIRE`, `GET` and `MGET` 1 each.
-- **rate-limiter-flexible** (730): from scripts `SET EX NX`, `INCRBY` and
+- **rate-limiter-flexible** (729): from scripts `SET EX NX`, `INCRBY` and
   `PTTL` 86 each and `PEXPIRE` 8; from the client `EVAL` 73, `QUIT` 55,
   `INFO` 54, `FLUSHDB` 53, `FLUSHALL` 47, `PTTL` 42, `GET` 37,
-  `MULTI`/`EXEC` 29 (around `SET` or `GET` or `INCRBY`, then `PTTL`), `SET EX`
-  17, `EVALSHA` 13, `SET` 6, `DEL` 4, `INCRBY` 4.
+  `MULTI`/`EXEC` 29, `SET EX` 17, `EVALSHA` 13, `SET` 6, `DEL` 4, `INCRBY` 4.
+  Its transactions queue `SET` alone (5), or `SET`, `GET` or `INCRBY`
+  followed by `PTTL` (24). The sources of its four recorded scripts can also
+  call `EXPIRE`, in a branch for a key without an expiry that the tests did
+  not reach.
 
 ## What the milestone needs from firn
 
@@ -109,12 +117,12 @@ Ordered by how many selected consumers each gap stops:
    (null, map, set, double and the rest) follow, for every command the
    consumers send.
 2. **Transactions: `MULTI` and `EXEC`.** Django's `set_many` and
-   rate-limiter-flexible's non-scripted paths queue two to five commands
+   rate-limiter-flexible's non-scripted paths queue one to five commands
    (`MSET`, `EXPIRE`, `SET`, `GET`, `INCRBY`, `PTTL`) and run them with
    `EXEC`. No consumer sent `WATCH` or `DISCARD`.
-3. **Scripts: `EVAL` and `EVALSHA`.** rate-limiter-flexible's scripts call
-   `SET` with `EX` and `NX`, `INCRBY`, `PTTL` and `PEXPIRE`; scripts run
-   only `GET`, `INCR` and `SET` today.
+3. **Scripts: `EVAL` and `EVALSHA`.** rate-limiter-flexible's scripts ran
+   `SET` with `EX` and `NX`, `INCRBY`, `PTTL` and `PEXPIRE`, and their source
+   can also call `EXPIRE`; scripts run only `GET`, `INCR` and `SET` today.
 4. **`SCAN` with `MATCH` and `COUNT`**, which connect-redis uses to list and
    clear sessions, and **`CLIENT INFO`**, which Django sent once.
 

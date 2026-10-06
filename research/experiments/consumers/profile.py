@@ -3,11 +3,14 @@
     python3 profile.py monitor.log > profile.tsv
 
 A form is a command's name, its subcommand for a command that has them, and
-the option words it was sent with, in the order sent; the output counts each
-form by its source, a client or a script (`lua`). An argument counts as an
-option word when it spells one of OPTIONS in any case, so a value that
-happens to spell one is counted too; the profile bounds what a consumer
-sends rather than parsing each command's syntax. run.sh calls it.
+the option words it was sent with, in the order sent. The output counts each
+form by its source: `client` for a command a client sent, `lua` for one a
+script ran. Rows of source `script` are not executions: they name each command
+the source text of a script sent with EVAL can call, counted by the distinct
+scripts naming it, since a test may leave a script's branch unexercised. An
+argument counts as an option word when it spells one of OPTIONS in any case,
+so a value that happens to spell one is counted too. The number of commands
+read goes to standard error; a record with none exits 1. run.sh calls it.
 """
 
 import re
@@ -36,10 +39,14 @@ OPTIONS = {
 # space but may hold brackets itself, as an IPv6 address does: [::1]:5000.
 LINE = re.compile(r'^\d+\.\d+ \[\d+ ([^ ]+)\] (.*)$')
 WORD = re.compile(r'"((?:[^"\\]|\\.)*)"')
+# A command a script's source calls: redis.call('name', ...) or pcall.
+CALL = re.compile(r"""redis\.p?call\(\s*['"]([A-Za-z_]+)['"]""")
 
 
 def forms(path):
     counts = Counter()
+    scripts = set()
+    total = 0
     with open(path, encoding="utf-8", errors="replace") as record:
         for line in record:
             match = LINE.match(line.rstrip("\n"))
@@ -49,21 +56,34 @@ def forms(path):
             words = WORD.findall(match.group(2))
             if not words:
                 continue
+            total += 1
             name = words[0].upper()
             form = [name]
             rest = words[1:]
             if name in CONTAINERS and rest:
                 form.append(rest[0].upper())
                 rest = rest[1:]
+            if name in ("EVAL", "EVAL_RO") and rest:
+                scripts.add(rest[0])
             if name in ("EVAL", "EVALSHA", "EVAL_RO", "EVALSHA_RO"):
+                rest = []
+            if name == "SCRIPT" and len(form) > 1 and form[1] == "LOAD" and rest:
+                scripts.add(rest[0])
                 rest = []
             form.extend(word.upper() for word in rest if word.upper() in OPTIONS)
             counts[(source, " ".join(form))] += 1
-    return counts
+    for script in scripts:
+        for name in sorted(set(call.upper() for call in CALL.findall(script))):
+            counts[("script", name)] += 1
+    return counts, total
 
 
 def main():
-    counts = forms(sys.argv[1])
+    counts, total = forms(sys.argv[1])
+    print(f"{total} commands", file=sys.stderr)
+    if total == 0:
+        print("the record holds no command", file=sys.stderr)
+        sys.exit(1)
     print("source\tform\tcount")
     for (source, form), count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
         print(f"{source}\t{form}\t{count}")
