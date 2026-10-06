@@ -262,8 +262,8 @@ fn call_line(vm: &Vm, return_pc: u64) -> line: u64 reads(vm) {
 fn table_handle(value: Value) -> handle: u64 pure {
   doc "A table's handle plus one, or 0 for a value that is not a table.";
   match value {
-    Tab(h: h) => {
-      let wide = cvt::<u32, u64>(h);
+    Tab(h: hv) => {
+      let wide = cvt::<u32, u64>(hv);
       return wide +sat 1_u64;
     }
     Nil() => {
