@@ -10,7 +10,7 @@ Add an item at the end of the section that owns its topic.
 
 A gap in Whitefoot itself, stated as its minimal semantic example, goes
 under *Whitefoot requirements* until Whitefoot resolves it
-([AGENTS.md](../AGENTS.md#the-whitefoot-boundary)). The items below were
+([downstream.md](../whitefoot-kit/downstream.md#trying-an-unmerged-whitefoot-change)). The items below were
 written while firn lived in the Whitefoot repository; a path such as
 `compiler/...` they name is Whitefoot's.
 

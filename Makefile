@@ -19,53 +19,18 @@ DESIGN_TREES := $(filter-out log,$(basename $(notdir $(wildcard $(ROOT)/design/*
 # event with design/skill/review-base.sh.
 DESIGN_REVIEW_BASE ?= origin/main
 
-# The pinned Whitefoot compiler. whitefoot.pin holds one line,
-# `release = wf-<12-character commit hash>`, or `release = wf-exp-<hash>` for
-# an experiment release on an experiment branch, naming a release of
-# Ming-Research/Whitefoot; `make compiler` downloads that release's
-# whitefootc for this host, checked against its SHA256SUMS and manifest, to
-# build/whitefoot/<release>/. Only a work branch may pin an experiment
-# release (AGENTS.md, rule 4; make pin-ready refuses it), and
-# `make WHITEFOOTC=<path> firn` builds with a locally built compiler instead.
-PIN := $(ROOT)/whitefoot.pin
-PIN_LINE := ^release = wf-(exp-)?[0-9a-f]{12}$$
-RELEASE := $(shell sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$$/\1/p' $(PIN) 2>/dev/null)
-RELEASE_COMMIT := $(lastword $(subst -, ,$(RELEASE)))
-RELEASES := https://github.com/Ming-Research/Whitefoot/releases/download
-HOST := $(shell uname -s)-$(shell uname -m)
-ASSET := $(if $(filter Linux-x86_64,$(HOST)),whitefootc-linux-x86_64.tar.gz,$(if $(filter Darwin-arm64,$(HOST)),whitefootc-macos-arm64.tar.gz))
-WHITEFOOT := $(BUILD)/whitefoot/$(RELEASE)
-PINNED_WHITEFOOTC := $(WHITEFOOT)/whitefootc
-WHITEFOOTC := $(PINNED_WHITEFOOTC)
+# The pinned Whitefoot compiler: whitefoot.pin, make compiler, pin-ready and
+# WHITEFOOTC come from the whitefoot-kit submodule, shared with the other
+# projects written in Whitefoot (whitefoot-kit/downstream.md).
+include $(ROOT)/whitefoot-kit/whitefoot.mk
 
 # firn is one module program; any of its sources changes the build.
 FIRN_GRAPH := $(ROOT)/firn/modules.wfg
 FIRN_SOURCES := $(shell find $(ROOT)/firn -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
 
-.PHONY: check compiler firn firn-test test redis-suite firn-lto design-lint design-ready pin-ready
+.PHONY: check firn firn-test test redis-suite firn-lto design-lint design-ready
 
 check: compiler firn test redis-suite design-lint
-
-compiler: $(PINNED_WHITEFOOTC)
-
-$(PIN):
-	@echo "whitefoot.pin is missing; it names the Whitefoot compiler release (AGENTS.md, Upgrading Whitefoot)" >&2
-	@exit 1
-
-$(PINNED_WHITEFOOTC): $(PIN)
-	@test "$$(grep -c '' $(PIN))" = 1 && grep -qE '$(PIN_LINE)' $(PIN) || { echo "whitefoot.pin must hold exactly one line: release = wf-<12-character commit hash>" >&2; exit 1; }
-	@test -n "$(ASSET)" || { echo "Whitefoot publishes no compiler for $(HOST)" >&2; exit 1; }
-	@rm -rf $(WHITEFOOT).part && mkdir -p $(WHITEFOOT).part
-	@cd $(WHITEFOOT).part && for file in $(ASSET) SHA256SUMS whitefoot-release.json; do \
-		curl -fsSL --retry 3 -o $$file $(RELEASES)/$(RELEASE)/$$file || { \
-			echo "cannot download $$file of $(RELEASE); make it with: gh workflow run compiler-release.yml -R Ming-Research/Whitefoot -f commit=$(RELEASE_COMMIT)$(if $(findstring wf-exp-,$(RELEASE)), -f experiment=true) (AGENTS.md, Upgrading Whitefoot)" >&2; \
-			exit 1; }; \
-	done
-	@cd $(WHITEFOOT).part && grep '  $(ASSET)$$' SHA256SUMS | shasum -a 256 -c -
-	@cd $(WHITEFOOT).part && $(PY) -c 'import json, sys; m = json.load(open("whitefoot-release.json")); sys.exit(0 if m["tag"] == "$(RELEASE)" and m["commit"].startswith("$(RELEASE_COMMIT)") else "whitefoot-release.json does not describe $(RELEASE)")'
-	@cd $(WHITEFOOT).part && tar -xzf $(ASSET) && rm $(ASSET) && test -x whitefootc
-	@rm -rf $(WHITEFOOT) && mv $(WHITEFOOT).part $(WHITEFOOT)
-	@echo "whitefootc $(RELEASE) for $(HOST) at $(WHITEFOOTC)"
 
 # The server as a developer runs it: an incremental cache keeps each module's
 # checked and compiled parts, so a rebuild compiles only what an edit changed.
@@ -108,11 +73,3 @@ design-lint:
 
 design-ready:
 	@$(if $(DESIGN_TREES),$(PY) -B $(ROOT)/design/skill/lint.py --root $(ROOT)/design --trees $(DESIGN_TREES) --base "$(DESIGN_REVIEW_BASE)" --require-approval,echo "design ready: no live tree")
-
-# A revision bound for main pins a release of a commit on Whitefoot's main,
-# never an experiment release (AGENTS.md, rule 4); CI runs this with
-# design-ready on ready pull requests and main.
-pin-ready:
-	@if grep -q '^release = wf-exp-' $(PIN); then \
-		echo "whitefoot.pin names the experiment release $(RELEASE); pin a release of a commit on Whitefoot's main before this reaches main" >&2; \
-		exit 1; fi

@@ -30,9 +30,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      # The readiness check runs the design-tree skill's lint, a submodule.
+      # The readiness check runs the design-tree skill's lint, and the
+      # Makefile includes whitefoot-kit's rules; both are submodules.
       - name: Check out the design-tree skill
-        run: git submodule update --init design/skill
+        run: git submodule update --init design/skill whitefoot-kit
 
       - name: Name main as a local ref
         run: |

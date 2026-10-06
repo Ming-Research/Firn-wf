@@ -103,10 +103,9 @@ Source: [code and tests](../AGENTS.md#code-and-tests).
   shows that a representative wrong result is detected.
 - [ ] **T3 — Local and CI correspondence.** CI runs the same Makefile targets
   as local `make check`; changed selection adds no omission or extra check.
-- [ ] **T4 — The pins.** A moved pin names the adopted revisions and why; a
-  revision bound for `main` pins a Whitefoot release built from a commit on
-  Whitefoot's `main`, never an experiment release `wf-exp-`, and submodule
-  commits on their repositories' `main`, and firn's checks pass with them.
+- [ ] **T4 — The pins.** The [review items](../whitefoot-kit/downstream.md#review-items)
+  of Whitefoot-kit hold for `whitefoot.pin` and the `whitefoot-kit` and
+  `design/skill` submodules, and firn's checks pass with them.
 
 ## R. Decisions — changed choices, premises or evidence
 

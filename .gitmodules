@@ -1,3 +1,6 @@
 [submodule "design/skill"]
 	path = design/skill
 	url = https://github.com/Ming-Research/Design-skill.git
+[submodule "whitefoot-kit"]
+	path = whitefoot-kit
+	url = https://github.com/Ming-Research/Whitefoot-kit.git
