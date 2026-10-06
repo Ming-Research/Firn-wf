@@ -222,10 +222,23 @@ jobs:
             git worktree add --detach "$tree" "${pair#*=}"
             git -C "$tree" submodule update --init
             echo "revision,$name,$(git -C "$tree" rev-parse HEAD),$(cat "$tree/whitefoot.pin")" | tee -a "$OUT/revisions.csv"
-            # A tree whose kit predates the target pins a release that names
-            # no LLVM major, which any clang builds.
+            # A tree's own pin names the LLVM major its compiler needs: a
+            # hosted runner installs it, the self-hosted machine must have
+            # it. A tree whose kit predates the target pins a release built
+            # with Ubuntu 24.04's clang 18 before releases named their major.
             if make -C "$tree" -n toolchain-check > /dev/null 2>&1; then
-              make -C "$tree" toolchain-check
+              if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+                make -C "$tree" toolchain
+              else
+                make -C "$tree" toolchain-check
+              fi
+            elif [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+              sudo apt-get install -y --no-install-recommends clang-18 lld-18
+              sudo ln -sf /usr/bin/clang-18 /usr/bin/clang
+              sudo ln -sf /usr/bin/ld.lld-18 /usr/bin/ld.lld
+            elif ! /usr/bin/clang --version | grep -q 'clang version 18\.'; then
+              echo "$name pins a release built with LLVM 18, and /usr/bin/clang is not 18: build it where it is, with mode build, and pass that run as images_run" >&2
+              exit 1
             fi
             make -C "$tree" firn-lto
             cp "$tree/build/firn-lto" "$OUT/$name"
@@ -281,6 +294,13 @@ jobs:
             fi
             run_session compare 2>&1 | tee "$OUT/bench.txt"
           else
+            # scale builds this checkout's firn under its own pin's LLVM,
+            # which a tree built above may have replaced on a hosted runner.
+            if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+              make toolchain
+            else
+              make toolchain-check
+            fi
             make compiler
             export FIRN_BASELINE="$OUT/base"
             echo "firn: $(git rev-parse HEAD)" | tee -a "$OUT/host.txt"
