@@ -80,6 +80,36 @@ const arity_renamenx: i64 = 3_i64;
 
 const arity_copy: i64 = -3_i64;
 
+const arity_hset: i64 = -4_i64;
+
+const arity_hmset: i64 = -4_i64;
+
+const arity_hsetnx: i64 = 4_i64;
+
+const arity_hget: i64 = 3_i64;
+
+const arity_hmget: i64 = -3_i64;
+
+const arity_hdel: i64 = -3_i64;
+
+const arity_hexists: i64 = 3_i64;
+
+const arity_hstrlen: i64 = 3_i64;
+
+const arity_hlen: i64 = 2_i64;
+
+const arity_hgetall: i64 = 2_i64;
+
+const arity_hkeys: i64 = 2_i64;
+
+const arity_hvals: i64 = 2_i64;
+
+const arity_hincrby: i64 = 4_i64;
+
+const arity_hincrbyfloat: i64 = 4_i64;
+
+const arity_hrandfield: i64 = -2_i64;
+
 const arity_noscript_with_argument: i64 = -2_i64;
 
 const text_script_arity: Array<u8, 58> = "ERR Wrong number of args calling Redis command from script";
@@ -241,7 +271,7 @@ fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
 }
 
 fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY, the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
+  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD, the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
   let code = name_code(input: input, start: name.start, length: name.length);
   if code == code_get {
     return 1_u64;
@@ -372,6 +402,57 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   if code == code_copy {
     return 39_u64;
   }
+  if code == code_hset {
+    return 40_u64;
+  }
+  if code == code_hmset {
+    return 41_u64;
+  }
+  if code == code_hsetnx {
+    return 42_u64;
+  }
+  if code == code_hget {
+    return 43_u64;
+  }
+  if code == code_hmget {
+    return 44_u64;
+  }
+  if code == code_hdel {
+    return 45_u64;
+  }
+  if code == code_hexists {
+    return 46_u64;
+  }
+  if code == code_hstrlen {
+    return 47_u64;
+  }
+  if code == code_hlen {
+    return 48_u64;
+  }
+  if code == code_hgetall {
+    return 49_u64;
+  }
+  if code == code_hkeys {
+    return 50_u64;
+  }
+  if code == code_hvals {
+    return 51_u64;
+  }
+  if code == code_hincrby {
+    return 52_u64;
+  }
+  if code == code_hincrbyfloat {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_hincrbyfloat[0_u64..12_u64]);
+    if spelled {
+      return 53_u64;
+    }
+  }
+  if code == code_hrandfield {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_hrandfield[0_u64..10_u64]);
+    if spelled {
+      return 54_u64;
+    }
+  }
   return 0_u64;
 }
 
@@ -473,6 +554,51 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   }
   if kind == 39_u64 {
     return arity_copy;
+  }
+  if kind == 40_u64 {
+    return arity_hset;
+  }
+  if kind == 41_u64 {
+    return arity_hmset;
+  }
+  if kind == 42_u64 {
+    return arity_hsetnx;
+  }
+  if kind == 43_u64 {
+    return arity_hget;
+  }
+  if kind == 44_u64 {
+    return arity_hmget;
+  }
+  if kind == 45_u64 {
+    return arity_hdel;
+  }
+  if kind == 46_u64 {
+    return arity_hexists;
+  }
+  if kind == 47_u64 {
+    return arity_hstrlen;
+  }
+  if kind == 48_u64 {
+    return arity_hlen;
+  }
+  if kind == 49_u64 {
+    return arity_hgetall;
+  }
+  if kind == 50_u64 {
+    return arity_hkeys;
+  }
+  if kind == 51_u64 {
+    return arity_hvals;
+  }
+  if kind == 52_u64 {
+    return arity_hincrby;
+  }
+  if kind == 53_u64 {
+    return arity_hincrbyfloat;
+  }
+  if kind == 54_u64 {
+    return arity_hrandfield;
   }
   return 0_i64;
 }
@@ -640,6 +766,66 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
   }
   if kind == 39_u64 {
     let appended = script_copy(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    return appended;
+  }
+  if kind == 40_u64 {
+    let appended = script_hset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, counted: calendar);
+    return appended;
+  }
+  if kind == 41_u64 {
+    let appended = script_hset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, counted: relative);
+    return appended;
+  }
+  if kind == 42_u64 {
+    let appended = script_hsetnx(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 43_u64 {
+    let appended = script_hget(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 44_u64 {
+    let appended = script_hmget(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 45_u64 {
+    let appended = script_hdel(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 46_u64 {
+    let appended = script_hfield(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, length: relative);
+    return appended;
+  }
+  if kind == 47_u64 {
+    let appended = script_hfield(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, length: calendar);
+    return appended;
+  }
+  if kind == 48_u64 {
+    let appended = script_hlen(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 49_u64 {
+    let appended = script_hall(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 2_i64);
+    return appended;
+  }
+  if kind == 50_u64 {
+    let appended = script_hall(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 0_i64);
+    return appended;
+  }
+  if kind == 51_u64 {
+    let appended = script_hall(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 1_i64);
+    return appended;
+  }
+  if kind == 52_u64 {
+    let appended = script_hincrby(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 53_u64 {
+    let appended = script_hincrbyfloat(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 54_u64 {
+    let appended = script_hrandfield(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   return 0_u64;
@@ -1033,5 +1219,219 @@ fn script_copy(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots
   let work = copy_body(slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
   let appended = transfer_meta(due: &meta^.due, log: effects, logged: logged, work: &work, input: input, args: args, env: env);
   copy_finish(client: client, error: 0_u64, outcome: work.outcome);
+  return appended;
+}
+
+fn script_hset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, counted: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HSET and HMSET through the network command parts while EXEC or a script holds every key.";
+  let valid = hset_parse(input: input, args: args, client: client);
+  if valid {
+  } else {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  let slot = &keys^[key];
+  let removed = hset_body(slot: slot, client: client);
+  let changed = client^.state == state_done;
+  let appended = changed_meta(log: effects, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
+  hset_finish(client: client, counted: counted);
+  return appended;
+}
+
+fn script_hsetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HSETNX through the network command parts while EXEC or a script holds every key.";
+  prepare_keys(input: input, args: args, client: client, first: 2_u64);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  let slot = &keys^[key];
+  let removed = hsetnx_body(slot: slot, client: client);
+  let stored = client^.state == state_done;
+  let added = client^.number > 0_u64;
+  let changed = band(stored, added);
+  let appended = changed_meta(log: effects, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
+  hsetnx_finish(client: client);
+  return appended;
+}
+
+fn script_hget(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HGET through the network command parts while EXEC or a script holds every key.";
+  hash_field_parse(input: input, args: args, client: client);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  let slot = &keys^[key];
+  hget_body(slot: slot, client: client);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  hget_finish(client: client);
+  return appended;
+}
+
+fn script_hmget(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HMGET through the network command parts while EXEC or a script holds every key.";
+  prepare_keys(input: input, args: args, client: client, first: 2_u64);
+  let fields = args^.inner.len -sat 2_u64;
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  let slot = &keys^[key];
+  hmget_body(slot: slot, client: client);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  hmget_finish(client: client, fields: fields);
+  return appended;
+}
+
+fn script_hdel(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HDEL through the network command parts while EXEC or a script holds every key.";
+  prepare_keys(input: input, args: args, client: client, first: 2_u64);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  let slot = &keys^[key];
+  let removed = hdel_body(slot: slot, client: client);
+  let changed = client^.number > 0_u64;
+  let appended = changed_meta(log: effects, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
+  hdel_finish(client: client);
+  return appended;
+}
+
+fn script_hfield(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, length: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HEXISTS and HSTRLEN through the network command parts while EXEC or a script holds every key.";
+  hash_field_parse(input: input, args: args, client: client);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  let slot = &keys^[key];
+  hfield_body(slot: slot, client: client);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  hfield_finish(client: client, length: length);
+  return appended;
+}
+
+fn script_hlen(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HLEN through the network command parts while EXEC or a script holds every key.";
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.number = 0_u64;
+  let slot = &keys^[key];
+  hlen_body(slot: slot, client: client);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  hlen_finish(client: client);
+  return appended;
+}
+
+fn script_hall(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, shown: i64) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HGETALL, HKEYS and HVALS through the network command parts while EXEC or a script holds every key.";
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.low = shown;
+  let slot = &keys^[key];
+  hall_body(slot: slot, client: client);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  hall_finish(client: client, shown: shown);
+  return appended;
+}
+
+fn script_hincrby(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HINCRBY through the network command parts while EXEC or a script holds every key.";
+  let valid = hincrby_parse(input: input, args: args, client: client);
+  if valid {
+  } else {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  set client^.high = 0_i64;
+  let slot = &keys^[key];
+  let removed = hincrby_body(slot: slot, client: client);
+  let changed = client^.state == state_done;
+  let appended = changed_meta(log: effects, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
+  hincrby_finish(client: client);
+  return appended;
+}
+
+fn script_hincrbyfloat(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HINCRBYFLOAT through the network command parts while EXEC or a script holds every key.";
+  let read = hincrbyfloat_parse(input: input, args: args);
+  let refused = hincrbyfloat_refused(client: client, read: &read);
+  if refused {
+    return 0_u64;
+  }
+  hash_field_parse(input: input, args: args, client: client);
+  let key_span = arg(args: args, index: 1_u64);
+  let field_span = arg(args: args, index: 2_u64);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  let empty = decimal_text(value: 0_i64);
+  let floating = Floating(increment: read, text: move empty, state: state_absent);
+  let slot = &keys^[key];
+  let removed = hincrbyfloat_body(slot: slot, client: client, floating: &floating);
+  let appended = hincrbyfloat_meta(log: effects, logged: logged, removed: removed, client: client, floating: &floating, input: input, key_span: key_span, field_span: field_span, key: key);
+  hincrbyfloat_finish(client: client, floating: &floating);
+  return appended;
+}
+
+fn script_hrandfield(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "HRANDFIELD through the network command parts while EXEC or a script holds every key.";
+  let valid = hrandfield_parse(input: input, args: args, client: client);
+  if valid {
+  } else {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  set client^.state = state_absent;
+  let asked = client^.number != 0_u64;
+  let single = client^.low == 0_i64;
+  let reading = bor(asked, single);
+  let slot = &keys^[key];
+  hrandfield_body(slot: slot, client: client, reading: reading);
+  let lapsed = client^.state == state_expired;
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+  hrandfield_finish(client: client, reading: reading, single: single);
   return appended;
 }
