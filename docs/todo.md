@@ -568,6 +568,24 @@ written while firn lived in the Whitefoot repository; a path such as
   write's bookkeeping, so the gap belongs to Whitefoot. Reopen when
   Whitefoot specifies it.
 
+- **A held concurrent map cannot be emptied without another held map.**
+  At pin `364f86c2fd16151103ac3947e5bf069727686733`, the minimal operation
+  needed is a nonwaiting function taking `keys: &ConcurrentHashMap<V>`
+  with `writes(keys)` that leaves every entry `None`. SHARE-1/PRE-1 expose
+  `map_count`, per-key access and `shared_map_new`, but no clear or iterator;
+  TYPE-9 admits maps only as shared state. `swap` needs a second held map,
+  reached through another atomic target, and SHARE-2 makes that acquisition
+  waiting. `ScriptCommands.call` cannot wait. Consequently FLUSHALL/FLUSHDB
+  (reserved held codes 164/165) have shared network parts but remain
+  unavailable inside EXEC and scripts. A fixed supply of fresh maps cannot
+  support an arbitrary number of Lua flush calls. Add a map-clear operation
+  in Whitefoot, a neighbor of the whole-map iteration Q64 asks for, then
+  write FLUSHALL's body over the held map with it, keeping prior effects
+  and the outer statement. Reopen for these commands; validate two
+  flushes separated by writes, expiry-queue removal, empty-map propagation,
+  concurrent atomicity, and AOF replay against Redis 7.0.15. No compiler
+  change or pin upgrade has been made here.
+
 - **A program cannot read a socket address.** The specification (v0.93,
   section 14, `std::net`) makes `SocketAddress` opaque, built only by
   `socket_address_v4` and `socket_address_v6`; `tcp_accept` returns the

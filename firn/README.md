@@ -52,22 +52,18 @@ clients send on their own:
   resumable host call; any other command is answered with Redis's error for
   an unknown one, noting that firn may not run it from scripts yet;
 - connection: `PING`, `ECHO`, `QUIT`, `AUTH`, `HELLO` with no version,
-  version 2 or version 3, which switches the connection to RESP3, `SELECT 0`, firn
-  having one database, and `CLIENT ID`, `CLIENT GETNAME`, `CLIENT SETNAME`
-  and `CLIENT INFO`, described below;
+  version 2 or version 3, which switches the connection to RESP3,
+  `SELECT 0`, firn having one database, and `CLIENT ID`, `CLIENT GETNAME`,
+  `CLIENT SETNAME` and `CLIENT INFO`, described below;
 - transactions: `MULTI`, `EXEC` and `DISCARD`. `EXEC` runs the queued
   commands in order in one atomic statement, their time frozen at its start,
-  for the commands written as parts: `GET`, `SET`, `INCR`, `DECR`, `INCRBY`,
-  `DECRBY`, `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`,
-  `EXPIRETIME`, `PEXPIRETIME`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `TYPE`,
-  `PERSIST`, `DBSIZE`, `PING`, `ECHO`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`,
-  `GETDEL`, `GETEX`, `APPEND`, `SETRANGE`, `STRLEN`, `GETRANGE`, `MGET`,
-  `MSETNX`, `INCRBYFLOAT`, `RENAME`, `RENAMENX`, `COPY`, `HSET`, `HMSET`,
-  `HSETNX`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`, `HSTRLEN`, `HLEN`,
-  `HGETALL`, `HKEYS`, `HVALS`, `HINCRBY`, `HINCRBYFLOAT` and `HRANDFIELD`.
-  Any other command
-  sent inside a transaction is queued, and `EXEC` then refuses the whole transaction;
-  `WATCH` is refused inside one and unknown outside;
+  for the commands written as parts: every keys, strings, hashes, lists, sets
+  and sorted sets command this list names other than the blocking ones and
+  `SCAN`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`, `COMMAND`
+  and `COMMAND COUNT`; `FLUSHALL`, `FLUSHDB` and `INFO` are not among them.
+  Any other command sent inside a transaction is queued, and `EXEC` then
+  refuses the whole transaction; `WATCH` is refused inside one and unknown
+  outside;
 - server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which
   describe no command. `COMMAND DOCS` is answered as an unknown subcommand,

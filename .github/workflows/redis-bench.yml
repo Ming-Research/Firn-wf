@@ -95,7 +95,7 @@ jobs:
           fetch-depth: 0
 
       - name: Check out Whitefoot-kit
-        run: git submodule update --init whitefoot-kit
+        run: git submodule update --init whitefoot-kit deps/halo-wf
 
       # The self-hosted machine keeps its tools installed and gives a job no
       # passwordless sudo.
@@ -186,7 +186,7 @@ jobs:
             git worktree prune
             rm -rf "$tree"
             git worktree add --detach "$tree" "${pair#*=}"
-            git -C "$tree" submodule update --init whitefoot-kit
+            git -C "$tree" submodule update --init whitefoot-kit deps/halo-wf
             echo "revision,$name,$(git -C "$tree" rev-parse HEAD),$(cat "$tree/whitefoot.pin")" | tee -a "$OUT/revisions.csv"
             make -C "$tree" firn-lto
             cp "$tree/build/firn-lto" "$OUT/$name"

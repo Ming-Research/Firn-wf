@@ -1,4 +1,4 @@
-Decision: A script's commands read the clock as it was when the script began, as Redis 7.0.15 freezes time for a script, because every command of one script must judge expiry and relative deadlines against one instant.
+Decision: A script's commands read the clock as it was when the script began, for expiry checks, relative deadlines and TTL replies alike, because every command of one script must judge expiry and relative deadlines against one instant, as Redis 7.2 freezes one time for a whole execution unit ([`commandTimeSnapshot`](https://github.com/redis/redis/blob/7.2.0/src/expire.c#L668)), instead of Redis 7.0.15's freezing of expiry checks alone, under which a TTL reply or a relative EXPIRE inside a long script reads the moving clock.
 
 Decision: A key a script's command finds expired is removed at once and its `DEL` appended to the script's effects, as Redis 7.0.15 removes a key a script's lookup finds expired, because the effects must replay to the state the script left.
 
@@ -17,6 +17,7 @@ Decision: SCRIPT KILL stops a script that has written nothing when its current a
 Decision: The commands a script calls reach the scripting module as an interface, ScriptCommands, that the commands module binds to script_command, because the commands module already depends on the scripting module for EVAL's dispatch and a call back into it would close a cycle of modules, instead of moving the script's statement out of the scripting module into the commands module, which would split the Lua environment's handling between the two.
 
 Rejected:
+- Freezing expiry checks alone, as Redis 7.0.15 does: rejected because Redis moved to one time for the whole execution unit in 7.2, and following 7.0.15 would carry a live clock into every command part for a difference seen only while a script runs long.
 - Releasing the statement around each of a script's commands: rejected because another client's command could then come between them, which Redis does not allow.
 - A registry of scripts per connection: rejected because EVALSHA on one connection must find a script another loaded, as Redis's registry is the server's.
 - A pool of engines that scripts take in any order: rejected because a script's cjson settings and random-number state then reach only the scripts that take the same engine, where Redis's one Lua state gives them to every later script.

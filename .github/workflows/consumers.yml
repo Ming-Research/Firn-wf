@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check out Whitefoot-kit
-        run: git submodule update --init whitefoot-kit
+        run: git submodule update --init whitefoot-kit deps/halo-wf
 
       - name: Install Redis, its tools, clang and LLD
         run: |
