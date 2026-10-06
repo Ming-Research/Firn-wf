@@ -23,13 +23,17 @@ jobs:
               body = f"*3\r\n$4\r\nEVAL\r\n${len(script)}\r\n{script}\r\n$1\r\n0\r\n".encode()
               s.sendall(body)
               data = b""
-              while b"reached lua stack limit" not in data:
-                  chunk = s.recv(1 << 20)
+              s.settimeout(3)
+              while True:
+                  try:
+                      chunk = s.recv(1 << 20)
+                  except socket.timeout:
+                      break
                   if not chunk:
                       break
                   data += chunk
               cut = data.index(b"-ERR reached lua stack limit")
-              print(script, "| headers before the error:", data[:cut].count(header), "| reply starts:", data[:40])
+              print(script, "| headers before the error:", data[:cut].count(header), "| around the first error:", data[max(0, cut - 40):cut + 70], "| total bytes:", len(data))
               s.close()
           run("local a={}; local b={a}; a[1]=b; return a", b"*1\r\n")
           run("local a={}; a.map={k=a}; return a", b"*2\r\n")
