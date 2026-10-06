@@ -1,0 +1,3 @@
+# unit<TAB>test name; sorted, one identity per line.
+# Bootstrap: empty until redis-suite-record.yml records firn in CI.
+# Commit its generated passing.tsv (passed in every run) in the same PR.

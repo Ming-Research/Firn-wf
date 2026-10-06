@@ -44,7 +44,8 @@ implementation requirement.
 
 **The reference.** firn's behavior is judged against Redis 7.0.15 on x86-64
 Linux: its replies, the append-only files it writes and reads, and its own
-test suite (`research/experiments/redis-compat/`). Its source is the oracle
+test suite (`tests/redis-suite/`, with historical results under
+`research/experiments/redis-compat/`). Its source is the oracle
 for what a command does where the documentation is silent.
 
 **The language.** The pinned Whitefoot commit defines the language. Releases
@@ -182,11 +183,18 @@ merge precondition.
 
 - `make check`, the gate, in CI on every push and on the revision to merge.
   It downloads the pinned compiler (`make compiler`), builds firn and runs
-  its network cases (`tests/`) and the design lint. It needs git, curl,
-  Python 3, Rust stable (with Cargo), the submodules
+  its network cases (`tests/`), the Redis 7.0.15 suite ratchet
+  (`tests/redis-suite/`, without `--tolerant`) and the design lint. The
+  ratchet requires every test in `passing.tsv` to pass and reports new
+  passes to add in the same PR; `unstable.tsv` records exclusions from
+  repeated CI runs. The dispatch-only `redis-suite-record.yml` workflow
+  produces both lists for review and commit. The gate needs git, curl,
+  Python 3, Rust stable (with Cargo), `tclsh` 8.5 or later, Redis's client
+  tools (`redis-cli` and `redis-benchmark`), the submodules
   (`git clone --recurse-submodules` or
   `git submodule update --init`) and the toolchain the compiler links with:
-  `/usr/bin/clang`, and on Linux LLD, which CI installs.
+  `/usr/bin/clang`, and on Linux LLD, which CI installs alongside `tcl`
+  and `redis-tools`. The Redis suite runner needs Linux's GNU tools.
 - `make design-ready`, before marking ready and in CI on ready PRs and main:
   every design-tree change is approved in the log.
 - Build and test through CI, not on a developer's machine; run a build or

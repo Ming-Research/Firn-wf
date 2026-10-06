@@ -8,8 +8,8 @@ failure, and units.tsv, the counts per unit; then prints a report.
 usage: summarize.py RUN_DIR [--reference TESTS_TSV]
 
 With --reference, a test that the reference run's tests.tsv reports and this
-run does not is counted as not reached and listed so in tests.tsv. README.md
-defines every outcome and cause.
+run does not is counted as not reached and listed so in tests.tsv.
+research/experiments/redis-compat/README.md defines every outcome and cause.
 """
 
 import argparse

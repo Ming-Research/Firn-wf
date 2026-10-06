@@ -1,0 +1,3 @@
+# unit<TAB>test name<TAB>reason; sorted, excluded from the ratchet.
+# Bootstrap: empty until redis-suite-record.yml records firn in CI.
+# Commit its generated unstable.tsv (passed in some but not all runs).

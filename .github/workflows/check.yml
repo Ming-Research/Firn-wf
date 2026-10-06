@@ -1,7 +1,7 @@
 # firn's gate: every push runs `make check`, which downloads the pinned
-# Whitefoot compiler release, builds firn and runs its network cases and the
-# design lint. The exact revision that merges into main passes this first
-# (AGENTS.md, rule 3).
+# Whitefoot compiler release, builds firn and runs its network cases, Redis
+# suite ratchet and design lint. The exact revision that merges into main
+# passes this first (AGENTS.md, rule 3).
 name: check
 
 on:
@@ -42,7 +42,7 @@ jobs:
       - name: Install the host toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld
+          sudo apt-get install -y --no-install-recommends clang lld tcl redis-tools
           ld.lld --version
           /usr/bin/clang --version
           python3 --version
@@ -50,5 +50,24 @@ jobs:
       - name: Select the Rust toolchain
         run: rustup default stable && cargo --version
 
+      - name: Read the Redis archive pin
+        id: redis
+        run: |
+          sha256=$(sed -n 's/^sha256=//p' tests/redis-suite/run.sh)
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-source-${{ steps.redis.outputs.sha256 }}
+
       - name: Check
         run: make check
+
+      - name: Upload the Redis suite run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-suite-${{ github.sha }}
+          path: build/redis-suite

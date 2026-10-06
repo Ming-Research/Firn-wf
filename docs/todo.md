@@ -398,6 +398,16 @@ written while firn lived in the Whitefoot repository; a path such as
 
 ## Tests
 
+- **Seed the Redis suite ratchet from repeated CI runs.** `make check` now
+  runs Redis 7.0.15's suite without `--tolerant`, but
+  `tests/redis-suite/passing.tsv` and `unstable.tsv` are empty bootstrap
+  lists, so no named pass is protected yet. Dispatch
+  `.github/workflows/redis-suite-record.yml` on this revision, inspect the
+  run artifacts and commit its sorted intersection of passes and its
+  unstable exclusions with their reasons. Verify the populated baseline
+  with `make check` in CI. Reopen before this ratchet change is merged;
+  remove this item when those files and the passing gate are recorded.
+
 - **firn's network cases now and then lose their first connection when many
   cases run at once on a 32-CPU host.** `cargo test --test corpus` on
   the 14900K under WSL2, every case at once, failed one of firn's cases
