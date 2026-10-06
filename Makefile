@@ -66,7 +66,7 @@ firn-lto: $(BUILD)/firn-lto
 $(BUILD)/firn-lto: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 	$(WHITEFOOTC) --full-lto --graph $(FIRN_GRAPH) --entry firn -o $@
 
-# The design skill's own tests, then the lint of every live tree.
+# Design-skill's own tests, then the lint of every live tree.
 design-lint:
 	@$(PY) -B -m unittest discover -s $(ROOT)/design/skill -p 'test_lint.py'
 	@$(if $(DESIGN_TREES),$(PY) -B $(ROOT)/design/skill/lint.py --root $(ROOT)/design --trees $(DESIGN_TREES) --base "$(DESIGN_REVIEW_BASE)",echo "design lint: no live tree")

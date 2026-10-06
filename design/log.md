@@ -1,8 +1,8 @@
 # Design tree change log
 
 Newest first. One entry per approved change of the tree: a dated title,
-`Nodes:` naming every node changed, `Owner-approved:` and `Summary:`;
-`skill/SKILL.md` owns the form.
+`Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
+owner-wide instructions' design-tree part owns the form.
 
 ## 2026-10-06 firn builds with a pinned release through Whitefoot-kit
 
