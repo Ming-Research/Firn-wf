@@ -4077,7 +4077,8 @@ fn firn_records_transactions_as_redis_propagates_them() {
 /// result that contains itself ending in Redis's stack-limit error at the
 /// depth Redis reaches; redis.call and redis.pcall run the commands written
 /// as parts, numbers formatted as Redis formats them, an error reply raised
-/// at redis.call and returned by redis.pcall, and the reply read in the
+/// at redis.call, at the line of the call or of a rethrow as Redis's error
+/// handler reports it, and returned by redis.pcall, and the reply read in the
 /// script's protocol whatever the client's. The expected bytes are
 /// redis-server 7.0.15's.
 #[cfg(target_os = "linux")]
@@ -4166,6 +4167,12 @@ fn firn_runs_scripts_as_redis_does() {
         ],
         vec![
             "EVAL",
+            "local _, e = xpcall(function()\n  redis.call('INCR', KEYS[1])\nend, function(e) return e end)\nerror(e, 0)",
+            "1",
+            "sk",
+        ],
+        vec![
+            "EVAL",
             "return redis.call('SET',KEYS[1],'v','EX',100,'NX')",
             "1",
             "sk2",
@@ -4219,7 +4226,7 @@ fn firn_runs_scripts_as_redis_does() {
     let sets = "*1\r\n".repeat(2665);
     let limit = "-ERR reached lua stack limit\r\n";
     let expected = format!(
-        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n$-1\r\n$2\r\nsv\r\n:1\r\n:42\r\n:47\r\n-ERR value is not an integer or out of range\r\n-ERR value is not an integer or out of range script: da8455f0535fd532821b3713a4eccd80fc4b8457, on @user_script:1.\r\n-ERR value is not an integer or out of range script: 8225a61dd7e7b8c6f60bf49e74d2d38d8fbd695f, on @user_script:2.\r\n+OK\r\n:100\r\n:1\r\n+OK\r\n$1\r\nb\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n$2\r\nsv\r\n_\r\n_\r\n"
+        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n$-1\r\n$2\r\nsv\r\n:1\r\n:42\r\n:47\r\n-ERR value is not an integer or out of range\r\n-ERR value is not an integer or out of range script: da8455f0535fd532821b3713a4eccd80fc4b8457, on @user_script:1.\r\n-ERR value is not an integer or out of range script: 8225a61dd7e7b8c6f60bf49e74d2d38d8fbd695f, on @user_script:2.\r\n-ERR value is not an integer or out of range script: 6793b20f57c81afc3e867639a73e30ff2bd19609, on @user_script:4.\r\n+OK\r\n:100\r\n:1\r\n+OK\r\n$1\r\nb\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n$2\r\nsv\r\n_\r\n_\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the scripting batch");
     drop(client);
@@ -4280,25 +4287,24 @@ fn firn_kills_a_looping_script_as_redis_does() {
 }
 
 /// firn's scripts share one Lua state as Redis 7.0.15's do: the cjson
-/// precision one script sets reaches a later script on another connection
-/// while a third connection's script is in progress, and survives that
-/// script's abandoned attempts and its kill. With a pool of engines the
-/// later script could take another engine than the one the setting reached
-/// and encode 3.14159 at the default precision of 14 digits.
+/// precision one connection's script sets reaches another connection's
+/// script that runs while a third connection's script loops, and survives
+/// that script's abandoned attempts and its kill. The looping script holds
+/// the one engine during each attempt, so the later script waits for it;
+/// with a pool of engines it would take a second engine, served on another
+/// of the four drivers while an attempt runs, and encode 3.14159 at the
+/// default precision of 14 digits. The expected bytes are redis-server
+/// 7.0.15's (Firn-wf probe run 37487261232).
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_scripts_share_one_lua_state_as_redis_does() {
     let program = firn();
     let port = free_port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]);
-    let mut looping = connect_when_ready(port);
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), b"3"]);
     let mut setter = connect_when_ready(port);
+    let mut looping = connect_when_ready(port);
     let mut reader = connect_when_ready(port);
-    looping
-        .write_all(&resp(&["EVAL", "while true do end", "0"]))
-        .expect("start the looping script");
-    std::thread::sleep(Duration::from_millis(300));
     setter
         .write_all(&resp(&[
             "EVAL",
@@ -4307,6 +4313,10 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
         ]))
         .expect("set the precision");
     expect_replies(&mut setter, b":1\r\n", "the precision set");
+    looping
+        .write_all(&resp(&["EVAL", "while true do end", "0"]))
+        .expect("start the looping script");
+    std::thread::sleep(Duration::from_millis(300));
     let encode = resp(&["EVAL", "return cjson.encode(3.14159)", "0"]);
     reader.write_all(&encode).expect("encode a number");
     expect_replies(
@@ -4325,8 +4335,8 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
     );
     reader.write_all(&encode).expect("encode again");
     expect_replies(&mut reader, b"$4\r\n3.14\r\n", "the number after the kill");
-    drop(looping);
     drop(setter);
+    drop(looping);
     drop(reader);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
