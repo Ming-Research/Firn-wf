@@ -1,4 +1,5 @@
 alias extended_read = pkg::extended::extended_read;
+alias decimal_text = pkg::bytes::decimal_text;
 alias Bytes = pkg::bytes::Bytes;
 alias reply_array = pkg::protocol::reply_array;
 alias Client = pkg::protocol::Client;
