@@ -344,7 +344,7 @@ written while firn lived in the Whitefoot repository; a path such as
   the README's layout puts such readings in `bytes`, beside `read_integer`
   and `glob_match`. No case gives `CONFIG SET port` a value that does not
   parse, so that branch of `run_config_set` is unchecked. The idle case in
-  Whitefoot's `compiler/tests/programs/network.rs` pins a sending client's
+  `tests/network.rs` pins a sending client's
   once-a-second reading of the limit only loosely: its pings end about 1.9
   seconds after the client's last reading, so a period up to that passes.
   And its waits make it firn's longest case, about 20 seconds with the
@@ -372,8 +372,8 @@ written while firn lived in the Whitefoot repository; a path such as
 
 - **firn's network cases now and then lose their first connection when many
   cases run at once on a 32-CPU host.** `cargo test --test corpus` on
-  the 14900K under WSL2, every case at once, failed one of firn's cases in
-  Whitefoot's `compiler/tests/programs/network.rs`, a different one each time, with
+  the 14900K under WSL2, every case at once, failed one of firn's cases
+  (now in `tests/network.rs`), a different one each time, with
   "Connection reset by peer" on the first batch's reply, or once with the
   server never listening: 1 run of 3 at `cea9188d4`, 3 of 4 at `f8ca277a9`,
   and 4 of 8 at `a008b01ef` and after; a case run alone passed 6 times of 6.

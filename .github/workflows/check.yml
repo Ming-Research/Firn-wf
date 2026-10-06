@@ -1,6 +1,7 @@
 # firn's gate: every push runs `make check`, which downloads the pinned
-# Whitefoot compiler release, builds firn and runs the design lint. The
-# exact revision that merges into main passes this first (AGENTS.md, rule 3).
+# Whitefoot compiler release, builds firn and runs its network cases and the
+# design lint. The exact revision that merges into main passes this first
+# (AGENTS.md, rule 3).
 name: check
 
 on:
@@ -45,6 +46,9 @@ jobs:
           ld.lld --version
           /usr/bin/clang --version
           python3 --version
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
 
       - name: Check
         run: make check

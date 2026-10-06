@@ -21,7 +21,9 @@ DESIGN_REVIEW_BASE ?= origin/main
 # an experiment release on an experiment branch, naming a release of
 # Ming-Research/Whitefoot; `make compiler` downloads that release's
 # whitefootc for this host, checked against its SHA256SUMS and manifest, to
-# build/whitefoot/<release>/.
+# build/whitefoot/<release>/. Only a work branch may pin an experiment
+# release (AGENTS.md, rule 4; make pin-ready refuses it), and
+# `make WHITEFOOTC=<path> firn` builds with a locally built compiler instead.
 PIN := $(ROOT)/whitefoot.pin
 PIN_LINE := ^release = wf-(exp-)?[0-9a-f]{12}$$
 RELEASE := $(shell sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$$/\1/p' $(PIN) 2>/dev/null)
@@ -30,29 +32,30 @@ RELEASES := https://github.com/Ming-Research/Whitefoot/releases/download
 HOST := $(shell uname -s)-$(shell uname -m)
 ASSET := $(if $(filter Linux-x86_64,$(HOST)),whitefootc-linux-x86_64.tar.gz,$(if $(filter Darwin-arm64,$(HOST)),whitefootc-macos-arm64.tar.gz))
 WHITEFOOT := $(BUILD)/whitefoot/$(RELEASE)
-WHITEFOOTC := $(WHITEFOOT)/whitefootc
+PINNED_WHITEFOOTC := $(WHITEFOOT)/whitefootc
+WHITEFOOTC := $(PINNED_WHITEFOOTC)
 
 # firn is one module program; any of its sources changes the build.
 FIRN_GRAPH := $(ROOT)/firn/modules.wfg
 FIRN_SOURCES := $(shell find $(ROOT)/firn -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
 
-.PHONY: check compiler firn firn-lto design-lint design-ready
+.PHONY: check compiler firn firn-test test firn-lto design-lint design-ready pin-ready
 
-check: compiler firn design-lint
+check: compiler firn test design-lint
 
-compiler: $(WHITEFOOTC)
+compiler: $(PINNED_WHITEFOOTC)
 
 $(PIN):
 	@echo "whitefoot.pin is missing; it names the Whitefoot compiler release (AGENTS.md, Upgrading Whitefoot)" >&2
 	@exit 1
 
-$(WHITEFOOTC): $(PIN)
+$(PINNED_WHITEFOOTC): $(PIN)
 	@test "$$(grep -c '' $(PIN))" = 1 && grep -qE '$(PIN_LINE)' $(PIN) || { echo "whitefoot.pin must hold exactly one line: release = wf-<12-character commit hash>" >&2; exit 1; }
 	@test -n "$(ASSET)" || { echo "Whitefoot publishes no compiler for $(HOST)" >&2; exit 1; }
 	@rm -rf $(WHITEFOOT).part && mkdir -p $(WHITEFOOT).part
 	@cd $(WHITEFOOT).part && for file in $(ASSET) SHA256SUMS whitefoot-release.json; do \
 		curl -fsSL --retry 3 -o $$file $(RELEASES)/$(RELEASE)/$$file || { \
-			echo "cannot download $$file of $(RELEASE): dispatch Whitefoot's release workflow for that commit (AGENTS.md, Upgrading Whitefoot)" >&2; \
+			echo "cannot download $$file of $(RELEASE); make it with: gh workflow run compiler-release.yml -R Ming-Research/Whitefoot -f commit=$(RELEASE_COMMIT)$(if $(findstring wf-exp-,$(RELEASE)), -f experiment=true) (AGENTS.md, Upgrading Whitefoot)" >&2; \
 			exit 1; }; \
 	done
 	@cd $(WHITEFOOT).part && grep '  $(ASSET)$$' SHA256SUMS | shasum -a 256 -c -
@@ -71,6 +74,16 @@ firn: $(BUILD)/firn
 $(BUILD)/firn: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 	$(WHITEFOOTC) --graph $(FIRN_GRAPH) --entry firn --cache $(BUILD)/firn-cache -o $@
 
+# The network cases use the overlap lowering with every eligible call
+# offered, as they did in Whitefoot's program tests.
+firn-test: $(BUILD)/firn-test
+
+$(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
+	$(WHITEFOOTC) --par --par-call-grain off --graph $(FIRN_GRAPH) --entry firn --cache $(BUILD)/firn-test-cache -o $@
+
+test: firn-test
+	FIRN=$(BUILD)/firn-test cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked
+
 # The server as it is measured: the program and the runtime optimized
 # together under full link-time optimization.
 firn-lto: $(BUILD)/firn-lto
@@ -85,3 +98,11 @@ design-lint:
 
 design-ready:
 	@$(if $(DESIGN_TREES),$(PY) -B $(ROOT)/design/skill/lint.py --root $(ROOT)/design --trees $(DESIGN_TREES) --base "$(DESIGN_REVIEW_BASE)" --require-approval,echo "design ready: no live tree")
+
+# A revision bound for main pins a release of a commit on Whitefoot's main,
+# never an experiment release (AGENTS.md, rule 4); CI runs this with
+# design-ready on ready pull requests and main.
+pin-ready:
+	@if grep -q '^release = wf-exp-' $(PIN); then \
+		echo "whitefoot.pin names the experiment release $(RELEASE); pin a release of a commit on Whitefoot's main before this reaches main" >&2; \
+		exit 1; fi
