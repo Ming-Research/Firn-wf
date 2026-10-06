@@ -59,6 +59,10 @@ public fn input_grow(input: &Box<Slots<u8>>) -> result: unit writes(input) doc "
 
 public fn keep_rest(input: &Box<Slots<u8>>, from: u64, held: u64) -> kept: u64 writes(input) doc "Moves the bytes from a position up to held, an incomplete request, to the front of the input and returns how many it moved.";
 
+public fn clear_args(args: &Box<Slots<Span>>) -> result: unit writes(args) doc "Empties the argument spans, keeping their capacity.";
+
+public fn push_arg(args: &Box<Slots<Span>>, start: u64, length: u64) -> result: unit writes(args) doc "Appends one argument's span, doubling the spans' capacity when they are full.";
+
 public fn arg(args: &Box<Slots<Span>>, index: u64) -> span: Span reads(args) doc "The span of one argument, or an empty span past the last.";
 
 public fn client_new(capacity: u64) -> made: Client pure contract {
