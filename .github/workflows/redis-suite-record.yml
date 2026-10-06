@@ -31,7 +31,8 @@ jobs:
       - name: Install the host toolchain and suite tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld tcl redis-tools
+          sudo apt-get install -y --no-install-recommends tcl redis-tools
+          make toolchain
           ld.lld --version
           /usr/bin/clang --version
           python3 --version

@@ -27,12 +27,17 @@ jobs:
       - name: Check out Whitefoot-kit
         run: git submodule update --init whitefoot-kit deps/halo-wf
 
-      - name: Install Redis, its tools, clang and LLD
+      - name: Install Redis and its tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends redis-server redis-tools clang lld
+          sudo apt-get install -y --no-install-recommends redis-server redis-tools
           sudo systemctl stop redis-server || true
           redis-server --version
+
+      # firn's build needs the LLVM major the pinned release was built with.
+      - name: Install the pinned release's LLVM
+        if: ${{ matrix.server == 'firn' }}
+        run: make toolchain
 
       - uses: actions/setup-python@v5
         with:

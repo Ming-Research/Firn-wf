@@ -59,8 +59,10 @@ When priorities conflict, first:
   review and commit.
 - The gate needs git, curl, Python 3, Rust stable with Cargo, `tclsh` 8.5 or
   later, `redis-cli` and `redis-benchmark`, the submodules
-  (`git submodule update --init`), `/usr/bin/clang` and, on Linux, LLD; the
-  Redis suite runner needs Linux's GNU tools.
+  (`git submodule update --init`), `/usr/bin/clang` and, on Linux, LLD of
+  the LLVM major the pinned release names (`make toolchain` installs it,
+  `make toolchain-check` checks it); the Redis suite runner needs Linux's
+  GNU tools.
 - `make pin-ready`, with the readiness check: `whitefoot.pin` names no
   experiment release.
 
