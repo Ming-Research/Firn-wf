@@ -155,13 +155,7 @@ fn script_ttl(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged:
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
   let removed = ttl_body(slot: slot, remaining: &remaining);
-  let appended = 0_u64;
-  if removed {
-    if logged {
-      log_removal(log: effects, key: key);
-      set appended = 1_u64;
-    }
-  }
+  let appended = ttl_meta(log: effects, logged: logged, removed: removed, key: key);
   ttl_finish(client: client, remaining: &remaining, now: time^.check, in_seconds: in_seconds, absolute: absolute);
   return appended;
 }
@@ -185,17 +179,11 @@ fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
     let value_index = index +wrap 1_u64;
     let slot = &keys^[key];
     let lapsed = mset_body(slot: slot, input: input, args: args, value_index: value_index, now: time^.check);
-    if lapsed {
-      if logged {
-        log_removal(log: effects, key: key);
-        set appended = appended +wrap 1_u64;
-      }
-    }
+    let removal = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
+    set appended = appended +wrap removal;
   }
-  if logged {
-    log_command(log: effects, input: input, args: args);
-    set appended = appended +wrap 1_u64;
-  }
+  let recorded = mset_meta(log: effects, logged: logged, input: input, args: args);
+  set appended = appended +wrap recorded;
   reply_ok(client: client);
   return appended;
 }
@@ -283,7 +271,10 @@ fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
   }
   let ttl = code == code_ttl;
   let pttl = code == code_pttl;
-  let expiretime = code == code_expiretime;
+  let expiretime = False();
+  if code == code_expiretime {
+    set expiretime = name_is(input: input, start: name.start, length: name.length, word: &word_expiretime[0_u64..10_u64]);
+  }
   let reading_seconds = bor(ttl, expiretime);
   let reading_milliseconds = bor(pttl, pexpiretime);
   let reading_expiry = bor(reading_seconds, reading_milliseconds);

@@ -812,20 +812,36 @@ fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       let position = key_position(positions: &client^.key_metadata, index: at);
       let lapsed = mset_body(slot: &slots^[at], input: input, args: args, value_index: position, now: time^.check);
       if lapsed {
-        if logged {
-          let index = position -wrap 1_u64;
-          let place = key_bounds(input: input, args: args, index: index);
-          let key = &input^[place.start..place.end];
-          log_removal(log: &m^.log, key: key);
-        }
+        let index = position -wrap 1_u64;
+        let place = key_bounds(input: input, args: args, index: index);
+        let key = &input^[place.start..place.end];
+        let removal = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key);
       }
     }
-    if logged {
-      log_command(log: &m^.log, input: input, args: args);
-    }
+    let recorded = mset_meta(log: &m^.log, logged: logged, input: input, args: args);
   }
   reply_ok(client: client);
   return unit;
+}
+
+fn mset_lapse_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, key: &[u8]) -> appended: u64 reads(key), writes(log) {
+  doc "MSET's metadata for one key after mset_body: when the entry it replaced had expired and the keyspace keeps a file, appends the removal as log_removal records it, as Redis propagates the removal when it overwrites such a key, and answers 1; otherwise 0.";
+  if lapsed {
+    if logged {
+      log_removal(log: log, key: key);
+      return 1_u64;
+    }
+  }
+  return 0_u64;
+}
+
+fn mset_meta(log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(input), reads(args), writes(log) {
+  doc "MSET's metadata after its work on every key: when the keyspace keeps a file, appends the command as it was sent and answers 1; otherwise 0.";
+  if logged {
+    log_command(log: log, input: input, args: args);
+    return 1_u64;
+  }
+  return 0_u64;
 }
 
 fn mset_body(slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, value_index: u64, now: u64) -> lapsed: Bool reads(input), reads(args), writes(slot) {
