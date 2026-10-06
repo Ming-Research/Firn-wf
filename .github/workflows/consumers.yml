@@ -1,0 +1,89 @@
+# The deployment milestone's consumers (research/investigations/consumers/):
+# each consumer's own Redis tests run against Redis 7.0.15, recording the
+# commands they send, and against firn built at this revision. Dispatched by
+# hand; an investigation copies the results it relies on into its record.
+name: consumers
+
+on:
+  # Temporary: runs on this branch's pushes until the investigation records
+  # its first results, removed before the pull request is ready.
+  push:
+    branches: [claude/consumers]
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  run:
+    name: ${{ matrix.consumer }} against ${{ matrix.server }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer: [django, connect-redis, rate-limiter-flexible]
+        server: [redis, firn]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out Whitefoot-kit
+        run: git submodule update --init whitefoot-kit
+
+      - name: Install Redis, its tools, clang and LLD
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends redis-server redis-tools clang lld
+          sudo systemctl stop redis-server || true
+          redis-server --version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Build firn
+        if: ${{ matrix.server == 'firn' }}
+        run: |
+          make firn
+          echo "FIRN=$GITHUB_WORKSPACE/build/firn" >> "$GITHUB_ENV"
+
+      - name: Run the consumer's tests
+        env:
+          OUT: ${{ runner.temp }}/consumers
+        run: bash research/experiments/consumers/run.sh "${{ matrix.consumer }}" "${{ matrix.server }}"
+
+      - name: Publish the result
+        if: always()
+        env:
+          DIR: ${{ runner.temp }}/consumers/${{ matrix.consumer }}-${{ matrix.server }}
+        run: |
+          {
+            echo "## ${{ matrix.consumer }} against ${{ matrix.server }}"
+            echo
+            echo '```text'
+            cat "$DIR/what.txt" 2>/dev/null
+            echo "tests exited $(cat "$DIR/status" 2>/dev/null || echo '(not run)')"
+            tail -n 15 "$DIR/test.log" 2>/dev/null
+            echo '```'
+            if [ -f "$DIR/profile.tsv" ]; then
+              echo
+              echo '```text'
+              cat "$DIR/profile.tsv"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: consumers-${{ matrix.consumer }}-${{ matrix.server }}
+          path: |
+            ${{ runner.temp }}/consumers/${{ matrix.consumer }}-${{ matrix.server }}/*.txt
+            ${{ runner.temp }}/consumers/${{ matrix.consumer }}-${{ matrix.server }}/*.log
+            ${{ runner.temp }}/consumers/${{ matrix.consumer }}-${{ matrix.server }}/*.tsv
+            ${{ runner.temp }}/consumers/${{ matrix.consumer }}-${{ matrix.server }}/status
