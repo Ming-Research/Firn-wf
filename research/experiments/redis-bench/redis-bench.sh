@@ -40,7 +40,9 @@
 #                                 COMPARE_PROFILE (default mset at depth 16)
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
-# the records before the quick mode built it with none.
+# the records before the quick mode built it with none. The redis-bench
+# workflow (.github/workflows/redis-bench.yml) runs the compare and scale
+# modes on the owner's i9-14900K.
 #
 # BASELINE_ROOT, when set, is a worktree of the revision before expiry with its
 # compiler built; its subset is measured as the baseline lines of Experiment 8.

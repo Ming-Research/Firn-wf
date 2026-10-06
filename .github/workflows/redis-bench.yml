@@ -1,0 +1,226 @@
+# firn measured with redis-benchmark (research/experiments/redis-bench/), on
+# the owner's i9-14900K or a GitHub runner, dispatched by hand. Each revision
+# that `revisions` names is built with `make firn-lto` in a worktree of its
+# own, with the compiler release its own whitefoot.pin names.
+#
+#   mode compare  the built images measured interleaved against each other
+#                 (redis-bench.sh compare); a name ending in -twin measures
+#                 the image of its stem again, as a noise control
+#   mode scale    this checkout's firn, the image named base as firn-base,
+#                 and Redis, Valkey, Dragonfly and Garnet where the host has
+#                 them, on each server CPU count in `cpus`
+#                 (redis-bench.sh scale)
+#
+# An investigation names the run and copies the tables it relies on into its
+# record, because job logs and artifacts expire.
+name: redis-bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: The owner's i9-14900K (self-hosted, labelled 14900k), or a GitHub runner for a functional probe
+        type: choice
+        options: [14900k, github]
+        default: 14900k
+      mode:
+        description: compare the revisions' images, or scale them against Redis and its competitors
+        type: choice
+        options: [compare, scale]
+        default: compare
+      revisions:
+        description: "name=revision pairs; a name ending in -twin measures its stem's image again; scale uses base"
+        type: string
+        default: "base=origin/main head=HEAD head-twin=HEAD"
+      cpus:
+        description: Server CPU counts
+        type: string
+        default: "1 2"
+      tests:
+        description: redis-benchmark tests
+        type: string
+        default: "mset set get"
+      depths:
+        description: Pipeline depths (compare)
+        type: string
+        default: "16 1"
+      passes:
+        description: Passes; probe with 2 first
+        type: string
+        default: "2"
+      seconds:
+        description: Seconds per measured run; probe with 5 first
+        type: string
+        default: "5"
+      profile:
+        description: Record a perf profile of each image (compare)
+        type: boolean
+        default: true
+      profile_test:
+        description: The test and depth each image is profiled under
+        type: string
+        default: "mset 16"
+      annotate:
+        description: Symbols whose instructions each profile annotates, space-separated
+        type: string
+        default: ""
+      callers:
+        description: Give each profile sample its DWARF-unwound callers
+        type: boolean
+        default: false
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: redis-bench-${{ github.ref }}-${{ inputs.runner || '14900k' }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: redis-bench ${{ inputs.mode || 'compare' }} (${{ inputs.runner || '14900k' }})
+    runs-on: ${{ (inputs.runner || '14900k') == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 150
+    env:
+      MODE: ${{ inputs.mode || 'compare' }}
+      REVISIONS: ${{ inputs.revisions || 'base=origin/main head=HEAD head-twin=HEAD' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out Whitefoot-kit
+        run: git submodule update --init whitefoot-kit
+
+      # The self-hosted machine keeps its tools installed and gives a job no
+      # passwordless sudo.
+      - name: Install clang, LLD, Redis's tools and perf
+        if: ${{ runner.environment == 'github-hosted' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld redis-server redis-tools
+          sudo apt-get install -y --no-install-recommends linux-tools-common \
+            linux-tools-generic "linux-tools-$(uname -r)" || true
+
+      - name: Check the host's tools
+        run: |
+          echo "OUT=$RUNNER_TEMP/redis-bench" >> "$GITHUB_ENV"
+          OUT="$RUNNER_TEMP/redis-bench"
+          # A cancelled run on the self-hosted machine can leave its servers
+          # and clients behind, which would load the host this run measures:
+          # stop them and say what was stopped.
+          if [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
+            ps -eo pid,args | grep -E 'redis-bench\.sh (compare|scale)|_temp/redis-bench/' |
+              grep -v grep | tee "$RUNNER_TEMP/leftover.txt" || true
+            awk '{print $1}' "$RUNNER_TEMP/leftover.txt" | xargs -r kill 2>/dev/null || true
+            sleep 2
+          fi
+          missing=
+          for tool in clang ld.lld curl python3 git make taskset redis-server redis-benchmark redis-cli; do
+            command -v "$tool" >/dev/null || missing="$missing $tool"
+          done
+          if [ -n "$missing" ]; then
+            echo "missing:$missing"
+            exit 1
+          fi
+          mkdir -p "$OUT"
+          {
+            echo "kernel: $(uname -srvmo)"
+            echo "cpus: $(nproc)"
+            echo "model: $(awk -F': ' '/^model name/ {print $2; exit}' /proc/cpuinfo)"
+            echo "runner: $RUNNER_NAME ($RUNNER_ENVIRONMENT)"
+            echo "load: $(cat /proc/loadavg)"
+            for tool in redis-server valkey-server dragonfly garnet-server redis-benchmark; do
+              echo "$tool: $(command -v "$tool" || echo missing)"
+            done
+            redis-server --version
+            valkey-server --version 2>/dev/null || true
+          } | tee "$OUT/host.txt"
+
+      - name: Build each revision's firn with its pinned compiler
+        run: |
+          images=
+          for pair in $REVISIONS; do
+            name=${pair%%=*}
+            stem=${name%-twin}
+            if [ "$stem" != "$name" ]; then
+              images="$images $name=$OUT/$stem"
+              continue
+            fi
+            tree="$RUNNER_TEMP/tree-$name"
+            # The self-hosted machine keeps the checkout, and with it the
+            # registration of an earlier run's worktree under a cleaned temp.
+            git worktree prune
+            rm -rf "$tree"
+            git worktree add --detach "$tree" "${pair#*=}"
+            git -C "$tree" submodule update --init whitefoot-kit
+            echo "revision,$name,$(git -C "$tree" rev-parse HEAD),$(cat "$tree/whitefoot.pin")" | tee -a "$OUT/revisions.csv"
+            make -C "$tree" firn-lto
+            cp "$tree/build/firn-lto" "$OUT/$name"
+            images="$images $name=$OUT/$name"
+          done
+          echo "IMAGES=$images" >> "$GITHUB_ENV"
+
+      - name: Measure the images interleaved
+        if: ${{ env.MODE == 'compare' }}
+        timeout-minutes: 110
+        env:
+          COMPARE_CPUS: ${{ inputs.cpus || '1 2' }}
+          COMPARE_TESTS: ${{ inputs.tests || 'mset set get' }}
+          COMPARE_DEPTHS: ${{ inputs.depths || '16 1' }}
+          COMPARE_PASSES: ${{ inputs.passes || '2' }}
+          COMPARE_SECONDS: ${{ inputs.seconds || '5' }}
+          PROFILE: ${{ github.event_name != 'workflow_dispatch' || inputs.profile }}
+          COMPARE_PROFILE: ${{ inputs.profile_test || 'mset 16' }}
+          PERF_ANNOTATE: ${{ inputs.annotate }}
+          PERF_CALLERS: ${{ inputs.callers && '1' || '' }}
+          PERF_FREQUENCY: ${{ inputs.callers && '999' || '4999' }}
+        run: |
+          set -o pipefail
+          if [ "$PROFILE" = true ]; then
+            PERF=$(ls /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf 2>/dev/null | head -1)
+            if [ -n "$PERF" ]; then
+              if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+                sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
+              fi
+              export PERF
+            else
+              echo "no perf for this kernel; profiles skipped" | tee -a "$OUT/host.txt"
+            fi
+          fi
+          sh research/experiments/redis-bench/redis-bench.sh compare 2>&1 | tee "$OUT/bench.txt"
+
+      - name: Measure firn against Redis and its competitors
+        if: ${{ env.MODE == 'scale' }}
+        timeout-minutes: 110
+        env:
+          SCALE: ${{ inputs.cpus || '1 2' }}
+          SCALE_TESTS: ${{ inputs.tests || 'mset set get' }}
+          PASSES: ${{ inputs.passes || '2' }}
+          SECONDS_PER_RUN: ${{ inputs.seconds || '5' }}
+        run: |
+          set -o pipefail
+          make compiler
+          export FIRN_BASELINE="$OUT/base"
+          echo "firn: $(git rev-parse HEAD)" | tee -a "$OUT/host.txt"
+          sh research/experiments/redis-bench/redis-bench.sh scale 2>&1 | tee "$OUT/scale.txt"
+
+      - name: Publish the host and the revisions
+        if: always()
+        run: |
+          {
+            echo "## redis-bench $MODE"
+            echo
+            echo '```text'
+            cat "$OUT/host.txt" "$OUT/revisions.csv" 2>/dev/null
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: redis-bench-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/redis-bench/*.csv
+            ${{ runner.temp }}/redis-bench/*.txt

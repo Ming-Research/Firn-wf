@@ -41,8 +41,9 @@ When priorities conflict, first:
   requirements*.
 - Review checklist: [docs/review-checklist.md](docs/review-checklist.md).
 - Performance comparisons build firn with `make firn-lto` and run
-  `research/experiments/redis-bench/redis-bench.sh` on the 14900K; an upgrade
-  of Whitefoot uses them for the comparison
+  `research/experiments/redis-bench/redis-bench.sh` on the 14900K through the
+  `redis-bench.yml` workflow; an upgrade of Whitefoot uses them for the
+  comparison
   [downstream.md](whitefoot-kit/downstream.md#upgrading-whitefoot) asks for.
 
 ## Checks
