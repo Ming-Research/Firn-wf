@@ -4546,9 +4546,12 @@ abcdef\x00\x00Z\r\n:1\r\n*2\r\n$4\r\nlast\r\n$5\r\nother\r\n:0\r\n:0\r\n$3\r\n\
 /// script's redis.call, and their errors through redis.pcall, as Redis
 /// 7.0.15 does: a key renamed onto another and onto itself, RENAMENX onto a
 /// live key, COPY with and without REPLACE and DB 0, an expiry carried to
-/// the new key, a list copied, a key found expired, and the refusals, the
-/// arity errors among them aborting a transaction. The expected bytes are
-/// redis-server 7.0.15's (Firn-wf probe run 37494816783).
+/// the new key, a list copied, and the refusals, the arity errors among
+/// them aborting a transaction; a key that lapsed before the requests is
+/// gone by the time RENAME names it, since EXISTS found it first, and the
+/// commands meeting expired keys themselves are
+/// firn_records_held_renames_and_copies_as_redis_propagates_them's. The
+/// expected bytes are redis-server 7.0.15's (Firn-wf probe run 37494816783).
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_runs_rename_and_copy_parts_as_redis_does() {
@@ -4675,6 +4678,75 @@ $3\r\ntwo\r\n+OK\r\n+OK\r\n:0\r\n:1\r\n:1\r\n+OK\r\n+OK\r\n:4102444800000\r\n\
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
+}
+
+/// firn records RENAME and COPY run inside a transaction's EXEC and a
+/// script as Redis 7.0.15 propagates them over keys found expired: each
+/// expired key the commands find is removed and recorded as DEL where the
+/// command finds it, inside the transaction's MULTI and EXEC or the
+/// script's, with the commands that ran; a refused RENAME records only its
+/// source's removal. The keys come from a file whose expiries have passed,
+/// which the replay keeps as reached; the expected records are
+/// redis-server 7.0.15's for the same keys expiring under it with active
+/// expiry off (Firn-wf probe run 37499574103), less the SELECT it begins
+/// with.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_renames_and_copies_as_redis_propagates_them() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let loaded: Vec<u8> = [
+        resp(&["SET", "a", "1"]),
+        resp(&["SET", "b", "2", "PXAT", "1"]),
+        resp(&["SET", "c", "3", "PXAT", "1"]),
+        resp(&["SET", "e", "5"]),
+        resp(&["SET", "f", "6", "PXAT", "1"]),
+        resp(&["SET", "g", "7", "PXAT", "1"]),
+    ]
+    .concat();
+    std::fs::write(fixture.path().join("held.aof"), &loaded).expect("write the loaded file");
+    let port = free_port();
+    let text = port.to_string();
+    let client = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port);
+        let mut batch = Vec::new();
+        for request in [
+            vec!["MULTI"],
+            vec!["RENAME", "a", "b"],
+            vec!["RENAME", "c", "d"],
+            vec!["COPY", "e", "f"],
+            vec!["EXEC"],
+            vec![
+                "EVAL",
+                "redis.call('RENAME', KEYS[1], KEYS[2]) return redis.pcall('COPY', KEYS[3], KEYS[4])",
+                "4",
+                "b",
+                "x",
+                "g",
+                "y",
+            ],
+            vec!["MGET", "a", "b", "c", "d", "e", "f", "g", "x", "y"],
+        ] {
+            batch.extend(resp(&request));
+        }
+        client.write_all(&batch).expect("send the commands");
+        expect_replies(
+            &mut client,
+            b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR no such key\r\n:1\r\n:0\r\n*9\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n$1\r\n5\r\n$1\r\n5\r\n$-1\r\n$1\r\n1\r\n$-1\r\n",
+            "the commands",
+        );
+    });
+    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"held.aof"]);
+    client.join().expect("the client's exchange");
+    assert!(output.status.success(), "firn: {:?}", output.status);
+    let file = std::fs::read(fixture.path().join("held.aof")).expect("read firn's file");
+    let recorded = file
+        .strip_prefix(loaded.as_slice())
+        .expect("the loaded records kept at the file's start");
+    assert_eq!(
+        String::from_utf8_lossy(recorded),
+        "*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$1\r\na\r\n$1\r\nb\r\n*2\r\n$3\r\nDEL\r\n$1\r\nc\r\n*2\r\n$3\r\nDEL\r\n$1\r\nf\r\n*3\r\n$4\r\nCOPY\r\n$1\r\ne\r\n$1\r\nf\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*3\r\n$6\r\nRENAME\r\n$1\r\nb\r\n$1\r\nx\r\n*2\r\n$3\r\nDEL\r\n$1\r\ng\r\n*1\r\n$4\r\nEXEC\r\n",
+    );
 }
 
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
