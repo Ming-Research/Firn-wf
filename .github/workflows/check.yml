@@ -1,5 +1,6 @@
 # firn's gate: every push runs `make check`, which downloads the pinned
-# Whitefoot compiler release, builds firn and runs every firn check. The
+# Whitefoot compiler release, builds firn and runs its network cases and the
+# design lint. The
 # exact revision that merges into main passes this first (AGENTS.md, rule 3).
 name: check
 
