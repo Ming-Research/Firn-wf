@@ -1,3 +1,6 @@
+alias Key = pkg::bytes::Key;
+alias ceiling = pkg::store::ceiling;
+alias hash_map_new = std::collections::hash_map::hash_map_new;
 alias extended_read = pkg::extended::extended_read;
 alias Bytes = pkg::bytes::Bytes;
 alias reply_array = pkg::protocol::reply_array;
@@ -79,6 +82,38 @@ const arity_rename: i64 = 3_i64;
 const arity_renamenx: i64 = 3_i64;
 
 const arity_copy: i64 = -3_i64;
+
+const arity_sadd: i64 = -3_i64;
+
+const arity_srem: i64 = -3_i64;
+
+const arity_spop: i64 = -2_i64;
+
+const arity_scard: i64 = 2_i64;
+
+const arity_smembers: i64 = 2_i64;
+
+const arity_sismember: i64 = 3_i64;
+
+const arity_smismember: i64 = -3_i64;
+
+const arity_srandmember: i64 = -2_i64;
+
+const arity_smove: i64 = 4_i64;
+
+const arity_sinter: i64 = -2_i64;
+
+const arity_sunion: i64 = -2_i64;
+
+const arity_sdiff: i64 = -2_i64;
+
+const arity_sintercard: i64 = -3_i64;
+
+const arity_sinterstore: i64 = -3_i64;
+
+const arity_sunionstore: i64 = -3_i64;
+
+const arity_sdiffstore: i64 = -3_i64;
 
 const arity_noscript_with_argument: i64 = -2_i64;
 
@@ -372,6 +407,75 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   if code == code_copy {
     return 39_u64;
   }
+  if code == code_sadd {
+    return 90_u64;
+  }
+  if code == code_srem {
+    return 91_u64;
+  }
+  if code == code_spop {
+    return 92_u64;
+  }
+  if code == code_scard {
+    return 93_u64;
+  }
+  if code == code_smembers {
+    return 94_u64;
+  }
+  if code == code_sismember {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_sismember[0_u64..9_u64]);
+    if spelled {
+      return 95_u64;
+    }
+  }
+  if code == code_smismember {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_smismember[0_u64..10_u64]);
+    if spelled {
+      return 96_u64;
+    }
+  }
+  if code == code_srandmember {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_srandmember[0_u64..11_u64]);
+    if spelled {
+      return 97_u64;
+    }
+  }
+  if code == code_smove {
+    return 98_u64;
+  }
+  if code == code_sinter {
+    return 99_u64;
+  }
+  if code == code_sunion {
+    return 100_u64;
+  }
+  if code == code_sdiff {
+    return 101_u64;
+  }
+  if code == code_sintercard {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_sintercard[0_u64..10_u64]);
+    if spelled {
+      return 102_u64;
+    }
+  }
+  if code == code_sinterstore {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_sinterstore[0_u64..11_u64]);
+    if spelled {
+      return 103_u64;
+    }
+  }
+  if code == code_sunionstore {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_sunionstore[0_u64..11_u64]);
+    if spelled {
+      return 104_u64;
+    }
+  }
+  if code == code_sdiffstore {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_sdiffstore[0_u64..10_u64]);
+    if spelled {
+      return 105_u64;
+    }
+  }
   return 0_u64;
 }
 
@@ -473,6 +577,54 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   }
   if kind == 39_u64 {
     return arity_copy;
+  }
+  if kind == 90_u64 {
+    return arity_sadd;
+  }
+  if kind == 91_u64 {
+    return arity_srem;
+  }
+  if kind == 92_u64 {
+    return arity_spop;
+  }
+  if kind == 93_u64 {
+    return arity_scard;
+  }
+  if kind == 94_u64 {
+    return arity_smembers;
+  }
+  if kind == 95_u64 {
+    return arity_sismember;
+  }
+  if kind == 96_u64 {
+    return arity_smismember;
+  }
+  if kind == 97_u64 {
+    return arity_srandmember;
+  }
+  if kind == 98_u64 {
+    return arity_smove;
+  }
+  if kind == 99_u64 {
+    return arity_sinter;
+  }
+  if kind == 100_u64 {
+    return arity_sunion;
+  }
+  if kind == 101_u64 {
+    return arity_sdiff;
+  }
+  if kind == 102_u64 {
+    return arity_sintercard;
+  }
+  if kind == 103_u64 {
+    return arity_sinterstore;
+  }
+  if kind == 104_u64 {
+    return arity_sunionstore;
+  }
+  if kind == 105_u64 {
+    return arity_sdiffstore;
   }
   return 0_i64;
 }
@@ -640,6 +792,78 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
   }
   if kind == 39_u64 {
     let appended = script_copy(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    return appended;
+  }
+  if kind == 90_u64 {
+    let appended = script_sadd(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 91_u64 {
+    let appended = script_srem(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 92_u64 {
+    let appended = script_spop(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 93_u64 {
+    let appended = script_scard(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 94_u64 {
+    let appended = script_smembers(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 95_u64 {
+    let many = False();
+    let appended = script_sismember(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, many: many);
+    return appended;
+  }
+  if kind == 96_u64 {
+    let many = True();
+    let appended = script_sismember(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, many: many);
+    return appended;
+  }
+  if kind == 97_u64 {
+    let appended = script_srandmember(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 98_u64 {
+    let appended = script_smove(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    return appended;
+  }
+  if kind == 99_u64 {
+    let storing = False();
+    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_inter, storing: storing);
+    return appended;
+  }
+  if kind == 100_u64 {
+    let storing = False();
+    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_union, storing: storing);
+    return appended;
+  }
+  if kind == 101_u64 {
+    let storing = False();
+    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
+    return appended;
+  }
+  if kind == 102_u64 {
+    let appended = script_sintercard(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    return appended;
+  }
+  if kind == 103_u64 {
+    let storing = True();
+    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_inter, storing: storing);
+    return appended;
+  }
+  if kind == 104_u64 {
+    let storing = True();
+    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_union, storing: storing);
+    return appended;
+  }
+  if kind == 105_u64 {
+    let storing = True();
+    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
     return appended;
   }
   return 0_u64;
@@ -1033,5 +1257,154 @@ fn script_copy(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots
   let work = copy_body(slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
   let appended = transfer_meta(due: &meta^.due, log: effects, logged: logged, work: &work, input: input, args: args, env: env);
   copy_finish(client: client, error: 0_u64, outcome: work.outcome);
+  return appended;
+}
+
+fn script_sadd(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "SADD under a held statement, through the network parts, removing and recording an expired entry at once.";
+  sadd_parse(input: input, args: args, client: client, now: time^.check);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let lapsed = sadd_body(slot: slot, client: client);
+  let appended = set_members_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
+  sadd_finish(client: client);
+  return appended;
+}
+
+fn script_srem(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "SREM under a held statement, through the network parts, removing and recording an expired entry at once.";
+  srem_parse(input: input, args: args, client: client, now: time^.check);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let lapsed = srem_body(slot: slot, client: client);
+  let appended = set_members_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
+  srem_finish(client: client);
+  return appended;
+}
+
+fn script_spop(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "SPOP under a held statement, through the network parts, removing and recording an expired entry at once.";
+  let ready = spop_parse(input: input, args: args, client: client, now: time^.check);
+  if bnot(ready) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let lapsed = spop_body(slot: slot, client: client);
+  let appended = spop_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
+  spop_finish(client: client);
+  return appended;
+}
+
+fn script_scard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "SCARD under a held statement, through the network parts, removing and recording an expired entry at once.";
+  scard_parse(client: client, now: time^.check);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let lapsed = scard_body(slot: slot, client: client);
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = ttl_meta(log: effects, logged: logged, removed: lapsed, key: key);
+  scard_finish(client: client);
+  return appended;
+}
+
+fn script_smembers(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "SMEMBERS under a held statement, through the network parts, removing and recording an expired entry at once.";
+  smembers_parse(client: client, now: time^.check);
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let lapsed = smembers_body(slot: slot, client: client);
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = ttl_meta(log: effects, logged: logged, removed: lapsed, key: key);
+  smembers_finish(client: client);
+  return appended;
+}
+
+fn script_sismember(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, many: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "SISMEMBER under a held statement, through the network parts, removing and recording an expired entry at once.";
+  sismember_parse(input: input, args: args, client: client, now: time^.check, many: many);
+  let count = client^.items.inner.len;
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let lapsed = sismember_body(slot: slot, client: client);
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = ttl_meta(log: effects, logged: logged, removed: lapsed, key: key);
+  sismember_finish(client: client, many: many, count: count);
+  return appended;
+}
+
+fn script_srandmember(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "SRANDMEMBER under a held statement, through the network parts, removing and recording an expired entry at once.";
+  let ready = srandmember_parse(input: input, args: args, client: client, now: time^.check);
+  if bnot(ready) {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 1_u64);
+  let key = &input^[place.start..place.end];
+  let slot = &keys^[key];
+  let lapsed = srandmember_body(slot: slot, client: client);
+  if lapsed {
+    set slot^ = None<Entry>();
+  }
+  let appended = ttl_meta(log: effects, logged: logged, removed: lapsed, key: key);
+  srandmember_finish(client: client);
+  return appended;
+}
+
+fn script_smove(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "SMOVE under a held statement, using the same key set, entries body, metadata and reply as the network.";
+  let ks = key_set_new(capacity: 2_u64);
+  let pair = smove_parse(input: input, args: args, client: client, keys: &ks, now: time^.check);
+  let slots = &keys^[ks];
+  let work = smove_body(slots: slots, source: pair.source, destination: pair.target, client: client);
+  let appended = smove_meta(log: effects, logged: logged, work: &work, input: input, args: args);
+  smove_finish(client: client);
+  return appended;
+}
+
+fn script_set_combine(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, operation: u64, storing: Bool) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "SINTER, SUNION, SDIFF and their STORE forms under a held statement, through the network parts; any expired operand still present is removed before the statement proceeds.";
+  let ks = set_combine_parse(input: input, args: args, client: client, storing: storing, now: time^.check);
+  let members = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
+  let slots = &keys^[ks];
+  let work = set_combine_body(slots: slots, keys: &ks, client: client, env: env, operation: operation, storing: storing, members: &members);
+  let first = 1_u64;
+  if storing {
+    set first = 2_u64;
+  }
+  set_operands_lapse_body(slots: slots, keys: &ks, positions: &client^.key_metadata, first: first, now: time^.check, removed: &work.removed);
+  let appended = set_operands_meta(log: effects, logged: logged, removed: &work.removed, changed: work.changed, input: input, args: args);
+  set_combine_finish(client: client, storing: storing, members: &members);
+  return appended;
+}
+
+fn script_sintercard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(effects), writes(client) {
+  doc "SINTERCARD under a held statement, through the network parts, removing and recording each expired operand once.";
+  let plan = sintercard_parse(input: input, args: args, client: client);
+  if bnot(plan.valid) {
+    return 0_u64;
+  }
+  let ks = sintercard_keys(input: input, args: args, client: client, end: plan.end, now: time^.check);
+  let slots = &keys^[ks];
+  let lapsed = sintercard_body(slots: slots, keys: &ks, client: client, env: env, limit: plan.limit);
+  let removed = box_slots_new::<u64>(capacity: 0_u64);
+  if lapsed {
+    set_operands_lapse_body(slots: slots, keys: &ks, positions: &client^.key_metadata, first: 2_u64, now: time^.check, removed: &removed);
+  }
+  let changed = False();
+  let appended = set_operands_meta(log: effects, logged: logged, removed: &removed, changed: changed, input: input, args: args);
+  sintercard_finish(client: client);
   return appended;
 }

@@ -953,7 +953,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
   }
   if code == code_sadd {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_sadd, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -964,7 +964,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_srem {
-    let fits = count >= 3_u64;
+    let fits = arity_holds(arity: arity_srem, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -975,7 +975,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_spop {
-    let fits = count >= 2_u64;
+    let fits = arity_holds(arity: arity_spop, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -986,7 +986,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_scard {
-    let fits = count == 2_u64;
+    let fits = arity_holds(arity: arity_scard, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -997,7 +997,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_smembers {
-    let fits = count == 2_u64;
+    let fits = arity_holds(arity: arity_smembers, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1010,7 +1010,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_sismember {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_sismember[0_u64..9_u64]);
     if spelled {
-      let fits = count == 3_u64;
+      let fits = arity_holds(arity: arity_sismember, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -1025,7 +1025,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_smismember {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_smismember[0_u64..10_u64]);
     if spelled {
-      let fits = count >= 3_u64;
+      let fits = arity_holds(arity: arity_smismember, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -1040,7 +1040,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_srandmember {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_srandmember[0_u64..11_u64]);
     if spelled {
-      let fits = count >= 2_u64;
+      let fits = arity_holds(arity: arity_srandmember, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -1052,7 +1052,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
   }
   if code == code_smove {
-    let fits = count == 4_u64;
+    let fits = arity_holds(arity: arity_smove, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1063,7 +1063,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_sinter {
-    let fits = count >= 2_u64;
+    let fits = arity_holds(arity: arity_sinter, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1075,7 +1075,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_sunion {
-    let fits = count >= 2_u64;
+    let fits = arity_holds(arity: arity_sunion, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1087,7 +1087,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_sdiff {
-    let fits = count >= 2_u64;
+    let fits = arity_holds(arity: arity_sdiff, count: count);
     let go = band(fits, open);
     if bnot(go) {
       refused(client: client, input: input, name: name, fits: fits);
@@ -1101,7 +1101,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_sintercard {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_sintercard[0_u64..10_u64]);
     if spelled {
-      let fits = count >= 3_u64;
+      let fits = arity_holds(arity: arity_sintercard, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -1115,7 +1115,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_sinterstore {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_sinterstore[0_u64..11_u64]);
     if spelled {
-      let fits = count >= 3_u64;
+      let fits = arity_holds(arity: arity_sinterstore, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -1130,7 +1130,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_sunionstore {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_sunionstore[0_u64..11_u64]);
     if spelled {
-      let fits = count >= 3_u64;
+      let fits = arity_holds(arity: arity_sunionstore, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
@@ -1145,7 +1145,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_sdiffstore {
     let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_sdiffstore[0_u64..10_u64]);
     if spelled {
-      let fits = count >= 3_u64;
+      let fits = arity_holds(arity: arity_sdiffstore, count: count);
       let go = band(fits, open);
       if bnot(go) {
         refused(client: client, input: input, name: name, fits: fits);
