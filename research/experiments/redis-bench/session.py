@@ -23,14 +23,17 @@ named before it runs. `stop PATH` stops what the session left:
 
 Each process is signalled through a pidfd opened on the process found, TERM
 and then KILL. A record from an earlier boot names nothing left. `stop`
-removes the record once nothing it names runs, and exits 1, keeping it, when
-a process outlives KILL or the record does not read, so that no measurement
-starts on a host it cannot account for. A process of the session that is
+removes the record once nothing it names runs, checking last while it holds
+the record's lock, under which `register` appends; a removed record refuses
+registration, so no server starts after it. `stop` exits 1, keeping the
+record, when a process outlives KILL or the record does not read, so that no
+measurement starts on a host it cannot account for. A process of the session that is
 not a registered server and outlives its leader, such as a client, carries
 the runner's tracking variable, by which the runner stops it when the job
 ends.
 """
 
+import fcntl
 import os
 import signal
 import sys
@@ -79,17 +82,27 @@ def record(path, pid):
 
 
 def register(path, pid):
+    """Adds a server of the recorded session to the record, under the record's
+    lock; refuses, so that the server is not started, once stop has retired
+    the record or when the process is not of the recorded session."""
     if pid == "parent":
         pid = os.getppid()
     pid = int(pid)
-    found = identity(pid)
-    if found is None:
-        return
     try:
-        with open(path, "a") as f:
-            f.write(f"{pid} {found[1]}\n")
+        handle = os.open(path, os.O_RDWR | os.O_APPEND)
     except OSError as error:
         sys.exit(f"cannot register server {pid} in {path}: {error.strerror}")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        if os.fstat(handle).st_nlink == 0:
+            sys.exit(f"cannot register server {pid}: {path} was retired")
+        read = read_record(path)
+        found = identity(pid)
+        if read is None or found is None or found[0] != read[1]:
+            sys.exit(f"cannot register server {pid}: not of the session {path} records")
+        os.write(handle, f"{pid} {found[1]}\n".encode())
+    finally:
+        os.close(handle)
 
 
 def read_record(path):
@@ -130,7 +143,9 @@ def stop(path):
 
     def targets():
         again = read_record(path)
-        for pid, started in (again[3] if again is not None else servers):
+        if again is None:
+            sys.exit(f"{path} no longer reads as a session record; it is kept")
+        for pid, started in again[3]:
             named.setdefault(pid, (session, started))
         if identity(session) == (session, start):
             found = {}
@@ -145,36 +160,50 @@ def stop(path):
         return [(pid, known) for pid, known in named.items()
                 if identity(pid) == known]
 
-    for sig, grace in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
-        left = targets()
-        if not left:
-            break
-        for pid, known in left:
-            try:
-                handle = os.pidfd_open(pid)
-            except ProcessLookupError:
-                continue
-            try:
-                # Read after opening: the handle names the process found only
-                # if that process still holds the number.
-                if identity(pid) == known:
-                    print(f"stopping {pid} ({command_line(pid)}) with {sig.name}")
-                    try:
-                        signal.pidfd_send_signal(handle, sig)
-                    except ProcessLookupError:
-                        pass
-                    except PermissionError:
-                        print(f"not permitted to signal {pid}")
-            finally:
-                os.close(handle)
-        deadline = time.monotonic() + grace
-        while targets() and time.monotonic() < deadline:
-            time.sleep(0.1)
+    def stop_targets():
+        for sig, grace in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+            left = targets()
+            if not left:
+                break
+            for pid, known in left:
+                try:
+                    handle = os.pidfd_open(pid)
+                except ProcessLookupError:
+                    continue
+                try:
+                    # Read after opening: the handle names the process found only
+                    # if that process still holds the number.
+                    if identity(pid) == known:
+                        print(f"stopping {pid} ({command_line(pid)}) with {sig.name}")
+                        try:
+                            signal.pidfd_send_signal(handle, sig)
+                        except ProcessLookupError:
+                            pass
+                        except PermissionError:
+                            print(f"not permitted to signal {pid}")
+                finally:
+                    os.close(handle)
+            deadline = time.monotonic() + grace
+            while targets() and time.monotonic() < deadline:
+                time.sleep(0.1)
+
+    # A registration made while the session was being stopped is stopped in
+    # another round. The last check and the record's removal hold its lock,
+    # so no server registers between them, and once the record is removed
+    # register refuses and no further server starts.
+    for _ in range(3):
+        stop_targets()
+        handle = os.open(path, os.O_RDONLY)
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            if not targets():
+                os.remove(path)
+                return
+        finally:
+            os.close(handle)
     left = targets()
-    if left:
-        named = ", ".join(f"{pid} ({command_line(pid)})" for pid, _ in left)
-        sys.exit(f"session {session} kept {named} past KILL; {path} kept")
-    os.remove(path)
+    named_left = ", ".join(f"{pid} ({command_line(pid)})" for pid, _ in left)
+    sys.exit(f"session {session} kept {named_left} past KILL; {path} kept")
 
 
 def main():
