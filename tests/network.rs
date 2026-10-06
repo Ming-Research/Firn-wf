@@ -3688,7 +3688,7 @@ fn firn_answers_connection_commands_as_redis_does() {
         .expect("ask for INFO's fixed sections");
     expect_replies(
         &mut client,
-        b"+OK\r\n$30\r\n# Cluster\r\ncluster_enabled:0\r\n\r\n$0\r\n\r\n$26\r\n# Keyspace\r\ndb0:keys=1\r\n\r\n$11\r\n# Modules\r\n\r\n",
+        b"+OK\r\n$30\r\n# Cluster\r\ncluster_enabled:0\r\n\r\n$0\r\n\r\n$24\r\n# Keyspace\r\ndb0:keys=1\r\n\r\n$11\r\n# Modules\r\n\r\n",
         "INFO's fixed sections",
     );
     let defaults = [
