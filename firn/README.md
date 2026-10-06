@@ -59,8 +59,11 @@ clients send on their own:
   commands in order in one atomic statement, their time frozen at its start,
   for the commands written as parts: `GET`, `SET`, `INCR`, `DECR`, `INCRBY`,
   `DECRBY`, `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`,
-  `EXPIRETIME`, `PEXPIRETIME` and `MSET`. Any other command sent inside a
-  transaction is queued, and `EXEC` then refuses the whole transaction;
+  `EXPIRETIME`, `PEXPIRETIME`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `TYPE`,
+  `PERSIST`, `DBSIZE`, `PING`, `ECHO`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`,
+  `GETDEL`, `GETEX`, `APPEND`, `SETRANGE`, `STRLEN`, `GETRANGE`, `MGET`,
+  `MSETNX`, `INCRBYFLOAT`, `RENAME`, `RENAMENX` and `COPY`. Any other command
+  sent inside a transaction is queued, and `EXEC` then refuses the whole transaction;
   `WATCH` is refused inside one and unknown outside;
 - server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which

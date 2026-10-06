@@ -4458,6 +4458,484 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// firn removes a key INCRBYFLOAT finds expired before it refuses an
+/// increment that is not a number, as Redis 7.0.15's incrbyfloatCommand
+/// looks the key up for writing first: DBSIZE, which counts entries not
+/// yet removed, then counts none. A refusal that kept the entry would count
+/// it while the file records its removal.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_removes_an_expired_key_incrbyfloat_refuses_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    client
+        .write_all(&resp(&["SET", "lapsing", "1", "PX", "1"]))
+        .expect("set a key that lapses");
+    expect_replies(&mut client, b"+OK\r\n", "the key set");
+    std::thread::sleep(Duration::from_millis(5));
+    let mut batch = resp(&["INCRBYFLOAT", "lapsing", "bad"]);
+    batch.extend(resp(&["DBSIZE"]));
+    client.write_all(&batch).expect("refuse the increment");
+    expect_replies(
+        &mut client,
+        b"-ERR value is not a valid float\r\n:0\r\n",
+        "the refusal and the count",
+    );
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn runs the keys and strings commands written as parts, from DEL to
+/// INCRBYFLOAT, inside a transaction's EXEC and through a script's
+/// redis.call, and their errors through redis.pcall, as Redis 7.0.15 does:
+/// the same requests, from the same keys, give the same replies whichever
+/// path runs them, PING's and MSETNX's own argument checks among them,
+/// which a transaction queues and EXEC answers. The expected bytes are
+/// redis-server 7.0.15's (Firn-wf probe run 37490938223).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_keys_and_strings_parts_as_redis_does() {
+    const VALID: &[&[&str]] = &[
+        &["PING"],
+        &["PING", "hello"],
+        &["ECHO", "hello"],
+        &["SETNX", "parts:a", "one"],
+        &["SETNX", "parts:a", "two"],
+        &["EXISTS", "parts:a", "parts:a", "parts:missing"],
+        &["TYPE", "parts:a"],
+        &["TYPE", "parts:list"],
+        &["TYPE", "parts:missing"],
+        &["SETEX", "parts:seconds", "60", "value"],
+        &["PSETEX", "parts:millis", "60000", "value"],
+        &["PERSIST", "parts:seconds"],
+        &["PERSIST", "parts:seconds"],
+        &["GETSET", "parts:a", "replacement"],
+        &["GETDEL", "parts:a"],
+        &["GETDEL", "parts:a"],
+        &["SET", "parts:a", "abc"],
+        &["GETEX", "parts:a", "PX", "60000"],
+        &["GETEX", "parts:a", "PERSIST"],
+        &["APPEND", "parts:a", "def"],
+        &["SETRANGE", "parts:a", "8", "Z"],
+        &["STRLEN", "parts:a"],
+        &["GETRANGE", "parts:a", "-3", "-1"],
+        &["MGET", "parts:a", "parts:missing", "parts:list", "parts:a"],
+        &[
+            "MSETNX", "parts:x", "first", "parts:x", "last", "parts:y", "other",
+        ],
+        &["MGET", "parts:x", "parts:y"],
+        &["MSETNX", "parts:x", "rejected", "parts:z", "untouched"],
+        &["EXISTS", "parts:z"],
+        &["INCRBYFLOAT", "parts:number", "0.1"],
+        &["INCRBYFLOAT", "parts:number", "0.2"],
+        &["DEL", "parts:x", "parts:x", "parts:missing"],
+        &["UNLINK", "parts:y", "parts:y"],
+        &["DBSIZE"],
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["PING", "one", "two"],
+        &["MSETNX", "parts:odd", "value", "dangling"],
+        &["GETEX", "parts:missing", "EX", "bad"],
+        &["GETEX", "parts:list", "EX", "bad"],
+        &["GETEX", "parts:a", "EX", "bad"],
+        &["GETEX", "parts:a", "PXAT", "1"],
+        &["SETEX", "parts:bad", "0", "value"],
+        &["PSETEX", "parts:bad", "bad", "value"],
+        &["GETSET", "parts:list", "value"],
+        &["GETDEL", "parts:list"],
+        &["APPEND", "parts:list", "value"],
+        &["SETRANGE", "parts:a", "-1", "value"],
+        &["SETRANGE", "parts:a", "536870912", "x"],
+        &["SETRANGE", "parts:missing", "10", ""],
+        &["GETRANGE", "parts:a", "bad", "1"],
+        &["INCRBYFLOAT", "parts:list", "bad"],
+        &["INCRBYFLOAT", "parts:number", "bad"],
+        &["INCRBYFLOAT", "parts:number", "inf"],
+        &["DBSIZE"],
+    ];
+    const TRANSACTIONS: &[u8] =
+        b"+OK\r\n:1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
+*33\r\n+PONG\r\n$5\r\nhello\r\n$5\r\nhello\r\n:1\r\n:0\r\n:2\r\n+string\r\n\
++list\r\n+none\r\n+OK\r\n+OK\r\n:1\r\n:0\r\n$3\r\none\r\n$11\r\nreplacement\r\n\
+$-1\r\n+OK\r\n$3\r\nabc\r\n$3\r\nabc\r\n:6\r\n:9\r\n:9\r\n$3\r\n\x00\x00Z\r\n\
+*4\r\n$9\r\nabcdef\x00\x00Z\r\n$-1\r\n$-1\r\n$9\r\nabcdef\x00\x00Z\r\n:1\r\n\
+*2\r\n$4\r\nlast\r\n$5\r\nother\r\n:0\r\n:0\r\n$3\r\n0.1\r\n$3\r\n0.3\r\n:1\r\n\
+:1\r\n:5\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR wrong number of arguments for 'ping' command\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR wrong number of arguments for 'msetnx' command\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+$-1\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n$9\r\nabcdef\x00\x00Z\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR invalid expire time in 'setex' command\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is not an integer or out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR offset is out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR string exceeds maximum allowed size (proto-max-bulk-len)\r\n+OK\r\n\
++QUEUED\r\n*1\r\n:0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is not an integer or out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not a valid float\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR increment would produce NaN or Infinity\r\n+OK\r\n+QUEUED\r\n*1\r\n:4\r\n";
+    const SCRIPTS: &[u8] =
+        b"+OK\r\n:1\r\n+PONG\r\n$5\r\nhello\r\n$5\r\nhello\r\n:1\r\n:0\r\n:2\r\n\
++string\r\n+list\r\n+none\r\n+OK\r\n+OK\r\n:1\r\n:0\r\n$3\r\none\r\n$11\r\n\
+replacement\r\n$-1\r\n+OK\r\n$3\r\nabc\r\n$3\r\nabc\r\n:6\r\n:9\r\n:9\r\n$3\r\n\
+\x00\x00Z\r\n*4\r\n$9\r\nabcdef\x00\x00Z\r\n$-1\r\n$-1\r\n$9\r\n\
+abcdef\x00\x00Z\r\n:1\r\n*2\r\n$4\r\nlast\r\n$5\r\nother\r\n:0\r\n:0\r\n$3\r\n\
+0.1\r\n$3\r\n0.3\r\n:1\r\n:1\r\n:5\r\n\
+-ERR wrong number of arguments for 'ping' command\r\n\
+-ERR wrong number of arguments for 'msetnx' command\r\n$-1\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is not an integer or out of range\r\n$9\r\nabcdef\x00\x00Z\r\n\
+-ERR invalid expire time in 'setex' command\r\n\
+-ERR value is not an integer or out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR offset is out of range\r\n\
+-ERR string exceeds maximum allowed size (proto-max-bulk-len)\r\n:0\r\n\
+-ERR value is not an integer or out of range\r\n\
+-WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
+-ERR value is not a valid float\r\n\
+-ERR increment would produce NaN or Infinity\r\n:4\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let setup: [&[&str]; 2] = [&["FLUSHALL"], &["LPUSH", "parts:list", "x"]];
+    let mut transactions = Vec::new();
+    for request in setup {
+        transactions.extend(resp(request));
+    }
+    transactions.extend(resp(&["MULTI"]));
+    for request in VALID {
+        transactions.extend(resp(request));
+    }
+    transactions.extend(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.extend(resp(&["MULTI"]));
+        transactions.extend(resp(request));
+        transactions.extend(resp(&["EXEC"]));
+    }
+    client
+        .write_all(&transactions)
+        .expect("send the transactions");
+    expect_replies(&mut client, TRANSACTIONS, "the transactions");
+    let mut scripts = Vec::new();
+    for request in setup {
+        scripts.extend(resp(request));
+    }
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.extend(resp(&call));
+        }
+    }
+    client.write_all(&scripts).expect("send the scripts");
+    expect_replies(&mut client, SCRIPTS, "the scripts");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn runs RENAME, RENAMENX and COPY, written as parts over the entries
+/// of the keys they name, inside a transaction's EXEC and through a
+/// script's redis.call, and their errors through redis.pcall, as Redis
+/// 7.0.15 does: a key renamed onto another and onto itself, RENAMENX onto a
+/// live key, COPY with and without REPLACE and DB 0, an expiry carried to
+/// the new key, a list copied, and the refusals, the arity errors among
+/// them aborting a transaction; a key that lapsed before the requests is
+/// gone by the time RENAME names it, since EXISTS found it first, and the
+/// commands meeting expired keys themselves are
+/// firn_records_held_renames_and_copies_as_redis_propagates_them's. The
+/// expected bytes are redis-server 7.0.15's (Firn-wf probe run 37494816783).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_rename_and_copy_parts_as_redis_does() {
+    const SETUP: &[&[&str]] = &[
+        &["FLUSHALL"],
+        &["RPUSH", "l", "a", "b"],
+        &["SET", "e", "1", "PX", "1"],
+    ];
+    const VALID: &[&[&str]] = &[
+        &["SET", "s", "one"],
+        &["RENAME", "s", "d"],
+        &["GET", "d"],
+        &["EXISTS", "s"],
+        &["SET", "s", "two"],
+        &["RENAMENX", "s", "d"],
+        &["RENAMENX", "s", "n"],
+        &["GET", "n"],
+        &["COPY", "n", "d"],
+        &["COPY", "n", "d", "REPLACE"],
+        &["GET", "d"],
+        &["SET", "s", "one"],
+        &["RENAME", "s", "s"],
+        &["RENAMENX", "s", "s"],
+        &["COPY", "s", "d", "DB", "0", "REPLACE"],
+        &["COPY", "s", "d", "rePlace", "db", "0", "REPLACE", "DB", "0"],
+        &["SET", "t", "one", "PXAT", "4102444800000"],
+        &["RENAME", "t", "t2"],
+        &["PEXPIRETIME", "t2"],
+        &["COPY", "t2", "t3"],
+        &["PEXPIRETIME", "t3"],
+        &["COPY", "l", "l2"],
+        &["TYPE", "l2"],
+        &["EXISTS", "e"],
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["RENAME", "e", "f"],
+        &["RENAME", "absent", "d"],
+        &["RENAMENX", "absent", "d"],
+        &["COPY", "absent", "d"],
+        &["COPY", "s", "s"],
+        &["COPY", "s", "d", "DB"],
+        &["COPY", "s", "d", "UNKNOWN"],
+        &["COPY", "s", "d", "DB", "bad"],
+        &["COPY", "s", "d", "DB", "-1"],
+        &["RENAME", "s"],
+        &["RENAME", "s", "d", "extra"],
+        &["RENAMENX", "s"],
+        &["COPY", "s"],
+    ];
+    const SET_UP: &[u8] = b"+OK\r\n:2\r\n+OK\r\n";
+    const TRANSACTIONS: &[u8] =
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
++QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*24\r\n+OK\r\n+OK\r\n$3\r\none\r\n\
+:0\r\n+OK\r\n:0\r\n:1\r\n$3\r\ntwo\r\n:0\r\n:1\r\n$3\r\ntwo\r\n+OK\r\n+OK\r\n\
+:0\r\n:1\r\n:1\r\n+OK\r\n+OK\r\n:4102444800000\r\n:1\r\n:4102444800000\r\n:1\r\n\
++list\r\n:0\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR no such key\r\n+OK\r\n+QUEUED\r\n\
+*1\r\n-ERR no such key\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR no such key\r\n+OK\r\n\
++QUEUED\r\n*1\r\n:0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR source and destination objects are the same\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR DB index is out of range\r\n+OK\r\n\
+-ERR wrong number of arguments for 'rename' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'rename' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'renamenx' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'copy' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n";
+    const SCRIPTS: &[u8] =
+        b"+OK\r\n+OK\r\n$3\r\none\r\n:0\r\n+OK\r\n:0\r\n:1\r\n$3\r\ntwo\r\n:0\r\n:1\r\n\
+$3\r\ntwo\r\n+OK\r\n+OK\r\n:0\r\n:1\r\n:1\r\n+OK\r\n+OK\r\n:4102444800000\r\n\
+:1\r\n:4102444800000\r\n:1\r\n+list\r\n:0\r\n-ERR no such key\r\n\
+-ERR no such key\r\n-ERR no such key\r\n:0\r\n\
+-ERR source and destination objects are the same\r\n-ERR syntax error\r\n\
+-ERR syntax error\r\n-ERR value is not an integer or out of range\r\n\
+-ERR DB index is out of range\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut transactions = vec![resp(&["MULTI"])];
+    for request in VALID {
+        transactions.push(resp(request));
+    }
+    transactions.push(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.push(resp(&["MULTI"]));
+        transactions.push(resp(request));
+        transactions.push(resp(&["EXEC"]));
+    }
+    let mut scripts = Vec::new();
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.push(resp(&call));
+        }
+    }
+    for (requests, expected, what) in [
+        (transactions, TRANSACTIONS, "the transactions"),
+        (scripts, SCRIPTS, "the scripts"),
+    ] {
+        let set_up: Vec<u8> = SETUP.iter().flat_map(|request| resp(request)).collect();
+        client.write_all(&set_up).expect("set the keys up");
+        expect_replies(&mut client, SET_UP, "the keys set up");
+        std::thread::sleep(Duration::from_millis(50));
+        client
+            .write_all(&requests.concat())
+            .expect("send the requests");
+        expect_replies(&mut client, expected, what);
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// The commands of an append-only file, each its arguments.
+#[cfg(target_os = "linux")]
+fn file_records(mut bytes: &[u8]) -> Vec<Vec<Vec<u8>>> {
+    fn line(bytes: &mut &[u8]) -> usize {
+        let rest: &[u8] = *bytes;
+        let end = rest
+            .windows(2)
+            .position(|pair| pair == b"\r\n")
+            .expect("a record's line ends");
+        let count = std::str::from_utf8(&rest[1..end])
+            .expect("a count in ASCII")
+            .parse()
+            .expect("a count");
+        *bytes = &rest[end + 2..];
+        count
+    }
+    let mut records = Vec::new();
+    while !bytes.is_empty() {
+        let count = line(&mut bytes);
+        let mut record = Vec::new();
+        for _ in 0..count {
+            let length = line(&mut bytes);
+            record.push(bytes[..length].to_vec());
+            bytes = &bytes[length + 2..];
+        }
+        records.push(record);
+    }
+    records
+}
+
+/// Runs commands that meet keys found expired inside a transaction or a
+/// script and checks their replies and the records firn appends after a
+/// file that loads those keys. `loaded` sets the keys, those to meet
+/// expired with `PXAT 1`, an expiry the replay keeps as reached; `records`
+/// is what redis-server 7.0.15 appends for the same keys expiring under it
+/// with active expiry off, less the SELECT it begins with. firn's active
+/// expiry first sweeps 100 ms after it starts; when that sweep removed the
+/// keys before the commands met them, the replies are the same and the
+/// sweep's DEL records stand outside any MULTI and EXEC for keys Redis
+/// removes inside one, and the run starts over, up to five times. A held
+/// command that records such a removal outside its block shows the same
+/// form on every run and fails.
+#[cfg(target_os = "linux")]
+fn check_held_records(
+    loaded: &[&[&str]],
+    requests: &[&[&str]],
+    replies: &'static [u8],
+    records: &[u8],
+) {
+    let program = firn();
+    let loaded: Vec<u8> = loaded.iter().flat_map(|request| resp(request)).collect();
+    let batch: Vec<u8> = requests.iter().flat_map(|request| resp(request)).collect();
+    for _ in 0..5 {
+        let fixture = fixture_directory();
+        std::fs::write(fixture.path().join("held.aof"), &loaded).expect("write the loaded file");
+        let port = free_port();
+        let text = port.to_string();
+        let sent = batch.clone();
+        let client = std::thread::spawn(move || {
+            let mut client = connect_when_ready(port);
+            client.write_all(&sent).expect("send the commands");
+            expect_replies(&mut client, replies, "the commands");
+        });
+        let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"held.aof"]);
+        client.join().expect("the client's exchange");
+        assert!(output.status.success(), "firn: {:?}", output.status);
+        let file = std::fs::read(fixture.path().join("held.aof")).expect("read firn's file");
+        let recorded = file
+            .strip_prefix(loaded.as_slice())
+            .expect("the loaded records kept at the file's start");
+        if recorded == records {
+            return;
+        }
+        let removals = |bytes: &[u8], within: bool| -> Vec<Vec<u8>> {
+            let mut inside = false;
+            let mut keys = Vec::new();
+            for record in file_records(bytes) {
+                match record[0].as_slice() {
+                    b"MULTI" => inside = true,
+                    b"EXEC" => inside = false,
+                    b"DEL" if inside == within => keys.push(record[1].clone()),
+                    _ => {}
+                }
+            }
+            keys
+        };
+        let met = removals(records, true);
+        let swept = removals(recorded, false)
+            .iter()
+            .any(|key| met.contains(key));
+        assert!(
+            swept,
+            "the records:\n{}\nwhere Redis appends:\n{}",
+            String::from_utf8_lossy(recorded),
+            String::from_utf8_lossy(records)
+        );
+    }
+    panic!("active expiry removed the loaded keys before the commands met them in five runs");
+}
+
+/// firn records RENAME and COPY run inside a transaction's EXEC and a
+/// script as Redis 7.0.15 propagates them over keys found expired: each
+/// expired key the commands find is removed and recorded as DEL where the
+/// command finds it, inside the transaction's MULTI and EXEC or the
+/// script's, with the commands that ran; a refused RENAME records only its
+/// source's removal. The expected records are redis-server 7.0.15's
+/// (Firn-wf probe run 37499574103).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_renames_and_copies_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["SET", "a", "1"],
+            &["SET", "b", "2", "PXAT", "1"],
+            &["SET", "c", "3", "PXAT", "1"],
+            &["SET", "e", "5"],
+            &["SET", "f", "6", "PXAT", "1"],
+            &["SET", "g", "7", "PXAT", "1"],
+        ],
+        &[
+            &["MULTI"],
+            &["RENAME", "a", "b"],
+            &["RENAME", "c", "d"],
+            &["COPY", "e", "f"],
+            &["EXEC"],
+            &[
+                "EVAL",
+                "redis.call('RENAME', KEYS[1], KEYS[2]) return redis.pcall('COPY', KEYS[3], KEYS[4])",
+                "4",
+                "b",
+                "x",
+                "g",
+                "y",
+            ],
+            &["MGET", "a", "b", "c", "d", "e", "f", "g", "x", "y"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR no such key\r\n:1\r\n:0\r\n*9\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n$1\r\n5\r\n$1\r\n5\r\n$-1\r\n$1\r\n1\r\n$-1\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$1\r\na\r\n$1\r\nb\r\n*2\r\n$3\r\nDEL\r\n$1\r\nc\r\n*2\r\n$3\r\nDEL\r\n$1\r\nf\r\n*3\r\n$4\r\nCOPY\r\n$1\r\ne\r\n$1\r\nf\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*3\r\n$6\r\nRENAME\r\n$1\r\nb\r\n$1\r\nx\r\n*2\r\n$3\r\nDEL\r\n$1\r\ng\r\n*1\r\n$4\r\nEXEC\r\n",
+    );
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
