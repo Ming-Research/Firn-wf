@@ -93,5 +93,8 @@ design-lint:
 	@$(PY) -B -m unittest discover -s $(ROOT)/design/skill -p 'test_lint.py'
 	@$(if $(DESIGN_TREES),$(PY) -B $(ROOT)/design/skill/lint.py --root $(ROOT)/design --trees $(DESIGN_TREES) --base "$(DESIGN_REVIEW_BASE)",echo "design lint: no live tree")
 
+# Readiness also holds rule 4 of AGENTS.md: a revision bound for main pins a
+# release of a Whitefoot main commit, never an experiment release.
 design-ready:
+	@! grep -qE '^release = wf-exp-' $(PIN) || { echo "whitefoot.pin names experiment release $(RELEASE); a revision bound for main pins a release of a Whitefoot main commit (AGENTS.md, rule 4)" >&2; exit 1; }
 	@$(if $(DESIGN_TREES),$(PY) -B $(ROOT)/design/skill/lint.py --root $(ROOT)/design --trees $(DESIGN_TREES) --base "$(DESIGN_REVIEW_BASE)" --require-approval,echo "design ready: no live tree")

@@ -188,7 +188,8 @@ merge precondition.
   `git submodule update --init`) and the toolchain the compiler links with:
   `/usr/bin/clang`, and on Linux LLD, which CI installs.
 - `make design-ready`, before marking ready and in CI on ready PRs and main:
-  every design-tree change is approved in the log.
+  every design-tree change is approved in the log, and `whitefoot.pin` names
+  a release of a Whitefoot main commit, not an experiment release (rule 4).
 - Build and test through CI, not on a developer's machine; run a build or
   test locally only when CI cannot do it or the owner asks, and say so.
 - Precise timing and performance run on the owner's i9-14900K self-hosted
