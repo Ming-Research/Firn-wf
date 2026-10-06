@@ -59,7 +59,7 @@ passes.
 - `design/`: the decisions firn is built on, and their approval log;
   `design/skill/`, a submodule of
   [Design-skill](https://github.com/Ming-Research/Design-skill), holds the
-  tree's lint.
+  tree's lint and a copy of the owner-wide agent instructions.
 - `research/`: the server's design and measurements
   (`research/investigations/firn/`) and the instruments behind them
   (`research/experiments/`).
