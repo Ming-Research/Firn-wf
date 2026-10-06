@@ -417,6 +417,22 @@ written while firn lived in the Whitefoot repository; a path such as
   Reopen when a workload ranks or counts in large sorted sets, or with the
   library's next ordered map change.
 
+- **A busy script gets no BUSY reply.** Redis 7.0.15 answers other clients'
+  commands `BUSY` once a script has run past `busy-reply-threshold`
+  (`lua-time-limit`), leaving them `SCRIPT KILL` and `SHUTDOWN NOSAVE`.
+  firn has no threshold: a command that needs the keyspace waits until the
+  script's attempt ends, and a script that has written runs to its end
+  holding it, so an endless one holds it until `SCRIPT KILL` from another
+  connection. Redis's suite test `just EXEC and script timeout` sends `EXEC`
+  during such a script and waits for `BUSY` before it sends `SCRIPT KILL`,
+  so on firn it hangs until the suite's 120-second timeout and its retry
+  (`firn/scripting/entry.wf`). The change: the pool records when the
+  running script began, and a command that would take the keyspace answers
+  `BUSY` past the threshold. It adds a check of the pool to every such
+  command, a cost to measure on the 14900K before choosing it. Reopen when
+  a consumer runs scripts long enough to meet the threshold, or when the
+  suite's time matters.
+
 ## Tests
 
 - **Thirteen of Redis's suite tests are lost to a connection left in
