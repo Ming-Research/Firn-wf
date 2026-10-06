@@ -4183,9 +4183,10 @@ fn firn_runs_scripts_as_redis_does() {
 
 /// firn's SCRIPT KILL stops a script that has written nothing at the end of
 /// its current attempt and answers it Redis 7.0.15's error, naming the
-/// script's SHA1 and the line it ran; SCRIPT KILL answers NOTBUSY when no
-/// script runs and Redis's arity error for an argument; and another
-/// connection's command runs between the looping script's attempts.
+/// script's SHA1 and the line it ran, and SCRIPT KILL answers NOTBUSY when no
+/// script runs and Redis's arity error for an argument. SCRIPT KILL needs
+/// only the scripts' pool, so it is answered while the script holds the
+/// keyspace.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_kills_a_looping_script_as_redis_does() {
@@ -4209,10 +4210,6 @@ fn firn_kills_a_looping_script_as_redis_does() {
         .write_all(&resp(&["EVAL", "while true do end", "0"]))
         .expect("start the looping script");
     std::thread::sleep(Duration::from_millis(300));
-    other
-        .write_all(&resp(&["SET", "k", "v"]))
-        .expect("write while the script loops");
-    expect_replies(&mut other, b"+OK\r\n", "a write while the script loops");
     other
         .write_all(&resp(&["SCRIPT", "KILL"]))
         .expect("kill the script");
