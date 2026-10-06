@@ -4291,7 +4291,7 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
     let program = firn();
     let port = free_port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]);
     let mut looping = connect_when_ready(port);
     let mut setter = connect_when_ready(port);
     let mut reader = connect_when_ready(port);
