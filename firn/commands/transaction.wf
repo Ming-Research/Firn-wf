@@ -37,7 +37,7 @@ const text_watch_inside: Array<u8, 37> = "ERR WATCH inside MULTI is not allowed"
 
 const text_execabort: Array<u8, 59> = "EXECABORT Transaction discarded because of previous errors.";
 
-const text_not_queued: Array<u8, 65> = "ERR unknown command, or one firn does not yet run in transactions";
+const text_foreign_abort: Array<u8, 92> = "EXECABORT Transaction discarded because it holds a command firn does not run in transactions";
 
 const reply_queued: Array<u8, 9> = "+QUEUED\r\n";
 
@@ -52,13 +52,15 @@ fn transaction_new() -> made: Transaction pure {
   let counts = box_slots_new::<u64>(capacity: 8_u64);
   let closed = False();
   let clean = False();
-  return Transaction(open: closed, dirty: clean, bytes: move bytes, spans: move spans, counts: move counts);
+  let runnable = False();
+  return Transaction(open: closed, dirty: clean, foreign: runnable, bytes: move bytes, spans: move spans, counts: move counts);
 }
 
 fn transaction_reset(transaction: &Transaction) -> result: unit writes(transaction) {
   doc "Closes a transaction and drops what it queued, keeping the space, as Redis's discardTransaction does after EXEC or DISCARD.";
   set transaction^.open = False();
   set transaction^.dirty = False();
+  set transaction^.foreign = False();
   loop @bytes {
     if transaction^.bytes.inner.len > 0_u64 {
       let dropped = take_back(window: &transaction^.bytes.inner);
@@ -133,7 +135,7 @@ fn queue_command(transaction: &Transaction, input: &[u8], args: &Box<Slots<Span>
 }
 
 fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(transaction), writes(client) {
-  doc "A command sent inside a transaction, other than EXEC, DISCARD, MULTI, WATCH and QUIT: checked as Redis 7.0.15's processCommand checks it before queueing, and either queued and answered QUEUED, or refused, marking the transaction so that EXEC aborts it. A connection that must authenticate first is answered NOAUTH; a command held_kind does not name, which firn either does not know or does not yet run by its parts, firn's error for one it cannot queue; a count of arguments outside the command's arity Redis's arity error.";
+  doc "A command sent inside a transaction, other than EXEC, DISCARD, MULTI, WATCH and QUIT: checked as Redis 7.0.15's processCommand checks it before queueing, and either queued and answered QUEUED, or refused, marking the transaction dirty so that EXEC aborts it. A connection that must authenticate first is answered NOAUTH, and a command held_kind names with a count of arguments outside its arity Redis's arity error. A command held_kind does not name, which firn either does not know or does not run by its parts, is queued and answered QUEUED, marking the transaction foreign so that EXEC refuses it whole: firn names its commands only in execute's rows, and a client that stops at an error reply would otherwise be left inside the transaction.";
   if client^.locked {
     let stopped = denied(client: client);
     set transaction^.dirty = True();
@@ -142,8 +144,9 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
   if kind == 0_u64 {
-    reply_error(client: client, word: &text_not_queued[0_u64..65_u64]);
-    set transaction^.dirty = True();
+    queue_command(transaction: transaction, input: input, args: args);
+    set transaction^.foreign = True();
+    reply_word(client: client, word: &reply_queued[0_u64..9_u64]);
     return unit;
   }
   let arity = held_arity(kind: kind);
@@ -160,9 +163,14 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
 }
 
 fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transaction: &Transaction) -> result: unit reads(store), reads(env), reads(time), writes(client), writes(transaction) waits {
-  doc "EXEC inside a transaction: a transaction a refused command marked is discarded with Redis's EXECABORT error; otherwise every queued command runs in order by its parts, in one statement holding every key and the keyspace's metadata so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands see the time EXEC began, as Redis freezes it for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. The transaction then closes.";
+  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order by its parts, in one statement holding every key and the keyspace's metadata so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands see the time EXEC began, as Redis freezes it for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. The transaction then closes.";
   if transaction^.dirty {
     reply_error(client: client, word: &text_execabort[0_u64..59_u64]);
+    transaction_reset(transaction: transaction);
+    return unit;
+  }
+  if transaction^.foreign {
+    reply_error(client: client, word: &text_foreign_abort[0_u64..92_u64]);
     transaction_reset(transaction: transaction);
     return unit;
   }
@@ -194,7 +202,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
         let ran = held_run(kind: kind, keys: t, meta: m, effects: &effects, logged: logged, input: queued, args: &args, client: client, env: env, time: time);
         set appended = appended +wrap ran;
       } else {
-        reply_error(client: client, word: &text_not_queued[0_u64..65_u64]);
+        reply_error(client: client, word: &text_foreign_abort[0_u64..92_u64]);
       }
     }
     if appended > 1_u64 {

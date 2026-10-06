@@ -3799,11 +3799,11 @@ fn firn_answers_connection_commands_as_redis_does() {
 /// EXEC and DISCARD outside one and a nested MULTI are refused; queued
 /// commands answer QUEUED and EXEC answers an array of their replies, a
 /// runtime error among them leaving the others done; a command refused while
-/// queueing, for its arity or because firn cannot queue it, makes EXEC abort
-/// the transaction; WATCH inside one is refused without aborting it; DISCARD
-/// drops what was queued. The expected bytes are redis-server 7.0.15's, but
-/// for the refusal of FOO, which firn names a command it cannot queue where
-/// Redis names an unknown one.
+/// queueing for its arity makes EXEC abort the transaction; WATCH inside one
+/// is refused without aborting it; DISCARD drops what was queued. The expected
+/// bytes are redis-server 7.0.15's, but for FOO, which firn queues and then
+/// refuses whole at EXEC as a command it does not run in transactions, where
+/// Redis refuses it as unknown when it is sent and EXEC then aborts.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_keeps_transactions_as_redis_does() {
@@ -3851,7 +3851,7 @@ fn firn_keeps_transactions_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the transaction batch");
-    let expected = "-ERR EXEC without MULTI\r\n-ERR DISCARD without MULTI\r\n+OK\r\n-ERR MULTI calls can not be nested\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*6\r\n+OK\r\n:6\r\n:1\r\n:100\r\n+OK\r\n$1\r\n2\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR value is not an integer or out of range\r\n$3\r\nabc\r\n+OK\r\n+QUEUED\r\n-ERR wrong number of arguments for 'get' command\r\n-EXECABORT Transaction discarded because of previous errors.\r\n$-1\r\n+OK\r\n+QUEUED\r\n-ERR unknown command, or one firn does not yet run in transactions\r\n-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n-ERR WATCH inside MULTI is not allowed\r\n*0\r\n+OK\r\n+QUEUED\r\n+OK\r\n$-1\r\n-ERR wrong number of arguments for 'exec' command\r\n";
+    let expected = "-ERR EXEC without MULTI\r\n-ERR DISCARD without MULTI\r\n+OK\r\n-ERR MULTI calls can not be nested\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*6\r\n+OK\r\n:6\r\n:1\r\n:100\r\n+OK\r\n$1\r\n2\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n-ERR value is not an integer or out of range\r\n$3\r\nabc\r\n+OK\r\n+QUEUED\r\n-ERR wrong number of arguments for 'get' command\r\n-EXECABORT Transaction discarded because of previous errors.\r\n$-1\r\n+OK\r\n+QUEUED\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n+OK\r\n-ERR WATCH inside MULTI is not allowed\r\n*0\r\n+OK\r\n+QUEUED\r\n+OK\r\n$-1\r\n-ERR wrong number of arguments for 'exec' command\r\n";
     expect_replies(&mut client, expected.as_bytes(), "the transaction batch");
     drop(client);
     let (status, _) = finished(child);

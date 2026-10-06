@@ -50,8 +50,8 @@ clients send on their own:
   for the commands written as parts: `GET`, `SET`, `INCR`, `DECR`, `INCRBY`,
   `DECRBY`, `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `TTL`, `PTTL`,
   `EXPIRETIME`, `PEXPIRETIME` and `MSET`. Any other command sent inside a
-  transaction is refused, and `EXEC` then aborts it; `WATCH` is refused
-  inside one and unknown outside;
+  transaction is queued, and `EXEC` then refuses the whole transaction;
+  `WATCH` is refused inside one and unknown outside;
 - server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which
   describe no command. `COMMAND DOCS` is answered as an unknown subcommand,
