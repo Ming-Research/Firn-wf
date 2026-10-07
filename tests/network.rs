@@ -7515,10 +7515,17 @@ fn shutdown_finished(mut child: ProgramChild) {
     assert_eq!(finished(child).0, 0);
 }
 
-/// No client limit or half-close can end these servers. The client that sends
-/// SHUTDOWN gets no reply, not even to the writes it pipelined before it, as
-/// redis-server 7.0.15 answers such a read (Firn-wf probe run 37574985225),
-/// and the replay finds every one of those writes, as Redis's does.
+/// No client limit or half-close can end these servers. A client pipelines
+/// 128 writes and reads their replies; then a write of fewer than 100 bytes
+/// holding `SET held 1` and SHUTDOWN, which Linux's loopback delivers to firn
+/// in one read, gets no reply at all, not even `SET`'s, as redis-server 7.0.15
+/// answers that read (Firn-wf probe run 37574985225). A second client writes
+/// one key after another, each after the last's reply, until firn closes it;
+/// it sees the request only at its next once-a-second poll, so it goes on
+/// writing after the request. The replay finds the 128 writes, `held` and
+/// every write the second client was answered for; those it made after the
+/// request are lost if the writer drains when the request arrives rather than
+/// after every client has gone.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
@@ -7529,6 +7536,24 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
         let text = port.to_string();
         let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
         let mut client = connect_when_ready(port);
+        let mut late = connect_when_ready(port);
+        let writer = std::thread::spawn(move || {
+            let mut answered = Vec::new();
+            for i in 0_u64.. {
+                let key = format!("late:{i}");
+                if late.write_all(&resp(&["SET", &key, "after"])).is_err() {
+                    break;
+                }
+                let mut reply = [0_u8; 5];
+                if late.read_exact(&mut reply).is_err() {
+                    break;
+                }
+                assert_eq!(&reply, b"+OK\r\n", "{key}");
+                answered.push(key);
+            }
+            answered
+        });
+        std::thread::sleep(Duration::from_millis(200));
         let mut batch = Vec::new();
         for i in 0..128 {
             batch.extend(resp(&[
@@ -7537,32 +7562,42 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
                 &format!("value:{i}"),
             ]));
         }
-        batch.extend(resp(&["SHUTDOWN"]));
+        client.write_all(&batch).expect("write the keys");
+        expect_replies(&mut client, &b"+OK\r\n".repeat(128), "the writes");
+        let last = [resp(&["SET", "held", "1"]), resp(&["SHUTDOWN"])].concat();
+        assert!(last.len() < 100, "one small write");
         client
-            .write_all(&batch)
-            .expect("write keys and shutdown together");
-        shutdown_finished(child);
+            .write_all(&last)
+            .expect("write a key and shutdown together");
         let mut replies = Vec::new();
         client
             .read_to_end(&mut replies)
             .expect("shutdown closes its client");
         assert_eq!(
             replies, b"",
-            "Redis 7.0.15 sends nothing to a client after SHUTDOWN, even the replies of the commands before it in the same read"
+            "no reply to SHUTDOWN or to the write before it"
         );
+        let answered = writer.join().expect("the second client's writes");
+        assert!(
+            !answered.is_empty(),
+            "the second client wrote before the request"
+        );
+        shutdown_finished(child);
 
         let port = free_port();
         let text = port.to_string();
         let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
         let mut client = connect_when_ready(port);
-        for i in 0..128 {
+        let mut keys: Vec<(String, String)> = (0..128)
+            .map(|i| (format!("shutdown:{i}"), format!("value:{i}")))
+            .collect();
+        keys.push(("held".to_string(), "1".to_string()));
+        keys.extend(answered.into_iter().map(|key| (key, "after".to_string())));
+        for (key, value) in &keys {
             client
-                .write_all(&resp(&["GET", &format!("shutdown:{i}")]))
-                .expect("read replayed key");
-            assert_eq!(
-                bulk_reply(&mut client, "replayed shutdown write"),
-                format!("value:{i}")
-            );
+                .write_all(&resp(&["GET", key]))
+                .expect("read a replayed key");
+            assert_eq!(&bulk_reply(&mut client, "a replayed write"), value, "{key}");
         }
         client
             .write_all(&resp(&["SHUTDOWN", "NOSAVE"]))
@@ -7572,8 +7607,8 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
     }
 }
 
-/// The idle peer has completed a PING, remains open, and has no idle limit;
-/// omitting receive polling or stopping the writer before clients leave fails.
+/// The idle peer has completed a PING, remains open, and has no idle limit,
+/// so firn exits only if its receive's deadline lets it see the request.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_shutdown_closes_an_idle_client_without_an_idle_limit_on_both_routes() {

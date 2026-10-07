@@ -132,13 +132,14 @@ change them while it runs and saves no snapshot; Redis would apply them.
 `CONFIG RESETSTAT` answers OK and zeroes the count of connections the server
 has accepted.
 
-`SHUTDOWN` sends no reply, nor the replies to the commands before it in
-the same read, which Redis 7.0.15 does not send either; its connection
-closes, and firn stops accepting clients. Every other client sees the
-request within a second, when a wait for its next request ends or at its
-next read while it sends, sends the replies it holds and closes; a send
-blocked on a client that does not read is abandoned at its next one-second
-deadline. Once every client has left, the append-only file's writer appends
+`SHUTDOWN` sends no reply, nor the replies its connection holds unsent
+from the commands before it, which Redis 7.0.15 does not send either; its
+connection closes, and firn stops accepting clients. Every other client sees
+the request when a wait for its next request ends, at most a second after it
+began, or at its first read a second or more after its last look while it
+sends, so a long command or batch delays it; it then sends the replies it
+holds and closes. A send blocked on a client that does not read is abandoned
+at its next one-second deadline. Once every client has left, the append-only file's writer appends
 its last bytes, syncs and closes, and firn exits with status 0, as Redis
 does even when that sync fails. No snapshot is written: the `save` schedule
 is empty, and `SAVE` answers `ERR Errors trying to SHUTDOWN. Check logs.`
