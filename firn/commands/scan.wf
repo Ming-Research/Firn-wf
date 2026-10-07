@@ -255,14 +255,14 @@ fn scan_finish(client: &Client, found: &KeySet, next: u64) -> result: unit reads
   let digits = array_filled::<u8, 20>(value: 0_u8);
   let start = 20_u64;
   let value = next;
-  loop (
-    invariant cursor_digits: start <= 20_u64
-  ) {
+  loop {
     if start > 0_u64 {
       set start = start -wrap 1_u64;
       let digit = value % 10_u64;
       let ascii = digit +wrap 48_u64;
-      set digits[start] = cvt.wrap::<u64, u8>(ascii);
+      if start < 20_u64 {
+        set digits[start] = cvt.wrap::<u64, u8>(ascii);
+      }
     }
     set value = value / 10_u64;
     if value == 0_u64 {
