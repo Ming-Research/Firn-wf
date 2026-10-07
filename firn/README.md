@@ -15,7 +15,9 @@ clients send on their own:
 - keys: `DEL`, `UNLINK`, `EXISTS`, `TOUCH`, `TYPE`, `RENAME`, `RENAMENX`,
   `COPY` with `REPLACE` and `DB 0`, `EXPIRE`, `PEXPIRE`, `EXPIREAT` and
   `PEXPIREAT` with their options `NX`, `XX`, `GT` and `LT`, `TTL`, `PTTL`,
-  `EXPIRETIME`, `PEXPIRETIME`, `PERSIST`, `DBSIZE`;
+  `EXPIRETIME`, `PEXPIRETIME`, `PERSIST`, `DBSIZE`,
+  `SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]`, `KEYS pattern`
+  and `RANDOMKEY`;
 - strings: `GET`, `SET` with its options `NX`, `XX`, `GET`, `KEEPTTL`,
   `EX`, `PX`, `EXAT` and `PXAT`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`,
   `GETDEL`, `GETEX`, `MGET`, `MSET`, `MSETNX`, `INCR`, `INCRBY`, `DECR`,
@@ -58,9 +60,10 @@ clients send on their own:
 - transactions: `MULTI`, `EXEC` and `DISCARD`. `EXEC` runs the queued
   commands in order in one atomic statement, their time frozen at its start,
   for the commands written as parts: every keys, strings, hashes, lists, sets
-  and sorted sets command this list names other than the blocking ones and
-  `SCAN`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`, `COMMAND`
-  and `COMMAND COUNT`; `FLUSHALL`, `FLUSHDB` and `INFO` are not among them.
+  and sorted sets command this list names, including `SCAN`, `KEYS` and
+  `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
+  `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`; `INFO` is not among
+  them. These same command parts run in scripts.
   Any other command sent inside a transaction is queued, and `EXEC` then
   refuses the whole transaction, but for a `COMMAND` subcommand Redis does
   not have, or `COUNT` outside its arity, which is refused when sent, as
@@ -79,6 +82,18 @@ clients send on their own:
   answers OK, as Redis does with its debug command enabled, firn keeping no
   log to write it to; every other `DEBUG` subcommand is answered as an
   unknown one.
+
+`SCAN` takes one map scan step per request; its unsigned decimal cursor is
+zero when the scan ends, and a nonzero cursor can accompany an empty batch.
+`MATCH` and `KEYS` patterns are binary and case-sensitive; `TYPE` names are
+case-insensitive. `KEYS` walks the whole keyspace in one atomic statement
+and skips expired entries without removing them. `SCAN` removes expired
+entries reached after `MATCH`, and `RANDOMKEY` removes expired candidates;
+both record those removals as `DEL`. `RANDOMKEY` starts at a cursor drawn
+from firn's existing xorshift64 state and walks forward, wrapping once;
+this does not reproduce Redis's sampling distribution. All five commands,
+including both flush commands, run through their shared parts on the
+network, in `EXEC` and through `redis.call` or `redis.pcall`.
 
 `CONFIG GET` takes Redis's glob patterns over firn's parameters:
 `appendfilename`, `appendonly`, `bind`, `databases`, `port`, `requirepass`,

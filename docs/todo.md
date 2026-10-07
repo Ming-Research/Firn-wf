@@ -185,10 +185,10 @@ written while firn lived in the Whitefoot repository; a path such as
   `CLIENT` subcommands beyond `ID`, `GETNAME` and `SETNAME`, which firn
   answers as unknown, and a command table, which `COMMAND` and
   `COMMAND COUNT` report empty and `COMMAND DOCS`, `INFO`, `LIST` and
-  `GETKEYS` answer as unknown subcommands; `KEYS` and `SCAN`, which can match
-  with `glob_match` (`firn/bytes/bytes.wf`), `LMPOP` and the blocking list commands, `SSCAN`,
+  `GETKEYS` answer as unknown subcommands; `LMPOP` and the blocking list
+  commands, `SSCAN`,
   `WATCH`, publish and subscribe, and a random hash seed; and
-  `RANDOMKEY`, `SORT`, `LCS`, `OBJECT`, `DUMP`, `RESTORE`, `MOVE`, `MIGRATE`,
+  `SORT`, `LCS`, `OBJECT`, `DUMP`, `RESTORE`, `MOVE`, `MIGRATE`,
   `WAIT`, `HSCAN`, `ZSCAN`, `ZRANGESTORE`, `ZRANDMEMBER`, `ZMPOP` and
   `BZMPOP`, `BZPOPMIN` and `BZPOPMAX`, and `ZDIFF`, `ZINTER`, `ZUNION`,
   `ZINTERCARD` and their stores, which firn answers as unknown commands.
@@ -470,6 +470,15 @@ written while firn lived in the Whitefoot repository; a path such as
   validate TIME's two decimal bulk strings and microsecond range, and
   compare two calls around substantial script work without changing expiry.
 
+- **SCAN TYPE none has a Redis 7.0.15 expiry corner.** In `db.c`,
+  `scanGenericCommand` performs TYPE's `lookupKeyReadWithFlags` before
+  `expireIfNeeded`. An expired matching key is deleted by that lookup,
+  its type becomes `none`, and the later expiry check sees no expiry,
+  so Redis's source admits its name in the reply with TYPE none. Firn
+  deliberately omits every expired name as the enumeration task requires.
+  Record this with active expiry disabled before deciding whether to adopt
+  that corner; ordinary TYPE filters and DEL propagation remain unchanged.
+
 ## Tests
 
 - **Thirteen of Redis's suite tests are lost to a connection left in
@@ -548,43 +557,6 @@ written while firn lived in the Whitefoot repository; a path such as
   when the case fails this way in CI.
 
 ## Whitefoot requirements
-
-- **A program cannot enumerate the keys of a `ConcurrentHashMap`.** The
-  specification (v0.93, the concurrent map paragraph of [SHARE-1] and
-  [SHARE-2]) gives a map keyed access, key-set access and `map_count`, and
-  no way to learn which keys it holds. Minimal witness: given
-  `m: Shared<ConcurrentHashMap<u64>>` after `m["a"] = Some(1)` and
-  `m["b"] = Some(2)`, no program can compute the list `["a", "b"]` without
-  knowing those keys already. Redis's `SCAN`, `KEYS` and `RANDOMKEY` need
-  it; connect-redis, a selected consumer, lists and clears its sessions with
-  `SCAN MATCH COUNT`
-  ([consumers](../research/investigations/consumers/README.md#what-the-milestone-needs-from-firn)).
-  `SCAN` also needs a resumable cursor that returns every key present for
-  the whole scan at least once while the map grows, shrinks or is written by
-  other contexts, as Redis's reverse-binary cursor over its table does. The
-  change: a map operation that visits a bounded range of the map's slots
-  from a cursor and returns the next cursor, under the same guarantee.
-  Keeping a second index of keys beside the map in firn would double every
-  write's bookkeeping, so the gap belongs to Whitefoot. Reopen when
-  Whitefoot specifies it.
-
-- **A held concurrent map cannot be emptied without another held map.**
-  At pin `364f86c2fd16151103ac3947e5bf069727686733`, the minimal operation
-  needed is a nonwaiting function taking `keys: &ConcurrentHashMap<V>`
-  with `writes(keys)` that leaves every entry `None`. SHARE-1/PRE-1 expose
-  `map_count`, per-key access and `shared_map_new`, but no clear or iterator;
-  TYPE-9 admits maps only as shared state. `swap` needs a second held map,
-  reached through another atomic target, and SHARE-2 makes that acquisition
-  waiting. `ScriptCommands.call` cannot wait. Consequently FLUSHALL/FLUSHDB
-  (reserved held codes 164/165) have shared network parts but remain
-  unavailable inside EXEC and scripts. A fixed supply of fresh maps cannot
-  support an arbitrary number of Lua flush calls. Add a map-clear operation
-  in Whitefoot, a neighbor of the whole-map iteration Q64 asks for, then
-  write FLUSHALL's body over the held map with it, keeping prior effects
-  and the outer statement. Reopen for these commands; validate two
-  flushes separated by writes, expiry-queue removal, empty-map propagation,
-  concurrent atomicity, and AOF replay against Redis 7.0.15. No compiler
-  change or pin upgrade has been made here.
 
 - **A program cannot read a socket address.** The specification (v0.93,
   section 14, `std::net`) makes `SocketAddress` opaque, built only by

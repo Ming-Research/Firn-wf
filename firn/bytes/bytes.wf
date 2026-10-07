@@ -523,8 +523,8 @@ struct ClassMatch {
   next: u64;
 }
 
-fn class_match(input: &[u8], open: u64, end: u64, byte: u8) -> result: ClassMatch reads(input) {
-  doc "Matches one byte against the class whose opening bracket is at open in a pattern ending before end, as Redis's stringmatchlen matches one with nocase set, and says where the pattern continues after the class. A leading ^ negates it; a backslash makes the next byte a member, compared without folding case, unlike every other comparison; a - between two bytes makes a range whose bounds are read as signed chars, as on x86-64, swapped when reversed and only then folded as folded_char folds them, so that [Z-a] holds nothing, and so does a range from byte 128 to z; ] closes the class at once, so [] holds nothing; a class with no closing bracket runs to the pattern's end.";
+fn class_match(input: &[u8], open: u64, end: u64, byte: u8, nocase: Bool) -> result: ClassMatch reads(input) {
+  doc "Matches one byte against the class whose opening bracket is at open in a pattern ending before end, as Redis's stringmatchlen matches one with the supplied case flag, and says where the pattern continues after the class. A leading ^ negates it; a backslash makes the next byte a member, compared without folding case even when nocase is true; a - between two bytes makes a range whose bounds are read as signed chars, as on x86-64, swapped when reversed and, only with nocase, folded as folded_char folds them, so that with nocase [Z-a] holds nothing, and neither does a range from byte 128 to z; ] closes the class at once, so [] holds nothing; a class with no closing bracket runs to the pattern's end.";
   let position = open +wrap 1_u64;
   let negated = False();
   let first = byte_before(input: input, position: position, end: end);
@@ -566,10 +566,14 @@ fn class_match(input: &[u8], open: u64, end: u64, byte: u8) -> result: ClassMatc
         set low = end_raw;
         set high = start_raw;
       }
-      let low_folded = folded_char(value: low);
-      let high_folded = folded_char(value: high);
-      let target_raw = signed_char(byte: byte);
-      let target = folded_char(value: target_raw);
+      let low_folded = low;
+      let high_folded = high;
+      let target = signed_char(byte: byte);
+      if nocase {
+        set low_folded = folded_char(value: low);
+        set high_folded = folded_char(value: high);
+        set target = folded_char(value: target);
+      }
       set position = last;
       let above = target >= low_folded;
       let below = target <= high_folded;
@@ -578,8 +582,12 @@ fn class_match(input: &[u8], open: u64, end: u64, byte: u8) -> result: ClassMatc
         set matched = True();
       }
     } else {
-      let member_folded = lower(byte: current);
-      let byte_folded = lower(byte: byte);
+      let member_folded = current;
+      let byte_folded = byte;
+      if nocase {
+        set member_folded = lower(byte: current);
+        set byte_folded = lower(byte: byte);
+      }
       if member_folded == byte_folded {
         set matched = True();
       }
@@ -593,8 +601,8 @@ fn class_match(input: &[u8], open: u64, end: u64, byte: u8) -> result: ClassMatc
   return ClassMatch(matched: matched, next: next);
 }
 
-fn glob_match(input: &[u8], start: u64, length: u64, name: &[u8]) -> matched: Bool reads(input), reads(name) {
-  doc "Whether a name matches the glob pattern of length bytes of the input from start, as Redis's stringmatchlen matches one with nocase set: * matches any run of bytes, ? any one byte, [...] one byte as class_match reads a class, a backslash makes the next byte literal, and any other byte matches itself in either case. Where Redis recurses at each *, this returns to the last * passed and lets it take one more byte, which accepts the same names without a recursion as deep as the pattern's stars; as in Redis, a * never takes the name's last byte from the rest of the pattern, which cannot match an empty name, and an empty name matches only an empty pattern.";
+fn glob_match(input: &[u8], start: u64, length: u64, name: &[u8], nocase: Bool) -> matched: Bool reads(input), reads(name) {
+  doc "Whether a name matches the glob pattern of length bytes of the input from start, as Redis's stringmatchlen matches one with the supplied case flag: * matches any run of bytes, ? any one byte, [...] one byte as class_match reads a class, a backslash makes the next byte literal, and any other byte matches itself, folding case only when nocase is true. Where Redis recurses at each *, this returns to the last * passed and lets it take one more byte, which accepts the same names without a recursion as deep as the pattern's stars; as in Redis, a * never takes the name's last byte from the rest of the pattern, which cannot match an empty name, and an empty name matches only an empty pattern.";
   let end = start +wrap length;
   let size = name^.len;
   if size == 0_u64 {
@@ -637,7 +645,7 @@ fn glob_match(input: &[u8], start: u64, length: u64, name: &[u8]) -> matched: Bo
           set next = position +wrap 1_u64;
           set step = 1_u64;
         } else if current == 91_u8 {
-          let class = class_match(input: input, open: position, end: end, byte: byte);
+          let class = class_match(input: input, open: position, end: end, byte: byte, nocase: nocase);
           if class.matched {
             set next = class.next;
             set step = 1_u64;
@@ -653,8 +661,12 @@ fn glob_match(input: &[u8], start: u64, length: u64, name: &[u8]) -> matched: Bo
             set literal = byte_at(input: input, index: next);
             set next = position +wrap 2_u64;
           }
-          let literal_folded = lower(byte: literal);
-          let byte_folded = lower(byte: byte);
+          let literal_folded = literal;
+          let byte_folded = byte;
+          if nocase {
+            set literal_folded = lower(byte: literal);
+            set byte_folded = lower(byte: byte);
+          }
           if literal_folded == byte_folded {
             set step = 1_u64;
           }

@@ -11,6 +11,14 @@ alias reply_unknown = pkg::protocol::reply_unknown;
 alias run_eval = pkg::scripting::eval;
 alias run_script = pkg::scripting::script;
 
+const code_scan: u64 = 1312899923_u64;
+
+const code_keys: u64 = 1398359371_u64;
+
+const word_randomkey: Array<u8, 9> = "RANDOMKEY";
+
+const code_randomkey: u64 = 18395882105768657234_u64;
+
 const code_ping: u64 = 1196312912_u64;
 
 const code_eval: u64 = 1279350341_u64;
@@ -689,6 +697,42 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       run_persist(store: store, input: input, args: args, client: client, env: env, time: time);
     }
     return unit;
+  }
+  if code == code_scan {
+    let fits = arity_holds(arity: arity_scan, count: count);
+    let go = band(fits, open);
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      run_scan(store: store, input: input, args: args, client: client, time: time);
+    }
+    return unit;
+  }
+  if code == code_keys {
+    let fits = arity_holds(arity: arity_keys, count: count);
+    let go = band(fits, open);
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      run_keys(store: store, input: input, args: args, client: client, time: time);
+    }
+    return unit;
+  }
+  if code == code_randomkey {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_randomkey[0_u64..9_u64]);
+    if spelled {
+      let fits = arity_holds(arity: arity_randomkey, count: count);
+      let go = band(fits, open);
+      if bnot(go) {
+        refused(client: client, input: input, name: name, fits: fits);
+      }
+      if go {
+        run_randomkey(store: store, client: client, time: time);
+      }
+      return unit;
+    }
   }
   if code == code_dbsize {
     let fits = arity_holds(arity: arity_dbsize, count: count);

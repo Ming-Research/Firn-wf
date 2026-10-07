@@ -392,7 +392,7 @@ fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
 }
 
 fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME, 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH; 90 SADD, 91 SREM, 92 SPOP, 93 SCARD, 94 SMEMBERS, 95 SISMEMBER, 96 SMISMEMBER, 97 SRANDMEMBER, 98 SMOVE, 99 SINTER, 100 SUNION, 101 SDIFF, 102 SINTERCARD, 103 SINTERSTORE, 104 SUNIONSTORE, 105 SDIFFSTORE; 120 ZADD, 121 ZINCRBY, 122 ZREM, 123 ZPOPMIN, 124 ZPOPMAX, 125 ZCARD, 126 ZSCORE, 127 ZMSCORE, 128 ZRANK, 129 ZREVRANK, 130 ZRANGE, 131 ZREVRANGE, 132 ZRANGEBYSCORE, 133 ZREVRANGEBYSCORE, 134 ZRANGEBYLEX, 135 ZREVRANGEBYLEX, 136 ZCOUNT, 137 ZLEXCOUNT, 138 ZREMRANGEBYRANK, 139 ZREMRANGEBYSCORE, 140 ZREMRANGEBYLEX; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 166 COMMAND, 164, 165 and 167 being kept for FLUSHALL, FLUSHDB and INFO; the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
+  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME, 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH; 90 SADD, 91 SREM, 92 SPOP, 93 SCARD, 94 SMEMBERS, 95 SISMEMBER, 96 SMISMEMBER, 97 SRANDMEMBER, 98 SMOVE, 99 SINTER, 100 SUNION, 101 SDIFF, 102 SINTERCARD, 103 SINTERSTORE, 104 SUNIONSTORE, 105 SDIFFSTORE; 120 ZADD, 121 ZINCRBY, 122 ZREM, 123 ZPOPMIN, 124 ZPOPMAX, 125 ZCARD, 126 ZSCORE, 127 ZMSCORE, 128 ZRANK, 129 ZREVRANK, 130 ZRANGE, 131 ZREVRANGE, 132 ZRANGEBYSCORE, 133 ZREVRANGEBYSCORE, 134 ZRANGEBYLEX, 135 ZREVRANGEBYLEX, 136 ZCOUNT, 137 ZLEXCOUNT, 138 ZREMRANGEBYRANK, 139 ZREMRANGEBYSCORE, 140 ZREMRANGEBYLEX; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 164 FLUSHALL, 165 FLUSHDB, 166 COMMAND, 168 SCAN, 169 KEYS, 170 RANDOMKEY, 167 being kept for INFO; the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
   let code = name_code(input: input, start: name.start, length: name.length);
   if code == code_get {
     return 1_u64;
@@ -799,6 +799,24 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   if code == code_command {
     return 166_u64;
   }
+  if code == code_flushall {
+    return 164_u64;
+  }
+  if code == code_flushdb {
+    return 165_u64;
+  }
+  if code == code_scan {
+    return 168_u64;
+  }
+  if code == code_keys {
+    return 169_u64;
+  }
+  if code == code_randomkey {
+    let spelled = name_is(input: input, start: name.start, length: name.length, word: &word_randomkey[0_u64..9_u64]);
+    if spelled {
+      return 170_u64;
+    }
+  }
   return 0_u64;
 }
 
@@ -1120,11 +1138,42 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   if kind == 166_u64 {
     return arity_command;
   }
+  if kind == 164_u64 {
+    return arity_flush;
+  }
+  if kind == 165_u64 {
+    return arity_flush;
+  }
+  if kind == 168_u64 {
+    return arity_scan;
+  }
+  if kind == 169_u64 {
+    return arity_keys;
+  }
+  if kind == 170_u64 {
+    return arity_randomkey;
+  }
   return 0_i64;
 }
 
 fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "Runs a command held_kind names, its arity already checked, by its parts inside a statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the caller's record of what it changed. time is the statement's: its check is the instant the script or the transaction began, and its calendar time is frozen with it.";
+  if kind == 164_u64 {
+    return held_flush(keys: keys, due: &meta^.due, log: effects, logged: logged, input: input, args: args, client: client);
+  }
+  if kind == 165_u64 {
+    return held_flush(keys: keys, due: &meta^.due, log: effects, logged: logged, input: input, args: args, client: client);
+  }
+  if kind == 168_u64 {
+    return held_scan(keys: keys, log: effects, logged: logged, input: input, args: args, client: client, now: time^.check);
+  }
+  if kind == 169_u64 {
+    held_keys(keys: keys, input: input, args: args, client: client, now: time^.check);
+    return 0_u64;
+  }
+  if kind == 170_u64 {
+    return held_randomkey(keys: keys, random: &meta^.random, log: effects, logged: logged, client: client, now: time^.check);
+  }
   let relative = False();
   let calendar = True();
   if kind == 1_u64 {
