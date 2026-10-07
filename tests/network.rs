@@ -4839,12 +4839,7 @@ fn file_records(mut bytes: &[u8]) -> Vec<Vec<Vec<u8>>> {
 /// records such a removal outside its block shows the same form on every
 /// run and fails.
 #[cfg(target_os = "linux")]
-fn check_held_records(
-    loaded: &[&[&str]],
-    requests: &[&[&str]],
-    replies: &[u8],
-    records: &[u8],
-) {
+fn check_held_records(loaded: &[&[&str]], requests: &[&[&str]], replies: &[u8], records: &[u8]) {
     let program = firn();
     let loaded: Vec<u8> = loaded.iter().flat_map(|request| resp(request)).collect();
     let mut batch: Vec<u8> = requests.iter().flat_map(|request| resp(request)).collect();
