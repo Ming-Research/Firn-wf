@@ -7515,74 +7515,74 @@ fn shutdown_finished(mut child: ProgramChild) {
     assert_eq!(finished(child).0, 0);
 }
 
-/// No client limit or half-close can end these servers. A client pipelines
-/// 128 writes and reads their replies; then a write of fewer than 100 bytes
-/// holding `SET held 1` and SHUTDOWN, which Linux's loopback delivers to firn
-/// in one read, gets no reply at all, not even `SET`'s, as redis-server 7.0.15
-/// answers that read (Firn-wf probe run 37574985225). A second client writes
-/// one key after another, each after the last's reply, until firn closes it;
-/// it sees the request only at its next once-a-second poll, so it goes on
-/// writing after the request. The replay finds the 128 writes, `held` and
-/// every write the second client was answered for; those it made after the
-/// request are lost if the writer drains when the request arrives rather than
-/// after every client has gone.
+/// No client limit or half-close can end these servers. A second client
+/// answers a PING; the first pipelines 128 writes and reads their replies,
+/// then sends `SET held 1` and SHUTDOWN in one write. When both reach firn
+/// in one read, firn answers neither, not even `SET`, as redis-server 7.0.15
+/// answers that read (Firn-wf probe run 37574985225); it answers `SET` alone
+/// when they arrive in two reads, which TCP allows, and the run starts over.
+/// 50 ms after the first client's connection closes, the second client
+/// writes a key and is answered: under a second after its PING it is still
+/// inside the wait it began then and has not looked at the request since,
+/// so it runs the write after the request; a run that took longer starts
+/// over. The replay finds the 128 writes, `held` and the second client's
+/// write; the last is lost if the writer drains when the request arrives
+/// rather than after every client has gone. Five runs bound the retries.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
     let program = firn();
     for native_ring in [false, true] {
-        let name = format!("shutdown-drain-{native_ring}.aof");
-        let port = free_port();
-        let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
-        let mut client = connect_when_ready(port);
-        let mut late = connect_when_ready(port);
-        let writer = std::thread::spawn(move || {
-            let mut answered = Vec::new();
-            for i in 0_u64.. {
-                let key = format!("late:{i}");
-                if late.write_all(&resp(&["SET", &key, "after"])).is_err() {
-                    break;
-                }
-                let mut reply = [0_u8; 5];
-                if late.read_exact(&mut reply).is_err() {
-                    break;
-                }
-                assert_eq!(&reply, b"+OK\r\n", "{key}");
-                answered.push(key);
+        let mut attempt = 0;
+        let name = loop {
+            attempt += 1;
+            assert!(attempt <= 5, "five runs met neither precondition");
+            let name = format!("shutdown-drain-{native_ring}-{attempt}.aof");
+            let port = free_port();
+            let text = port.to_string();
+            let child =
+                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
+            let mut client = connect_when_ready(port);
+            let mut late = connect_when_ready(port);
+            late.write_all(&resp(&["PING"]))
+                .expect("establish the second client");
+            expect_replies(&mut late, b"+PONG\r\n", "second client ready");
+            let ready = Instant::now();
+            let mut batch = Vec::new();
+            for i in 0..128 {
+                batch.extend(resp(&[
+                    "SET",
+                    &format!("shutdown:{i}"),
+                    &format!("value:{i}"),
+                ]));
             }
-            answered
-        });
-        std::thread::sleep(Duration::from_millis(200));
-        let mut batch = Vec::new();
-        for i in 0..128 {
-            batch.extend(resp(&[
-                "SET",
-                &format!("shutdown:{i}"),
-                &format!("value:{i}"),
-            ]));
-        }
-        client.write_all(&batch).expect("write the keys");
-        expect_replies(&mut client, &b"+OK\r\n".repeat(128), "the writes");
-        let last = [resp(&["SET", "held", "1"]), resp(&["SHUTDOWN"])].concat();
-        assert!(last.len() < 100, "one small write");
-        client
-            .write_all(&last)
-            .expect("write a key and shutdown together");
-        let mut replies = Vec::new();
-        client
-            .read_to_end(&mut replies)
-            .expect("shutdown closes its client");
-        assert_eq!(
-            replies, b"",
-            "no reply to SHUTDOWN or to the write before it"
-        );
-        let answered = writer.join().expect("the second client's writes");
-        assert!(
-            !answered.is_empty(),
-            "the second client wrote before the request"
-        );
-        shutdown_finished(child);
+            client.write_all(&batch).expect("write the keys");
+            expect_replies(&mut client, &b"+OK\r\n".repeat(128), "the writes");
+            let last = [resp(&["SET", "held", "1"]), resp(&["SHUTDOWN"])].concat();
+            client
+                .write_all(&last)
+                .expect("write a key and shutdown together");
+            let mut replies = Vec::new();
+            client
+                .read_to_end(&mut replies)
+                .expect("shutdown closes its client");
+            std::thread::sleep(Duration::from_millis(50));
+            let in_time = ready.elapsed() < Duration::from_millis(800);
+            if in_time {
+                late.write_all(&resp(&["SET", "late", "after"]))
+                    .expect("write after the request");
+                expect_replies(&mut late, b"+OK\r\n", "a write after the request");
+            }
+            shutdown_finished(child);
+            if replies == b"+OK\r\n" || !in_time {
+                continue;
+            }
+            assert_eq!(
+                replies, b"",
+                "no reply to SHUTDOWN or to the write before it in the same read"
+            );
+            break name;
+        };
 
         let port = free_port();
         let text = port.to_string();
@@ -7592,7 +7592,7 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
             .map(|i| (format!("shutdown:{i}"), format!("value:{i}")))
             .collect();
         keys.push(("held".to_string(), "1".to_string()));
-        keys.extend(answered.into_iter().map(|key| (key, "after".to_string())));
+        keys.push(("late".to_string(), "after".to_string()));
         for (key, value) in &keys {
             client
                 .write_all(&resp(&["GET", key]))
