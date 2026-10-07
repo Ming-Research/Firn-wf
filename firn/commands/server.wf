@@ -10,7 +10,6 @@ alias bytes_new = pkg::bytes::bytes_new;
 alias read_integer = pkg::bytes::read_integer;
 alias reply_decimal = pkg::protocol::reply_decimal;
 alias ceiling = pkg::store::ceiling;
-alias keyspace_capacity = pkg::store::keyspace_capacity;
 alias log_command = pkg::store::log_command;
 alias PriorityQueue = std::collections::priority_queue::PriorityQueue;
 alias priority_queue_new = std::collections::priority_queue::priority_queue_new;
@@ -163,20 +162,29 @@ fn flush_meta(due: &PriorityQueue<Due, ceiling>, none_due: &PriorityQueue<Due, c
   return appended;
 }
 
-fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "FLUSHALL and FLUSHDB through flush_refused, a swap of the keyspace's map for a fresh one, flush_meta and reply_ok. The fresh map is held beside the keyspace and metadata, and the old map and expiries are released after that statement and before the reply, under either SYNC or ASYNC. A held caller would need a fresh held map; the pinned language cannot clear a map through its reference alone.";
+fn flush_body(keys: &ConcurrentHashMap<Entry>) -> result: unit writes(keys) {
+  doc "Empties the held keyspace. Entry references for later commands must be formed after this call.";
+  map_clear::<Entry>(map: keys);
+  return unit;
+}
+
+fn held_flush(keys: &ConcurrentHashMap<Entry>, due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> appended: u64 reads(input), reads(args), writes(keys), writes(due), writes(log), writes(client) {
   let refused = flush_refused(input: input, args: args, client: client);
   if refused {
-    return unit;
-  } else {
-    let fresh = shared_map_new::<Entry>(capacity: keyspace_capacity);
-    let none_due = priority_queue_new::<Due, ceiling>();
-    atomic t = &store^.keys, f = &fresh, m = &store^.meta {
-      swap(first: t, second: f);
-      let appended = flush_meta(due: &m^.due, none_due: &none_due, log: &m^.log, logged: store^.logging, input: input, args: args);
-    }
+    return 0_u64;
   }
+  flush_body(keys: keys);
+  let none_due = priority_queue_new::<Due, ceiling>();
+  let appended = flush_meta(due: due, none_due: &none_due, log: log, logged: logged, input: input, args: args);
   reply_ok(client: client);
+  return appended;
+}
+
+fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
+  doc "FLUSHALL and FLUSHDB use the same parsing, map_clear body, expiry and file metadata, and reply as EXEC and scripts. Both modes release old values when the hold ends.";
+  atomic t = &store^.keys, m = &store^.meta {
+    let appended = held_flush(keys: t, due: &m^.due, log: &m^.log, logged: store^.logging, input: input, args: args, client: client);
+  }
   return unit;
 }
 
@@ -296,7 +304,8 @@ fn parameter_matches(input: &[u8], start: u64, length: u64, globbing: Bool, whic
     if first <= last {
       let name = &parameter_names[first..last];
       if globbing {
-        let matched = glob_match(input: input, start: start, length: length, name: name);
+        let nocase = True();
+        let matched = glob_match(input: input, start: start, length: length, name: name, nocase: nocase);
         return matched;
       }
       let named = same_name(input: input, start: start, length: length, name: name);

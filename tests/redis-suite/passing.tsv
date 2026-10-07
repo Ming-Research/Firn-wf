@@ -24,9 +24,11 @@ integration/redis-cli	Non-interactive non-TTY CLI: Read last argument from pipe	
 integration/redis-cli	Non-interactive non-TTY CLI: Status reply	1
 integration/redis-cli	Options -X with illegal argument	1
 integration/redis-cli	Piping raw protocol	1
+integration/redis-cli	Scan mode	1
 integration/replication-buffer	Partial resynchronization is successful even client-output-buffer-limit is less than repl-backlog-size	1
 integration/replication-buffer	Replica client-output-buffer size is limited to backlog_limit/16 when no replication data is pending	1
 unit/dump	MIGRATE cached connections are released after some time	1
+unit/expire	5 keys in, 5 keys out	1
 unit/expire	EXPIRE - After 2.1 seconds the key should no longer be here	1
 unit/expire	EXPIRE - It should be still possible to read 'x'	1
 unit/expire	EXPIRE - set timeouts multiple times	1
@@ -90,14 +92,23 @@ unit/introspection	CLIENT SETNAME does not accept spaces	1
 unit/introspection	CONFIG sanity	1
 unit/introspection	PING	1
 unit/introspection-2	TOUCH returns the number of existing keys specified	1
+unit/keyspace	COPY basic usage for string	1
 unit/keyspace	COPY can copy key expire metadata as well	1
 unit/keyspace	COPY does not create an expire if it does not exist	1
 unit/keyspace	COPY for string does not copy data to no-integer DB	1
 unit/keyspace	Commands pipelining	1
 unit/keyspace	DBSIZE	1
 unit/keyspace	DEL against a single item	1
+unit/keyspace	DEL all keys	1
+unit/keyspace	DEL all keys again (DB 0)	1
 unit/keyspace	EXISTS	1
+unit/keyspace	KEYS * two times with long key, Github issue #1208	1
+unit/keyspace	KEYS to get all keys	1
+unit/keyspace	KEYS with pattern	1
 unit/keyspace	Non existing command	1
+unit/keyspace	RANDOMKEY	1
+unit/keyspace	RANDOMKEY against empty DB	1
+unit/keyspace	RANDOMKEY regression 1	1
 unit/keyspace	RENAME against already existing key	1
 unit/keyspace	RENAME against non existing source key	1
 unit/keyspace	RENAME basic usage	1
@@ -110,6 +121,7 @@ unit/keyspace	RENAMENX against already existing key	1
 unit/keyspace	RENAMENX against already existing key (2)	1
 unit/keyspace	RENAMENX basic usage	1
 unit/keyspace	RENAMENX where source and dest key are the same (existing)	1
+unit/keyspace	Regression for pattern matching long nested loops	1
 unit/keyspace	Untagged multi-key commands	1
 unit/keyspace	Vararg DEL	1
 unit/keyspace	Zero length value in key. SET/GET/EXISTS	1
@@ -150,6 +162,11 @@ unit/protocol	raw protocol response - multiline	1
 unit/quit	Pipelined commands after QUIT must not be executed	1
 unit/quit	Pipelined commands after QUIT that exceed read buffer size	1
 unit/quit	QUIT returns OK	1
+unit/scan	SCAN COUNT	1
+unit/scan	SCAN MATCH	1
+unit/scan	SCAN TYPE	1
+unit/scan	SCAN basic	1
+unit/scan	SCAN guarantees check under write load	1
 unit/scripting	EVALSHA - Can we call a SHA1 if already defined?	1
 unit/scripting	EVALSHA - Can we call a SHA1 in uppercase?	1
 unit/scripting	EVALSHA - Do we get an error on invalid SHA1?	1

@@ -1,0 +1,403 @@
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias Keyspace = pkg::store::Keyspace;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+alias arg = pkg::protocol::arg;
+alias byte_at = pkg::bytes::byte_at;
+alias expired = pkg::store::expired;
+alias glob_match = pkg::bytes::glob_match;
+alias name_code = pkg::bytes::name_code;
+alias read_integer = pkg::bytes::read_integer;
+alias reply_array = pkg::protocol::reply_array;
+alias reply_bulk_input = pkg::protocol::reply_bulk_input;
+alias reply_error = pkg::protocol::reply_error;
+alias reply_nil = pkg::protocol::reply_nil;
+
+const arity_scan: i64 = -2_i64;
+
+const arity_keys: i64 = 2_i64;
+
+const arity_randomkey: i64 = 1_i64;
+
+const text_invalid_cursor: Array<u8, 18> = "ERR invalid cursor";
+
+struct ScanCursor {
+  value: u64;
+  valid: Bool;
+}
+
+struct ScanPlan {
+  cursor: u64;
+  count: u64;
+  pattern: Span;
+  matching: Bool;
+  kind: u64;
+  state: u64;
+}
+
+fn scan_cursor(input: &[u8], span: Span) -> parsed: ScanCursor reads(input) {
+  doc "Redis 7.0.15 parseScanCursorOrReply uses x86-64 strtoul: decimal u64 magnitude, an optional sign, leading zeros, an empty C string as zero, and ignored bytes after NUL; initial whitespace, overflow, a sign without digits and trailing non-NUL text are invalid.";
+  let valid = True();
+  let invalid = False();
+  let length = before_zero(input: input, span: span);
+  if length == 0_u64 {
+    return ScanCursor(value: 0_u64, valid: valid);
+  }
+  let first = byte_at(input: input, index: span.start);
+  let negative = first == 45_u8;
+  let positive = first == 43_u8;
+  let signed = bor(negative, positive);
+  let offset = 0_u64;
+  if signed {
+    set offset = 1_u64;
+  }
+  if offset == length {
+    return ScanCursor(value: 0_u64, valid: invalid);
+  }
+  let value = 0_u64;
+  loop {
+    if offset >= length {
+      break;
+    }
+    let position = span.start +wrap offset;
+    let byte = byte_at(input: input, index: position);
+    if byte < 48_u8 {
+      return ScanCursor(value: 0_u64, valid: invalid);
+    }
+    if byte > 57_u8 {
+      return ScanCursor(value: 0_u64, valid: invalid);
+    }
+    let wide = cvt::<u8, u64>(byte);
+    let digit = wide -wrap 48_u64;
+    if value > 1844674407370955161_u64 {
+      return ScanCursor(value: 0_u64, valid: invalid);
+    }
+    if value == 1844674407370955161_u64 {
+      if digit > 5_u64 {
+        return ScanCursor(value: 0_u64, valid: invalid);
+      }
+    }
+    let shifted = value *wrap 10_u64;
+    set value = shifted +wrap digit;
+    set offset = offset +wrap 1_u64;
+  }
+  if negative {
+    set value = 0_u64 -wrap value;
+  }
+  return ScanCursor(value: value, valid: valid);
+}
+
+fn scan_type(input: &[u8], span: Span) -> kind: u64 reads(input) {
+  doc "TYPE names are compared in either case up to NUL, as Redis's strcasecmp. none is 7: Redis 7.0.15 reads a key's type before its expiry check, so the name of an expired key the step removes has type none. Other unknown types match nothing: 6; 0 means no TYPE filter in ScanPlan.";
+  let length = before_zero(input: input, span: span);
+  let code = name_code(input: input, start: span.start, length: length);
+  if code == 78401563153491_u64 {
+    return 1_u64;
+  }
+  if code == 1414744396_u64 {
+    return 2_u64;
+  }
+  if code == 5522771_u64 {
+    return 3_u64;
+  }
+  if code == 1213415752_u64 {
+    return 4_u64;
+  }
+  if code == 1413829466_u64 {
+    return 5_u64;
+  }
+  if code == 1162760014_u64 {
+    return 7_u64;
+  }
+  return 6_u64;
+}
+
+fn scan_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: ScanPlan reads(input), reads(args) {
+  doc "SCAN's options, in input order, with later MATCH, COUNT and TYPE replacing earlier ones. State 1 is valid, 2 invalid cursor, 3 invalid integer and 4 syntax error.";
+  let absent = Span(start: 0_u64, length: 0_u64);
+  let no = False();
+  let plan = ScanPlan(cursor: 0_u64, count: 10_u64, pattern: absent, matching: no, kind: 0_u64, state: 1_u64);
+  let cursor_span = arg(args: args, index: 1_u64);
+  let parsed = scan_cursor(input: input, span: cursor_span);
+  if parsed.valid {
+    set plan.cursor = parsed.value;
+  } else {
+    set plan.state = 2_u64;
+    return plan;
+  }
+  let index = 2_u64;
+  loop {
+    if index >= args^.inner.len {
+      break;
+    }
+    let following = index +wrap 1_u64;
+    if following >= args^.inner.len {
+      set plan.state = 4_u64;
+      return plan;
+    }
+    let option = arg(args: args, index: index);
+    let length = before_zero(input: input, span: option);
+    let code = name_code(input: input, start: option.start, length: length);
+    let value = arg(args: args, index: following);
+    if code == 362091466563_u64 {
+      let number = read_integer(input: input, start: value.start, length: value.length);
+      if number.state == 0_u64 {
+        set plan.state = 3_u64;
+        return plan;
+      }
+      if number.value < 1_i64 {
+        set plan.state = 4_u64;
+        return plan;
+      }
+      set plan.count = cvt.wrap::<i64, u64>(number.value);
+    } else if code == 310367240525_u64 {
+      set plan.pattern = value;
+      set plan.matching = True();
+    } else if code == code_type {
+      set plan.kind = scan_type(input: input, span: value);
+    } else {
+      set plan.state = 4_u64;
+      return plan;
+    }
+    set index = index +wrap 2_u64;
+  }
+  return plan;
+}
+
+fn scan_refused(client: &Client, plan: &ScanPlan) -> refused: Bool reads(plan), writes(client) {
+  if plan^.state == 1_u64 {
+    return False();
+  }
+  if plan^.state == 2_u64 {
+    reply_error(client: client, word: &text_invalid_cursor[0_u64..18_u64]);
+  } else if plan^.state == 3_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+  } else {
+    reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+  }
+  return True();
+}
+
+fn scanned_key(keys: &KeySet, index: u64) -> bytes: Box<Array<u8>> reads(keys) contract {
+  requires index < keys^.len;
+} {
+  doc "Read the exact length first, then the full binary key, including empty keys. The immutable key set makes the two reads agree.";
+  let probe = array_filled::<u8, 0>(value: 0_u8);
+  let length = key_set_read_key(keys: keys, index: index, out: &probe[0_u64..0_u64]);
+  let bytes = box_array_filled::<u8>(count: length, value: 0_u8);
+  let size = bytes.inner.len;
+  key_set_read_key(keys: keys, index: index, out: &bytes.inner[0_u64..size]);
+  return move bytes;
+}
+
+fn scan_matches(input: &[u8], pattern: Span, key: &[u8]) -> matched: Bool reads(input), reads(key) {
+  doc "SCAN and KEYS bypass stringmatchlen for exactly *, which also admits an empty key. Other patterns use the binary, case-sensitive matcher.";
+  if pattern.length == 1_u64 {
+    let first = byte_at(input: input, index: pattern.start);
+    if first == 42_u8 {
+      return True();
+    }
+  }
+  let nocase = False();
+  return glob_match(input: input, start: pattern.start, length: pattern.length, name: key, nocase: nocase);
+}
+
+fn scan_body(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], plan: &ScanPlan, client: &Client, now: u64, found: &KeySet) -> work: ScanWork reads(input), reads(plan), writes(keys), writes(log), writes(client), writes(found) {
+  doc "One map_scan into a fresh key set. MATCH precedes lookup; a matched expired entry is removed and logged even when TYPE excludes it, and TYPE none returns its name. No reference into the map survives a whole-map mutation.";
+  let step = key_set_new(capacity: 16_u64);
+  let next = map_scan::<Entry>(map: keys, cursor: plan^.cursor, count: plan^.count, keys: &step);
+  let entries = &keys^[step];
+  let appended = 0_u64;
+  set client^.now = now;
+  for (index in 0_u64..step.len) {
+    let bytes = scanned_key(keys: &step, index: index);
+    let size = bytes.inner.len;
+    let key = &bytes.inner[0_u64..size];
+    let wanted = True();
+    if plan^.matching {
+      set wanted = scan_matches(input: input, pattern: plan^.pattern, key: key);
+    }
+    if wanted {
+      if index < entries^.len {
+        let kind = entry_kind(slot: &entries^[index], client: client);
+        let removed = client^.state == state_expired;
+        let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+        set appended = appended +wrap recorded;
+        if kind != 0_u64 {
+          let any = plan^.kind == 0_u64;
+          let typed = plan^.kind == kind;
+          let included = bor(any, typed);
+          if included {
+            key_set_insert(keys: found, key: key);
+          }
+        }
+        if removed {
+          if plan^.kind == 7_u64 {
+            key_set_insert(keys: found, key: key);
+          }
+        }
+      }
+    }
+  }
+  return ScanWork(next: next, appended: appended);
+}
+
+struct ScanWork {
+  next: u64;
+  appended: u64;
+}
+
+fn keys_finish(client: &Client, found: &KeySet) -> result: unit reads(found), writes(client) {
+  reply_array(client: client, count: found^.len);
+  for @reply (index in 0_u64..found^.len) {
+    let bytes = scanned_key(keys: found, index: index);
+    let size = bytes.inner.len;
+    reply_bulk_input(client: client, input: &bytes.inner[0_u64..size], start: 0_u64, length: size);
+  }
+  return unit;
+}
+
+fn scan_finish(client: &Client, found: &KeySet, next: u64) -> result: unit reads(found), writes(client) {
+  doc "The cursor is an unsigned decimal bulk string, including the upper half of u64.";
+  let digits = array_filled::<u8, 20>(value: 0_u8);
+  let start = 20_u64;
+  let value = next;
+  loop {
+    if start > 0_u64 {
+      set start = start -wrap 1_u64;
+      let digit = value % 10_u64;
+      let ascii = digit +wrap 48_u64;
+      if start < 20_u64 {
+        set digits[start] = cvt.wrap::<u64, u8>(ascii);
+      }
+    }
+    set value = value / 10_u64;
+    if value == 0_u64 {
+      break;
+    }
+  }
+  reply_array(client: client, count: 2_u64);
+  let length = 20_u64 -sat start;
+  reply_bulk_input(client: client, input: &digits[0_u64..20_u64], start: start, length: length);
+  keys_finish(client: client, found: found);
+  return unit;
+}
+
+fn held_scan(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64) -> appended: u64 reads(input), reads(args), writes(keys), writes(log), writes(client) {
+  let plan = scan_plan(input: input, args: args);
+  let refused = scan_refused(client: client, plan: &plan);
+  if refused {
+    return 0_u64;
+  }
+  let found = key_set_new(capacity: 16_u64);
+  let work = scan_body(keys: keys, log: log, logged: logged, input: input, plan: &plan, client: client, now: now, found: &found);
+  scan_finish(client: client, found: &found, next: work.next);
+  return work.appended;
+}
+
+fn keys_body(keys: &ConcurrentHashMap<Entry>, input: &[u8], pattern: Span, now: u64, found: &KeySet) -> result: unit reads(keys), reads(input), writes(found) {
+  doc "KEYS scans from zero to zero under the caller's whole hold, into one key set. keyIsExpired only filters: unlike SCAN and RANDOMKEY this never deletes or propagates an expired entry.";
+  let all = key_set_new(capacity: 16_u64);
+  let cursor = 0_u64;
+  loop {
+    set cursor = map_scan::<Entry>(map: keys, cursor: cursor, count: 0_u64, keys: &all);
+    if cursor == 0_u64 {
+      break;
+    }
+  }
+  let entries = &keys^[all];
+  for @filter (index in 0_u64..all.len) {
+    let bytes = scanned_key(keys: &all, index: index);
+    let size = bytes.inner.len;
+    let key = &bytes.inner[0_u64..size];
+    let matched = scan_matches(input: input, pattern: pattern, key: key);
+    if matched {
+      if index < entries^.len {
+        let present = entry_present(slot: &entries^[index]);
+        let lapsed = held_lapsed(slot: &entries^[index], now: now);
+        if present {
+          if bnot(lapsed) {
+            key_set_insert(keys: found, key: key);
+          }
+        }
+      }
+    }
+  }
+  return unit;
+}
+
+fn held_keys(keys: &ConcurrentHashMap<Entry>, input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64) -> result: unit reads(keys), reads(input), reads(args), writes(client) {
+  let pattern = arg(args: args, index: 1_u64);
+  let found = key_set_new(capacity: 16_u64);
+  keys_body(keys: keys, input: input, pattern: pattern, now: now, found: &found);
+  keys_finish(client: client, found: &found);
+  return unit;
+}
+
+fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &Client, now: u64) -> appended: u64 writes(keys), writes(random), writes(log), writes(client) {
+  doc "RANDOMKEY as Redis 7.0.15's dbRandomKey draws through dictGetFairRandomKey and dictGetRandomKey: one map_scan step of count 15 from a position drawn from firn's xorshift64 state, also used by SPOP, continued from position zero when it reaches the table's end short of fifteen keys, as dictGetSomeKeys wraps, and a key picked uniformly among those gathered, with a fresh position whenever none is. A picked key found expired is removed, recorded as DEL, and the draw starts over; nil once the map holds no key.";
+  let appended = 0_u64;
+  set client^.now = now;
+  loop {
+    let live = map_count::<Entry>(map: keys);
+    if live == 0_u64 {
+      break;
+    }
+    set random^ = next_random(state: random^);
+    let sample = key_set_new(capacity: 16_u64);
+    let next = map_scan::<Entry>(map: keys, cursor: random^, count: 15_u64, keys: &sample);
+    let first = sample.len;
+    if next == 0_u64 {
+      if first < 15_u64 {
+        let wrapped = map_scan::<Entry>(map: keys, cursor: 0_u64, count: 15_u64, keys: &sample);
+      }
+    }
+    let gathered = sample.len;
+    if gathered > 0_u64 {
+      set random^ = next_random(state: random^);
+      let pick = random^ % gathered;
+      let entries = &keys^[sample];
+      if pick < sample.len {
+        let bytes = scanned_key(keys: &sample, index: pick);
+        let size = bytes.inner.len;
+        let key = &bytes.inner[0_u64..size];
+        if pick < entries^.len {
+          let kind = entry_kind(slot: &entries^[pick], client: client);
+          let removed = client^.state == state_expired;
+          let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+          set appended = appended +wrap recorded;
+          if kind != 0_u64 {
+            reply_bulk_input(client: client, input: key, start: 0_u64, length: size);
+            return appended;
+          }
+        }
+      }
+    }
+  }
+  reply_nil(client: client);
+  return appended;
+}
+
+fn run_scan(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  let logged = store^.logging;
+  atomic t = &store^.keys, m = &store^.meta {
+    let appended = held_scan(keys: t, log: &m^.log, logged: logged, input: input, args: args, client: client, now: time^.check);
+  }
+  return unit;
+}
+
+fn run_keys(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  atomic t = &store^.keys {
+    held_keys(keys: t, input: input, args: args, client: client, now: time^.check);
+  }
+  return unit;
+}
+
+fn run_randomkey(store: &Keyspace, client: &Client, time: &Time) -> result: unit reads(store), reads(time), writes(client) waits {
+  let logged = store^.logging;
+  atomic t = &store^.keys, m = &store^.meta {
+    let appended = held_randomkey(keys: t, random: &m^.random, log: &m^.log, logged: logged, client: client, now: time^.check);
+  }
+  return unit;
+}
