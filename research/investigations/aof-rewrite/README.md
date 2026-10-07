@@ -150,9 +150,14 @@ last rewrite and exceed `auto-aof-rewrite-min-size` (64 MB):
 3. **Install.** The temporary file is renamed to the next base name and a
    manifest naming the new base and the incremental files from the switch on
    is persisted; the old base and closed incremental files are then removed.
-4. **Failure.** A step that fails leaves the manifest of step 1, which
-   replays to the whole state, removes the temporary file, and records the
-   failure for `INFO`'s `aof_last_bgrewrite_status`.
+4. **Failure.** Persisting the manifest of step 3 is the commit point, as in
+   Redis's `backgroundRewriteDoneHandler`. A step that fails before it
+   leaves the manifest of step 1, which replays to the whole state, removes
+   the temporary file and any renamed base the manifest does not name, and
+   records the failure for `INFO`'s `aof_last_bgrewrite_status`. After it,
+   the new manifest stays in force: removing the old files is cleanup, and
+   files it leaves behind, still listed as history, are removed by the next
+   rewrite or start, as `aofDelHistoryFiles` removes them.
 
 `INFO persistence` reports `aof_rewrite_in_progress`, `aof_rewrites`,
 `aof_last_bgrewrite_status`, `aof_current_size` and `aof_base_size` from
