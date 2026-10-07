@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-07 SHUTDOWN stops firn in order
+
+Nodes: firn/orderly-stop, firn/transactions, firn/command-parts
+
+Owner-approved: In the Firn session of 2026-10-07, written in Chinese, the owner answered the reports' ledgers with "Q209 agreed. Q210 agreed" (translated), approving Q209 A (a script that never ends keeps firn from stopping until the busy-script work) and Q210 A (merge Firn-wf#27 once this entry's gate and readiness pass); with "I think 206 is a hack; other ways of getting stuck cannot necessarily be solved like this. It must go into the TODO" (translated), and after the TODO entry and the stopgap wording, "Q206 agreed" (translated), approving Q206 A (polling as a stopgap); and with "208 agreed ... 207 approved" (translated), approving Q207 (SHUTDOWN SAVE takes Redis's failed-save path) and Q208 A (SHUTDOWN inside MULTI refused when sent).
+
+Summary: SHUTDOWN records a request in the server's state, which every context reads by polling: each socket wait carries a deadline of at most a second, at a measured cost of at most 1.25% at pipeline depth 1, because Whitefoot v0.94 offers no way for one context to end another's wait; polling is a stopgap until that Whitefoot capability, recorded in docs/todo.md, replaces it. main stops the append-only file's writer only after every client has gone, so the commands clients ran before seeing the request are appended and synced. SHUTDOWN SAVE takes Redis 7.0.15's failed-save path because firn writes no snapshot; inside MULTI, SHUTDOWN is refused when sent and dirties the transaction, and scripts refuse it as noscript, as Redis 7.0.15 does ([investigation](../research/investigations/orderly-stop/README.md)).
+
 ## 2026-10-07 Enumeration through map_scan and RANDOMKEY's sampling
 
 Nodes: firn/enumeration
