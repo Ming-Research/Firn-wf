@@ -75,4 +75,45 @@ Server CPUs 2, depth 16, thousands of requests a second (median of 2 passes of 5
 
 ## Scripts, transactions and expiring keys
 
-Not measured yet.
+### The plan, stated before measuring
+
+Each workload is the selected consumers' own command forms, as the
+[consumers' profiles](../consumers/README.md#results) record them:
+
+- **Scripted rate limiting.** `EVALSHA` of rate-limiter-flexible's consume
+  script, which runs `SET key 0 EX ttl NX`, `INCRBY`, `PTTL` and, for a key
+  without an expiry, `EXPIRE`. Each call takes one of 100,000 keys at random.
+- **Rate limiting in a transaction.** `MULTI`, `INCRBY key 1`, `PTTL key`,
+  `EXEC`: the form rate-limiter-flexible's transactions take in 24 of its 29.
+- **Cache `set_many`.** `MULTI`, `MSET` of three keys, `EXPIRE` of each,
+  `EXEC`: Django's form in 19 of its 20.
+- **Session store.** connect-redis's `SET sess:<id> <200-byte value> EX
+  86400` alone, and `GET` of a stored session alone.
+
+The settings are as follows:
+- Every workload runs against redis-server 7.0.15 and firn, with the
+  append-only file off, and on with fsync every second.
+- It runs on 1 and 2 server CPUs, with 50 connections at pipeline depth 1,
+  since these clients send one command or one transaction and wait.
+- Each line has 3 interleaved passes of 10 seconds after a probe of 2 passes
+  of 5 seconds.
+
+The recorded measures are:
+- requests or transactions a second;
+- the median and p99 latency;
+- for the session store, each server's resident memory after one million
+  sessions are stored.
+
+This measurement is exploratory and predicts nothing. Its result is each
+workload's firn-to-Redis ratio of rate and of p99, with the noise between
+passes, and it names every workload where firn's rate falls below Redis's or
+its p99 rises above.
+
+**The client.** redis-benchmark sends one command repeatedly and cannot send
+a `MULTI` block. memtier_benchmark is not installed on the i9-14900K, and
+its runner cannot install packages. The client is therefore a small Rust
+program in `research/experiments/redis-bench/`, which redis-bench.sh runs
+for every workload of this section, so that one client measures all of
+them. It is built with the host's cargo, which the 14900K has for
+Whitefoot's own benchmarks. It is removed when a common tool can send these
+workloads.
