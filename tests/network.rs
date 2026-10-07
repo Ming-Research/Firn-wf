@@ -6853,11 +6853,11 @@ fn firn_records_held_scan_type_none_as_redis_propagates_it() {
 /// often, as Redis 7.0.15's dictGetFairRandomKey does when its sample of up
 /// to fifteen keys covers the whole keyspace: over 2000 draws in a map
 /// presized far beyond its keys, every key comes up at least 100 times, half
-/// its expected count. A uniform draw misses that bound with negligible
-/// probability, while taking the first key after a random position, whose
-/// chance grows with the empty run before the key, fails it unless every one
-/// of the ten gaps holds at least a twentieth of the table, about one run in
-/// five hundred.
+/// its expected count. firn's key positions are fixed, so the case meets the
+/// same layout on every run; on it, taking the first key after a random
+/// position drew one key 7 times (Firn-wf run 37554610167), and a sample
+/// that stopped at the table's end without wrapping drew one 29 times and
+/// another 735 (run 37554594356).
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_draws_random_keys_uniformly_as_redis_does() {
