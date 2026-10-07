@@ -62,4 +62,27 @@ and the last column is the difference between head and head-twin:
 
 At this resolution, about 3%, the probe shows no cost. That is too coarse
 for the 2% rule. The sized run takes depth 1 alone, 6 passes of 10 seconds
-on 1 and 2 CPUs: run [37573701622](https://github.com/Ming-Research/Firn-wf/actions/runs/37573701622).
+on 1 and 2 CPUs.
+
+**Sized run.** Run [37573701622](https://github.com/Ming-Research/Firn-wf/actions/runs/37573701622)
+compared the same images at depth 1, 6 passes of 10 seconds each. head's
+only change from base was the receive deadline that the implementation on
+this branch also makes: in `serve`, the deadline of at most a second is
+computed whether or not an idle limit is set. Each cell is the median rate;
+the next columns give the server's processor time per request:
+
+| CPUs | test | base | head | head-twin | head / base | head and twin | base µs | head µs |
+|---|---|---|---|---|---|---|---|---|
+| 1 | set | 152.1k | 150.2k | 151.0k | -1.25% | 0.51% | 6.56 | 6.65 |
+| 1 | get | 154.0k | 153.3k | 154.3k | -0.45% | 0.63% | 6.49 | 6.52 |
+| 2 | set | 259.7k | 265.9k | 269.1k | +2.36% | 1.21% | 7.67 | 7.51 |
+| 2 | get | 268.9k | 267.3k | 271.9k | -0.59% | 1.71% | 7.43 | 7.47 |
+
+**Decision under the rule.** No test on either CPU count loses more than
+2%, so polling is not rejected.
+
+**What remains uncertain.** On one CPU, `set` loses 1.25%, more than the
+0.51% between head and its twin, and its processor time per request rises
+by 1.2%. A cost of about 1% on unpipelined writes on one CPU is therefore
+not excluded; it lies below the rule's threshold. The rule weighs nothing at
+depth 16, where a batch parks once.
