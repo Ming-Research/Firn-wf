@@ -84,8 +84,12 @@ an RDB preamble (`aof-use-rdb-preamble no`).
 
 ## Proposal
 
-A, in the multi-part layout. The decision goes to the owner first; nothing
-is implemented yet.
+A, in the multi-part layout, selected by the owner as Q213 A.
+
+Whitefoot v0.95 gives renaming, removal and directory sync within one
+directory, but no way to create `appendonlydir` or write below it; the
+[writable-subdirectories investigation](https://github.com/Ming-Research/Whitefoot/blob/1ca213242/research/investigations/writable-subdirectories/README.md)
+proposes `open_directory_write`, which this design uses.
 
 Validation, stated before implementing:
 - **A failure at each step.** A rewrite stopped at each of its steps (before
@@ -99,3 +103,55 @@ Validation, stated before implementing:
   with `aof-use-rdb-preamble no`.
 - **Cost.** On the 14900K, measure the rewrite's effect on throughput and
   p99 of the session workload, and its peak memory.
+
+## Design
+
+Names follow Redis 7.0.15 with `appendfilename` `F`, `appendonly.aof` by
+default, below the directory `appendonlydir`:
+- base `F.<n>.base.aof`, in the format of the commands, as Redis writes it
+  with `aof-use-rdb-preamble no`, since firn reads and writes no RDB;
+- incremental `F.<n>.incr.aof`;
+- manifest `F.manifest`, one line per file, `file <name> seq <n> type <b|i|h>`,
+  written as a temporary `temp-F.manifest`, synced, renamed over the
+  manifest, and the directory synced.
+
+Start:
+- the directory is opened for writing, created when missing;
+- a manifest is read and its base and incremental files replayed in order,
+  every file but the last required to end on a whole command, the last cut
+  as a single file is cut today;
+- with no manifest and no files, an empty base `F.1.base.aof` is written, as
+  Redis forces a base on an empty start, then `F.1.incr.aof` is opened and
+  the manifest persisted;
+- an old-style single file `F` beside the directory with no manifest is the
+  case Redis upgrades by moving `F` into the directory, which needs a rename
+  between two directories that Whitefoot does not offer (Firn ledger Q217).
+
+A rewrite, started by `BGREWRITEAOF` or automatically when the files have
+grown by `auto-aof-rewrite-percentage` (100) over the base written by the
+last rewrite and exceed `auto-aof-rewrite-min-size` (64 MB):
+1. **Switch.** The writer takes the pending bytes in one atomic statement,
+   appends and syncs them to the current incremental file and closes it,
+   opens the next incremental file, and persists a manifest naming the old
+   base, every incremental file and the new one. Every command answered
+   after that atomic statement is recorded in the new file only.
+2. **Rebuild.** A context spawned for the rewrite replays the old base and
+   the closed incremental files, which no longer change, into a keyspace of
+   its own, then writes that keyspace to `temp-rewriteaof-bg-<n>.aof` inside
+   the directory as Redis's `rewriteAppendOnlyFileRio` writes a dataset:
+   `SET`, and `RPUSH`, `SADD`, `ZADD` and `HSET` of at most 64 elements a
+   command, each key followed by `PEXPIREAT` when it has an expiry. It syncs
+   the file. Redis writes its temporary file in the working directory and
+   moves it in; firn writes it in the directory, where the rename cannot
+   cross a file system.
+3. **Install.** The temporary file is renamed to the next base name and a
+   manifest naming the new base and the incremental files from the switch on
+   is persisted; the old base and closed incremental files are then removed.
+4. **Failure.** A step that fails leaves the manifest of step 1, which
+   replays to the whole state, removes the temporary file, and records the
+   failure for `INFO`'s `aof_last_bgrewrite_status`.
+
+`INFO persistence` reports `aof_rewrite_in_progress`, `aof_rewrites`,
+`aof_last_bgrewrite_status`, `aof_current_size` and `aof_base_size` from
+the rewrite's state; `BGREWRITEAOF` answers as Redis does when a rewrite is
+already running.
