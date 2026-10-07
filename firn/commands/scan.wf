@@ -215,18 +215,19 @@ fn scan_body(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool
     if plan^.matching {
       set wanted = scan_matches(input: input, pattern: plan^.pattern, key: key);
     }
-    let present = index < entries^.len;
-    if band(wanted, present) {
-      let kind = entry_kind(slot: &entries^[index], client: client);
-      let removed = client^.state == state_expired;
-      let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
-      set appended = appended +wrap recorded;
-      if kind != 0_u64 {
-        let any = plan^.kind == 0_u64;
-        let typed = plan^.kind == kind;
-        let included = bor(any, typed);
-        if included {
-          key_set_insert(keys: found, key: key);
+    if wanted {
+      if index < entries^.len {
+        let kind = entry_kind(slot: &entries^[index], client: client);
+        let removed = client^.state == state_expired;
+        let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+        set appended = appended +wrap recorded;
+        if kind != 0_u64 {
+          let any = plan^.kind == 0_u64;
+          let typed = plan^.kind == kind;
+          let included = bor(any, typed);
+          if included {
+            key_set_insert(keys: found, key: key);
+          }
         }
       }
     }
