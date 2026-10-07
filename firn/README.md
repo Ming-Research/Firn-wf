@@ -68,7 +68,9 @@ clients send on their own:
   refuses the whole transaction, but for a `COMMAND` subcommand Redis does
   not have, or `COUNT` outside its arity, which is refused when sent, as
   Redis refuses it; `WATCH` is refused inside one and unknown outside;
-- server: `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
+  `SHUTDOWN` is refused when sent and makes `EXEC` abort the transaction;
+- server: `SHUTDOWN [NOSAVE|SAVE] [NOW] [FORCE] [ABORT]`, described below,
+  `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which
   describe no command. `COMMAND DOCS` is answered as an unknown subcommand,
   so that `redis-cli` uses its own help. `FLUSHALL` and `FLUSHDB`, with
@@ -119,17 +121,35 @@ or none. `requirepass` changes the password for every connection that has
 not authenticated, as in Redis: a connection authenticates by giving the
 password, or by being accepted while none is set, and stays authenticated;
 removing the password lets the others in until one is set again. `timeout`
-changes the idle limit for new connections and, within a second, for
-connections waiting under a limit, while a connection that waits with no
-limit reads a new one only once it sends again. A client's silence is
-counted from its last request or the replies to it, as Redis counts it from
-its last read or write. `appendfilename` and `databases` are refused as Redis
+changes the idle limit for new connections and, within a second, for every
+connection waiting for a request, one that waited with no limit included. A
+client's silence is counted from its last request or the replies to it, as
+Redis counts it from its last read or write. `appendfilename` and `databases` are refused as Redis
 refuses them. An `appendonly`, `port` or `bind` other than the one firn
 started with, and a `save` schedule other than the empty one, are refused in
 Redis's form for a refused value with firn's own reason, since firn cannot
 change them while it runs and saves no snapshot; Redis would apply them.
 `CONFIG RESETSTAT` answers OK and zeroes the count of connections the server
 has accepted.
+
+`SHUTDOWN` sends no reply, nor the replies to the commands before it in
+the same read, which Redis 7.0.15 does not send either; its connection
+closes, and firn stops accepting clients. Every other client sees the
+request within a second, when a wait for its next request ends or at its
+next read while it sends, sends the replies it holds and closes; a send
+blocked on a client that does not read is abandoned at its next one-second
+deadline. Once every client has left, the append-only file's writer appends
+its last bytes, syncs and closes, and firn exits with status 0, as Redis
+does even when that sync fails. No snapshot is written: the `save` schedule
+is empty, and `SAVE` answers `ERR Errors trying to SHUTDOWN. Check logs.`
+and keeps serving unless `FORCE` is also given. `NOW` changes nothing, firn
+having no replicas, and `ABORT` answers `ERR No shutdown in progress.`
+Options are read in either case up to a zero byte, and an unknown option,
+`SAVE` with `NOSAVE`, or `ABORT` with another option is a syntax error.
+Scripts cannot call `SHUTDOWN`, and a script that is running holds its
+client until it ends, so one that never ends keeps firn from stopping (the
+busy-script entry of [docs/todo.md](../docs/todo.md#server)). SIGTERM and
+SIGINT still end firn at once, without this drain.
 
 `INFO`, with no section, `default`, `all`, `everything` or named sections,
 answers Redis's sections in Redis's order and form. Its fields carry real

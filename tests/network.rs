@@ -7495,3 +7495,264 @@ fn firn_replays_the_value_types_from_its_append_only_file_with_hashes_and_sorted
     let (status, _) = finished(child);
     assert_eq!(status, 0, "the second run");
 }
+
+/// Wait without dropping connected peers: otherwise EOF from the test itself
+/// could conceal a shutdown path that never closes them.
+#[cfg(target_os = "linux")]
+fn shutdown_finished(mut child: ProgramChild) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().expect("poll shutdown exit") {
+            assert_eq!(status.code(), Some(0), "orderly shutdown status");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "SHUTDOWN did not finish within five seconds"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(finished(child).0, 0);
+}
+
+/// No client limit or half-close can end these servers. The client that sends
+/// SHUTDOWN gets no reply, not even to the writes it pipelined before it, as
+/// redis-server 7.0.15 answers such a read (Firn-wf probe run 37574985225),
+/// and the replay finds every one of those writes, as Redis's does.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
+    let program = firn();
+    for native_ring in [false, true] {
+        let name = format!("shutdown-drain-{native_ring}.aof");
+        let port = free_port();
+        let text = port.to_string();
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
+        let mut client = connect_when_ready(port);
+        let mut batch = Vec::new();
+        for i in 0..128 {
+            batch.extend(resp(&[
+                "SET",
+                &format!("shutdown:{i}"),
+                &format!("value:{i}"),
+            ]));
+        }
+        batch.extend(resp(&["SHUTDOWN"]));
+        client
+            .write_all(&batch)
+            .expect("write keys and shutdown together");
+        shutdown_finished(child);
+        let mut replies = Vec::new();
+        client
+            .read_to_end(&mut replies)
+            .expect("shutdown closes its client");
+        assert_eq!(
+            replies, b"",
+            "Redis 7.0.15 sends nothing to a client after SHUTDOWN, even the replies of the commands before it in the same read"
+        );
+
+        let port = free_port();
+        let text = port.to_string();
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
+        let mut client = connect_when_ready(port);
+        for i in 0..128 {
+            client
+                .write_all(&resp(&["GET", &format!("shutdown:{i}")]))
+                .expect("read replayed key");
+            assert_eq!(
+                bulk_reply(&mut client, "replayed shutdown write"),
+                format!("value:{i}")
+            );
+        }
+        client
+            .write_all(&resp(&["SHUTDOWN", "NOSAVE"]))
+            .expect("stop replay server");
+        shutdown_finished(child);
+        assert_eq!(client.read(&mut [0]).expect("replay server EOF"), 0);
+    }
+}
+
+/// The idle peer has completed a PING, remains open, and has no idle limit;
+/// omitting receive polling or stopping the writer before clients leave fails.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_shutdown_closes_an_idle_client_without_an_idle_limit_on_both_routes() {
+    for native_ring in [false, true] {
+        let port = free_port();
+        let text = port.to_string();
+        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
+        let mut idle = connect_when_ready(port);
+        idle.write_all(&resp(&["PING"]))
+            .expect("establish idle peer");
+        expect_replies(&mut idle, b"+PONG\r\n", "idle peer ready");
+        let mut caller = connect_when_ready(port);
+        caller
+            .write_all(&resp(&["sHuTdOwN", "nOw\0ignored", "nOsAvE", "NOSAVE"]))
+            .expect("shutdown with case folding, C strings and duplicate flags");
+        shutdown_finished(child);
+        assert_eq!(caller.read(&mut [0]).expect("shutdown EOF"), 0);
+        assert_eq!(idle.read(&mut [0]).expect("idle EOF"), 0);
+    }
+}
+
+/// firn refuses SHUTDOWN's bad options, ABORT, SAVE without a snapshot to
+/// write, SHUTDOWN inside MULTI and from scripts with the replies
+/// redis-server 7.0.15 gives (Firn-wf probe run 37573881373), each followed
+/// by a PING that shows firn still serving; EXECABORT shows the refusal inside
+/// MULTI dirtied the transaction, and SAVE FORCE then stops firn.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_shutdown_refusals_match_redis_on_both_routes() {
+    for native_ring in [false, true] {
+        let port = free_port();
+        let text = port.to_string();
+        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
+        let mut client = connect_when_ready(port);
+        let cases: &[(&[&str], &[u8])] = &[
+            (&["SHUTDOWN", "unknown"], b"-ERR syntax error\r\n"),
+            (&["SHUTDOWN", "NOSAVE", "SAVE"], b"-ERR syntax error\r\n"),
+            (&["SHUTDOWN", "NOSAVE", "SAVE", "FORCE"], b"-ERR syntax error\r\n"),
+            (&["SHUTDOWN", "ABORT", "NOW"], b"-ERR syntax error\r\n"),
+            (&["SHUTDOWN", "ABORT"], b"-ERR No shutdown in progress.\r\n"),
+            (&["SHUTDOWN", "abort\0ignored", "ABORT"], b"-ERR No shutdown in progress.\r\n"),
+            (&["SHUTDOWN", "SAVE"], b"-ERR Errors trying to SHUTDOWN. Check logs.\r\n"),
+            (&["SHUTDOWN", "sAvE\0ignored", "NOW"], b"-ERR Errors trying to SHUTDOWN. Check logs.\r\n"),
+            (&["EVAL", "return redis.pcall('SHUTDOWN')", "0"], b"-ERR This Redis command is not allowed from script\r\n"),
+            (&["EVAL", "return redis.call('SHUTDOWN')", "0"], b"-ERR This Redis command is not allowed from script script: 3f015a397180968e42a7299b68bb00dfc94f51e3, on @user_script:1.\r\n"),
+        ];
+        for (request, expected) in cases {
+            client
+                .write_all(&resp(request))
+                .expect("send shutdown refusal");
+            expect_replies(&mut client, expected, "shutdown refusal");
+            client
+                .write_all(&resp(&["PING"]))
+                .expect("ping after refusal");
+            expect_replies(&mut client, b"+PONG\r\n", "still serving after refusal");
+        }
+        client
+            .write_all(&resp(&["MULTI"]))
+            .expect("begin transaction");
+        expect_replies(&mut client, b"+OK\r\n", "MULTI");
+        client
+            .write_all(&resp(&["SHUTDOWN"]))
+            .expect("shutdown inside MULTI");
+        expect_replies(
+            &mut client,
+            b"-ERR Command not allowed inside a transaction\r\n",
+            "refused when sent",
+        );
+        client
+            .write_all(&resp(&["EXEC"]))
+            .expect("exec dirty transaction");
+        expect_replies(
+            &mut client,
+            b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+            "dirty EXEC",
+        );
+        client
+            .write_all(&resp(&["PING"]))
+            .expect("ping after EXECABORT");
+        expect_replies(&mut client, b"+PONG\r\n", "still serving after EXECABORT");
+        client
+            .write_all(&resp(&["CONFIG", "GET", "save"]))
+            .expect("read empty save schedule");
+        expect_replies(
+            &mut client,
+            b"*2\r\n$4\r\nsave\r\n$0\r\n\r\n",
+            "no snapshot schedule",
+        );
+        client
+            .write_all(&resp(&["SHUTDOWN", "SAVE", "FORCE"]))
+            .expect("force failed snapshot shutdown");
+        shutdown_finished(child);
+        assert_eq!(client.read(&mut [0]).expect("forced shutdown EOF"), 0);
+    }
+}
+
+/// A reply far larger than socket buffering forces flush to wait. Leaving
+/// that peer unread through process exit makes an unbounded send fail the case.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_shutdown_abandons_a_blocked_send_on_both_routes() {
+    for native_ring in [true, false] {
+        let port = free_port();
+        let text = port.to_string();
+        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
+        let mut slow = connect_when_ready(port);
+        let mut caller = connect_when_ready(port);
+        let value = "x".repeat(16 * 1024 * 1024);
+        caller
+            .write_all(&resp(&["SET", "large", &value]))
+            .expect("seed large reply");
+        expect_replies(&mut caller, b"+OK\r\n", "large value stored");
+        slow.write_all(&resp(&["GET", "large"]))
+            .expect("request large reply");
+        assert_eq!(reply_line(&mut slow, "large reply header"), "$16777216\r\n");
+        // Cross a send deadline before shutdown: timeouts alone must not close
+        // the server or prevent another connection's ordinary commands.
+        std::thread::sleep(Duration::from_millis(1200));
+        caller
+            .write_all(&resp(&["PING"]))
+            .expect("ping during blocked send");
+        expect_replies(&mut caller, b"+PONG\r\n", "serving while send waits");
+        let mut resumed = vec![0; value.len() + 2];
+        slow.read_exact(&mut resumed)
+            .expect("send resumes after a deadline without shutdown");
+        assert_eq!(&resumed[..value.len()], value.as_bytes());
+        assert_eq!(&resumed[value.len()..], b"\r\n");
+        slow.write_all(&resp(&["GET", "large"]))
+            .expect("block another large reply");
+        assert_eq!(
+            reply_line(&mut slow, "second large reply header"),
+            "$16777216\r\n"
+        );
+        caller
+            .write_all(&resp(&["SHUTDOWN"]))
+            .expect("stop with a blocked send");
+        shutdown_finished(child);
+        assert_eq!(caller.read(&mut [0]).expect("caller EOF"), 0);
+        let mut rest = Vec::new();
+        slow.read_to_end(&mut rest).expect("blocked sender closes");
+        assert!(
+            rest.len() < value.len() + 2,
+            "peer should have blocked before the whole reply"
+        );
+    }
+}
+
+/// CONFIG SET must reach a receive that began with timeout zero, while a
+/// deadline alone must leave that connection usable before the limit is set.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_applies_an_idle_limit_to_a_previously_unlimited_receive() {
+    let port = free_port();
+    let text = port.to_string();
+    let child = firn().spawn_on_route(true, &[text.as_bytes(), b"0"]);
+    let mut idle = connect_when_ready(port);
+    let mut caller = connect_when_ready(port);
+    idle.write_all(&resp(&["PING"]))
+        .expect("establish unlimited receive");
+    expect_replies(&mut idle, b"+PONG\r\n", "unlimited client");
+    std::thread::sleep(Duration::from_millis(1200));
+    idle.write_all(&resp(&["PING"]))
+        .expect("still usable after receive deadline");
+    expect_replies(&mut idle, b"+PONG\r\n", "timeout zero remains unlimited");
+    caller
+        .write_all(&resp(&["CONFIG", "SET", "timeout", "1"]))
+        .expect("enable idle timeout");
+    expect_replies(&mut caller, b"+OK\r\n", "new timeout");
+    idle.set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("bound idle closure");
+    assert_eq!(
+        idle.read(&mut [0])
+            .expect("new limit closes waiting client"),
+        0
+    );
+    // The caller may also have become idle; use a fresh connection to stop.
+    let mut stopper = connect_when_ready(port);
+    stopper
+        .write_all(&resp(&["SHUTDOWN"]))
+        .expect("stop idle-limit case");
+    shutdown_finished(child);
+}

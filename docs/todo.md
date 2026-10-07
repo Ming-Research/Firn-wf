@@ -32,8 +32,8 @@ written while firn lived in the Whitefoot repository; a path such as
     queues or calls from a script that are not parts yet, since `EXEC` and
     scripts run only those `held_kind` (`firn/commands/script.wf`) names.
   - Make AOF persistence usable through write/sync error handling, rewrite
-    and orderly `SHUTDOWN`/signal handling; verify
-    a practical data migration path. File replacement and signal delivery
+    and orderly stop on signals, `SHUTDOWN` being done; verify a practical
+    data migration path. File replacement and signal delivery
     may require Whitefoot library/runtime work; AOF presence alone is not
     durable-recovery evidence. RDB compatibility is not assumed by this item.
   - Add memory accounting, `maxmemory` and the eviction behavior the selected
@@ -106,8 +106,12 @@ written while firn lived in the Whitefoot repository; a path such as
   the append-only file's writer until firn is killed. Redis 7.0.15 answers
   other clients `BUSY` once `busy-reply-threshold` (`lua-time-limit`, 5
   seconds) has passed, leaving them `SCRIPT KILL` and `SHUTDOWN NOSAVE`,
-  which stops even a script that has written. firn has no threshold: a
-  command that needs the keyspace waits for the attempt to end. Redis's
+  which stops even a script that has written. firn's `SHUTDOWN` reaches a
+  script's client only once the script ends, so a script that never ends,
+  whether or not it has written, keeps firn from stopping: after `EVAL
+  "redis.call('SET','x','1'); while true do end" 0`, `SHUTDOWN NOSAVE` on
+  another connection leaves firn running. firn has no threshold: a command
+  that needs the keyspace waits for the attempt to end. Redis's
   suite test `just EXEC and script timeout` waits for `BUSY` before it sends
   `SCRIPT KILL`, so on firn it hangs until the suite's 120-second timeout
   and its retry. The change: the pool records when the running script
@@ -342,22 +346,16 @@ written while firn lived in the Whitefoot repository; a path such as
   picks several distinct entries would remove that scan; reopen with the
   same library change.
 
-- **A connection that waits with no idle limit misses a limit `CONFIG SET`
-  sets.** firn's `serve` (`firn/server/server.wf`) gives a receive a
-  deadline, at most a second away, only while an idle limit is set, and reads
-  the limit again when a deadline passes and at most once a second while the
-  client sends; a client waiting with no limit has no deadline, so after
-  `CONFIG SET timeout 5` it stays open until it sends, where Redis's
-  `clientsCron` closes every client silent past the new limit. Every receive
-  with a deadline of at most a second would close the gap; a receive that
-  parks then pays a timer insertion and removal on its driver's heap
-  (`wf_context_arm_deadline` in Whitefoot's `compiler/src/backend/completion/bridge.c`),
-  which an unpipelined benchmark pays on every request. Measure that cost with
-  `redis-bench.sh quick` before choosing. Nor is a client closed while firn's
-  send to it waits on replies it leaves unread, where Redis closes one that
-  nothing has been written to for the limit; `flush` could pass `send_once`
-  (`lib/std/net/module.wfm`) a deadline while a limit is set. Reopen when a
-  deployment changes the limit while it runs or relies on it to drop clients
+- **The idle limit does not close a client blocked on sending replies.**
+  Every receive now has a deadline of at most a second, so `CONFIG SET
+  timeout` reaches even a client that was waiting with no limit. `flush`
+  (`firn/server/server.wf`) also gives sends one-second deadlines, but
+  retries them unless SHUTDOWN was requested; it does not track the last
+  successful write for the idle limit. Redis closes a client to which
+  nothing has been written for that limit. Track send progress and read the
+  current idle limit at those deadlines; validate with a client that stops
+  reading a reply larger than its socket buffer, including a timeout set
+  while it waits. Reopen when a deployment relies on timeout to drop clients
   that stop reading.
 
 - **`INFO` leaves out what firn does not measure.** `run_info`
@@ -384,12 +382,13 @@ written while firn lived in the Whitefoot repository; a path such as
   writer (`write_log` in `firn/persistence/persistence.wf`) has not yet
   appended, up to one 10-millisecond cycle, and the bytes not yet synced,
   where Redis on SIGTERM appends and syncs its file before it exits, as its
-  `SHUTDOWN` command does, which firn lacks. Seen on 2026-10-03: a `SET` sent
-  a few milliseconds before a SIGTERM was absent after the replay. A signal
-  delivered to a context could set the keyspace's `stopping`, which makes the
-  writer append, sync and close, as it does once the client limit is
-  reached. Reopen with `SHUTDOWN`, or when firn runs under a service manager
-  that stops it with SIGTERM.
+  `SHUTDOWN` command does, which firn now does too. Seen on 2026-10-03: a
+  `SET` sent a few milliseconds before a SIGTERM was absent after the replay.
+  Whitefoot's `std::process` delivers no signal to a context; were one
+  delivered, it could set `keyspace.server.shutdown` as `SHUTDOWN` does, so
+  clients leave before main sets `stopping` and the writer appends, syncs
+  and closes. Reopen when Whitefoot delivers signals, or when firn runs under
+  a service manager that stops it with SIGTERM.
 
 - **firn writes decimals and reads `CONFIG SET`'s integers in repeated
   code.** `text_reserve` and `text_number` in `firn/commands/info.wf`
