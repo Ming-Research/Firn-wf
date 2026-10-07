@@ -123,9 +123,12 @@ Start:
 - with no manifest and no files, an empty base `F.1.base.aof` is written, as
   Redis forces a base on an empty start, then `F.1.incr.aof` is opened and
   the manifest persisted;
-- an old-style single file `F` beside the directory with no manifest is the
-  case Redis upgrades by moving `F` into the directory, which needs a rename
-  between two directories that Whitefoot does not offer (Firn ledger Q217).
+- an old-style single file `F` beside the directory with no manifest is
+  upgraded as Redis upgrades it: a manifest naming `F` as the base is
+  persisted, then `F` is moved into the directory. Whitefoot v0.95 renames
+  only within one directory; the writable-subdirectories investigation
+  proposes `move_file` between two directories' write halves for this
+  (Firn ledger Q217).
 
 A rewrite, started by `BGREWRITEAOF` or automatically when the files have
 grown by `auto-aof-rewrite-percentage` (100) over the base written by the
