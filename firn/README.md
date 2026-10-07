@@ -90,10 +90,11 @@ case-insensitive. `KEYS` walks the whole keyspace in one atomic statement
 and skips expired entries without removing them. `SCAN` removes expired
 entries reached after `MATCH`, returning their names only under
 `TYPE none`, as Redis 7.0.15 does, and `RANDOMKEY` removes expired
-candidates; both record those removals as `DEL`. `RANDOMKEY` samples as Redis's
-`dictGetFairRandomKey` does, picking uniformly among up to fifteen keys
-found forward from a random position, with positions and draws of its own,
-so the key it returns differs from Redis's. All five commands,
+candidates; both record those removals as `DEL`. `RANDOMKEY` draws as Redis's
+`dbRandomKey` does, picking uniformly among the keys one scan step of count
+15 gathers from a random position, with a fresh position when a step
+gathers none; its positions and draws are its own, so the key it returns
+differs from Redis's. All five commands,
 including both flush commands, run through their shared parts on the
 network, in `EXEC` and through `redis.call` or `redis.pcall`.
 

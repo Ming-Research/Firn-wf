@@ -6390,13 +6390,13 @@ $0\r\n\r\n+OK\r\n+OK\r\n:4\r\n\
 }
 
 /// firn parses SCAN, KEYS, RANDOMKEY, FLUSHALL and FLUSHDB as Redis does:
-/// wrong argument counts, invalid cursors (out of range, signed, spaced or
-/// empty), COUNT, MATCH and TYPE options with their syntax and range errors,
-/// and the arguments Redis reads only up to their first zero byte. The same
-/// requests, from the same keys, run in one transaction, each error or
-/// boundary request in a transaction of its own, then through a script's
-/// redis.call and the errors through redis.pcall, and give the replies
-/// redis-server 7.0.15 gives (Firn-wf probe run 37551292895).
+/// wrong argument counts; the cursors Redis refuses (out of range, a lone
+/// sign, a leading space, trailing text) and those it takes (empty, signed,
+/// with leading zeros, cut at a zero byte); COUNT, MATCH and TYPE options
+/// with their syntax and range errors; and the arguments Redis reads only
+/// up to their first zero byte. Each request runs on an empty keyspace in a
+/// transaction of its own, then through a script's redis.pcall, and gives
+/// the replies redis-server 7.0.15 gives (Firn-wf probe run 37551292895).
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_runs_scan_parts_as_redis_does() {
@@ -6847,6 +6847,48 @@ fn firn_records_held_scan_type_none_as_redis_propagates_it() {
         b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n*2\r\n$1\r\n0\r\n*1\r\n$2\r\nn1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n*2\r\n$1\r\n0\r\n*1\r\n$2\r\nn3\r\n:3\r\n",
         b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nn1\r\n*3\r\n$3\r\nSET\r\n$1\r\nw\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nn3\r\n*3\r\n$3\r\nSET\r\n$1\r\nt\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n",
     );
+}
+
+/// firn's RANDOMKEY draws each key of a keyspace of ten keys about equally
+/// often, as Redis 7.0.15's dictGetFairRandomKey does when its sample of up
+/// to fifteen keys covers the whole keyspace: over 2000 draws in a map
+/// presized far beyond its keys, every key comes up at least 100 times, half
+/// its expected count. A uniform draw misses that bound with negligible
+/// probability, while taking the first key after a random position, whose
+/// chance grows with the empty run before the key, fails it unless every one
+/// of the ten gaps holds at least a twentieth of the table, about one run in
+/// five hundred.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_draws_random_keys_uniformly_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let keys: Vec<String> = (0..10).map(|index| format!("draw:{index}")).collect();
+    let writes: Vec<Vec<u8>> = keys.iter().map(|key| resp(&["SET", key, "v"])).collect();
+    client.write_all(&writes.concat()).expect("send the writes");
+    for _ in 0..keys.len() {
+        assert_eq!(reply_line(&mut client, "SET"), "+OK\r\n");
+    }
+    client
+        .write_all(&resp(&["RANDOMKEY"]).repeat(2000))
+        .expect("send RANDOMKEY");
+    let mut drawn = std::collections::HashMap::new();
+    for _ in 0..2000 {
+        *drawn
+            .entry(bulk_reply(&mut client, "RANDOMKEY"))
+            .or_insert(0) += 1;
+    }
+    assert_eq!(drawn.len(), keys.len(), "{drawn:?}");
+    for key in &keys {
+        let count = drawn.get(key).copied().unwrap_or(0);
+        assert!(count >= 100, "{key} drawn {count} times of 2000: {drawn:?}");
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
 }
 
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
