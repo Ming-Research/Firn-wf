@@ -368,9 +368,10 @@ fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots
   loop {
     let sample = key_set_new(capacity: 16_u64);
     randomkey_sample(keys: keys, random: random, sample: &sample);
-    if sample.len > 0_u64 {
+    let gathered = sample.len;
+    if gathered > 0_u64 {
       set random^ = next_random(state: random^);
-      let pick = random^ % sample.len;
+      let pick = random^ % gathered;
       let entries = &keys^[sample];
       if pick < sample.len {
         let bytes = scanned_key(keys: &sample, index: pick);
