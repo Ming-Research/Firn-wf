@@ -388,10 +388,11 @@ fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots
         }
       }
     } else {
-      reply_nil(client: client);
-      return appended;
+      break;
     }
   }
+  reply_nil(client: client);
+  return appended;
 }
 
 fn run_scan(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
