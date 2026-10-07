@@ -344,9 +344,9 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       set idle = limits.idle;
       set client.closing = limits.shutdown;
       let after = std::time::now(clock: &clock);
-      let current = nanoseconds_from(earlier: origin, later: after);
-      set polled = current;
-      let quiet = current -sat last;
+      let woken = nanoseconds_from(earlier: origin, later: after);
+      set polled = woken;
+      let quiet = woken -sat last;
       let idle_ns = idle *wrap 1000000000_u64;
       let limited = idle != 0_u64;
       let silent = quiet >= idle_ns;
