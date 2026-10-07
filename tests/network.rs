@@ -6385,6 +6385,162 @@ $0\r\n\r\n+OK\r\n+OK\r\n:4\r\n\
     assert_eq!(status, 0);
 }
 
+/// firn parses SCAN, KEYS, RANDOMKEY, FLUSHALL and FLUSHDB as Redis does: wrong argument counts, invalid cursors (out of range, signed, spaced or empty), COUNT, MATCH and TYPE options with their syntax and range errors, and the arguments Redis reads only up to their first zero byte. The same requests, from the same keys, run in one transaction,
+/// each error or boundary request in a transaction of its own, then through
+/// a script's redis.call and the errors through redis.pcall, and give the
+/// replies redis-server 7.0.15 gives (Firn-wf probe run 37551292895).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_scan_parts_as_redis_does() {
+    const SETUP: &[&[&str]] = &[
+        &["FLUSHALL"],
+    ];
+    const VALID: &[&[&str]] = &[
+    ];
+    const ERRORS: &[&[&str]] = &[
+        &["SCAN"],
+        &["SCAN", "bad"],
+        &["SCAN", " "],
+        &["SCAN", "0 "],
+        &["SCAN", "+"],
+        &["SCAN", "-"],
+        &["SCAN", "18446744073709551616"],
+        &["SCAN", "-18446744073709551616"],
+        &["SCAN", "0", "COUNT"],
+        &["SCAN", "0", "MATCH"],
+        &["SCAN", "0", "TYPE"],
+        &["SCAN", "0", "BOGUS", "x"],
+        &["SCAN", "0", "COUNT", ""],
+        &["SCAN", "0", "COUNT", "0"],
+        &["SCAN", "0", "COUNT", "-1"],
+        &["SCAN", "0", "COUNT", "+1"],
+        &["SCAN", "0", "COUNT", "01"],
+        &["SCAN", "0", "COUNT", "1.0"],
+        &["SCAN", "0", "COUNT", "9223372036854775808"],
+        &["SCAN", "0", "COUNT", "0", "COUNT", "1"],
+        &["SCAN", ""],
+        &["SCAN", "+0"],
+        &["SCAN", "-0"],
+        &["SCAN", "00"],
+        &["SCAN", "-1"],
+        &["SCAN", "18446744073709551615"],
+        &["SCAN", "0\0ignored"],
+        &["SCAN", "0", "COUNT", "9223372036854775807"],
+        &["SCAN", "0", "COUNT\0ignored", "1"],
+        &["SCAN", "0", "MATCH", ""],
+        &["SCAN", "0", "TYPE", "StRiNg"],
+        &["SCAN", "0", "TYPE", "none"],
+        &["SCAN", "0", "TYPE", "unknown"],
+        &["SCAN", "0", "TYPE", "string\0ignored"],
+        &["SCAN", "0", "MATCH", "x", "MATCH", "*"],
+        &["KEYS"],
+        &["KEYS", "*", "extra"],
+        &["KEYS", "*"],
+        &["KEYS", ""],
+        &["RANDOMKEY", "extra"],
+        &["RANDOMKEY"],
+        &["FLUSHALL", "bad"],
+        &["FLUSHDB", "SYNC", "ASYNC"],
+        &["FLUSHALL"],
+        &["FLUSHDB", "ASYNC"],
+        &["FLUSHALL", "sync"],
+        &["FLUSHDB", "SYNC\0ignored"],
+    ];
+    const TRANSACTIONS: &[u8] = b"+OK\r\n+OK\r\n*0\r\n+OK\r\n-ERR wrong number of arguments for 'scan' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR invalid cursor\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR invalid cursor\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR invalid cursor\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR invalid cursor\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR invalid cursor\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR invalid cursor\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR invalid cursor\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is not an integer or out of range\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR value is not an integer or out of range\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n\
+*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n\
++QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n\
+0\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n+QUEUED\r\n\
+*1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n*0\r\n\
++OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n\
+$1\r\n0\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n\
++QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n\
+0\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n\
+-ERR wrong number of arguments for 'keys' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
+-ERR wrong number of arguments for 'keys' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
++QUEUED\r\n*1\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*0\r\n+OK\r\n\
+-ERR wrong number of arguments for 'randomkey' command\r\n\
+-EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
++QUEUED\r\n*1\r\n$-1\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n\
++QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n+OK\r\n\
++QUEUED\r\n*1\r\n+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n\
++OK\r\n";
+    const SCRIPTS: &[u8] = b"+OK\r\n-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR invalid cursor\r\n-ERR invalid cursor\r\n-ERR invalid cursor\r\n\
+-ERR invalid cursor\r\n-ERR invalid cursor\r\n-ERR invalid cursor\r\n\
+-ERR invalid cursor\r\n-ERR syntax error\r\n-ERR syntax error\r\n\
+-ERR syntax error\r\n-ERR syntax error\r\n\
+-ERR value is not an integer or out of range\r\n-ERR syntax error\r\n\
+-ERR syntax error\r\n-ERR value is not an integer or out of range\r\n\
+-ERR value is not an integer or out of range\r\n\
+-ERR value is not an integer or out of range\r\n\
+-ERR value is not an integer or out of range\r\n-ERR syntax error\r\n*2\r\n\
+$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n\
+*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n\
+*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n\
+$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n\
+*0\r\n*2\r\n$1\r\n0\r\n*0\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n*0\r\n*0\r\n\
+-ERR Wrong number of args calling Redis command from script\r\n$-1\r\n\
+-ERR syntax error\r\n-ERR syntax error\r\n+OK\r\n+OK\r\n+OK\r\n+OK\r\n";
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    transactions.push(resp(&["MULTI"]));
+    for request in VALID {
+        transactions.push(resp(request));
+    }
+    transactions.push(resp(&["EXEC"]));
+    for request in ERRORS {
+        transactions.push(resp(&["MULTI"]));
+        transactions.push(resp(request));
+        transactions.push(resp(&["EXEC"]));
+    }
+    let mut scripts: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
+    for (calls, script) in [
+        (VALID, "return redis.call(unpack(ARGV))"),
+        (ERRORS, "return redis.pcall(unpack(ARGV))"),
+    ] {
+        for request in calls {
+            let mut call = vec!["EVAL", script, "0"];
+            call.extend_from_slice(request);
+            scripts.push(resp(&call));
+        }
+    }
+    for (requests, expected, what) in [
+        (transactions, TRANSACTIONS, "the transactions"),
+        (scripts, SCRIPTS, "the scripts"),
+    ] {
+        client.write_all(&requests.concat()).expect("send the requests");
+        expect_replies(&mut client, expected, what);
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to

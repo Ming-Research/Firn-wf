@@ -306,14 +306,11 @@ fn keys_body(keys: &ConcurrentHashMap<Entry>, input: &[u8], pattern: Span, now: 
     let matched = scan_matches(input: input, pattern: pattern, key: key);
     if matched {
       if index < entries^.len {
-        match entries^[index] {
-          Some(value: held) => {
-            let lapsed = expired(expires: held^.expires, now: now);
-            if bnot(lapsed) {
-              key_set_insert(keys: found, key: key);
-            }
-          }
-          None() => {
+        let present = entry_present(slot: &entries^[index]);
+        let lapsed = held_lapsed(slot: &entries^[index], now: now);
+        if present {
+          if bnot(lapsed) {
+            key_set_insert(keys: found, key: key);
           }
         }
       }
@@ -374,8 +371,9 @@ fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots
 }
 
 fn run_scan(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  let logged = store^.logging;
   atomic t = &store^.keys, m = &store^.meta {
-    let appended = held_scan(keys: t, log: &m^.log, logged: store^.logging, input: input, args: args, client: client, now: time^.check);
+    let appended = held_scan(keys: t, log: &m^.log, logged: logged, input: input, args: args, client: client, now: time^.check);
   }
   return unit;
 }
@@ -388,8 +386,9 @@ fn run_keys(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
 }
 
 fn run_randomkey(store: &Keyspace, client: &Client, time: &Time) -> result: unit reads(store), reads(time), writes(client) waits {
+  let logged = store^.logging;
   atomic t = &store^.keys, m = &store^.meta {
-    let appended = held_randomkey(keys: t, random: &m^.random, log: &m^.log, logged: store^.logging, client: client, now: time^.check);
+    let appended = held_randomkey(keys: t, random: &m^.random, log: &m^.log, logged: logged, client: client, now: time^.check);
   }
   return unit;
 }
