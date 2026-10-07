@@ -114,6 +114,7 @@ a `MULTI` block. memtier_benchmark is not installed on the i9-14900K, and
 its runner cannot install packages. The client is therefore a small Rust
 program in `research/experiments/redis-bench/`, which redis-bench.sh runs
 for every workload of this section, so that one client measures all of
-them. It is built with the host's cargo, which the 14900K has for
-Whitefoot's own benchmarks. It is removed when a common tool can send these
+them. It is built with the host's cargo; the 14900K's runner has it in
+`~/.cargo/bin`, where Whitefoot's `compute-bench.yml` placement job finds it
+to build the compiler there. It is removed when a common tool can send these
 workloads.
