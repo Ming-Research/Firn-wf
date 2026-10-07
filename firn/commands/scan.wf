@@ -336,7 +336,7 @@ fn held_keys(keys: &ConcurrentHashMap<Entry>, input: &[u8], args: &Box<Slots<Spa
 }
 
 fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &Client, now: u64) -> appended: u64 writes(keys), writes(random), writes(log), writes(client) {
-  doc "RANDOMKEY as Redis 7.0.15's dbRandomKey draws through dictGetFairRandomKey and dictGetRandomKey: one map_scan step of count 15 from a position drawn from firn's xorshift64 state, also used by SPOP, and a key picked uniformly among those it gathers, with a fresh position whenever a step gathers none. A picked key found expired is removed, recorded as DEL, and the draw starts over; nil once the map holds no key.";
+  doc "RANDOMKEY as Redis 7.0.15's dbRandomKey draws through dictGetFairRandomKey and dictGetRandomKey: one map_scan step of count 15 from a position drawn from firn's xorshift64 state, also used by SPOP, continued from position zero when it reaches the table's end short of fifteen keys, as dictGetSomeKeys wraps, and a key picked uniformly among those gathered, with a fresh position whenever none is. A picked key found expired is removed, recorded as DEL, and the draw starts over; nil once the map holds no key.";
   let appended = 0_u64;
   set client^.now = now;
   loop {
@@ -347,6 +347,12 @@ fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots
     set random^ = next_random(state: random^);
     let sample = key_set_new(capacity: 16_u64);
     let next = map_scan::<Entry>(map: keys, cursor: random^, count: 15_u64, keys: &sample);
+    let first = sample.len;
+    if next == 0_u64 {
+      if first < 15_u64 {
+        let wrapped = map_scan::<Entry>(map: keys, cursor: 0_u64, count: 15_u64, keys: &sample);
+      }
+    }
     let gathered = sample.len;
     if gathered > 0_u64 {
       set random^ = next_random(state: random^);

@@ -92,8 +92,8 @@ entries reached after `MATCH`, returning their names only under
 `TYPE none`, as Redis 7.0.15 does, and `RANDOMKEY` removes expired
 candidates; both record those removals as `DEL`. `RANDOMKEY` draws as Redis's
 `dbRandomKey` does, picking uniformly among the keys one scan step of count
-15 gathers from a random position, with a fresh position when a step
-gathers none; its positions and draws are its own, so the key it returns
+15 gathers from a random position, wrapping at the table's end, with a
+fresh position when it gathers none; its positions and draws are its own, so the key it returns
 differs from Redis's. All five commands,
 including both flush commands, run through their shared parts on the
 network, in `EXEC` and through `redis.call` or `redis.pcall`.
