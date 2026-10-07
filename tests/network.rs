@@ -4832,21 +4832,23 @@ fn file_records(mut bytes: &[u8]) -> Vec<Vec<Vec<u8>>> {
 /// is what redis-server 7.0.15 appends for the same keys expiring under it
 /// with active expiry off, less the SELECT it begins with. firn's active
 /// expiry first sweeps 100 ms after it starts; when that sweep removed the
-/// keys before the commands met them, the replies are the same and the
-/// sweep's DEL records stand outside any MULTI and EXEC for keys Redis
-/// removes inside one, and the run starts over, up to five times. A held
-/// command that records such a removal outside its block shows the same
-/// form on every run and fails.
+/// keys before the commands met them, the sweep's DEL records stand outside
+/// any MULTI and EXEC for keys Redis removes inside one, and the run starts
+/// over, up to five times. The replies, which can name a key the sweep
+/// removed, are compared on a run whose records match. A held command that
+/// records such a removal outside its block shows the same form on every
+/// run and fails.
 #[cfg(target_os = "linux")]
 fn check_held_records(
     loaded: &[&[&str]],
     requests: &[&[&str]],
-    replies: &'static [u8],
+    replies: &[u8],
     records: &[u8],
 ) {
     let program = firn();
     let loaded: Vec<u8> = loaded.iter().flat_map(|request| resp(request)).collect();
-    let batch: Vec<u8> = requests.iter().flat_map(|request| resp(request)).collect();
+    let mut batch: Vec<u8> = requests.iter().flat_map(|request| resp(request)).collect();
+    batch.extend(resp(&["QUIT"]));
     for _ in 0..5 {
         let fixture = fixture_directory();
         std::fs::write(fixture.path().join("held.aof"), &loaded).expect("write the loaded file");
@@ -4856,16 +4858,23 @@ fn check_held_records(
         let client = std::thread::spawn(move || {
             let mut client = connect_when_ready(port);
             client.write_all(&sent).expect("send the commands");
-            expect_replies(&mut client, replies, "the commands");
+            let mut returned = Vec::new();
+            client.read_to_end(&mut returned).expect("read the replies");
+            returned
         });
         let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"held.aof"]);
-        client.join().expect("the client's exchange");
+        let returned = client.join().expect("the client's exchange");
         assert!(output.status.success(), "firn: {:?}", output.status);
         let file = std::fs::read(fixture.path().join("held.aof")).expect("read firn's file");
         let recorded = file
             .strip_prefix(loaded.as_slice())
             .expect("the loaded records kept at the file's start");
         if recorded == records {
+            assert_eq!(
+                String::from_utf8_lossy(&returned),
+                String::from_utf8_lossy(&[replies, b"+OK\r\n"].concat()),
+                "the commands"
+            );
             return;
         }
         let removals = |bytes: &[u8], within: bool| -> Vec<Vec<u8>> {
@@ -6816,6 +6825,33 @@ fn firn_enumerates_keys_as_redis_does() {
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
+}
+
+/// firn records SCAN with TYPE none run inside a transaction's EXEC and a script as Redis 7.0.15 propagates it: an expired key its MATCH pattern selects is removed, recorded as DEL where SCAN meets it, and named in the reply, since Redis reads a key's type before its expiry check; a live key is not named. The expected
+/// records are redis-server 7.0.15's (Firn-wf probe run 37552883025).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_scan_type_none_as_redis_propagates_it() {
+    check_held_records(
+        &[
+            &["SET", "n1", "1"],
+            &["PEXPIREAT", "n1", "1"],
+            &["SET", "n2", "2"],
+            &["SET", "n3", "3"],
+            &["PEXPIREAT", "n3", "1"],
+        ],
+        &[
+            &["MULTI"],
+            &["SCAN", "0", "MATCH", "n1", "TYPE", "none", "COUNT", "1000"],
+            &["SCAN", "0", "MATCH", "n2", "TYPE", "none", "COUNT", "1000"],
+            &["SET", "w", "1"],
+            &["EXEC"],
+            &["EVAL", "local r = redis.call('SCAN', '0', 'MATCH', 'n3', 'TYPE', 'NONE', 'COUNT', '1000'); redis.call('SET', 't', '1'); return r", "0"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n*2\r\n$1\r\n0\r\n*1\r\n$2\r\nn1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n*2\r\n$1\r\n0\r\n*1\r\n$2\r\nn3\r\n:3\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nn1\r\n*3\r\n$3\r\nSET\r\n$1\r\nw\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nn3\r\n*3\r\n$3\r\nSET\r\n$1\r\nt\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n",
+    );
 }
 
 /// firn records a script's writes as Redis 7.0.15 propagates them: a script

@@ -470,15 +470,6 @@ written while firn lived in the Whitefoot repository; a path such as
   validate TIME's two decimal bulk strings and microsecond range, and
   compare two calls around substantial script work without changing expiry.
 
-- **SCAN TYPE none has a Redis 7.0.15 expiry corner.** In `db.c`,
-  `scanGenericCommand` performs TYPE's `lookupKeyReadWithFlags` before
-  `expireIfNeeded`. An expired matching key is deleted by that lookup,
-  its type becomes `none`, and the later expiry check sees no expiry,
-  so Redis's source admits its name in the reply with TYPE none. Firn
-  deliberately omits every expired name as the enumeration task requires.
-  Record this with active expiry disabled before deciding whether to adopt
-  that corner; ordinary TYPE filters and DEL propagation remain unchanged.
-
 ## Tests
 
 - **Thirteen of Redis's suite tests are lost to a connection left in

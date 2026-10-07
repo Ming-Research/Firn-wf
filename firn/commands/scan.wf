@@ -89,7 +89,7 @@ fn scan_cursor(input: &[u8], span: Span) -> parsed: ScanCursor reads(input) {
 }
 
 fn scan_type(input: &[u8], span: Span) -> kind: u64 reads(input) {
-  doc "TYPE names are compared in either case up to NUL, as Redis's strcasecmp. Unknown types match no live value: 6; 0 means no TYPE filter in ScanPlan.";
+  doc "TYPE names are compared in either case up to NUL, as Redis's strcasecmp. none is 7: Redis 7.0.15 reads a key's type before its expiry check, so the name of an expired key the step removes has type none. Other unknown types match nothing: 6; 0 means no TYPE filter in ScanPlan.";
   let length = before_zero(input: input, span: span);
   let code = name_code(input: input, start: span.start, length: length);
   if code == 78401563153491_u64 {
@@ -106,6 +106,9 @@ fn scan_type(input: &[u8], span: Span) -> kind: u64 reads(input) {
   }
   if code == 1413829466_u64 {
     return 5_u64;
+  }
+  if code == 1162760014_u64 {
+    return 7_u64;
   }
   return 6_u64;
 }
@@ -201,7 +204,7 @@ fn scan_matches(input: &[u8], pattern: Span, key: &[u8]) -> matched: Bool reads(
 }
 
 fn scan_body(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], plan: &ScanPlan, client: &Client, now: u64, found: &KeySet) -> work: ScanWork reads(input), reads(plan), writes(keys), writes(log), writes(client), writes(found) {
-  doc "One map_scan into a fresh key set. MATCH precedes lookup; a matched expired entry is removed and logged even when TYPE excludes it. No reference into the map survives a whole-map mutation.";
+  doc "One map_scan into a fresh key set. MATCH precedes lookup; a matched expired entry is removed and logged even when TYPE excludes it, and TYPE none returns its name. No reference into the map survives a whole-map mutation.";
   let step = key_set_new(capacity: 16_u64);
   let next = map_scan::<Entry>(map: keys, cursor: plan^.cursor, count: plan^.count, keys: &step);
   let entries = &keys^[step];
@@ -226,6 +229,11 @@ fn scan_body(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool
           let typed = plan^.kind == kind;
           let included = bor(any, typed);
           if included {
+            key_set_insert(keys: found, key: key);
+          }
+        }
+        if removed {
+          if plan^.kind == 7_u64 {
             key_set_insert(keys: found, key: key);
           }
         }

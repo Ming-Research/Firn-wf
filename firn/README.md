@@ -88,8 +88,9 @@ zero when the scan ends, and a nonzero cursor can accompany an empty batch.
 `MATCH` and `KEYS` patterns are binary and case-sensitive; `TYPE` names are
 case-insensitive. `KEYS` walks the whole keyspace in one atomic statement
 and skips expired entries without removing them. `SCAN` removes expired
-entries reached after `MATCH`, and `RANDOMKEY` removes expired candidates;
-both record those removals as `DEL`. `RANDOMKEY` starts at a cursor drawn
+entries reached after `MATCH`, returning their names only under
+`TYPE none`, as Redis 7.0.15 does, and `RANDOMKEY` removes expired
+candidates; both record those removals as `DEL`. `RANDOMKEY` starts at a cursor drawn
 from firn's existing xorshift64 state and walks forward, wrapping once;
 this does not reproduce Redis's sampling distribution. All five commands,
 including both flush commands, run through their shared parts on the
