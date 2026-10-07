@@ -44,4 +44,22 @@ cost is measurable on firn's throughput.
 
 ## Results
 
-None yet.
+**Probe.** Run [37570894247](https://github.com/Ming-Research/Firn-wf/actions/runs/37570894247)
+compared base 936110104, head 54268619b (branch `claude/stop-poll-probe`)
+and head-twin. It ran 2 passes of 5 seconds. Each cell is the median rate,
+and the last column is the difference between head and head-twin:
+
+| depth | CPUs | test | base | head | head / base | head and twin |
+|---|---|---|---|---|---|---|
+| 1 | 1 | set | 147k | 152k | +3.3% | 1.0% |
+| 1 | 1 | get | 155k | 152k | -2.3% | 2.9% |
+| 1 | 2 | set | 264k | 263k | -0.4% | 2.5% |
+| 1 | 2 | get | 272k | 278k | +2.2% | 3.1% |
+| 16 | 1 | set | 1751k | 1804k | +3.0% | 3.7% |
+| 16 | 1 | get | 1931k | 1892k | -2.0% | 1.8% |
+| 16 | 2 | set | 3137k | 3181k | +1.4% | 2.4% |
+| 16 | 2 | get | 3361k | 3469k | +3.2% | 5.7% |
+
+At this resolution, about 3%, the probe shows no cost. That is too coarse
+for the 2% rule. The sized run takes depth 1 alone, 6 passes of 10 seconds
+on 1 and 2 CPUs: run [37573701622](https://github.com/Ming-Research/Firn-wf/actions/runs/37573701622).
