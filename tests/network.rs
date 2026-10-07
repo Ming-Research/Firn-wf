@@ -7516,18 +7516,20 @@ fn shutdown_finished(mut child: ProgramChild) {
 }
 
 /// No client limit or half-close can end these servers. A second client
-/// answers a PING; the first pipelines 128 writes and reads their replies,
-/// then sends `SET held 1` and SHUTDOWN in one write. When both reach firn
-/// in one read, firn answers neither, not even `SET`, as redis-server 7.0.15
-/// answers that read (Firn-wf probe run 37574985225); it answers `SET` alone
-/// when they arrive in two reads, which TCP allows, and the run starts over.
-/// 50 ms after the first client's connection closes, the second client
-/// writes a key and is answered: under a second after its PING it is still
-/// inside the wait it began then and has not looked at the request since,
-/// so it runs the write after the request; a run that took longer starts
-/// over. The replay finds the 128 writes, `held` and the second client's
-/// write; the last is lost if the writer drains when the request arrives
-/// rather than after every client has gone. Five runs bound the retries.
+/// connects and answers a PING; the first pipelines 128 writes and reads their
+/// replies, then sends `SET held 1` and SHUTDOWN in one write. When both reach
+/// firn in one read, firn answers neither, not even `SET`, as redis-server
+/// 7.0.15 answers that read (Firn-wf probe run 37574985225); it answers `SET`
+/// alone when they arrive in two reads, which TCP allows, and the run starts
+/// over. 200 ms after the first client's connection closes, well past the
+/// writer's 10 ms cycle, the second client writes a key. Under 800 ms after it
+/// connected, it has not looked at the request since it began serving and its
+/// wait for that write began after its PONG, so it runs the write after the
+/// request and answers it; a run that took longer, or in which it closed
+/// instead, starts over. The replay finds the 128 writes, `held` and the
+/// second client's write, which is lost when the writer drains once the
+/// request arrives instead of after every client has gone. Five runs bound
+/// the reruns; on Linux's loopback a write this small reaches firn in one read.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
@@ -7536,18 +7538,18 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
         let mut attempt = 0;
         let name = loop {
             attempt += 1;
-            assert!(attempt <= 5, "five runs met neither precondition");
+            assert!(attempt <= 5, "five runs each missed a precondition");
             let name = format!("shutdown-drain-{native_ring}-{attempt}.aof");
             let port = free_port();
             let text = port.to_string();
             let child =
                 program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
             let mut client = connect_when_ready(port);
+            let ready = Instant::now();
             let mut late = connect_when_ready(port);
             late.write_all(&resp(&["PING"]))
                 .expect("establish the second client");
             expect_replies(&mut late, b"+PONG\r\n", "second client ready");
-            let ready = Instant::now();
             let mut batch = Vec::new();
             for i in 0..128 {
                 batch.extend(resp(&[
@@ -7566,15 +7568,19 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
             client
                 .read_to_end(&mut replies)
                 .expect("shutdown closes its client");
-            std::thread::sleep(Duration::from_millis(50));
-            let in_time = ready.elapsed() < Duration::from_millis(800);
-            if in_time {
+            std::thread::sleep(Duration::from_millis(200));
+            let mut answered = false;
+            if ready.elapsed() < Duration::from_millis(800) {
                 late.write_all(&resp(&["SET", "late", "after"]))
                     .expect("write after the request");
-                expect_replies(&mut late, b"+OK\r\n", "a write after the request");
+                let mut reply = Vec::new();
+                late.read_to_end(&mut reply)
+                    .expect("the second client closes");
+                answered = reply == b"+OK\r\n";
+                assert!(answered || reply.is_empty(), "{reply:?}");
             }
             shutdown_finished(child);
-            if replies == b"+OK\r\n" || !in_time {
+            if replies == b"+OK\r\n" || !answered {
                 continue;
             }
             assert_eq!(
