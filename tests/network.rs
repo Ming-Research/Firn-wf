@@ -6385,18 +6385,19 @@ $0\r\n\r\n+OK\r\n+OK\r\n:4\r\n\
     assert_eq!(status, 0);
 }
 
-/// firn parses SCAN, KEYS, RANDOMKEY, FLUSHALL and FLUSHDB as Redis does: wrong argument counts, invalid cursors (out of range, signed, spaced or empty), COUNT, MATCH and TYPE options with their syntax and range errors, and the arguments Redis reads only up to their first zero byte. The same requests, from the same keys, run in one transaction,
-/// each error or boundary request in a transaction of its own, then through
-/// a script's redis.call and the errors through redis.pcall, and give the
-/// replies redis-server 7.0.15 gives (Firn-wf probe run 37551292895).
+/// firn parses SCAN, KEYS, RANDOMKEY, FLUSHALL and FLUSHDB as Redis does:
+/// wrong argument counts, invalid cursors (out of range, signed, spaced or
+/// empty), COUNT, MATCH and TYPE options with their syntax and range errors,
+/// and the arguments Redis reads only up to their first zero byte. The same
+/// requests, from the same keys, run in one transaction, each error or
+/// boundary request in a transaction of its own, then through a script's
+/// redis.call and the errors through redis.pcall, and give the replies
+/// redis-server 7.0.15 gives (Firn-wf probe run 37551292895).
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_runs_scan_parts_as_redis_does() {
-    const SETUP: &[&[&str]] = &[
-        &["FLUSHALL"],
-    ];
-    const VALID: &[&[&str]] = &[
-    ];
+    const SETUP: &[&[&str]] = &[&["FLUSHALL"]];
+    const VALID: &[&[&str]] = &[];
     const ERRORS: &[&[&str]] = &[
         &["SCAN"],
         &["SCAN", "bad"],
@@ -6446,7 +6447,8 @@ fn firn_runs_scan_parts_as_redis_does() {
         &["FLUSHALL", "sync"],
         &["FLUSHDB", "SYNC\0ignored"],
     ];
-    const TRANSACTIONS: &[u8] = b"+OK\r\n+OK\r\n*0\r\n+OK\r\n-ERR wrong number of arguments for 'scan' command\r\n\
+    const TRANSACTIONS: &[u8] =
+        b"+OK\r\n+OK\r\n*0\r\n+OK\r\n-ERR wrong number of arguments for 'scan' command\r\n\
 -EXECABORT Transaction discarded because of previous errors.\r\n+OK\r\n\
 +QUEUED\r\n*1\r\n-ERR invalid cursor\r\n+OK\r\n+QUEUED\r\n*1\r\n\
 -ERR invalid cursor\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR invalid cursor\r\n+OK\r\n\
@@ -6483,7 +6485,8 @@ $1\r\n0\r\n*0\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n\
 +QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n+OK\r\n\
 +QUEUED\r\n*1\r\n+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n+OK\r\n+OK\r\n+QUEUED\r\n*1\r\n\
 +OK\r\n";
-    const SCRIPTS: &[u8] = b"+OK\r\n-ERR Wrong number of args calling Redis command from script\r\n\
+    const SCRIPTS: &[u8] =
+        b"+OK\r\n-ERR Wrong number of args calling Redis command from script\r\n\
 -ERR invalid cursor\r\n-ERR invalid cursor\r\n-ERR invalid cursor\r\n\
 -ERR invalid cursor\r\n-ERR invalid cursor\r\n-ERR invalid cursor\r\n\
 -ERR invalid cursor\r\n-ERR syntax error\r\n-ERR syntax error\r\n\
@@ -6533,9 +6536,283 @@ $1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n
         (transactions, TRANSACTIONS, "the transactions"),
         (scripts, SCRIPTS, "the scripts"),
     ] {
-        client.write_all(&requests.concat()).expect("send the requests");
+        client
+            .write_all(&requests.concat())
+            .expect("send the requests");
         expect_replies(&mut client, expected, what);
     }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn records SCAN and KEYS run inside a transaction's EXEC and a script
+/// as Redis 7.0.15 propagates them over keys found expired: SCAN removes
+/// each expired key its MATCH pattern selects and records it as DEL where it
+/// meets it, among the block's writes, including a key its TYPE option then
+/// leaves out of the reply, and leaves an expired key the pattern does not
+/// select; KEYS removes and records nothing. The expected records are
+/// redis-server 7.0.15's (Firn-wf probe run 37551806041).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_scan_commands_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["SET", "k1", "1"],
+            &["PEXPIREAT", "k1", "1"],
+            &["SET", "k2", "2"],
+            &["HSET", "h1", "f", "v"],
+            &["PEXPIREAT", "h1", "1"],
+            &["SET", "x1", "3"],
+            &["PEXPIREAT", "x1", "1"],
+            &["SET", "s1", "4"],
+            &["PEXPIREAT", "s1", "1"],
+        ],
+        &[
+            &["MULTI"],
+            &["SCAN", "0", "MATCH", "k*", "COUNT", "1000"],
+            &["SCAN", "0", "MATCH", "h*", "TYPE", "string", "COUNT", "1000"],
+            &["KEYS", "x*"],
+            &["SET", "w", "1"],
+            &["SCAN", "0", "MATCH", "x*", "COUNT", "1000"],
+            &["EXEC"],
+            &["EVAL", "local r = redis.call('SCAN', '0', 'MATCH', 's*', 'COUNT', '1000'); redis.call('SET', 't', '1'); return r", "0"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*5\r\n*2\r\n$1\r\n0\r\n*1\r\n$2\r\nk2\r\n*2\r\n$1\r\n0\r\n*0\r\n*0\r\n+OK\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n:3\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nk1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nh1\r\n*3\r\n$3\r\nSET\r\n$1\r\nw\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ns1\r\n*3\r\n$3\r\nSET\r\n$1\r\nt\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n",
+    );
+}
+
+/// firn records RANDOMKEY run inside a transaction's EXEC as Redis 7.0.15
+/// propagates it: an expired key it draws is removed and recorded as DEL
+/// inside the transaction's MULTI and EXEC, before the writes that follow
+/// it, and with no live key left it answers nil. The expected records are
+/// redis-server 7.0.15's (Firn-wf probe run 37551806041).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_randomkey_as_redis_propagates_it() {
+    check_held_records(
+        &[
+            &["SET", "r1", "1"],
+            &["PEXPIREAT", "r1", "1"],
+        ],
+        &[
+            &["MULTI"],
+            &["RANDOMKEY"],
+            &["SET", "w", "1"],
+            &["EXEC"],
+            &["RANDOMKEY"],
+            &["DBSIZE"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n$-1\r\n+OK\r\n$1\r\nw\r\n:1\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nr1\r\n*3\r\n$3\r\nSET\r\n$1\r\nw\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n",
+    );
+}
+
+/// firn records RANDOMKEY run inside a script as Redis 7.0.15 propagates it:
+/// an expired key it draws is removed and recorded as DEL inside the
+/// script's MULTI and EXEC, before the script's writes, and with no live key
+/// left it answers nil. The expected records are redis-server 7.0.15's
+/// (Firn-wf probe run 37551806041).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_randomkey_in_scripts_as_redis_propagates_it() {
+    check_held_records(
+        &[
+            &["SET", "q1", "1"],
+            &["PEXPIREAT", "q1", "1"],
+        ],
+        &[
+            &["EVAL", "local k = redis.call('RANDOMKEY'); redis.call('SET', 'z', '1'); return k", "0"],
+            &["DBSIZE"],
+        ],
+        b"$-1\r\n:1\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nq1\r\n*3\r\n$3\r\nSET\r\n$1\r\nz\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n",
+    );
+}
+
+/// firn records FLUSHALL and FLUSHDB run inside a transaction's EXEC and a
+/// script as Redis 7.0.15 propagates them: each is recorded with its
+/// arguments as sent, in place among the block's writes, and empties the
+/// keyspace with its expiries, so a key written again after it has none. The
+/// expected records are redis-server 7.0.15's (Firn-wf probe run
+/// 37551806041).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_held_flush_commands_as_redis_propagates_them() {
+    check_held_records(
+        &[
+            &["SET", "a", "1"],
+            &["SET", "e", "1"],
+            &["PEXPIREAT", "e", "9999999999999"],
+        ],
+        &[
+            &["MULTI"],
+            &["SET", "c", "3"],
+            &["FLUSHALL"],
+            &["SET", "d", "4"],
+            &["SET", "e", "1"],
+            &["EXEC"],
+            &["TTL", "e"],
+            &["EVAL", "redis.call('SET', 'e', '5'); redis.call('FLUSHDB', 'async'); redis.call('SET', 'f', '6'); return redis.call('KEYS', '*')", "0"],
+            &["DBSIZE"],
+            &["TTL", "e"],
+        ],
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*4\r\n+OK\r\n+OK\r\n+OK\r\n+OK\r\n:-1\r\n*1\r\n$1\r\nf\r\n:1\r\n:-2\r\n",
+        b"*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n*1\r\n$8\r\nFLUSHALL\r\n*3\r\n$3\r\nSET\r\n$1\r\nd\r\n$1\r\n4\r\n*3\r\n$3\r\nSET\r\n$1\r\ne\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\ne\r\n$1\r\n5\r\n*2\r\n$7\r\nFLUSHDB\r\n$5\r\nasync\r\n*3\r\n$3\r\nSET\r\n$1\r\nf\r\n$1\r\n6\r\n*1\r\n$4\r\nEXEC\r\n",
+    );
+}
+
+/// firn enumerates its keyspace as Redis 7.0.15's SCAN, KEYS and RANDOMKEY
+/// promise: a SCAN iteration from cursor 0 until it returns 0 again yields
+/// every key present throughout, at any COUNT, with MATCH selecting keys by
+/// a case-sensitive glob pattern, empty and binary keys included, and TYPE
+/// selecting them by kind in either case; an expired key is never returned;
+/// KEYS returns the same keys in one reply; RANDOMKEY returns a present key,
+/// not always the same one, and nil once FLUSHDB has emptied the keyspace,
+/// after which SCAN and KEYS return nothing. Redis fixes no order, so the
+/// keys the case writes are the oracle. Redis may return a key twice while
+/// its table grows; firn's cursor never does, which the case also checks.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_enumerates_keys_as_redis_does() {
+    fn scan_all(client: &mut TcpStream, options: &[&str]) -> Vec<String> {
+        let mut cursor = "0".to_string();
+        let mut found = Vec::new();
+        for _ in 0..100_000 {
+            let request = {
+                let mut request = vec!["SCAN", cursor.as_str()];
+                request.extend_from_slice(options);
+                resp(&request)
+            };
+            client.write_all(&request).expect("send SCAN");
+            assert_eq!(reply_line(client, "SCAN"), "*2\r\n", "SCAN {options:?}");
+            cursor = bulk_reply(client, "the SCAN cursor");
+            found.extend(bulk_strings(client, "the SCAN keys"));
+            if cursor == "0" {
+                return found;
+            }
+        }
+        panic!("SCAN {options:?} did not return to cursor 0");
+    }
+    fn same_keys(mut found: Vec<String>, mut expected: Vec<String>, what: &str) {
+        found.sort();
+        let count = found.len();
+        found.dedup();
+        assert_eq!(found.len(), count, "{what}: a key returned twice");
+        expected.sort();
+        assert_eq!(found, expected, "{what}");
+    }
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut kinds: Vec<(String, &str)> = Vec::new();
+    let mut writes: Vec<Vec<u8>> = Vec::new();
+    for index in 0..300 {
+        let key = format!("user:{index}");
+        writes.push(resp(&["SET", &key, "v"]));
+        kinds.push((key, "string"));
+    }
+    for key in ["User:1", "", "bin\0key"] {
+        writes.push(resp(&["SET", key, "v"]));
+        kinds.push((key.to_string(), "string"));
+    }
+    for index in 0..20 {
+        let hash = format!("h:{index}");
+        writes.push(resp(&["HSET", &hash, "f", "v"]));
+        kinds.push((hash, "hash"));
+        let list = format!("l:{index}");
+        writes.push(resp(&["RPUSH", &list, "v"]));
+        kinds.push((list, "list"));
+        let set = format!("s:{index}");
+        writes.push(resp(&["SADD", &set, "v"]));
+        kinds.push((set, "set"));
+        let sorted = format!("z:{index}");
+        writes.push(resp(&["ZADD", &sorted, "1", "v"]));
+        kinds.push((sorted, "zset"));
+    }
+    writes.push(resp(&["SET", "gone", "v", "PX", "1"]));
+    client.write_all(&writes.concat()).expect("send the writes");
+    for _ in 0..writes.len() {
+        let line = reply_line(&mut client, "a write");
+        assert!(line == "+OK\r\n" || line == ":1\r\n", "a write: {line:?}");
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let keys = |wanted: &dyn Fn(&str, &str) -> bool| -> Vec<String> {
+        kinds
+            .iter()
+            .filter(|(key, kind)| wanted(key, kind))
+            .map(|(key, _)| key.clone())
+            .collect()
+    };
+    let all = keys(&|_, _| true);
+    let counts: [&[&str]; 3] = [&[], &["COUNT", "1"], &["COUNT", "1000"]];
+    for options in counts {
+        same_keys(scan_all(&mut client, options), all.clone(), "SCAN");
+    }
+    let filtered: [(&[&str], Vec<String>); 5] = [
+        (
+            &["MATCH", "user:*", "COUNT", "7"],
+            keys(&|key, _| key.starts_with("user:")),
+        ),
+        (
+            &["MATCH", "user:1?"],
+            (10..20).map(|index| format!("user:{index}")).collect(),
+        ),
+        (&["TYPE", "hash"], keys(&|_, kind| kind == "hash")),
+        (
+            &["TYPE", "ZSET", "COUNT", "3"],
+            keys(&|_, kind| kind == "zset"),
+        ),
+        (
+            &["MATCH", "*", "TYPE", "string"],
+            keys(&|_, kind| kind == "string"),
+        ),
+    ];
+    for (options, expected) in filtered {
+        same_keys(
+            scan_all(&mut client, options),
+            expected,
+            "SCAN with options",
+        );
+    }
+    for (pattern, expected) in [
+        ("*", all.clone()),
+        ("h:*", keys(&|_, kind| kind == "hash")),
+        ("[hl]:1", vec!["h:1".to_string(), "l:1".to_string()]),
+    ] {
+        client
+            .write_all(&resp(&["KEYS", pattern]))
+            .expect("send KEYS");
+        same_keys(bulk_strings(&mut client, "KEYS"), expected, pattern);
+    }
+    client
+        .write_all(&resp(&["RANDOMKEY"]).repeat(50))
+        .expect("send RANDOMKEY");
+    let mut drawn: Vec<String> = (0..50)
+        .map(|_| bulk_reply(&mut client, "RANDOMKEY"))
+        .collect();
+    assert!(drawn.iter().all(|key| all.contains(key)), "{drawn:?}");
+    drawn.sort();
+    drawn.dedup();
+    assert!(drawn.len() > 1, "RANDOMKEY always drew {drawn:?}");
+    client.write_all(&resp(&["DBSIZE"])).expect("send DBSIZE");
+    assert_eq!(integer_reply(&mut client, "DBSIZE"), all.len() as i64);
+    client
+        .write_all(&[resp(&["FLUSHDB"]), resp(&["RANDOMKEY"])].concat())
+        .expect("send FLUSHDB");
+    assert_eq!(reply_line(&mut client, "FLUSHDB"), "+OK\r\n");
+    assert_eq!(reply_line(&mut client, "RANDOMKEY"), "$-1\r\n");
+    same_keys(scan_all(&mut client, &[]), Vec::new(), "SCAN after FLUSHDB");
+    client.write_all(&resp(&["KEYS", "*"])).expect("send KEYS");
+    same_keys(
+        bulk_strings(&mut client, "KEYS"),
+        Vec::new(),
+        "KEYS after FLUSHDB",
+    );
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
