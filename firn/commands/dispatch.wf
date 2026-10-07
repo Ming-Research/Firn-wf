@@ -111,6 +111,8 @@ const code_persist: u64 = 23735472439313744_u64;
 
 const code_dbsize: u64 = 76254079566404_u64;
 
+const code_shutdown: u64 = 5645067812823451731_u64;
+
 const code_config: u64 = 78380037721923_u64;
 
 const code_flushall: u64 = 5497841024004082758_u64;
@@ -743,6 +745,13 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     if go {
       run_dbsize(store: store, client: client);
     }
+    return unit;
+  }
+  if code == code_shutdown {
+    if denied(client: client) {
+      return unit;
+    }
+    run_shutdown(store: store, input: input, args: args, client: client);
     return unit;
   }
   if code == code_config {

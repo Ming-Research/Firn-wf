@@ -58,7 +58,7 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   for @defaults (slot in 0_u64..9_u64) {
     set encodings[slot] = encoding_defaults[slot];
   }
-  let server = ServerState(password: move password, timeout: timeout, encodings: encodings, connections: 0_u64, started: started);
+  let server = ServerState(password: move password, timeout: timeout, shutdown: running, encodings: encodings, connections: 0_u64, started: started);
   let beside = shared_new::<ServerState>(value: move server);
   let pool = pkg::script_pool::new_pool();
   let scripts = shared_new::<pkg::script_pool::EnginePool>(value: move pool);
@@ -130,9 +130,12 @@ fn log_removal(log: &Box<Slots<u8>>, key: &[u8]) -> result: unit reads(key), wri
 }
 
 fn expire_key(store: &Keyspace, key: &[u8], at: u64) -> result: unit reads(store), reads(key) waits {
-  doc "Removes the key when its expiry is still the one queued at at, recording the removal as log_removal does.";
+  doc "Removes the key when its expiry is still the one queued at at, recording the removal as log_removal does, unless main has stopped the writer; testing stopping under the same metadata statement prevents a late expiry record after the final drain.";
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if m^.stopping {
+      return unit;
+    }
     let matched = False();
     match slot^ {
       Some(value: held) => {
@@ -380,4 +383,12 @@ fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>) -> r
     log_input(log: log, input: input, span: span);
   }
   return unit;
+}
+
+fn shutdown_requested(store: &Keyspace) -> requested: Bool reads(store) waits {
+  let requested = False();
+  atomic v = &store^.server {
+    set requested = v^.shutdown;
+  }
+  return requested;
 }
