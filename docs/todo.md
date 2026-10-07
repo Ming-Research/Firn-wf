@@ -548,6 +548,39 @@ written while firn lived in the Whitefoot repository; a path such as
 
 ## Whitefoot requirements
 
+- **A context cannot end another context's wait, so firn stops by
+  polling, which reaches only some waits.** In Whitefoot's specification
+  v0.94 a spawn is structured: the context that started another joins it
+  before it leaves, so `main` returns, and the program ends, only once every
+  client's context, the writer and the expiring context have ended. A context
+  waiting in a host operation (`tcp_accept`, `receive_next`, `send_once`, a
+  file operation), in a guarded atomic statement or in `sleep_until` waits
+  until that wait's own outcome or deadline; nothing another context does
+  ends it. To stop, firn polls: every socket wait has a deadline of at most a
+  second, and each context reads the shutdown request when its wait ends
+  (`design/firn/orderly-stop.md`; measured cost up to 1.25% at pipeline
+  depth 1, `research/investigations/orderly-stop`). That reaches only waits
+  that take a deadline and contexts that come back to their check. It cannot
+  end:
+  - a guarded atomic statement waiting for a state that does not come, such
+    as the script engine's take while a script that never ends holds it;
+  - work inside an atomic statement, such as a running script;
+  - a host operation that has no deadline, such as a sync on a stalled disk.
+
+  Every stop also waits up to a second, and every receive that parks pays a
+  timer. Minimal witness: a context that receives with `deadline: None` keeps
+  `main` from returning until its peer sends or closes, whatever any other
+  context does.
+
+  The change: a primitive that lets one context end other contexts' waits,
+  such as a cancellation a host wait and a guarded atomic statement observe,
+  ending with their own outcome, or an orderly program exit that ends every
+  context once the program has flushed what it chose. Either would replace
+  firn's polling. Reopen with SIGTERM handling, which needs Whitefoot to
+  deliver signals as well; with the busy-script work, where `SHUTDOWN NOSAVE`
+  must stop a script that never ends; or when another wait must be ended from
+  outside.
+
 - **A program cannot read a socket address.** The specification (v0.93,
   section 14, `std::net`) makes `SocketAddress` opaque, built only by
   `socket_address_v4` and `socket_address_v6`; `tcp_accept` returns the
