@@ -335,32 +335,16 @@ fn held_keys(keys: &ConcurrentHashMap<Entry>, input: &[u8], args: &Box<Slots<Spa
   return unit;
 }
 
-fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &Client, now: u64) -> appended: u64 writes(keys), writes(random), writes(log), writes(client) {
-  doc "Draw from firn's existing Meta.random xorshift64 source, also used by SPOP, then scan forward and wrap at zero once. Empty steps are progress, not an empty database. Expired candidates are removed and propagated before continuing.";
+fn randomkey_sample(keys: &ConcurrentHashMap<Entry>, random: &u64, sample: &KeySet) -> result: unit reads(keys), writes(random), writes(sample) {
+  doc "Redis 7.0.15's dictGetFairRandomKey gathers up to fifteen keys from a random position, at most ten buckets for each, and dictGetRandomKey stands in when that finds none: one map_scan step of count 15 from a position drawn from firn's xorshift64 state, also used by SPOP, then further steps forward, wrapping once, until one finds a key. The sample stays empty only when the map holds no key.";
   set random^ = next_random(state: random^);
   let start = random^;
   let cursor = start;
   let wrapped = False();
-  let appended = 0_u64;
-  set client^.now = now;
   loop {
-    let step = key_set_new(capacity: 1_u64);
-    let next = map_scan::<Entry>(map: keys, cursor: cursor, count: 1_u64, keys: &step);
-    let entries = &keys^[step];
-    for @candidates (index in 0_u64..step.len) {
-      let bytes = scanned_key(keys: &step, index: index);
-      let size = bytes.inner.len;
-      let key = &bytes.inner[0_u64..size];
-      if index < entries^.len {
-        let kind = entry_kind(slot: &entries^[index], client: client);
-        let removed = client^.state == state_expired;
-        let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
-        set appended = appended +wrap recorded;
-        if kind != 0_u64 {
-          reply_bulk_input(client: client, input: key, start: 0_u64, length: size);
-          return appended;
-        }
-      }
+    let next = map_scan::<Entry>(map: keys, cursor: cursor, count: 15_u64, keys: sample);
+    if sample^.len > 0_u64 {
+      break;
     }
     if wrapped {
       if next == 0_u64 {
@@ -374,8 +358,40 @@ fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots
     }
     set cursor = next;
   }
-  reply_nil(client: client);
-  return appended;
+  return unit;
+}
+
+fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &Client, now: u64) -> appended: u64 writes(keys), writes(random), writes(log), writes(client) {
+  doc "RANDOMKEY as Redis 7.0.15's dbRandomKey: one key picked uniformly from randomkey_sample's sample; a picked key found expired is removed, recorded as DEL, and the draw starts over; nil once the map holds no key.";
+  let appended = 0_u64;
+  set client^.now = now;
+  loop {
+    let sample = key_set_new(capacity: 16_u64);
+    randomkey_sample(keys: keys, random: random, sample: &sample);
+    if sample.len > 0_u64 {
+      set random^ = next_random(state: random^);
+      let pick = random^ % sample.len;
+      let entries = &keys^[sample];
+      if pick < sample.len {
+        let bytes = scanned_key(keys: &sample, index: pick);
+        let size = bytes.inner.len;
+        let key = &bytes.inner[0_u64..size];
+        if pick < entries^.len {
+          let kind = entry_kind(slot: &entries^[pick], client: client);
+          let removed = client^.state == state_expired;
+          let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+          set appended = appended +wrap recorded;
+          if kind != 0_u64 {
+            reply_bulk_input(client: client, input: key, start: 0_u64, length: size);
+            return appended;
+          }
+        }
+      }
+    } else {
+      reply_nil(client: client);
+      return appended;
+    }
+  }
 }
 
 fn run_scan(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
