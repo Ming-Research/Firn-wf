@@ -207,17 +207,16 @@ fn scan_body(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool
   let entries = &keys^[step];
   let appended = 0_u64;
   set client^.now = now;
-  for @filter (index in 0_u64..step.len) {
+  for (index in 0_u64..step.len) {
     let bytes = scanned_key(keys: &step, index: index);
     let size = bytes.inner.len;
     let key = &bytes.inner[0_u64..size];
+    let wanted = True();
     if plan^.matching {
-      let matched = scan_matches(input: input, pattern: plan^.pattern, key: key);
-      if bnot(matched) {
-        continue @filter;
-      }
+      set wanted = scan_matches(input: input, pattern: plan^.pattern, key: key);
     }
-    if index < entries^.len {
+    let present = index < entries^.len;
+    if band(wanted, present) {
       let kind = entry_kind(slot: &entries^[index], client: client);
       let removed = client^.state == state_expired;
       let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
