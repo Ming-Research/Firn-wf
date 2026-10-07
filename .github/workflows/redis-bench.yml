@@ -10,6 +10,8 @@
 #                 and Redis, Valkey, Dragonfly and Garnet where the host has
 #                 them, on each server CPU count in `cpus`
 #                 (redis-bench.sh scale)
+#   mode workloads  this checkout's firn and Redis, without and with AOF,
+#                   on the deployment-performance consumer command forms
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
 #
@@ -32,9 +34,9 @@ on:
         options: [14900k, github]
         default: 14900k
       mode:
-        description: compare the revisions' images, or scale them against Redis and its competitors
+        description: Compare images, scale against competitors, or measure consumer workloads
         type: choice
-        options: [compare, scale, build]
+        options: [compare, scale, workloads, build]
         default: compare
       revisions:
         description: "name=revision pairs; a name ending in -twin measures its stem's image again; scale uses base"
@@ -49,9 +51,9 @@ on:
         type: string
         default: "1 2"
       tests:
-        description: redis-benchmark tests
+        description: "Tests or workloads, space-separated; empty uses mset set get for compare/scale, all five for workloads"
         type: string
-        default: "mset set get"
+        default: ""
       depths:
         description: Pipeline depths (compare)
         type: string
@@ -125,6 +127,10 @@ jobs:
 
       - name: Check the host's tools
         run: |
+          if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
+            export PATH="$HOME/.cargo/bin:$PATH"
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
           echo "OUT=$RUNNER_TEMP/redis-bench" >> "$GITHUB_ENV"
           OUT="$RUNNER_TEMP/redis-bench"
           # The helpers that run a measurement in a session of its own and stop
@@ -162,6 +168,11 @@ jobs:
           for tool in clang ld.lld curl python3 git make taskset redis-server redis-benchmark redis-cli; do
             command -v "$tool" >/dev/null || missing="$missing $tool"
           done
+          if [ "$MODE" = workloads ]; then
+            for tool in cargo rustc; do
+              command -v "$tool" >/dev/null || missing="$missing $tool"
+            done
+          fi
           if [ -n "$missing" ]; then
             echo "missing:$missing"
             exit 1
@@ -184,6 +195,10 @@ jobs:
             redis-benchmark --version || true
             { clang --version | head -1; } || true
             ld.lld --version || true
+            if [ "$MODE" = workloads ]; then
+              cargo --version
+              rustc --version
+            fi
           } | tee "$OUT/host.txt"
 
       - uses: actions/download-artifact@v4
@@ -197,6 +212,7 @@ jobs:
       # Each tree's own pin names the LLVM major its compiler needs, which
       # the host's /usr/bin/clang must be (make toolchain-check).
       - name: Build each revision's firn with its pinned compiler
+        if: ${{ inputs.mode != 'workloads' }}
         run: |
           images=
           kept="$RUNNER_TEMP/images-run"
@@ -264,7 +280,7 @@ jobs:
         timeout-minutes: 110
         env:
           COMPARE_CPUS: ${{ inputs.cpus }}
-          COMPARE_TESTS: ${{ inputs.tests }}
+          COMPARE_TESTS: ${{ inputs.tests || 'mset set get' }}
           COMPARE_DEPTHS: ${{ inputs.depths }}
           COMPARE_PASSES: ${{ inputs.passes }}
           COMPARE_SECONDS: ${{ inputs.seconds }}
@@ -274,9 +290,13 @@ jobs:
           PERF_CALLERS: ${{ inputs.callers && '1' || '' }}
           PERF_FREQUENCY: ${{ inputs.callers && '999' || '4999' }}
           SCALE: ${{ inputs.cpus }}
-          SCALE_TESTS: ${{ inputs.tests }}
+          SCALE_TESTS: ${{ inputs.tests || 'mset set get' }}
           PASSES: ${{ inputs.passes }}
           SECONDS_PER_RUN: ${{ inputs.seconds }}
+          WORKLOAD_CPUS: ${{ inputs.cpus }}
+          WORKLOAD_PASSES: ${{ inputs.passes }}
+          WORKLOAD_SECONDS: ${{ inputs.seconds }}
+          WORKLOADS: ${{ inputs.tests }}
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"
@@ -294,7 +314,7 @@ jobs:
             fi
             run_session compare 2>&1 | tee "$OUT/bench.txt"
           else
-            # scale builds this checkout's firn under its own pin's LLVM,
+            # scale/workloads build this checkout's firn under its own pin's LLVM,
             # which a tree built above may have replaced on a hosted runner.
             if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
               make toolchain
@@ -304,7 +324,10 @@ jobs:
             make compiler
             export FIRN_BASELINE="$OUT/base"
             echo "firn: $(git rev-parse HEAD)" | tee -a "$OUT/host.txt"
-            run_session scale 2>&1 | tee "$OUT/scale.txt"
+            if [ "$MODE" = workloads ]; then
+              echo "revision,firn,$(git rev-parse HEAD),$(cat whitefoot.pin)" | tee "$OUT/revisions.csv"
+            fi
+            run_session "$MODE" 2>&1 | tee "$OUT/$MODE.txt"
           fi
 
       - name: Publish the host and the revisions

@@ -118,3 +118,26 @@ them. It is built with the host's cargo; the 14900K's runner has it in
 `~/.cargo/bin`, where Whitefoot's `compute-bench.yml` placement job finds it
 to build the compiler there. It is removed when a common tool can send these
 workloads.
+
+Run `sh research/experiments/redis-bench/redis-bench.sh workloads` through
+`redis-bench.yml` mode `workloads` on the 14900K; `cpus`, `passes`, `seconds`
+and `tests` set `WORKLOAD_CPUS`, `WORKLOAD_PASSES`, `WORKLOAD_SECONDS` and
+`WORKLOADS` (leave `tests` empty for all five). Probe with 2 passes of 5
+seconds before the 3 passes of 10 seconds. The harness tests and builds the
+std-only Cargo project in `research/experiments/redis-bench/workload/`
+offline in release mode, then starts a fresh server for each workload and
+line, reversing the line order on even passes. It uses 50 connections, one
+nonblocking worker per assigned client CPU (up to 16), and waits for each
+complete command or transaction reply before sending another on that
+connection. Request latencies use exact one-microsecond bins, merged across
+all workers; elapsed time excludes connection setup and script loading and
+includes draining requests in flight at the deadline. `workloads.csv` holds
+`line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms`.
+Before each `session-get` sample, `--fill 1000000` pipelines exactly
+`sess:0` through `sess:999999` with 200-byte values and a one-day expiry;
+`workloads-memory.csv` holds `line,pass,cpus,workload,sessions,rss_kib`
+from the server's `/proc/<pid>/status` after all fill replies arrive.
+Measured requests keep the planned 100,000-key range. The client also takes
+`--port`, `--workload`, `--connections`, `--threads`, `--keys`, `--value-size`
+and either `--seconds` or a total `--requests`; fill emits no timing row,
+and any protocol, I/O or Redis error fails the run.
