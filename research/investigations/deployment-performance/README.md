@@ -122,6 +122,67 @@ test's request count set from a short run of new to about 2.5 seconds. The
 rule above then claims a loss only for a test whose cells show it at both
 driver counts.
 
+### Results
+
+Images: run [37711707922](https://github.com/Ming-Research/Firn-wf/actions/runs/37711707922)
+(macOS 15.7.9, Apple clang 17.0.0, `make firn-lto`), old 6239de8c8 and mid
+c60db650d with wf-364f86c2fd16, new 08a60d308 with wf-0b7f5c5b9854. The M5
+run took 746 seconds under the host-wide lock on 2026-10-08, each
+measurement 2 to 3 seconds; "twin spread" is the largest difference between
+new and new-twin over the three passes; "within" means inside it, "mixed"
+outside it but not in the same direction in every pass.
+
+`WF_DRIVERS=1`, depth 16, thousands of requests a second (median of 3 passes):
+
+| test | old | mid | new | new-twin | old / new | mid / new | twin spread | old | mid |
+|---|---|---|---|---|---|---|---|---|---|
+| set | 2721 | 2710 | 2613 | 2685 | 1.041 | 1.037 | 3.4% | mixed | mixed |
+| get | 2777 | 2797 | 2761 | 2777 | 1.006 | 1.013 | 3.9% | within | within |
+| incr | 2639 | 2336 | 2664 | 2636 | 0.991 | 0.877 | 3.6% | within | mixed |
+| hset | 2555 | 2411 | 2431 | 2326 | 1.051 | 0.992 | 4.3% | mixed | within |
+| sadd | 2662 | 2580 | 2568 | 2533 | 1.037 | 1.005 | 2.9% | faster | within |
+| zadd | 1313 | 1256 | 1249 | 1296 | 1.051 | 1.005 | 3.7% | mixed | within |
+| lpush | 2745 | 2732 | 2730 | 2709 | 1.005 | 1.001 | 1.7% | within | within |
+| rpop | 2796 | 2783 | 2780 | 2792 | 1.006 | 1.001 | 2.4% | within | within |
+| lrange_100 | 284 | 279 | 275 | 282 | 1.033 | 1.014 | 4.7% | within | within |
+| mset | 1273 | 1248 | 1260 | 1304 | 1.010 | 0.991 | 3.5% | within | within |
+
+`WF_DRIVERS=2`, depth 16, thousands of requests a second (median of 3 passes):
+
+| test | old | mid | new | new-twin | old / new | mid / new | twin spread | old | mid |
+|---|---|---|---|---|---|---|---|---|---|
+| set | 2651 | 2665 | 2640 | 2634 | 1.004 | 1.009 | 2.7% | within | within |
+| get | 2753 | 2751 | 2769 | 2771 | 0.994 | 0.994 | 0.3% | mixed | mixed |
+| incr | 2583 | 2490 | 2646 | 2522 | 0.976 | 0.941 | 4.7% | within | mixed |
+| hset | 2351 | 2100 | 2217 | 2265 | 1.060 | 0.947 | 2.1% | mixed | mixed |
+| sadd | 2397 | 2383 | 2334 | 2344 | 1.027 | 1.021 | 0.6% | faster | mixed |
+| zadd | 1212 | 1125 | 1206 | 1201 | 1.005 | 0.933 | 0.4% | faster | mixed |
+| lpush | 2511 | 2434 | 2511 | 2525 | 1.000 | 0.969 | 1.0% | within | mixed |
+| rpop | 2387 | 2578 | 2581 | 2592 | 0.925 | 0.999 | 0.4% | mixed | within |
+| lrange_100 | 280 | 280 | 282 | 278 | 0.993 | 0.991 | 7.8% | within | within |
+| mset | 1161 | 1200 | 1120 | 1093 | 1.037 | 1.072 | 4.1% | within | mixed |
+
+**A check of what the run can resolve.** On the same settings, `set` at
+depth 16 with one benchmark process gave firn new (one driver) 2.91 million
+requests a second and Redis 7.0.15 2.05 million, 1.42 times, as on the
+14900K (1.44); three benchmark processes gave 2.67 and 1.91 million. The run
+therefore separates firn from Redis, but firn does not gain from a second
+driver or from more client processes, so it runs near a limit outside the
+server on this machine, and a difference of a few percent between firn
+revisions may not reach the measurement.
+
+**Result.**
+- By the rule, no test shows a loss of mid or new against old at both
+  driver counts except `sadd`, where old is faster than new by 3.7% and
+  2.7%, beyond twin spreads of 2.9% and 0.6%.
+- `mid` against new is within the spread or mixed in every cell; no
+  command-path change shows a consistent loss.
+- What this does not settle: depth 1, which the M5 cannot resolve, and
+  differences smaller than the limit above; the losses of 3 to 6% that the
+  14900K's non-interleaved runs suggested for `set` and `mset` are neither
+  confirmed nor excluded here (`set` is mixed, `mset` within). The
+  interleaved 14900K comparison stays queued for when the machine returns.
+
 ## Scripts, transactions and expiring keys
 
 ### The plan, stated before measuring
