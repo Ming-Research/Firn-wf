@@ -77,6 +77,8 @@ Whitefoot gap; a change to them is made in
 
 ## Reports
 
+The status board is <https://claude.ai/artifact/AYK6DKgUmesZWMptgKD7ot>.
+
 A completion report also names any `whitefoot.pin` or submodule moved and any
 Whitefoot gap filed.
 
