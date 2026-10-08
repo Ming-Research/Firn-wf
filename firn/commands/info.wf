@@ -387,7 +387,10 @@ fn memory_human(text: &Box<Slots<u8>>, value: u64) -> result: unit writes(text) 
     let half = quantum / 2_u64;
     let odd = quotient % 2_u64;
     let tie = residual == half;
-    let up = bor(residual > half, band(tie, odd == 1_u64));
+    let odd_quotient = odd == 1_u64;
+    let tied_up = band(tie, odd_quotient);
+    let above = residual > half;
+    let up = bor(above, tied_up);
     if up {
       set quotient = quotient +wrap 1_u64;
     }
@@ -419,7 +422,10 @@ fn memory_human(text: &Box<Slots<u8>>, value: u64) -> result: unit writes(text) 
   let halfway = divisor / 2_u64;
   let parity = cents % 2_u64;
   let equal = remainder == halfway;
-  if bor(remainder > halfway, band(equal, parity == 1_u64)) {
+  let odd_cents = parity == 1_u64;
+  let tied_round = band(equal, odd_cents);
+  let beyond = remainder > halfway;
+  if bor(beyond, tied_round) {
     set cents = cents +wrap 1_u64;
   }
   let integral = cents / 100_u64;

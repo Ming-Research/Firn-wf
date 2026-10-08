@@ -274,7 +274,8 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     let go = band(fits, open);
     let subarity = object_arity(input: input, args: args);
     let subfits = arity_holds(arity: subarity, count: count);
-    if band(fits, bnot(subfits)) {
+    let subfails = bnot(subfits);
+    if band(fits, subfails) {
       let rejected_object = object_plan(input: input, args: args, client: client);
       return unit;
     }

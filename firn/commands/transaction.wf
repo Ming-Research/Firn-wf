@@ -176,7 +176,8 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
   }
   if kind == 171_u64 {
     let object_count = object_arity(input: input, args: args);
-    if bnot(arity_holds(arity: object_count, count: count)) {
+    let object_fits = arity_holds(arity: object_count, count: count);
+    if bnot(object_fits) {
       let refused_object = object_plan(input: input, args: args, client: client);
       set transaction^.dirty = True();
       return unit;

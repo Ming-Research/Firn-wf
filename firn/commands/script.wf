@@ -1660,7 +1660,8 @@ fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
       reply_error(client: client, word: &text_script_unknown[0_u64..44_u64]);
       return 0_u64;
     }
-    if bnot(arity_holds(arity: object_count, count: count)) {
+    let object_fits = arity_holds(arity: object_count, count: count);
+    if bnot(object_fits) {
       reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
       return 0_u64;
     }
