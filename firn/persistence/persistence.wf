@@ -97,7 +97,8 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
           }
         }
         if rewrite {
-          set log = aof_rw_cycle(store: &store, factory: &factory, log: move log, pending: &pending, clock: &clock, last_sync: &last_sync, time: &time, manual: manual);
+          let aof_cycled = aof_rw_cycle(store: &store, factory: &factory, log: move log, pending: &pending, clock: &clock, last_sync: &last_sync, time: &time, manual: manual);
+          set log = move aof_cycled;
         }
       }
     }
