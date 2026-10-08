@@ -305,8 +305,8 @@ Where firn falls below Redis:
   p99 of 3.4 to 5.5 ms against 0.6 to 1.0 ms, and worse on two CPUs than on
   one. firn runs every script on one engine that scripts take in turn
   (`firn/script_pool`); waiting for the engine is the hypothesis for the
-  second CPU's loss, not measured here, and why one CPU's p99 is five times
-  Redis's is not known.
+  second CPU's loss, not measured here; why one CPU's p99 is five times
+  Redis's is answered [below](#why-the-scripted-limiters-tail-is-long).
 - **Session writes with the append-only file on one CPU,** at 0.92 with a
   p99 of 0.84 ms against 0.65 ms.
 - **The transaction rate limiter's p99 with the append-only file on two
@@ -356,9 +356,11 @@ thousands a second and p99 in ms, both passes:
 
 With one connection firn matches Redis in rate and p99, so the script's own
 path is not the cost: the hypothesis survives its rejection test. The loss
-appears when connections compete: at 8 connections firn's rate is 0.75 of
-Redis's with an equal p99, and at 50 its p99 is 3.42 ms in every pass and
-line, six times Redis's. Whitefoot's runtime wakes every context watching a
+appears when connections compete: at 8 connections firn's rate is 0.73 to
+0.75 of Redis's without the append-only file and 0.81 to 0.82 with it, with
+an equal p99, and at 50 its p99 is 3.42 to 3.43 ms in every pass and line,
+6.0 to 6.2 times Redis's without the append-only file and 3.5 to 3.7 times
+with it. Whitefoot's runtime wakes every context watching a
 unit when a statement writes it (`wf_watch_wake_locked` in its
 `completion/bridge.c`), so each release of the engine wakes every waiting
 script. A p99 this constant across passes points to a fixed delay rather
@@ -367,8 +369,11 @@ the next measurement.
 
 A profile of firn under the same workload (run
 [37782618040](https://github.com/Ming-Research/Firn-wf/actions/runs/37782618040),
-one CPU, `perf record` of one extra unmeasured 5-second run per line, flat
-self time) does not support the race as the main cost. In all four profiles
+Firn-wf 7b96ba5, one CPU, one pass, `perf record` of one extra unmeasured
+5-second run per line, flat self time) shows where firn's CPU goes. A flat
+on-CPU profile cannot show time a context spends waiting off the CPU, so it
+bounds only the CPU cost of the race, not its delay; the probe below
+measures the time a script holds the engine. In all four profiles
 (8 and 50 connections, append-only file off and on) the largest symbols are
 Halo's collector check `halo.vm.collect_if_due` at 11.8 to 12.6%, the C
 allocator (calloc, malloc, free and consolidation) at 11 to 13% together,
@@ -392,24 +397,29 @@ used an experiment branch (`exp/script-gc-probe` at 51f9b04, not merged)
 that reads Halo's `collection_count` and the monotonic clock just after a
 script call takes the engine and just before it returns it, and sorts calls
 into those during which a collection completed and the rest. One CPU,
-5 seconds per line; the 50-connection figures subtract the 8-connection run
-that preceded them on the same server.
+one pass, 5 seconds per line. The counters run from the server's start and
+were read after each measured run, before the unmeasured profiled rerun, so
+the reading after the 50-connection run also holds the 8-connection
+measured run and its profiled rerun, which cannot be separated: only the
+8-connection rows are clean, and the table gives the 50-connection lines
+their client p99 alone.
 
 | line | connections | calls | with a collection | mean, with | mean, without | calls per collection | client p99, firn / Redis |
 |---|---|---|---|---|---|---|---|
 | firn | 8 | 786,572 | 241 | 3.24 ms | 2.7 µs | 3,264 | 0.087 / 0.100 ms |
-| firn | 50 | 1,440,274 | 430 | 3.70 ms | 3.0 µs | 3,349 | 3.457 / 0.714 ms |
+| firn | 50 | not separable | | | | | 3.457 / 0.714 ms |
 | firn, AOF | 8 | 815,809 | 250 | 3.05 ms | 2.6 µs | 3,263 | 0.085 / 0.090 ms |
-| firn, AOF | 50 | 1,283,655 | 383 | 3.78 ms | 3.1 µs | 3,352 | 3.457 / 0.814 ms |
+| firn, AOF | 50 | not separable | | | | | 3.457 / 0.814 ms |
 
-Calls with a collection fall between 1 and 8 ms, most between 2 and 4; the
-longest took 6.7 ms. A collection pauses every waiting connection: about one
+In the 8-connection runs, calls with a collection fall between 1 and 8 ms,
+most between 2 and 4; the longest took 6.2 ms. A collection pauses every waiting connection: about one
 request in 3,300 runs into one, and each pause delays the other waiting
 connections' requests too, about 50 / 3,300 = 1.5% of requests at 50
 connections, above the 1% the p99 counts, and 8 / 3,300 = 0.24% at 8,
 below it. That accounts for the p99 equal to the pause at 50 connections
 and for its absence at 1 and 8. Collections took 0.78 of 5 seconds at 8
-connections, 15.6% of the server's time, a large part of the rate's 0.75.
+connections, 15.6% of the server's time, a large part of the rate's 0.73 to
+0.75 without the append-only file.
 The profile of the same run no longer lists `text_bytes`, the per-call copy
 this branch removed. The collector belongs to Halo, whose design records a
 whole-heap collection as an owner decision; these figures go to Halo's

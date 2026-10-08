@@ -16,6 +16,18 @@ written while firn lived in the Whitefoot repository; a path such as
 
 ## Server
 
+- **Scripts' p99 follows Halo's collection pause.** With 50 connections
+  firn runs rate-limiter-flexible's script at 0.73 to 0.78 of Redis 7.0.15's
+  rate on one CPU with a p99 of 3.4 ms against 0.6 to 1.0 ms, and at 0.68
+  on two CPUs; Halo's whole-heap collection, about once per 3,300 calls and
+  3 to 4 ms long, sets the p99 and takes about 15% of the server's time
+  ([deployment record](../research/investigations/deployment-performance/README.md#why-the-scripted-limiters-tail-is-long)).
+  The collector is Halo's (its card `halo-gc-pause` on the status board);
+  firn's part, the per-call source copy, is removed. Uncertain: the second
+  CPU's further loss (engine waiting is the hypothesis) and the allocator's
+  11 to 13%. Reopen when Halo's collector changes: rerun the limiter
+  workload at 8 and 50 connections on the i9-14900K against Redis.
+
 - **Complete firn's standalone deployment workloads.** The
   [deployment direction](../research/investigations/firn/DESIGN.md#deployment-direction)
   requires usable cache/session storage and scripted conditional updates,

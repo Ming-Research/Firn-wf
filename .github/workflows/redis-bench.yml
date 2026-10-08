@@ -71,7 +71,7 @@ on:
         type: string
         default: "50"
       profile:
-        description: Record a perf profile of each image (compare) or of each firn line's first pass (workloads)
+        description: "Record a perf profile of each image (compare), or rerun each firn line's first pass once more under perf (workloads: one extra unmeasured run per firn line, CPU count, workload and connection count)"
         type: boolean
         default: true
       profile_test:
