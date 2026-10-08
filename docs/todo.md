@@ -573,10 +573,31 @@ written while firn lived in the Whitefoot repository; a path such as
   installation: let manifest rename succeed, fail the next directory sync,
   then require retained files and history, error status, subsequent writes
   in the selected incremental file and correct values after restart. The
-  implementation has only source inspection for this path. Reopen in the
+  implementation has only source inspection for this path. Also load a
+  manifest containing history and fail startup's directory sync: startup
+  must retain both history files and records. The existing history-removal
+  network case covers success but cannot portably inject this failure or
+  prove syscall ordering. Reopen in the
   rewrite's CI validation before claiming failure-at-every-step coverage.
 
 ## Whitefoot requirements
+
+- **Exclusive creation for temporary append-only files.** Whitefoot's
+  `open_append` opens an existing file; it cannot create a file only when
+  absent. For appendfilename `F`, firn's rewrite opens and truncates
+  `temp-F.base`. Another dataset sharing appendonlydir can have that exact
+  appendfilename and an upgraded base still named `temp-F.base`, so the
+  rewrite destroys its persisted data. Distinct appendfilenames alone do
+  not isolate these names. Redis 7.0.15's `temp-F.incr` has the same class
+  of collision. Keep this overlap unsupported, with no naming workaround;
+  add an exclusive-create operation to Whitefoot, then use it for temporary
+  files so a collision fails without opening or truncating the existing
+  file. Reopen when shared-directory isolation is required or Whitefoot
+  supplies exclusive creation. Validate in CI with one dataset's upgraded
+  base occupying another's temporary name: rewriting must refuse the
+  collision, leave the existing bytes unchanged and preserve both datasets
+  after restart. The collision follows from the open/truncate path; no
+  collision experiment or implementation of exclusive creation is claimed.
 
 - **A context cannot end another context's wait, so firn stops by
   polling, which reaches only some waits.** In Whitefoot's specification

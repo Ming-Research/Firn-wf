@@ -265,7 +265,13 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
     Ok(value: opened) => {
       let persisted = aof_persist(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
       if persisted.durable {
-        aof_history(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
+        match std::fs::sync_directory(factory: factory, root: writable) {
+          Ok(value: synced) => {
+            aof_history(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
+          }
+          Err(error: problem) => {
+          }
+        }
         return Ok<WriteFile, unit>(value: move opened);
       }
       close_write(factory: factory, file: move opened);

@@ -313,7 +313,7 @@ fn aof_read_manifest(factory: &HandleFactory, directory: &DirectoryRead, prefix:
 }
 
 fn aof_repr(output: &Box<Slots<u8>>, input: &[u8]) -> result: unit reads(input), writes(output) {
-  doc "aofInfoFormat uses sdsneedsrepr and sdscatrepr: quote whitespace, control or non-ASCII bytes, quotes and backslashes; emit C escapes or lowercase hexadecimal.";
+  doc "Use sdscatrepr encoding, also quoting apostrophes that Redis's sdsneedsrepr misses so sdssplitargs can read the name back.";
   let quote = False();
   let length = input^.len;
   for (index in 0_u64..length) {
@@ -321,9 +321,11 @@ fn aof_repr(output: &Box<Slots<u8>>, input: &[u8]) -> result: unit reads(input),
     let low = byte <= 32_u8;
     let high = byte >= 127_u8;
     let double = byte == 34_u8;
+    let single = byte == 39_u8;
     let backslash = byte == 92_u8;
     let controls = bor(low, high);
-    let escaped = bor(double, backslash);
+    let quotes = bor(double, single);
+    let escaped = bor(quotes, backslash);
     let special = bor(controls, escaped);
     set quote = bor(quote, special);
   }

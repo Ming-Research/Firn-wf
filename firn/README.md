@@ -244,7 +244,8 @@ write `temp-F.manifest`, sync it, rename it over the manifest and sync the
 directory. A listed file that is missing or malformed stops firn with status
 4 before it listens. Only the last file may have an incomplete tail cut,
 as with `aof-load-truncated yes`; an incomplete earlier file stops startup.
-Listed history files are removed after loading; unlisted files are kept.
+Listed history files are removed after loading only after syncing appendonlydir;
+a failed sync leaves them listed and on disk. Unlisted files are kept.
 An old single file `F` in the working directory is upgraded by persisting a
 manifest and moving `F` into `appendonlydir`. Interrupted upgrades resume;
 when both copies exist and the manifest names `F`, the directory copy wins.
@@ -257,7 +258,13 @@ replays the closed files into a private keyspace and writes a new command
 base. Clients continue writing to the new incremental file. Installation
 persists a manifest selecting the new base before removing the old files.
 The temporary base is `temp-F.base` beside `temp-F.manifest`, so servers
-sharing `appendonlydir` with distinct appendfilenames use distinct files.
+sharing `appendonlydir` with distinct appendfilenames use distinct temporary
+base names. Those names can still collide with another dataset's upgraded
+base: if its appendfilename is literally `temp-F.base`, rewriting `F` can
+truncate that dataset's base. Do not share a directory with that overlap.
+Whitefoot does not yet offer exclusive file creation to refuse the collision;
+Redis's `temp-F.incr` has the same class of collision. The remaining work is
+recorded under [Whitefoot requirements](../docs/todo.md#whitefoot-requirements).
 With appendonly off, `BGREWRITEAOF` answers
 `ERR Can't execute an AOF background rewriting. Please check the server logs for more information.`
 because there is no closed log to rebuild; Redis can rewrite in that state.

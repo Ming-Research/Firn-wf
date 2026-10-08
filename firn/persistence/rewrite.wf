@@ -53,8 +53,52 @@ fn aof_rw_manifest(original: &AofManifest) -> made: AofManifest reads(original) 
   return move made;
 }
 
-fn aof_rw_switch(factory: &HandleFactory, log: &AofLog) -> accepted: Bool writes(factory), writes(log) waits {
-  doc "Flush is complete before entry. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; the old one is synced and closed before the rebuild starts.";
+fn aof_rw_close_tail(store: &Keyspace, factory: &HandleFactory, log: &AofLog, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(time), writes(factory), writes(log), writes(clock) waits {
+  doc "Read the current incremental file through replay into a private keyspace. If EOF leaves an unfinished region, cut before its first MULTI so the closed file replays whole. A later EXEC can close a startup-retained block, so no startup offset is carried here. The live keyspace is unchanged.";
+  for (index in 0_u64..log^.manifest.parts.inner.len) {
+    let part = &log^.manifest.parts.inner[index];
+    let incremental = part^.kind == 105_u8;
+    let current = part^.sequence == log^.manifest.incr_sequence;
+    let selected = band(incremental, current);
+    if selected {
+      let empty = array_filled::<u8, 0>(value: 0_u8);
+      let password = pkg::bytes::bytes_new(input: &empty[0_u64..0_u64], start: 0_u64, length: 0_u64);
+      let quiet = False();
+      let private_store = pkg::store::keyspace_new(seed: 1_u64, logging: quiet, password: move password, timeout: 0_u64, started: time^.unix_ms);
+      let length = part^.name.inner.len;
+      let name = &part^.name.inner[0_u64..length];
+      let loaded = replay(store: &private_store, factory: factory, root: &log^.directory, name: name, name_length: length, time: time, clock: clock);
+      if loaded.stopped {
+        return False();
+      }
+      if loaded.unfinished {
+        match std::fs::truncate_file(factory: factory, file: &log^.file, length: loaded.reverted) {
+          Ok(value: truncated) => {
+            let removed = loaded.size -sat loaded.reverted;
+            atomic m = &store^.meta {
+              set m^.aof_current_size = m^.aof_current_size -sat removed;
+            }
+          }
+          Err(error: problem) => {
+            return False();
+          }
+        }
+      } else if loaded.cut {
+        return False();
+      }
+      return True();
+    }
+  }
+  return False();
+}
+
+fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(time), writes(factory), writes(log), writes(clock) waits {
+  doc "Flush is complete before entry. Find the unfinished region in the current file, cut it and sync the file before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts.";
+  let whole = aof_rw_close_tail(store: store, factory: factory, log: log, time: time, clock: clock);
+  if whole {
+  } else {
+    return False();
+  }
   match std::fs::sync_file(factory: factory, file: &log^.file) {
     Ok(value: synced) => {
     }
@@ -305,7 +349,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
     aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
     return move log;
   }
-  let switched = aof_rw_switch(factory: factory, log: &log);
+  let switched = aof_rw_switch(store: store, factory: factory, log: &log, time: time, clock: clock);
   if switched {
   } else {
     aof_rw_complete(store: store, accepted: no, manual: manual, started: no);

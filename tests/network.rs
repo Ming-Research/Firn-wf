@@ -8385,6 +8385,28 @@ fn multi_part_aof_can_handle_appendfilename_contains_whitespaces() {
     multipart_load(&program, name, &[("k1", Some("v1"))]);
 }
 
+/// sdssplitargs reads apostrophes inside double quotes literally. Firn also
+/// quotes this name when writing, unlike Redis 7.0.15's sdsneedsrepr.
+#[test]
+fn multi_part_aof_quotes_apostrophes_in_appendfilename() {
+    let program = CompiledProgram::from_environment();
+    let name = "a'b";
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
+    let mut client = connect_when_ready(port);
+    client.write_all(&resp(&["SET", "k", "v"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "apostrophe appendfilename");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+    let directory = program.working_directory().join("appendonlydir");
+    assert_eq!(
+        std::fs::read(directory.join(format!("{name}.manifest"))).unwrap(),
+        b"file \"a'b.1.base.aof\" seq 1 type b\nfile \"a'b.1.incr.aof\" seq 1 type i\n"
+    );
+    multipart_load(&program, name, &[("k", Some("v"))]);
+}
+
 /// loadAppendOnlyFiles permits truncation only in the last active file.
 /// aofDelHistoryFiles removes only listed history, leaving unlisted files.
 #[test]
@@ -8687,6 +8709,130 @@ fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
         assert_eq!(integer_reply(&mut client, "expiry unchanged"), 99999999999000);
     }
     rewrite_stop(&mut client, child);
+}
+
+/// The partial-command-in-block fixture retains MULTI at startup. Redis's
+/// loader reverts the unfinished block, including later appended commands;
+/// the rewrite must close that file outside the block before publishing it
+/// as an earlier incremental file that startup will no longer truncate.
+#[test]
+fn firn_rewrite_cuts_a_retained_unfinished_block_before_switching() {
+    let program = CompiledProgram::from_environment();
+    let name = "appendonly.aof";
+    let path = aof_incremental_fixture(program.working_directory(), name);
+    let partial = resp(&["SET", "c", "3"]);
+    let retained = [
+        resp(&["SET", "a", "1"]),
+        resp(&["MULTI"]),
+        resp(&["SET", "b", "2"]),
+    ].concat();
+    std::fs::write(&path, [retained.clone(), partial[..9].to_vec()].concat()).unwrap();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]);
+    let mut client = connect_when_ready(port);
+    multipart_values(&mut client, &[("a", Some("1")), ("b", None), ("c", None)]);
+    assert_eq!(std::fs::read(&path).unwrap(), retained);
+    client.write_all(&resp(&["SET", "after", "1"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "append inside retained block");
+    rewrite_start(&mut client);
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+    multipart_values(&mut client, &[("after", Some("1"))]);
+    client.write_all(&resp(&["SET", "new", "2"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "append after switch");
+    rewrite_stop(&mut client, child);
+    multipart_load(&program, name, &[
+        ("a", Some("1")), ("b", None), ("c", None),
+        ("after", None), ("new", Some("2")),
+    ]);
+}
+
+/// loadSingleAppendOnlyFile queues the retained SET and the appended MULTI
+/// until EXEC, then applies all the queued writes. Both restart paths must
+/// satisfy these Redis expectations; the no-rewrite run is not the oracle.
+#[test]
+fn firn_rewrite_keeps_a_retained_block_closed_by_an_appended_transaction() {
+    for rewrite in [false, true] {
+        let program = CompiledProgram::from_environment();
+        let name = "appendonly.aof";
+        let path = aof_incremental_fixture(program.working_directory(), name);
+        let partial = resp(&["SET", "c", "3"]);
+        let retained = [
+            resp(&["SET", "a", "1"]),
+            resp(&["MULTI"]),
+            resp(&["SET", "b", "2"]),
+        ].concat();
+        std::fs::write(&path, [retained.clone(), partial[..9].to_vec()].concat()).unwrap();
+        let port = free_port();
+        let text = port.to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]);
+        let mut client = connect_when_ready(port);
+        multipart_values(&mut client, &[("a", Some("1")), ("b", None), ("c", None)]);
+        assert_eq!(std::fs::read(&path).unwrap(), retained);
+        client.write_all(&[
+            resp(&["MULTI"]),
+            resp(&["SET", "x", "1"]),
+            resp(&["SET", "y", "2"]),
+            resp(&["EXEC"]),
+        ].concat()).unwrap();
+        expect_replies(
+            &mut client,
+            b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n+OK\r\n",
+            "transaction closes the retained block in the file",
+        );
+        if rewrite {
+            rewrite_start(&mut client);
+            assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+        }
+        multipart_values(&mut client, &[("b", None), ("x", Some("1")), ("y", Some("2"))]);
+        rewrite_stop(&mut client, child);
+        multipart_load(&program, name, &[
+            ("a", Some("1")), ("b", Some("2")), ("c", None),
+            ("x", Some("1")), ("y", Some("2")),
+        ]);
+    }
+}
+
+/// Redis reverts every queued write when EOF leaves CLIENT_MULTI set.
+/// Startup's partial-command cut retains both MULTIs; closing this file
+/// before only the latest one would leave an incomplete earlier file.
+#[test]
+fn firn_rewrite_cuts_before_both_retained_unmatched_multis() {
+    for rewrite in [false, true] {
+        let program = CompiledProgram::from_environment();
+        let name = "appendonly.aof";
+        let path = aof_incremental_fixture(program.working_directory(), name);
+        let partial = resp(&["SET", "d", "4"]);
+        let retained = [
+            resp(&["SET", "a", "1"]),
+            resp(&["MULTI"]),
+            resp(&["INCR", "a"]),
+            resp(&["EXEC"]),
+            resp(&["EXEC"]),
+            resp(&["MULTI"]),
+            resp(&["SET", "b", "2"]),
+            resp(&["MULTI"]),
+            resp(&["SET", "c", "3"]),
+        ].concat();
+        std::fs::write(&path, [retained.clone(), partial[..9].to_vec()].concat()).unwrap();
+        let port = free_port();
+        let text = port.to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]);
+        let mut client = connect_when_ready(port);
+        multipart_values(&mut client, &[("a", Some("2")), ("b", None), ("c", None), ("d", None)]);
+        assert_eq!(std::fs::read(&path).unwrap(), retained);
+        client.write_all(&resp(&["SET", "after", "1"])).unwrap();
+        expect_replies(&mut client, b"+OK\r\n", "append inside nested unfinished blocks");
+        if rewrite {
+            rewrite_start(&mut client);
+            assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+        }
+        multipart_values(&mut client, &[("after", Some("1"))]);
+        rewrite_stop(&mut client, child);
+        multipart_load(&program, name, &[
+            ("a", Some("2")), ("b", None), ("c", None), ("d", None), ("after", None),
+        ]);
+    }
 }
 
 /// State after each durable rewrite step, from backgroundRewriteDoneHandler.

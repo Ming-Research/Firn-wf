@@ -121,8 +121,9 @@ default, below the directory `appendonlydir`:
 Start:
 - the directory is opened for writing, created when missing;
 - a manifest is read and its base and incremental files replayed in order,
-  every file but the last required to end on a whole command, the last cut
-  as a single file is cut today;
+  every file but the last required to end on a whole command outside a block,
+  the last cut as a single file is cut today; startup then syncs appendonlydir
+  before removing listed history, retaining it if that sync fails;
 - with no manifest and no files, an empty base `F.1.base.aof` is written, as
   Redis forces a base on an empty start, then `F.1.incr.aof` is opened and
   the manifest persisted;
@@ -136,7 +137,14 @@ grown by `auto-aof-rewrite-percentage` (100) over the base written by the
 last rewrite and exceed `auto-aof-rewrite-min-size` (64 MB):
 1. **Switch.** After draining any earlier partial append, the writer takes
    pending bytes in one atomic statement and appends and syncs them to the
-   current incremental file. It opens the next incremental file and persists
+   current incremental file. It reads that file through replay into a private
+   keyspace to find whether it now ends inside an unfinished block. If it
+   does, it cuts before the first MULTI after the last closing EXEC, then
+   syncs the file before publishing any switch; otherwise it cuts nothing.
+   These are the commands a restart would revert; the live keyspace stays
+   unchanged. The cut subtracts the removed bytes from the active-file byte
+   count. Every closed file must replay whole, since startup refuses an
+   incomplete earlier file. It opens the next incremental file and persists
    a manifest naming the old base, every incremental file and the new one,
    retaining the old handle until publication. It then selects the new handle
    and closes the old one. Records enqueued after that atomic statement go
@@ -189,7 +197,18 @@ The temporary base follows Redis's temporary append-only naming convention:
 It sits beside `temp-F.manifest`, so servers with distinct appendfilenames
 in one directory have distinct temporary files. Two servers with the same
 appendfilename already share a manifest, which Redis does not support.
-This rewrite consequently needs no exclusive temporary-file creation API.
+Distinct temporary names do not exclude collision with an upgraded base of
+another dataset whose appendfilename is literally `temp-F.base`. That shared
+layout remains unsupported; preventing its truncation needs Whitefoot's
+missing exclusive-create operation, as recorded in the
+[TODO](../../../docs/todo.md#whitefoot-requirements). Redis's `temp-F.incr`
+has the same class of collision.
+
+Manifest names containing apostrophes are double-quoted, with no escape for
+the apostrophe inside the quotes, as `sdscatrepr` would encode them and
+`sdssplitargs` reads them. This deliberately differs from Redis 7.0.15's
+`sdsneedsrepr`, which misses the apostrophe and writes a name its own parser
+cannot read back.
 
 The writer keeps its old append handle until the switch manifest is
 published, as `openNewIncrAofForAppend` does, so an open or pre-publication
@@ -208,6 +227,45 @@ installation; a request arriving during installation waits for it to end.
 Main also waits for the flag before marking the writer stopped. Filesystem
 IO stays outside atomic statements.
 
+## Switch-time block boundary
+
+The boundary is a property of the current file at switching. Startup's cut
+is not enough: it can retain an unfinished MULTI after removing a partial
+command, and later appends can either leave that region unfinished or close
+it. A rewrite must leave the closed file replayable as an earlier file.
+
+`replay` therefore reports `unfinished` at EOF and `reverted`, the offset of
+the first MULTI after the last EXEC that closed a block, separately from
+`kept`, which continues to implement Redis's startup truncation rule. Nested
+MULTIs update that rule's latest-MULTI position but do not move `reverted`.
+An EXEC outside a block changes neither boundary. The writer calls replay
+on the current incremental file into a private keyspace after its append
+drain and before switching, then removes only a reported unfinished region.
+A read or parse failure refuses the switch. This reuses the existing parser
+and block rules, at the cost of an additional replay of the current file
+before each switch; no latency or memory measurement is claimed.
+
+Two sequences distinguish this from the rejected boundaries:
+
+- `SET a 1; MULTI; SET b 2; MULTI; SET c 3` followed by a partial command
+  retains both MULTIs at startup. Cutting before the latest MULTI would leave
+  the first unfinished. The switch cuts before the first; the restart keeps
+  `a=1` and neither `b` nor `c`.
+- After `SET a 1; MULTI; SET b 2` is retained, a two-write transaction appends
+  `MULTI; SET x 1; SET y 2; EXEC`. The current file now ends outside a block,
+  so the switch cuts nothing. Restart applies `b=2`, `x=1`, and `y=2` as
+  well as `a=1`; the saved startup offset would lose those writes.
+
+The expectation comes from Redis 7.0.15's `loadSingleAppendOnlyFile` in
+`src/aof.c`: commands while CLIENT_MULTI is set are queued until EXEC, and
+EOF with that flag set reverts the incomplete block. Its `valid_before_multi`
+tracks the latest MULTI for startup truncation; that byte boundary differs
+from the start of all commands left unapplied. These are source-derived
+expectations, not observations from a new Redis run. The two network cases
+exercise restart with and without a rewrite against the same explicit
+expected values. The nested case also preserves a preceding completed block
+and passes over a subsequent EXEC outside a block.
+
 ## Validation still needed
 
 The network cases cover the disabled-AOF refusal, independent appendfilenames
@@ -219,4 +277,13 @@ not execution of a failing directory sync. That path needs a CI fault
 experiment in which manifest rename succeeds and the following directory
 sync returns an error, for both switching and installation. It must observe
 the selected files, retained history, later writes and restart, and require
-`aof_last_bgrewrite_status:err`. No performance result is claimed.
+`aof_last_bgrewrite_status:err`. Startup's history-removal case covers the
+successful cleanup path, but neither proves syscall ordering nor portably
+injects failure of the new pre-cleanup directory sync; that failure remains
+unverified and must retain both history files and manifest entries. The
+partial-command-in-block and nested-MULTI rewrite cases expect Redis's
+reverted values after restart; the appended-transaction case expects the
+now-completed block's values to survive. The apostrophe appendfilename case
+expects a quoted, reloadable manifest. These cases await CI; no local build,
+check or test was run for these review fixes. No performance result is
+claimed.
