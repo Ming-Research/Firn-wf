@@ -73,6 +73,42 @@ Server CPUs 2, depth 16, thousands of requests a second (median of 2 passes of 5
 - **What this does not measure.** Depth 1 is not measured here; scale mode
   runs depth 16 only.
 
+## A regression between the command-path changes and now, on the M5
+
+### The plan, stated before measuring
+
+The question (Firn ledger Q211): did firn's throughput fall between
+6239de8c8, before the command-path changes, c60db650d, after them (main
+after #23), and 08a60d308, main now? The interleaved comparison on the
+i9-14900K was lost twice when the machine went offline, and the machine is
+out of service; the owner's M5 Air stands in for timing only.
+
+- **Images.** Built with `make firn-lto` on a GitHub-hosted macOS arm64
+  runner (`macos-15`) by a temporary workflow on the branch `claude/m5-timing`,
+  each revision with its own pinned compiler (wf-364f86c2fd16 for the first
+  two, wf-0b7f5c5b9854 for the last) and the runner's one Apple clang. The
+  three therefore differ only in firn's and the compiler's sources, not in
+  the LLVM version, unlike the 14900K images, of which the first two used
+  LLVM 18 and the last LLVM 22.
+- **Client.** `redis-benchmark` of Redis 7.0.15, built from the release
+  archive whose SHA-256 `tests/redis-suite/run.sh` pins.
+- **Settings.** 50 connections, 100,000 random keys, pipeline depths 1 and
+  16, the server with `WF_DRIVERS` 1 and 2. macOS offers no CPU pinning, so
+  the server and the client share the machine's cores as the scheduler
+  places them.
+- **Order.** In every cell (test, depth, drivers) each pass measures old,
+  mid, new and new-twin, a second run of new, in a shuffled order; the whole
+  run holds the host-wide lock.
+- **Size.** The Air slows under sustained load, so a sample of three tests,
+  two passes and 2 seconds a run comes first; its twin spread, and whether
+  it grows over the run, sets the scale.
+
+The rule: in a cell, a revision is reported slower or faster than new only
+when its median over the passes differs from new's by more than the largest
+difference between new and new-twin in that cell, in the same direction in
+every pass. A loss is claimed only for a test whose cells show it at both
+depths.
+
 ## Scripts, transactions and expiring keys
 
 ### The plan, stated before measuring
