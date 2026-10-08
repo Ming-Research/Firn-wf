@@ -7638,7 +7638,7 @@ fn shutdown_finished(mut child: ProgramChild) {
         }
         assert!(
             Instant::now() < deadline,
-            "SHUTDOWN did not finish within five seconds"
+            "the orderly stop did not finish within five seconds"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -7889,6 +7889,113 @@ fn firn_shutdown_abandons_a_blocked_send_on_both_routes() {
             rest.len() < value.len() + 2,
             "peer should have blocked before the whole reply"
         );
+    }
+}
+
+/// Sends a signal, named as kill(1) names it, to the running program alone.
+#[cfg(target_os = "linux")]
+fn send_signal(child: &ProgramChild, signal: &str) {
+    let status = std::process::Command::new("/bin/kill")
+        .args([format!("-{signal}"), "--".to_string(), child.id().to_string()])
+        .status()
+        .expect("run kill");
+    assert!(status.success(), "kill -{signal} {}: {status:?}", child.id());
+}
+
+/// SIGTERM and SIGINT stop firn as SHUTDOWN does, as Redis 7.0.15 shuts
+/// down gracefully on either (`sigShutdownHandler` and `serverCron` in its
+/// `src/server.c`): the signal comes right after 128 acknowledged writes,
+/// within the writer's 10 ms cycle and its one-second sync, while the client
+/// that wrote them stays connected. firn closes that client and exits with
+/// status 0, and the replay finds every write. Under the host default, which
+/// applied before firn took signals, the signal ended firn at once, a status
+/// this case refuses, and lost the writes not yet appended.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_stops_in_order_on_sigterm_and_sigint_on_both_routes() {
+    let program = firn();
+    for signal in ["TERM", "INT"] {
+        for native_ring in [false, true] {
+            let name = format!("signal-{signal}-{native_ring}.aof");
+            let port = free_port();
+            let text = port.to_string();
+            let child =
+                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
+            let mut client = connect_when_ready(port);
+            let mut batch = Vec::new();
+            for i in 0..128 {
+                batch.extend(resp(&["SET", &format!("signal:{i}"), &format!("value:{i}")]));
+            }
+            client.write_all(&batch).expect("write the keys");
+            expect_replies(&mut client, &b"+OK\r\n".repeat(128), "the writes");
+            send_signal(&child, signal);
+            shutdown_finished(child);
+            assert_eq!(client.read(&mut [0]).expect("the signal closes the client"), 0);
+
+            let port = free_port();
+            let text = port.to_string();
+            let child =
+                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
+            let mut reader = connect_when_ready(port);
+            for i in 0..128 {
+                reader
+                    .write_all(&resp(&["GET", &format!("signal:{i}")]))
+                    .expect("read a replayed key");
+                assert_eq!(
+                    bulk_reply(&mut reader, "a replayed write"),
+                    format!("value:{i}"),
+                    "{signal} on route {native_ring}"
+                );
+            }
+            reader
+                .write_all(&resp(&["SHUTDOWN", "NOSAVE"]))
+                .expect("stop the replay server");
+            shutdown_finished(child);
+            assert_eq!(reader.read(&mut [0]).expect("replay server EOF"), 0);
+        }
+    }
+}
+
+/// firn closes its stop listener on the first signal, restoring the host
+/// default, so a second signal ends it at once, by that signal, before its
+/// drain ends (design/firn/orderly-stop.md). Eight idle clients, connected
+/// 125 ms apart, each read the request at the end of their own one-second
+/// waits, so the drain lasts about 875 ms or more after the first signal;
+/// the second comes 400 ms after it, past the moment the first is taken.
+/// Were the second ignored, as Redis 7.0.15 ignores a second SIGTERM, firn
+/// would exit with status 0 once the drain ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
+    use std::os::unix::process::ExitStatusExt;
+    for (signal, number, native_ring) in [("TERM", 15, false), ("INT", 2, true)] {
+        let port = free_port();
+        let text = port.to_string();
+        let mut child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
+        let mut idle = Vec::new();
+        for _ in 0..8 {
+            let mut client = connect_when_ready(port);
+            client
+                .write_all(&resp(&["PING"]))
+                .expect("establish an idle client");
+            expect_replies(&mut client, b"+PONG\r\n", "idle client ready");
+            idle.push(client);
+            std::thread::sleep(Duration::from_millis(125));
+        }
+        send_signal(&child, signal);
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            child.try_wait().expect("poll firn").is_none(),
+            "{signal}: firn must still be draining when the second signal comes"
+        );
+        send_signal(&child, signal);
+        let output = child.wait_with_output().expect("wait for firn");
+        assert_eq!(
+            output.status.signal(),
+            Some(number),
+            "{signal} twice: {output:?}"
+        );
+        drop(idle);
     }
 }
 
