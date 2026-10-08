@@ -134,11 +134,25 @@ fn register(store: &Keyspace, sha: &Array<u8, 40>, source: &[u8]) -> r: unit rea
   return unit;
 }
 
-fn cached(pooled: &PooledEngine, sha: &Array<u8, 40>, source: &[u8]) -> id: Result<ScriptId, halo::compile::CompileError> reads(sha), reads(source), writes(pooled) {
+fn cache_index(pooled: &PooledEngine, sha: &Array<u8, 40>) -> index: u64 reads(pooled), reads(sha) {
+  doc "Where the engine's cache holds the script compiled under sha, or the cache's length when the engine has not compiled it.";
   for (i in 0_u64..pooled^.cache.inner.len) {
     if same_sha(left: &pooled^.cache.inner[i].sha, right: sha) {
-      return Ok<ScriptId, halo::compile::CompileError>(value: pooled^.cache.inner[i].id);
+      return i;
     }
+  }
+  return pooled^.cache.inner.len;
+}
+
+fn cached(pooled: &PooledEngine, sha: &Array<u8, 40>, source: &[u8]) -> id: Result<ScriptId, halo::compile::CompileError> reads(sha), reads(source), writes(pooled) {
+  let index = cache_index(pooled: pooled, sha: sha);
+  return compiled_at(pooled: pooled, index: index, sha: sha, source: source);
+}
+
+fn compiled_at(pooled: &PooledEngine, index: u64, sha: &Array<u8, 40>, source: &[u8]) -> id: Result<ScriptId, halo::compile::CompileError> reads(sha), reads(source), writes(pooled) {
+  doc "The script at index in the engine's cache, or, for an index past the cache, source compiled and cached under sha.";
+  if index < pooled^.cache.inner.len {
+    return Ok<ScriptId, halo::compile::CompileError>(value: pooled^.cache.inner[index].id);
   }
   let compiled = halo::embed::compile(engine: &pooled^.engine, chunk_name: &entry_text_0[0_u64..12_u64], source: source);
   match move compiled {
@@ -308,7 +322,7 @@ fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &Conc
 }
 
 fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, keys_env: &KeyEnv, time: &Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(keys_env), reads(time), writes(client), writes(clock) waits {
-  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. An attempt that runs out of its budget having written nothing is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits for the engine is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
+  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and copies the script's source out of the registry only for an attempt whose engine has not compiled it, answering NOSCRIPT then if a SCRIPT FLUSH since the check has removed it. An attempt that runs out of its budget having written nothing is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits for the engine is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
   let count = args^.inner.len;
   let body = pkg::protocol::arg(args: args, index: 1_u64);
   if by_sha {
@@ -341,8 +355,6 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     atomic p = &store^.scripts {
       let index = registry_find(pool: p, sha: &sha);
       if index < p^.registry.inner.len {
-        let n = p^.registry.inner[index].source.inner.len;
-        text_bytes(out: &source, bytes: &p^.registry.inner[index].source.inner[0_u64..n]);
         set present = True();
       }
     }
@@ -356,6 +368,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     reply_error(client: client, word: &entry_text_6[0_u64..45_u64]);
     return unit;
   }
+  let held = bnot(by_sha);
   let budget = 1000_u64;
   let mark = 0_u64;
   let begun = False();
@@ -370,9 +383,28 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
       set begun = True();
     }
     let retry = False();
+    let unregistered = False();
+    let slot = 0_u64;
     if bnot(killed) {
+      set slot = cache_index(pooled: &pooled, sha: &sha);
+      if slot == pooled.cache.inner.len {
+        if bnot(held) {
+          atomic p = &store^.scripts {
+            let index = registry_find(pool: p, sha: &sha);
+            if index < p^.registry.inner.len {
+              let stored = p^.registry.inner[index].source.inner.len;
+              text_bytes(out: &source, bytes: &p^.registry.inner[index].source.inner[0_u64..stored]);
+              set held = True();
+            }
+          }
+          set unregistered = bnot(held);
+        }
+      }
+    }
+    let stopped = bor(killed, unregistered);
+    if bnot(stopped) {
       let n = source.inner.len;
-      let compiled = cached(pooled: &pooled, sha: &sha, source: &source.inner[0_u64..n]);
+      let compiled = compiled_at(pooled: &pooled, index: slot, sha: &sha, source: &source.inner[0_u64..n]);
       match move compiled {
         Err(error: e) => {
           compile_error(client: client, error: &e);
@@ -435,7 +467,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   let line = halo::embed::error_line(engine: &pooled.engine);
                   let value = halo::embed::error_value(engine: &pooled.engine);
                   let locate = readonly_message(vm: &pooled.engine.vm, value: value);
-                  let formatted = format_redis_error(engine: &pooled.engine, source: &source.inner[0_u64..n], line: line, locate: locate);
+                  let formatted = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
                   let length = formatted.inner.len;
                   reply_error(client: client, word: &formatted.inner[0_u64..length]);
                   if logged {
@@ -456,6 +488,10 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     return_engine(store: store, pooled: move pooled);
     if killed {
       reply_killed(client: client, sha: &sha, line: stopped_at);
+      break;
+    }
+    if unregistered {
+      reply_error(client: client, word: &entry_text_6[0_u64..45_u64]);
       break;
     }
     if bnot(retry) {
