@@ -38,10 +38,24 @@
 #                                 naming a perf executable it then records a
 #                                 flat profile of each image under
 #                                 COMPARE_PROFILE (default mset at depth 16)
+#   sh redis-bench.sh workloads   the deployment-performance investigation's
+#                                 std-only Rust client, built offline with
+#                                 cargo in release mode; Redis and firn, each
+#                                 without and with AOF, at depth 1 with 50
+#                                 connections and one thread per client CPU
+#                                 (up to 16 CPUs, as in scale); WORKLOAD_CPUS
+#                                 (default 1 2), WORKLOAD_PASSES (default 3),
+#                                 WORKLOAD_SECONDS (default 10), WORKLOADS
+#                                 (default limiter-script limiter-tx setmany-tx
+#                                 session-set session-get). Each workload gets
+#                                 a fresh server; line order reverses on even
+#                                 passes. Before session-get, fill 1,000,000
+#                                 sessions and record VmRSS in KiB. Probe with
+#                                 WORKLOAD_PASSES=2 WORKLOAD_SECONDS=5 first.
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
 # the records before the quick mode built it with none. The redis-bench
-# workflow (.github/workflows/redis-bench.yml) runs the compare and scale
+# workflow (.github/workflows/redis-bench.yml) runs compare, scale and workloads
 # modes on the owner's i9-14900K.
 #
 # BASELINE_ROOT, when set, is a worktree of the revision before expiry with its
@@ -643,6 +657,68 @@ if [ "$MODE" = compare ]; then
         fi
     done
     cat "$OUT/compare.csv"
+    exit 0
+fi
+
+# Consumer workloads, isolated so the session RSS is not a mixed keyspace.
+# Keep the client's exit status outside a pipeline or echo substitution: a
+# RESP error, including one nested in EXEC, must fail the measurement.
+if [ "$MODE" = workloads ]; then
+    PATH="$HOME/.cargo/bin:$PATH"
+    export PATH
+    manifest="$ROOT/research/experiments/redis-bench/workload/Cargo.toml"
+    target="$OUT/workload-target"
+    cargo test --offline --locked --release --manifest-path "$manifest" --target-dir "$target"
+    cargo build --offline --locked --release --manifest-path "$manifest" --target-dir "$target"
+    client="$target/release/firn-workload"
+    total=$(nproc)
+    workloads=${WORKLOADS:-limiter-script limiter-tx setmany-tx session-set session-get}
+    for workload in $workloads; do
+        case $workload in
+            limiter-script|limiter-tx|setmany-tx|session-set|session-get) ;;
+            *) echo "unknown workload: $workload" >&2; exit 1 ;;
+        esac
+    done
+    echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"
+    echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
+    # Only this mode changes cleanup; the workflow's registered-session cleanup
+    # also handles cancellation on the shared runner.
+    trap '[ -z "$server" ] || { kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true; }' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    for n in ${WORKLOAD_CPUS:-1 2}; do
+        if [ "$n" -ge "$total" ]; then
+            echo "skip,workloads $n,the host has $total CPUs"
+            continue
+        fi
+        SERVER_CPUS=$(seq -s, 0 $((n - 1)))
+        CLIENT_THREADS=$((total - n < 16 ? total - n : 16))
+        CLIENT_CPUS=$(seq -s, "$n" $((n + CLIENT_THREADS - 1)))
+        pass=1
+        while [ "$pass" -le "${WORKLOAD_PASSES:-3}" ]; do
+            order="reference reference-aof firn-$n firn-aof-$n"
+            if [ $((pass % 2)) -eq 0 ]; then
+                order="firn-aof-$n firn-$n reference-aof reference"
+            fi
+            for workload in $workloads; do
+                for line in $order; do
+                    start "$line"
+                    if [ "$workload" = session-get ]; then
+                        taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" --fill 1000000
+                        rss=$(awk '/^VmRSS:/ { print $2; found=1 } END { if (!found) exit 1 }' "/proc/$server/status")
+                        echo "$line,$pass,$n,$workload,1000000,$rss" | tee -a "$OUT/workloads-memory.csv"
+                    fi
+                    result=$(taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
+                        --threads "$CLIENT_THREADS" --connections 50 \
+                        --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
+                    echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
+                    stop
+                    server=
+                done
+            done
+            pass=$((pass + 1))
+        done
+    done
     exit 0
 fi
 
