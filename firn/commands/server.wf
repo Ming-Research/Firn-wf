@@ -1009,7 +1009,7 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   }
   if refused < 28_u64 {
     if refused == 13_u64 {
-      reply_set_failed(client: client, which: refused, reason: &text_no_snapshot[0_u64..28_u64]);
+      reply_set_failed(client: client, which: refused, reason: &text_no_snapshot[0_u64..22_u64]);
     } else {
       reply_set_failed(client: client, which: refused, reason: &text_cannot_change[0_u64..35_u64]);
     }
