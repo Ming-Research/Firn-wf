@@ -159,7 +159,7 @@ during the replay before that still ends firn at once, where Redis stops
 loading and exits with status 0, and a host that refuses to deliver them to
 firn stops it with status 3, as an address it cannot listen on does. Once
 firn has taken a signal, or has seen a `SHUTDOWN` request or let its last
-client go after its limit on clients, which it does within a second, a
+client go after its limit on clients, which it does within a tenth of a second, a
 further SIGTERM or SIGINT ends it at once, without the rest of the drain;
 Redis ends at once, with status 1, on a second SIGINT, but ignores a second
 SIGTERM. `SHUTDOWN ABORT` answers `ERR No shutdown in progress.` after a

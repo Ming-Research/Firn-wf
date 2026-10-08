@@ -32,8 +32,8 @@ written while firn lived in the Whitefoot repository; a path such as
     queues or calls from a script that are not parts yet, since `EXEC` and
     scripts run only those `held_kind` (`firn/commands/script.wf`) names.
   - Make AOF persistence usable through write/sync error handling, orderly
-    stop on `SHUTDOWN` being done and on SIGTERM and SIGINT drafted and
-    awaiting CI validation; verify a practical data migration path.
+    stop on `SHUTDOWN` being done and on SIGTERM and SIGINT in Firn-wf #33;
+    verify a practical data migration path.
     Multi-part AOF loading, old-file upgrades and startup history cleanup
     are implemented. The background rewrite and automatic trigger are
     drafted and await CI validation

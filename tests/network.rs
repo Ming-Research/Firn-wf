@@ -7851,7 +7851,7 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
     for (signal, number, native_ring) in [("TERM", 15, false), ("INT", 2, true)] {
         let port = free_port();
         let text = port.to_string();
-        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
+        let mut child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
         let mut idle = Vec::new();
         for _ in 0..8 {
             let mut client = connect_when_ready(port);
@@ -7864,6 +7864,10 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
         }
         send_signal(&child, signal);
         std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            child.try_wait().expect("poll firn").is_none(),
+            "{signal}: firn must still be draining when the second signal comes"
+        );
         send_signal(&child, signal);
         let output = child.wait_with_output().expect("wait for firn");
         assert_eq!(
