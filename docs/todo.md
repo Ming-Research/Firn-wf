@@ -582,6 +582,18 @@ written while firn lived in the Whitefoot repository; a path such as
 
 ## Whitefoot requirements
 
+- **An append-only file that is a symbolic link is refused.** Redis 7.0.15
+  opens `appendonly.aof`, the manifest and the files it names with `fopen`
+  and `open`, following a symbolic link at the name, and checks the
+  directory and an old-style file's kind with `stat`. firn opens names below
+  a directory through Whitefoot's component operations, which refuse a link
+  at the name, and Whitefoot offers no query of an entry's kind. A
+  deployment whose `appendonly.aof` is a link to another disk starts on
+  Redis and is refused by firn. Uncertain: whether any deployment does
+  this. Whitefoot's refusal keeps a name below its root, which its names
+  rule exists for, so the change, if one is wanted, would be an explicit
+  operation that follows a link with the authority it reaches, not a
+  relaxed name rule. Reopen when a deployment keeps its file behind a link.
 - **Exclusive creation for temporary append-only files.** Whitefoot's
   `open_append` opens an existing file; it cannot create a file only when
   absent. For appendfilename `F`, firn's rewrite opens and truncates
