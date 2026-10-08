@@ -1108,7 +1108,8 @@ fn firn_records_its_writes_as_redis_propagates_them() {
     let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"forms.aof"]);
     client.join().expect("the client's exchange");
     assert!(output.status.success(), "firn: {:?}", output.status);
-    let file = std::fs::read(fixture.path().join("forms.aof")).expect("read firn's file");
+    let file =
+        std::fs::read(aof_incremental_path(fixture.path(), "forms.aof")).expect("read firn's file");
     assert_eq!(
         String::from_utf8_lossy(&file),
         String::from_utf8_lossy(
@@ -1220,7 +1221,9 @@ fn firn_replays_blocks_and_cuts_an_unloaded_end_as_redis_does() {
         ),
     ];
     for (name, input, checks, mut kept, reload) in cases {
-        let path = fixture.path().join(name);
+        // Use a sole incremental file so the existing cut-and-append oracle
+        // still exercises writes into the same last file, including MULTI tails.
+        let path = aof_incremental_fixture(fixture.path(), name);
         std::fs::write(&path, input)
             .unwrap_or_else(|error| panic!("{name}: write the fixture: {error}"));
         let mut batch = Vec::new();
@@ -1280,7 +1283,7 @@ fn firn_stops_on_an_append_only_file_that_does_not_parse() {
     let program = firn();
     let fixture = fixture_directory();
     let name = "malformed.aof";
-    let path = fixture.path().join(name);
+    let path = aof_incremental_fixture(fixture.path(), name);
     let content = [
         resp(&["SET", "a", "1"]),
         b"*1\r\n:3\r\nfoo\r\n".to_vec(),
@@ -2832,7 +2835,8 @@ fn firn_replays_the_value_types_from_its_append_only_file() {
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0, "the first run");
-    let file = std::fs::read(program.working_directory().join(name)).expect("read the file");
+    let file = std::fs::read(aof_incremental_path(program.working_directory(), name))
+        .expect("read the file");
     let head: &[u8] = b"*1\r\n$8\r\nFLUSHALL\r\n*3\r\n$3\r\nSET\r\n$7\r\nflushed\r\n$1\r\nv\r\n*1\r\n$8\r\nFLUSHALL\r\n*3\r\n$5\r\nRPUSH\r\n$12\r\nflushed-list\r\n$1\r\na\r\n*2\r\n$7\r\nFLUSHDB\r\n$5\r\nASYNC\r\n*3\r\n$8\r\nFUNCTION\r\n$5\r\nFLUSH\r\n$5\r\nASYNC\r\n";
     assert_eq!(
         String::from_utf8_lossy(&file[..head.len().min(file.len())]),
@@ -4124,7 +4128,8 @@ fn firn_records_transactions_as_redis_propagates_them() {
     );
     client.join().expect("the client's exchange");
     assert!(output.status.success(), "firn: {:?}", output.status);
-    let file = std::fs::read(fixture.path().join("transactions.aof")).expect("read firn's file");
+    let file = std::fs::read(aof_incremental_path(fixture.path(), "transactions.aof"))
+        .expect("read firn's file");
     assert_eq!(
         String::from_utf8_lossy(&file),
         "*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
@@ -4860,10 +4865,14 @@ fn check_held_records(loaded: &[&[&str]], requests: &[&[&str]], replies: &[u8], 
         let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"held.aof"]);
         let returned = client.join().expect("the client's exchange");
         assert!(output.status.success(), "firn: {:?}", output.status);
-        let file = std::fs::read(fixture.path().join("held.aof")).expect("read firn's file");
-        let recorded = file
-            .strip_prefix(loaded.as_slice())
-            .expect("the loaded records kept at the file's start");
+        assert_eq!(
+            std::fs::read(fixture.path().join("appendonlydir/held.aof")).unwrap(),
+            loaded,
+            "the upgraded base retains the loaded records"
+        );
+        let file = std::fs::read(aof_incremental_path(fixture.path(), "held.aof"))
+            .expect("read firn's incremental file");
+        let recorded = file.as_slice();
         if recorded == records {
             assert_eq!(
                 String::from_utf8_lossy(&returned),
@@ -6923,7 +6932,8 @@ fn firn_records_scripts_as_redis_propagates_them() {
     let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]);
     client.join().expect("the client's exchange");
     assert!(output.status.success(), "firn: {:?}", output.status);
-    let file = std::fs::read(fixture.path().join("scripts.aof")).expect("read firn's file");
+    let file = std::fs::read(aof_incremental_path(fixture.path(), "scripts.aof"))
+        .expect("read firn's file");
     assert_eq!(
         String::from_utf8_lossy(&file),
         "*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
@@ -7425,7 +7435,7 @@ fn firn_replays_the_value_types_from_its_append_only_file_with_hashes_and_sorted
         b"$3\r\n0.1\r\n$3\r\n0.3\r\n:1\r\n:1\r\n:0\r\n+OK\r\n:1\r\n+OK\r\n:1\r\n+OK\r\n:5\r\n+OK\r\n$3\r\n1.5\r\n+OK\r\n:0\r\n+OK\r\n$3\r\n1.5\r\n$3\r\n3.5\r\n:4\r\n:1\r\n*2\r\n$1\r\nd\r\n$1\r\n4\r\n:1\r\n+OK\r\n:1\r\n+OK\r\n:0\r\n+OK\r\n+OK\r\n:0\r\n+OK\r\n+OK\r\n*0\r\n+OK\r\n+OK\r\n:0\r\n+OK\r\n",
         "the first run's changes",
     );
-    let file = format!("/proc/{}/cwd/{name}", child.id());
+    let file = format!("/proc/{}/cwd/appendonlydir/{name}.1.incr.aof", child.id());
     let started = Instant::now();
     let records = loop {
         let records = aof_records(&std::fs::read(&file).unwrap_or_default());
@@ -7796,4 +7806,708 @@ fn firn_applies_an_idle_limit_to_a_previously_unlimited_receive() {
         .write_all(&resp(&["SHUTDOWN"]))
         .expect("stop idle-limit case");
     shutdown_finished(child);
+}
+
+/// The first incremental file used by fresh starts and old-file upgrades.
+fn aof_incremental_path(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
+    directory
+        .join("appendonlydir")
+        .join(format!("{name}.1.incr.aof"))
+}
+
+/// An existing last incremental file, for the original single-file cut oracle.
+fn aof_incremental_fixture(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
+    std::fs::create_dir_all(directory.join("appendonlydir")).unwrap();
+    std::fs::write(
+        directory
+            .join("appendonlydir")
+            .join(format!("{name}.manifest")),
+        format!("file {name}.1.incr.aof seq 1 type i\n"),
+    )
+    .unwrap();
+    aof_incremental_path(directory, name)
+}
+
+/// All files and values below are Redis 7.0.15 integration/aof-multi-part.tcl
+/// Part 1 fixtures. Only the loading portion of upgrade cases is ported:
+/// their later BGREWRITEAOF/RDB/DEBUG checks belong to step 2 or require RDB.
+/*
+Copyright (c) 2006-2020, Salvatore Sanfilippo
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+    * Neither the name of Redis nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
+fn multipart_files(program: &CompiledProgram, files: &[(&str, &[&[&str]])], manifest: &str) {
+    let directory = program.working_directory().join("appendonlydir");
+    std::fs::create_dir_all(&directory).unwrap();
+    for (name, commands) in files {
+        let bytes: Vec<u8> = commands.iter().flat_map(|command| resp(command)).collect();
+        std::fs::write(directory.join(name), bytes).unwrap();
+    }
+    std::fs::write(directory.join("appendonly.aof.manifest"), manifest).unwrap();
+}
+
+fn multipart_values(client: &mut TcpStream, values: &[(&str, Option<&str>)]) {
+    for (key, value) in values {
+        client.write_all(&resp(&["GET", key])).unwrap();
+        let expected = match value {
+            Some(text) => format!("${}\r\n{text}\r\n", text.len()),
+            None => "$-1\r\n".to_owned(),
+        };
+        expect_replies(client, expected.as_bytes(), key);
+    }
+}
+
+fn multipart_load(program: &CompiledProgram, name: &str, values: &[(&str, Option<&str>)]) {
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
+    let mut client = connect_when_ready(port);
+    multipart_values(&mut client, values);
+    // Also make an empty expected-values case prove that startup completed.
+    client.write_all(&resp(&["PING"])).unwrap();
+    expect_replies(&mut client, b"+PONG\r\n", "loaded");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+fn multipart_refused(program: &CompiledProgram) {
+    let text = free_port().to_string();
+    let result = program.run(
+        program.working_directory(),
+        &[text.as_bytes(), b"1", b"appendonly.aof"],
+    );
+    assert_eq!(result.status.code(), Some(4), "{result:?}");
+}
+
+// Redis: Multi Part AOF can't load data when some file missing
+#[test]
+fn multi_part_aof_cannot_load_data_when_some_file_missing() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.2.incr.aof", &[&["set", "k2", "v2"]]),
+        ],
+        "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.2.incr.aof seq 2 type i\n",
+    );
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can't load data when the sequence not increase monotonically
+#[test]
+fn multi_part_aof_cannot_load_data_when_the_sequence_not_increase_monotonically() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.incr.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.2.incr.aof", &[&["set", "k2", "v2"]]),
+        ],
+        "file appendonly.aof.2.incr.aof seq 2 type i\nfile appendonly.aof.1.incr.aof seq 1 type i\n",
+    );
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can't load data when there are blank lines in the manifest file
+#[test]
+fn multi_part_aof_cannot_load_data_when_there_are_blank_lines_in_the_manifest_file() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.incr.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.3.incr.aof", &[&["set", "k2", "v2"]]),
+        ],
+        "file appendonly.aof.1.incr.aof seq 1 type i\n\nfile appendonly.aof.3.incr.aof seq 3 type i\n",
+    );
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can't load data when there is a duplicate base file
+#[test]
+fn multi_part_aof_cannot_load_data_when_there_is_a_duplicate_base_file() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.2.base.aof", &[&["set", "k2", "v2"]]),
+            ("appendonly.aof.1.incr.aof", &[&["set", "k3", "v3"]]),
+        ],
+        "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.2.base.aof seq 2 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n",
+    );
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can't load data when the manifest format is wrong (type unknown)
+#[test]
+fn multi_part_aof_cannot_load_data_when_the_manifest_format_is_wrong_type_unknown() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.1.incr.aof", &[&["set", "k3", "v3"]]),
+        ],
+        "file appendonly.aof.1.base.aof seq 1 type x\nfile appendonly.aof.1.incr.aof seq 1 type i\n",
+    );
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can't load data when the manifest format is wrong (missing key)
+#[test]
+fn multi_part_aof_cannot_load_data_when_the_manifest_format_is_wrong_missing_key() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.1.incr.aof", &[&["set", "k3", "v3"]]),
+        ],
+        "filx appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n",
+    );
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can't load data when the manifest format is wrong (line too short)
+#[test]
+fn multi_part_aof_cannot_load_data_when_the_manifest_format_is_wrong_line_too_short() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.1.incr.aof", &[&["set", "k3", "v3"]]),
+        ],
+        "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof type i\n",
+    );
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can't load data when the manifest format is wrong (line too long)
+#[test]
+fn multi_part_aof_cannot_load_data_when_the_manifest_format_is_wrong_line_too_long() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.1.incr.aof", &[&["set", "k3", "v3"]]),
+        ],
+        "file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n",
+    );
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can't load data when the manifest format is wrong (odd parameter)
+#[test]
+fn multi_part_aof_cannot_load_data_when_the_manifest_format_is_wrong_odd_parameter() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.1.incr.aof", &[&["set", "k3", "v3"]]),
+        ],
+        "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i newkey\n",
+    );
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can't load data when the manifest file is empty
+#[test]
+fn multi_part_aof_cannot_load_data_when_the_manifest_file_is_empty() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(&program, &[], "");
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can load data discontinuously increasing sequence
+#[test]
+fn multi_part_aof_can_load_data_discontinuously_increasing_sequence() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.1.incr.aof", &[&["set", "k2", "v2"]]),
+            ("appendonly.aof.3.incr.aof", &[&["set", "k3", "v3"]]),
+        ],
+        "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.3.incr.aof seq 3 type i\n",
+    );
+    multipart_load(
+        &program,
+        "appendonly.aof",
+        &[("k1", Some("v1")), ("k2", Some("v2")), ("k3", Some("v3"))],
+    );
+}
+
+// Redis: Multi Part AOF can load data when manifest add new k-v
+#[test]
+fn multi_part_aof_can_load_data_when_manifest_add_new_k_v() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.1.incr.aof", &[&["set", "k2", "v2"]]),
+            ("appendonly.aof.3.incr.aof", &[&["set", "k3", "v3"]]),
+        ],
+        "file appendonly.aof.1.base.aof seq 1 type b newkey newvalue\nfile appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.3.incr.aof seq 3 type i\n",
+    );
+    multipart_load(
+        &program,
+        "appendonly.aof",
+        &[("k1", Some("v1")), ("k2", Some("v2")), ("k3", Some("v3"))],
+    );
+}
+
+// Redis: Multi Part AOF can load data when some AOFs are empty
+#[test]
+fn multi_part_aof_can_load_data_when_some_aofs_are_empty() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["set", "k1", "v1"]]),
+            ("appendonly.aof.1.incr.aof", &[]),
+            ("appendonly.aof.3.incr.aof", &[&["set", "k3", "v3"]]),
+        ],
+        "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.3.incr.aof seq 3 type i\n",
+    );
+    multipart_load(
+        &program,
+        "appendonly.aof",
+        &[("k1", Some("v1")), ("k2", None), ("k3", Some("v3"))],
+    );
+}
+
+// Redis: Multi Part AOF can create BASE (AOF format) when redis starts from empty
+fn multipart_empty_start(empty_directory: bool) {
+    let program = CompiledProgram::from_environment();
+    let directory = program.working_directory().join("appendonlydir");
+    if empty_directory {
+        std::fs::create_dir(&directory).unwrap();
+    }
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"appendonly.aof"]);
+    let mut client = connect_when_ready(port);
+    assert_eq!(
+        std::fs::read(directory.join("appendonly.aof.1.base.aof")).unwrap(),
+        b""
+    );
+    assert_eq!(
+        std::fs::read(directory.join("appendonly.aof.1.incr.aof")).unwrap(),
+        b""
+    );
+    assert_eq!(
+        std::fs::read(directory.join("appendonly.aof.manifest")).unwrap(),
+        b"file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n"
+    );
+    client.write_all(&resp(&["SET", "k1", "v1"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "write after empty start");
+    multipart_values(&mut client, &[("k1", Some("v1"))]);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+    multipart_load(&program, "appendonly.aof", &[("k1", Some("v1"))]);
+}
+
+// Redis: Multi Part AOF can start when no aof and no manifest
+#[test]
+fn multi_part_aof_can_start_when_no_aof_and_no_manifest() {
+    multipart_empty_start(false);
+}
+
+// Redis: Multi Part AOF can start when we have en empty AOF dir
+#[test]
+fn multi_part_aof_can_start_when_we_have_an_empty_aof_dir() {
+    multipart_empty_start(true);
+}
+
+/// Redis's fileExist excludes a directory at the old filename; it is not
+/// an AOF to upgrade. A directory listed as an active file is still fatal.
+#[test]
+fn multi_part_aof_distinguishes_legacy_and_listed_directories() {
+    let program = CompiledProgram::from_environment();
+    std::fs::create_dir(program.working_directory().join("appendonly.aof")).unwrap();
+    multipart_load(&program, "appendonly.aof", &[]);
+    assert!(program.working_directory().join("appendonly.aof").is_dir());
+    assert_eq!(
+        std::fs::read(
+            program
+                .working_directory()
+                .join("appendonlydir/appendonly.aof.manifest")
+        )
+        .unwrap(),
+        b"file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n"
+    );
+
+    let program = CompiledProgram::from_environment();
+    multipart_files(&program, &[], "file appendonly.aof.1.base.aof seq 1 type b\n");
+    std::fs::create_dir(
+        program
+            .working_directory()
+            .join("appendonlydir/appendonly.aof.1.base.aof"),
+    )
+    .unwrap();
+    multipart_refused(&program);
+}
+
+fn multipart_old_file(program: &CompiledProgram, name: &str, keys: &[(&str, &str)]) {
+    let bytes: Vec<u8> = keys
+        .iter()
+        .flat_map(|(key, value)| resp(&["SET", key, value]))
+        .collect();
+    std::fs::write(program.working_directory().join(name), bytes).unwrap();
+}
+
+fn multipart_upgrade(interrupted: bool, both: bool) {
+    let program = CompiledProgram::from_environment();
+    multipart_old_file(
+        &program,
+        "appendonly.aof",
+        &[("k1", "v1"), ("k2", "v2"), ("k3", "v3")],
+    );
+    if interrupted {
+        multipart_files(&program, &[], "file appendonly.aof seq 1 type b\n");
+    }
+    if both {
+        multipart_files(
+            &program,
+            &[(
+                "appendonly.aof",
+                &[
+                    &["SET", "k4", "v4"],
+                    &["SET", "k5", "v5"],
+                    &["SET", "k6", "v6"],
+                ],
+            )],
+            "file appendonly.aof seq 1 type b\n",
+        );
+    }
+    let expected = if both {
+        vec![
+            ("k1", None),
+            ("k2", None),
+            ("k3", None),
+            ("k4", Some("v4")),
+            ("k5", Some("v5")),
+            ("k6", Some("v6")),
+        ]
+    } else {
+        vec![("k1", Some("v1")), ("k2", Some("v2")), ("k3", Some("v3"))]
+    };
+    multipart_load(&program, "appendonly.aof", &expected);
+    assert_eq!(
+        program.working_directory().join("appendonly.aof").exists(),
+        both
+    );
+    let directory = program.working_directory().join("appendonlydir");
+    assert!(directory.join("appendonly.aof").exists());
+    assert_eq!(
+        std::fs::read(directory.join("appendonly.aof.manifest")).unwrap(),
+        b"file appendonly.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n"
+    );
+    multipart_load(&program, "appendonly.aof", &expected);
+}
+
+// Redis: Multi Part AOF can load data from old version redis (rdb preamble no)
+#[test]
+fn multi_part_aof_can_load_data_from_old_version_redis_rdb_preamble_no() {
+    multipart_upgrade(false, false);
+}
+
+// Redis: Multi Part AOF can continue the upgrade from the interrupted upgrade state
+#[test]
+fn multi_part_aof_can_continue_the_upgrade_from_the_interrupted_upgrade_state() {
+    multipart_upgrade(true, false);
+}
+
+// Redis: Multi Part AOF can be loaded correctly when both server dir and aof dir contain old AOF
+#[test]
+fn multi_part_aof_loads_directory_copy_when_both_directories_contain_old_aof() {
+    multipart_upgrade(true, true);
+}
+
+/// loadAppendOnlyFiles uses the manifest's base when no upgrade is needed.
+/// Redis's fileExist ignores a directory at the legacy path. The pinned
+/// open_file refuses that path, so it must not be probed before this choice.
+#[test]
+fn multi_part_aof_keeps_a_valid_base_when_the_legacy_path_is_a_directory() {
+    for base in ["appendonly.aof", "appendonly.aof.1.base.aof"] {
+        let program = CompiledProgram::from_environment();
+        std::fs::create_dir(program.working_directory().join("appendonly.aof")).unwrap();
+        multipart_files(
+            &program,
+            &[(base, &[&["SET", "k1", "v1"]])],
+            &format!("file {base} seq 1 type b\n"),
+        );
+        multipart_load(&program, "appendonly.aof", &[("k1", Some("v1"))]);
+        assert!(program.working_directory().join("appendonly.aof").is_dir());
+        assert_eq!(
+            std::fs::read(
+                program
+                    .working_directory()
+                    .join("appendonlydir/appendonly.aof.manifest")
+            )
+            .unwrap(),
+            format!("file {base} seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n")
+                .as_bytes()
+        );
+    }
+}
+
+// Redis: Multi Part AOF can't load data when the manifest contains the old AOF
+// file name but the file does not exist in server dir and aof dir
+#[test]
+fn multi_part_aof_cannot_load_an_old_aof_missing_from_both_directories() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(&program, &[], "file appendonly.aof seq 1 type b\n");
+    multipart_refused(&program);
+}
+
+// Redis: Multi Part AOF can upgrade when when two redis share the same server dir
+#[test]
+fn multi_part_aof_can_upgrade_when_two_servers_share_the_same_server_dir() {
+    let program = CompiledProgram::from_environment();
+    multipart_old_file(
+        &program,
+        "appendonly.aof",
+        &[("k1", "v1"), ("k2", "v2"), ("k3", "v3")],
+    );
+    multipart_old_file(
+        &program,
+        "appendonly.aof2",
+        &[("k4", "v4"), ("k5", "v5"), ("k6", "v6")],
+    );
+    let first_port = free_port();
+    let first_text = first_port.to_string();
+    let first = program.spawn_on_route(true, &[first_text.as_bytes(), b"1", b"appendonly.aof"]);
+    let mut first_client = connect_when_ready(first_port);
+    let second_port = free_port();
+    let second_text = second_port.to_string();
+    let second = program.spawn_on_route(true, &[second_text.as_bytes(), b"1", b"appendonly.aof2"]);
+    let mut second_client = connect_when_ready(second_port);
+    multipart_values(
+        &mut first_client,
+        &[
+            ("k1", Some("v1")),
+            ("k2", Some("v2")),
+            ("k3", Some("v3")),
+            ("k4", None),
+            ("k5", None),
+            ("k6", None),
+        ],
+    );
+    multipart_values(
+        &mut second_client,
+        &[
+            ("k1", None),
+            ("k2", None),
+            ("k3", None),
+            ("k4", Some("v4")),
+            ("k5", Some("v5")),
+            ("k6", Some("v6")),
+        ],
+    );
+    drop(first_client);
+    drop(second_client);
+    assert_eq!(finished(first).0, 0);
+    assert_eq!(finished(second).0, 0);
+    for name in ["appendonly.aof", "appendonly.aof2"] {
+        assert!(!program.working_directory().join(name).exists());
+        assert_eq!(
+            std::fs::read(
+                program
+                    .working_directory()
+                    .join("appendonlydir")
+                    .join(format!("{name}.manifest"))
+            )
+            .unwrap(),
+            format!("file {name} seq 1 type b\nfile {name}.1.incr.aof seq 1 type i\n").as_bytes()
+        );
+    }
+}
+
+// Redis: Multi Part AOF can handle appendfilename contains whitespaces
+// aofInfoFormat's sdscatrepr output, with startup sequence 1 (no rewrite yet).
+#[test]
+fn multi_part_aof_can_handle_appendfilename_contains_whitespaces() {
+    let program = CompiledProgram::from_environment();
+    let name = " file seq \n\n.aof ";
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
+    let mut client = connect_when_ready(port);
+    client.write_all(&resp(&["SET", "k1", "v1"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "whitespace appendfilename");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+    let directory = program.working_directory().join("appendonlydir");
+    assert_eq!(std::fs::read(directory.join(format!("{name}.manifest"))).unwrap(),
+        b"file \" file seq \\n\\n.aof .1.base.aof\" seq 1 type b\nfile \" file seq \\n\\n.aof .1.incr.aof\" seq 1 type i\n");
+    multipart_load(&program, name, &[("k1", Some("v1"))]);
+}
+
+/// loadAppendOnlyFiles permits truncation only in the last active file.
+/// aofDelHistoryFiles removes only listed history, leaving unlisted files.
+#[test]
+fn multi_part_aof_replays_in_order_appends_to_last_and_removes_history() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[
+            ("appendonly.aof.1.base.aof", &[&["SET", "k", "1"]]),
+            ("appendonly.aof.1.incr.aof", &[&["INCR", "k"]]),
+            ("appendonly.aof.3.incr.aof", &[&["INCR", "k"]]),
+            ("old.aof", &[&["SET", "k", "wrong"]]),
+            ("temp-rewriteaof-bg-2.aof", &[&["SET", "k", "wrong"]]),
+        ],
+        "file appendonly.aof.1.incr.aof seq 1 type i\nfile old.aof seq 1 type h\nfile absent.aof seq 2 type h\nfile appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.3.incr.aof seq 3 type i\n",
+    );
+    let directory = program.working_directory().join("appendonlydir");
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"appendonly.aof"]);
+    let mut client = connect_when_ready(port);
+    multipart_values(&mut client, &[("k", Some("3"))]);
+    client.write_all(&resp(&["INCR", "k"])).unwrap();
+    expect_replies(&mut client, b":4\r\n", "append to last incremental");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+    assert_eq!(
+        std::fs::read(directory.join("appendonly.aof.1.base.aof")).unwrap(),
+        resp(&["SET", "k", "1"])
+    );
+    assert_eq!(
+        std::fs::read(directory.join("appendonly.aof.1.incr.aof")).unwrap(),
+        resp(&["INCR", "k"])
+    );
+    assert_eq!(
+        std::fs::read(directory.join("appendonly.aof.3.incr.aof")).unwrap(),
+        resp(&["INCR", "k"]).repeat(2)
+    );
+    assert!(!directory.join("old.aof").exists());
+    assert!(directory.join("temp-rewriteaof-bg-2.aof").exists());
+    assert_eq!(std::fs::read(directory.join("appendonly.aof.manifest")).unwrap(),
+        b"file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.3.incr.aof seq 3 type i\n");
+    multipart_load(&program, "appendonly.aof", &[("k", Some("4"))]);
+}
+
+#[test]
+fn multi_part_aof_cuts_only_the_last_file() {
+    for damaged in [
+        "appendonly.aof.1.base.aof",
+        "appendonly.aof.1.incr.aof",
+        "appendonly.aof.2.incr.aof",
+    ] {
+        let program = CompiledProgram::from_environment();
+        multipart_files(
+            &program,
+            &[
+                ("appendonly.aof.1.base.aof", &[&["SET", "k1", "v1"]]),
+                ("appendonly.aof.1.incr.aof", &[&["SET", "k2", "v2"]]),
+                ("appendonly.aof.2.incr.aof", &[&["SET", "k3", "v3"]]),
+            ],
+            "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.2.incr.aof seq 2 type i\n",
+        );
+        let path = program
+            .working_directory()
+            .join("appendonlydir")
+            .join(damaged);
+        let whole = std::fs::read(&path).unwrap();
+        let broken = [whole.clone(), b"*3\r\n$3\r\nSET\r\n$4\r\ncut".to_vec()].concat();
+        std::fs::write(&path, &broken).unwrap();
+        if damaged == "appendonly.aof.2.incr.aof" {
+            multipart_load(
+                &program,
+                "appendonly.aof",
+                &[("k1", Some("v1")), ("k2", Some("v2")), ("k3", Some("v3"))],
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), whole);
+        } else {
+            multipart_refused(&program);
+            assert_eq!(std::fs::read(&path).unwrap(), broken);
+        }
+    }
+}
+
+/// Additional branches of aofLoadManifestFromFile beyond the Tcl fixtures:
+/// sdssplitargs, C-string fields, signed atoll prefixes, comments and fgets' limit.
+#[test]
+fn multi_part_aof_manifest_parser_preserves_redis_field_rules() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[("quoted name.aof", &[&["SET", "k1", "v1"]])],
+        "# comment\nTyPe base SeQ \" -2tail\" FiLe ignored FiLe \"quoted name.aof\\x00ignored\" future field\nfile missing-history seq -1 type history\n",
+    );
+    multipart_load(&program, "appendonly.aof", &[("k1", Some("v1"))]);
+    assert_eq!(
+        std::fs::read(
+            program
+                .working_directory()
+                .join("appendonlydir/appendonly.aof.manifest")
+        )
+        .unwrap(),
+        b"file \"quoted name.aof\" seq -2 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n"
+    );
+    multipart_load(&program, "appendonly.aof", &[("k1", Some("v1"))]);
+}
+
+#[test]
+fn multi_part_aof_manifest_parser_refuses_bad_fields_and_boundaries() {
+    for manifest in [
+        " \t\r\n".to_owned(),
+        "file appendonly.aof.1.base.aof seq 1 type b".to_owned(),
+        "file appendonly.aof.1.base.aof seq 0 type b\n".to_owned(),
+        "file appendonly.aof.1.incr.aof seq -1 type i\n".to_owned(),
+        "file appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.1.incr.aof seq 1 type i\n".to_owned(),
+        "file appendonly.aof.1.base.aof seq 1 unknown b\n".to_owned(),
+        "file appendonly.aof.1.base.aof seq 1 type \"\"\n".to_owned(),
+        "file \"unclosed seq 1 type b\n".to_owned(),
+        "file ../escape seq 1 type b\n".to_owned(),
+        "file dir\\escape seq 1 type b\n".to_owned(),
+        "file /escape seq 1 type b\n".to_owned(),
+        "file appendonly.aof.1.base.aof seq 1 type b\0\n".to_owned(),
+        format!("file appendonly.aof.1.base.aof seq 1 type b padding {}\n", "x".repeat(1024)),
+    ] {
+        let program = CompiledProgram::from_environment();
+        multipart_files(&program, &[
+                ("appendonly.aof.1.base.aof", &[&["SET", "k1", "v1"]]),
+                ("appendonly.aof.1.incr.aof", &[&["SET", "k2", "v2"]]),
+            ], &manifest);
+        multipart_refused(&program);
+        assert_eq!(std::fs::read(program.working_directory().join("appendonlydir/appendonly.aof.manifest")).unwrap(), manifest.as_bytes());
+    }
+}
+
+#[test]
+fn multi_part_aof_manifest_accepts_exact_line_limit_and_comment_only_file() {
+    let head = "file appendonly.aof.1.base.aof seq 1 type b padding ";
+    let manifest = format!("{head}{}\n", "x".repeat(1024 - head.len() - 1));
+    let program = CompiledProgram::from_environment();
+    multipart_files(
+        &program,
+        &[("appendonly.aof.1.base.aof", &[&["SET", "k1", "v1"]])],
+        &manifest,
+    );
+    multipart_load(&program, "appendonly.aof", &[("k1", Some("v1"))]);
+
+    // Comments precede the newline check, including the last line without LF.
+    let program = CompiledProgram::from_environment();
+    multipart_files(&program, &[], "# only a comment");
+    multipart_load(&program, "appendonly.aof", &[]);
+    assert_eq!(std::fs::read(program.working_directory().join("appendonlydir/appendonly.aof.manifest")).unwrap(),
+        b"file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n");
 }

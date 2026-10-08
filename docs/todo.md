@@ -33,8 +33,10 @@ written while firn lived in the Whitefoot repository; a path such as
     scripts run only those `held_kind` (`firn/commands/script.wf`) names.
   - Make AOF persistence usable through write/sync error handling, rewrite
     and orderly stop on signals, `SHUTDOWN` being done; verify a practical
-    data migration path. File replacement and signal delivery
-    may require Whitefoot library/runtime work; AOF presence alone is not
+    data migration path. Multi-part AOF loading, old-file upgrades and startup
+    history cleanup are implemented; the background rewrite and its trigger
+    remain the next step of the [rewrite design](../research/investigations/aof-rewrite/README.md#design).
+    Signal delivery may require Whitefoot library/runtime work; AOF presence alone is not
     durable-recovery evidence. RDB compatibility is not assumed by this item.
   - Add memory accounting, `maxmemory` and the eviction behavior the selected
     deployments need, including large-value reclamation and slow-client
@@ -144,19 +146,19 @@ written while firn lived in the Whitefoot repository; a path such as
   a unit test of the deque helpers, since a network case would need tens of
   gigabytes. Reopen when a workload approaches a billion elements in one
   list, or with the next change to the list representation.
-- **Replay still differs from Redis's loader in two cases.** A file that
+- **Replay still differs from Redis's record format and block capacity.** A file that
   does not parse, cannot be read or holds a block larger than the input
   window's ceiling now stops firn with status 4, as Redis 7.0.15 exits
-  (`firn/persistence/persistence.wf`). Two differences remain: an error
-  opening the file other than its absence is treated as no file, where Redis
-  exits on `AOF_OPEN_ERR`; and replay accepts inline commands, where Redis's
+  (`firn/persistence/persistence.wf`); every listed file must open before
+  multi-part loading begins. Replay accepts inline commands, where Redis's
   loader requires every record to start with `*`, apart from annotation
   lines starting with `#`, and stops at any other byte. A block larger than the window's ceiling, 2 GiB, also stops firn
   where Redis loads it; replaying a block by re-reading it from its file
-  offset instead of holding it would lift that limit. The change: tell an
-  absent file from an open failure, and refuse a record starting with
-  neither `*` nor `#`, passing over `#` annotations as Redis does. Validate with an unreadable file and a file holding an inline
-  command. Reopen before firn is offered to a deployment that keeps an
+  offset instead of holding it would lift that limit. The change: refuse a
+  record starting with neither `*` nor `#`, pass over `#` annotations as
+  Redis does, and replay a large block without retaining all its bytes.
+  Validate with inline and annotated files and a block beyond the input
+  window's ceiling. Reopen before firn is offered to a deployment that keeps an
   append-only file.
 - **A script's noscript refusal checks only the command's own arity.**
   `script_command` (`firn/commands/script.wf`) answers Redis's arity error

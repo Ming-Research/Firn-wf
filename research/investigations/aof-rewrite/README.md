@@ -84,12 +84,12 @@ an RDB preamble (`aof-use-rdb-preamble no`).
 
 ## Proposal
 
-A, in the multi-part layout, selected by the owner as Q213 A.
+A, in the multi-part layout.
 
-Whitefoot v0.95 gives renaming, removal and directory sync within one
-directory, but no way to create `appendonlydir` or write below it; the
+Whitefoot v0.98 supplies `open_directory_write` to create or open
+`appendonlydir` and `move_file` to move the old log into it. The
 [writable-subdirectories investigation](https://github.com/Ming-Research/Whitefoot/blob/1ca213242/research/investigations/writable-subdirectories/README.md)
-proposes `open_directory_write`, which this design uses.
+records the grounds for these interfaces.
 
 Validation, stated before implementing:
 - **A failure at each step.** A rewrite stopped at each of its steps (before
@@ -125,10 +125,8 @@ Start:
   the manifest persisted;
 - an old-style single file `F` beside the directory with no manifest is
   upgraded as Redis upgrades it: a manifest naming `F` as the base is
-  persisted, then `F` is moved into the directory. Whitefoot v0.95 renames
-  only within one directory; the writable-subdirectories investigation
-  proposes `move_file` between two directories' write halves for this
-  (Firn ledger Q217).
+  persisted, then `F` is moved into the directory with `move_file` between
+  the working directory's and append-only directory's write halves.
 
 A rewrite, started by `BGREWRITEAOF` or automatically when the files have
 grown by `auto-aof-rewrite-percentage` (100) over the base written by the
@@ -142,8 +140,9 @@ last rewrite and exceed `auto-aof-rewrite-min-size` (64 MB):
    the closed incremental files, which no longer change, into a keyspace of
    its own, then writes that keyspace to `temp-rewriteaof-bg-<n>.aof` inside
    the directory as Redis's `rewriteAppendOnlyFileRio` writes a dataset:
-   `SET`, and `RPUSH`, `SADD`, `ZADD` and `HSET` of at most 64 elements a
-   command, each key followed by `PEXPIREAT` when it has an expiry. It syncs
+   `SET`, and `RPUSH`, `SADD`, `ZADD` and `HMSET` of at most 64 elements a
+   command, each key followed by `PEXPIREAT` when it has an expiry. Redis
+   7.0.15's `rewriteHashObject` uses `HMSET` for hashes. It syncs
    the file. Redis writes its temporary file in the working directory and
    moves it in; firn writes it in the directory, where the rename cannot
    cross a file system.

@@ -209,12 +209,11 @@ Up to four arguments may come first by position, in this order:
 1. the port to listen on, 6379 when absent;
 2. how many clients to accept before stopping, 0, the default, for no
    limit;
-3. the name of an append-only file in the working directory, or `-` for
-   none, the default: firn replays the file before it listens, cutting a
-   file whose end did not load back to its last whole command or before an
-   unfinished `MULTI` block, as Redis does with `aof-load-truncated yes`,
-   appends every change to it and syncs it once a second, as Redis's
-   `appendfsync everysec` does;
+3. `appendfilename`, the prefix of the append-only files below `appendonlydir`
+   in the working directory, or `-` for none, the default; firn replays the
+   manifest's base and then its incremental files before listening, appends
+   changes to the last incremental file and syncs it once a second, as
+   Redis's `appendfsync everysec` does;
 4. how many seconds a silent client is kept before it is closed, 0, the
    default, for no limit.
 
@@ -237,6 +236,21 @@ value; a later value replaces an earlier one:
 
 An unknown option, a value that does not read or an argument by position after
 an option stops firn with status 1.
+
+Persistence uses Redis 7.0.15's manifest layout: with prefix `F`, a fresh
+start creates `appendonlydir/F.1.base.aof` (empty), `F.1.incr.aof` and
+`F.manifest`. Base files use commands, not an RDB preamble. Manifest updates
+write `temp-F.manifest`, sync it, rename it over the manifest and sync the
+directory. A listed file that is missing or malformed stops firn with status
+4 before it listens. Only the last file may have an incomplete tail cut,
+as with `aof-load-truncated yes`; an incomplete earlier file stops startup.
+Listed history files are removed after loading; unlisted files are kept.
+An old single file `F` in the working directory is upgraded by persisting a
+manifest and moving `F` into `appendonlydir`. Interrupted upgrades resume;
+when both copies exist and the manifest names `F`, the directory copy wins.
+
+`BGREWRITEAOF` and the automatic rewrite options are not implemented yet;
+this layout is the first step of the [rewrite design](../research/investigations/aof-rewrite/README.md#design).
 
 `WF_DRIVERS` sets how many threads serve the connections, one per CPU by
 default.
@@ -268,5 +282,5 @@ default.
   and the conversions between replies and Lua values; `script_pool` holds
   the one Lua engine every script takes in turn and the registry of
   scripts the keyspace shares;
-- `persistence`: the append-only file's writer and its replay;
+- `persistence`: the append-only manifest, startup and upgrade, writer and replay;
 - `server`: connections, active expiry, the invocation's options and `main`.

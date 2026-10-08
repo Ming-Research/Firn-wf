@@ -1,0 +1,9 @@
+Decision: firn keeps Redis 7.0.15's multi-part append-only layout below `appendonlydir`, with appendfilename `F` naming `F.<n>.base.aof`, `F.<n>.incr.aof`, `F.manifest` and `temp-F.manifest`, persisting the manifest by syncing the temporary file, renaming it and syncing the directory, because the manifest can select a consistent base and the incremental files that follow it while later writes continue, instead of one file whose replacement must also copy concurrent writes ([design](../../research/investigations/aof-rewrite/README.md#design)).
+
+Decision: The rewrite replays the base and closed incremental files into a private keyspace and writes that dataset while the writer appends later commands to a new incremental file, because the closed log defines the exact state before that incremental file even for non-idempotent commands, instead of stopping the live keyspace for a complete scan (candidate B), tracking scan position and duplicating writes (C), or adding a runtime copy-on-write snapshot (D) ([candidates](../../research/investigations/aof-rewrite/README.md#candidates)).
+
+Decision: The rewrite's temporary base is written inside `appendonlydir`, because its installation rename must stay on one file system, instead of Redis's temporary file in the working directory which may be on another file system.
+
+Decision: Base files contain commands in Redis's append-only format, because firn reads and writes no RDB, instead of Redis's default RDB base preamble.
+
+Decision: An old-style file `F` is upgraded by persisting a manifest naming it as base sequence 1 and then moving it from the working directory into `appendonlydir` with `std::fs::move_file`, because that order supports Redis's interrupted-upgrade recovery without copying the log, instead of a copied second file or interpreting an unfinished move as an empty dataset.
