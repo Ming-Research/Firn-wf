@@ -384,3 +384,33 @@ one connection it delays one request in thousands and stays below the p99.
 The collection pause has not been measured; Halo's session owns that
 measurement and the collector. firn's own part is the per-call copy of the
 source.
+
+Halo's session asked for the pause to be measured before any change to its
+collector. Run
+[37792606166](https://github.com/Ming-Research/Firn-wf/actions/runs/37792606166)
+used an experiment branch (`exp/script-gc-probe` at 51f9b04, not merged)
+that reads Halo's `collection_count` and the monotonic clock just after a
+script call takes the engine and just before it returns it, and sorts calls
+into those during which a collection completed and the rest. One CPU,
+5 seconds per line; the 50-connection figures subtract the 8-connection run
+that preceded them on the same server.
+
+| line | connections | calls | with a collection | mean, with | mean, without | calls per collection | client p99, firn / Redis |
+|---|---|---|---|---|---|---|---|
+| firn | 8 | 786,572 | 241 | 3.24 ms | 2.7 µs | 3,264 | 0.087 / 0.100 ms |
+| firn | 50 | 1,440,274 | 430 | 3.70 ms | 3.0 µs | 3,349 | 3.457 / 0.714 ms |
+| firn, AOF | 8 | 815,809 | 250 | 3.05 ms | 2.6 µs | 3,263 | 0.085 / 0.090 ms |
+| firn, AOF | 50 | 1,283,655 | 383 | 3.78 ms | 3.1 µs | 3,352 | 3.457 / 0.814 ms |
+
+Calls with a collection fall between 1 and 8 ms, most between 2 and 4; the
+longest took 6.7 ms. A collection pauses every waiting connection: about one
+request in 3,300 runs into one, and each pause delays the other waiting
+connections' requests too, about 50 / 3,300 = 1.5% of requests at 50
+connections, above the 1% the p99 counts, and 8 / 3,300 = 0.24% at 8,
+below it. That accounts for the p99 equal to the pause at 50 connections
+and for its absence at 1 and 8. Collections took 0.78 of 5 seconds at 8
+connections, 15.6% of the server's time, a large part of the rate's 0.75.
+The profile of the same run no longer lists `text_bytes`, the per-call copy
+this branch removed. The collector belongs to Halo, whose design records a
+whole-heap collection as an owner decision; these figures go to Halo's
+session as the evidence for its card.
