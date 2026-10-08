@@ -368,7 +368,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     reply_error(client: client, word: &entry_text_6[0_u64..45_u64]);
     return unit;
   }
-  let held = bnot(by_sha);
+  let have_source = bnot(by_sha);
   let budget = 1000_u64;
   let mark = 0_u64;
   let begun = False();
@@ -388,16 +388,16 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     if bnot(killed) {
       set slot = cache_index(pooled: &pooled, sha: &sha);
       if slot == pooled.cache.inner.len {
-        if bnot(held) {
+        if bnot(have_source) {
           atomic p = &store^.scripts {
             let index = registry_find(pool: p, sha: &sha);
             if index < p^.registry.inner.len {
               let stored = p^.registry.inner[index].source.inner.len;
               text_bytes(out: &source, bytes: &p^.registry.inner[index].source.inner[0_u64..stored]);
-              set held = True();
+              set have_source = True();
             }
           }
-          set unregistered = bnot(held);
+          set unregistered = bnot(have_source);
         }
       }
     }
