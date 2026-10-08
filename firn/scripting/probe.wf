@@ -1,3 +1,6 @@
+alias Keyspace = pkg::store::Keyspace;
+alias EnginePool = pkg::script_pool::EnginePool;
+
 fn probe_bucket(nanos: u64) -> bucket: u64 pure {
   doc "The log2 bucket of a duration: bucket i counts durations from 2^i to below 2^(i+1) nanoseconds, bucket 0 also zero, and bucket 39 everything from 2^39.";
   let bucket = 0_u64;
