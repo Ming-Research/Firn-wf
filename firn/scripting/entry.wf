@@ -322,7 +322,7 @@ fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &Conc
 }
 
 fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, keys_env: &KeyEnv, time: &Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(keys_env), reads(time), writes(client), writes(clock) waits {
-  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and copies the script's source out of the registry only for an attempt whose engine has not compiled it, answering NOSCRIPT then if a SCRIPT FLUSH since the check has removed it. An attempt that runs out of its budget having written nothing is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits for the engine is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
+  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and, for each attempt whose engine has not compiled it, reads the registry again and copies the script's source from that read, answering NOSCRIPT then if a SCRIPT FLUSH has removed it; an attempt whose engine has compiled it copies nothing. An attempt that runs out of its budget having written nothing is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits for the engine is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
   let count = args^.inner.len;
   let body = pkg::protocol::arg(args: args, index: 1_u64);
   if by_sha {
@@ -368,7 +368,6 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     reply_error(client: client, word: &entry_text_6[0_u64..45_u64]);
     return unit;
   }
-  let have_source = bnot(by_sha);
   let budget = 1000_u64;
   let mark = 0_u64;
   let begun = False();
@@ -388,16 +387,18 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     if bnot(killed) {
       set slot = cache_index(pooled: &pooled, sha: &sha);
       if slot == pooled.cache.inner.len {
-        if bnot(have_source) {
+        if by_sha {
+          let found = False();
+          set source = box_slots_new::<u8>(capacity: 0_u64);
           atomic p = &store^.scripts {
             let index = registry_find(pool: p, sha: &sha);
             if index < p^.registry.inner.len {
               let stored = p^.registry.inner[index].source.inner.len;
               text_bytes(out: &source, bytes: &p^.registry.inner[index].source.inner[0_u64..stored]);
-              set have_source = True();
+              set found = True();
             }
           }
-          set unregistered = bnot(have_source);
+          set unregistered = bnot(found);
         }
       }
     }

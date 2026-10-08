@@ -53,10 +53,14 @@
 #                                 a fresh server; line order reverses on even
 #                                 passes. Before session-get, fill 1,000,000
 #                                 sessions and record VmRSS in KiB. With PERF
-#                                 set, each firn line's first pass is run once
-#                                 more under perf record, unmeasured, and its
-#                                 flat profile kept as profile-<line>-<cpus>-
-#                                 <workload>-<connections>.txt. Probe with
+#                                 set, in pass 1 only, each firn line's server,
+#                                 after all its measured runs of a workload,
+#                                 runs that workload once more at each
+#                                 connection count in turn under perf record,
+#                                 unmeasured, and keeps each flat profile as
+#                                 profile-<line>-<cpus>-<workload>-
+#                                 <connections>.txt; Redis lines are not
+#                                 profiled. Probe with
 #                                 WORKLOAD_PASSES=2 WORKLOAD_SECONDS=5 first.
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
@@ -719,8 +723,12 @@ if [ "$MODE" = workloads ]; then
                             --threads "$CLIENT_THREADS" --connections "$conns" \
                             --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
                         echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
-                        case $line in firn-*) profiled=1 ;; *) profiled= ;; esac
-                        if [ -n "$PERF" ] && [ -n "$profiled" ] && [ "$pass" -eq 1 ]; then
+                    done
+                    # Profile only after every measured run on this server, so
+                    # no measured run follows an unmeasured one here.
+                    case $line in firn-*) profiled=1 ;; *) profiled= ;; esac
+                    if [ -n "$PERF" ] && [ -n "$profiled" ] && [ "$pass" -eq 1 ]; then
+                        for conns in ${WORKLOAD_CONNECTIONS:-50}; do
                             name="$line-$n-$workload-$conns"
                             "$PERF" record -F "${PERF_FREQUENCY:-4999}" -p "$server" \
                                 -o "$OUT/perf-$name.data" >/dev/null 2>&1 &
@@ -736,8 +744,8 @@ if [ "$MODE" = workloads ]; then
                             rm -f "$OUT/perf-$name.data"
                             echo "== profile $name"
                             grep -v '^#' "$OUT/profile-$name.txt" | grep -v '^$' | head -25
-                        fi
-                    done
+                        done
+                    fi
                     stop
                     server=
                 done
