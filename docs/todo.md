@@ -31,16 +31,16 @@ written while firn lived in the Whitefoot repository; a path such as
     `WATCH`/`UNWATCH`, and write as parts the commands a selected consumer
     queues or calls from a script that are not parts yet, since `EXEC` and
     scripts run only those `held_kind` (`firn/commands/script.wf`) names.
-  - Make AOF persistence usable through write/sync error handling
-    and orderly stop on signals, `SHUTDOWN` being done; verify a practical
-    data migration path. Multi-part AOF loading, old-file upgrades and startup
-    history cleanup are implemented. The background rewrite and automatic
-    trigger are drafted and await CI validation
+  - Make AOF persistence usable through write/sync error handling, orderly
+    stop on `SHUTDOWN` being done and on SIGTERM and SIGINT in Firn-wf #33;
+    verify a practical data migration path.
+    Multi-part AOF loading, old-file upgrades and startup history cleanup
+    are implemented. The background rewrite and automatic trigger are
+    drafted and await CI validation
     ([rewrite design](../research/investigations/aof-rewrite/README.md#design)).
     The draft retains unwritten append bytes; client-visible write/sync
-    error handling remains open.
-    Signal delivery may require Whitefoot library/runtime work; AOF presence alone is not
-    durable-recovery evidence. RDB compatibility is not assumed by this item.
+    error handling remains open. AOF presence alone is not durable-recovery
+    evidence. RDB compatibility is not assumed by this item.
   - Add memory accounting, `maxmemory` and the eviction behavior the selected
     deployments need, including large-value reclamation and slow-client
     pressure. Complete authentication, configuration, logs, connection limits,
@@ -420,20 +420,6 @@ written while firn lived in the Whitefoot repository; a path such as
   Reopen when firn is monitored through `INFO`, or with the next work on
   firn's statistics.
 
-- **A signal stops firn without writing its pending append-only bytes.**
-  firn handles no signal, and the standard library's `std::process`
-  delivers none, so SIGTERM or SIGINT ends it at once, losing the changes its
-  writer (`write_log` in `firn/persistence/persistence.wf`) has not yet
-  appended, up to one 10-millisecond cycle, and the bytes not yet synced,
-  where Redis on SIGTERM appends and syncs its file before it exits, as its
-  `SHUTDOWN` command does, which firn now does too. Seen on 2026-10-03: a
-  `SET` sent a few milliseconds before a SIGTERM was absent after the replay.
-  Whitefoot's `std::process` delivers no signal to a context; were one
-  delivered, it could set `keyspace.server.shutdown` as `SHUTDOWN` does, so
-  clients leave before main sets `stopping` and the writer appends, syncs
-  and closes. Reopen when Whitefoot delivers signals, or when firn runs under
-  a service manager that stops it with SIGTERM.
-
 - **firn writes decimals and reads `CONFIG SET`'s integers in repeated
   code.** `text_reserve` and `text_number` in `firn/commands/info.wf`
   copy `log_reserve` and `log_number` in `firn/store/store.wf`, the one
@@ -524,6 +510,23 @@ written while firn lived in the Whitefoot repository; a path such as
   appendonly on a populated server. Reopen with runtime appendonly enablement
   or a selected workload that exports data this way; validate both the
   resulting base and writes concurrent with the snapshot against Redis.
+
+- **A second stop signal, or one during replay, ends firn at once.** firn
+  takes SIGTERM and SIGINT from just before it listens, and closes its stop
+  listener on the first, restoring the host default
+  (`design/firn/orderly-stop.md`). A second SIGTERM while firn drains
+  therefore ends it at once, losing the changes not yet appended or synced,
+  where Redis 7.0.15's `sigShutdownHandler` ignores it; a second SIGINT ends
+  it by the signal where Redis exits with status 1; and a signal during the
+  replay ends firn at once where Redis stops loading and exits with status 0.
+  Matching Redis needs a way to end the program, with a status, from a
+  context while others still wait, such as the orderly program exit the
+  polling entry under *Whitefoot requirements* names, so the listener could
+  stay open through the drain and through the replay. Validate with a second
+  SIGTERM during a drain held open by an idle client, which must leave the
+  acknowledged writes in the replay, and a second SIGINT, which must end firn
+  with status 1. Reopen when that capability lands, or when a service manager
+  firn runs under sends SIGTERM more than once.
 
 ## Tests
 
@@ -677,11 +680,16 @@ written while firn lived in the Whitefoot repository; a path such as
   The change: a primitive that lets one context end other contexts' waits,
   such as a cancellation a host wait and a guarded atomic statement observe,
   ending with their own outcome, or an orderly program exit that ends every
-  context once the program has flushed what it chose. Either would replace
-  firn's polling. Reopen with SIGTERM handling, which needs Whitefoot to
-  deliver signals as well; with the busy-script work, where `SHUTDOWN NOSAVE`
-  must stop a script that never ends; or when another wait must be ended from
-  outside.
+  context once the program has flushed what it chose, with a status the
+  program chooses. Either would replace
+  firn's polling, the stop-signal context's among it, which polls the
+  shutdown request between waits for a signal so that it ends when firn
+  stops for another reason. Reopen with the busy-script work, where
+  `SHUTDOWN NOSAVE` must stop a script that never ends, or when another wait
+  must be ended from outside. The exit with a chosen status is also what
+  matching Redis's handling of a second SIGTERM and of a signal during the
+  replay needs (the server entry on a second stop signal); the owner chose
+  to record it here and ship the signal stop without it.
 
 - **A program cannot read a socket address.** The specification (v0.93,
   section 14, `std::net`) makes `SocketAddress` opaque, built only by

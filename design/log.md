@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-08 SIGTERM and SIGINT stop firn in order
+
+Nodes: firn/orderly-stop
+
+Owner-approved: On the shared status board of 2026-10-08, written in Chinese, after the card "firn's way of taking stop signals, and how to handle the Whitefoot gap" (translated), which recommended option A, approving the two decisions, merging Firn-wf #33 and recording a context ending the program with a status as a Whitefoot gap, the owner chose A.
+
+Summary: SIGTERM and SIGINT request the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either under its defaults, appending and syncing the append-only file. One stop listener, opened just before firn listens, is waited on by a context of its own that polls the shutdown request every tenth of a second, because nothing else can end its wait when firn stops for another reason; a host that refuses the listener stops firn with status 3. The context closes the listener on the first signal, restoring the host default, so a second signal ends firn at once, which keeps an escape from a stop that does not finish; a second SIGTERM thus ends firn where Redis ignores it, and a signal during the replay ends it where Redis exits with status 0. Matching those needs a Whitefoot program exit with a chosen status from one context, recorded under Whitefoot requirements in docs/todo.md.
+
 ## 2026-10-08 Rewriting the append-only file in Redis 7's multi-part layout
 
 Nodes: firn/aof-rewrite, firn/append-only-file
