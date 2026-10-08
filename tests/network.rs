@@ -3007,6 +3007,29 @@ fn expect_silence_for(stream: &mut TcpStream, wait: Duration, what: &str) {
         .expect("restore the reply wait");
 }
 
+/// Whether the wait passed silently, leaving any reply unread and restoring
+/// the previous timeout. A closed connection or a socket failure is an error.
+#[cfg(target_os = "linux")]
+fn silent_for(stream: &mut TcpStream, wait: Duration) -> std::io::Result<bool> {
+    let previous = stream.read_timeout()?;
+    stream.set_read_timeout(Some(wait))?;
+    let result = stream.peek(&mut [0_u8; 1]);
+    stream.set_read_timeout(previous)?;
+    match result {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) => Ok(true),
+        Err(error) => Err(error),
+        Ok(0) => Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "connection closed during the wait for silence",
+        )),
+        Ok(_) => Ok(false),
+    }
+}
+
 /// firn splits an inline command as Redis's sdssplitargs splits one: double
 /// quotes in which \n, \r, \t, \b, \a, \\, \" and \xHH stand for their bytes,
 /// a backslash before any other byte for that byte and an incomplete \x for x;
@@ -4412,8 +4435,15 @@ fn firn_kills_a_looping_script_as_redis_does() {
 /// SCRIPT FLUSH waits for a running EVALSHA, including between attempts,
 /// as Redis 7.0.15 queues FLUSH below its busy threshold. SCRIPT KILL can
 /// still stop the script while FLUSH waits: the script gets Redis's killed
-/// error, FLUSH succeeds, and a later EVALSHA gets NOSCRIPT. The start delay
-/// and killed error are the same as in the SCRIPT KILL case above.
+/// error, FLUSH succeeds, and a later EVALSHA gets NOSCRIPT. Each round loads
+/// the script and checks that FLUSH stays silent for 300 ms before KILL. An
+/// immediate OK leaves the precondition that the script had begun unproven:
+/// EVALSHA must then answer exactly NOSCRIPT, and the case reruns with a
+/// longer start delay, at most three rounds. Without the running guard,
+/// FLUSH answers at once while the script runs and its next attempt answers
+/// NOSCRIPT, so every round looks like an unproven precondition and the case
+/// fails. A correct firn passes unless every round's start delay is too short.
+/// The killed error is the same as in the SCRIPT KILL case above.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_script_flush_waits_for_a_looping_script_to_be_killed() {
@@ -4425,22 +4455,44 @@ fn firn_script_flush_waits_for_a_looping_script_to_be_killed() {
     let mut flushing = connect_when_ready(port);
     let mut killing = connect_when_ready(port);
     let sha = "694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7";
-    looping
-        .write_all(&resp(&["SCRIPT", "LOAD", "while true do end"]))
-        .expect("load the looping script");
-    expect_replies(
-        &mut looping,
-        format!("$40\r\n{sha}\r\n").as_bytes(),
-        "the looping script's SHA1",
-    );
-    looping
-        .write_all(&resp(&["EVALSHA", sha, "0"]))
-        .expect("start the looping script by SHA1");
-    std::thread::sleep(Duration::from_millis(300));
-    flushing
-        .write_all(&resp(&["SCRIPT", "FLUSH"]))
-        .expect("flush while the script runs");
-    expect_silence(&mut flushing, "SCRIPT FLUSH while a script is in progress");
+    let mut round = 0;
+    loop {
+        round += 1;
+        assert!(
+            round <= 3,
+            "SCRIPT FLUSH never waited for a running script in three rounds"
+        );
+        looping
+            .write_all(&resp(&["SCRIPT", "LOAD", "while true do end"]))
+            .expect("load the looping script");
+        expect_replies(
+            &mut looping,
+            format!("$40\r\n{sha}\r\n").as_bytes(),
+            "the looping script's SHA1",
+        );
+        looping
+            .write_all(&resp(&["EVALSHA", sha, "0"]))
+            .expect("start the looping script by SHA1");
+        std::thread::sleep(Duration::from_millis(300 * round));
+        flushing
+            .write_all(&resp(&["SCRIPT", "FLUSH"]))
+            .expect("flush while the script runs");
+        if silent_for(&mut flushing, Duration::from_millis(300))
+            .expect("wait for SCRIPT FLUSH while a script is in progress")
+        {
+            break;
+        }
+        expect_replies(
+            &mut flushing,
+            b"+OK\r\n",
+            "SCRIPT FLUSH before the running precondition was proven",
+        );
+        expect_replies(
+            &mut looping,
+            b"-NOSCRIPT No matching script. Please use EVAL.\r\n",
+            "EVALSHA when SCRIPT FLUSH did not wait",
+        );
+    }
     killing
         .write_all(&resp(&["SCRIPT", "KILL"]))
         .expect("kill the script while FLUSH waits");
