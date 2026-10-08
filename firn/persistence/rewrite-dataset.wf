@@ -1,3 +1,4 @@
+alias aof_ceiling = pkg::store::ceiling;
 alias Keyspace = pkg::store::Keyspace;
 alias HandleFactory = std::io::HandleFactory;
 alias WriteFile = std::fs::WriteFile;
@@ -89,16 +90,16 @@ fn aof_rw_entry(slot: &Option<AofEntry>, emitter: &AofEmitter) -> result: unit r
           }
         }
         Members(members: stored_members) => {
-          set emitter^.remaining = aof_map_len::<AofKey, unit, 4294967296_u64>(map: stored_members);
-          aof_map_each::<AofKey, unit, AofEmitter, fn aof_rw_member, 4294967296_u64>(map: stored_members, env: emitter);
+          set emitter^.remaining = aof_map_len::<AofKey, unit, aof_ceiling>(map: stored_members);
+          aof_map_each::<AofKey, unit, AofEmitter, fn aof_rw_member, aof_ceiling>(map: stored_members, env: emitter);
         }
         Fields(fields: stored_fields) => {
-          set emitter^.remaining = aof_map_len::<AofKey, AofBytes, 4294967296_u64>(map: stored_fields);
-          aof_map_each::<AofKey, AofBytes, AofEmitter, fn aof_rw_field, 4294967296_u64>(map: stored_fields, env: emitter);
+          set emitter^.remaining = aof_map_len::<AofKey, AofBytes, aof_ceiling>(map: stored_fields);
+          aof_map_each::<AofKey, AofBytes, AofEmitter, fn aof_rw_field, aof_ceiling>(map: stored_fields, env: emitter);
         }
         Ranked(ranked: stored_ranked) => {
-          set emitter^.remaining = aof_map_len::<AofKey, f64, 4294967296_u64>(map: &stored_ranked^.scores);
-          aof_map_each::<AofKey, f64, AofEmitter, fn aof_rw_score, 4294967296_u64>(map: &stored_ranked^.scores, env: emitter);
+          set emitter^.remaining = aof_map_len::<AofKey, f64, aof_ceiling>(map: &stored_ranked^.scores);
+          aof_map_each::<AofKey, f64, AofEmitter, fn aof_rw_score, aof_ceiling>(map: &stored_ranked^.scores, env: emitter);
         }
       }
       if held^.expires != 0_u64 {
