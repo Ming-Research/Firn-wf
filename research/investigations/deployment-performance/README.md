@@ -341,3 +341,26 @@ file off. With one connection no script waits for the engine.
   several times Redis's: the time is then in the script's own path (the
   per-call copy of the source out of the registry, the cache lookup, the
   engine's run, or the reply), which a profile of that path then locates.
+
+### Result
+
+Run [37781681980](https://github.com/Ming-Research/Firn-wf/actions/runs/37781681980)
+on the i9-14900K, Firn-wf 703cdfb, one CPU, 2 passes of 5 seconds. Rate in
+thousands a second and p99 in ms, both passes:
+
+| connections | Redis | firn | Redis, AOF | firn, AOF |
+|---|---|---|---|---|
+| 1 | 49.0, 49.0 / 0.030, 0.030 | 47.3, 45.3 / 0.028, 0.033 | 47.2, 45.8 / 0.031, 0.033 | 46.4, 46.7 / 0.029, 0.028 |
+| 8 | 211.7, 212.7 / 0.084, 0.084 | 155.3, 158.5 / 0.087, 0.085 | 190.5, 197.4 / 0.112, 0.082 | 155.2, 161.3 / 0.086, 0.082 |
+| 50 | 155.5, 155.0 / 0.554, 0.571 | 121.0, 113.0 / 3.420, 3.433 | 139.1, 138.3 / 0.964, 0.938 | 111.7, 110.3 / 3.420, 3.424 |
+
+With one connection firn matches Redis in rate and p99, so the script's own
+path is not the cost: the hypothesis survives its rejection test. The loss
+appears when connections compete: at 8 connections firn's rate is 0.75 of
+Redis's with an equal p99, and at 50 its p99 is 3.42 ms in every pass and
+line, six times Redis's. Whitefoot's runtime wakes every context watching a
+unit when a statement writes it (`wf_watch_wake_locked` in its
+`completion/bridge.c`), so each release of the engine wakes every waiting
+script. A p99 this constant across passes points to a fixed delay rather
+than to chance in that race; a profile of firn at 8 and 50 connections is
+the next measurement.

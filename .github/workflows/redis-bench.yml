@@ -71,7 +71,7 @@ on:
         type: string
         default: "50"
       profile:
-        description: Record a perf profile of each image (compare)
+        description: Record a perf profile of each image (compare) or of each firn line's first pass (workloads)
         type: boolean
         default: true
       profile_test:
@@ -305,7 +305,7 @@ jobs:
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"
-          if [ "$MODE" = compare ]; then
+          if [ "$MODE" = compare ] || [ "$MODE" = workloads ]; then
             if [ "$PROFILE" = true ]; then
               PERF=$(ls /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf 2>/dev/null | head -1 || true)
               if [ -n "$PERF" ]; then
@@ -317,6 +317,8 @@ jobs:
                 echo "no perf for this kernel; profiles skipped" | tee -a "$OUT/host.txt"
               fi
             fi
+          fi
+          if [ "$MODE" = compare ]; then
             run_session compare 2>&1 | tee "$OUT/bench.txt"
           else
             # scale/workloads build this checkout's firn under its own pin's LLVM,

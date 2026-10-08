@@ -52,7 +52,11 @@
 #                                 session-set session-get). Each workload gets
 #                                 a fresh server; line order reverses on even
 #                                 passes. Before session-get, fill 1,000,000
-#                                 sessions and record VmRSS in KiB. Probe with
+#                                 sessions and record VmRSS in KiB. With PERF
+#                                 set, each firn line's first pass is run once
+#                                 more under perf record, unmeasured, and its
+#                                 flat profile kept as profile-<line>-<cpus>-
+#                                 <workload>-<connections>.txt. Probe with
 #                                 WORKLOAD_PASSES=2 WORKLOAD_SECONDS=5 first.
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
@@ -715,6 +719,24 @@ if [ "$MODE" = workloads ]; then
                             --threads "$CLIENT_THREADS" --connections "$conns" \
                             --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
                         echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
+                        case $line in firn-*) profiled=1 ;; *) profiled= ;; esac
+                        if [ -n "$PERF" ] && [ -n "$profiled" ] && [ "$pass" -eq 1 ]; then
+                            name="$line-$n-$workload-$conns"
+                            "$PERF" record -F "${PERF_FREQUENCY:-4999}" -p "$server" \
+                                -o "$OUT/perf-$name.data" >/dev/null 2>&1 &
+                            recorder=$!
+                            sleep 1
+                            taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
+                                --threads "$CLIENT_THREADS" --connections "$conns" \
+                                --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}" >/dev/null
+                            kill -INT "$recorder"
+                            wait "$recorder" || true
+                            "$PERF" report -i "$OUT/perf-$name.data" --stdio --no-children \
+                                --sort dso,symbol --percent-limit 0.5 -g none >"$OUT/profile-$name.txt" 2>/dev/null
+                            rm -f "$OUT/perf-$name.data"
+                            echo "== profile $name"
+                            grep -v '^#' "$OUT/profile-$name.txt" | grep -v '^$' | head -25
+                        fi
                     done
                     stop
                     server=
