@@ -1,0 +1,151 @@
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias Keyspace = pkg::store::Keyspace;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+alias arg = pkg::protocol::arg;
+alias reply_arity_word = pkg::protocol::reply_arity_word;
+alias reply_error = pkg::protocol::reply_error;
+alias reply_nil = pkg::protocol::reply_nil;
+alias reply_integer = pkg::protocol::reply_integer;
+alias reply_echoed = pkg::protocol::reply_echoed;
+alias reply_word = pkg::protocol::reply_word;
+
+const code_object: u64 = 92647902036559_u64;
+
+const object_help_name: Array<u8, 4> = "HELP";
+
+const object_help_reply: Array<u8, 662> = "*15\r\n+OBJECT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:\r\n+ENCODING <key>\r\n+    Return the kind of internal representation used in order to store the value\r\n+    associated with a <key>.\r\n+FREQ <key>\r\n+    Return the access frequency index of the <key>. The returned integer is\r\n+    proportional to the logarithm of the recent access frequency of the key.\r\n+IDLETIME <key>\r\n+    Return the idle time of the <key>, that is the approximated number of\r\n+    seconds elapsed since the last access to the key.\r\n+REFCOUNT <key>\r\n+    Return the number of references of the value associated with the specified\r\n+    <key>.\r\n+HELP\r\n+    Prints this help.\r\n";
+
+const object_idle_command: Array<u8, 15> = "object|idletime";
+
+const object_freq_command: Array<u8, 11> = "object|freq";
+
+const object_help_command: Array<u8, 11> = "object|help";
+
+const arity_object: i64 = -2_i64;
+
+const object_unknown: Array<u8, 25> = "-ERR unknown subcommand '";
+
+const object_idle: Array<u8, 8> = "IDLETIME";
+
+const object_freq: Array<u8, 4> = "FREQ";
+
+const object_try_help: Array<u8, 21> = "'. Try OBJECT HELP.\r\n";
+
+const object_idle_error: Array<u8, 171> = "ERR An LFU maxmemory policy is selected, idle time not tracked. Please note that when switching between policies at runtime LRU and LFU data will take some time to adjust.";
+
+const object_freq_error: Array<u8, 182> = "ERR An LFU maxmemory policy is not selected, access frequency not tracked. Please note that when switching between policies at runtime LRU and LFU data will take some time to adjust.";
+
+fn object_arity(input: &[u8], args: &Box<Slots<Span>>) -> arity: i64 reads(input), reads(args) {
+  doc "Redis 7.0.15 commands/object-idletime.json and object-freq.json have arity 3; object-help.json has arity 2; the OBJECT container has arity -2; zero identifies an unsupported or unknown subcommand for preflight rejection.";
+  if args^.inner.len < 2_u64 {
+    return arity_object;
+  }
+  let sub = arg(args: args, index: 1_u64);
+  if word_at(input: input, span: sub, word: &object_help_name[0_u64..4_u64]) {
+    return 2_i64;
+  }
+  let idle = word_at(input: input, span: sub, word: &object_idle[0_u64..8_u64]);
+  let frequency = word_at(input: input, span: sub, word: &object_freq[0_u64..4_u64]);
+  if bor(idle, frequency) {
+    return 3_i64;
+  }
+  return 0_i64;
+}
+
+fn object_plan(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: u64 reads(input), reads(args), writes(client) {
+  doc "Redis 7.0.15 server.c commandCheckExistence preflight and object.c objectCommand parsing for IDLETIME, FREQ and HELP (networking.c addReplyHelp). The OBJECT container has arity -2 and no flags; IDLETIME and FREQ are READONLY with LOOKUP_NOTOUCH|LOOKUP_NONOTIFY, and HELP is LOADING|STALE. Other subcommands retain Redis's unknown-subcommand reply until implemented.";
+  let sub = arg(args: args, index: 1_u64);
+  if word_at(input: input, span: sub, word: &object_help_name[0_u64..4_u64]) {
+    if args^.inner.len != 2_u64 {
+      reply_arity_word(client: client, word: &object_help_command[0_u64..11_u64]);
+    } else {
+      reply_word(client: client, word: &object_help_reply[0_u64..662_u64]);
+    }
+    return 0_u64;
+  }
+  if word_at(input: input, span: sub, word: &object_idle[0_u64..8_u64]) {
+    if args^.inner.len != 3_u64 {
+      reply_arity_word(client: client, word: &object_idle_command[0_u64..15_u64]);
+      return 0_u64;
+    }
+    return 1_u64;
+  }
+  if word_at(input: input, span: sub, word: &object_freq[0_u64..4_u64]) {
+    if args^.inner.len != 3_u64 {
+      reply_arity_word(client: client, word: &object_freq_command[0_u64..11_u64]);
+      return 0_u64;
+    }
+    return 2_u64;
+  }
+  reply_word(client: client, word: &object_unknown[0_u64..25_u64]);
+  let shown = imin(sub.length, 128_u64);
+  let echoed = reply_echoed(client: client, input: input, span: sub, limit: shown);
+  reply_word(client: client, word: &object_try_help[0_u64..21_u64]);
+  return 0_u64;
+}
+
+fn object_body(slot: &Option<Entry>, client: &Client, kind: u64) -> lapsed: Bool writes(slot), writes(client) {
+  doc "Redis 7.0.15 object.c objectCommandLookupOrReply and objectCommand: NOTOUCH, missing keys return null before policy checks, IDLETIME uses estimateObjectIdleTime/1000 and FREQ uses LFUDecrAndReturn without storing decay.";
+  let present = entry_kind(slot: slot, client: client);
+  let removed = client^.state == state_expired;
+  if present == 0_u64 {
+    reply_nil(client: client);
+    return removed;
+  }
+  let lfu = access_lfu(client: client);
+  if kind == 1_u64 {
+    if lfu {
+      reply_error(client: client, word: &object_idle_error[0_u64..171_u64]);
+      return removed;
+    }
+  } else if bnot(lfu) {
+    reply_error(client: client, word: &object_freq_error[0_u64..182_u64]);
+    return removed;
+  }
+  match slot^ {
+    Some(value: inspected) => {
+      let answer = access_idle(stamp: inspected^.access, client: client);
+      if kind == 2_u64 {
+        let frequency = access_frequency(stamp: inspected^.access, client: client);
+        set answer = cvt::<u32, u64>(frequency);
+      }
+      let signed = cvt.wrap::<u64, i64>(answer);
+      reply_integer(client: client, value: signed);
+    }
+    None() => {
+    }
+  }
+  return removed;
+}
+
+fn run_object(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "Redis 7.0.15 object.c objectCommand through shared command parts, logging lazy expiry as db.c lookupKey does.";
+  let kind = object_plan(input: input, args: args, client: client);
+  if kind == 0_u64 {
+    return unit;
+  }
+  let place = key_bounds(input: input, args: args, index: 2_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
+    let lapsed = object_body(slot: slot, client: client, kind: kind);
+    let appended = mset_lapse_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, key: key);
+  }
+  return unit;
+}
+
+fn held_object(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(log), writes(client) {
+  doc "Redis 7.0.15 object.c objectCommand with the same NOTOUCH body in scripts and EXEC.";
+  let kind = object_plan(input: input, args: args, client: client);
+  if kind == 0_u64 {
+    return 0_u64;
+  }
+  let place = key_bounds(input: input, args: args, index: 2_u64);
+  let key = &input^[place.start..place.end];
+  set client^.now = time^.check;
+  let lapsed = object_body(slot: &keys^[key], client: client, kind: kind);
+  return mset_lapse_meta(log: log, logged: logged, lapsed: lapsed, key: key);
+}

@@ -418,7 +418,8 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
           let random = pooled.engine.vm.random_state;
           let configs = config_snapshot(vm: &pooled.engine.vm);
           let config_active = pooled.engine.vm.cjson_active_config;
-          atomic t = &store^.keys, m = &store^.meta {
+          atomic t = &store^.keys, m = &store^.meta, access_state = &store^.server {
+            pkg::store::access_settings(server: access_state, client: client);
             let held_keys = map_count::<pkg::store::Entry>(map: t);
             let held_clients = m^.clients;
             let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);

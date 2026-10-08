@@ -31,9 +31,10 @@ public enum Value {
 }
 
 public struct Entry {
-  doc "A key's value and its expiry: the calendar time in milliseconds at which it expires, as Redis keeps it, or zero for none.";
+  doc "A key's value, Redis 7.0.15 robj.lru access bits (object.c createObject and db.c lookupKey), and its expiry: the calendar time in milliseconds at which it expires, as Redis keeps it, or zero for none.";
   public value: Value;
   public expires: u64;
+  public access: u32;
 }
 
 public struct Due {
@@ -62,14 +63,25 @@ public struct Meta {
   public random: u64;
 }
 
+public struct MemoryConfig {
+  doc "Redis 7.0.15 config.c memory settings; policies use maxmemory_policy_enum order, with noeviction at 7. Step 1 tracks accesses and reports these values; eviction and OOM enforcement follow separately.";
+  public maxmemory: u64;
+  public maxmemory_policy: u64;
+  public maxmemory_samples: u64;
+  public lfu_log_factor: u64;
+  public lfu_decay_time: u64;
+  public maxmemory_eviction_tenacity: u64;
+}
+
 public struct ServerState {
-  doc "What the server keeps beside the keyspace that every connection reaches: the password clients must give, empty for none, and how many seconds a silent client is kept, zero for no limit, which CONFIG SET changes; the values of the parameters whose only effect in Redis is on its internal encodings, which CONFIG SET sets and CONFIG GET reports and firn does not use, in the order of their names: hash-max-listpack-entries, hash-max-listpack-value, list-compress-depth, list-max-listpack-size, set-max-intset-entries, stream-node-max-bytes, stream-node-max-entries, zset-max-listpack-entries and zset-max-listpack-value; how many connections the server has accepted since it started or CONFIG RESETSTAT last ran; the shutdown request, which SHUTDOWN and a stop signal set and main sets again with Meta.stopping, separate from it until every client has left; and the calendar time in milliseconds at which it started, which INFO's uptime counts from.";
+  doc "What the server keeps beside the keyspace that every connection reaches: the password clients must give, empty for none, and how many seconds a silent client is kept, zero for no limit, which CONFIG SET changes; the values of the parameters whose only effect in Redis is on its internal encodings, which CONFIG SET sets and CONFIG GET reports and firn does not use, in the order of their names: hash-max-listpack-entries, hash-max-listpack-value, list-compress-depth, list-max-listpack-size, set-max-intset-entries, stream-node-max-bytes, stream-node-max-entries, zset-max-listpack-entries and zset-max-listpack-value; how many connections the server has accepted since it started or CONFIG RESETSTAT last ran; the shutdown request, which SHUTDOWN and a stop signal set and main sets again with Meta.stopping, separate from it until every client has left; the calendar time in milliseconds at which it started, which INFO's uptime counts from; and the six maxmemory and LFU settings CONFIG exposes.";
   public password: Bytes;
   public timeout: u64;
   public shutdown: Bool;
   public encodings: Array<i64, 9>;
   public connections: u64;
   public started: u64;
+  public memory: MemoryConfig;
 }
 
 public struct Keyspace {
@@ -137,3 +149,5 @@ public fn log_text(log: &Box<Slots<u8>>, text: &Bytes) -> result: unit reads(tex
 public fn log_decimal(log: &Box<Slots<u8>>, value: u64) -> result: unit writes(log) doc "Appends a number as a RESP bulk string of its decimal digits.";
 
 public fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>) -> result: unit reads(input), reads(args), writes(log) doc "Appends a command as the client sent it, every argument a RESP bulk string.";
+
+public fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) doc "Redis 7.0.15 db.c lookupKey observes one server policy and LFU configuration with the key lookup. The caller holds this server state in the same atomic statement as the keys, including throughout EXEC or a script attempt, so CONFIG cannot reinterpret access bits midway through a command.";

@@ -264,7 +264,7 @@ written while firn lived in the Whitefoot repository; a path such as
   `GETKEYS` answer as unknown subcommands; `LMPOP` and the blocking list
   commands, `SSCAN`,
   `WATCH`, publish and subscribe, and a random hash seed; and
-  `SORT`, `LCS`, `OBJECT`, `DUMP`, `RESTORE`, `MOVE`, `MIGRATE`,
+  `SORT`, `LCS`, `DUMP`, `RESTORE`, `MOVE`, `MIGRATE`,
   `WAIT`, `HSCAN`, `ZSCAN`, `ZRANGESTORE`, `ZRANDMEMBER`, `ZMPOP` and
   `BZMPOP`, `BZPOPMIN` and `BZPOPMAX`, and `ZDIFF`, `ZINTER`, `ZUNION`,
   `ZINTERCARD` and their stores, which firn answers as unknown commands.
@@ -555,6 +555,40 @@ written while firn lived in the Whitefoot repository; a path such as
   acknowledged writes in the replay, and a second SIGINT, which must end firn
   with status 1. Reopen when that capability lands, or when a service manager
   firn runs under sends SIGTERM more than once.
+
+- **Complete OBJECT's encoding and reference-count queries.** IDLETIME,
+  FREQ and HELP are implemented in the maxmemory step 1 draft; ENCODING and
+  REFCOUNT still answer Redis's unknown-subcommand error, including for a
+  missing key. This leaves introspection clients and Redis's shared-integer
+  cases unsupported. Firn's value representations do not map directly to
+  Redis's encodings or reference counts; determine the truthful compatibility
+  contract before implementing these replies. Validate against Redis 7.0.15
+  `object.c objectCommand` and `unit/introspection-2`/`unit/maxmemory`.
+  Reopen when a selected consumer requires either query or the next object
+  representation investigation chooses that contract.
+
+- **Preserve script retry semantics with access tracking.** The maxmemory
+  step 1 draft refreshes LRU/LFU metadata on GET, but a read-only script
+  attempt that exhausts its interpreter budget runs again and repeats LFU
+  updates. Treating that metadata change as a dataset write would make a
+  read-only infinite script unkillable. Owner direction is pending on
+  journaling and restoring original stamps and random state before a retry;
+  the journal's representation and allocation failures remain undesigned.
+  Finish this within step 1 before claiming Redis-compatible script access
+  counts. The new finite-loop LFU network assertion must count one GET,
+  and a GET followed by an infinite loop must remain killable. See the
+  [decision and alternatives](../research/investigations/memory-limit/step-1.md#open-direction-access-updates-across-script-retries).
+
+- **Measure the common settings hold added by access tracking.** The draft
+  holds ServerState with tracked key lookups to order CONFIG changes with
+  the lookup. This adds a common target to otherwise independent GETs and
+  holds it through a script attempt; Whitefoot does not promise concurrent
+  read-only holds. Retaining this baseline awaits owner direction. Include
+  it in the existing same-source 14900K stamp-cost experiment, with base
+  twins; reopen the publication representation if its cost exceeds the
+  twins' spread. No slowdown is asserted without that measurement. An
+  alternative must also preserve concurrent CONFIG/lookup ordering. See
+  the [ordering analysis](../research/investigations/memory-limit/step-1.md#open-direction-settings-and-keyspace-ordering).
 
 ## Tests
 

@@ -1,0 +1,306 @@
+alias reply_bulk_input = pkg::protocol::reply_bulk_input;
+alias reply_byte = pkg::protocol::reply_byte;
+alias reply_word = pkg::protocol::reply_word;
+alias read_integer = pkg::bytes::read_integer;
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias Keyspace = pkg::store::Keyspace;
+alias Time = pkg::store::Time;
+alias Span = pkg::protocol::Span;
+alias expired = pkg::store::expired;
+
+fn prepare_access(client: &Client, time: &Time) -> result: unit reads(time), writes(client) {
+  doc "Redis 7.0.15 object.c createObject and db.c lookupKey use the calendar clock, including during AOF loading when the expiry-check time is zero. Settings are read by store.access_settings in the same atomic statement as each command's key lookups.";
+  set client^.access_ms = time^.unix_ms;
+  return unit;
+}
+
+fn access_lfu(client: &Client) -> lfu: Bool reads(client) {
+  doc "Whether Redis 7.0.15 config.c maxmemory_policy_enum selects an LFU policy.";
+  let volatile = client^.memory_policy == 1_u64;
+  let allkeys = client^.memory_policy == 5_u64;
+  return bor(volatile, allkeys);
+}
+
+fn access_clock(client: &Client) -> clock: u32 reads(client) {
+  doc "Redis 7.0.15 evict.c getLRUClock: calendar milliseconds divided by LRU_CLOCK_RESOLUTION, masked to LRU_BITS (24).";
+  let seconds = client^.access_ms / 1000_u64;
+  let bits = iand(seconds, 16777215_u64);
+  return cvt.wrap::<u64, u32>(bits);
+}
+
+fn access_minute(client: &Client) -> minute: u32 reads(client) {
+  doc "Redis 7.0.15 evict.c LFUGetTimeInMinutes: the low 16 bits of calendar minutes.";
+  let minutes = client^.access_ms / 60000_u64;
+  let bits = iand(minutes, 65535_u64);
+  return cvt.wrap::<u64, u32>(bits);
+}
+
+fn new_access(client: &Client) -> stamp: u32 reads(client) {
+  doc "Redis 7.0.15 object.c createObject: an LRU clock under every non-LFU policy, otherwise the minute stamp and LFU_INIT_VAL (5).";
+  if access_lfu(client: client) {
+    let minute = access_minute(client: client);
+    let high = ishl.wrap(minute, 8_u32);
+    return ior(high, 5_u32);
+  }
+  return access_clock(client: client);
+}
+
+fn access_frequency(stamp: u32, client: &Client) -> counter: u32 reads(client) {
+  doc "Redis 7.0.15 evict.c LFUTimeElapsed and LFUDecrAndReturn: one wrap uses 65535, decay subtracts elapsed whole periods, and a zero decay time never decays. Inspection leaves the stored bits unchanged.";
+  let previous = ishr.wrap(stamp, 8_u32);
+  let minute = access_minute(client: client);
+  let elapsed = minute -wrap previous;
+  if minute < previous {
+    let before = 65535_u32 -wrap previous;
+    set elapsed = before +wrap minute;
+  }
+  let counter = iand(stamp, 255_u32);
+  let periods = 0_u64;
+  if client^.lfu_decay_time != 0_u64 {
+    let wide = cvt::<u32, u64>(elapsed);
+    set periods = wide / client^.lfu_decay_time;
+  }
+  let held = cvt::<u32, u64>(counter);
+  let decayed = held -sat periods;
+  return cvt.wrap::<u64, u32>(decayed);
+}
+
+fn access_increment(counter: u32, client: &Client) -> increased: u32 writes(client) {
+  doc "Redis 7.0.15 evict.c LFULogIncr: saturate at 255, clamp counter minus LFU_INIT_VAL at zero, and compare a random fraction against 1/(base*lfu_log_factor+1). Draw from firn's client random state with next_random, as SPOP does.";
+  if counter == 255_u32 {
+    return counter;
+  }
+  set client^.random = next_random(state: client^.random);
+  let bits = iand(client^.random, 2147483647_u64);
+  let drawn = cvt.nearest::<u64, f64>(bits);
+  let fraction = fdiv.strict(drawn, 2147483647.0_f64);
+  let base = counter -sat 5_u32;
+  let wide = cvt::<u32, u64>(base);
+  let weighted = wide *wrap client^.lfu_log_factor;
+  let divisor = weighted +wrap 1_u64;
+  let floating = cvt.nearest::<u64, f64>(divisor);
+  let probability = fdiv.strict(1.0_f64, floating);
+  if flt(fraction, probability) {
+    return counter +wrap 1_u32;
+  }
+  return counter;
+}
+
+fn refresh_access(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
+  doc "Redis 7.0.15 db.c lookupKey and updateLFU: refresh each live lookup, before type checks, under every policy; NOTOUCH callers omit this call. Firn has no fork child suppressing updates.";
+  match slot^ {
+    Some(value: accessed) => {
+      let lapsed = expired(expires: accessed^.expires, now: client^.now);
+      if bnot(lapsed) {
+        let stamp = access_clock(client: client);
+        if access_lfu(client: client) {
+          let counter = access_frequency(stamp: accessed^.access, client: client);
+          let increased = access_increment(counter: counter, client: client);
+          let minute = access_minute(client: client);
+          let high = ishl.wrap(minute, 8_u32);
+          set stamp = ior(high, increased);
+        }
+        set accessed^.access = stamp;
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn replacement_access(slot: &Option<Entry>, client: &Client) -> stamp: u32 reads(slot), reads(client) {
+  doc "Redis 7.0.15 db.c dbOverwrite/setKey preserves the old LFU bits after its lookups; non-LFU replacements retain object.c createObject's fresh LRU clock.";
+  if access_lfu(client: client) {
+    match slot^ {
+      Some(value: replaced) => {
+        let lapsed = expired(expires: replaced^.expires, now: client^.now);
+        if bnot(lapsed) {
+          return replaced^.access;
+        }
+      }
+      None() => {
+      }
+    }
+  }
+  return new_access(client: client);
+}
+
+fn access_idle(stamp: u32, client: &Client) -> seconds: u64 reads(client) {
+  doc "Redis 7.0.15 evict.c estimateObjectIdleTime divided by 1000: one wrap adds LRU_CLOCK_MAX (16777215), exactly as Redis does.";
+  let clock = access_clock(client: client);
+  let elapsed = clock -wrap stamp;
+  if clock < stamp {
+    let before = 16777215_u32 -wrap stamp;
+    set elapsed = clock +wrap before;
+  }
+  return cvt::<u32, u64>(elapsed);
+}
+
+const memory_policy_0: Array<u8, 12> = "volatile-lru";
+
+const memory_policy_1: Array<u8, 12> = "volatile-lfu";
+
+const memory_policy_2: Array<u8, 15> = "volatile-random";
+
+const memory_policy_3: Array<u8, 12> = "volatile-ttl";
+
+const memory_policy_4: Array<u8, 11> = "allkeys-lru";
+
+const memory_policy_5: Array<u8, 11> = "allkeys-lfu";
+
+const memory_policy_6: Array<u8, 14> = "allkeys-random";
+
+const memory_policy_7: Array<u8, 10> = "noeviction";
+
+const memory_policy_error: Array<u8, 153> = "argument(s) must be one of the following: volatile-lru, volatile-lfu, volatile-random, volatile-ttl, allkeys-lru, allkeys-lfu, allkeys-random, noeviction";
+
+fn reply_memory_unsigned(client: &Client, value: u64) -> result: unit writes(client) {
+  doc "Redis 7.0.15 config.c numericConfigGet formats the full unsigned maxmemory range in decimal.";
+  let length = 1_u64;
+  let rest = value / 10_u64;
+  loop {
+    if rest == 0_u64 {
+      break;
+    }
+    set length = length +wrap 1_u64;
+    set rest = rest / 10_u64;
+  }
+  reply_byte(client: client, value: 36_u8);
+  pkg::protocol::reply_decimal(client: client, value: length);
+  reply_word(client: client, word: &text_crlf[0_u64..2_u64]);
+  pkg::protocol::reply_decimal(client: client, value: value);
+  reply_word(client: client, word: &text_crlf[0_u64..2_u64]);
+  return unit;
+}
+
+fn memory_policy(input: &[u8], span: Span) -> policy: u64 reads(input) {
+  doc "Redis 7.0.15 config.c configEnumGetValue matches policy names case-insensitively up to the first zero byte, returning 8 for an invalid name.";
+  let length = before_zero(input: input, span: span);
+  if same_name(input: input, start: span.start, length: length, name: &memory_policy_0[0_u64..12_u64]) {
+    return 0_u64;
+  }
+  if same_name(input: input, start: span.start, length: length, name: &memory_policy_1[0_u64..12_u64]) {
+    return 1_u64;
+  }
+  if same_name(input: input, start: span.start, length: length, name: &memory_policy_2[0_u64..15_u64]) {
+    return 2_u64;
+  }
+  if same_name(input: input, start: span.start, length: length, name: &memory_policy_3[0_u64..12_u64]) {
+    return 3_u64;
+  }
+  if same_name(input: input, start: span.start, length: length, name: &memory_policy_4[0_u64..11_u64]) {
+    return 4_u64;
+  }
+  if same_name(input: input, start: span.start, length: length, name: &memory_policy_5[0_u64..11_u64]) {
+    return 5_u64;
+  }
+  if same_name(input: input, start: span.start, length: length, name: &memory_policy_6[0_u64..14_u64]) {
+    return 6_u64;
+  }
+  if same_name(input: input, start: span.start, length: length, name: &memory_policy_7[0_u64..10_u64]) {
+    return 7_u64;
+  }
+  return 8_u64;
+}
+
+fn reply_memory_policy(client: &Client, policy: u64) -> result: unit writes(client) {
+  doc "Redis 7.0.15 config.c enumConfigGet returns the canonical lower-case maxmemory policy.";
+  if policy == 0_u64 {
+    reply_bulk_input(client: client, input: &memory_policy_0[0_u64..12_u64], start: 0_u64, length: 12_u64);
+  }
+  if policy == 1_u64 {
+    reply_bulk_input(client: client, input: &memory_policy_1[0_u64..12_u64], start: 0_u64, length: 12_u64);
+  }
+  if policy == 2_u64 {
+    reply_bulk_input(client: client, input: &memory_policy_2[0_u64..15_u64], start: 0_u64, length: 15_u64);
+  }
+  if policy == 3_u64 {
+    reply_bulk_input(client: client, input: &memory_policy_3[0_u64..12_u64], start: 0_u64, length: 12_u64);
+  }
+  if policy == 4_u64 {
+    reply_bulk_input(client: client, input: &memory_policy_4[0_u64..11_u64], start: 0_u64, length: 11_u64);
+  }
+  if policy == 5_u64 {
+    reply_bulk_input(client: client, input: &memory_policy_5[0_u64..11_u64], start: 0_u64, length: 11_u64);
+  }
+  if policy == 6_u64 {
+    reply_bulk_input(client: client, input: &memory_policy_6[0_u64..14_u64], start: 0_u64, length: 14_u64);
+  }
+  if policy == 7_u64 {
+    reply_bulk_input(client: client, input: &memory_policy_7[0_u64..10_u64], start: 0_u64, length: 10_u64);
+  }
+  return unit;
+}
+
+fn memory_policy_text(text: &Box<Slots<u8>>, policy: u64) -> result: unit writes(text) {
+  doc "Redis 7.0.15 config.c evictPolicyToString supplies INFO's canonical maxmemory_policy name.";
+  if policy == 0_u64 {
+    text_word(text: text, word: &memory_policy_0[0_u64..12_u64]);
+  }
+  if policy == 1_u64 {
+    text_word(text: text, word: &memory_policy_1[0_u64..12_u64]);
+  }
+  if policy == 2_u64 {
+    text_word(text: text, word: &memory_policy_2[0_u64..15_u64]);
+  }
+  if policy == 3_u64 {
+    text_word(text: text, word: &memory_policy_3[0_u64..12_u64]);
+  }
+  if policy == 4_u64 {
+    text_word(text: text, word: &memory_policy_4[0_u64..11_u64]);
+  }
+  if policy == 5_u64 {
+    text_word(text: text, word: &memory_policy_5[0_u64..11_u64]);
+  }
+  if policy == 6_u64 {
+    text_word(text: text, word: &memory_policy_6[0_u64..14_u64]);
+  }
+  if policy == 7_u64 {
+    text_word(text: text, word: &memory_policy_7[0_u64..10_u64]);
+  }
+  return unit;
+}
+
+fn config_memory_value(input: &[u8], span: Span, which: u64, client: &Client) -> amount: Amount reads(input), writes(client) {
+  doc "Redis 7.0.15 config.c enumConfigSet/numericConfigSet bounds and error text for the six maxmemory settings; maxmemory uses util.c memtoull through memory_value.";
+  let no = False();
+  let yes = True();
+  if which == 22_u64 {
+    let parsed = memory_value(input: input, span: span);
+    if bnot(parsed.valid) {
+      reply_set_failed(client: client, which: which, reason: &text_not_memory[0_u64..31_u64]);
+    }
+    return parsed;
+  }
+  if which == 23_u64 {
+    let policy = memory_policy(input: input, span: span);
+    if policy == 8_u64 {
+      reply_set_failed(client: client, which: which, reason: &memory_policy_error[0_u64..153_u64]);
+      return Amount(value: 0_u64, valid: no);
+    }
+    return Amount(value: policy, valid: yes);
+  }
+  let number = read_integer(input: input, start: span.start, length: span.length);
+  if number.state != 1_u64 {
+    reply_set_failed(client: client, which: which, reason: &text_not_parsed[0_u64..43_u64]);
+    return Amount(value: 0_u64, valid: no);
+  }
+  let least = 0_i64;
+  let most = 2147483647_i64;
+  if which == 24_u64 {
+    set least = 1_i64;
+  }
+  if which == 27_u64 {
+    set most = 100_i64;
+  }
+  let below = number.value < least;
+  let above = number.value > most;
+  if bor(below, above) {
+    reply_bounds(client: client, which: which, least: least, most: most);
+    return Amount(value: 0_u64, valid: no);
+  }
+  let value = cvt.wrap::<i64, u64>(number.value);
+  return Amount(value: value, valid: yes);
+}

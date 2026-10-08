@@ -3174,7 +3174,7 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
 /// and an argument with none of the three bytes is a name, \Port among them.
 /// The options --timeout and --appendfilename set the values reported. Every
 /// reply holds what redis-server 7.0.15 answers for these parameters with the
-/// same settings, in alphabetical order, one of the orders Redis answers in.
+/// same settings, in firn's stable parameter order, one of the orders Redis answers in. The memory parameters extend the wildcard result and make maxmemory a known name.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_matches_config_get_patterns_as_redis_does() {
@@ -3219,20 +3219,21 @@ fn firn_matches_config_get_patterns_as_redis_does() {
     let hash_and_list = "$25\r\nhash-max-listpack-entries\r\n$3\r\n512\r\n$23\r\nhash-max-listpack-value\r\n$2\r\n64\r\n$24\r\nhash-max-ziplist-entries\r\n$3\r\n512\r\n$22\r\nhash-max-ziplist-value\r\n$2\r\n64\r\n$19\r\nlist-compress-depth\r\n$1\r\n0\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n";
     let s_fields = "$4\r\nsave\r\n$0\r\n\r\n$22\r\nset-max-intset-entries\r\n$3\r\n512\r\n$21\r\nstream-node-max-bytes\r\n$4\r\n4096\r\n$23\r\nstream-node-max-entries\r\n$3\r\n100\r\n";
     let zset_fields = "$25\r\nzset-max-listpack-entries\r\n$3\r\n128\r\n$23\r\nzset-max-listpack-value\r\n$2\r\n64\r\n$24\r\nzset-max-ziplist-entries\r\n$3\r\n128\r\n$22\r\nzset-max-ziplist-value\r\n$2\r\n64\r\n";
+    let memory_fields = "$9\r\nmaxmemory\r\n$1\r\n0\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n$17\r\nmaxmemory-samples\r\n$1\r\n5\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$14\r\nlfu-decay-time\r\n$1\r\n1\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n";
     let expected = format!(
-        "*44\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
+        "*56\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}\
          *4\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n\
          *4\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n\
          *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\
          *2\r\n{port_field}\
-         *4\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n\
+         *8\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n\
          *18\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
          *0\r\n\
          *0\r\n\
          *2\r\n{port_field}\
          *0\r\n\
          *8\r\n{s_fields}\
-         *0\r\n\
+         *2\r\n$9\r\nmaxmemory\r\n$1\r\n0\r\n\
          *8\r\n{s_fields}"
     );
     expect_replies(&mut client, expected.as_bytes(), "the patterns");
@@ -9374,4 +9375,247 @@ fn firn_simultaneous_rewrites_in_one_directory_keep_independent_datasets() {
     rewrite_stop(&mut second_client, second);
     multipart_load(&program, "appendonly.aof", &[("owner", Some("first"))]);
     multipart_load(&program, "second.aof", &[("owner", Some("second"))]);
+}
+
+/// Sends one command and consumes its whole reply so CONFIG and OBJECT cases
+/// can also check errors without leaving a response in the stream.
+#[cfg(target_os = "linux")]
+fn memory_request(client: &mut TcpStream, args: &[&str]) -> String {
+    client.write_all(&resp(args)).expect("send memory command");
+    whole_reply(client, &args.join(" "))
+}
+
+#[cfg(target_os = "linux")]
+fn memory_object(client: &mut TcpStream, sub: &str, key: &str) -> i64 {
+    let reply = memory_request(client, &["OBJECT", sub, key]);
+    reply.strip_prefix(':').and_then(|s| s.strip_suffix("\r\n"))
+        .and_then(|s| s.parse().ok()).unwrap_or_else(|| panic!("OBJECT {sub} {key}: {reply:?}"))
+}
+
+/// Redis 7.0.15 config.c defaults, numericConfigSet/enumConfigSet and util.c
+/// memtoull define these expectations; server.c bytesToHuman defines INFO.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_configures_and_reports_maxmemory_without_enforcing_it_yet() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    for (name, default, changed) in [
+        ("maxmemory", "0", "1048576"),
+        ("maxmemory-policy", "noeviction", "allkeys-lfu"),
+        ("maxmemory-samples", "5", "17"),
+        ("lfu-log-factor", "10", "0"),
+        ("lfu-decay-time", "1", "0"),
+        ("maxmemory-eviction-tenacity", "10", "100"),
+    ] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, default]));
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", name, changed]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, changed]));
+    }
+    let policies = ["volatile-lru", "volatile-lfu", "volatile-random", "volatile-ttl", "allkeys-lru", "allkeys-lfu", "allkeys-random", "noeviction"];
+    for policy in policies {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", &policy.to_uppercase()]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "maxmemory-policy"]).as_bytes(), resp(&["maxmemory-policy", policy]));
+        client.write_all(&resp(&["INFO", "memory"])).unwrap();
+        assert_eq!(info_field(&bulk_reply(&mut client, "memory policy"), "maxmemory_policy"), Some(policy.to_owned()));
+    }
+    let policy_reason = format!("argument(s) must be one of the following: {}", policies.join(", "));
+    let bounds = "argument must be between 0 and 2147483647 inclusive";
+    let sample_bounds = "argument must be between 1 and 2147483647 inclusive";
+    let tenacity_bounds = "argument must be between 0 and 100 inclusive";
+    for (name, value, reason) in [
+        ("maxmemory-policy", "lru", policy_reason.as_str()),
+        ("maxmemory-policy", "", policy_reason.as_str()),
+        ("maxmemory", "-1", "argument must be a memory value"),
+        ("maxmemory", "1.5mb", "argument must be a memory value"),
+        ("maxmemory", "1tb", "argument must be a memory value"),
+        ("maxmemory-samples", "0", sample_bounds),
+        ("maxmemory-samples", "2147483648", sample_bounds),
+        ("lfu-log-factor", "-1", bounds),
+        ("lfu-log-factor", "2147483648", bounds),
+        ("lfu-decay-time", "-1", bounds),
+        ("lfu-decay-time", "2147483648", bounds),
+        ("maxmemory-eviction-tenacity", "-1", tenacity_bounds),
+        ("maxmemory-eviction-tenacity", "101", tenacity_bounds),
+        ("maxmemory-samples", "01", "argument couldn't be parsed into an integer"),
+        ("lfu-log-factor", "+1", "argument couldn't be parsed into an integer"),
+        ("lfu-decay-time", "1m", "argument couldn't be parsed into an integer"),
+        ("maxmemory-eviction-tenacity", "1.0", "argument couldn't be parsed into an integer"),
+    ] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", name, value]),
+            format!("-ERR CONFIG SET failed (possibly related to argument '{name}') - {reason}\r\n"));
+    }
+    for (name, value) in [("maxmemory-samples", "1"), ("lfu-log-factor", "2147483647"), ("lfu-decay-time", "2147483647"), ("maxmemory-eviction-tenacity", "0")] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", name, value]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, value]));
+    }
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory", "4kb", "lfu-decay-time", "-1"]),
+        format!("-ERR CONFIG SET failed (possibly related to argument 'lfu-decay-time') - {bounds}\r\n"));
+    assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "maxmemory"]).as_bytes(), resp(&["maxmemory", "1048576"]));
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory", "1", "MAXMEMORY", "2"]),
+        "-ERR CONFIG SET failed (possibly related to argument 'MAXMEMORY') - duplicate parameter\r\n");
+    for (value, bytes, human) in [
+        ("", "0", "0B"), ("k", "0", "0B"), ("1b", "1", "1B"),
+        ("1k", "1000", "1000B"), ("1KB", "1024", "1.00K"),
+        ("1152", "1152", "1.12K"), ("1408", "1408", "1.38K"),
+        ("1m", "1000000", "976.56K"), ("1mb", "1048576", "1.00M"),
+        ("1g", "1000000000", "953.67M"), ("1GB", "1073741824", "1.00G"),
+        ("1099511627776", "1099511627776", "1.00T"),
+        ("1125899906842624", "1125899906842624", "1.00P"),
+        ("1152921504606846976", "1152921504606846976", "1152921504606846976B"),
+        ("18446744073709551616", "18446744073709551615", "18446744073709551615B"),
+    ] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory", value]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "maxmemory"]).as_bytes(), resp(&["maxmemory", bytes]));
+        client.write_all(&resp(&["INFO", "memory"])).unwrap();
+        let info = bulk_reply(&mut client, "memory values");
+        assert_eq!(info_field(&info, "maxmemory"), Some(bytes.to_owned()));
+        assert_eq!(info_field(&info, "maxmemory_human"), Some(human.to_owned()));
+    }
+    // Step 1 stores the limit; step 2 will replace this assertion with OOM coverage.
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory", "1"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["SET", "over-limit", "still accepted"]), "+OK\r\n");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// db.c lookupKey and expire.c ttlGenericCommand/touchCommand: metadata reads
+/// do not touch the key, including under the default noeviction policy.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_tracks_idle_time_and_notouch_lookups() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    assert_eq!(memory_request(&mut client, &["SET", "idle", "v"]), "+OK\r\n");
+    assert!(memory_object(&mut client, "IDLETIME", "idle") <= 1);
+    std::thread::sleep(Duration::from_secs(2));
+    let before = memory_object(&mut client, "IDLETIME", "idle");
+    assert!(before >= 1, "one-second clock must advance: {before}");
+    for args in [vec!["EXISTS", "idle"], vec!["TYPE", "idle"], vec!["TTL", "idle"],
+        vec!["PTTL", "idle"], vec!["EXPIRETIME", "idle"], vec!["PEXPIRETIME", "idle"],
+        vec!["SCAN", "0", "TYPE", "string"], vec!["KEYS", "*"], vec!["RANDOMKEY"],
+        vec!["OBJECT", "IDLETIME", "idle"]] {
+        memory_request(&mut client, &args);
+        assert!(memory_object(&mut client, "IDLETIME", "idle") >= before, "{args:?} touched the key");
+    }
+    assert_eq!(memory_request(&mut client, &["GET", "idle"]), "$1\r\nv\r\n");
+    assert!(memory_object(&mut client, "IDLETIME", "idle") <= 1);
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(memory_object(&mut client, "IDLETIME", "idle") >= 1);
+    assert_eq!(memory_request(&mut client, &["TOUCH", "idle", "idle"]), ":2\r\n");
+    assert!(memory_object(&mut client, "IDLETIME", "idle") <= 1);
+    for policy in ["noeviction", "volatile-lru", "allkeys-lru", "allkeys-random", "volatile-random", "volatile-ttl"] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", policy]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["SET", "idle", "v"]), "+OK\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", "idle") <= 1);
+        assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ", "idle"]), "-ERR An LFU maxmemory policy is not selected, access frequency not tracked. Please note that when switching between policies at runtime LRU and LFU data will take some time to adjust.\r\n");
+        assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ", "missing"]), "$-1\r\n");
+    }
+    for policy in ["allkeys-lfu", "volatile-lfu"] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", policy]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["OBJECT", "IDLETIME", "idle"]), "-ERR An LFU maxmemory policy is selected, idle time not tracked. Please note that when switching between policies at runtime LRU and LFU data will take some time to adjust.\r\n");
+        assert_eq!(memory_request(&mut client, &["OBJECT", "IDLETIME", "missing"]), "$-1\r\n");
+    }
+    for sub in ["ENCODING", "REFCOUNT", "no-such-subcommand"] {
+        assert_eq!(memory_request(&mut client, &["OBJECT", sub, "idle"]), format!("-ERR unknown subcommand '{sub}'. Try OBJECT HELP.\r\n"));
+    }
+    assert_eq!(memory_request(&mut client, &["OBJECT"]), "-ERR wrong number of arguments for 'object' command\r\n");
+    assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ"]), "-ERR wrong number of arguments for 'object|freq' command\r\n");
+    assert!(memory_request(&mut client, &["OBJECT", "HELP"]).starts_with("*15\r\n+OBJECT <subcommand>"));
+    for (request, error) in [
+        (vec!["OBJECT", "no-such-subcommand", "idle"], "-ERR unknown subcommand 'no-such-subcommand'. Try OBJECT HELP.\r\n"),
+        (vec!["OBJECT", "FREQ"], "-ERR wrong number of arguments for 'object|freq' command\r\n"),
+    ] {
+        assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &request), error);
+        assert_eq!(memory_request(&mut client, &["EXEC"]), "-EXECABORT Transaction discarded because of previous errors.\r\n");
+    }
+    assert_eq!(memory_request(&mut client, &["EVAL", "return redis.pcall('OBJECT', 'no-such-subcommand')", "0"]), "-ERR Unknown Redis command called from script\r\n");
+    assert_eq!(memory_request(&mut client, &["EVAL", "return redis.pcall('OBJECT', 'FREQ')", "0"]), "-ERR Wrong number of args calling Redis command from script\r\n");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// object.c createObject starts at five. dbOverwrite preserves the old LFU
+/// bits; setGenericCommand with GET and getsetCommand each look up twice.
+/// A zero log factor makes increments effectively deterministic as in Redis.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["SET", "freq", "v"]), "+OK\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "freq"), 5);
+    assert_eq!(memory_object(&mut client, "FREQ", "freq"), 5);
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "lfu-log-factor", "0", "lfu-decay-time", "0"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "freq"]), "$1\r\nv\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "freq"), 6);
+    assert_eq!(memory_request(&mut client, &["SET", "freq", "v"]), "+OK\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "freq"), 7);
+    assert_eq!(memory_request(&mut client, &["SET", "freq", "v", "GET"]), "$1\r\nv\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "freq"), 9);
+    assert_eq!(memory_request(&mut client, &["GETSET", "freq", "v"]), "$1\r\nv\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "freq"), 11);
+    assert_eq!(memory_request(&mut client, &["SET", "freq", "x", "NX"]), "$-1\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "freq"), 12);
+    assert!(memory_request(&mut client, &["LLEN", "freq"]).starts_with("-WRONGTYPE"));
+    assert_eq!(memory_object(&mut client, "FREQ", "freq"), 13);
+    for args in [vec!["EXISTS", "freq"], vec!["TYPE", "freq"], vec!["TTL", "freq"], vec!["PTTL", "freq"], vec!["EXPIRETIME", "freq"], vec!["PEXPIRETIME", "freq"], vec!["SCAN", "0", "TYPE", "string"]] {
+        memory_request(&mut client, &args);
+        assert_eq!(memory_object(&mut client, "FREQ", "freq"), 13, "{args:?}");
+    }
+    assert_eq!(memory_request(&mut client, &["PERSIST", "freq"]), ":0\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "freq"), 14);
+    assert_eq!(memory_request(&mut client, &["TOUCH", "freq", "freq"]), ":2\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "freq"), 16);
+    assert_eq!(memory_request(&mut client, &["MSET", "dup", "a", "dup", "b"]), "+OK\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "dup"), 6);
+    assert_eq!(memory_request(&mut client, &["MSETNX", "nxdup", "a", "nxdup", "b"]), ":1\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "nxdup"), 6);
+    assert_eq!(memory_request(&mut client, &["SADD", "set", "a"]), ":1\r\n");
+    memory_request(&mut client, &["SINTER", "set", "set"]);
+    assert_eq!(memory_object(&mut client, "FREQ", "set"), 7);
+    assert_eq!(memory_request(&mut client, &["SMOVE", "set", "set", "a"]), ":1\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "set"), 9);
+    assert_eq!(memory_request(&mut client, &["COPY", "freq", "copied"]), ":1\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "copied"), 5);
+    assert_eq!(memory_request(&mut client, &["RENAME", "copied", "renamed"]), "+OK\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "renamed"), 6);
+    assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+    for args in [vec!["GET", "renamed"], vec!["GET", "renamed"], vec!["OBJECT", "FREQ", "renamed"]] {
+        assert_eq!(memory_request(&mut client, &args), "+QUEUED\r\n");
+    }
+    assert_eq!(memory_request(&mut client, &["EXEC"]), "*3\r\n$1\r\nv\r\n$1\r\nv\r\n:8\r\n");
+    assert_eq!(memory_request(&mut client, &["EVAL", "redis.call('GET', KEYS[1]); local n=0; for i=1,20000 do n=n+i end; return redis.call('OBJECT','FREQ',KEYS[1])", "1", "renamed"]), ":9\r\n");
+    for _ in 0..260 {
+        memory_request(&mut client, &["GET", "renamed"]);
+    }
+    assert_eq!(memory_object(&mut client, "FREQ", "renamed"), 255);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Redis's AOF loader creates objects with the clock at load time. No stamp
+/// is persisted in the SET record, and the expiry-check time is zero there.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_initializes_access_stamps_during_aof_replay() {
+    let program = CompiledProgram::from_environment();
+    std::fs::write(program.working_directory().join("access.aof"), resp(&["SET", "loaded", "v"])).unwrap();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"access.aof"]);
+    let mut client = connect_when_ready(port);
+    assert!(memory_object(&mut client, "IDLETIME", "loaded") <= 1);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
 }

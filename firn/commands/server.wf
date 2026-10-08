@@ -41,9 +41,9 @@ const text_quote_end: Array<u8, 3> =[39_u8, 13_u8, 10_u8];
 
 const text_try_config: Array<u8, 21> =[39_u8, 46_u8, 32_u8, 84_u8, 114_u8, 121_u8, 32_u8, 67_u8, 79_u8, 78_u8, 70_u8, 73_u8, 71_u8, 32_u8, 72_u8, 69_u8, 76_u8, 80_u8, 46_u8, 13_u8, 10_u8];
 
-const parameter_ends: Array<u64, 22> =[14_u64, 24_u64, 28_u64, 37_u64, 62_u64, 85_u64, 109_u64, 131_u64, 150_u64, 172_u64, 193_u64, 197_u64, 208_u64, 212_u64, 234_u64, 255_u64, 278_u64, 285_u64, 310_u64, 333_u64, 357_u64, 379_u64];
+const parameter_ends: Array<u64, 28> =[14_u64, 24_u64, 28_u64, 37_u64, 62_u64, 85_u64, 109_u64, 131_u64, 150_u64, 172_u64, 193_u64, 197_u64, 208_u64, 212_u64, 234_u64, 255_u64, 278_u64, 285_u64, 310_u64, 333_u64, 357_u64, 379_u64, 388_u64, 404_u64, 421_u64, 435_u64, 449_u64, 476_u64];
 
-const parameter_slots: Array<u64, 22> =[9_u64, 9_u64, 9_u64, 9_u64, 0_u64, 1_u64, 0_u64, 1_u64, 2_u64, 3_u64, 3_u64, 9_u64, 9_u64, 9_u64, 4_u64, 5_u64, 6_u64, 9_u64, 7_u64, 8_u64, 7_u64, 8_u64];
+const parameter_slots: Array<u64, 28> =[9_u64, 9_u64, 9_u64, 9_u64, 0_u64, 1_u64, 0_u64, 1_u64, 2_u64, 3_u64, 3_u64, 9_u64, 9_u64, 9_u64, 4_u64, 5_u64, 6_u64, 9_u64, 7_u64, 8_u64, 7_u64, 8_u64, 9_u64, 9_u64, 9_u64, 9_u64, 9_u64, 9_u64];
 
 const encoding_lower: Array<i64, 9> =[0_i64, 0_i64, 0_i64, -2147483648_i64, 0_i64, 0_i64, 0_i64, 0_i64, 0_i64];
 
@@ -53,7 +53,7 @@ const encoding_memory: Array<u64, 9> =[0_u64, 1_u64, 0_u64, 0_u64, 0_u64, 1_u64,
 
 const text_unknown_subcommand: Array<u8, 25> =[45_u8, 69_u8, 82_u8, 82_u8, 32_u8, 117_u8, 110_u8, 107_u8, 110_u8, 111_u8, 119_u8, 110_u8, 32_u8, 115_u8, 117_u8, 98_u8, 99_u8, 111_u8, 109_u8, 109_u8, 97_u8, 110_u8, 100_u8, 32_u8, 39_u8];
 
-const parameter_names: Array<u8, 379> = "appendfilenameappendonlybinddatabaseshash-max-listpack-entrieshash-max-listpack-valuehash-max-ziplist-entrieshash-max-ziplist-valuelist-compress-depthlist-max-listpack-sizelist-max-ziplist-sizeportrequirepasssaveset-max-intset-entriesstream-node-max-bytesstream-node-max-entriestimeoutzset-max-listpack-entrieszset-max-listpack-valuezset-max-ziplist-entrieszset-max-ziplist-value";
+const parameter_names: Array<u8, 476> = "appendfilenameappendonlybinddatabaseshash-max-listpack-entrieshash-max-listpack-valuehash-max-ziplist-entrieshash-max-ziplist-valuelist-compress-depthlist-max-listpack-sizelist-max-ziplist-sizeportrequirepasssaveset-max-intset-entriesstream-node-max-bytesstream-node-max-entriestimeoutzset-max-listpack-entrieszset-max-listpack-valuezset-max-ziplist-entrieszset-max-ziplist-valuemaxmemorymaxmemory-policymaxmemory-sampleslfu-log-factorlfu-decay-timemaxmemory-eviction-tenacity";
 
 const text_minus: Array<u8, 1> = "-";
 
@@ -258,25 +258,25 @@ fn run_debug(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: 
 }
 
 fn parameter_start(which: u64) -> start: u64 pure {
-  doc "Where the name of parameter which, counted from 0 in alphabetical order, starts in parameter_names.";
+  doc "Where the name of parameter which, counted from 0 in parameter_names order, starts in parameter_names.";
   if which == 0_u64 {
     return 0_u64;
   }
   let before = which -wrap 1_u64;
-  if before < 22_u64 {
+  if before < 28_u64 {
     let start = parameter_ends[before];
     return start;
   }
-  return 379_u64;
+  return 476_u64;
 }
 
 fn parameter_end(which: u64) -> end: u64 pure {
   doc "Where the name of parameter which ends in parameter_names.";
-  if which < 22_u64 {
+  if which < 28_u64 {
     let end = parameter_ends[which];
     return end;
   }
-  return 379_u64;
+  return 476_u64;
 }
 
 fn same_name(input: &[u8], start: u64, length: u64, name: &[u8]) -> same: Bool reads(input), reads(name) {
@@ -300,7 +300,7 @@ fn parameter_matches(input: &[u8], start: u64, length: u64, globbing: Bool, whic
   doc "Whether length bytes of the input from start reach parameter which: as a glob pattern matched as Redis matches one when globbing is true, or else as the parameter's name in either case.";
   let first = parameter_start(which: which);
   let last = parameter_end(which: which);
-  if last <= 379_u64 {
+  if last <= 476_u64 {
     if first <= last {
       let name = &parameter_names[first..last];
       if globbing {
@@ -319,7 +319,7 @@ fn reply_parameter_name(client: &Client, which: u64) -> result: unit writes(clie
   doc "Writes the name of parameter which as a bulk string, in lower case.";
   let first = parameter_start(which: which);
   let last = parameter_end(which: which);
-  if last <= 379_u64 {
+  if last <= 476_u64 {
     if first <= last {
       let name = &parameter_names[first..last];
       let length = last -wrap first;
@@ -333,7 +333,7 @@ fn reply_parameter_word(client: &Client, which: u64) -> result: unit writes(clie
   doc "Writes the name of parameter which into an error reply, in lower case.";
   let first = parameter_start(which: which);
   let last = parameter_end(which: which);
-  if last <= 379_u64 {
+  if last <= 476_u64 {
     if first <= last {
       reply_word(client: client, word: &parameter_names[first..last]);
     }
@@ -342,15 +342,15 @@ fn reply_parameter_word(client: &Client, which: u64) -> result: unit writes(clie
 }
 
 fn lookup_parameter(input: &[u8], span: Span) -> which: u64 reads(input) {
-  doc "The parameter an argument names, its whole length in either case, or 22 when it names none of them.";
-  for @parameters (which in 0_u64..22_u64) {
+  doc "The parameter an argument names, its whole length in either case, or 28 when it names none of them.";
+  for @parameters (which in 0_u64..28_u64) {
     let unglobbed = False();
     let named = parameter_matches(input: input, start: span.start, length: span.length, globbing: unglobbed, which: which);
     if named {
       return which;
     }
   }
-  return 22_u64;
+  return 28_u64;
 }
 
 fn server_copy(store: &Keyspace) -> made: ServerState reads(store) waits {
@@ -362,6 +362,7 @@ fn server_copy(store: &Keyspace) -> made: ServerState reads(store) waits {
   let connections = 0_u64;
   let started = 0_u64;
   let shutdown = False();
+  let memory = pkg::store::MemoryConfig(maxmemory: 0_u64, maxmemory_policy: 7_u64, maxmemory_samples: 5_u64, lfu_log_factor: 10_u64, lfu_decay_time: 1_u64, maxmemory_eviction_tenacity: 10_u64);
   atomic v = &store^.server {
     set password = bytes_copy(bytes: &v^.password);
     set timeout = v^.timeout;
@@ -369,8 +370,9 @@ fn server_copy(store: &Keyspace) -> made: ServerState reads(store) waits {
     set encodings = v^.encodings;
     set connections = v^.connections;
     set started = v^.started;
+    set memory = v^.memory;
   }
-  return ServerState(password: move password, timeout: timeout, shutdown: shutdown, encodings: encodings, connections: connections, started: started);
+  return ServerState(password: move password, timeout: timeout, shutdown: shutdown, encodings: encodings, connections: connections, started: started, memory: memory);
 }
 
 fn reply_parameter_value(store: &Keyspace, client: &Client, which: u64, server: &ServerState) -> result: unit reads(store), reads(server), writes(client) {
@@ -399,7 +401,19 @@ fn reply_parameter_value(store: &Keyspace, client: &Client, which: u64, server: 
   } else if which == 17_u64 {
     let timeout = cvt.wrap::<u64, i64>(server^.timeout);
     reply_bulk_decimal(client: client, value: timeout);
-  } else if which < 22_u64 {
+  } else if which == 22_u64 {
+    reply_memory_unsigned(client: client, value: server^.memory.maxmemory);
+  } else if which == 23_u64 {
+    reply_memory_policy(client: client, policy: server^.memory.maxmemory_policy);
+  } else if which == 24_u64 {
+    reply_memory_unsigned(client: client, value: server^.memory.maxmemory_samples);
+  } else if which == 25_u64 {
+    reply_memory_unsigned(client: client, value: server^.memory.lfu_log_factor);
+  } else if which == 26_u64 {
+    reply_memory_unsigned(client: client, value: server^.memory.lfu_decay_time);
+  } else if which == 27_u64 {
+    reply_memory_unsigned(client: client, value: server^.memory.maxmemory_eviction_tenacity);
+  } else if which < 28_u64 {
     let slot = parameter_slots[which];
     if slot < 9_u64 {
       reply_bulk_decimal(client: client, value: server^.encodings[slot]);
@@ -715,7 +729,7 @@ fn reply_bounds(client: &Client, which: u64, least: i64, most: i64) -> result: u
 }
 
 fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "CONFIG GET parameter [parameter ...]: answers the parameters firn reports that the arguments reach, as Redis 7.0 answers: appendfilename, the append-only file's name; appendonly, yes while firn keeps the file; bind, the address firn listens on; databases, 1; port; requirepass, the password clients must give; save, empty, since firn never saves a snapshot; timeout, the idle limit; and the parameters whose only effect in Redis is on its internal encodings, with their aliases, each with the value CONFIG SET last gave it or Redis's default. An argument holding [, * or ? before any zero byte is a glob pattern, its bytes from a zero byte on ignored as Redis's C string ignores them, matched as glob_match matches one; any other argument names a parameter in either case. A parameter several arguments reach is answered once, spelled as the first argument reaching it spells it, a pattern spelling it in lower case, an alias counting as a parameter of its own, as in Redis; the parameters come in alphabetical order, one of the orders Redis answers in, since Redis orders them by a hash seeded anew at each start; and an argument reaching none of them, a parameter firn does not report included, matches nothing, as one Redis does not know does. CONFIG SET is answered as run_config_set answers it, after too few arguments are answered as Redis answers them; CONFIG RESETSTAT answers OK and zeroes the count of connections the server has accepted; and any other subcommand is answered as Redis answers an unknown one, its name echoed to 128 bytes. A connection that must authenticate first is answered NOAUTH once the subcommand and its arguments are counted.";
+  doc "CONFIG GET parameter [parameter ...]: answers the parameters firn reports that the arguments reach, as Redis 7.0 answers: appendfilename, the append-only file's name; appendonly, yes while firn keeps the file; bind, the address firn listens on; databases, 1; port; requirepass, the password clients must give; save, empty, since firn never saves a snapshot; timeout, the idle limit; and the parameters whose only effect in Redis is on its internal encodings, with their aliases, each with the value CONFIG SET last gave it or Redis's default. An argument holding [, * or ? before any zero byte is a glob pattern, its bytes from a zero byte on ignored as Redis's C string ignores them, matched as glob_match matches one; any other argument names a parameter in either case. A parameter several arguments reach is answered once, spelled as the first argument reaching it spells it, a pattern spelling it in lower case, an alias counting as a parameter of its own, as in Redis; the parameters come in parameter_names order, one of the orders Redis answers in, since Redis orders them by a hash seeded anew at each start; and an argument reaching none of them, a parameter firn does not report included, matches nothing, as one Redis does not know does. CONFIG SET is answered as run_config_set answers it, after too few arguments are answered as Redis answers them; CONFIG RESETSTAT answers OK and zeroes the count of connections the server has accepted; and any other subcommand is answered as Redis answers an unknown one, its name echoed to 128 bytes. A connection that must authenticate first is answered NOAUTH once the subcommand and its arguments are counted.";
   let sub = arg(args: args, index: 1_u64);
   let getting = name_is(input: input, start: sub.start, length: sub.length, word: &word_get[0_u64..3_u64]);
   let setting = name_is(input: input, start: sub.start, length: sub.length, word: &word_set[0_u64..3_u64]);
@@ -730,9 +744,9 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       return unit;
     }
     let server = server_copy(store: store);
-    let found = array_filled::<u64, 22>(value: 0_u64);
-    let spelled_start = array_filled::<u64, 22>(value: 0_u64);
-    let spelled_length = array_filled::<u64, 22>(value: 0_u64);
+    let found = array_filled::<u64, 28>(value: 0_u64);
+    let spelled_start = array_filled::<u64, 28>(value: 0_u64);
+    let spelled_length = array_filled::<u64, 28>(value: 0_u64);
     for @arguments (index in 2_u64..count) {
       let parameter = arg(args: args, index: index);
       let held = before_zero(input: input, span: parameter);
@@ -741,7 +755,7 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       if globbing {
         set length = held;
       }
-      for @parameters (which in 0_u64..22_u64) {
+      for @parameters (which in 0_u64..28_u64) {
         let unseen = found[which] == 0_u64;
         if unseen {
           let matched = parameter_matches(input: input, start: parameter.start, length: length, globbing: globbing, which: which);
@@ -758,13 +772,13 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       }
     }
     let pairs = 0_u64;
-    for @counting (which in 0_u64..22_u64) {
+    for @counting (which in 0_u64..28_u64) {
       if found[which] != 0_u64 {
         set pairs = pairs +wrap 1_u64;
       }
     }
     reply_map(client: client, pairs: pairs);
-    for @answers (which in 0_u64..22_u64) {
+    for @answers (which in 0_u64..28_u64) {
       let how = found[which];
       if how == 1_u64 {
         let start = spelled_start[which];
@@ -815,14 +829,14 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
 }
 
 fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "CONFIG SET parameter value [parameter value ...], after the arguments are counted and authentication checked, in Redis 7.0's three steps, each over the pairs in order. First the names: an odd count is a syntax error, and the first pair naming a parameter firn does not report, naming appendfilename or databases, which Redis never sets, or naming a parameter an earlier pair named, an alias not counting as its parameter, is answered with Redis's error for it. Then the values, each read as Redis reads its parameter's: a number of the encoding parameters' kinds, the idle limit or the port, read whole as string2ll reads it or, for the parameters Redis measures in bytes, as memtoull reads a memory value, and checked against Redis's range for the parameter; yes or no for appendonly; a schedule for save; no more than 16 addresses for bind; any bytes for requirepass, the empty ones removing the password. The first value refused is answered with Redis's error naming its parameter. Last, a value firn cannot apply while it runs is refused, the first in order: an appendonly other than whether firn keeps its file, a port or bind other than where it listens, and a save schedule other than the empty one, since firn saves no snapshot. Only when every pair passes are the values applied, in one atomic statement on the server's state, a later alias's value replacing its parameter's: the password then binds every connection that has not authenticated from its next request, the idle limit reaches a connection waiting under a limit within a second and any other at its next request, and the encoding parameters' values are kept for CONFIG GET to report. Nothing is appended to the append-only file, as Redis appends nothing.";
+  doc "CONFIG SET parameter value [parameter value ...], after the arguments are counted and authentication checked, in Redis 7.0's three steps, each over the pairs in order. First the names: an odd count is a syntax error, and the first pair naming a parameter firn does not report, naming appendfilename or databases, which Redis never sets, or naming a parameter an earlier pair named, an alias not counting as its parameter, is answered with Redis's error for it. Then the values, each read as Redis reads its parameter's: a number of the encoding parameters' kinds, the idle limit or the port, read whole as string2ll reads it or, for the parameters Redis measures in bytes, as memtoull reads a memory value, and checked against Redis's range for the parameter; yes or no for appendonly; a schedule for save; no more than 16 addresses for bind; any bytes for requirepass, the empty ones removing the password. The first value refused is answered with Redis's error naming its parameter. Last, a value firn cannot apply while it runs is refused, the first in order: an appendonly other than whether firn keeps its file, a port or bind other than where it listens, and a save schedule other than the empty one, since firn saves no snapshot. Only when every pair passes are the values applied, in one atomic statement on the server's state, a later alias's value replacing its parameter's: the password then binds every connection that has not authenticated from its next request, the idle limit reaches a connection waiting under a limit within a second and any other at its next request, the encoding parameters' values are kept for CONFIG GET to report, and the six memory parameters are validated as config.c and stored (eviction and OOM enforcement are not implemented yet). Nothing is appended to the append-only file, as Redis appends nothing.";
   let count = args^.inner.len;
   let unpaired = count % 2_u64;
   if unpaired == 1_u64 {
     reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
     return unit;
   }
-  let seen = array_filled::<u64, 22>(value: 0_u64);
+  let seen = array_filled::<u64, 28>(value: 0_u64);
   let index = 2_u64;
   loop @names {
     if index >= count {
@@ -830,7 +844,7 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     }
     let name = arg(args: args, index: index);
     let which = lookup_parameter(input: input, span: name);
-    if which >= 22_u64 {
+    if which >= 28_u64 {
       reply_word(client: client, word: &text_config_set[0_u64..61_u64]);
       let echoed = reply_echoed(client: client, input: input, span: name, limit: name.length);
       reply_word(client: client, word: &text_quote_end[0_u64..3_u64]);
@@ -856,7 +870,9 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   let password_at = 0_u64;
   let encodings_given = array_filled::<u64, 9>(value: 0_u64);
   let new_encodings = array_filled::<i64, 9>(value: 0_i64);
-  let refused = 22_u64;
+  let memory_given = array_filled::<u64, 6>(value: 0_u64);
+  let memory_values = array_filled::<u64, 6>(value: 0_u64);
+  let refused = 28_u64;
   set index = 2_u64;
   loop @values {
     if index >= count {
@@ -866,7 +882,7 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     let which = lookup_parameter(input: input, span: name);
     let value_at = index +wrap 1_u64;
     let value = arg(args: args, index: value_at);
-    let unrefused = refused == 22_u64;
+    let unrefused = refused == 28_u64;
     if which == 1_u64 {
       let spelled = before_zero(input: input, span: value);
       let yes = name_is(input: input, start: value.start, length: spelled, word: &word_yes[0_u64..3_u64]);
@@ -945,7 +961,17 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       }
       set timeout_given = True();
       set new_timeout = cvt.wrap::<i64, u64>(number.value);
-    } else if which < 22_u64 {
+    } else if which >= 22_u64 {
+      let memory_slot = which -wrap 22_u64;
+      let parsed_memory = config_memory_value(input: input, span: value, which: which, client: client);
+      if bnot(parsed_memory.valid) {
+        return unit;
+      }
+      if memory_slot < 6_u64 {
+        set memory_given[memory_slot] = 1_u64;
+        set memory_values[memory_slot] = parsed_memory.value;
+      }
+    } else if which < 28_u64 {
       let slot = parameter_slots[which];
       if slot < 9_u64 {
         let bits = 0_u64;
@@ -981,9 +1007,9 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     }
     set index = index +wrap 2_u64;
   }
-  if refused < 22_u64 {
+  if refused < 28_u64 {
     if refused == 13_u64 {
-      reply_set_failed(client: client, which: refused, reason: &text_no_snapshot[0_u64..22_u64]);
+      reply_set_failed(client: client, which: refused, reason: &text_no_snapshot[0_u64..28_u64]);
     } else {
       reply_set_failed(client: client, which: refused, reason: &text_cannot_change[0_u64..35_u64]);
     }
@@ -1000,6 +1026,24 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     }
     if timeout_given {
       set v^.timeout = new_timeout;
+    }
+    if memory_given[0_u64] == 1_u64 {
+      set v^.memory.maxmemory = memory_values[0_u64];
+    }
+    if memory_given[1_u64] == 1_u64 {
+      set v^.memory.maxmemory_policy = memory_values[1_u64];
+    }
+    if memory_given[2_u64] == 1_u64 {
+      set v^.memory.maxmemory_samples = memory_values[2_u64];
+    }
+    if memory_given[3_u64] == 1_u64 {
+      set v^.memory.lfu_log_factor = memory_values[3_u64];
+    }
+    if memory_given[4_u64] == 1_u64 {
+      set v^.memory.lfu_decay_time = memory_values[4_u64];
+    }
+    if memory_given[5_u64] == 1_u64 {
+      set v^.memory.maxmemory_eviction_tenacity = memory_values[5_u64];
     }
     for @slots (slot in 0_u64..9_u64) {
       if encodings_given[slot] == 1_u64 {

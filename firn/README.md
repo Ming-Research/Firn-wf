@@ -15,7 +15,8 @@ clients send on their own:
 - keys: `DEL`, `UNLINK`, `EXISTS`, `TOUCH`, `TYPE`, `RENAME`, `RENAMENX`,
   `COPY` with `REPLACE` and `DB 0`, `EXPIRE`, `PEXPIRE`, `EXPIREAT` and
   `PEXPIREAT` with their options `NX`, `XX`, `GT` and `LT`, `TTL`, `PTTL`,
-  `EXPIRETIME`, `PEXPIRETIME`, `PERSIST`, `DBSIZE`,
+  `EXPIRETIME`, `PEXPIRETIME`, `PERSIST`, `DBSIZE`, `OBJECT IDLETIME`,
+  `OBJECT FREQ`, `OBJECT HELP`,
   `SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]`, `KEYS pattern`
   and `RANDOMKEY`;
 - strings: `GET`, `SET` with its options `NX`, `XX`, `GET`, `KEEPTTL`,
@@ -131,6 +132,28 @@ refuses them. An `appendonly`, `port` or `bind` other than the one firn
 started with, and a `save` schedule other than the empty one, are refused in
 Redis's form for a refused value with firn's own reason, since firn cannot
 change them while it runs and saves no snapshot; Redis would apply them.
+The memory parameters are `maxmemory` (default 0, Redis memory units accepted),
+`maxmemory-policy` (default `noeviction`), `maxmemory-samples` (default 5,
+minimum 1), `lfu-log-factor` (default 10, minimum 0), `lfu-decay-time`
+(default 1 minute, 0 disables decay), and `maxmemory-eviction-tenacity`
+(default 10, from 0 through 100). The integer sampling and LFU parameters
+have Redis's maximum of 2,147,483,647. All eight policy names are accepted:
+`noeviction`, `allkeys-lru`, `allkeys-lfu`, `allkeys-random`, `volatile-lru`,
+`volatile-lfu`, `volatile-random`, and `volatile-ttl`.
+**Eviction and the OOM refusal are not implemented yet:** a configured limit
+is stored and reported, and the policy selects access tracking, but neither
+limits allocations nor refuses writes.
+
+`OBJECT IDLETIME key` reports idle seconds at one-second resolution under
+any non-LFU policy, including `noeviction`; `OBJECT FREQ key` reports Redis's
+logarithmic, decayed frequency under an LFU policy. Each rejects the other
+policy kind with Redis's error, and missing keys return null. Ordinary
+reads and writes refresh access state; `EXISTS`, `TYPE`, the four TTL/time
+queries, `OBJECT`, and SCAN's TYPE filter do not. `TOUCH` refreshes it.
+Policy changes reinterpret the existing bits, as Redis does, so values need
+time to adjust. `OBJECT HELP` returns Redis's help; `ENCODING` and `REFCOUNT`
+remain unsupported. Scripts and EXEC use the same tracking command bodies.
+
 `CONFIG RESETSTAT` answers OK and zeroes the count of connections the server
 has accepted.
 
@@ -168,6 +191,9 @@ SIGTERM. `SHUTDOWN ABORT` answers `ERR No shutdown in progress.` after a
 signal too, where Redis's cancels a signal's request in the moment, at most
 a tenth of a second, before its next cron acts on it.
 
+`INFO memory` reports the configured `maxmemory`, `maxmemory_human` and
+`maxmemory_policy`, with Redis's formatting.
+
 `INFO`, with no section, `default`, `all`, `everything` or named sections,
 answers Redis's sections in Redis's order and form. Its fields carry real
 values for the port, the calendar time, the uptime, the clients connected,
@@ -176,7 +202,7 @@ held, which it counts holding the table whole, as `DBSIZE` does; the other
 fields it reports have values that are fixed and true of firn: Redis's
 version 7.0.15, no git revision, `redis_git_sha1` being 00000000 as in
 Redis's builds from a release, standalone mode, 64 bits, its active
-expiry's 10 runs a second, no configuration file, memory limit, eviction,
+expiry's 10 runs a second, no configuration file or eviction yet,
 script, function, replica, background save, fork, module, publish
 and subscribe, tracking or cluster. What firn does not measure, memory and
 processor time, per-command and per-error counts among them, is left out,

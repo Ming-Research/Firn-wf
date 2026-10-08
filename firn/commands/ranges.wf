@@ -716,8 +716,9 @@ fn zrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u6
   return True();
 }
 
-fn zrange_body(slot: &Option<Entry>, client: &Client, walk: &Walk) -> result: unit reads(slot), writes(client), writes(walk) {
+fn zrange_body(slot: &Option<Entry>, client: &Client, walk: &Walk) -> result: unit writes(slot), writes(client), writes(walk) {
   doc "Runs ZRANGE over its key's entry; the caller owns the statement.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = range_ranked(env: client, value: held, walk: walk);
@@ -752,7 +753,8 @@ fn run_zrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     zrange_body(slot: slot, client: client, walk: &walk);
   }
   if client^.state == state_expired {
@@ -818,8 +820,9 @@ fn zcount_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u6
   return True();
 }
 
-fn zcount_body(slot: &Option<Entry>, client: &Client, walk: &Walk) -> result: unit reads(slot), writes(client), writes(walk) {
+fn zcount_body(slot: &Option<Entry>, client: &Client, walk: &Walk) -> result: unit writes(slot), writes(client), writes(walk) {
   doc "Runs ZCOUNT over its key's entry; the caller owns the statement.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = count_ranked(env: client, value: held, walk: walk);
@@ -852,7 +855,8 @@ fn run_zcount(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     zcount_body(slot: slot, client: client, walk: &walk);
   }
   if client^.state == state_expired {
@@ -994,6 +998,7 @@ fn zremrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind:
 
 fn zremrange_body(slot: &Option<Entry>, client: &Client, walk: &Walk) -> lapsed: Bool writes(slot), writes(client), writes(walk) {
   doc "Runs ZREMRANGE over its key's entry; the caller owns the statement.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let edited = remove_walked(env: client, value: held, walk: walk);
@@ -1040,7 +1045,8 @@ fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let lapsed = zremrange_body(slot: slot, client: client, walk: &walk);
     let appended = zremrange_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
   }

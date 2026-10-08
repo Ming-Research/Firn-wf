@@ -217,7 +217,8 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let work = push_body(slot: slot, client: client, front: front, existing: existing);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
@@ -298,7 +299,8 @@ fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let work = pop_body(slot: slot, client: client);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
@@ -380,7 +382,8 @@ fn run_lrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   }
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     lrange_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
@@ -427,7 +430,8 @@ fn run_llen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   llen_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     llen_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
@@ -530,7 +534,8 @@ fn run_lindex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   lindex_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     lindex_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
@@ -595,7 +600,8 @@ fn run_lset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let work = lset_body(slot: slot, client: client, input: input, args: args);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
@@ -703,7 +709,8 @@ fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let work = lrem_body(slot: slot, client: client, input: input, args: args);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
@@ -799,7 +806,8 @@ fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let work = ltrim_body(slot: slot, client: client);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
@@ -892,7 +900,8 @@ fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let work = linsert_body(slot: slot, client: client, input: input, args: args);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
@@ -1000,8 +1009,9 @@ fn run_lpos(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let positions = box_slots_new::<u64>(capacity: 0_u64);
-  atomic slot = &store^.keys[key] {
-    lpos_body(slot: slot, input: input, args: args, seek: &seek, positions: &positions);
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
+    lpos_body(client: client, slot: slot, input: input, args: args, seek: &seek, positions: &positions);
   }
   if seek.state == state_expired {
     remove_expired(store: store, key: key, now: seek.now);
@@ -1072,7 +1082,7 @@ fn take_element(slot: &Option<Entry>, from_head: Bool, client: &Client) -> poppe
   }
 }
 
-fn place_element(slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -> result: unit writes(slot) {
+fn place_element(client: &Client, slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -> result: unit writes(slot), reads(client) {
   doc "Pushes an element onto the head (to_head) or tail of the list an entry holds, creating the list, without an expiry, for an entry holding none; an entry holding another kind, which the caller has refused, drops it.";
   match slot^ {
     Some(value: held) => {
@@ -1105,7 +1115,8 @@ fn place_element(slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -
   let list = deque_new::<Box<Slots<u8>>, ceiling>(capacity: 8_u64);
   push_element(list: &list, element: move element, front: to_head);
   let made = Value::Items(items: move list);
-  let fresh = Entry(value: move made, expires: 0_u64);
+  let stamp = new_access(client: client);
+  let fresh = Entry(value: move made, expires: 0_u64, access: stamp);
   set slot^ = Some<Entry>(value: move fresh);
   return unit;
 }
@@ -1141,7 +1152,8 @@ fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let pair = rename_parse(input: input, args: args, keys: &ks);
   set client^.now = time^.check;
   let logged = store^.logging;
-  atomic slots = &store^.keys[ks], m = &store^.meta {
+  atomic slots = &store^.keys[ks], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let work = lmove_body(slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
     let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args);
   }
@@ -1168,6 +1180,7 @@ fn push_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
 
 fn push_body(slot: &Option<Entry>, client: &Client, front: Bool, existing: Bool) -> work: ListWork writes(slot), writes(client) {
   doc "PUSH over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(slot: slot, client: client);
   let removed = False();
   let changed = False();
   match slot^ {
@@ -1194,7 +1207,8 @@ fn push_body(slot: &Option<Entry>, client: &Client, front: Bool, existing: Bool)
       push_all(list: &list, client: client, front: front);
       set client^.number = list.inner.len;
       let made = Value::Items(items: move list);
-      let fresh = Entry(value: move made, expires: 0_u64);
+      let stamp = new_access(client: client);
+      let fresh = Entry(value: move made, expires: 0_u64, access: stamp);
       set slot^ = Some<Entry>(value: move fresh);
       set client^.state = state_done;
     }
@@ -1258,6 +1272,7 @@ fn pop_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time
 
 fn pop_body(slot: &Option<Entry>, client: &Client) -> work: ListWork writes(slot), writes(client) {
   doc "POP over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(slot: slot, client: client);
   let removed = False();
   let changed = False();
   match slot^ {
@@ -1326,8 +1341,9 @@ fn lrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &T
   return True();
 }
 
-fn lrange_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn lrange_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
   doc "LRANGE over its held entry; live values use the existing reply writer and expired entries record state_expired.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = range_items(env: client, value: held);
@@ -1359,8 +1375,9 @@ fn llen_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return unit;
 }
 
-fn llen_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn llen_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
   doc "LLEN over its held entry; live values use the existing reply writer and expired entries record state_expired.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = list_length(env: client, value: held);
@@ -1393,8 +1410,9 @@ fn lindex_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &T
   return unit;
 }
 
-fn lindex_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn lindex_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
   doc "LINDEX over its held entry; live values use the existing reply writer and expired entries record state_expired.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = index_item(env: client, value: held);
@@ -1435,6 +1453,7 @@ fn lset_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
 
 fn lset_body(slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(input), reads(args), writes(slot), writes(client) {
   doc "LSET over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(slot: slot, client: client);
   let removed = False();
   let changed = False();
   let value_span = arg(args: args, index: 3_u64);
@@ -1496,6 +1515,7 @@ fn lrem_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
 
 fn lrem_body(slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(input), reads(args), writes(slot), writes(client) {
   doc "LREM over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(slot: slot, client: client);
   let removed = False();
   let changed = False();
   let element = arg(args: args, index: 3_u64);
@@ -1560,6 +1580,7 @@ fn ltrim_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Ti
 
 fn ltrim_body(slot: &Option<Entry>, client: &Client) -> work: ListWork writes(slot), writes(client) {
   doc "LTRIM over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(slot: slot, client: client);
   let removed = False();
   let changed = False();
   match slot^ {
@@ -1618,6 +1639,7 @@ fn linsert_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &
 
 fn linsert_body(slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(input), reads(args), writes(slot), writes(client) {
   doc "LINSERT over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(slot: slot, client: client);
   let removed = False();
   let changed = False();
   let value_span = arg(args: args, index: 4_u64);
@@ -1725,8 +1747,10 @@ fn lpos_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return True();
 }
 
-fn lpos_body(slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, seek: &Seek, positions: &Box<Slots<u64>>) -> result: unit reads(slot), reads(input), reads(args), writes(seek), writes(positions) {
+fn lpos_body(client: &Client, slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, seek: &Seek, positions: &Box<Slots<u64>>) -> result: unit writes(slot), reads(input), reads(args), writes(seek), writes(positions), writes(client) {
   doc "LPOS over its held entry, collecting matching positions and recording expired or wrong-type entries.";
+  set client^.now = seek^.now;
+  refresh_access(slot: slot, client: client);
   let element = arg(args: args, index: 2_u64);
   match slot^ {
     Some(value: held) => {
@@ -1804,6 +1828,7 @@ fn lmove_body(slots: &Entries<Entry>, source: u64, destination: u64, client: &Cl
   set client^.state = state_absent;
   let found = entry_none;
   if source < slots^.len {
+    refresh_access(slot: &slots^[source], client: client);
     set found = list_kind(slot: &slots^[source], now: client^.now);
   }
   if found == entry_lapsed {
@@ -1818,6 +1843,7 @@ fn lmove_body(slots: &Entries<Entry>, source: u64, destination: u64, client: &Cl
   if found == entry_wanted {
     let target = entry_none;
     if destination < slots^.len {
+      refresh_access(slot: &slots^[destination], client: client);
       set target = list_kind(slot: &slots^[destination], now: client^.now);
     }
     if target == entry_lapsed {
@@ -1835,7 +1861,7 @@ fn lmove_body(slots: &Entries<Entry>, source: u64, destination: u64, client: &Cl
         Some(value: element) => {
           reply_bulk(client: client, stored: &element);
           if destination < slots^.len {
-            place_element(slot: &slots^[destination], element: move element, to_head: to_head);
+            place_element(client: client, slot: &slots^[destination], element: move element, to_head: to_head);
           } else {
             let dropped = move element;
           }

@@ -179,7 +179,8 @@ fn fresh_hash(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot
     let fields = hash_map_new::<Key, Bytes, ceiling>(capacity: capacity);
     set client^.number = put_fields(fields: &fields, client: client);
     let made = Value::Fields(fields: move fields);
-    let fresh = Entry(value: move made, expires: 0_u64);
+    let stamp = new_access(client: client);
+    let fresh = Entry(value: move made, expires: 0_u64, access: stamp);
     set slot^ = Some<Entry>(value: move fresh);
     set client^.state = state_done;
   }
@@ -199,7 +200,8 @@ fn run_hset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   set client^.state = state_absent;
   set client^.number = 0_u64;
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let removed = hset_body(slot: slot, client: client);
     let changed = client^.state == state_done;
     let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
@@ -270,7 +272,8 @@ fn run_hsetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.state = state_absent;
   set client^.number = 0_u64;
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let removed = hsetnx_body(slot: slot, client: client);
     let stored = client^.state == state_done;
     let added = client^.number > 0_u64;
@@ -330,7 +333,8 @@ fn run_hget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   set client^.state = state_absent;
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     hget_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
@@ -397,7 +401,8 @@ fn run_hmget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   set client^.state = state_absent;
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     hmget_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
@@ -468,7 +473,8 @@ fn run_hdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   set client^.state = state_absent;
   set client^.number = 0_u64;
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let removed = hdel_body(slot: slot, client: client);
     let changed = client^.number > 0_u64;
     let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
@@ -520,7 +526,8 @@ fn run_hfield(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.now = time^.check;
   set client^.state = state_absent;
   set client^.number = 0_u64;
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     hfield_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
@@ -569,7 +576,8 @@ fn run_hlen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   set client^.now = time^.check;
   set client^.state = state_absent;
   set client^.number = 0_u64;
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     hlen_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
@@ -656,7 +664,8 @@ fn run_hall(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   set client^.now = time^.check;
   set client^.state = state_absent;
   set client^.low = shown;
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     hall_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
@@ -748,7 +757,8 @@ fn run_hincrby(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   set client^.state = state_absent;
   set client^.high = 0_i64;
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let removed = hincrby_body(slot: slot, client: client);
     let changed = client^.state == state_done;
     let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
@@ -860,7 +870,8 @@ fn run_hincrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
   let empty = decimal_text(value: 0_i64);
   let floating = Floating(increment: read, text: move empty, state: state_absent);
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
+  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     let removed = hincrbyfloat_body(slot: slot, client: client, floating: &floating);
     let appended = hincrbyfloat_meta(log: &m^.log, logged: logged, removed: removed, client: client, floating: &floating, input: input, key_span: key_span, field_span: field_span, key: key);
   }
@@ -1025,7 +1036,8 @@ fn run_hrandfield(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   let asked = client^.number != 0_u64;
   let single = client^.low == 0_i64;
   let reading = bor(asked, single);
-  atomic slot = &store^.keys[key] {
+  atomic slot = &store^.keys[key], access_state = &store^.server {
+    pkg::store::access_settings(server: access_state, client: client);
     hrandfield_body(slot: slot, client: client, reading: reading);
   }
   if client^.state == state_expired {
@@ -1341,6 +1353,7 @@ fn hset_finish(client: &Client, counted: Bool) -> result: unit writes(client) {
 
 fn hset_body(slot: &Option<Entry>, client: &Client) -> removed: Bool writes(slot), writes(client) {
   doc "HSET and HMSET's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let edited = set_fields(env: client, value: held);
@@ -1374,6 +1387,7 @@ fn hsetnx_finish(client: &Client) -> result: unit writes(client) {
 
 fn hsetnx_body(slot: &Option<Entry>, client: &Client) -> removed: Bool writes(slot), writes(client) {
   doc "HSETNX's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let edited = set_field_once(env: client, value: held);
@@ -1407,8 +1421,9 @@ fn hget_finish(client: &Client) -> result: unit writes(client) {
   return unit;
 }
 
-fn hget_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn hget_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
   doc "HGET's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = get_field(env: client, value: held);
@@ -1436,8 +1451,9 @@ fn hmget_finish(client: &Client, fields: u64) -> result: unit writes(client) {
   return unit;
 }
 
-fn hmget_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn hmget_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
   doc "HMGET's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = get_fields(env: client, value: held);
@@ -1462,6 +1478,7 @@ fn hdel_finish(client: &Client) -> result: unit writes(client) {
 
 fn hdel_body(slot: &Option<Entry>, client: &Client) -> removed: Bool writes(slot), writes(client) {
   doc "HDEL's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let edited = delete_fields(env: client, value: held);
@@ -1496,8 +1513,9 @@ fn hfield_finish(client: &Client, length: Bool) -> result: unit writes(client) {
   return unit;
 }
 
-fn hfield_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn hfield_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
   doc "HEXISTS and HSTRLEN's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = find_field(env: client, value: held);
@@ -1519,8 +1537,9 @@ fn hlen_finish(client: &Client) -> result: unit writes(client) {
   return unit;
 }
 
-fn hlen_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn hlen_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
   doc "HLEN's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = hash_size(env: client, value: held);
@@ -1548,8 +1567,9 @@ fn hall_finish(client: &Client, shown: i64) -> result: unit writes(client) {
   return unit;
 }
 
-fn hall_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn hall_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
   doc "HGETALL, HKEYS and HVALS's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = all_fields(env: client, value: held);
@@ -1578,6 +1598,7 @@ fn hincrby_finish(client: &Client) -> result: unit writes(client) {
 
 fn hincrby_body(slot: &Option<Entry>, client: &Client) -> removed: Bool writes(slot), writes(client) {
   doc "HINCRBY's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let edited = add_to_field(env: client, value: held);
@@ -1599,7 +1620,8 @@ fn hincrby_body(slot: &Option<Entry>, client: &Client) -> removed: Bool writes(s
       let put = hash_map_put::<KeyHash, Bytes, ceiling>(map: &fields, key: move named, value: move text, env: &client^.keys);
     }
     let made = Value::Fields(fields: move fields);
-    let fresh = Entry(value: move made, expires: 0_u64);
+    let stamp = new_access(client: client);
+    let fresh = Entry(value: move made, expires: 0_u64, access: stamp);
     set slot^ = Some<Entry>(value: move fresh);
     set client^.high = client^.low;
     set client^.state = state_done;
@@ -1628,6 +1650,7 @@ fn hincrbyfloat_finish(client: &Client, floating: &Floating) -> result: unit rea
 
 fn hincrbyfloat_body(slot: &Option<Entry>, client: &Client, floating: &Floating) -> removed: Bool writes(slot), writes(client), writes(floating) {
   doc "HINCRBYFLOAT's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let edited = add_float(env: client, value: held, floating: floating);
@@ -1652,7 +1675,8 @@ fn hincrbyfloat_body(slot: &Option<Entry>, client: &Client, floating: &Floating)
         let put = hash_map_put::<KeyHash, Bytes, ceiling>(map: &fields, key: move named, value: move stored, env: &client^.keys);
       }
       let made = Value::Fields(fields: move fields);
-      let fresh = Entry(value: move made, expires: 0_u64);
+      let stamp = new_access(client: client);
+      let fresh = Entry(value: move made, expires: 0_u64, access: stamp);
       set slot^ = Some<Entry>(value: move fresh);
       set client^.state = state_done;
     }
@@ -1679,8 +1703,9 @@ fn hrandfield_finish(client: &Client, reading: Bool, single: Bool) -> result: un
   return unit;
 }
 
-fn hrandfield_body(slot: &Option<Entry>, client: &Client, reading: Bool) -> result: unit reads(slot), writes(client) {
+fn hrandfield_body(slot: &Option<Entry>, client: &Client, reading: Bool) -> result: unit writes(slot), writes(client) {
   doc "HRANDFIELD's work on one held entry; the caller owns the statement and expiry metadata.";
+  refresh_access(slot: slot, client: client);
   if reading {
     match slot^ {
       Some(value: held) => {

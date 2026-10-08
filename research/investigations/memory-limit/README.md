@@ -112,3 +112,11 @@ before implementation; the rest follows Redis.
   `allkeys-lru` with a limit at half the dataset: firn's hit rate against
   Redis 7.0.15's. firn's is rejected if it is more than two percentage
   points below Redis's.
+
+## Step 1 implementation record
+
+The [access/configuration draft record](step-1.md) lists every lookup site,
+its Redis oracle, the unrun validation and the open script-retry and
+configuration-ordering choices. The owner selected all eight policies and
+the all-policy access stamp in the board rulings `firn-maxmemory-policies` A
+and `firn-access-stamp` A. Eviction and OOM refusal are the following step.

@@ -59,7 +59,8 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   for @defaults (slot in 0_u64..9_u64) {
     set encodings[slot] = encoding_defaults[slot];
   }
-  let server = ServerState(password: move password, timeout: timeout, shutdown: running, encodings: encodings, connections: 0_u64, started: started);
+  let memory = MemoryConfig(maxmemory: 0_u64, maxmemory_policy: 7_u64, maxmemory_samples: 5_u64, lfu_log_factor: 10_u64, lfu_decay_time: 1_u64, maxmemory_eviction_tenacity: 10_u64);
+  let server = ServerState(password: move password, timeout: timeout, shutdown: running, encodings: encodings, connections: 0_u64, started: started, memory: memory);
   let beside = shared_new::<ServerState>(value: move server);
   let pool = pkg::script_pool::new_pool();
   let scripts = shared_new::<pkg::script_pool::EnginePool>(value: move pool);
@@ -398,5 +399,14 @@ fn request_shutdown(store: &Keyspace) -> result: unit reads(store) waits {
   atomic v = &store^.server, m = &store^.meta when m^.aof_installing == 0_u64 {
     set v^.shutdown = True();
   }
+  return unit;
+}
+
+fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) {
+  doc "Redis 7.0.15 db.c lookupKey and config.c memory settings, read while the caller holds server and keys together so a policy change is ordered with every affected lookup.";
+  set client^.memory_policy = server^.memory.maxmemory_policy;
+  set client^.maxmemory = server^.memory.maxmemory;
+  set client^.lfu_log_factor = server^.memory.lfu_log_factor;
+  set client^.lfu_decay_time = server^.memory.lfu_decay_time;
   return unit;
 }
