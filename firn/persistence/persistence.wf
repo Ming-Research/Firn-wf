@@ -89,10 +89,8 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
           set m^.aof_rewrite_requested = False();
           set rewrite = manual;
           if m^.aof_rewrite_in_progress {
-          } else {
-            if m^.aof_rewrite_reply == 0_u64 {
-              set rewrite = aof_rw_growth(current_size: m^.aof_current_size, base_size: m^.aof_base_size, percentage: m^.aof_rewrite_percentage, minimum: m^.aof_rewrite_min_size);
-            }
+          } else if m^.aof_rewrite_reply == 0_u64 {
+            set rewrite = aof_rw_growth(current_size: m^.aof_current_size, base_size: m^.aof_base_size, percentage: m^.aof_rewrite_percentage, minimum: m^.aof_rewrite_min_size);
           }
           if rewrite {
             set m^.aof_rewrite_in_progress = True();

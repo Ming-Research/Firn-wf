@@ -200,11 +200,9 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pen
   let drained = appended == length;
   if drained {
     set pending^ = box_slots_new::<u8>(capacity: 65536_u64);
-  } else {
-    if appended <= length {
-      let suffix = aof_copy(input: &pending^.inner[appended..length]);
-      set pending^ = move suffix;
-    }
+  } else if appended <= length {
+    let suffix = aof_copy(input: &pending^.inner[appended..length]);
+    set pending^ = move suffix;
   }
   let reading = std::time::now(clock: clock);
   let elapsed = std::time::nanoseconds_from(earlier: last_sync^, later: reading);
