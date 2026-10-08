@@ -10,6 +10,7 @@ alias KeyEnv = pkg::bytes::KeyEnv;
 alias ReadStop = std::io::ReadStop;
 alias Settings = pkg::protocol::Settings;
 alias Span = pkg::protocol::Span;
+alias StopListener = std::process::StopListener;
 alias Due = pkg::store::Due;
 alias Keyspace = pkg::store::Keyspace;
 alias TcpConnection = std::net::TcpConnection;
@@ -27,6 +28,7 @@ alias close_directory_write = std::fs::close_directory_write;
 alias close_listener = std::net::close_listener;
 alias close_receive = std::net::close_receive;
 alias close_send = std::net::close_send;
+alias close_stop_listener = std::process::close_stop_listener;
 alias execute_client = pkg::commands::execute_client;
 alias transaction_new = pkg::commands::transaction_new;
 alias exit_status = std::process::exit_status;
@@ -47,6 +49,8 @@ alias send_once = std::net::send_once;
 alias settings_copy = pkg::protocol::settings_copy;
 alias sleep_until = std::time::sleep_until;
 alias socket_address_v4 = std::net::socket_address_v4;
+alias stop_listen = std::process::stop_listen;
+alias stop_next = std::process::stop_next;
 alias keyspace_logging = pkg::store::keyspace_logging;
 alias keyspace_new = pkg::store::keyspace_new;
 alias keyspace_share = pkg::store::keyspace_share;
@@ -55,6 +59,7 @@ alias tcp_listen = std::net::tcp_listen;
 alias unix_nanoseconds = std::time::unix_nanoseconds;
 alias wall_clock_share = std::time::wall_clock_share;
 alias shutdown_requested = pkg::store::shutdown_requested;
+alias request_shutdown = pkg::store::request_shutdown;
 alias write_log = pkg::persistence::write_log;
 
 fn send_all(send: &TcpSend, source: &[u8], length: u64, store: &Keyspace, clock: &Clock, base: Instant) -> result: Result<unit, IoError> reads(source), reads(store), writes(send), writes(clock) waits contract {
@@ -458,6 +463,37 @@ fn expire_keys(store: Keyspace, clock: Clock, wall: WallClock) -> result: unit p
     if stop {
       break @ticks;
     }
+  }
+  return unit;
+}
+
+fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspace, clock: Clock) -> result: unit pure waits {
+  doc "Waits in a context of its own for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either. The listener is closed before the request is recorded, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops. Each wait lasts at most a second, after which the context reads the shutdown request, in the server's state alone so that a script holding the keyspace's metadata cannot keep it from its next wait, and ends without a request once it is set: by SHUTDOWN, or by main once it stops for another reason, such as the limit on clients. A wait that fails otherwise closes the listener, leaving the host default.";
+  let heard = False();
+  loop @waiting {
+    if shutdown_requested(store: &store) {
+      break @waiting;
+    }
+    let before = std::time::now(clock: &clock);
+    let bound = instant_after(instant: before, nanoseconds: 1000000000_u64);
+    let limit = Some<Instant>(value: bound);
+    match stop_next(factory: &factory, listener: &listener, deadline: limit) {
+      Ok(value: kind) => {
+        set heard = True();
+        break @waiting;
+      }
+      Err(error: problem) => {
+        let waited = deadline_error(error: &problem);
+        if waited {
+        } else {
+          break @waiting;
+        }
+      }
+    }
+  }
+  close_stop_listener(factory: &factory, listener: move listener);
+  if heard {
+    request_shutdown(store: &store);
   }
   return unit;
 }
@@ -930,8 +966,8 @@ fn read_options(args: &std::text::Args) -> options: Options reads(args) {
 }
 
 fn main(inputs: Inputs) -> status: ExitStatus pure waits {
-  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation, which read_options reads, names up to four arguments by position, the port, how many clients to accept, zero for no limit, the append-only file's name or - for none, and the idle limit, then options by name, --port, --bind, --timeout, --appendonly, --appendfilename, --requirepass, --clients, --auto-aof-rewrite-percentage and --auto-aof-rewrite-min-size; an invocation that does not read stops firn with status 1. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second.";
-  let Inputs(args: args, cwd: cwd_directory, stdout: unused_stdout, stderr: unused_stderr, handles: handles, stdin: unused_stdin, clock: clock, wall_clock: wall_clock) = move inputs;
+  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation, which read_options reads, names up to four arguments by position, the port, how many clients to accept, zero for no limit, the append-only file's name or - for none, and the idle limit, then options by name, --port, --bind, --timeout, --appendonly, --appendfilename, --requirepass, --clients, --auto-aof-rewrite-percentage and --auto-aof-rewrite-min-size; an invocation that does not read stops firn with status 1. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from just before firn listens, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; firn stops with status 3 when it cannot listen, on its address or for those signals.";
+  let Inputs(args: args, cwd: cwd_directory, stdout: unused_stdout, stderr: unused_stderr, handles: handles, stdin: unused_stdin, clock: clock, wall_clock: wall_clock, stops: stops) = move inputs;
   let std::fs::Directory(read: cwd, write: cwd_write) = move cwd_directory;
   let options = read_options(args: &args);
   if options.valid {
@@ -995,66 +1031,80 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   spawn expire_keys(store: move expiring_store, clock: move expiring_clock, wall: move expiring_wall);
   let address = socket_address_v4(a: listen_at.a, b: listen_at.b, c: listen_at.c, d: listen_at.d, port: port);
   let listened = True();
-  match tcp_listen(factory: &handles, address: &address) {
-    Ok(value: listener) => {
-      let accepted = 0_u64;
-      loop @accepting {
-        if count != 0_u64 {
-          if accepted >= count {
+  match stop_listen(factory: &handles, stops: &stops) {
+    Ok(value: stop_listener) => {
+      let stop_factory = factory_share(factory: &handles);
+      let stop_store = keyspace_share(store: &keyspace);
+      let stop_clock = clock_share(clock: &clock);
+      spawn stop_on_signal(listener: move stop_listener, factory: move stop_factory, store: move stop_store, clock: move stop_clock);
+    }
+    Err(error: stop_problem) => {
+      set listened = False();
+    }
+  }
+  if listened {
+    match tcp_listen(factory: &handles, address: &address) {
+      Ok(value: listener) => {
+        let accepted = 0_u64;
+        loop @accepting {
+          if count != 0_u64 {
+            if accepted >= count {
+              break @accepting;
+            }
+          }
+          if shutdown_requested(store: &keyspace) {
             break @accepting;
           }
-        }
-        if shutdown_requested(store: &keyspace) {
-          break @accepting;
-        }
-        let before = std::time::now(clock: &clock);
-        let bound = instant_after(instant: before, nanoseconds: 1000000000_u64);
-        let limit = Some<Instant>(value: bound);
-        match tcp_accept(factory: &handles, listener: &listener, deadline: limit) {
-          Ok(value: next) => {
-            let AcceptedConnection(connection: connection, peer: unused_peer) = move next;
-            if shutdown_requested(store: &keyspace) {
-              let TcpConnection(receive: receiver, send: sender) = move connection;
-              close_receive(factory: &handles, receive: move receiver);
-              close_send(factory: &handles, send: move sender);
-              break @accepting;
+          let before = std::time::now(clock: &clock);
+          let bound = instant_after(instant: before, nanoseconds: 1000000000_u64);
+          let limit = Some<Instant>(value: bound);
+          match tcp_accept(factory: &handles, listener: &listener, deadline: limit) {
+            Ok(value: next) => {
+              let AcceptedConnection(connection: connection, peer: unused_peer) = move next;
+              if shutdown_requested(store: &keyspace) {
+                let TcpConnection(receive: receiver, send: sender) = move connection;
+                close_receive(factory: &handles, receive: move receiver);
+                close_send(factory: &handles, send: move sender);
+                break @accepting;
+              }
+              let factory = factory_share(factory: &handles);
+              let handle = keyspace_share(store: &keyspace);
+              let serving_clock = clock_share(clock: &clock);
+              let serving_wall = wall_clock_share(clock: &wall_clock);
+              let serving_settings = settings_copy(settings: &settings);
+              let id = accepted +wrap 1_u64;
+              atomic m = &keyspace.meta {
+                set m^.clients = m^.clients +wrap 1_u64;
+              }
+              let required = False();
+              atomic v = &keyspace.server {
+                set v^.connections = v^.connections +wrap 1_u64;
+                let length = bytes_length(bytes: &v^.password);
+                set required = length > 0_u64;
+              }
+              set accepted = accepted +wrap 1_u64;
+              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id);
             }
-            let factory = factory_share(factory: &handles);
-            let handle = keyspace_share(store: &keyspace);
-            let serving_clock = clock_share(clock: &clock);
-            let serving_wall = wall_clock_share(clock: &wall_clock);
-            let serving_settings = settings_copy(settings: &settings);
-            let id = accepted +wrap 1_u64;
-            atomic m = &keyspace.meta {
-              set m^.clients = m^.clients +wrap 1_u64;
-            }
-            let required = False();
-            atomic v = &keyspace.server {
-              set v^.connections = v^.connections +wrap 1_u64;
-              let length = bytes_length(bytes: &v^.password);
-              set required = length > 0_u64;
-            }
-            set accepted = accepted +wrap 1_u64;
-            spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id);
-          }
-          Err(error: problem) => {
-            let timed_out = deadline_error(error: &problem);
-            if bnot(timed_out) {
-              break @accepting;
+            Err(error: problem) => {
+              let timed_out = deadline_error(error: &problem);
+              if bnot(timed_out) {
+                break @accepting;
+              }
             }
           }
         }
+        close_listener(factory: &handles, listener: move listener);
       }
-      close_listener(factory: &handles, listener: move listener);
-    }
-    Err(error: problem) => {
-      set listened = False();
+      Err(error: problem) => {
+        set listened = False();
+      }
     }
   }
   atomic m = &keyspace.meta when m^.clients == 0_u64 {
   }
-  atomic m = &keyspace.meta when m^.aof_installing == 0_u64 {
+  atomic m = &keyspace.meta, v = &keyspace.server when m^.aof_installing == 0_u64 {
     set m^.stopping = True();
+    set v^.shutdown = True();
   }
   if listened {
     return exit_status(code: 0_u8);

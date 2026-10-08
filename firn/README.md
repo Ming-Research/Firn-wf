@@ -149,8 +149,22 @@ Options are read in either case up to a zero byte, and an unknown option,
 `SAVE` with `NOSAVE`, or `ABORT` with another option is a syntax error.
 Scripts cannot call `SHUTDOWN`, and a script that is running holds its
 client until it ends, so one that never ends keeps firn from stopping (the
-busy-script entry of [docs/todo.md](../docs/todo.md#server)). SIGTERM and
-SIGINT still end firn at once, without this drain.
+busy-script entry of [docs/todo.md](../docs/todo.md#server)).
+
+SIGTERM and SIGINT stop firn as `SHUTDOWN` does, with the same drain, the
+append-only file's last append and sync, and status 0, as Redis 7.0.15 shuts
+down gracefully on either signal under its default `shutdown-on-sigterm` and
+`shutdown-on-sigint`. firn hears them from just before it listens: one sent
+during the replay before that still ends firn at once, where Redis stops
+loading and exits with status 0, and a host that refuses to deliver them to
+firn stops it with status 3, as an address it cannot listen on does. Once
+firn has taken a signal, or has seen a `SHUTDOWN` request or let its last
+client go after its limit on clients, which it does within a second, a
+further SIGTERM or SIGINT ends it at once, without the rest of the drain;
+Redis ends at once, with status 1, on a second SIGINT, but ignores a second
+SIGTERM. `SHUTDOWN ABORT` answers `ERR No shutdown in progress.` after a
+signal too, where Redis's cancels a signal's request in the moment, at most
+a tenth of a second, before its next cron acts on it.
 
 `INFO`, with no section, `default`, `all`, `everything` or named sections,
 answers Redis's sections in Redis's order and form. Its fields carry real

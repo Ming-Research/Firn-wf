@@ -393,3 +393,10 @@ fn shutdown_requested(store: &Keyspace) -> requested: Bool reads(store) waits {
   }
   return requested;
 }
+
+fn request_shutdown(store: &Keyspace) -> result: unit reads(store) waits {
+  atomic v = &store^.server, m = &store^.meta when m^.aof_installing == 0_u64 {
+    set v^.shutdown = True();
+  }
+  return unit;
+}
