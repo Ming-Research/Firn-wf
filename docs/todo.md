@@ -65,8 +65,10 @@ written while firn lived in the Whitefoot repository; a path such as
   rate (187 against 203 thousand a second, spreads 1.9% each) with a p99 of
   0.84 ms against 0.65 ms; without the file, or on two CPUs, firn is faster
   ([deployment record](../research/investigations/deployment-performance/README.md#results-1)). The cause is not measured: firn's
-  writer context shares the one CPU with the connections, where Redis writes
-  its buffer once per event-loop turn and syncs on a background thread.
+  writer context shares the one CPU with the connections, where Redis
+  7.0.15 writes its buffer once per event-loop turn (`flushAppendOnlyFile`
+  from `beforeSleep`) and leaves the sync to a background thread
+  (`bioCreateFsyncJob`).
   The change: profile firn on this line (`perf` and per-request system
   calls against Redis) and remove what the profile names. Validate with an
   interleaved firn and Redis rerun of `session-set` with the file on, one
@@ -85,9 +87,9 @@ written while firn lived in the Whitefoot repository; a path such as
 
 - **firn holds more memory than Redis for the same sessions.** After one
   million connect-redis sessions of 200 bytes with a one-day expiry, firn's
-  resident set was 411 MB against Redis 7.0.15's 355 to 359 MB (16% more),
-  437 to 439 MB with the append-only file on one CPU (23%) and 523 to 559 MB
-  on two (47 to 58%), while Redis's did not change with the file
+  resident set was 402 MiB against Redis 7.0.15's 347 to 351 MiB (16%
+  more), 427 to 429 MiB with the append-only file on one CPU (23%) and 511
+  to 546 MiB on two (47 to 58%), while Redis's did not change with the file
   ([deployment record](../research/investigations/deployment-performance/README.md#results-1)). The causes are not measured: firn's
   entry layout against Redis's, the allocator's retained memory, and what
   the append-only path keeps; the growth with a second CPU suggests
