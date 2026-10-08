@@ -251,3 +251,59 @@ Measured requests keep the planned 100,000-key range. The client also takes
 `--port`, `--workload`, `--connections`, `--threads`, `--keys`, `--value-size`
 and either `--seconds` or a total `--requests`; fill emits no timing row,
 and any protocol, I/O or Redis error fails the run.
+
+### Results
+
+Run [37775047771](https://github.com/Ming-Research/Firn-wf/actions/runs/37775047771)
+on the i9-14900K, 2026-10-08: Firn-wf 133119b (whitefoot.pin
+`wf-e42e715c664c`, Halo-wf 0def88248) against redis-server 7.0.15, 3
+interleaved passes of 5 seconds per line after a probe of 1 pass of 3
+seconds ([37774316578](https://github.com/Ming-Research/Firn-wf/actions/runs/37774316578)).
+The plan asked for passes of 10 seconds; the passes were shortened to keep
+the machine's slot short, and every conclusion below holds by a margin
+larger than the spread between its passes, which the table gives as the
+range over the mean.
+
+Rate in thousands a second (spread), firn over Redis, and median p99 in ms:
+
+| CPUs | workload | AOF | Redis | firn | firn/Redis | p99 Redis | p99 firn |
+|---|---|---|---|---|---|---|---|
+| 1 | limiter-script | off | 154 (11.8%) | 120 (6.5%) | 0.78 | 0.70 | 3.42 |
+| 1 | limiter-script | on | 130 (5.6%) | 115 (14.6%) | 0.88 | 0.98 | 3.42 |
+| 1 | limiter-tx | off | 253 (10.2%) | 312 (5.6%) | 1.23 | 0.48 | 0.24 |
+| 1 | limiter-tx | on | 226 (6.7%) | 317 (3.9%) | 1.41 | 0.46 | 0.26 |
+| 1 | setmany-tx | off | 150 (2.7%) | 187 (3.2%) | 1.24 | 0.82 | 0.39 |
+| 1 | setmany-tx | on | 96 (2.6%) | 104 (0.9%) | 1.08 | 3.74 | 1.76 |
+| 1 | session-set | off | 267 (6.7%) | 305 (5.8%) | 1.14 | 0.36 | 0.26 |
+| 1 | session-set | on | 203 (1.9%) | 187 (1.9%) | 0.92 | 0.65 | 0.84 |
+| 1 | session-get | off | 273 (6.8%) | 314 (6.4%) | 1.15 | 0.31 | 0.24 |
+| 1 | session-get | on | 266 (8.4%) | 323 (16.3%) | 1.21 | 0.44 | 0.24 |
+| 2 | limiter-script | off | 160 (7.2%) | 109 (3.5%) | 0.68 | 0.60 | 5.12 |
+| 2 | limiter-script | on | 135 (9.0%) | 107 (6.7%) | 0.79 | 0.88 | 5.51 |
+| 2 | limiter-tx | off | 263 (4.4%) | 598 (4.3%) | 2.28 | 0.34 | 0.15 |
+| 2 | limiter-tx | on | 229 (2.0%) | 513 (1.5%) | 2.24 | 0.42 | 0.50 |
+| 2 | setmany-tx | off | 150 (10.1%) | 335 (4.6%) | 2.24 | 0.83 | 0.31 |
+| 2 | setmany-tx | on | 106 (5.4%) | 208 (6.0%) | 1.95 | 1.23 | 0.97 |
+| 2 | session-set | off | 258 (10.6%) | 560 (4.6%) | 2.17 | 0.49 | 0.16 |
+| 2 | session-set | on | 210 (1.7%) | 450 (5.2%) | 2.14 | 0.64 | 0.37 |
+| 2 | session-get | off | 273 (4.4%) | 626 (4.9%) | 2.29 | 0.32 | 0.15 |
+| 2 | session-get | on | 274 (5.6%) | 556 (5.0%) | 2.03 | 0.32 | 0.16 |
+
+Resident memory after one million sessions, KiB, per pass: Redis 355,036
+to 359,148 with the append-only file off or on; firn 411,460 to 411,732
+off, 437,516 to 439,128 on with one CPU, and 522,792 to 559,168 on with
+two.
+
+Where firn falls below Redis:
+- **The scripted rate limiter.** At 0.68 to 0.88 of Redis's rate, with a
+  p99 of 3.4 to 5.5 ms against 0.6 to 1.0 ms, and worse on two CPUs than on
+  one. firn runs every script on one engine that scripts take in turn
+  (`firn/script_pool`), so the second CPU adds waiting for the engine; why
+  one CPU's p99 is five times Redis's is not known.
+- **Session writes with the append-only file on one CPU,** at 0.92 with a
+  p99 of 0.84 ms against 0.65 ms.
+- **Memory,** 16 percent above Redis for the same sessions, 23 percent with
+  the append-only file on one CPU and 47 to 58 percent on two.
+
+Every other line is above Redis: 1.08 to 1.41 times on one CPU and 1.95
+to 2.29 times on two, where Redis serves from one thread.
