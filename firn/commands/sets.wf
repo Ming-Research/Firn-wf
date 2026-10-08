@@ -819,7 +819,7 @@ fn drop_member(slot: &Option<Entry>, member: &Key, client: &Client) -> removed: 
   }
 }
 
-fn place_member(client: &Client, slot: &Option<Entry>, member: Key, keys: &KeyEnv) -> result: unit reads(keys), writes(slot), reads(client) {
+fn place_member(client: &Client, slot: &Option<Entry>, member: Key, keys: &KeyEnv) -> result: unit reads(keys), reads(client), writes(slot) {
   doc "Adds a member to the set an entry holds, creating the set, without an expiry, for an entry holding none; an entry holding another kind, which the caller has refused, drops it.";
   match slot^ {
     Some(value: held) => {
@@ -1097,7 +1097,7 @@ fn gather(slots: &Entries<Entry>, keys: &KeySet, positions: &Box<Slots<u64>>, fo
   return count;
 }
 
-fn store_members(client: &Client, slot: &Option<Entry>, members: &HashMap<Key, unit, ceiling>) -> result: unit writes(slot), writes(members), reads(client) {
+fn store_members(client: &Client, slot: &Option<Entry>, members: &HashMap<Key, unit, ceiling>) -> result: unit reads(client), writes(slot), writes(members) {
   doc "Gives the entry a new set without an expiry, exchanging it with the members, which are left holding the new set's emptiness.";
   let empty = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
   let made = Value::Members(members: move empty);

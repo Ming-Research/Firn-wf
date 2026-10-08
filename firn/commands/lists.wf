@@ -1082,7 +1082,7 @@ fn take_element(slot: &Option<Entry>, from_head: Bool, client: &Client) -> poppe
   }
 }
 
-fn place_element(client: &Client, slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -> result: unit writes(slot), reads(client) {
+fn place_element(client: &Client, slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -> result: unit reads(client), writes(slot) {
   doc "Pushes an element onto the head (to_head) or tail of the list an entry holds, creating the list, without an expiry, for an entry holding none; an entry holding another kind, which the caller has refused, drops it.";
   match slot^ {
     Some(value: held) => {
@@ -1747,7 +1747,7 @@ fn lpos_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return True();
 }
 
-fn lpos_body(client: &Client, slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, seek: &Seek, positions: &Box<Slots<u64>>) -> result: unit writes(slot), reads(input), reads(args), writes(seek), writes(positions), writes(client) {
+fn lpos_body(client: &Client, slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, seek: &Seek, positions: &Box<Slots<u64>>) -> result: unit reads(input), reads(args), writes(slot), writes(seek), writes(positions), writes(client) {
   doc "LPOS over its held entry, collecting matching positions and recording expired or wrong-type entries.";
   set client^.now = seek^.now;
   refresh_access(slot: slot, client: client);
