@@ -1,0 +1,173 @@
+alias Keyspace = pkg::store::Keyspace;
+alias HandleFactory = std::io::HandleFactory;
+alias WriteFile = std::fs::WriteFile;
+alias AofEntry = pkg::store::Entry;
+alias AofBytes = pkg::bytes::Bytes;
+alias AofKey = pkg::bytes::Key;
+alias aof_log_count = pkg::store::log_count;
+alias aof_log_word = pkg::store::log_word;
+alias aof_log_text = pkg::store::log_text;
+alias aof_log_decimal = pkg::store::log_decimal;
+alias aof_map_each = std::collections::hash_map::hash_map_each;
+alias aof_map_len = std::collections::hash_map::hash_map_len;
+
+const aof_rw_set: Array<u8, 3> = "SET";
+
+const aof_rw_rpush: Array<u8, 5> = "RPUSH";
+
+const aof_rw_sadd: Array<u8, 4> = "SADD";
+
+const aof_rw_zadd: Array<u8, 4> = "ZADD";
+
+const aof_rw_hmset: Array<u8, 5> = "HMSET";
+
+const aof_rw_expire: Array<u8, 9> = "PEXPIREAT";
+
+const aof_rw_select: Array<u8, 6> = "SELECT";
+
+struct AofEmitter {
+  key: AofBytes;
+  output: Box<Slots<u8>>;
+  remaining: u64;
+  batch: u64;
+}
+
+fn aof_rw_header(emitter: &AofEmitter, word: &[u8], width: u64) -> result: unit reads(word), writes(emitter) {
+  if emitter^.batch == 0_u64 {
+    let items = imin(emitter^.remaining, 64_u64);
+    let arguments = items *wrap width;
+    let count = arguments +wrap 2_u64;
+    aof_log_count(log: &emitter^.output, count: count, room: 256_u64);
+    aof_log_word(log: &emitter^.output, word: word);
+    aof_log_text(log: &emitter^.output, text: &emitter^.key);
+    set emitter^.batch = items;
+  }
+  set emitter^.batch = emitter^.batch -wrap 1_u64;
+  set emitter^.remaining = emitter^.remaining -wrap 1_u64;
+  return unit;
+}
+
+fn aof_rw_member(env: &AofEmitter, key: &AofKey, value: &unit) -> result: unit reads(key.bytes), writes(env) {
+  aof_rw_header(emitter: env, word: &aof_rw_sadd[0_u64..4_u64], width: 1_u64);
+  aof_log_text(log: &env^.output, text: &key^.bytes);
+  return unit;
+}
+
+fn aof_rw_field(env: &AofEmitter, key: &AofKey, value: &AofBytes) -> result: unit reads(key.bytes), reads(value), writes(env) {
+  aof_rw_header(emitter: env, word: &aof_rw_hmset[0_u64..5_u64], width: 2_u64);
+  aof_log_text(log: &env^.output, text: &key^.bytes);
+  aof_log_text(log: &env^.output, text: value);
+  return unit;
+}
+
+fn aof_rw_score(env: &AofEmitter, key: &AofKey, value: &f64) -> result: unit reads(key.bytes), reads(value), writes(env) {
+  aof_rw_header(emitter: env, word: &aof_rw_zadd[0_u64..4_u64], width: 2_u64);
+  let digits = pkg::scores::score_bytes(score: value^);
+  aof_log_text(log: &env^.output, text: &digits);
+  aof_log_text(log: &env^.output, text: &key^.bytes);
+  return unit;
+}
+
+fn aof_rw_entry(slot: &Option<AofEntry>, emitter: &AofEmitter) -> result: unit reads(slot), writes(emitter) {
+  doc "Redis rewriteAppendOnlyFileRio: retain even elapsed expiries, emit at most 64 collection elements per command, and follow each expiring value with its absolute PEXPIREAT. Script caches have no AOF records and firn implements no persisted functions.";
+  match slot^ {
+    Some(value: held) => {
+      match held^.value {
+        Text(bytes: stored) => {
+          aof_log_count(log: &emitter^.output, count: 3_u64, room: 256_u64);
+          aof_log_word(log: &emitter^.output, word: &aof_rw_set[0_u64..3_u64]);
+          aof_log_text(log: &emitter^.output, text: &emitter^.key);
+          aof_log_text(log: &emitter^.output, text: stored);
+        }
+        Items(items: listed) => {
+          set emitter^.remaining = listed^.inner.len;
+          for (index in 0_u64..listed^.inner.len) {
+            aof_rw_header(emitter: emitter, word: &aof_rw_rpush[0_u64..5_u64], width: 1_u64);
+            let element = &listed^.inner[index];
+            let length = element^.inner.len;
+            aof_log_word(log: &emitter^.output, word: &element^.inner[0_u64..length]);
+          }
+        }
+        Members(members: stored_members) => {
+          set emitter^.remaining = aof_map_len::<AofKey, unit, 4294967296_u64>(map: stored_members);
+          aof_map_each::<AofKey, unit, AofEmitter, fn aof_rw_member, 4294967296_u64>(map: stored_members, env: emitter);
+        }
+        Fields(fields: stored_fields) => {
+          set emitter^.remaining = aof_map_len::<AofKey, AofBytes, 4294967296_u64>(map: stored_fields);
+          aof_map_each::<AofKey, AofBytes, AofEmitter, fn aof_rw_field, 4294967296_u64>(map: stored_fields, env: emitter);
+        }
+        Ranked(ranked: stored_ranked) => {
+          set emitter^.remaining = aof_map_len::<AofKey, f64, 4294967296_u64>(map: &stored_ranked^.scores);
+          aof_map_each::<AofKey, f64, AofEmitter, fn aof_rw_score, 4294967296_u64>(map: &stored_ranked^.scores, env: emitter);
+        }
+      }
+      if held^.expires != 0_u64 {
+        aof_log_count(log: &emitter^.output, count: 3_u64, room: 128_u64);
+        aof_log_word(log: &emitter^.output, word: &aof_rw_expire[0_u64..9_u64]);
+        aof_log_text(log: &emitter^.output, text: &emitter^.key);
+        aof_log_decimal(log: &emitter^.output, value: held^.expires);
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn aof_rw_key(keys: &KeySet, index: u64) -> bytes: Box<Array<u8>> reads(keys) contract {
+  requires index < keys^.len;
+} {
+  let probe = array_filled::<u8, 0>(value: 0_u8);
+  let length = key_set_read_key(keys: keys, index: index, out: &probe[0_u64..0_u64]);
+  let bytes = box_array_filled::<u8>(count: length, value: 0_u8);
+  let size = bytes.inner.len;
+  key_set_read_key(keys: keys, index: index, out: &bytes.inner[0_u64..size]);
+  return move bytes;
+}
+
+fn aof_rw_dataset(private_store: &Keyspace, live_store: &Keyspace, factory: &HandleFactory, file: &WriteFile) -> result: Result<u64, unit> reads(private_store), reads(live_store), writes(factory), writes(file) waits {
+  doc "Scan only the private replayed map; emit one key outside its atomic statement so host IO never holds a map. A shutdown is observed between keys. Return the exact number of bytes written, or refuse a partial write.";
+  let cursor = 0_u64;
+  let size = 0_u64;
+  let selected = False();
+  loop @scanning {
+    let keys = key_set_new(capacity: 64_u64);
+    atomic table = &private_store^.keys {
+      set cursor = map_scan::<AofEntry>(map: table, cursor: cursor, count: 64_u64, keys: &keys);
+    }
+    let count = keys.len;
+    for (index in 0_u64..count) {
+      let cancelled = aof_rw_cancelled(store: live_store);
+      if cancelled {
+        return Err<u64, unit>(error: unit);
+      }
+      if index < keys.len {
+        let bytes = aof_rw_key(keys: &keys, index: index);
+        let length = bytes.inner.len;
+        let key = &bytes.inner[0_u64..length];
+        let copied = pkg::bytes::bytes_new(input: key, start: 0_u64, length: length);
+        let output = box_slots_new::<u8>(capacity: 4096_u64);
+        let emitter = AofEmitter(key: move copied, output: move output, remaining: 0_u64, batch: 0_u64);
+        if selected {
+        } else {
+          aof_log_count(log: &emitter.output, count: 2_u64, room: 32_u64);
+          aof_log_word(log: &emitter.output, word: &aof_rw_select[0_u64..6_u64]);
+          aof_log_decimal(log: &emitter.output, value: 0_u64);
+          set selected = True();
+        }
+        atomic slot = &private_store^.keys[key] {
+          aof_rw_entry(slot: slot, emitter: &emitter);
+        }
+        let appended = append_all(factory: factory, file: file, source: &emitter.output);
+        if appended != emitter.output.inner.len {
+          return Err<u64, unit>(error: unit);
+        }
+        set size = size +wrap appended;
+      }
+    }
+    if cursor == 0_u64 {
+      break @scanning;
+    }
+  }
+  return Ok<u64, unit>(value: size);
+}

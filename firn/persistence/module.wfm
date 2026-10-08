@@ -5,7 +5,7 @@ alias Keyspace = pkg::store::Keyspace;
 alias Time = pkg::store::Time;
 alias WriteFile = std::fs::WriteFile;
 
-public fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock) -> result: unit pure waits doc "The append-only file's writer: every 10 milliseconds it exchanges the keyspace's pending bytes for an empty buffer in one atomic statement and appends what it took to the file, syncing the file once a second has passed since the last sync, as appendfsync everysec does. Once the server stops it writes the last bytes, syncs and closes the file.";
+public fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time) -> result: unit pure waits doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Preserve a partial append for the next drain. Main sets stopping only after clients have left.";
 
 public struct Loaded {
   doc "What replaying an append-only file found: applied, how many commands it applied, size, how many bytes were read, and, when cut, kept, the length the file is to be cut to before anything is appended to it, as Redis 7.0.15 truncates a file whose end it could not load, and stopped, that the replay ended at a record it could not load and the server must not start, as Redis 7.0.15 exits.";
@@ -36,7 +36,7 @@ public struct AofManifest {
 }
 
 public struct AofLog {
-  doc "The writer owns the directory halves, appendfilename, manifest and last incremental file for a later switch and rebuild from closed files.";
+  doc "The writer owns the directory halves, appendfilename, manifest and last incremental file; a structured rebuild owns the read half until its result returns it to the writer.";
   public directory: DirectoryRead;
   public writable: std::fs::DirectoryWrite;
   public prefix: Box<Slots<u8>>;

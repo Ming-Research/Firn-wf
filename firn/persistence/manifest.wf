@@ -382,10 +382,18 @@ fn aof_hex(output: &Box<Slots<u8>>, byte: u8) -> result: unit writes(output) {
   return unit;
 }
 
-fn aof_persist(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> accepted: Bool reads(prefix), writes(factory), writes(writable), writes(manifest) waits {
+struct AofPublication {
+  published: Bool;
+  durable: Bool;
+}
+
+fn aof_persist(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> outcome: AofPublication reads(prefix), writes(factory), writes(writable), writes(manifest) waits {
+  doc "Publication succeeds once rename replaces the manifest, even if the following directory sync fails. Callers must retain the files it names on that outcome. A failed sync leaves dirty set for a later persistence attempt.";
+  let yes = True();
+  let no = False();
   if manifest^.dirty {
   } else {
-    return True();
+    return AofPublication(published: yes, durable: yes);
   }
   let output = box_slots_new::<u8>(capacity: 1024_u64);
   for (pass in 0_u64..3_u64) {
@@ -419,22 +427,22 @@ fn aof_persist(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, pref
   let written = aof_replace(factory: factory, writable: writable, name: temp_name, contents: &output);
   if written {
   } else {
-    return False();
+    return AofPublication(published: no, durable: no);
   }
   match std::fs::rename_file(factory: factory, root: writable, from: temp_name, from_start: 0_u64, from_end: temp_length, to: name, to_start: 0_u64, to_end: length) {
     Ok(value: renamed) => {
     }
     Err(error: problem) => {
-      return False();
+      return AofPublication(published: no, durable: no);
     }
   }
   match std::fs::sync_directory(factory: factory, root: writable) {
     Ok(value: synced) => {
       set manifest^.dirty = False();
-      return True();
+      return AofPublication(published: yes, durable: yes);
     }
     Err(error: problem) => {
-      return False();
+      return AofPublication(published: yes, durable: no);
     }
   }
 }

@@ -43,11 +43,20 @@ public struct Due {
 }
 
 public struct Meta {
-  doc "What the keyspace keeps beside its keys: the queued expiries, the append-only file's pending bytes, the total bytes in active files and startup base size for the rewrite, the clients connected, whether the server is stopping, and the state SPOP draws from.";
+  doc "What the keyspace keeps beside its keys: the queued expiries, the append-only file's pending bytes, the active-file byte count and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion and automatic thresholds, the clients connected, whether the server is stopping, and the state SPOP draws from.";
   public due: PriorityQueue<Due, ceiling>;
   public log: Box<Slots<u8>>;
   public aof_current_size: u64;
   public aof_base_size: u64;
+  public aof_rewrite_in_progress: Bool;
+  public aof_rewrite_requested: Bool;
+  public aof_rewrite_reply: u64;
+  public aof_rewrites: u64;
+  public aof_rewrite_ok: Bool;
+  public aof_worker_done: Bool;
+  public aof_installing: u64;
+  public aof_rewrite_percentage: u64;
+  public aof_rewrite_min_size: u64;
   public clients: u64;
   public stopping: Bool;
   public random: u64;

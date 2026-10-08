@@ -7829,8 +7829,8 @@ fn aof_incremental_fixture(directory: &std::path::Path, name: &str) -> std::path
 }
 
 /// All files and values below are Redis 7.0.15 integration/aof-multi-part.tcl
-/// Part 1 fixtures. Only the loading portion of upgrade cases is ported:
-/// their later BGREWRITEAOF/RDB/DEBUG checks belong to step 2 or require RDB.
+/// Part 1 fixtures and command-format upgrade/rewrite cases. RDB cases are
+/// omitted; restart and explicit values replace the DEBUG-only digest reload.
 /*
 Copyright (c) 2006-2020, Salvatore Sanfilippo
 All rights reserved.
@@ -8219,6 +8219,16 @@ fn multipart_upgrade(interrupted: bool, both: bool) {
         b"file appendonly.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n"
     );
     multipart_load(&program, "appendonly.aof", &expected);
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
+    let mut client = connect_when_ready(port);
+    rewrite_start(&mut client);
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+    assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), rewrite_manifest(2, 2));
+    assert!(!directory.join("appendonly.aof").exists());
+    rewrite_stop(&mut client, child);
+    multipart_load(&program, "appendonly.aof", &expected);
 }
 
 // Redis: Multi Part AOF can load data from old version redis (rdb preamble no)
@@ -8320,6 +8330,10 @@ fn multi_part_aof_can_upgrade_when_two_servers_share_the_same_server_dir() {
             ("k6", Some("v6")),
         ],
     );
+    rewrite_start(&mut first_client);
+    assert_eq!(rewrite_wait(&mut first_client)["aof_last_bgrewrite_status"], "ok");
+    rewrite_start(&mut second_client);
+    assert_eq!(rewrite_wait(&mut second_client)["aof_last_bgrewrite_status"], "ok");
     drop(first_client);
     drop(second_client);
     assert_eq!(finished(first).0, 0);
@@ -8334,13 +8348,15 @@ fn multi_part_aof_can_upgrade_when_two_servers_share_the_same_server_dir() {
                     .join(format!("{name}.manifest"))
             )
             .unwrap(),
-            format!("file {name} seq 1 type b\nfile {name}.1.incr.aof seq 1 type i\n").as_bytes()
+            format!("file {name}.2.base.aof seq 2 type b\nfile {name}.2.incr.aof seq 2 type i\n").as_bytes()
         );
     }
+    multipart_load(&program, "appendonly.aof", &[("k1", Some("v1")), ("k4", None)]);
+    multipart_load(&program, "appendonly.aof2", &[("k1", None), ("k4", Some("v4"))]);
 }
 
 // Redis: Multi Part AOF can handle appendfilename contains whitespaces
-// aofInfoFormat's sdscatrepr output, with startup sequence 1 (no rewrite yet).
+// aofInfoFormat's sdscatrepr output before and after rewrite.
 #[test]
 fn multi_part_aof_can_handle_appendfilename_contains_whitespaces() {
     let program = CompiledProgram::from_environment();
@@ -8357,6 +8373,16 @@ fn multi_part_aof_can_handle_appendfilename_contains_whitespaces() {
     assert_eq!(std::fs::read(directory.join(format!("{name}.manifest"))).unwrap(),
         b"file \" file seq \\n\\n.aof .1.base.aof\" seq 1 type b\nfile \" file seq \\n\\n.aof .1.incr.aof\" seq 1 type i\n");
     multipart_load(&program, name, &[("k1", Some("v1"))]);
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]);
+    let mut client = connect_when_ready(port);
+    rewrite_start(&mut client);
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+    assert_eq!(std::fs::read(directory.join(format!("{name}.manifest"))).unwrap(),
+        b"file \" file seq \\n\\n.aof .2.base.aof\" seq 2 type b\nfile \" file seq \\n\\n.aof .2.incr.aof\" seq 2 type i\n");
+    rewrite_stop(&mut client, child);
+    multipart_load(&program, name, &[("k1", Some("v1"))]);
 }
 
 /// loadAppendOnlyFiles permits truncation only in the last active file.
@@ -8371,7 +8397,7 @@ fn multi_part_aof_replays_in_order_appends_to_last_and_removes_history() {
             ("appendonly.aof.1.incr.aof", &[&["INCR", "k"]]),
             ("appendonly.aof.3.incr.aof", &[&["INCR", "k"]]),
             ("old.aof", &[&["SET", "k", "wrong"]]),
-            ("temp-rewriteaof-bg-2.aof", &[&["SET", "k", "wrong"]]),
+            ("temp-appendonly.aof.base", &[&["SET", "k", "wrong"]]),
         ],
         "file appendonly.aof.1.incr.aof seq 1 type i\nfile old.aof seq 1 type h\nfile absent.aof seq 2 type h\nfile appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.3.incr.aof seq 3 type i\n",
     );
@@ -8398,7 +8424,7 @@ fn multi_part_aof_replays_in_order_appends_to_last_and_removes_history() {
         resp(&["INCR", "k"]).repeat(2)
     );
     assert!(!directory.join("old.aof").exists());
-    assert!(directory.join("temp-rewriteaof-bg-2.aof").exists());
+    assert!(directory.join("temp-appendonly.aof.base").exists());
     assert_eq!(std::fs::read(directory.join("appendonly.aof.manifest")).unwrap(),
         b"file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.3.incr.aof seq 3 type i\n");
     multipart_load(&program, "appendonly.aof", &[("k", Some("4"))]);
@@ -8510,4 +8536,469 @@ fn multi_part_aof_manifest_accepts_exact_line_limit_and_comment_only_file() {
     multipart_load(&program, "appendonly.aof", &[]);
     assert_eq!(std::fs::read(program.working_directory().join("appendonlydir/appendonly.aof.manifest")).unwrap(),
         b"file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n");
+}
+
+fn rewrite_info(client: &mut TcpStream) -> std::collections::BTreeMap<String, String> {
+    client.write_all(&resp(&["INFO", "persistence"])).unwrap();
+    bulk_reply(client, "rewrite INFO")
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
+}
+
+fn rewrite_wait(client: &mut TcpStream) -> std::collections::BTreeMap<String, String> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let info = rewrite_info(client);
+        if info["aof_rewrite_in_progress"] == "0" {
+            return info;
+        }
+        assert!(Instant::now() < deadline, "rewrite did not finish: {info:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn rewrite_start(client: &mut TcpStream) {
+    client.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
+    expect_replies(
+        client,
+        b"+Background append only file rewriting started\r\n",
+        "bgrewriteaofCommand start reply",
+    );
+}
+
+fn rewrite_stop(client: &mut TcpStream, child: ProgramChild) {
+    client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
+    shutdown_finished(child);
+}
+
+fn rewrite_manifest(base: u64, incremental: u64) -> String {
+    format!(
+        "file appendonly.aof.{base}.base.aof seq {base} type b\nfile appendonly.aof.{incremental}.incr.aof seq {incremental} type i\n"
+    )
+}
+
+/// Redis's generic rewrite-start failure is firn's deliberate refusal when
+/// appendonly is off: no closed log or snapshot supplies the rewrite source.
+#[test]
+fn firn_refuses_aof_rewrite_without_appendonly() {
+    let program = CompiledProgram::from_environment();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0"]);
+    let mut client = connect_when_ready(port);
+    client.write_all(&resp(&["SET", "k", "v"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "in-memory value");
+    client.write_all(&resp(&["BGREWRITEAOF", "extra"])).unwrap();
+    expect_replies(&mut client, b"-ERR wrong number of arguments for 'bgrewriteaof' command\r\n", "rewrite arity with appendonly off");
+    for _ in 0..2 {
+        client.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
+        expect_replies(&mut client, b"-ERR Can't execute an AOF background rewriting. Please check the server logs for more information.\r\n", "rewrite cannot start without a source");
+        let info = rewrite_info(&mut client);
+        assert_eq!(info["aof_enabled"], "0");
+        assert_eq!(info["aof_rewrite_in_progress"], "0");
+        assert_eq!(info["aof_rewrites"], "0");
+    }
+    multipart_values(&mut client, &[("k", Some("v"))]);
+    rewrite_stop(&mut client, child);
+    assert!(!program.working_directory().join("appendonlydir").exists());
+}
+
+/// rewriteAppendOnlyFileRio, rewrite*Object and AOF_REWRITE_ITEMS_PER_CMD
+/// supply the oracle: SET, RPUSH/SADD/ZADD/HMSET in groups of at most 64,
+/// SELECT 0 before the dataset, and absolute PEXPIREAT after each key.
+#[test]
+fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
+    let program = CompiledProgram::from_environment();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
+    let mut client = connect_when_ready(port);
+    client.write_all(&resp(&["SET", "text", "hello\0world\r\n"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "binary string");
+    for index in 0..65 {
+        let member = format!("m{index:02}");
+        let value = format!("v{index:02}");
+        let score = format!("{index}.25");
+        for (request, expected) in [
+            (vec!["RPUSH", "list", member.as_str()], index + 1),
+            (vec!["SADD", "set", member.as_str()], 1),
+            (vec!["HSET", "hash", member.as_str(), value.as_str()], 1),
+            (vec!["ZADD", "sorted", score.as_str(), member.as_str()], 1),
+        ] {
+            client.write_all(&resp(&request)).unwrap();
+            assert_eq!(integer_reply(&mut client, "seed collection"), expected);
+        }
+    }
+    let deadline = "99999999999000";
+    for key in ["text", "list", "set", "hash", "sorted"] {
+        client.write_all(&resp(&["PEXPIREAT", key, deadline])).unwrap();
+        assert_eq!(integer_reply(&mut client, "absolute expiry"), 1);
+    }
+    rewrite_start(&mut client);
+    let info = rewrite_wait(&mut client);
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok");
+    assert_eq!(info["aof_rewrites"], "1");
+    let directory = program.working_directory().join("appendonlydir");
+    assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), rewrite_manifest(2, 2));
+    let mut names: Vec<_> = std::fs::read_dir(&directory).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+    names.sort();
+    assert_eq!(names, ["appendonly.aof.2.base.aof", "appendonly.aof.2.incr.aof", "appendonly.aof.manifest"].map(std::ffi::OsString::from));
+    let base = std::fs::read(directory.join("appendonly.aof.2.base.aof")).unwrap();
+    let records = file_records(&base);
+    assert_eq!(records[0], vec![b"SELECT".to_vec(), b"0".to_vec()]);
+    for (command, key, width) in [("RPUSH", "list", 1), ("SADD", "set", 1), ("HMSET", "hash", 2), ("ZADD", "sorted", 2)] {
+        let chunks: Vec<_> = records.iter().filter(|record| record[0] == command.as_bytes()).collect();
+        assert_eq!(chunks.len(), 2, "{command} batches");
+        assert_eq!(chunks[0].len(), 2 + 64 * width);
+        assert_eq!(chunks[1].len(), 2 + width);
+        assert!(chunks.iter().all(|record| record[1] == key.as_bytes()));
+    }
+    assert_eq!(records.iter().filter(|record| record[0] == b"PEXPIREAT").count(), 5);
+    assert!(records.iter().all(|record| record[0] != b"HSET"));
+    assert_eq!(info["aof_current_size"].parse::<u64>().unwrap(), base.len() as u64);
+    assert_eq!(info["aof_base_size"], info["aof_current_size"]);
+    rewrite_stop(&mut client, child);
+
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
+    let mut client = connect_when_ready(port);
+    multipart_values(&mut client, &[("text", Some("hello\0world\r\n"))]);
+    for index in 0..65 {
+        let member = format!("m{index:02}");
+        let value = format!("v{index:02}");
+        let score = format!("{index}.25");
+        let position = index.to_string();
+        for (request, expected) in [
+            (vec!["LINDEX", "list", position.as_str()], member.as_str()),
+            (vec!["HGET", "hash", member.as_str()], value.as_str()),
+            (vec!["ZSCORE", "sorted", member.as_str()], score.as_str()),
+        ] {
+            client.write_all(&resp(&request)).unwrap();
+            assert_eq!(bulk_reply(&mut client, "replayed collection"), expected);
+        }
+        client.write_all(&resp(&["SISMEMBER", "set", &member])).unwrap();
+        assert_eq!(integer_reply(&mut client, "replayed set member"), 1);
+    }
+    for key in ["text", "list", "set", "hash", "sorted"] {
+        client.write_all(&resp(&["PEXPIRETIME", key])).unwrap();
+        assert_eq!(integer_reply(&mut client, "expiry unchanged"), 99999999999000);
+    }
+    rewrite_stop(&mut client, child);
+}
+
+/// State after each durable rewrite step, from backgroundRewriteDoneHandler.
+/// Only manifest-listed history is collected; Redis leaves orphan temporary
+/// and renamed-but-unpublished bases alone. INCR distinguishes double replay.
+#[test]
+fn firn_replays_each_interrupted_rewrite_step() {
+    for phase in 0..4 {
+        let program = CompiledProgram::from_environment();
+        let manifest = if phase == 3 {
+            "file appendonly.aof.2.base.aof seq 2 type b\nfile appendonly.aof.1.base.aof seq 1 type h\nfile appendonly.aof.1.incr.aof seq 1 type h\nfile appendonly.aof.2.incr.aof seq 2 type i\n"
+        } else {
+            "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.2.incr.aof seq 2 type i\n"
+        };
+        multipart_files(&program, &[
+            ("appendonly.aof.1.base.aof", &[&["SET", "counter", "1"]]),
+            ("appendonly.aof.1.incr.aof", &[&["INCR", "counter"]]),
+            ("appendonly.aof.2.incr.aof", &[&["INCR", "counter"]]),
+        ], manifest);
+        let directory = program.working_directory().join("appendonlydir");
+        if phase == 1 {
+            std::fs::write(directory.join("temp-appendonly.aof.base"), resp(&["SET", "counter", "2"])).unwrap();
+        }
+        if phase >= 2 {
+            std::fs::write(directory.join("appendonly.aof.2.base.aof"), resp(&["SET", "counter", "2"])).unwrap();
+        }
+        multipart_load(&program, "appendonly.aof", &[("counter", Some("3"))]);
+        assert_eq!(directory.join("appendonly.aof.1.base.aof").exists(), phase != 3);
+        assert_eq!(directory.join("appendonly.aof.1.incr.aof").exists(), phase != 3);
+        if phase == 1 {
+            assert!(directory.join("temp-appendonly.aof.base").exists());
+        }
+        if phase >= 2 {
+            assert!(directory.join("appendonly.aof.2.base.aof").exists());
+        }
+        if phase == 3 {
+            assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), rewrite_manifest(2, 2));
+        }
+    }
+}
+
+fn rewrite_large_fixture(program: &CompiledProgram) {
+    multipart_files(program, &[("appendonly.aof.1.base.aof", &[]), ("appendonly.aof.1.incr.aof", &[])], &rewrite_manifest(1, 1));
+    let mut bytes = Vec::new();
+    let value = "x".repeat(512);
+    for index in 0..16000 {
+        bytes.extend(resp(&["SET", &format!("seed:{index}"), &value]));
+    }
+    std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
+}
+
+#[test]
+fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
+    let program = CompiledProgram::from_environment();
+    rewrite_large_fixture(&program);
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
+    let mut control = connect_when_ready(port);
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut workers = Vec::new();
+    for operation in ["INCR", "APPEND", "LPUSH"] {
+        let running = running.clone();
+        workers.push(std::thread::spawn(move || {
+            let mut client = connect_when_ready(port);
+            let mut count = 0;
+            while running.load(std::sync::atomic::Ordering::Acquire) || count < 100 {
+                let mut request = vec![operation, operation];
+                if operation != "INCR" {
+                    request.push("x");
+                }
+                client.write_all(&resp(&request)).unwrap();
+                count += 1;
+                assert_eq!(integer_reply(&mut client, "concurrent write"), count);
+            }
+            (operation, count)
+        }));
+    }
+    rewrite_start(&mut control);
+    assert_eq!(rewrite_info(&mut control)["aof_rewrite_in_progress"], "1", "fixture must overlap the rewrite");
+    control.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
+    expect_replies(&mut control, b"-ERR Background append only file rewriting already in progress\r\n", "one rewrite at a time");
+    assert_eq!(rewrite_wait(&mut control)["aof_last_bgrewrite_status"], "ok");
+    running.store(false, std::sync::atomic::Ordering::Release);
+    let expected: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+    rewrite_stop(&mut control, child);
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
+    let mut client = connect_when_ready(port);
+    for (operation, count) in expected {
+        match operation {
+            "INCR" => {
+                client.write_all(&resp(&["GET", operation])).unwrap();
+                assert_eq!(bulk_reply(&mut client, "counter after restart"), count.to_string());
+            }
+            "APPEND" => {
+                client.write_all(&resp(&["GET", operation])).unwrap();
+                assert_eq!(bulk_reply(&mut client, "string after restart"), "x".repeat(count as usize));
+            }
+            "LPUSH" => {
+                client.write_all(&resp(&["LLEN", operation])).unwrap();
+                assert_eq!(integer_reply(&mut client, "list length after restart"), count);
+                client.write_all(&resp(&["LRANGE", operation, "0", "-1"])).unwrap();
+                let mut reply = format!("*{count}\r\n").into_bytes();
+                for _ in 0..count {
+                    reply.extend_from_slice(b"$1\r\nx\r\n");
+                }
+                expect_replies(&mut client, &reply, "every pushed element");
+            }
+            _ => unreachable!(),
+        }
+    }
+    rewrite_stop(&mut client, child);
+}
+
+#[test]
+fn firn_shutdown_cancels_rewrite_and_replays_switch_manifest() {
+    let program = CompiledProgram::from_environment();
+    rewrite_large_fixture(&program);
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
+    let mut client = connect_when_ready(port);
+    rewrite_start(&mut client);
+    assert_eq!(rewrite_info(&mut client)["aof_rewrite_in_progress"], "1");
+    client.write_all(&resp(&["INCR", "after-switch"])).unwrap();
+    assert_eq!(integer_reply(&mut client, "write after switch"), 1);
+    rewrite_stop(&mut client, child);
+    let directory = program.working_directory().join("appendonlydir");
+    assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.2.incr.aof seq 2 type i\n");
+    assert!(!directory.join("temp-appendonly.aof.base").exists());
+    assert!(!directory.join("appendonly.aof.2.base.aof").exists());
+    multipart_load(&program, "appendonly.aof", &[("after-switch", Some("1")), ("seed:15999", Some(&"x".repeat(512)))]);
+}
+
+/// serverCron requires both a strict minimum size and percentage growth;
+/// zero percentage disables the automatic trigger. Startup uses base size.
+#[test]
+fn firn_automatic_rewrite_requires_size_and_growth_and_can_be_disabled() {
+    for (percentage, minimum, expected_rewrites) in [("0", "0", 0), ("100", "4096", 0), ("100", "1b", 1)] {
+        let program = CompiledProgram::from_environment();
+        multipart_files(&program, &[
+            ("appendonly.aof.1.base.aof", &[&["SET", "n", "0"]]),
+            ("appendonly.aof.1.incr.aof", &[&["INCR", "n"], &["INCR", "n"], &["INCR", "n"]]),
+        ], &rewrite_manifest(1, 1));
+        let port = free_port();
+        let text = port.to_string();
+        let child = program.spawn_on_route(true, &[
+            text.as_bytes(), b"0", b"appendonly.aof",
+            b"--auto-aof-rewrite-percentage", percentage.as_bytes(),
+            b"--auto-aof-rewrite-min-size", minimum.as_bytes(),
+        ]);
+        let mut client = connect_when_ready(port);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut info = rewrite_info(&mut client);
+        if expected_rewrites == 1 {
+            while info["aof_rewrites"] == "0" || info["aof_rewrite_in_progress"] == "1" {
+                assert!(Instant::now() < deadline, "automatic rewrite did not finish");
+                std::thread::sleep(Duration::from_millis(10));
+                info = rewrite_info(&mut client);
+            }
+            assert_eq!(info["aof_last_bgrewrite_status"], "ok");
+            // No later growth: installing a base must not retrigger itself.
+            std::thread::sleep(Duration::from_millis(250));
+            assert_eq!(rewrite_info(&mut client)["aof_rewrites"], "1");
+        } else {
+            std::thread::sleep(Duration::from_millis(250));
+            info = rewrite_info(&mut client);
+        }
+        assert_eq!(info["aof_rewrites"], expected_rewrites.to_string());
+        rewrite_stop(&mut client, child);
+        multipart_load(&program, "appendonly.aof", &[("n", Some("3"))]);
+    }
+}
+
+/// Force host refusals with directory entries, requiring no test-only server
+/// path. A failed switch keeps the old append handle; failed base installation
+/// keeps the switch manifest. Both accept later writes and replay them once.
+#[test]
+fn firn_rewrite_host_failures_keep_a_replayable_manifest() {
+    for failure in ["new-incremental", "temporary-base", "base-rename", "switch-manifest"] {
+        let program = CompiledProgram::from_environment();
+        let port = free_port();
+        let text = port.to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
+        let mut client = connect_when_ready(port);
+        let directory = program.working_directory().join("appendonlydir");
+        let obstacle = directory.join(match failure {
+            "new-incremental" => "appendonly.aof.2.incr.aof",
+            "temporary-base" => "temp-appendonly.aof.base",
+            "base-rename" => "appendonly.aof.2.base.aof",
+            "switch-manifest" => "temp-appendonly.aof.manifest",
+            _ => unreachable!(),
+        });
+        std::fs::create_dir(&obstacle).unwrap();
+        client.write_all(&resp(&["INCR", "n"])).unwrap();
+        assert_eq!(integer_reply(&mut client, "before failed rewrite"), 1);
+        client.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
+        let response = reply_line(&mut client, "rewrite failure response");
+        if failure == "base-rename" || failure == "temporary-base" {
+            assert_eq!(response, "+Background append only file rewriting started\r\n");
+        } else {
+            assert_eq!(response, "-ERR Can't execute an AOF background rewriting. Please check the server logs for more information.\r\n");
+        }
+        let info = rewrite_wait(&mut client);
+        assert_eq!(info["aof_last_bgrewrite_status"], "err");
+        let attempts = if failure == "base-rename" || failure == "temporary-base" { "1" } else { "0" };
+        assert_eq!(info["aof_rewrites"], attempts);
+        client.write_all(&resp(&["INCR", "n"])).unwrap();
+        assert_eq!(integer_reply(&mut client, "after failed rewrite"), 2);
+        std::fs::remove_dir(&obstacle).unwrap();
+        rewrite_stop(&mut client, child);
+        multipart_load(&program, "appendonly.aof", &[("n", Some("2"))]);
+        assert!(!directory.join("temp-appendonly.aof.base").exists());
+        let port = free_port();
+        let text = port.to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
+        let mut client = connect_when_ready(port);
+        rewrite_start(&mut client);
+        assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok", "retry after {failure}");
+        rewrite_stop(&mut client, child);
+        multipart_load(&program, "appendonly.aof", &[("n", Some("2"))]);
+    }
+}
+
+#[test]
+fn firn_rewrites_an_empty_dataset_without_select_and_can_rewrite_again() {
+    let program = CompiledProgram::from_environment();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
+    let mut client = connect_when_ready(port);
+    let directory = program.working_directory().join("appendonlydir");
+    for sequence in 2..=3 {
+        rewrite_start(&mut client);
+        let info = rewrite_wait(&mut client);
+        assert_eq!(info["aof_last_bgrewrite_status"], "ok");
+        assert_eq!(info["aof_rewrites"], (sequence - 1).to_string());
+        assert_eq!(info["aof_base_size"], "0");
+        assert_eq!(info["aof_current_size"], "0");
+        assert!(std::fs::read(directory.join(format!("appendonly.aof.{sequence}.base.aof"))).unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), rewrite_manifest(sequence, sequence));
+    }
+    rewrite_stop(&mut client, child);
+    multipart_load(&program, "appendonly.aof", &[]);
+}
+
+#[test]
+fn firn_automatic_rewrite_minimum_is_strict() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(&program, &[
+        ("appendonly.aof.1.base.aof", &[]),
+        ("appendonly.aof.1.incr.aof", &[&["SET", "n", "0"]]),
+    ], &rewrite_manifest(1, 1));
+    let minimum = resp(&["SET", "n", "0"]).len().to_string();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[
+        text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", minimum.as_bytes(),
+    ]);
+    let mut client = connect_when_ready(port);
+    std::thread::sleep(Duration::from_millis(250));
+    assert_eq!(rewrite_info(&mut client)["aof_rewrites"], "0");
+    client.write_all(&resp(&["INCR", "n"])).unwrap();
+    assert_eq!(integer_reply(&mut client, "cross strict minimum"), 1);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let info = rewrite_info(&mut client);
+        if info["aof_rewrites"] == "1" && info["aof_rewrite_in_progress"] == "0" {
+            assert_eq!(info["aof_last_bgrewrite_status"], "ok");
+            break;
+        }
+        assert!(Instant::now() < deadline, "no rewrite after crossing minimum");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    rewrite_stop(&mut client, child);
+    multipart_load(&program, "appendonly.aof", &[("n", Some("1"))]);
+}
+
+/// Temporary bases include appendfilename, since sequences in independent
+/// manifests can coincide. Both rewrites must succeed and retain their own
+/// dataset when their directory is shared.
+#[test]
+fn firn_simultaneous_rewrites_in_one_directory_keep_independent_datasets() {
+    let program = CompiledProgram::from_environment();
+    rewrite_large_fixture(&program);
+    let directory = program.working_directory().join("appendonlydir");
+    let seed = std::fs::read(directory.join("appendonly.aof.1.incr.aof")).unwrap();
+    for (prefix, owner) in [("appendonly.aof", "first"), ("second.aof", "second")] {
+        let mut bytes = seed.clone();
+        bytes.extend(resp(&["SET", "owner", owner]));
+        std::fs::write(directory.join(format!("{prefix}.1.base.aof")), b"").unwrap();
+        std::fs::write(directory.join(format!("{prefix}.1.incr.aof")), bytes).unwrap();
+        std::fs::write(directory.join(format!("{prefix}.manifest")), format!("file {prefix}.1.base.aof seq 1 type b\nfile {prefix}.1.incr.aof seq 1 type i\n")).unwrap();
+    }
+    let first_port = free_port();
+    let first_text = first_port.to_string();
+    let first = program.spawn_on_route(true, &[first_text.as_bytes(), b"0", b"appendonly.aof"]);
+    let mut first_client = connect_when_ready(first_port);
+    let second_port = free_port();
+    let second_text = second_port.to_string();
+    let second = program.spawn_on_route(true, &[second_text.as_bytes(), b"0", b"second.aof"]);
+    let mut second_client = connect_when_ready(second_port);
+    rewrite_start(&mut first_client);
+    rewrite_start(&mut second_client);
+    assert_eq!(rewrite_info(&mut first_client)["aof_rewrite_in_progress"], "1", "fixture must overlap both rewrites");
+    assert_eq!(rewrite_info(&mut second_client)["aof_rewrite_in_progress"], "1");
+    assert_eq!(rewrite_wait(&mut first_client)["aof_last_bgrewrite_status"], "ok");
+    assert_eq!(rewrite_wait(&mut second_client)["aof_last_bgrewrite_status"], "ok");
+    rewrite_stop(&mut first_client, first);
+    rewrite_stop(&mut second_client, second);
+    multipart_load(&program, "appendonly.aof", &[("owner", Some("first"))]);
+    multipart_load(&program, "second.aof", &[("owner", Some("second"))]);
 }

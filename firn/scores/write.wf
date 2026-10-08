@@ -218,3 +218,9 @@ fn reply_score(client: &Client, score: f64) -> result: unit writes(client) {
   reply_bulk_input(client: client, input: window, start: 0_u64, length: text.length);
   return unit;
 }
+
+fn score_bytes(score: f64) -> text: pkg::bytes::Bytes pure {
+  doc "The same decimal text as reply_score, without RESP framing, for a stored score in a rewritten append-only file.";
+  let formatted = score_text(score: score);
+  return pkg::bytes::bytes_new(input: &formatted.bytes[0_u64..32_u64], start: 0_u64, length: formatted.length);
+}

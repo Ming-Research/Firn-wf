@@ -161,7 +161,7 @@ fields it reports have values that are fixed and true of firn: Redis's
 version 7.0.15, no git revision, `redis_git_sha1` being 00000000 as in
 Redis's builds from a release, standalone mode, 64 bits, its active
 expiry's 10 runs a second, no configuration file, memory limit, eviction,
-script, function, replica, background save, rewrite, fork, module, publish
+script, function, replica, background save, fork, module, publish
 and subscribe, tracking or cluster. What firn does not measure, memory and
 processor time, per-command and per-error counts among them, is left out,
 so its CPU, Commandstats, Errorstats and Latencystats sections are empty
@@ -249,8 +249,39 @@ An old single file `F` in the working directory is upgraded by persisting a
 manifest and moving `F` into `appendonlydir`. Interrupted upgrades resume;
 when both copies exist and the manifest names `F`, the directory copy wins.
 
-`BGREWRITEAOF` and the automatic rewrite options are not implemented yet;
-this layout is the first step of the [rewrite design](../research/investigations/aof-rewrite/README.md#design).
+The following rewrite behavior is an **unvalidated draft** awaiting CI.
+
+With append-only persistence enabled, the draft `BGREWRITEAOF` starts a
+background rewrite. The writer switches to a new incremental file, and another context
+replays the closed files into a private keyspace and writes a new command
+base. Clients continue writing to the new incremental file. Installation
+persists a manifest selecting the new base before removing the old files.
+The temporary base is `temp-F.base` beside `temp-F.manifest`, so servers
+sharing `appendonlydir` with distinct appendfilenames use distinct files.
+With appendonly off, `BGREWRITEAOF` answers
+`ERR Can't execute an AOF background rewriting. Please check the server logs for more information.`
+because there is no closed log to rebuild; Redis can rewrite in that state.
+The base writes hashes with `HMSET`, and collections in commands of at most
+64 elements, followed by each key's absolute expiry. Scripts persist their
+command effects, not their cached sources; firn has no persisted functions.
+
+`--auto-aof-rewrite-percentage` defaults to `100`; `0` disables automatic
+rewrites. `--auto-aof-rewrite-min-size` defaults to `67108864` bytes (64 MiB)
+and accepts Redis's `b`, `k`, `m`, `g`, `kb`, `mb`, and `gb` suffixes. A rewrite
+starts when the active files exceed that minimum and have grown by at least
+the percentage over the size at the last successful rewrite. At startup the
+baseline is the loaded base file's size, as Redis 7.0.15 initializes it.
+These are startup options; `CONFIG SET` does not change them.
+
+`INFO persistence` reports rewrite progress, attempts, last status, current
+active-file bytes and the rewrite baseline. Failure before manifest publication
+leaves the switch manifest replayable. If manifest rename succeeds but
+directory sync fails, the new manifest stays in force, all files and history
+entries are retained, and `aof_last_bgrewrite_status` reports `err`.
+`SHUTDOWN` accepted before installation cancels the rebuild at its next step;
+once installation starts, shutdown waits for it to finish. Shutdown drains
+the incremental file after clients leave and joins the rebuild before exiting.
+See the [rewrite design](../research/investigations/aof-rewrite/README.md#design).
 
 `WF_DRIVERS` sets how many threads serve the connections, one per CPU by
 default.

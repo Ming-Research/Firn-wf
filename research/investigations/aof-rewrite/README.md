@@ -34,8 +34,11 @@ state.
     from the new one on; it is written through a temporary file, a rename
     and a directory sync.
   - The files no longer named are deleted.
-- **Failure.** A rewrite that fails leaves the old manifest, whose base and
-  incremental files, the new one included, still replay to the whole state.
+- **Failure.** Before manifest publication, failure leaves the old manifest,
+  whose base and incremental files, the new one included, still replay to
+  the whole state. After rename, a directory-sync failure can leave Redis
+  naming a new base that its failure handler then unlinks; firn retains it
+  as described below.
 
 The base's consistency comes from `fork`: the child sees the dataset exactly
 as it was when the new incremental file began.
@@ -131,14 +134,16 @@ Start:
 A rewrite, started by `BGREWRITEAOF` or automatically when the files have
 grown by `auto-aof-rewrite-percentage` (100) over the base written by the
 last rewrite and exceed `auto-aof-rewrite-min-size` (64 MB):
-1. **Switch.** The writer takes the pending bytes in one atomic statement,
-   appends and syncs them to the current incremental file and closes it,
-   opens the next incremental file, and persists a manifest naming the old
-   base, every incremental file and the new one. Every command answered
-   after that atomic statement is recorded in the new file only.
+1. **Switch.** After draining any earlier partial append, the writer takes
+   pending bytes in one atomic statement and appends and syncs them to the
+   current incremental file. It opens the next incremental file and persists
+   a manifest naming the old base, every incremental file and the new one,
+   retaining the old handle until publication. It then selects the new handle
+   and closes the old one. Records enqueued after that atomic statement go
+   only to the new file if switching succeeds.
 2. **Rebuild.** A context spawned for the rewrite replays the old base and
    the closed incremental files, which no longer change, into a keyspace of
-   its own, then writes that keyspace to `temp-rewriteaof-bg-<n>.aof` inside
+   its own, then writes that keyspace to `temp-F.base` inside
    the directory as Redis's `rewriteAppendOnlyFileRio` writes a dataset:
    `SET`, and `RPUSH`, `SADD`, `ZADD` and `HMSET` of at most 64 elements a
    command, each key followed by `PEXPIREAT` when it has an expiry. Redis
@@ -149,16 +154,69 @@ last rewrite and exceed `auto-aof-rewrite-min-size` (64 MB):
 3. **Install.** The temporary file is renamed to the next base name and a
    manifest naming the new base and the incremental files from the switch on
    is persisted; the old base and closed incremental files are then removed.
-4. **Failure.** Persisting the manifest of step 3 is the commit point, as in
-   Redis's `backgroundRewriteDoneHandler`. A step that fails before it
-   leaves the manifest of step 1, which replays to the whole state, removes
-   the temporary file and any renamed base the manifest does not name, and
-   records the failure for `INFO`'s `aof_last_bgrewrite_status`. After it,
-   the new manifest stays in force: removing the old files is cleanup, and
-   files it leaves behind, still listed as history, are removed by the next
-   rewrite or start, as `aofDelHistoryFiles` removes them.
+4. **Failure.** Manifest rename publishes the new selection. A failure before
+   it leaves the manifest of step 1, removes the temporary file and any
+   renamed base the manifest does not name, and records failure for `INFO`'s
+   `aof_last_bgrewrite_status`. If rename succeeds but the directory sync
+   fails, the new manifest stays in force, every published file and history
+   entry is retained, and the status reports failure. The persistence result
+   carries publication and durability separately, so the writer also adopts
+   a published switch manifest and its new append handle on that failure.
+   Redis 7.0.15's `writeAofManifestFile` can return failure after rename,
+   while `backgroundRewriteDoneHandler` then unlinks the new base; retaining
+   it avoids leaving a visible manifest that names a missing file.
+   Only successful directory sync permits history cleanup. After that,
+   cleanup cannot roll the base back or fail the rebuild, as Redis's handler
+   ignores `aofDelHistoryFiles`' result. Startup or a later rewrite can retry
+   cleanup for history still listed on disk; an unlink failure followed by
+   a successful cleanup manifest can leave an unlisted orphan, as in Redis.
 
 `INFO persistence` reports `aof_rewrite_in_progress`, `aof_rewrites`,
 `aof_last_bgrewrite_status`, `aof_current_size` and `aof_base_size` from
 the rewrite's state; `BGREWRITEAOF` answers as Redis does when a rewrite is
 already running.
+
+## Implementation notes
+
+With appendonly off there is no closed log to replay and no snapshot.
+`BGREWRITEAOF` therefore returns Redis's generic rewrite-start failure:
+`ERR Can't execute an AOF background rewriting. Please check the server logs for more information.`
+Redis's `bgrewriteaofCommand` allows that state; the compatibility work to
+remove firn's difference is in [the TODO](../../../docs/todo.md#server).
+
+The temporary base follows Redis's temporary append-only naming convention:
+`TEMP_FILE_NAME_PREFIX` (`temp-`), appendfilename `F`, and suffix `.base`.
+It sits beside `temp-F.manifest`, so servers with distinct appendfilenames
+in one directory have distinct temporary files. Two servers with the same
+appendfilename already share a manifest, which Redis does not support.
+This rewrite consequently needs no exclusive temporary-file creation API.
+
+The writer keeps its old append handle until the switch manifest is
+published, as `openNewIncrAofForAppend` does, so an open or pre-publication
+manifest failure leaves an appendable old file. It syncs that old file
+before preparing the switch and closes it before spawning the rebuild.
+The temporary base is buffered one key at a time outside host IO; map
+statements touch only the private keyspace. Collection commands hold at
+most 64 elements. The existing score formatter supplies round-trippable
+score text without a second formatting implementation. Script caches have
+no AOF records and no functions are persisted.
+
+A metadata flag serializes accepting SHUTDOWN with the install handler,
+as Redis's event loop does. The writer acquires it in the same atomic
+statement that reads the shutdown request. A request accepted first prevents
+installation; a request arriving during installation waits for it to end.
+Main also waits for the flag before marking the writer stopped. Filesystem
+IO stays outside atomic statements.
+
+## Validation still needed
+
+The network cases cover the disabled-AOF refusal, independent appendfilenames
+sharing a directory, interrupted directory states, host refusals before
+publication, concurrent writes, shutdown and successful installation. They
+have not been run for this implementation; compilation and all checks await
+CI after push. Interrupted-state fixtures establish restart expectations,
+not execution of a failing directory sync. That path needs a CI fault
+experiment in which manifest rename succeeds and the following directory
+sync returns an error, for both switching and installation. It must observe
+the selected files, retained history, later writes and restart, and require
+`aof_last_bgrewrite_status:err`. No performance result is claimed.

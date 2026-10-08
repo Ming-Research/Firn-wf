@@ -31,11 +31,14 @@ written while firn lived in the Whitefoot repository; a path such as
     `WATCH`/`UNWATCH`, and write as parts the commands a selected consumer
     queues or calls from a script that are not parts yet, since `EXEC` and
     scripts run only those `held_kind` (`firn/commands/script.wf`) names.
-  - Make AOF persistence usable through write/sync error handling, rewrite
+  - Make AOF persistence usable through write/sync error handling
     and orderly stop on signals, `SHUTDOWN` being done; verify a practical
     data migration path. Multi-part AOF loading, old-file upgrades and startup
-    history cleanup are implemented; the background rewrite and its trigger
-    remain the next step of the [rewrite design](../research/investigations/aof-rewrite/README.md#design).
+    history cleanup are implemented. The background rewrite and automatic
+    trigger are drafted and await CI validation
+    ([rewrite design](../research/investigations/aof-rewrite/README.md#design)).
+    The draft retains unwritten append bytes; client-visible write/sync
+    error handling remains open.
     Signal delivery may require Whitefoot library/runtime work; AOF presence alone is not
     durable-recovery evidence. RDB compatibility is not assumed by this item.
   - Add memory accounting, `maxmemory` and the eviction behavior the selected
@@ -471,6 +474,18 @@ written while firn lived in the Whitefoot repository; a path such as
   validate TIME's two decimal bulk strings and microsecond range, and
   compare two calls around substantial script work without changing expiry.
 
+- **BGREWRITEAOF with appendonly off cannot rebuild a dataset.** Redis
+  7.0.15 rewrites its live dataset in that state; firn's rewrite replays
+  closed logs and has no source without append-only persistence. For example,
+  `SET k v` followed by `BGREWRITEAOF` with appendonly off returns
+  `ERR Can't execute an AOF background rewriting. Please check the server logs for more information.`
+  and creates no base, so a client cannot use it to export an in-memory
+  dataset. Removing the difference needs a consistent snapshot of the live
+  keyspace and a rewrite path that consumes it, also needed when enabling
+  appendonly on a populated server. Reopen with runtime appendonly enablement
+  or a selected workload that exports data this way; validate both the
+  resulting base and writes concurrent with the snapshot against Redis.
+
 ## Tests
 
 - **Thirteen of Redis's suite tests are lost to a connection left in
@@ -547,6 +562,19 @@ written while firn lived in the Whitefoot repository; a path such as
   each expiry's `PEXPIRETIME` before and after the restart, which no load
   changes; the window could give way to that comparison, or widen. Reopen
   when the case fails this way in CI.
+
+- **Exercise a directory-sync failure after rewrite manifest publication.**
+  The rewrite's persistence result distinguishes a failed rename from a
+  successful rename followed by failed directory sync. Network cases force
+  failures before publication and replay interrupted directory fixtures, but
+  do not execute this latter error path. A regression could delete a base
+  still named by the manifest or leave the writer appending to the wrong
+  incremental file. Add a CI host-fault experiment for both switch and
+  installation: let manifest rename succeed, fail the next directory sync,
+  then require retained files and history, error status, subsequent writes
+  in the selected incremental file and correct values after restart. The
+  implementation has only source inspection for this path. Reopen in the
+  rewrite's CI validation before claiming failure-at-every-step coverage.
 
 ## Whitefoot requirements
 

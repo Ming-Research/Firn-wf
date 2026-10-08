@@ -91,7 +91,7 @@ fn aof_upgrade(factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs
   set manifest^.base_sequence = 1_i64;
   set manifest^.dirty = True();
   let persisted = aof_persist(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
-  if persisted {
+  if persisted.durable {
   } else {
     return False();
   }
@@ -264,7 +264,7 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
   match std::fs::open_append(factory: factory, root: writable, name: name, start: 0_u64, end: length) {
     Ok(value: opened) => {
       let persisted = aof_persist(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
-      if persisted {
+      if persisted.durable {
         aof_history(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
         return Ok<WriteFile, unit>(value: move opened);
       }
