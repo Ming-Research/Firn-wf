@@ -52,7 +52,8 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   let due = priority_queue_new::<Due, ceiling>();
   let log = box_slots_new::<u8>(capacity: 65536_u64);
   let running = False();
-  let meta = Meta(due: move due, log: move log, clients: 0_u64, stopping: running, random: seed);
+  let rewrite_ok = True();
+  let meta = Meta(due: move due, log: move log, aof_current_size: 0_u64, aof_base_size: 0_u64, aof_rewrite_in_progress: running, aof_rewrite_requested: running, aof_rewrite_reply: 0_u64, aof_rewrites: 0_u64, aof_rewrite_ok: rewrite_ok, aof_worker_done: running, aof_installing: 0_u64, aof_rewrite_percentage: 100_u64, aof_rewrite_min_size: 67108864_u64, clients: 0_u64, stopping: running, random: seed);
   let kept = shared_new::<Meta>(value: move meta);
   let encodings = array_filled::<i64, 9>(value: 0_i64);
   for @defaults (slot in 0_u64..9_u64) {

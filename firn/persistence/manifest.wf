@@ -1,0 +1,594 @@
+alias Clock = std::time::Clock;
+alias DirectoryRead = std::fs::DirectoryRead;
+alias HandleFactory = std::io::HandleFactory;
+alias Span = pkg::protocol::Span;
+alias Keyspace = pkg::store::Keyspace;
+alias Time = pkg::store::Time;
+alias WriteFile = std::fs::WriteFile;
+alias close_read = std::fs::close_read;
+alias close_write = std::fs::close_write;
+alias input_new = pkg::protocol::input_new;
+alias arg = pkg::protocol::arg;
+alias name_is = pkg::bytes::name_is;
+alias open_file = std::fs::open_file;
+alias parse_request = pkg::protocol::parse_request;
+alias read_at = std::fs::read_at;
+alias sync_file = std::fs::sync_file;
+alias aof_byte_at = pkg::bytes::byte_at;
+alias aof_word = pkg::store::log_append;
+
+const aof_directory_name: Array<u8, 13> = "appendonlydir";
+
+const aof_manifest_suffix: Array<u8, 9> = ".manifest";
+
+const aof_temp_prefix: Array<u8, 5> = "temp-";
+
+const aof_base_suffix: Array<u8, 11> = ".1.base.aof";
+
+const aof_incr_suffix: Array<u8, 11> = ".1.incr.aof";
+
+const aof_key_file: Array<u8, 4> = "FILE";
+
+const aof_key_seq: Array<u8, 3> = "SEQ";
+
+const aof_key_type: Array<u8, 4> = "TYPE";
+
+const aof_line_file: Array<u8, 5> = "file ";
+
+const aof_line_seq: Array<u8, 5> = " seq ";
+
+const aof_line_type: Array<u8, 6> = " type ";
+
+const aof_hex_digits: Array<u8, 16> = "0123456789abcdef";
+
+fn aof_copy(input: &[u8]) -> made: Box<Slots<u8>> reads(input) {
+  let made = box_slots_new::<u8>(capacity: 0_u64);
+  aof_word(log: &made, bytes: input);
+  return move made;
+}
+
+fn aof_named(prefix: &[u8], suffix: &[u8]) -> made: Box<Slots<u8>> reads(prefix), reads(suffix) {
+  let made = aof_copy(input: prefix);
+  aof_word(log: &made, bytes: suffix);
+  return move made;
+}
+
+fn aof_push(manifest: &AofManifest, part: AofPart) -> result: unit writes(manifest) {
+  let length = manifest^.parts.inner.len;
+  let capacity = manifest^.parts.inner.cap;
+  if length == capacity {
+    let doubled = capacity +wrap capacity;
+    let target = imax(doubled, 16_u64);
+    if target >= manifest^.parts.inner.cap {
+      grow(cell: &manifest^.parts, capacity: target);
+    }
+  }
+  if manifest^.parts.inner.len < manifest^.parts.inner.cap {
+    place_back(window: &manifest^.parts.inner, value: move part);
+    return unit;
+  }
+  return unit;
+}
+
+fn aof_cstring(input: &[u8], span: Span) -> text: Box<Slots<u8>> reads(input) {
+  doc "Redis's manifest fields use C strings after sdssplitargs, so a decoded zero terminates their values.";
+  let text = box_slots_new::<u8>(capacity: span.length);
+  for (index in 0_u64..span.length) {
+    let at = span.start +wrap index;
+    let byte = aof_byte_at(input: input, index: at);
+    if byte == 0_u8 {
+      return move text;
+    }
+    if text.inner.len < text.inner.cap {
+      place_back(window: &text.inner, value: byte);
+    }
+  }
+  return move text;
+}
+
+fn aof_sequence(input: &[u8]) -> number: i64 reads(input) {
+  doc "The signed decimal prefix Redis reads with atoll, including a sign, leading whitespace and trailing non-digits; the reference x86-64 libc saturates overflow.";
+  let index = 0_u64;
+  loop @spaces {
+    let byte = aof_byte_at(input: input, index: index);
+    let space = byte == 32_u8;
+    let low = byte >= 9_u8;
+    let high = byte <= 13_u8;
+    let control = band(low, high);
+    let whitespace = bor(space, control);
+    if whitespace {
+      set index = index +wrap 1_u64;
+    } else {
+      break @spaces;
+    }
+  }
+  let first = aof_byte_at(input: input, index: index);
+  let negative = first == 45_u8;
+  let positive = first == 43_u8;
+  let signed = bor(negative, positive);
+  if signed {
+    set index = index +wrap 1_u64;
+  }
+  let magnitude = 0_u64;
+  let limit = 9223372036854775807_u64;
+  if negative {
+    set limit = 9223372036854775808_u64;
+  }
+  loop @digits {
+    let byte = aof_byte_at(input: input, index: index);
+    if byte < 48_u8 {
+      break @digits;
+    }
+    if byte > 57_u8 {
+      break @digits;
+    }
+    let narrow = byte -wrap 48_u8;
+    let digit = cvt::<u8, u64>(narrow);
+    let remaining = limit -wrap digit;
+    let maximum = remaining / 10_u64;
+    if magnitude > maximum {
+      set magnitude = limit;
+    } else {
+      let scaled = magnitude *wrap 10_u64;
+      set magnitude = scaled +wrap digit;
+    }
+    set index = index +wrap 1_u64;
+  }
+  let number = cvt.wrap::<u64, i64>(magnitude);
+  if negative {
+    set number = 0_i64 -wrap number;
+  }
+  return number;
+}
+
+fn aof_parse_line(manifest: &AofManifest, input: &Box<Slots<u8>>, ended: Bool) -> accepted: Bool writes(manifest), writes(input) {
+  doc "Parses one fgets-sized manifest line as aofLoadManifestFromFile: comments precede the length check; sdssplitargs decodes fields; unknown pairs are ignored and repeated fields take their last value. The input has a leading space so parse_request always selects inline tokenization, even when the manifest line starts with an asterisk.";
+  let length = input^.inner.len;
+  if length > 1_u64 {
+    let first = input^.inner[1_u64];
+    if first == 35_u8 {
+      return True();
+    }
+  }
+  if ended {
+  } else {
+    return False();
+  }
+  let window = &input^.inner[0_u64..length];
+  let args = box_slots_new::<Span>(capacity: 16_u64);
+  let unlocked = False();
+  let parsed = parse_request(input: window, start: 0_u64, held: length, args: &args, locked: unlocked);
+  if parsed.state != 1_u64 {
+    return False();
+  }
+  let count = args.inner.len;
+  if count < 6_u64 {
+    return False();
+  }
+  let odd = count % 2_u64;
+  if odd != 0_u64 {
+    return False();
+  }
+  let filename = box_slots_new::<u8>(capacity: 0_u64);
+  let named = False();
+  let sequence = 0_i64;
+  let kind = 0_u8;
+  let index = 0_u64;
+  loop @pairs {
+    if index >= count {
+      break @pairs;
+    }
+    let key_span = arg(args: &args, index: index);
+    let key = aof_cstring(input: window, span: key_span);
+    let key_length = key.inner.len;
+    let key_bytes = &key.inner[0_u64..key_length];
+    let next = index +wrap 1_u64;
+    let value_span = arg(args: &args, index: next);
+    let value = aof_cstring(input: window, span: value_span);
+    let value_length = value.inner.len;
+    let value_bytes = &value.inner[0_u64..value_length];
+    let is_file = name_is(input: key_bytes, start: 0_u64, length: key_length, word: &aof_key_file[0_u64..4_u64]);
+    let is_seq = name_is(input: key_bytes, start: 0_u64, length: key_length, word: &aof_key_seq[0_u64..3_u64]);
+    let is_type = name_is(input: key_bytes, start: 0_u64, length: key_length, word: &aof_key_type[0_u64..4_u64]);
+    if is_file {
+      for (at in 0_u64..value_length) {
+        let byte = value.inner[at];
+        let slash = byte == 47_u8;
+        let backslash = byte == 92_u8;
+        let path = bor(slash, backslash);
+        if path {
+          return False();
+        }
+      }
+      swap(first: &filename, second: &value);
+      set named = True();
+    } else if is_seq {
+      set sequence = aof_sequence(input: value_bytes);
+    } else if is_type {
+      set kind = aof_byte_at(input: value_bytes, index: 0_u64);
+    }
+    set index = index +wrap 2_u64;
+  }
+  if named {
+  } else {
+    return False();
+  }
+  if sequence == 0_i64 {
+    return False();
+  }
+  if kind == 98_u8 {
+    if manifest^.base_sequence != 0_i64 {
+      return False();
+    }
+    set manifest^.base_sequence = sequence;
+  } else if kind == 105_u8 {
+    if sequence <= manifest^.incr_sequence {
+      return False();
+    }
+    set manifest^.incr_sequence = sequence;
+  } else if kind == 104_u8 {
+  } else {
+    return False();
+  }
+  let part = AofPart(name: move filename, sequence: sequence, kind: kind);
+  aof_push(manifest: manifest, part: move part);
+  return True();
+}
+
+fn aof_read_manifest(factory: &HandleFactory, directory: &DirectoryRead, prefix: &[u8], manifest: &AofManifest) -> accepted: Bool reads(directory), reads(prefix), writes(factory), writes(manifest) waits {
+  let filename = aof_named(prefix: prefix, suffix: &aof_manifest_suffix[0_u64..9_u64]);
+  let length = filename.inner.len;
+  let name = &filename.inner[0_u64..length];
+  match open_file(factory: factory, root: directory, name: name, start: 0_u64, end: length) {
+    Ok(value: opened) => {
+      let buffer = input_new(capacity: 4096_u64);
+      let line = box_slots_new::<u8>(capacity: 1025_u64);
+      aof_emit(log: &line, value: 32_u8);
+      let offset = 0_u64;
+      let lines = 0_u64;
+      let valid = True();
+      loop @chunks {
+        let end = buffer.inner.len;
+        let destination = &buffer.inner[0_u64..end];
+        let held = 0_u64;
+        let finished = False();
+        match read_at(factory: factory, file: &opened, destination: destination, file_offset: offset, start: 0_u64, end: end) {
+          Ok(value: got) => {
+            set held = got;
+            set offset = offset +wrap got;
+            set finished = got == 0_u64;
+          }
+          Err(error: stop) => {
+            set finished = True();
+            match stop {
+              ReadEnd() => {
+              }
+              ReadFailed(error: problem) => {
+                set valid = False();
+              }
+            }
+          }
+        }
+        for (index in 0_u64..held) {
+          let byte = aof_byte_at(input: destination, index: index);
+          aof_emit(log: &line, value: byte);
+          let newline = byte == 10_u8;
+          let full = line.inner.len == 1025_u64;
+          let complete = bor(newline, full);
+          if complete {
+            let accepted = aof_parse_line(manifest: manifest, input: &line, ended: newline);
+            if accepted {
+            } else {
+              set valid = False();
+            }
+            set lines = lines +wrap 1_u64;
+            set line = box_slots_new::<u8>(capacity: 1025_u64);
+            aof_emit(log: &line, value: 32_u8);
+          }
+        }
+        if finished {
+          if line.inner.len > 1_u64 {
+            let ended = False();
+            let accepted = aof_parse_line(manifest: manifest, input: &line, ended: ended);
+            set valid = band(valid, accepted);
+            set lines = lines +wrap 1_u64;
+          }
+          break @chunks;
+        }
+        if valid {
+        } else {
+          break @chunks;
+        }
+      }
+      close_read(factory: factory, file: move opened);
+      let nonempty = lines != 0_u64;
+      return band(valid, nonempty);
+    }
+    Err(error: problem) => {
+      let directories = False();
+      let missing = aof_missing(error: &problem, directories: directories);
+      return missing;
+    }
+  }
+}
+
+fn aof_repr(output: &Box<Slots<u8>>, input: &[u8]) -> result: unit reads(input), writes(output) {
+  doc "Use sdscatrepr encoding, also quoting apostrophes that Redis's sdsneedsrepr misses so sdssplitargs can read the name back.";
+  let quote = False();
+  let length = input^.len;
+  for (index in 0_u64..length) {
+    let byte = input^[index];
+    let low = byte <= 32_u8;
+    let high = byte >= 127_u8;
+    let double = byte == 34_u8;
+    let single = byte == 39_u8;
+    let backslash = byte == 92_u8;
+    let controls = bor(low, high);
+    let quotes = bor(double, single);
+    let escaped = bor(quotes, backslash);
+    let special = bor(controls, escaped);
+    set quote = bor(quote, special);
+  }
+  if quote {
+    aof_emit(log: output, value: 34_u8);
+  }
+  for (index in 0_u64..length) {
+    let byte = input^[index];
+    let escaped = 0_u8;
+    if byte == 10_u8 {
+      set escaped = 110_u8;
+    } else if byte == 13_u8 {
+      set escaped = 114_u8;
+    } else if byte == 9_u8 {
+      set escaped = 116_u8;
+    } else if byte == 7_u8 {
+      set escaped = 97_u8;
+    } else if byte == 8_u8 {
+      set escaped = 98_u8;
+    } else if byte == 34_u8 {
+      set escaped = 34_u8;
+    } else if byte == 92_u8 {
+      set escaped = 92_u8;
+    }
+    if escaped != 0_u8 {
+      aof_emit(log: output, value: 92_u8);
+      aof_emit(log: output, value: escaped);
+    } else if byte < 32_u8 {
+      aof_hex(output: output, byte: byte);
+    } else if byte >= 127_u8 {
+      aof_hex(output: output, byte: byte);
+    } else {
+      aof_emit(log: output, value: byte);
+    }
+  }
+  if quote {
+    aof_emit(log: output, value: 34_u8);
+  }
+  return unit;
+}
+
+fn aof_hex(output: &Box<Slots<u8>>, byte: u8) -> result: unit writes(output) {
+  aof_emit(log: output, value: 92_u8);
+  aof_emit(log: output, value: 120_u8);
+  let wide = cvt::<u8, u64>(byte);
+  let high = wide / 16_u64;
+  let low = wide % 16_u64;
+  if high < 16_u64 {
+    let glyph = aof_hex_digits[high];
+    aof_emit(log: output, value: glyph);
+  }
+  if low < 16_u64 {
+    let glyph = aof_hex_digits[low];
+    aof_emit(log: output, value: glyph);
+  }
+  return unit;
+}
+
+struct AofPublication {
+  published: Bool;
+  durable: Bool;
+}
+
+fn aof_persist(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> outcome: AofPublication reads(prefix), writes(factory), writes(writable), writes(manifest) waits {
+  doc "Publication succeeds once rename replaces the manifest, even if the following directory sync fails. Callers must retain the files it names on that outcome. A failed sync leaves dirty set for a later persistence attempt.";
+  let yes = True();
+  let no = False();
+  if manifest^.dirty {
+  } else {
+    return AofPublication(published: yes, durable: yes);
+  }
+  let output = box_slots_new::<u8>(capacity: 1024_u64);
+  for (pass in 0_u64..3_u64) {
+    let kind = 98_u8;
+    if pass == 1_u64 {
+      set kind = 104_u8;
+    } else if pass == 2_u64 {
+      set kind = 105_u8;
+    }
+    for (index in 0_u64..manifest^.parts.inner.len) {
+      let part = &manifest^.parts.inner[index];
+      if part^.kind == kind {
+        aof_word(log: &output, bytes: &aof_line_file[0_u64..5_u64]);
+        let length = part^.name.inner.len;
+        let name = &part^.name.inner[0_u64..length];
+        aof_repr(output: &output, input: name);
+        aof_word(log: &output, bytes: &aof_line_seq[0_u64..5_u64]);
+        aof_decimal(log: &output, value: part^.sequence);
+        aof_word(log: &output, bytes: &aof_line_type[0_u64..6_u64]);
+        aof_emit(log: &output, value: kind);
+        aof_emit(log: &output, value: 10_u8);
+      }
+    }
+  }
+  let filename = aof_named(prefix: prefix, suffix: &aof_manifest_suffix[0_u64..9_u64]);
+  let length = filename.inner.len;
+  let name = &filename.inner[0_u64..length];
+  let temporary = aof_named(prefix: &aof_temp_prefix[0_u64..5_u64], suffix: name);
+  let temp_length = temporary.inner.len;
+  let temp_name = &temporary.inner[0_u64..temp_length];
+  let written = aof_replace(factory: factory, writable: writable, name: temp_name, contents: &output);
+  if written {
+  } else {
+    return AofPublication(published: no, durable: no);
+  }
+  match std::fs::rename_file(factory: factory, root: writable, from: temp_name, from_start: 0_u64, from_end: temp_length, to: name, to_start: 0_u64, to_end: length) {
+    Ok(value: renamed) => {
+    }
+    Err(error: problem) => {
+      return AofPublication(published: no, durable: no);
+    }
+  }
+  match std::fs::sync_directory(factory: factory, root: writable) {
+    Ok(value: synced) => {
+      set manifest^.dirty = False();
+      return AofPublication(published: yes, durable: yes);
+    }
+    Err(error: problem) => {
+      return AofPublication(published: yes, durable: no);
+    }
+  }
+}
+
+fn aof_replace(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name: &[u8], contents: &Box<Slots<u8>>) -> accepted: Bool reads(writable), reads(name), reads(contents), writes(factory) waits {
+  let length = name^.len;
+  match std::fs::open_append(factory: factory, root: writable, name: name, start: 0_u64, end: length) {
+    Ok(value: opened) => {
+      let accepted = False();
+      match std::fs::truncate_file(factory: factory, file: &opened, length: 0_u64) {
+        Ok(value: cut) => {
+          let count = append_all(factory: factory, file: &opened, source: contents);
+          if count == contents^.inner.len {
+            match sync_file(factory: factory, file: &opened) {
+              Ok(value: synced) => {
+                set accepted = True();
+              }
+              Err(error: problem) => {
+              }
+            }
+          }
+        }
+        Err(error: problem) => {
+        }
+      }
+      match close_write(factory: factory, file: move opened) {
+        Ok(value: closed) => {
+        }
+        Err(error: problem) => {
+          set accepted = False();
+        }
+      }
+      return accepted;
+    }
+    Err(error: problem) => {
+      return False();
+    }
+  }
+}
+
+fn aof_missing(error: &std::io::IoError, directories: Bool) -> passed: Bool reads(error) {
+  doc "Whether an open failed because the named entry is absent, or is a directory when the caller only asks whether a regular file exists. Other host errors must not be treated as absence.";
+  match error^ {
+    NotFound(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    PermissionDenied(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    AlreadyExists(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    NotDirectory(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    IsDirectory(code: native_code, origin: native_origin) => {
+      return directories;
+    }
+    DirectoryNotEmpty(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ReadOnly(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ResourceBusy(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    InvalidInput(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    InvalidPath(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    Unsupported(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    TimedOut(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    DeadlinePassed() => {
+      return False();
+    }
+    BrokenPipe(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    WriteZero(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    UnexpectedEnd(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ConnectionRefused(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ConnectionReset(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ConnectionAborted(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    NotConnected(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    AddressInUse(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    AddressUnavailable(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    ResourceExhausted(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    FileTooLarge(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    NoSpace(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    QuotaExceeded(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    CrossDevice(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    DeviceFailure(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    Other(code: native_code, origin: native_origin) => {
+      return False();
+    }
+  }
+}
+
+fn aof_decimal(log: &Box<Slots<u8>>, value: i64) -> result: unit writes(log) {
+  let text = pkg::bytes::decimal_text(value: value);
+  let boxed = pkg::bytes::bytes_boxed(bytes: move text);
+  let length = boxed.inner.len;
+  let bytes = &boxed.inner[0_u64..length];
+  aof_word(log: log, bytes: bytes);
+  return unit;
+}
+
+fn aof_emit(log: &Box<Slots<u8>>, value: u8) -> result: unit writes(log) {
+  let byte = array_filled::<u8, 1>(value: value);
+  aof_word(log: log, bytes: &byte[0_u64..1_u64]);
+  return unit;
+}

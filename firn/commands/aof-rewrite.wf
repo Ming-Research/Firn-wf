@@ -1,0 +1,47 @@
+alias Keyspace = pkg::store::Keyspace;
+alias Client = pkg::protocol::Client;
+
+const aof_command_name: Array<u8, 12> = "BGREWRITEAOF";
+
+const aof_command_started: Array<u8, 45> = "Background append only file rewriting started";
+
+const aof_command_busy: Array<u8, 61> = "ERR Background append only file rewriting already in progress";
+
+const aof_command_failed: Array<u8, 97> = "ERR Can't execute an AOF background rewriting. Please check the server logs for more information.";
+
+fn run_aof_rewrite(store: &Keyspace, client: &Client) -> result: unit reads(store), writes(client) waits {
+  doc "Reserve one rewrite under the metadata statement, then await the writer's switch result before answering. Keep its result until this caller consumes it so a fast rebuild cannot lose the start outcome.";
+  if store^.logging {
+  } else {
+    pkg::protocol::reply_error(client: client, word: &aof_command_failed[0_u64..97_u64]);
+    return unit;
+  }
+  let busy = False();
+  atomic m = &store^.meta {
+    let awaiting_reply = m^.aof_rewrite_reply != 0_u64;
+    set busy = bor(m^.aof_rewrite_in_progress, awaiting_reply);
+    if busy {
+    } else {
+      set m^.aof_rewrite_in_progress = True();
+      set m^.aof_rewrite_requested = True();
+    }
+  }
+  if busy {
+    pkg::protocol::reply_error(client: client, word: &aof_command_busy[0_u64..61_u64]);
+    return unit;
+  }
+  let outcome = 0_u64;
+  atomic m = &store^.meta when m^.aof_rewrite_reply != 0_u64 {
+    set outcome = m^.aof_rewrite_reply;
+    set m^.aof_rewrite_reply = 0_u64;
+  }
+  if outcome == 1_u64 {
+    pkg::protocol::reply_byte(client: client, value: 43_u8);
+    pkg::protocol::reply_word(client: client, word: &aof_command_started[0_u64..45_u64]);
+    pkg::protocol::reply_byte(client: client, value: 13_u8);
+    pkg::protocol::reply_byte(client: client, value: 10_u8);
+  } else {
+    pkg::protocol::reply_error(client: client, word: &aof_command_failed[0_u64..97_u64]);
+  }
+  return unit;
+}

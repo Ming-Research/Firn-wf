@@ -31,10 +31,15 @@ written while firn lived in the Whitefoot repository; a path such as
     `WATCH`/`UNWATCH`, and write as parts the commands a selected consumer
     queues or calls from a script that are not parts yet, since `EXEC` and
     scripts run only those `held_kind` (`firn/commands/script.wf`) names.
-  - Make AOF persistence usable through write/sync error handling, rewrite
+  - Make AOF persistence usable through write/sync error handling
     and orderly stop on signals, `SHUTDOWN` being done; verify a practical
-    data migration path. File replacement and signal delivery
-    may require Whitefoot library/runtime work; AOF presence alone is not
+    data migration path. Multi-part AOF loading, old-file upgrades and startup
+    history cleanup are implemented. The background rewrite and automatic
+    trigger are drafted and await CI validation
+    ([rewrite design](../research/investigations/aof-rewrite/README.md#design)).
+    The draft retains unwritten append bytes; client-visible write/sync
+    error handling remains open.
+    Signal delivery may require Whitefoot library/runtime work; AOF presence alone is not
     durable-recovery evidence. RDB compatibility is not assumed by this item.
   - Add memory accounting, `maxmemory` and the eviction behavior the selected
     deployments need, including large-value reclamation and slow-client
@@ -144,19 +149,19 @@ written while firn lived in the Whitefoot repository; a path such as
   a unit test of the deque helpers, since a network case would need tens of
   gigabytes. Reopen when a workload approaches a billion elements in one
   list, or with the next change to the list representation.
-- **Replay still differs from Redis's loader in two cases.** A file that
+- **Replay still differs from Redis's record format and block capacity.** A file that
   does not parse, cannot be read or holds a block larger than the input
   window's ceiling now stops firn with status 4, as Redis 7.0.15 exits
-  (`firn/persistence/persistence.wf`). Two differences remain: an error
-  opening the file other than its absence is treated as no file, where Redis
-  exits on `AOF_OPEN_ERR`; and replay accepts inline commands, where Redis's
+  (`firn/persistence/persistence.wf`); every listed file must open before
+  multi-part loading begins. Replay accepts inline commands, where Redis's
   loader requires every record to start with `*`, apart from annotation
   lines starting with `#`, and stops at any other byte. A block larger than the window's ceiling, 2 GiB, also stops firn
   where Redis loads it; replaying a block by re-reading it from its file
-  offset instead of holding it would lift that limit. The change: tell an
-  absent file from an open failure, and refuse a record starting with
-  neither `*` nor `#`, passing over `#` annotations as Redis does. Validate with an unreadable file and a file holding an inline
-  command. Reopen before firn is offered to a deployment that keeps an
+  offset instead of holding it would lift that limit. The change: refuse a
+  record starting with neither `*` nor `#`, pass over `#` annotations as
+  Redis does, and replay a large block without retaining all its bytes.
+  Validate with inline and annotated files and a block beyond the input
+  window's ceiling. Reopen before firn is offered to a deployment that keeps an
   append-only file.
 - **A script's noscript refusal checks only the command's own arity.**
   `script_command` (`firn/commands/script.wf`) answers Redis's arity error
@@ -469,6 +474,18 @@ written while firn lived in the Whitefoot repository; a path such as
   validate TIME's two decimal bulk strings and microsecond range, and
   compare two calls around substantial script work without changing expiry.
 
+- **BGREWRITEAOF with appendonly off cannot rebuild a dataset.** Redis
+  7.0.15 rewrites its live dataset in that state; firn's rewrite replays
+  closed logs and has no source without append-only persistence. For example,
+  `SET k v` followed by `BGREWRITEAOF` with appendonly off returns
+  `ERR Can't execute an AOF background rewriting. Please check the server logs for more information.`
+  and creates no base, so a client cannot use it to export an in-memory
+  dataset. Removing the difference needs a consistent snapshot of the live
+  keyspace and a rewrite path that consumes it, also needed when enabling
+  appendonly on a populated server. Reopen with runtime appendonly enablement
+  or a selected workload that exports data this way; validate both the
+  resulting base and writes concurrent with the snapshot against Redis.
+
 ## Tests
 
 - **Thirteen of Redis's suite tests are lost to a connection left in
@@ -546,7 +563,53 @@ written while firn lived in the Whitefoot repository; a path such as
   changes; the window could give way to that comparison, or widen. Reopen
   when the case fails this way in CI.
 
+- **Exercise a directory-sync failure after rewrite manifest publication.**
+  The rewrite's persistence result distinguishes a failed rename from a
+  successful rename followed by failed directory sync. Network cases force
+  failures before publication and replay interrupted directory fixtures, but
+  do not execute this latter error path. A regression could delete a base
+  still named by the manifest or leave the writer appending to the wrong
+  incremental file. Add a CI host-fault experiment for both switch and
+  installation: let manifest rename succeed, fail the next directory sync,
+  then require retained files and history, error status, subsequent writes
+  in the selected incremental file and correct values after restart. The
+  implementation has only source inspection for this path. Also load a
+  manifest containing history and fail startup's directory sync: startup
+  must retain both history files and records. The existing history-removal
+  network case covers success but cannot portably inject this failure or
+  prove syscall ordering. Reopen in the
+  rewrite's CI validation before claiming failure-at-every-step coverage.
+
 ## Whitefoot requirements
+
+- **An append-only file that is a symbolic link is refused.** Redis 7.0.15
+  opens `appendonly.aof`, the manifest and the files it names with `fopen`
+  and `open`, following a symbolic link at the name, and checks the
+  directory and an old-style file's kind with `stat`. firn opens names below
+  a directory through Whitefoot's component operations, which refuse a link
+  at the name, and Whitefoot offers no query of an entry's kind. A
+  deployment whose `appendonly.aof` is a link to another disk starts on
+  Redis and is refused by firn. Uncertain: whether any deployment does
+  this. Whitefoot's refusal keeps a name below its root, which its names
+  rule exists for, so the change, if one is wanted, would be an explicit
+  operation that follows a link with the authority it reaches, not a
+  relaxed name rule. Reopen when a deployment keeps its file behind a link.
+- **Exclusive creation for temporary append-only files.** Whitefoot's
+  `open_append` opens an existing file; it cannot create a file only when
+  absent. For appendfilename `F`, firn's rewrite opens and truncates
+  `temp-F.base`. Another dataset sharing appendonlydir can have that exact
+  appendfilename and an upgraded base still named `temp-F.base`, so the
+  rewrite destroys its persisted data. Distinct appendfilenames alone do
+  not isolate these names. Redis 7.0.15's `temp-F.incr` has the same class
+  of collision. Keep this overlap unsupported, with no naming workaround;
+  add an exclusive-create operation to Whitefoot, then use it for temporary
+  files so a collision fails without opening or truncating the existing
+  file. Reopen when shared-directory isolation is required or Whitefoot
+  supplies exclusive creation. Validate in CI with one dataset's upgraded
+  base occupying another's temporary name: rewriting must refuse the
+  collision, leave the existing bytes unchanged and preserve both datasets
+  after restart. The collision follows from the open/truncate path; no
+  collision experiment or implementation of exclusive creation is claimed.
 
 - **A context cannot end another context's wait, so firn stops by
   polling, which reaches only some waits.** In Whitefoot's specification

@@ -13,3 +13,5 @@ public fn read_bound(input: &[u8], start: u64, length: u64) -> score: Score read
 public fn kept_score(score: f64) -> kept: f64 pure doc "The score a sorted set keeps for one read: negative zero becomes zero, as Redis keeps it in a sorted set it encodes as a listpack, one of at most 128 members of at most 64 bytes, which stores a score equal to an integer as that integer.";
 
 public fn reply_score(client: &Client, score: f64) -> result: unit writes(client) doc "Writes a score as Redis 7.0.15's addReplyDouble writes one, in the text of inf or -inf for an infinity and otherwise of C's %.17g, the value rounded to 17 significant digits with ties to even, in fixed notation when its decimal exponent is from -4 to 16 and in exponential notation otherwise, trailing zeros dropped: as a bulk string under RESP2, and under RESP3 as a double, a comma, the text and CR LF.";
+
+public fn score_bytes(score: f64) -> text: pkg::bytes::Bytes pure doc "The same decimal text as reply_score, without RESP framing, for a stored score in a rewritten append-only file.";
