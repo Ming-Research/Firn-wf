@@ -364,3 +364,23 @@ unit when a statement writes it (`wf_watch_wake_locked` in its
 script. A p99 this constant across passes points to a fixed delay rather
 than to chance in that race; a profile of firn at 8 and 50 connections is
 the next measurement.
+
+A profile of firn under the same workload (run
+[37782618040](https://github.com/Ming-Research/Firn-wf/actions/runs/37782618040),
+one CPU, `perf record` of one extra unmeasured 5-second run per line, flat
+self time) does not support the race as the main cost. In all four profiles
+(8 and 50 connections, append-only file off and on) the largest symbols are
+Halo's collector check `halo.vm.collect_if_due` at 11.8 to 12.6%, the C
+allocator (calloc, malloc, free and consolidation) at 11 to 13% together,
+Halo's string interning and table rehash at about 5%, and firn's copy of the
+script's source out of the registry on every `EVALSHA` (`text_bytes`) at 2.8
+to 3.8%; waiting for the engine and waking (`acquire_whole`, the shared
+lock) take about 3%. Halo collects with a whole mark and sweep each time a
+collection is due (`collect_if_due` in its `vm/collect.wf`), where Lua 5.1,
+which Redis runs, collects incrementally. The working hypothesis is
+therefore a periodic collection pause of about 3 ms: with 50 connections
+waiting, one pause delays some 50 requests and so sets the p99, while with
+one connection it delays one request in thousands and stays below the p99.
+The collection pause has not been measured; Halo's session owns that
+measurement and the collector. firn's own part is the per-call copy of the
+source.
