@@ -4436,14 +4436,17 @@ fn firn_kills_a_looping_script_as_redis_does() {
 /// as Redis 7.0.15 queues FLUSH below its busy threshold. SCRIPT KILL can
 /// still stop the script while FLUSH waits: the script gets Redis's killed
 /// error, FLUSH succeeds, and a later EVALSHA gets NOSCRIPT. Each round loads
-/// the script and checks that FLUSH stays silent for 300 ms before KILL. An
-/// immediate OK leaves the precondition that the script had begun unproven:
-/// EVALSHA must then answer exactly NOSCRIPT, and the case reruns with a
-/// longer start delay, at most three rounds. Without the running guard,
-/// FLUSH answers at once while the script runs and its next attempt answers
-/// NOSCRIPT, so every round looks like an unproven precondition and the case
-/// fails. A correct firn passes unless every round's start delay is too short.
-/// The killed error is the same as in the SCRIPT KILL case above.
+/// the script and checks that FLUSH stays silent for 300 ms and then the
+/// script for 300 ms more before KILL. An OK to FLUSH within the first wait
+/// leaves the precondition that the script had begun unproven: EVALSHA must
+/// then answer exactly NOSCRIPT, and the case reruns with a longer start
+/// delay, at most three rounds. Without the running guard, FLUSH answers
+/// once firn serves it and the running script's next attempt then answers
+/// NOSCRIPT, so a round fails or reruns unless firn leaves FLUSH unserved for
+/// the whole 600 ms of silence; the case cannot observe when firn starts
+/// serving FLUSH, so that delay is its assumption. A correct firn passes
+/// unless every round's start delay is too short. The killed error is the
+/// same as in the SCRIPT KILL case above.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_script_flush_waits_for_a_looping_script_to_be_killed() {
@@ -4480,6 +4483,7 @@ fn firn_script_flush_waits_for_a_looping_script_to_be_killed() {
         if silent_for(&mut flushing, Duration::from_millis(300))
             .expect("wait for SCRIPT FLUSH while a script is in progress")
         {
+            expect_silence(&mut looping, "the running script while SCRIPT FLUSH waits");
             break;
         }
         expect_replies(
