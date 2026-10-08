@@ -111,6 +111,8 @@ const code_persist: u64 = 23735472439313744_u64;
 
 const code_dbsize: u64 = 76254079566404_u64;
 
+const code_shutdown: u64 = 5645067812823451731_u64;
+
 const code_config: u64 = 78380037721923_u64;
 
 const code_flushall: u64 = 5497841024004082758_u64;
@@ -743,6 +745,24 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     if go {
       run_dbsize(store: store, client: client);
     }
+    return unit;
+  }
+  let rewrite_named = name_is(input: input, start: name.start, length: name.length, word: &aof_command_name[0_u64..12_u64]);
+  if rewrite_named {
+    let fits = count == 1_u64;
+    let go = band(fits, open);
+    if go {
+      run_aof_rewrite(store: store, client: client);
+    } else {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    return unit;
+  }
+  if code == code_shutdown {
+    if denied(client: client) {
+      return unit;
+    }
+    run_shutdown(store: store, input: input, args: args, client: client);
     return unit;
   }
   if code == code_config {

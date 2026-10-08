@@ -161,7 +161,7 @@ fn queue_fits(transaction: &Transaction, args: &Box<Slots<Span>>) -> fits: Bool 
 }
 
 fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(transaction), writes(client) {
-  doc "A command sent inside a transaction, other than EXEC, DISCARD, MULTI, WATCH and QUIT: checked in the order Redis 7.0.15's processCommand checks it before queueing, and either queued and answered QUEUED, or refused, marking the transaction dirty so that EXEC aborts it. COMMAND's subcommand is resolved by command_plan, an unknown one or COUNT outside its arity refused before queueing; a Redis subcommand firn does not run takes the same foreign path as a command without parts, regardless of argument count. A command held_kind names with a count of arguments outside its arity is answered Redis's arity error, then a connection that must authenticate first NOAUTH; a command that would take the queue past 1 GiB of arguments is refused, firn's queue growing no further. A command held_kind does not name, which firn either does not know or does not run by its parts, is queued and answered QUEUED, marking the transaction foreign so that EXEC refuses it whole: firn names its commands only in execute's rows, and a client that stops at an error reply would otherwise be left inside the transaction.";
+  doc "A command sent inside a transaction, other than EXEC, DISCARD, MULTI, WATCH and QUIT: checked in the order Redis 7.0.15's processCommand checks it before queueing, and either queued and answered QUEUED, or refused, marking the transaction dirty so that EXEC aborts it. COMMAND's subcommand is resolved by command_plan, an unknown one or COUNT outside its arity refused before queueing; a Redis subcommand firn does not run takes the same foreign path as a command without parts, regardless of argument count. A command held_kind names with a count of arguments outside its arity is answered Redis's arity error, then a connection that must authenticate first NOAUTH; SHUTDOWN is refused with Redis's CMD_NO_MULTI error and marks the transaction dirty before queueing; a command that would take the queue past 1 GiB of arguments is refused, firn's queue growing no further. A command held_kind does not name, which firn either does not know or does not run by its parts, is queued and answered QUEUED, marking the transaction foreign so that EXEC refuses it whole: firn names its commands only in execute's rows, and a client that stops at an error reply would otherwise be left inside the transaction.";
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
   let count = args^.inner.len;
@@ -189,6 +189,12 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
   }
   if client^.locked {
     let stopped = denied(client: client);
+    set transaction^.dirty = True();
+    return unit;
+  }
+  let code = name_code(input: input, start: name.start, length: name.length);
+  if code == code_shutdown {
+    reply_error(client: client, word: &text_no_multi[0_u64..44_u64]);
     set transaction^.dirty = True();
     return unit;
   }
@@ -351,3 +357,5 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
   return unit;
 }
+
+const text_no_multi: Array<u8, 44> = "ERR Command not allowed inside a transaction";

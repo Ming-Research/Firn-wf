@@ -24,8 +24,8 @@ alias read_at = std::fs::read_at;
 alias sleep_until = std::time::sleep_until;
 alias sync_file = std::fs::sync_file;
 
-fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>) -> result: Bool reads(source), writes(factory), writes(file) waits {
-  doc "Appends every byte the buffer holds to the file, reattempting until the host has taken them all; false reports a refusal or a write that took nothing.";
+fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>) -> result: u64 reads(source), writes(factory), writes(file) waits {
+  doc "Appends every byte the buffer holds to the file, reattempting until the host has taken them all; returns the number of bytes accepted, including a partial append before a refusal.";
   let length = source^.inner.len;
   let bytes = &source^.inner[0_u64..length];
   let written = 0_u64;
@@ -36,21 +36,21 @@ fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>
     match append_once(factory: factory, file: file, source: bytes, start: written, end: length) {
       Ok(value: next) => {
         if next == written {
-          return False();
+          return written;
         }
         set written = next;
       }
       Err(error: problem) => {
-        return False();
+        return written;
       }
     }
   }
-  return True();
+  return written;
 }
 
-fn write_log(store: Keyspace, factory: HandleFactory, file: WriteFile, clock: Clock) -> result: unit pure waits {
-  doc "The append-only file's writer: every 10 milliseconds it exchanges the keyspace's pending bytes for an empty buffer in one atomic statement and appends what it took to the file, syncing the file once a second has passed since the last sync, as appendfsync everysec does. Once the server stops it writes the last bytes, syncs and closes the file.";
-  let spare = box_slots_new::<u8>(capacity: 65536_u64);
+fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time) -> result: unit pure waits {
+  doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Preserve a partial append for the next drain. Main sets stopping only after clients have left.";
+  let pending = box_slots_new::<u8>(capacity: 65536_u64);
   let last_sync = std::time::now(clock: &clock);
   loop @writing {
     let started = std::time::now(clock: &clock);
@@ -59,23 +59,54 @@ fn write_log(store: Keyspace, factory: HandleFactory, file: WriteFile, clock: Cl
     let stop = False();
     atomic m = &store.meta {
       set stop = m^.stopping;
-      swap(first: &m^.log, second: &spare);
     }
-    let appended = append_all(factory: &factory, file: &file, source: &spare);
-    set spare = box_slots_new::<u8>(capacity: 65536_u64);
-    let reading = std::time::now(clock: &clock);
-    let since = nanoseconds_from(earlier: last_sync, later: reading);
-    let second_passed = since >= 1000000000_u64;
-    let sync_now = bor(second_passed, stop);
-    if sync_now {
-      let synced = sync_file(factory: &factory, file: &file);
-      set last_sync = reading;
-    }
+    let drained = aof_rw_flush(store: &store, factory: &factory, file: &log.file, pending: &pending, clock: &clock, last_sync: &last_sync, force: stop);
     if stop {
-      break @writing;
+      if drained {
+        let empty = False();
+        atomic m = &store.meta {
+          set empty = m^.log.inner.len == 0_u64;
+        }
+        if empty {
+          break @writing;
+        }
+      }
+    } else {
+      let cancelled = aof_rw_cancelled(store: &store);
+      if cancelled {
+        atomic m = &store.meta {
+          if m^.aof_rewrite_requested {
+            set m^.aof_rewrite_requested = False();
+            set m^.aof_rewrite_in_progress = False();
+            set m^.aof_rewrite_reply = 2_u64;
+          }
+        }
+      } else {
+        let rewrite = False();
+        let manual = False();
+        atomic m = &store.meta {
+          set manual = m^.aof_rewrite_requested;
+          set m^.aof_rewrite_requested = False();
+          set rewrite = manual;
+          if m^.aof_rewrite_in_progress {
+          } else if m^.aof_rewrite_reply == 0_u64 {
+            set rewrite = aof_rw_growth(current_size: m^.aof_current_size, base_size: m^.aof_base_size, percentage: m^.aof_rewrite_percentage, minimum: m^.aof_rewrite_min_size);
+          }
+          if rewrite {
+            set m^.aof_rewrite_in_progress = True();
+          }
+        }
+        if rewrite {
+          let aof_cycled = aof_rw_cycle(store: &store, factory: &factory, log: move log, pending: &pending, clock: &clock, last_sync: &last_sync, time: &time, manual: manual);
+          set log = move aof_cycled;
+        }
+      }
     }
   }
-  let closed = close_write(factory: &factory, file: move file);
+  let AofLog(directory: directory, writable: writable, prefix: prefix, manifest: manifest, file: file) = move log;
+  close_write(factory: &factory, file: move file);
+  std::fs::close_directory(factory: &factory, directory: move directory);
+  std::fs::close_directory_write(factory: &factory, directory: move writable);
   return unit;
 }
 
@@ -86,11 +117,14 @@ const word_exec: Array<u8, 4> = "EXEC";
 fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name: &[u8], name_length: u64, time: &Time, clock: &Clock) -> loaded: Loaded reads(store), reads(root), reads(name), reads(time), writes(factory), writes(clock) waits contract {
   requires name_length <= name^.len;
 } {
-  doc "Applies every command of the append-only file the name names, when one exists, and returns how many it applied and how much of the file to keep. The commands between MULTI and EXEC apply only once their EXEC is read, so a block the file ends inside, as a write cut short leaves one, applies none of its commands, as Redis 7.0.15 reverts an incomplete MULTI/EXEC block while loading; an EXEC outside a block is passed over. A file whose reading reaches its end inside a command is to be cut after the last whole command, and one that ends cleanly inside a block before its latest MULTI, as Redis cuts each with aof-load-truncated, its default, so the commands appended after the replay follow whole commands; a file that ends after a whole command outside a block is kept whole. As Redis does while loading, no key counts as expired during the replay, time's check being zero, and an expiry whose calendar time has passed is kept as one already reached, so the commands after it in the file apply as they did when they were written; lazy and active expiry remove such a key once the server listens. A record that is not a well-formed command, a read that fails other than at the file's end, or a block or command larger than the input window's ceiling stops the replay with stopped true, as Redis 7.0.15 stops loading and exits.";
+  doc "Applies every command of the append-only file the name names, refusing an absent file, and returns how many it applied and how much of the file to keep. The commands between MULTI and EXEC apply only once their EXEC is read, so a block the file ends inside, as a write cut short leaves one, applies none of its commands, as Redis 7.0.15 reverts an incomplete MULTI/EXEC block while loading; an EXEC outside a block is passed over. A file whose reading reaches its end inside a command is to be cut after the last whole command, and one that ends cleanly inside a block before its latest MULTI, as Redis cuts each with aof-load-truncated, its default, so the commands appended after the replay follow whole commands; a file that ends after a whole command outside a block is kept whole. As Redis does while loading, no key counts as expired during the replay, time's check being zero, and an expiry whose calendar time has passed is kept as one already reached, so the commands after it in the file apply as they did when they were written; lazy and active expiry remove such a key once the server listens. A record that is not a well-formed command, a read that fails other than at the file's end, or a block or command larger than the input window's ceiling stops the replay with stopped true, as Redis 7.0.15 stops loading and exits.";
   let applied = 0_u64;
   let kept = 0_u64;
+  let size = 0_u64;
   let cut = False();
   let stopped = False();
+  let reverted = 0_u64;
+  let unfinished = False();
   match open_file(factory: factory, root: root, name: name, start: 0_u64, end: name_length) {
     Ok(value: file) => {
       let env = KeyEnv();
@@ -107,6 +141,7 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
       let block_start = 0_u64;
       let block_body = 0_u64;
       let latest_multi = 0_u64;
+      let first_multi = 0_u64;
       loop @chunks {
         if held >= input.inner.len {
           input_grow(input: &input);
@@ -123,6 +158,7 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
           Ok(value: next) => {
             let got = next -wrap held;
             set offset = offset +wrap got;
+            set size = offset;
             set held = next;
             if got == 0_u64 {
               set ended = True();
@@ -149,6 +185,10 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
           } else if scanning {
             set kept = latest_multi;
             set cut = True();
+          }
+          set unfinished = scanning;
+          if scanning {
+            set reverted = first_multi;
           }
           break @chunks;
         }
@@ -191,6 +231,7 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
             } else if multi {
               set scanning = True();
               set latest_multi = window_base +wrap consumed;
+              set first_multi = latest_multi;
               set block_start = consumed;
               set block_body = parsed.next;
             } else if exec {
@@ -221,7 +262,8 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
       let closed = close_read(factory: factory, file: move file);
     }
     Err(error: problem) => {
+      set stopped = True();
     }
   }
-  return Loaded(applied: applied, kept: kept, cut: cut, stopped: stopped);
+  return Loaded(applied: applied, kept: kept, size: size, cut: cut, stopped: stopped, reverted: reverted, unfinished: unfinished);
 }

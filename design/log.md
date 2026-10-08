@@ -4,6 +4,22 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-08 Rewriting the append-only file in Redis 7's multi-part layout
+
+Nodes: firn/aof-rewrite, firn/append-only-file
+
+Owner-approved: In the Firn session of 2026-10-07, written in Chinese, after the report that presented keeping Redis 7.0.15's multi-part layout and rebuilding from the closed logs as Q213 option A, recommended: "213, what is AOF? But A looks reasonable" (translated), taken as approval; in the Firn session of 2026-10-08, after the completion report that presented refusing an append-only file behind a symbolic link as Q225 option A, refusing BGREWRITEAOF with appendonly off as Q226 option A, keeping the new manifest and every published file when the directory sync after its rename fails as Q227 option A, cutting an unfinished block from the current incremental file before a switch as Q231 option A, and quoting apostrophes in manifest filenames as Q232 option A, each recommended, with Firn-wf#29's design-tree text and the merge order as Q234: "Q225-Q234 all approved" (translated).
+
+Summary: firn keeps the append-only log as Redis 7.0.15 does, a manifest naming a base file and incremental files below `appendonlydir`, upgrades an old single file by moving it into the directory, and answers BGREWRITEAOF and the automatic rewrite trigger by replaying the base and closed incremental files into a private keyspace and writing that dataset as a new base, while live commands go to a new incremental file, because firn has no fork and no snapshot to write from. Persisting the new manifest is the commit point; a failed directory sync after it keeps the new manifest and every published file in force, where Redis would delete the new base the manifest names. Before a switch the writer cuts an unfinished transaction block from the current incremental file, since the next start reads that file as one before the last, where an incomplete end is refused; `append-only-file`'s cut accordingly applies only to the last file. Manifest names with apostrophes are written in double quotes so Redis can read them back, BGREWRITEAOF with appendonly off is refused as Redis refuses a rewrite it cannot start, and a file behind a symbolic link is refused, provisionally, where Redis follows it ([remaining compatibility work](../docs/todo.md#server)).
+
+## 2026-10-07 SHUTDOWN stops firn in order
+
+Nodes: firn/orderly-stop, firn/transactions, firn/command-parts
+
+Owner-approved: In the Firn session of 2026-10-07, written in Chinese, the owner answered the reports' ledgers with "Q209 agreed. Q210 agreed" (translated), approving Q209 A (a script that never ends keeps firn from stopping until the busy-script work) and Q210 A (merge Firn-wf#27 once this entry's gate and readiness pass); with "I think 206 is a hack; other ways of getting stuck cannot necessarily be solved like this. It must go into the TODO" (translated), and after the TODO entry and the stopgap wording, "Q206 agreed" (translated), approving Q206 A (polling as a stopgap); and with "208 agreed ... 207 approved" (translated), approving Q207 (SHUTDOWN SAVE takes Redis's failed-save path) and Q208 A (SHUTDOWN inside MULTI refused when sent).
+
+Summary: SHUTDOWN records a request in the server's state, which every context reads by polling: each socket wait carries a deadline of at most a second, at a measured cost of at most 1.25% at pipeline depth 1, because Whitefoot v0.94 offers no way for one context to end another's wait; polling is a stopgap until that Whitefoot capability, recorded in docs/todo.md, replaces it. main stops the append-only file's writer only after every client has gone, so the commands clients ran before seeing the request are appended and synced. SHUTDOWN SAVE takes Redis 7.0.15's failed-save path because firn writes no snapshot; inside MULTI, SHUTDOWN is refused when sent and dirties the transaction, and scripts refuse it as noscript, as Redis 7.0.15 does ([investigation](../research/investigations/orderly-stop/README.md)).
+
 ## 2026-10-07 Enumeration through map_scan and RANDOMKEY's sampling
 
 Nodes: firn/enumeration

@@ -37,7 +37,21 @@ const info_memory: Array<u8, 195> = "# Memory\r\nnumber_of_cached_scripts:0\r\nn
 
 const info_persistence_head: Array<u8, 121> = "# Persistence\r\nloading:0\r\nasync_loading:0\r\nrdb_bgsave_in_progress:0\r\nrdb_last_bgsave_status:ok\r\nrdb_saves:0\r\naof_enabled:";
 
-const info_persistence_tail: Array<u8, 127> = "\r\naof_rewrite_in_progress:0\r\naof_rewrite_scheduled:0\r\naof_last_bgrewrite_status:ok\r\naof_rewrites:0\r\nmodule_fork_in_progress:0\r\n";
+const info_rw_progress: Array<u8, 26> = "\r\naof_rewrite_in_progress:";
+
+const info_rw_status: Array<u8, 53> = "\r\naof_rewrite_scheduled:0\r\naof_last_bgrewrite_status:";
+
+const info_rw_count: Array<u8, 15> = "\r\naof_rewrites:";
+
+const info_rw_current: Array<u8, 19> = "\r\naof_current_size:";
+
+const info_rw_base: Array<u8, 16> = "\r\naof_base_size:";
+
+const info_rw_tail: Array<u8, 29> = "\r\nmodule_fork_in_progress:0\r\n";
+
+const info_rw_ok: Array<u8, 2> = "ok";
+
+const info_rw_error: Array<u8, 3> = "err";
 
 const info_stats_head: Array<u8, 36> = "# Stats\r\ntotal_connections_received:";
 
@@ -198,7 +212,7 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
   return chosen;
 }
 
-fn info_body(chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(client), reads(time) {
+fn info_body(chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
   doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
@@ -234,7 +248,27 @@ fn info_body(chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u
           set kept = 1_u64;
         }
         text_number(text: &text, value: kept);
-        text_word(text: &text, word: &info_persistence_tail[0_u64..127_u64]);
+        text_word(text: &text, word: &info_rw_progress[0_u64..26_u64]);
+        let progressing = 0_u64;
+        if persistence^.aof_rewrite_in_progress {
+          set progressing = 1_u64;
+        }
+        text_number(text: &text, value: progressing);
+        text_word(text: &text, word: &info_rw_status[0_u64..53_u64]);
+        if persistence^.aof_rewrite_ok {
+          text_word(text: &text, word: &info_rw_ok[0_u64..2_u64]);
+        } else {
+          text_word(text: &text, word: &info_rw_error[0_u64..3_u64]);
+        }
+        text_word(text: &text, word: &info_rw_count[0_u64..15_u64]);
+        text_number(text: &text, value: persistence^.aof_rewrites);
+        if logged {
+          text_word(text: &text, word: &info_rw_current[0_u64..19_u64]);
+          text_number(text: &text, value: persistence^.aof_current_size);
+          text_word(text: &text, word: &info_rw_base[0_u64..16_u64]);
+          text_number(text: &text, value: persistence^.aof_base_size);
+        }
+        text_word(text: &text, word: &info_rw_tail[0_u64..29_u64]);
       } else if which == 4_u64 {
         text_word(text: &text, word: &info_stats_head[0_u64..36_u64]);
         text_number(text: &text, value: connections);
@@ -275,7 +309,7 @@ fn info_finish(client: &Client, text: &Box<Slots<u8>>) -> result: unit reads(tex
 }
 
 fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no memory limit and so no eviction, no scripts or functions, no replica, background save, rewrite, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, memory used and processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
+  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no memory limit and so no eviction, no scripts or functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, memory used and processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
   let chosen = info_plan(input: input, args: args);
   let clients = 0_u64;
   if chosen[1_u64] == 1_u64 {
@@ -301,7 +335,10 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       set keys = map_count::<Entry>(map: t);
     }
   }
-  let text = info_body(chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, client: client, time: time);
+  let text = box_slots_new::<u8>(capacity: 0_u64);
+  atomic m = &store^.meta {
+    set text = info_body(chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
+  }
   info_finish(client: client, text: &text);
   return unit;
 }

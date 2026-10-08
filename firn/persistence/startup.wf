@@ -1,0 +1,316 @@
+alias Clock = std::time::Clock;
+alias DirectoryRead = std::fs::DirectoryRead;
+alias HandleFactory = std::io::HandleFactory;
+alias Keyspace = pkg::store::Keyspace;
+alias Time = pkg::store::Time;
+alias WriteFile = std::fs::WriteFile;
+alias close_read = std::fs::close_read;
+alias close_write = std::fs::close_write;
+alias open_file = std::fs::open_file;
+alias aof_byte_at = pkg::bytes::byte_at;
+
+fn aof_exists(factory: &HandleFactory, directory: &DirectoryRead, name: &[u8]) -> state: u64 reads(directory), reads(name), writes(factory) waits {
+  doc "Zero is absent or a directory, which Redis's regular-file existence query ignores; one is openable, and two is another host refusal, which startup must not treat as an absent file.";
+  let length = name^.len;
+  match open_file(factory: factory, root: directory, name: name, start: 0_u64, end: length) {
+    Ok(value: opened) => {
+      close_read(factory: factory, file: move opened);
+      return 1_u64;
+    }
+    Err(error: problem) => {
+      let directories = True();
+      let missing = aof_missing(error: &problem, directories: directories);
+      if missing {
+        return 0_u64;
+      }
+      return 2_u64;
+    }
+  }
+}
+
+fn aof_same(first: &[u8], second: &[u8]) -> same: Bool reads(first), reads(second) {
+  let length = first^.len;
+  if length != second^.len {
+    return False();
+  }
+  for (index in 0_u64..length) {
+    let left = aof_byte_at(input: first, index: index);
+    let right = aof_byte_at(input: second, index: index);
+    if left != right {
+      return False();
+    }
+  }
+  return True();
+}
+
+fn aof_upgrade(factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> accepted: Bool reads(cwd), reads(directory), reads(prefix), writes(factory), writes(cwd_write), writes(writable), writes(manifest) waits {
+  doc "aofUpgradePrepare persists the old filename as the base before moving it. Retry only with no active files or a lone old-name base absent from appendonlydir; when both old copies exist the directory copy wins.";
+  if manifest^.incr_sequence != 0_i64 {
+    return True();
+  }
+  let upgrade = manifest^.base_sequence == 0_i64;
+  for (index in 0_u64..manifest^.parts.inner.len) {
+    let part = &manifest^.parts.inner[index];
+    if part^.kind == 98_u8 {
+      let length = part^.name.inner.len;
+      let name = &part^.name.inner[0_u64..length];
+      let same = aof_same(first: name, second: prefix);
+      if same {
+        let present = aof_exists(factory: factory, directory: directory, name: prefix);
+        set upgrade = present == 0_u64;
+        if present == 2_u64 {
+          return False();
+        }
+      }
+    }
+  }
+  if upgrade {
+  } else {
+    return True();
+  }
+  let old = aof_exists(factory: factory, directory: cwd, name: prefix);
+  if old == 0_u64 {
+    return True();
+  }
+  if old == 2_u64 {
+    return False();
+  }
+  let had_base = manifest^.base_sequence != 0_i64;
+  if had_base {
+    for (index in 0_u64..manifest^.parts.inner.len) {
+      let part = &manifest^.parts.inner[index];
+      if part^.kind == 98_u8 {
+        set part^.sequence = 1_i64;
+      }
+    }
+  } else {
+    let name = aof_copy(input: prefix);
+    let part = AofPart(name: move name, sequence: 1_i64, kind: 98_u8);
+    aof_push(manifest: manifest, part: move part);
+  }
+  set manifest^.base_sequence = 1_i64;
+  set manifest^.dirty = True();
+  let persisted = aof_persist(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
+  if persisted.durable {
+  } else {
+    return False();
+  }
+  let length = prefix^.len;
+  match std::fs::move_file(factory: factory, from_root: cwd_write, from: prefix, from_start: 0_u64, from_end: length, to_root: writable, to: prefix, to_start: 0_u64, to_end: length) {
+    Ok(value: moved) => {
+      return True();
+    }
+    Err(error: problem) => {
+      return False();
+    }
+  }
+}
+
+fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, manifest: &AofManifest, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(directory), reads(writable), reads(manifest), reads(time), writes(factory), writes(clock) waits {
+  doc "Replay base first, then incrementals in manifest order. Missing listed files are fatal; only the last may be truncated. Keep startup byte sizes beside metadata for the writer and the later rewrite trigger.";
+  let total = 0_u64;
+  for (index in 0_u64..manifest^.parts.inner.len) {
+    let part = &manifest^.parts.inner[index];
+    if part^.kind != 104_u8 {
+      let length = part^.name.inner.len;
+      let name = &part^.name.inner[0_u64..length];
+      let exists = aof_exists(factory: factory, directory: directory, name: name);
+      if exists != 1_u64 {
+        return False();
+      }
+      set total = total +wrap 1_u64;
+    }
+  }
+  let loaded_count = 0_u64;
+  let current_size = 0_u64;
+  let base_size = 0_u64;
+  for (pass in 0_u64..2_u64) {
+    let kind = 98_u8;
+    if pass == 1_u64 {
+      set kind = 105_u8;
+    }
+    for (index in 0_u64..manifest^.parts.inner.len) {
+      let part = &manifest^.parts.inner[index];
+      if part^.kind == kind {
+        let length = part^.name.inner.len;
+        let name = &part^.name.inner[0_u64..length];
+        let loaded = replay(store: store, factory: factory, root: directory, name: name, name_length: length, time: time, clock: clock);
+        set loaded_count = loaded_count +wrap 1_u64;
+        if loaded.stopped {
+          return False();
+        }
+        let size = loaded.size;
+        if loaded.cut {
+          if loaded_count != total {
+            return False();
+          }
+          let cut = aof_cut(factory: factory, writable: writable, name: name, kept: loaded.kept);
+          if cut {
+            set size = loaded.kept;
+          } else {
+            return False();
+          }
+        }
+        set current_size = current_size +wrap size;
+        if kind == 98_u8 {
+          set base_size = size;
+        }
+      }
+    }
+  }
+  atomic m = &store^.meta {
+    set m^.aof_current_size = current_size;
+    set m^.aof_base_size = base_size;
+  }
+  return True();
+}
+
+fn aof_cut(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name: &[u8], kept: u64) -> accepted: Bool reads(writable), reads(name), writes(factory) waits {
+  let length = name^.len;
+  match std::fs::open_append(factory: factory, root: writable, name: name, start: 0_u64, end: length) {
+    Ok(value: opened) => {
+      let accepted = False();
+      match std::fs::truncate_file(factory: factory, file: &opened, length: kept) {
+        Ok(value: truncated) => {
+          set accepted = True();
+        }
+        Err(error: problem) => {
+        }
+      }
+      close_write(factory: factory, file: move opened);
+      return accepted;
+    }
+    Err(error: problem) => {
+      return False();
+    }
+  }
+}
+
+fn aof_history(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> result: unit reads(prefix), writes(factory), writes(writable), writes(manifest) waits {
+  doc "Like aofDelHistoryFiles, forget each h record after attempting unlink, including missing files or failed unlinks; a failed cleanup manifest update is nonfatal and can be retried on restart. Unlisted temporary or orphaned files are not garbage collected.";
+  let index = manifest^.parts.inner.len;
+  loop @history {
+    if index == 0_u64 {
+      break @history;
+    }
+    set index = index -wrap 1_u64;
+    if index < manifest^.parts.inner.len {
+      let part = &manifest^.parts.inner[index];
+      if part^.kind == 104_u8 {
+        let length = part^.name.inner.len;
+        let name = &part^.name.inner[0_u64..length];
+        let removed = std::fs::remove_file(factory: factory, root: writable, name: name, start: 0_u64, end: length);
+        let forgotten = remove_at(window: &manifest^.parts.inner, index: index);
+        set manifest^.dirty = True();
+      }
+    }
+  }
+  let persisted = aof_persist(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
+  return unit;
+}
+
+fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest, time: &Time, clock: &Clock) -> result: Result<WriteFile, unit> reads(store), reads(cwd), reads(directory), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(writable), writes(manifest), writes(clock) waits {
+  let parsed = aof_read_manifest(factory: factory, directory: directory, prefix: prefix, manifest: manifest);
+  if parsed {
+  } else {
+    return Err<WriteFile, unit>(error: unit);
+  }
+  let upgraded = aof_upgrade(factory: factory, cwd: cwd, cwd_write: cwd_write, directory: directory, writable: writable, prefix: prefix, manifest: manifest);
+  if upgraded {
+  } else {
+    return Err<WriteFile, unit>(error: unit);
+  }
+  let loaded = aof_load_parts(store: store, factory: factory, directory: directory, writable: writable, manifest: manifest, time: time, clock: clock);
+  if loaded {
+  } else {
+    return Err<WriteFile, unit>(error: unit);
+  }
+  let no_base = manifest^.base_sequence == 0_i64;
+  let no_incr = manifest^.incr_sequence == 0_i64;
+  let empty = band(no_base, no_incr);
+  if empty {
+    let name = aof_named(prefix: prefix, suffix: &aof_base_suffix[0_u64..11_u64]);
+    let length = name.inner.len;
+    let bytes = &name.inner[0_u64..length];
+    let contents = box_slots_new::<u8>(capacity: 0_u64);
+    let created = aof_replace(factory: factory, writable: writable, name: bytes, contents: &contents);
+    if created {
+    } else {
+      return Err<WriteFile, unit>(error: unit);
+    }
+    let part = AofPart(name: move name, sequence: 1_i64, kind: 98_u8);
+    aof_push(manifest: manifest, part: move part);
+    set manifest^.base_sequence = 1_i64;
+    set manifest^.dirty = True();
+  }
+  if no_incr {
+    let name = aof_named(prefix: prefix, suffix: &aof_incr_suffix[0_u64..11_u64]);
+    let part = AofPart(name: move name, sequence: 1_i64, kind: 105_u8);
+    aof_push(manifest: manifest, part: move part);
+    set manifest^.incr_sequence = 1_i64;
+    set manifest^.dirty = True();
+  }
+  let last = box_slots_new::<u8>(capacity: 0_u64);
+  for (index in 0_u64..manifest^.parts.inner.len) {
+    let part = &manifest^.parts.inner[index];
+    if part^.kind == 105_u8 {
+      let length = part^.name.inner.len;
+      let name = &part^.name.inner[0_u64..length];
+      set last = aof_copy(input: name);
+    }
+  }
+  let length = last.inner.len;
+  let name = &last.inner[0_u64..length];
+  match std::fs::open_append(factory: factory, root: writable, name: name, start: 0_u64, end: length) {
+    Ok(value: opened) => {
+      let persisted = aof_persist(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
+      if persisted.durable {
+        match std::fs::sync_directory(factory: factory, root: writable) {
+          Ok(value: synced) => {
+            aof_history(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
+          }
+          Err(error: problem) => {
+          }
+        }
+        return Ok<WriteFile, unit>(value: move opened);
+      }
+      close_write(factory: factory, file: move opened);
+      return Err<WriteFile, unit>(error: unit);
+    }
+    Err(error: problem) => {
+      return Err<WriteFile, unit>(error: unit);
+    }
+  }
+}
+
+fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, prefix: &[u8], time: &Time, clock: &Clock) -> result: Result<AofLog, unit> reads(store), reads(cwd), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(clock) waits {
+  doc "Opens appendonlydir, loads and upgrades Redis's manifest layout, cuts only its last active file, removes listed history and opens its last incremental file. A refusal returns Err before the listener starts.";
+  let directory_name = &aof_directory_name[0_u64..13_u64];
+  match std::fs::open_directory_write(factory: factory, root: cwd_write, name: directory_name, start: 0_u64, end: 13_u64) {
+    Ok(value: writable) => {
+      match std::fs::open_directory(factory: factory, root: cwd, name: directory_name, start: 0_u64, end: 13_u64) {
+        Ok(value: directory) => {
+          let parts = box_slots_new::<AofPart>(capacity: 4_u64);
+          let clean = False();
+          let manifest = AofManifest(parts: move parts, base_sequence: 0_i64, incr_sequence: 0_i64, dirty: clean);
+          match aof_prepare(store: store, factory: factory, cwd: cwd, cwd_write: cwd_write, directory: &directory, writable: &writable, prefix: prefix, manifest: &manifest, time: time, clock: clock) {
+            Ok(value: opened) => {
+              let filename = aof_copy(input: prefix);
+              let log = AofLog(directory: move directory, writable: move writable, prefix: move filename, manifest: move manifest, file: move opened);
+              return Ok<AofLog, unit>(value: move log);
+            }
+            Err(error: problem) => {
+              std::fs::close_directory(factory: factory, directory: move directory);
+            }
+          }
+        }
+        Err(error: problem) => {
+        }
+      }
+      std::fs::close_directory_write(factory: factory, directory: move writable);
+    }
+    Err(error: problem) => {
+    }
+  }
+  return Err<AofLog, unit>(error: unit);
+}

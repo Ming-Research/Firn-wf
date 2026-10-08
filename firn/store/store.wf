@@ -52,13 +52,14 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   let due = priority_queue_new::<Due, ceiling>();
   let log = box_slots_new::<u8>(capacity: 65536_u64);
   let running = False();
-  let meta = Meta(due: move due, log: move log, clients: 0_u64, stopping: running, random: seed);
+  let rewrite_ok = True();
+  let meta = Meta(due: move due, log: move log, aof_current_size: 0_u64, aof_base_size: 0_u64, aof_rewrite_in_progress: running, aof_rewrite_requested: running, aof_rewrite_reply: 0_u64, aof_rewrites: 0_u64, aof_rewrite_ok: rewrite_ok, aof_worker_done: running, aof_installing: 0_u64, aof_rewrite_percentage: 100_u64, aof_rewrite_min_size: 67108864_u64, clients: 0_u64, stopping: running, random: seed);
   let kept = shared_new::<Meta>(value: move meta);
   let encodings = array_filled::<i64, 9>(value: 0_i64);
   for @defaults (slot in 0_u64..9_u64) {
     set encodings[slot] = encoding_defaults[slot];
   }
-  let server = ServerState(password: move password, timeout: timeout, encodings: encodings, connections: 0_u64, started: started);
+  let server = ServerState(password: move password, timeout: timeout, shutdown: running, encodings: encodings, connections: 0_u64, started: started);
   let beside = shared_new::<ServerState>(value: move server);
   let pool = pkg::script_pool::new_pool();
   let scripts = shared_new::<pkg::script_pool::EnginePool>(value: move pool);
@@ -130,9 +131,12 @@ fn log_removal(log: &Box<Slots<u8>>, key: &[u8]) -> result: unit reads(key), wri
 }
 
 fn expire_key(store: &Keyspace, key: &[u8], at: u64) -> result: unit reads(store), reads(key) waits {
-  doc "Removes the key when its expiry is still the one queued at at, recording the removal as log_removal does.";
+  doc "Removes the key when its expiry is still the one queued at at, recording the removal as log_removal does, unless main has stopped the writer; testing stopping under the same metadata statement prevents a late expiry record after the final drain.";
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if m^.stopping {
+      return unit;
+    }
     let matched = False();
     match slot^ {
       Some(value: held) => {
@@ -380,4 +384,12 @@ fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>) -> r
     log_input(log: log, input: input, span: span);
   }
   return unit;
+}
+
+fn shutdown_requested(store: &Keyspace) -> requested: Bool reads(store) waits {
+  let requested = False();
+  atomic v = &store^.server {
+    set requested = v^.shutdown;
+  }
+  return requested;
 }
