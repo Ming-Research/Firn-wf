@@ -1,4 +1,6 @@
 alias AcceptedConnection = std::net::AcceptedConnection;
+alias CancelSource = std::time::CancelSource;
+alias CancelWatch = std::time::CancelWatch;
 alias Client = pkg::protocol::Client;
 alias Clock = std::time::Clock;
 alias ExitStatus = std::process::ExitStatus;
@@ -21,8 +23,14 @@ alias arg_get = std::text::arg_get;
 alias args_count = std::text::args_count;
 alias bytes_length = pkg::bytes::bytes_length;
 alias bytes_new = pkg::bytes::bytes_new;
+alias cancel_fire = std::time::cancel_fire;
+alias cancel_share = std::time::cancel_share;
+alias cancel_source = std::time::cancel_source;
+alias cancel_watch = std::time::cancel_watch;
 alias client_new = pkg::protocol::client_new;
 alias clock_share = std::time::clock_share;
+alias close_cancel_source = std::time::close_cancel_source;
+alias close_cancel_watch = std::time::close_cancel_watch;
 alias close_directory = std::fs::close_directory;
 alias close_directory_write = std::fs::close_directory_write;
 alias close_listener = std::net::close_listener;
@@ -44,7 +52,7 @@ alias name_is = pkg::bytes::name_is;
 alias nanoseconds_from = std::time::nanoseconds_from;
 alias parse_request = pkg::protocol::parse_request;
 alias protocol_error = pkg::protocol::protocol_error;
-alias receive_next = std::net::receive_next;
+alias receive_next_until = std::net::receive_next_until;
 alias send_once = std::net::send_once;
 alias settings_copy = pkg::protocol::settings_copy;
 alias sleep_until = std::time::sleep_until;
@@ -54,7 +62,7 @@ alias stop_next = std::process::stop_next;
 alias keyspace_logging = pkg::store::keyspace_logging;
 alias keyspace_new = pkg::store::keyspace_new;
 alias keyspace_share = pkg::store::keyspace_share;
-alias tcp_accept = std::net::tcp_accept;
+alias tcp_accept_until = std::net::tcp_accept_until;
 alias tcp_listen = std::net::tcp_listen;
 alias unix_nanoseconds = std::time::unix_nanoseconds;
 alias wall_clock_share = std::time::wall_clock_share;
@@ -121,7 +129,7 @@ struct Reading {
 }
 
 fn deadline_error(error: &IoError) -> passed: Bool reads(error) {
-  doc "Whether a host error is DeadlinePassed, a wait that ended at its deadline with nothing transferred.";
+  doc "Whether a host error is DeadlinePassed, a wait ended by its clock deadline or prototype cancellation with nothing transferred.";
   match error^ {
     NotFound(code: native_code, origin: native_origin) => {
       return False();
@@ -214,7 +222,7 @@ fn deadline_error(error: &IoError) -> passed: Bool reads(error) {
 }
 
 fn passed_deadline(stop: &ReadStop) -> passed: Bool reads(stop) {
-  doc "Whether a receive stopped at its deadline with no byte received, which leaves the connection as it was, rather than because the peer finished sending or the connection failed.";
+  doc "Whether a receive stopped with DeadlinePassed from its clock deadline or prototype cancellation, with no byte received and the connection left as it was, rather than because the peer finished sending or the connection failed.";
   match stop^ {
     ReadEnd() => {
       return False();
@@ -267,8 +275,8 @@ fn read_time(wall: &WallClock) -> result: Reading reads(wall) {
   return Reading(time: time, unix_us: unix_us);
 }
 
-fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64) -> result: unit pure waits {
-  doc "Serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: each read waits no longer than a second, or than a nonzero idle limit leaves, and the client reads the limit again when that wait ends and at most once a second while it sends, so that a limit CONFIG SET changes reaches it within a second; the same reads observe shutdown and close after held replies are sent. Sends retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
+fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, cancel: CancelWatch) -> result: unit pure waits {
+  doc "Serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: this never-merged cancellation experiment uses receive_next_until with a shared watch and no deadline when the idle limit is zero, retaining the existing deadline of at most a second or the remaining idle time when the limit is nonzero. A stop signal fires the watch after requesting shutdown; DeadlinePassed keeps the existing shutdown and idle-limit checks. SHUTDOWN only sets the flag and does not wake an unbounded receive, and CONFIG SET cannot make a connection in an unbounded receive reread a changed idle limit until it wakes for another reason. These regressions are accepted only for this measurement. The existing checks on activity still observe shutdown and close after held replies are sent. Sends retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
   let env = KeyEnv();
   let client = client_new(capacity: 16384_u64);
   atomic m = &store.meta {
@@ -312,20 +320,20 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       if fresh {
         set last = current;
       }
-      let wait = 1000000000_u64;
+      let limit = None<Instant>();
       if idle != 0_u64 {
         let quiet = current -sat last;
         let idle_ns = idle *wrap 1000000000_u64;
         let left = idle_ns -sat quiet;
-        set wait = imin(left, 1000000000_u64);
+        let wait = imin(left, 1000000000_u64);
+        let bound = instant_after(instant: before, nanoseconds: wait);
+        set limit = Some<Instant>(value: bound);
       }
-      let bound = instant_after(instant: before, nanoseconds: wait);
-      let limit = Some<Instant>(value: bound);
       set fresh = False();
       let length = input.inner.len;
       let window = &input.inner[0_u64..length];
       let waited = False();
-      match receive_next(receive: &connection.receive, destination: window, start: held, end: length, deadline: limit) {
+      match receive_next_until(receive: &connection.receive, destination: window, start: held, end: length, deadline: limit, cancel: &cancel) {
         Ok(value: next) => {
           set received = next;
         }
@@ -427,6 +435,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     }
     set held = keep_rest(input: &input, from: consumed, held: held);
   }
+  close_cancel_watch(watch: move cancel);
   let TcpConnection(receive: closing_receive, send: closing_send) = move connection;
   close_receive(factory: &factory, receive: move closing_receive);
   close_send(factory: &factory, send: move closing_send);
@@ -467,8 +476,8 @@ fn expire_keys(store: Keyspace, clock: Clock, wall: WallClock) -> result: unit p
   return unit;
 }
 
-fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspace, clock: Clock) -> result: unit pure waits {
-  doc "Waits in a context of its own for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either. The listener is closed before the request is recorded, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops. Each wait lasts at most a tenth of a second, as the expiry context's cycle does, so that firn's exit after it stops for another reason waits no longer than that, after which the context reads the shutdown request, in the server's state alone so that a script holding the keyspace's metadata cannot keep it from its next wait, and ends without a request once it is set: by SHUTDOWN, or by main once it stops for another reason, such as the limit on clients. A wait that fails otherwise closes the listener, leaving the host default.";
+fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspace, clock: Clock, source: CancelSource) -> result: unit pure waits {
+  doc "Waits in a context of its own for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either. The listener is closed before the request is recorded, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops. Each wait lasts at most a tenth of a second, as the expiry context's cycle does, so that firn's exit after it stops for another reason waits no longer than that, after which the context reads the shutdown request, in the server's state alone so that a script holding the keyspace's metadata cannot keep it from its next wait, and ends without a request once it is set: by SHUTDOWN, or by main once it stops for another reason, such as the limit on clients. A wait that fails otherwise closes the listener, leaving the host default. In this cancellation experiment, a heard signal fires the shared source immediately after requesting shutdown; every exit closes this context's source handle, without firing when no signal was heard.";
   let heard = False();
   loop @waiting {
     if shutdown_requested(store: &store) {
@@ -494,7 +503,9 @@ fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspac
   close_stop_listener(factory: &factory, listener: move listener);
   if heard {
     request_shutdown(store: &store);
+    cancel_fire(source: &source);
   }
+  close_cancel_source(source: move source);
   return unit;
 }
 
@@ -966,7 +977,7 @@ fn read_options(args: &std::text::Args) -> options: Options reads(args) {
 }
 
 fn main(inputs: Inputs) -> status: ExitStatus pure waits {
-  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation, which read_options reads, names up to four arguments by position, the port, how many clients to accept, zero for no limit, the append-only file's name or - for none, and the idle limit, then options by name, --port, --bind, --timeout, --appendonly, --appendfilename, --requirepass, --clients, --auto-aof-rewrite-percentage and --auto-aof-rewrite-min-size; an invocation that does not read stops firn with status 1. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from just before firn listens, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; firn stops with status 3 when it cannot listen, on its address or for those signals.";
+  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation, which read_options reads, names up to four arguments by position, the port, how many clients to accept, zero for no limit, the append-only file's name or - for none, and the idle limit, then options by name, --port, --bind, --timeout, --appendonly, --appendfilename, --requirepass, --clients, --auto-aof-rewrite-percentage and --auto-aof-rewrite-min-size; an invocation that does not read stops firn with status 1. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from just before firn listens, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; firn stops with status 3 when it cannot listen, on its address or for those signals. This never-merged cancellation measurement branch relaxes idle-limit and shutdown responsiveness as described by serve. Accept waits without a deadline on the signal watch; SHUTDOWN does not fire it and can leave accept blocked until another connection or host outcome.";
   let Inputs(args: args, cwd: cwd_directory, stdout: unused_stdout, stderr: unused_stderr, handles: handles, stdin: unused_stdin, clock: clock, wall_clock: wall_clock, stops: stops) = move inputs;
   let std::fs::Directory(read: cwd, write: cwd_write) = move cwd_directory;
   let options = read_options(args: &args);
@@ -1000,6 +1011,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
     set m^.aof_rewrite_percentage = options.rewrite_percentage;
     set m^.aof_rewrite_min_size = options.rewrite_min_size;
   }
+  let source = cancel_source();
   let logging = False();
   let failed = False();
   if options.logging {
@@ -1022,6 +1034,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   close_directory_write(factory: &handles, directory: move cwd_write);
   close_directory(factory: &handles, directory: move cwd);
   if failed {
+    close_cancel_source(source: move source);
     return exit_status(code: 4_u8);
   }
   let keyspace = keyspace_logging(store: &root, logging: logging);
@@ -1036,7 +1049,8 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
       let stop_factory = factory_share(factory: &handles);
       let stop_store = keyspace_share(store: &keyspace);
       let stop_clock = clock_share(clock: &clock);
-      spawn stop_on_signal(listener: move stop_listener, factory: move stop_factory, store: move stop_store, clock: move stop_clock);
+      let stop_source = cancel_share(source: &source);
+      spawn stop_on_signal(listener: move stop_listener, factory: move stop_factory, store: move stop_store, clock: move stop_clock, source: move stop_source);
     }
     Err(error: stop_problem) => {
       set listened = False();
@@ -1045,6 +1059,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   if listened {
     match tcp_listen(factory: &handles, address: &address) {
       Ok(value: listener) => {
+        let accepting_watch = cancel_watch(source: &source);
         let accepted = 0_u64;
         loop @accepting {
           if count != 0_u64 {
@@ -1055,10 +1070,8 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
           if shutdown_requested(store: &keyspace) {
             break @accepting;
           }
-          let before = std::time::now(clock: &clock);
-          let bound = instant_after(instant: before, nanoseconds: 1000000000_u64);
-          let limit = Some<Instant>(value: bound);
-          match tcp_accept(factory: &handles, listener: &listener, deadline: limit) {
+          let limit = None<Instant>();
+          match tcp_accept_until(factory: &handles, listener: &listener, deadline: limit, cancel: &accepting_watch) {
             Ok(value: next) => {
               let AcceptedConnection(connection: connection, peer: unused_peer) = move next;
               if shutdown_requested(store: &keyspace) {
@@ -1083,7 +1096,8 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
                 set required = length > 0_u64;
               }
               set accepted = accepted +wrap 1_u64;
-              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id);
+              let serving_watch = cancel_watch(source: &source);
+              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, cancel: move serving_watch);
             }
             Err(error: problem) => {
               let timed_out = deadline_error(error: &problem);
@@ -1093,6 +1107,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
             }
           }
         }
+        close_cancel_watch(watch: move accepting_watch);
         close_listener(factory: &handles, listener: move listener);
       }
       Err(error: problem) => {
@@ -1100,6 +1115,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
       }
     }
   }
+  close_cancel_source(source: move source);
   atomic m = &keyspace.meta when m^.clients == 0_u64 {
   }
   atomic m = &keyspace.meta, v = &keyspace.server when m^.aof_installing == 0_u64 {
