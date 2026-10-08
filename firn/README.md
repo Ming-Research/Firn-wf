@@ -49,10 +49,12 @@ clients send on their own:
   of [Halo-wf](https://github.com/Ming-Research/Halo-wf), `deps/halo-wf`,
   with Redis's `KEYS`, `ARGV`, `redis` library and reply conversions, in
   either protocol. A compiled script is kept until `SCRIPT FLUSH`, as in
-  Redis 7.0.15. `redis.call` and `redis.pcall` run the commands written as
-  parts, those `MULTI` runs, inside the script's statement, through Halo's
-  resumable host call; any other command is answered with Redis's error for
-  an unknown one, noting that firn may not run it from scripts yet;
+  Redis 7.0.15. `SCRIPT FLUSH` waits until no script is in progress before
+  clearing the registry. `redis.call` and `redis.pcall` run the commands
+  written as parts, those `MULTI` runs, inside the script's statement,
+  through Halo's resumable host call; any other command is answered with
+  Redis's error for an unknown one, noting that firn may not run it from
+  scripts yet;
 - connection: `PING`, `ECHO`, `QUIT`, `AUTH`, `HELLO` with no version,
   version 2 or version 3, which switches the connection to RESP3,
   `SELECT 0`, firn having one database, and `CLIENT ID`, `CLIENT GETNAME`,

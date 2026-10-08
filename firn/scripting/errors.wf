@@ -108,8 +108,8 @@ fn redis_error_field(engine: &Engine, table: Value) -> r: Value reads(engine) {
   return Value::Nil();
 }
 
-fn format_redis_error(engine: &Engine, source: &[u8], line: u64, locate: Bool) -> r: Box<Slots<u8>> reads(engine), reads(source) {
-  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE), which follows Redis 7.0.15's eval.c and script_lua.c. Redis 7's EVAL error reply, after eval.c's string-to-error-table handler and script_lua.c's final reply: an error table's err field, or ERR and the message; then the script body's SHA-1 and the line. The caller supplies the failing line, or zero if unknown; locate adds Lua's user_script prefix to a VM message not yet located.";
+fn format_redis_error(engine: &Engine, sha: &Array<u8, 40>, line: u64, locate: Bool) -> r: Box<Slots<u8>> reads(engine), reads(sha) {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE), which follows Redis 7.0.15's eval.c and script_lua.c. Redis 7's EVAL error reply, after eval.c's string-to-error-table handler and script_lua.c's final reply: an error table's err field, or ERR and the message; then the script body's SHA-1, which the caller supplies, and the line. The caller supplies the failing line, or zero if unknown; locate adds Lua's user_script prefix to a VM message not yet located.";
   let out = box_slots_new::<u8>(capacity: 0_u64);
   let error = halo::embed::error_value(engine: engine);
   let tag = halo::embed::kind(value: error);
@@ -129,9 +129,8 @@ fn format_redis_error(engine: &Engine, source: &[u8], line: u64, locate: Bool) -
     redis_value_text(engine: engine, value: error, out: &out);
   }
   if line > 0_u64 {
-    let digest = halo::embed::sha1hex(bytes: source);
     text_bytes(out: &out, bytes: &redis_script[0_u64..9_u64]);
-    text_bytes(out: &out, bytes: &digest[0_u64..40_u64]);
+    text_bytes(out: &out, bytes: &sha^[0_u64..40_u64]);
     text_bytes(out: &out, bytes: &redis_on[0_u64..5_u64]);
     text_bytes(out: &out, bytes: &redis_location[0_u64..13_u64]);
     decimal(out: &out, n: line);

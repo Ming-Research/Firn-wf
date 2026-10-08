@@ -3007,6 +3007,29 @@ fn expect_silence_for(stream: &mut TcpStream, wait: Duration, what: &str) {
         .expect("restore the reply wait");
 }
 
+/// Whether the wait passed silently, leaving any reply unread and restoring
+/// the previous timeout. A closed connection or a socket failure is an error.
+#[cfg(target_os = "linux")]
+fn silent_for(stream: &mut TcpStream, wait: Duration) -> std::io::Result<bool> {
+    let previous = stream.read_timeout()?;
+    stream.set_read_timeout(Some(wait))?;
+    let result = stream.peek(&mut [0_u8; 1]);
+    stream.set_read_timeout(previous)?;
+    match result {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) => Ok(true),
+        Err(error) => Err(error),
+        Ok(0) => Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "connection closed during the wait for silence",
+        )),
+        Ok(_) => Ok(false),
+    }
+}
+
 /// firn splits an inline command as Redis's sdssplitargs splits one: double
 /// quotes in which \n, \r, \t, \b, \a, \\, \" and \xHH stand for their bytes,
 /// a backslash before any other byte for that byte and an incomplete \x for x;
@@ -4159,17 +4182,18 @@ fn firn_records_transactions_as_redis_propagates_them() {
 /// compiled by EVAL or SCRIPT LOAD is cached under its SHA1 until SCRIPT FLUSH,
 /// EVALSHA finds it in either case and SCRIPT EXISTS in lower case only; KEYS
 /// and ARGV reach the script; the number of keys is checked as Redis checks it;
-/// a script that runs past its first budget is run again with a larger one; the
-/// globals' metatable is read-only; SCRIPT's subcommands and the commands'
-/// arities are answered as Redis answers them; redis.error_reply and
-/// redis.pcall's argument check answer Redis's error tables; and a script's
-/// result is written in the client's protocol, as luaReplyToRedisReply writes
-/// it, booleans following redis.setresp, and a result that contains itself
-/// ending in Redis's stack-limit error at the depth Redis reaches; redis.call
-/// and redis.pcall run the commands written as parts, numbers formatted as
-/// Redis formats them, an error reply raised at redis.call, at the line of the
-/// call or of a rethrow, through a local alias of error included, as Redis's
-/// error handler reports it, and returned by redis.pcall, Lua's pcall
+/// a script that runs past its first budget is run again with a larger one, by
+/// EVAL and by EVALSHA alike; the globals' metatable is read-only; SCRIPT's
+/// subcommands and the commands' arities are answered as Redis answers them;
+/// redis.error_reply and redis.pcall's argument check answer Redis's error
+/// tables; and a script's result is written in the client's protocol, as
+/// luaReplyToRedisReply writes it, booleans following redis.setresp, and a
+/// result that contains itself ending in Redis's stack-limit error at the depth
+/// Redis reaches; redis.call and redis.pcall run the commands written as parts,
+/// numbers formatted as Redis formats them, an error reply raised at
+/// redis.call, at the line of the call or of a rethrow, through a local alias
+/// of error included, as Redis's error handler reports it, with the script's
+/// SHA1 when EVALSHA ran it too, and returned by redis.pcall, Lua's pcall
 /// returning an error table's err field as Redis's replacement does, and the
 /// reply read in the script's protocol whatever the client's. The expected
 /// bytes are redis-server 7.0.15's.
@@ -4207,6 +4231,7 @@ fn firn_runs_scripts_as_redis_does() {
         vec!["SCRIPT", "FLUSH", "SYNC", "extra"],
         vec!["EVAL", "redis.setresp(3);return {false,true}", "0"],
         vec!["EVAL", "local n=0;for i=1,3000 do n=n+1 end;return n", "0"],
+        vec!["EVALSHA", "386217f93cd9e48ea05c21633f6b340505d4e852", "0"],
         vec![
             "EVAL",
             "local m=getmetatable(_G);return pcall(function()m.__index=nil end)",
@@ -4264,6 +4289,7 @@ fn firn_runs_scripts_as_redis_does() {
             "sk",
         ],
         vec!["EVAL", "local err = error\nerr('boom')", "0"],
+        vec!["EVALSHA", "443852b874bae87a7a4b0129daea4709fa17a0f1", "0"],
         vec![
             "EVAL",
             "local err = error\nlocal _, e = xpcall(function()\n  redis.call('INCR', KEYS[1])\nend, function(e) return e end)\nerr(e, 0)",
@@ -4346,7 +4372,7 @@ fn firn_runs_scripts_as_redis_does() {
     let sets = "*1\r\n".repeat(2665);
     let limit = "-ERR reached lua stack limit\r\n";
     let expected = format!(
-        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n$-1\r\n$2\r\nsv\r\n:1\r\n:42\r\n:47\r\n-ERR value is not an integer or out of range\r\n-ERR value is not an integer or out of range script: da8455f0535fd532821b3713a4eccd80fc4b8457, on @user_script:1.\r\n-ERR value is not an integer or out of range script: 8225a61dd7e7b8c6f60bf49e74d2d38d8fbd695f, on @user_script:2.\r\n-ERR value is not an integer or out of range script: 6793b20f57c81afc3e867639a73e30ff2bd19609, on @user_script:4.\r\n-ERR user_script:2: boom script: 443852b874bae87a7a4b0129daea4709fa17a0f1, on @user_script:2.\r\n-ERR value is not an integer or out of range script: d3a069bf51964f7e9ac333589ead69a481f56199, on @user_script:5.\r\n-ERR value is not an integer or out of range script: 3676a1037fb941aa22fb13a86e521811d4392a31, on @user_script:3.\r\n$6\r\nstring\r\n$5\r\nERR x\r\n$5\r\ntable\r\n+OK\r\n:100\r\n:1\r\n+OK\r\n$1\r\nb\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n$2\r\nsv\r\n_\r\n_\r\n"
+        ":42\r\n*1\r\n:1\r\n:42\r\n$40\r\n{sha}\r\n+OK\r\n*1\r\n:0\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n*4\r\n$3\r\nkey\r\n$3\r\narg\r\n$-1\r\n:1\r\n-ERR Number of keys can't be negative\r\n-ERR Number of keys can't be greater than number of args\r\n-ERR value is not an integer or out of range\r\n-ERR wrong number of arguments for 'script|exists' command\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n-ERR SCRIPT FLUSH only support SYNC|ASYNC option\r\n*2\r\n:0\r\n:1\r\n:3000\r\n:3000\r\n$-1\r\n-ERR wrong number of arguments for 'script|load' command\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n:42\r\n:42\r\n*1\r\n:0\r\n-ERR wrong number of arguments for 'eval' command\r\n-ERR wrong number of arguments for 'evalsha' command\r\n-ERR wrong number of arguments for 'script' command\r\n-ERR unknown subcommand 'unknown'. Try SCRIPT HELP.\r\n$64\r\nERR Please specify at least one argument for this redis lib call\r\n$9\r\nERR probe\r\n$-1\r\n$2\r\nsv\r\n:1\r\n:42\r\n:47\r\n-ERR value is not an integer or out of range\r\n-ERR value is not an integer or out of range script: da8455f0535fd532821b3713a4eccd80fc4b8457, on @user_script:1.\r\n-ERR value is not an integer or out of range script: 8225a61dd7e7b8c6f60bf49e74d2d38d8fbd695f, on @user_script:2.\r\n-ERR value is not an integer or out of range script: 6793b20f57c81afc3e867639a73e30ff2bd19609, on @user_script:4.\r\n-ERR user_script:2: boom script: 443852b874bae87a7a4b0129daea4709fa17a0f1, on @user_script:2.\r\n-ERR user_script:2: boom script: 443852b874bae87a7a4b0129daea4709fa17a0f1, on @user_script:2.\r\n-ERR value is not an integer or out of range script: d3a069bf51964f7e9ac333589ead69a481f56199, on @user_script:5.\r\n-ERR value is not an integer or out of range script: 3676a1037fb941aa22fb13a86e521811d4392a31, on @user_script:3.\r\n$6\r\nstring\r\n$5\r\nERR x\r\n$5\r\ntable\r\n+OK\r\n:100\r\n:1\r\n+OK\r\n$1\r\nb\r\n{arrays}{limit}{maps}{limit}{limit}{sets}{limit}*2\r\n$1\r\na\r\n:1\r\n*1\r\n$1\r\na\r\n$3\r\n1.5\r\n$3\r\n123\r\n$2\r\nhi\r\n{hello3}*2\r\n_\r\n:1\r\n*2\r\n#f\r\n#t\r\n%1\r\n$1\r\na\r\n:1\r\n~1\r\n$1\r\na\r\n,1.5\r\n(123\r\n=6\r\nmd :hi\r\n_\r\n$2\r\nsv\r\n_\r\n_\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the scripting batch");
     drop(client);
@@ -4402,6 +4428,100 @@ fn firn_kills_a_looping_script_as_redis_does() {
     );
     drop(looping);
     drop(other);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// SCRIPT FLUSH waits for a running EVALSHA, including between attempts,
+/// as Redis 7.0.15 queues FLUSH below its busy threshold. SCRIPT KILL can
+/// still stop the script while FLUSH waits: the script gets Redis's killed
+/// error, FLUSH succeeds, and a later EVALSHA gets NOSCRIPT. Each round loads
+/// the script and checks that FLUSH stays silent for 300 ms and then the
+/// script for 300 ms more before KILL. An OK to FLUSH within the first wait
+/// leaves the precondition that the script had begun unproven: EVALSHA must
+/// then answer exactly NOSCRIPT, and the case reruns with a longer start
+/// delay, at most three rounds. Without the running guard, FLUSH answers
+/// once firn serves it and the running script's next attempt then answers
+/// NOSCRIPT, so a round fails or reruns unless firn leaves FLUSH unserved for
+/// the whole 600 ms of silence; the case cannot observe when firn starts
+/// serving FLUSH, so that delay is its assumption. A correct firn passes
+/// unless every round's start delay is too short. The killed error is the
+/// same as in the SCRIPT KILL case above.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_script_flush_waits_for_a_looping_script_to_be_killed() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]);
+    let mut looping = connect_when_ready(port);
+    let mut flushing = connect_when_ready(port);
+    let mut killing = connect_when_ready(port);
+    let sha = "694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7";
+    let mut round = 0;
+    loop {
+        round += 1;
+        assert!(
+            round <= 3,
+            "SCRIPT FLUSH never waited for a running script in three rounds"
+        );
+        looping
+            .write_all(&resp(&["SCRIPT", "LOAD", "while true do end"]))
+            .expect("load the looping script");
+        expect_replies(
+            &mut looping,
+            format!("$40\r\n{sha}\r\n").as_bytes(),
+            "the looping script's SHA1",
+        );
+        looping
+            .write_all(&resp(&["EVALSHA", sha, "0"]))
+            .expect("start the looping script by SHA1");
+        std::thread::sleep(Duration::from_millis(300 * round));
+        flushing
+            .write_all(&resp(&["SCRIPT", "FLUSH"]))
+            .expect("flush while the script runs");
+        if silent_for(&mut flushing, Duration::from_millis(300))
+            .expect("wait for SCRIPT FLUSH while a script is in progress")
+        {
+            expect_silence(&mut looping, "the running script while SCRIPT FLUSH waits");
+            break;
+        }
+        expect_replies(
+            &mut flushing,
+            b"+OK\r\n",
+            "SCRIPT FLUSH before the running precondition was proven",
+        );
+        expect_replies(
+            &mut looping,
+            b"-NOSCRIPT No matching script. Please use EVAL.\r\n",
+            "EVALSHA when SCRIPT FLUSH did not wait",
+        );
+    }
+    killing
+        .write_all(&resp(&["SCRIPT", "KILL"]))
+        .expect("kill the script while FLUSH waits");
+    expect_replies(&mut killing, b"+OK\r\n", "SCRIPT KILL while FLUSH waits");
+    expect_replies(
+        &mut looping,
+        format!("-ERR Script killed by user with SCRIPT KILL... script: {sha}, on @user_script:1.\r\n").as_bytes(),
+        "the killed script while FLUSH waits",
+    );
+    expect_replies(
+        &mut flushing,
+        b"+OK\r\n",
+        "SCRIPT FLUSH once the script ended",
+    );
+    looping
+        .write_all(&resp(&["EVALSHA", sha, "0"]))
+        .expect("run the flushed SHA1");
+    expect_replies(
+        &mut looping,
+        b"-NOSCRIPT No matching script. Please use EVAL.\r\n",
+        "EVALSHA after SCRIPT FLUSH",
+    );
+    drop(looping);
+    drop(flushing);
+    drop(killing);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
 }

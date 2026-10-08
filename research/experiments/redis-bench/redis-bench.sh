@@ -41,16 +41,26 @@
 #   sh redis-bench.sh workloads   the deployment-performance investigation's
 #                                 std-only Rust client, built offline with
 #                                 cargo in release mode; Redis and firn, each
-#                                 without and with AOF, at depth 1 with 50
-#                                 connections and one thread per client CPU
-#                                 (up to 16 CPUs, as in scale); WORKLOAD_CPUS
+#                                 without and with AOF, at depth 1 with
+#                                 WORKLOAD_CONNECTIONS connections (default
+#                                 50; several values measure each in turn)
+#                                 and one thread per client CPU (up to 16
+#                                 CPUs, as in scale); WORKLOAD_CPUS
 #                                 (default 1 2), WORKLOAD_PASSES (default 3),
 #                                 WORKLOAD_SECONDS (default 10), WORKLOADS
 #                                 (default limiter-script limiter-tx setmany-tx
 #                                 session-set session-get). Each workload gets
 #                                 a fresh server; line order reverses on even
 #                                 passes. Before session-get, fill 1,000,000
-#                                 sessions and record VmRSS in KiB. Probe with
+#                                 sessions and record VmRSS in KiB. With PERF
+#                                 set, in pass 1 only, each firn line's server,
+#                                 after all its measured runs of a workload,
+#                                 runs that workload once more at each
+#                                 connection count in turn under perf record,
+#                                 unmeasured, and keeps each flat profile as
+#                                 profile-<line>-<cpus>-<workload>-
+#                                 <connections>.txt; Redis lines are not
+#                                 profiled. Probe with
 #                                 WORKLOAD_PASSES=2 WORKLOAD_SECONDS=5 first.
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
@@ -708,10 +718,34 @@ if [ "$MODE" = workloads ]; then
                         rss=$(awk '/^VmRSS:/ { print $2; found=1 } END { if (!found) exit 1 }' "/proc/$server/status")
                         echo "$line,$pass,$n,$workload,1000000,$rss" | tee -a "$OUT/workloads-memory.csv"
                     fi
-                    result=$(taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
-                        --threads "$CLIENT_THREADS" --connections 50 \
-                        --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
-                    echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
+                    for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                        result=$(taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
+                            --threads "$CLIENT_THREADS" --connections "$conns" \
+                            --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
+                        echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
+                    done
+                    # Profile only after every measured run on this server, so
+                    # no measured run follows an unmeasured one here.
+                    case $line in firn-*) profiled=1 ;; *) profiled= ;; esac
+                    if [ -n "$PERF" ] && [ -n "$profiled" ] && [ "$pass" -eq 1 ]; then
+                        for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                            name="$line-$n-$workload-$conns"
+                            "$PERF" record -F "${PERF_FREQUENCY:-4999}" -p "$server" \
+                                -o "$OUT/perf-$name.data" >/dev/null 2>&1 &
+                            recorder=$!
+                            sleep 1
+                            taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
+                                --threads "$CLIENT_THREADS" --connections "$conns" \
+                                --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}" >/dev/null
+                            kill -INT "$recorder"
+                            wait "$recorder" || true
+                            "$PERF" report -i "$OUT/perf-$name.data" --stdio --no-children \
+                                --sort dso,symbol --percent-limit 0.5 -g none >"$OUT/profile-$name.txt" 2>/dev/null
+                            rm -f "$OUT/perf-$name.data"
+                            echo "== profile $name"
+                            grep -v '^#' "$OUT/profile-$name.txt" | grep -v '^$' | head -25
+                        done
+                    fi
                     stop
                     server=
                 done

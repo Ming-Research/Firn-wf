@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-08 EVALSHA reuses the engine's compiled script; SCRIPT FLUSH waits for running scripts
+
+Nodes: firn/scripts
+
+Owner-approved: On the shared status board on 2026-10-08, written in Chinese, the owner ruled the decision card firn-evalsha-flush-race, which asked what firn does when another connection's SCRIPT FLUSH meets an EVALSHA in progress and presented option C, recommended, as SCRIPT FLUSH waiting until no script runs together with re-reading the registry on every cache miss, with "C: SCRIPT FLUSH takes effect once no script is running" (translated).
+
+Summary: EVALSHA still answers NOSCRIPT from the registry before it takes the engine, but an attempt whose engine has already compiled the script copies nothing, and an attempt whose engine has not reads the registry again and copies the source from that read, because copying the source on every call took 2.8 to 3.8% of firn's CPU under rate-limiter-flexible's script ([profile](../research/investigations/deployment-performance/README.md#result)). SCRIPT FLUSH waits until no script is in progress, as Redis 7.0.15 does below its busy threshold, so it never interrupts a running script's later attempts; above the threshold Redis answers BUSY, which firn adds with its busy-script replies ([TODO](../docs/todo.md#server)).
+
 ## 2026-10-08 SIGTERM and SIGINT stop firn in order
 
 Nodes: firn/orderly-stop
