@@ -60,7 +60,21 @@
 #                                 unmeasured, and keeps each flat profile as
 #                                 profile-<line>-<cpus>-<workload>-
 #                                 <connections>.txt; Redis lines are not
-#                                 profiled. Probe with
+#                                 profiled. workloads.csv columns are line,
+#                                 pass,cpus,workload,connections,requests,
+#                                 seconds,rate,p50_ms,p99_ms,p99_9_ms,peak_rss_kib.
+#                                 Peak RSS is Linux VmHWM since server start,
+#                                 including setup and earlier connection counts.
+#                                 FIRN_SCRIPT_PROBE prints INFO scriptprobe after
+#                                 each measured firn run as probe,<line>,<pass>,
+#                                 <cpus>,<workload>,<connections>,<field>:<value>.
+#                                 FIRN_HALO_GC_PAUSE sets firn's --halo-gc-pause
+#                                 only (unset keeps 200). A firn line's -p<number>
+#                                 suffix overrides it, e.g. firn-1-p400 or
+#                                 firn-aof-1-p400. WORKLOAD_LINES overrides the
+#                                 default lines; {n} expands to the CPU count:
+#                                 'reference firn-{n}-p200 firn-{n}-p400'.
+#                                 Order still reverses on even passes. Probe with
 #                                 WORKLOAD_PASSES=2 WORKLOAD_SECONDS=5 first.
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
@@ -153,7 +167,32 @@ start() {
     if [ -z "$KEEP" ]; then
         rm -rf "$OUT/appendonlydir" "$OUT/firn.aof"
     fi
-    case $1 in
+    start_line=$1
+    launch_line=$start_line
+    line_pause=
+    case $start_line in
+        firn-*)
+            line_pause=${FIRN_HALO_GC_PAUSE:-}
+            case $start_line in
+                *-p*)
+                    launch_line=${start_line%-p*}
+                    line_pause=${start_line##*-p}
+                    case $line_pause in
+                        ''|*[!0-9]*) echo "invalid GC pause suffix: $start_line" >&2; exit 1 ;;
+                    esac
+                    ;;
+            esac
+            ;;
+    esac
+    # Positional parameters here contain only the optional firn argument pair.
+    set --
+    if [ -n "$line_pause" ]; then
+        case $line_pause in
+            *[!0-9]*) echo "invalid FIRN_HALO_GC_PAUSE: $line_pause" >&2; exit 1 ;;
+        esac
+        set -- --halo-gc-pause "$line_pause"
+    fi
+    case $launch_line in
         reference)
             (registered; exec taskset -c "$SERVER_CPUS" redis-server --port "$PORT" --save "" \
                 --appendonly no --timeout "${IDLE:-0}" --daemonize no \
@@ -176,7 +215,7 @@ start() {
             ;;
         dragonfly-*)
             (registered; exec taskset -c "$SERVER_CPUS" "$DRAGONFLY" --port="$PORT" \
-                --proactor_threads="${1#dragonfly-}" --dbfilename= \
+                --proactor_threads="${launch_line#dragonfly-}" --dbfilename= \
                 --logtostderr ) >"$OUT/server.log" 2>&1 &
             ;;
         garnet-*)
@@ -184,27 +223,27 @@ start() {
                 --bind 127.0.0.1 ) >"$OUT/server.log" 2>&1 &
             ;;
         firn-base-*)
-            (registered; WF_DRIVERS=${1#firn-base-} exec taskset -c "$SERVER_CPUS" \
-                "$FIRN_BASELINE" "$PORT" 0 - "${IDLE:-0}" \
+            (registered; WF_DRIVERS=${launch_line#firn-base-} exec taskset -c "$SERVER_CPUS" \
+                "$FIRN_BASELINE" "$PORT" 0 - "${IDLE:-0}" "$@" \
                 ) >"$OUT/server.log" 2>&1 &
             ;;
         firn-aof-*)
-            (registered && cd "$OUT" && WF_DRIVERS=${1##*-} exec taskset -c "$SERVER_CPUS" \
-                ./firn "$PORT" 0 firn.aof "${IDLE:-0}") \
+            (registered && cd "$OUT" && WF_DRIVERS=${launch_line##*-} exec taskset -c "$SERVER_CPUS" \
+                ./firn "$PORT" 0 firn.aof "${IDLE:-0}" "$@") \
                 >"$OUT/server.log" 2>&1 &
             ;;
         firn-*)
-            (registered; WF_DRIVERS=${1#firn-} exec taskset -c "$SERVER_CPUS" \
-                "$OUT/firn" "$PORT" 0 - "${IDLE:-0}" \
+            (registered; WF_DRIVERS=${launch_line#firn-} exec taskset -c "$SERVER_CPUS" \
+                "$OUT/firn" "$PORT" 0 - "${IDLE:-0}" "$@" \
                 ) >"$OUT/server.log" 2>&1 &
             ;;
         image-*)
             (registered; WF_DRIVERS=$(cpu_count "$SERVER_CPUS") exec taskset -c "$SERVER_CPUS" \
-                "$(image_path "${1#image-}")" "$PORT" 0 - "${IDLE:-0}" \
+                "$(image_path "${launch_line#image-}")" "$PORT" 0 - "${IDLE:-0}" \
                 ) >"$OUT/server.log" 2>&1 &
             ;;
         baseline-*)
-            (registered; WF_DRIVERS=${1#baseline-} exec taskset -c "$SERVER_CPUS" \
+            (registered; WF_DRIVERS=${launch_line#baseline-} exec taskset -c "$SERVER_CPUS" \
                 "$OUT/redis_baseline" "$PORT" 0 ) >"$OUT/server.log" 2>&1 &
             ;;
     esac
@@ -213,7 +252,7 @@ start() {
     until redis-cli -p "$PORT" PING 2>/dev/null | grep -q PONG; do
         tries=$((tries + 1))
         if [ "$tries" -gt 400 ]; then
-            echo "$1 never answered on $PORT" >&2
+            echo "$start_line never answered on $PORT" >&2
             exit 1
         fi
         sleep 0.05
@@ -689,7 +728,7 @@ if [ "$MODE" = workloads ]; then
             *) echo "unknown workload: $workload" >&2; exit 1 ;;
         esac
     done
-    echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"
+    echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,p99_9_ms,peak_rss_kib' >"$OUT/workloads.csv"
     echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
     # Only this mode changes cleanup; the workflow's registered-session cleanup
     # also handles cancellation on the shared runner.
@@ -706,9 +745,11 @@ if [ "$MODE" = workloads ]; then
         CLIENT_CPUS=$(seq -s, "$n" $((n + CLIENT_THREADS - 1)))
         pass=1
         while [ "$pass" -le "${WORKLOAD_PASSES:-3}" ]; do
-            order="reference reference-aof firn-$n firn-aof-$n"
+            order=$(printf '%s\n' "${WORKLOAD_LINES:-reference reference-aof firn-$n firn-aof-$n}" | sed "s/{n}/$n/g")
             if [ $((pass % 2)) -eq 0 ]; then
-                order="firn-aof-$n firn-$n reference-aof reference"
+                reversed=
+                for next_line in $order; do reversed="$next_line $reversed"; done
+                order=$reversed
             fi
             for workload in $workloads; do
                 for line in $order; do
@@ -722,7 +763,14 @@ if [ "$MODE" = workloads ]; then
                         result=$(taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
                             --threads "$CLIENT_THREADS" --connections "$conns" \
                             --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
-                        echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
+                        peak_rss=$(awk '/^VmHWM:/ { print $2; found=1 } END { if (!found) exit 1 }' "/proc/$server/status")
+                        echo "$line,$pass,$n,$result,$peak_rss" | tee -a "$OUT/workloads.csv"
+                        case $line in firn-*) profiled=1 ;; *) profiled= ;; esac
+                        if [ -n "${FIRN_SCRIPT_PROBE:-}" ] && [ -n "$profiled" ]; then
+                            probe=$(redis-cli -p "$PORT" INFO scriptprobe)
+                            printf '%s\n' "$probe" | tr -d '\r' |
+                                sed -n "/./s/^/probe,$line,$pass,$n,$workload,$conns,/p"
+                        fi
                     done
                     # Profile only after every measured run on this server, so
                     # no measured run follows an unmeasured one here.

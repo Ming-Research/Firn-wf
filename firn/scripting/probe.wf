@@ -1,0 +1,298 @@
+fn probe_bucket(nanos: u64) -> bucket: u64 pure {
+  doc "The log2 bucket of a duration: bucket i counts durations from 2^i to below 2^(i+1) nanoseconds, bucket 0 also zero, and bucket 39 everything from 2^39.";
+  let bucket = 0_u64;
+  let rest = nanos;
+  loop {
+    if rest <= 1_u64 {
+      break;
+    }
+    set rest = rest / 2_u64;
+    set bucket = bucket +wrap 1_u64;
+  }
+  return imin(bucket, 39_u64);
+}
+
+fn probe_record(pool: &EnginePool, nanos: u64, collections: u64) -> r: unit writes(pool) {
+  doc "Counts one finished script call in the group of calls during which a collection completed or the group of those without one.";
+  let bucket = probe_bucket(nanos: nanos);
+  if collections > 0_u64 {
+    let pause_bucket = 4_u64;
+    if nanos < 1000000_u64 {
+      set pause_bucket = 0_u64;
+    } else if nanos < 2000000_u64 {
+      set pause_bucket = 1_u64;
+    } else if nanos < 4000000_u64 {
+      set pause_bucket = 2_u64;
+    } else if nanos < 8000000_u64 {
+      set pause_bucket = 3_u64;
+    }
+    if pause_bucket < 5_u64 {
+      set pool^.probe_gc.pause_hist[pause_bucket] = pool^.probe_gc.pause_hist[pause_bucket] +sat 1_u64;
+    }
+    set pool^.probe_calls_gc = pool^.probe_calls_gc +sat 1_u64;
+    set pool^.probe_sum_gc = pool^.probe_sum_gc +sat nanos;
+    set pool^.probe_max_gc = imax(pool^.probe_max_gc, nanos);
+    if bucket < 40_u64 {
+      set pool^.probe_hist_gc[bucket] = pool^.probe_hist_gc[bucket] +sat 1_u64;
+    }
+  } else {
+    set pool^.probe_calls_nogc = pool^.probe_calls_nogc +sat 1_u64;
+    set pool^.probe_sum_nogc = pool^.probe_sum_nogc +sat nanos;
+    set pool^.probe_max_nogc = imax(pool^.probe_max_nogc, nanos);
+    if bucket < 40_u64 {
+      set pool^.probe_hist_nogc[bucket] = pool^.probe_hist_nogc[bucket] +sat 1_u64;
+    }
+  }
+  return unit;
+}
+
+fn probe_line(out: &Box<Slots<u8>>, label: &[u8], value: u64) -> r: unit reads(label), writes(out) {
+  text_bytes(out: out, bytes: label);
+  decimal(out: out, n: value);
+  text_bytes(out: out, bytes: &entry_text_2[0_u64..2_u64]);
+  return unit;
+}
+
+fn probe_histogram(out: &Box<Slots<u8>>, label: &[u8], counts: &Array<u64, 40>) -> r: unit reads(label), reads(counts), writes(out) {
+  text_bytes(out: out, bytes: label);
+  for (i in 0_u64..40_u64) {
+    if i > 0_u64 {
+      push(out: out, byte: 44_u8);
+    }
+    decimal(out: out, n: counts^[i]);
+  }
+  text_bytes(out: out, bytes: &entry_text_2[0_u64..2_u64]);
+  return unit;
+}
+
+fn probe_info(store: &Keyspace) -> text: Box<Slots<u8>> reads(store) waits {
+  doc "INFO scriptprobe's text: the script calls counted since the server started, grouped by whether a collection completed while the call held the engine.";
+  let calls_gc = 0_u64;
+  let calls_nogc = 0_u64;
+  let sum_gc = 0_u64;
+  let sum_nogc = 0_u64;
+  let max_gc = 0_u64;
+  let max_nogc = 0_u64;
+  let collections = 0_u64;
+  let hist_gc = array_filled::<u64, 40>(value: 0_u64);
+  let hist_nogc = array_filled::<u64, 40>(value: 0_u64);
+  let gc_pause = 200_u64;
+  let gc = pkg::script_pool::new_probe_gc();
+  atomic p = &store^.scripts {
+    set gc_pause = p^.gc_pause;
+    set gc = p^.probe_gc;
+    set calls_gc = p^.probe_calls_gc;
+    set calls_nogc = p^.probe_calls_nogc;
+    set sum_gc = p^.probe_sum_gc;
+    set sum_nogc = p^.probe_sum_nogc;
+    set max_gc = p^.probe_max_gc;
+    set max_nogc = p^.probe_max_nogc;
+    set collections = p^.probe_collections;
+    set hist_gc = p^.probe_hist_gc;
+    set hist_nogc = p^.probe_hist_nogc;
+  }
+  let text = box_slots_new::<u8>(capacity: 1024_u64);
+  text_bytes(out: &text, bytes: &probe_head[0_u64..15_u64]);
+  probe_line(out: &text, label: &probe_calls_gc_label[0_u64..9_u64], value: calls_gc);
+  probe_line(out: &text, label: &probe_calls_nogc_label[0_u64..11_u64], value: calls_nogc);
+  probe_line(out: &text, label: &probe_sum_gc_label[0_u64..10_u64], value: sum_gc);
+  probe_line(out: &text, label: &probe_sum_nogc_label[0_u64..12_u64], value: sum_nogc);
+  probe_line(out: &text, label: &probe_max_gc_label[0_u64..10_u64], value: max_gc);
+  probe_line(out: &text, label: &probe_max_nogc_label[0_u64..12_u64], value: max_nogc);
+  probe_line(out: &text, label: &probe_collections_label[0_u64..12_u64], value: collections);
+  probe_histogram(out: &text, label: &probe_hist_gc_label[0_u64..8_u64], counts: &hist_gc);
+  probe_histogram(out: &text, label: &probe_hist_nogc_label[0_u64..10_u64], counts: &hist_nogc);
+  probe_line(out: &text, label: &probe_gc_pause_label[0_u64..9_u64], value: gc_pause);
+  probe_line(out: &text, label: &probe_gc_samples_label[0_u64..11_u64], value: gc.samples);
+  probe_line(out: &text, label: &probe_gc_unobserved_collections_label[0_u64..26_u64], value: gc.unobserved_collections);
+  probe_line(out: &text, label: &probe_gc_first_available_label[0_u64..19_u64], value: gc.first_available);
+  probe_line(out: &text, label: &probe_gc_gray_pops_sum_label[0_u64..17_u64], value: gc.gray_pops_sum);
+  probe_line(out: &text, label: &probe_gc_gray_pops_min_label[0_u64..17_u64], value: gc.gray_pops_min);
+  probe_line(out: &text, label: &probe_gc_gray_pops_max_label[0_u64..17_u64], value: gc.gray_pops_max);
+  probe_line(out: &text, label: &probe_gc_next_threshold_label[0_u64..18_u64], value: gc.next_threshold);
+  probe_line(out: &text, label: &probe_gc_pause_ns_sum_label[0_u64..16_u64], value: sum_gc);
+  probe_line(out: &text, label: &probe_gc_pause_ns_max_label[0_u64..16_u64], value: max_gc);
+  probe_line(out: &text, label: &probe_gc_pause_ms_0_1_label[0_u64..16_u64], value: gc.pause_hist[0_u64]);
+  probe_line(out: &text, label: &probe_gc_pause_ms_1_2_label[0_u64..16_u64], value: gc.pause_hist[1_u64]);
+  probe_line(out: &text, label: &probe_gc_pause_ms_2_4_label[0_u64..16_u64], value: gc.pause_hist[2_u64]);
+  probe_line(out: &text, label: &probe_gc_pause_ms_4_8_label[0_u64..16_u64], value: gc.pause_hist[3_u64]);
+  probe_line(out: &text, label: &probe_gc_pause_ms_8_plus_label[0_u64..19_u64], value: gc.pause_hist[4_u64]);
+  probe_kind_info(out: &text, prefix: &probe_kind_strings[0_u64..11_u64], kind: &gc.strings);
+  probe_line(out: &text, label: &probe_gc_first_strings_live_objects_label[0_u64..30_u64], value: gc.strings.first_live_objects);
+  probe_line(out: &text, label: &probe_gc_first_strings_live_bytes_label[0_u64..28_u64], value: gc.strings.first_live_bytes);
+  probe_kind_info(out: &text, prefix: &probe_kind_tables[0_u64..10_u64], kind: &gc.tables);
+  probe_line(out: &text, label: &probe_gc_first_tables_live_objects_label[0_u64..29_u64], value: gc.tables.first_live_objects);
+  probe_line(out: &text, label: &probe_gc_first_tables_live_bytes_label[0_u64..27_u64], value: gc.tables.first_live_bytes);
+  probe_kind_info(out: &text, prefix: &probe_kind_closures[0_u64..12_u64], kind: &gc.closures);
+  probe_line(out: &text, label: &probe_gc_first_closures_live_objects_label[0_u64..31_u64], value: gc.closures.first_live_objects);
+  probe_line(out: &text, label: &probe_gc_first_closures_live_bytes_label[0_u64..29_u64], value: gc.closures.first_live_bytes);
+  probe_kind_info(out: &text, prefix: &probe_kind_upvalues[0_u64..12_u64], kind: &gc.upvalues);
+  probe_line(out: &text, label: &probe_gc_first_upvalues_live_objects_label[0_u64..31_u64], value: gc.upvalues.first_live_objects);
+  probe_line(out: &text, label: &probe_gc_first_upvalues_live_bytes_label[0_u64..29_u64], value: gc.upvalues.first_live_bytes);
+  return move text;
+}
+
+const probe_head: Array<u8, 15> = "# Scriptprobe\r\n";
+
+const probe_calls_gc_label: Array<u8, 9> = "calls_gc:";
+
+const probe_calls_nogc_label: Array<u8, 11> = "calls_nogc:";
+
+const probe_sum_gc_label: Array<u8, 10> = "sum_ns_gc:";
+
+const probe_sum_nogc_label: Array<u8, 12> = "sum_ns_nogc:";
+
+const probe_max_gc_label: Array<u8, 10> = "max_ns_gc:";
+
+const probe_max_nogc_label: Array<u8, 12> = "max_ns_nogc:";
+
+const probe_collections_label: Array<u8, 12> = "collections:";
+
+const probe_hist_gc_label: Array<u8, 8> = "hist_gc:";
+
+const probe_hist_nogc_label: Array<u8, 10> = "hist_nogc:";
+
+fn probe_kind_record(kind: &pkg::script_pool::ProbeKind, stats: &halo::heap::CollectionKindStats, initial: Bool, first: Bool) -> r: unit reads(stats), writes(kind) {
+  set kind^.live_objects_sum = kind^.live_objects_sum +sat stats^.live_objects;
+  if initial {
+    set kind^.live_objects_min = stats^.live_objects;
+  } else {
+    set kind^.live_objects_min = imin(kind^.live_objects_min, stats^.live_objects);
+  }
+  set kind^.live_objects_max = imax(kind^.live_objects_max, stats^.live_objects);
+  if first {
+    set kind^.first_live_objects = stats^.live_objects;
+  }
+  set kind^.live_bytes_sum = kind^.live_bytes_sum +sat stats^.live_bytes;
+  if initial {
+    set kind^.live_bytes_min = stats^.live_bytes;
+  } else {
+    set kind^.live_bytes_min = imin(kind^.live_bytes_min, stats^.live_bytes);
+  }
+  set kind^.live_bytes_max = imax(kind^.live_bytes_max, stats^.live_bytes);
+  if first {
+    set kind^.first_live_bytes = stats^.live_bytes;
+  }
+  set kind^.freed_objects_sum = kind^.freed_objects_sum +sat stats^.freed_objects;
+  set kind^.freed_bytes_sum = kind^.freed_bytes_sum +sat stats^.freed_bytes;
+  set kind^.slots_visited_sum = kind^.slots_visited_sum +sat stats^.slots_visited;
+  return unit;
+}
+
+fn probe_collection(pool: &EnginePool, stats: &halo::heap::CollectionStats, observed: u64) -> r: unit reads(stats), writes(pool) {
+  doc "Accumulates one last-sweep snapshot per attempt with collections. Multiple sweeps advance collections by their true count but only the last contributes statistics; unobserved_collections makes that loss visible. The first live set is available only when the first observation contains exactly one sweep.";
+  let initial = pool^.probe_gc.samples == 0_u64;
+  let single = observed == 1_u64;
+  let first = band(initial, single);
+  if first {
+    set pool^.probe_gc.first_available = 1_u64;
+  }
+  set pool^.probe_collections = pool^.probe_collections +sat observed;
+  set pool^.probe_gc.samples = pool^.probe_gc.samples +sat 1_u64;
+  let unobserved = observed -sat 1_u64;
+  set pool^.probe_gc.unobserved_collections = pool^.probe_gc.unobserved_collections +sat unobserved;
+  set pool^.probe_gc.gray_pops_sum = pool^.probe_gc.gray_pops_sum +sat stats^.gray_pops;
+  if initial {
+    set pool^.probe_gc.gray_pops_min = stats^.gray_pops;
+  } else {
+    set pool^.probe_gc.gray_pops_min = imin(pool^.probe_gc.gray_pops_min, stats^.gray_pops);
+  }
+  set pool^.probe_gc.gray_pops_max = imax(pool^.probe_gc.gray_pops_max, stats^.gray_pops);
+  set pool^.probe_gc.next_threshold = stats^.next_threshold;
+  probe_kind_record(kind: &pool^.probe_gc.strings, stats: &stats^.strings, initial: initial, first: first);
+  probe_kind_record(kind: &pool^.probe_gc.tables, stats: &stats^.tables, initial: initial, first: first);
+  probe_kind_record(kind: &pool^.probe_gc.closures, stats: &stats^.closures, initial: initial, first: first);
+  probe_kind_record(kind: &pool^.probe_gc.upvalues, stats: &stats^.upvalues, initial: initial, first: first);
+  return unit;
+}
+
+fn probe_kind_line(out: &Box<Slots<u8>>, prefix: &[u8], suffix: &[u8], value: u64) -> r: unit reads(prefix), reads(suffix), writes(out) {
+  text_bytes(out: out, bytes: prefix);
+  probe_line(out: out, label: suffix, value: value);
+  return unit;
+}
+
+fn probe_kind_info(out: &Box<Slots<u8>>, prefix: &[u8], kind: &pkg::script_pool::ProbeKind) -> r: unit reads(prefix), reads(kind), writes(out) {
+  probe_kind_line(out: out, prefix: prefix, suffix: &probe_live_objects_sum_label[0_u64..17_u64], value: kind^.live_objects_sum);
+  probe_kind_line(out: out, prefix: prefix, suffix: &probe_live_objects_min_label[0_u64..17_u64], value: kind^.live_objects_min);
+  probe_kind_line(out: out, prefix: prefix, suffix: &probe_live_objects_max_label[0_u64..17_u64], value: kind^.live_objects_max);
+  probe_kind_line(out: out, prefix: prefix, suffix: &probe_live_bytes_sum_label[0_u64..15_u64], value: kind^.live_bytes_sum);
+  probe_kind_line(out: out, prefix: prefix, suffix: &probe_live_bytes_min_label[0_u64..15_u64], value: kind^.live_bytes_min);
+  probe_kind_line(out: out, prefix: prefix, suffix: &probe_live_bytes_max_label[0_u64..15_u64], value: kind^.live_bytes_max);
+  probe_kind_line(out: out, prefix: prefix, suffix: &probe_freed_objects_sum_label[0_u64..18_u64], value: kind^.freed_objects_sum);
+  probe_kind_line(out: out, prefix: prefix, suffix: &probe_freed_bytes_sum_label[0_u64..16_u64], value: kind^.freed_bytes_sum);
+  probe_kind_line(out: out, prefix: prefix, suffix: &probe_slots_visited_sum_label[0_u64..18_u64], value: kind^.slots_visited_sum);
+  return unit;
+}
+
+const probe_gc_pause_label: Array<u8, 9> = "gc_pause:";
+
+const probe_gc_samples_label: Array<u8, 11> = "gc_samples:";
+
+const probe_gc_unobserved_collections_label: Array<u8, 26> = "gc_unobserved_collections:";
+
+const probe_gc_first_available_label: Array<u8, 19> = "gc_first_available:";
+
+const probe_gc_gray_pops_sum_label: Array<u8, 17> = "gc_gray_pops_sum:";
+
+const probe_gc_gray_pops_min_label: Array<u8, 17> = "gc_gray_pops_min:";
+
+const probe_gc_gray_pops_max_label: Array<u8, 17> = "gc_gray_pops_max:";
+
+const probe_gc_next_threshold_label: Array<u8, 18> = "gc_next_threshold:";
+
+const probe_gc_pause_ns_sum_label: Array<u8, 16> = "gc_pause_ns_sum:";
+
+const probe_gc_pause_ns_max_label: Array<u8, 16> = "gc_pause_ns_max:";
+
+const probe_gc_pause_ms_0_1_label: Array<u8, 16> = "gc_pause_ms_0_1:";
+
+const probe_gc_pause_ms_1_2_label: Array<u8, 16> = "gc_pause_ms_1_2:";
+
+const probe_gc_pause_ms_2_4_label: Array<u8, 16> = "gc_pause_ms_2_4:";
+
+const probe_gc_pause_ms_4_8_label: Array<u8, 16> = "gc_pause_ms_4_8:";
+
+const probe_gc_pause_ms_8_plus_label: Array<u8, 19> = "gc_pause_ms_8_plus:";
+
+const probe_kind_strings: Array<u8, 11> = "gc_strings_";
+
+const probe_gc_first_strings_live_objects_label: Array<u8, 30> = "gc_first_strings_live_objects:";
+
+const probe_gc_first_strings_live_bytes_label: Array<u8, 28> = "gc_first_strings_live_bytes:";
+
+const probe_kind_tables: Array<u8, 10> = "gc_tables_";
+
+const probe_gc_first_tables_live_objects_label: Array<u8, 29> = "gc_first_tables_live_objects:";
+
+const probe_gc_first_tables_live_bytes_label: Array<u8, 27> = "gc_first_tables_live_bytes:";
+
+const probe_kind_closures: Array<u8, 12> = "gc_closures_";
+
+const probe_gc_first_closures_live_objects_label: Array<u8, 31> = "gc_first_closures_live_objects:";
+
+const probe_gc_first_closures_live_bytes_label: Array<u8, 29> = "gc_first_closures_live_bytes:";
+
+const probe_kind_upvalues: Array<u8, 12> = "gc_upvalues_";
+
+const probe_gc_first_upvalues_live_objects_label: Array<u8, 31> = "gc_first_upvalues_live_objects:";
+
+const probe_gc_first_upvalues_live_bytes_label: Array<u8, 29> = "gc_first_upvalues_live_bytes:";
+
+const probe_live_objects_sum_label: Array<u8, 17> = "live_objects_sum:";
+
+const probe_live_objects_min_label: Array<u8, 17> = "live_objects_min:";
+
+const probe_live_objects_max_label: Array<u8, 17> = "live_objects_max:";
+
+const probe_live_bytes_sum_label: Array<u8, 15> = "live_bytes_sum:";
+
+const probe_live_bytes_min_label: Array<u8, 15> = "live_bytes_min:";
+
+const probe_live_bytes_max_label: Array<u8, 15> = "live_bytes_max:";
+
+const probe_freed_objects_sum_label: Array<u8, 18> = "freed_objects_sum:";
+
+const probe_freed_bytes_sum_label: Array<u8, 16> = "freed_bytes_sum:";
+
+const probe_slots_visited_sum_label: Array<u8, 18> = "slots_visited_sum:";

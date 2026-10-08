@@ -55,9 +55,11 @@ fn take_engine(store: &Keyspace, first: Bool, mark: &u64) -> pooled: PooledEngin
   doc "Takes the one engine, waiting while another script has it, or makes it if none was made since the last SCRIPT FLUSH. A script's first take counts it in running and records the kills count in mark in the same atomic statement that reads the generation and takes the cached engine, so FLUSH cannot intervene and a kill before this take is not that script's. Later takes and SCRIPT LOAD leave running and mark unchanged.";
   let held = None<PooledEngine>();
   let generation = 0_u64;
+  let gc_pause = 200_u64;
   atomic p = &store^.scripts when p^.out == 0_u64 {
     set p^.out = 1_u64;
     set generation = p^.generation;
+    set gc_pause = p^.gc_pause;
     if first {
       set p^.running = p^.running +sat 1_u64;
       set mark^ = p^.kills;
@@ -71,30 +73,46 @@ fn take_engine(store: &Keyspace, first: Bool, mark: &u64) -> pooled: PooledEngin
     Some(value: engine) => {
       if engine.generation != generation {
         let stale = move engine;
-        return new_pooled(generation: generation);
+        return new_pooled(generation: generation, gc_pause: gc_pause);
       }
       return move engine;
     }
     None() => {
-      return new_pooled(generation: generation);
+      return new_pooled(generation: generation, gc_pause: gc_pause);
     }
   }
 }
 
-fn new_pooled(generation: u64) -> pooled: PooledEngine pure {
+fn new_pooled(generation: u64, gc_pause: u64) -> pooled: PooledEngine pure {
   doc "A flush generation starts a fresh Lua environment as Redis scriptingReset does, dropping compiled constants and library configuration as well as the cache index.";
   let engine = halo::embed::new_engine(limit: 18446744073709551615_u64);
+  halo::embed::set_gc_pause(engine: &engine, percent: gc_pause);
   halo::embed::set_pcall_error_field(engine: &engine, field: &s_30[0_u64..3_u64]);
   install_host(engine: &engine);
   let cache = box_slots_new::<Cached>(capacity: 0_u64);
   return PooledEngine(engine: move engine, generation: generation, cache: move cache);
 }
 
-fn return_engine(store: &Keyspace, pooled: PooledEngine) -> r: unit reads(store) waits {
-  doc "Puts the engine back for the next script, which then may take it.";
+fn return_engine(store: &Keyspace, pooled: PooledEngine, record: Bool, nanos: u64, collections: u64, observed: u64) -> r: unit reads(store) waits {
+  doc "Reads the last completed sweep once when this attempt observed collections, then resets and returns the engine. The same pool statement records that snapshot and, for a finished call, its total held duration across attempts.";
+  let snapshot = None<halo::heap::CollectionStats>();
+  if observed > 0_u64 {
+    let stats = halo::embed::last_collection(engine: &pooled.engine);
+    set snapshot = Some<halo::heap::CollectionStats>(value: stats);
+  }
   halo::embed::reset(engine: &pooled.engine);
   atomic p = &store^.scripts {
     set p^.out = 0_u64;
+    match snapshot {
+      Some(value: completed) => {
+        probe_collection(pool: p, stats: &completed, observed: observed);
+      }
+      None() => {
+      }
+    }
+    if record {
+      probe_record(pool: p, nanos: nanos, collections: collections);
+    }
     if p^.idle.inner.len == p^.idle.inner.cap {
       let room = p^.idle.inner.cap +sat 1_u64;
       let twice = p^.idle.inner.cap +sat p^.idle.inner.cap;
@@ -366,9 +384,13 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
   let mark = 0_u64;
   let begun = False();
   let stopped_at = 0_u64;
+  let held_nanos = 0_u64;
+  let held_collections = 0_u64;
   loop {
     let first = bnot(begun);
     let pooled = take_engine(store: store, first: first, mark: &mark);
+    let taken_at = std::time::now(clock: clock);
+    let collected_before = halo::embed::collection_count(engine: &pooled.engine);
     let killed = False();
     if begun {
       set killed = kill_requested(store: store, mark: mark);
@@ -480,7 +502,14 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
         }
       }
     }
-    return_engine(store: store, pooled: move pooled);
+    let returned_at = std::time::now(clock: clock);
+    let collected_after = halo::embed::collection_count(engine: &pooled.engine);
+    let held_for = std::time::nanoseconds_from(earlier: taken_at, later: returned_at);
+    let collected = collected_after -sat collected_before;
+    set held_nanos = held_nanos +sat held_for;
+    set held_collections = held_collections +sat collected;
+    let finished = bnot(retry);
+    return_engine(store: store, pooled: move pooled, record: finished, nanos: held_nanos, collections: held_collections, observed: collected);
     if killed {
       reply_killed(client: client, sha: &sha, line: stopped_at);
       break;
@@ -615,7 +644,8 @@ fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Clie
         reply_bulk_input(client: client, input: &sha[0_u64..40_u64], start: 0_u64, length: 40_u64);
       }
     }
-    return_engine(store: store, pooled: move pooled);
+    let no_record = False();
+    return_engine(store: store, pooled: move pooled, record: no_record, nanos: 0_u64, collections: 0_u64, observed: 0_u64);
     return unit;
   }
   return unit;

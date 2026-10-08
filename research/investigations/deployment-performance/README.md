@@ -246,7 +246,10 @@ complete command or transaction reply before sending another on that
 connection. Request latencies use exact one-microsecond bins, merged across
 all workers; elapsed time excludes connection setup and script loading and
 includes draining requests in flight at the deadline. `workloads.csv` holds
-`line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms`.
+`line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,p99_9_ms,peak_rss_kib`
+on the GC experiment branch. `peak_rss_kib` reads Linux VmHWM immediately
+after each measured run, before INFO or profiling; it is the peak since
+server startup, including setup and prior connection-count runs.
 Before each `session-get` sample, `--fill 1000000` pipelines exactly
 `sess:0` through `sess:999999` with 200-byte values and a one-day expiry;
 `workloads-memory.csv` holds `line,pass,cpus,workload,sessions,rss_kib`
@@ -424,3 +427,100 @@ The profile of the same run no longer lists `text_bytes`, the per-call copy
 this branch removed. The collector belongs to Halo, whose design records a
 whole-heap collection as an owner decision; these figures go to Halo's
 session as the evidence for its card.
+
+
+### GC live-set and pause experiment (unmerged)
+
+Question: under rate-limiter-flexible's EVALSHA script, does increasing
+Halo's pause percentage reduce collection frequency and the client tail,
+and what live objects, sweep work and peak resident memory accompany it?
+Compare the same firn image at pause 200 and 400, with a repeat of pause 200
+as the noise control, interleaved with Redis 7.0.15 on the 14900K. Reject the
+proposed tail benefit if p99.9 does not fall outside the repeated pause-200
+spread; report any increase in peak RSS alongside frequency and duration.
+No measurement has been run for this extension.
+
+This experiment ports the earlier script probe onto the current cache-hit
+path without copying script source on cache hits. It retains counters from
+server startup across SCRIPT FLUSH and engine replacement. A script attempt
+reads `collection_count` and the monotonic clock after taking the engine and
+before returning it; a finished call sums its attempts and enters either
+the GC or non-GC group. It excludes waiting to take the engine and retry
+sleeps, but includes script work, compilation on a cache miss and keyspace
+lock waits. Thus `gc_pause_ns_*` and the coarse histogram measure
+GC-containing **call durations**, a proxy for pause, not isolated collector
+time. `hist_gc` and `hist_nogc` retain the earlier 40 log2 nanosecond buckets.
+
+For each attempt whose count advances, the probe reads `last_collection`
+exactly once and accumulates that snapshot. `collections` counts every
+observed completed sweep; `gc_samples` counts snapshots, and
+`gc_unobserved_collections` counts additional sweeps in an attempt whose
+snapshots the last sweep replaced. Statistics describe all collections only
+when that last counter is zero. No snapshot is multiplied to fabricate the
+missing observations. Per-kind byte counts are Halo's logical payload
+estimates, excluding slab and intern reserve; `slots_visited` includes free
+slots. The first live set is recorded only if the first observation contains
+one sweep (`gc_first_available=1`); otherwise its fields stay zero. The first
+sweep occurs naturally after loading, not at a forced startup collection,
+and can retain temporary objects as well as libraries and script constants.
+The minimum over observed sweeps is an estimate of the always-live baseline,
+not proof that every counted object lives forever. Minima and first fields
+are zero until available; consult `gc_samples` and `gc_first_available`.
+
+`INFO scriptprobe` exposes one line per field (brace notation below expands
+to separate names):
+
+- `calls_{gc,nogc}`, `sum_ns_{gc,nogc}`, `max_ns_{gc,nogc}`,
+  `hist_{gc,nogc}`, `collections`.
+- `gc_pause`, `gc_samples`, `gc_unobserved_collections`,
+  `gc_first_available`, `gc_gray_pops_{sum,min,max}`, `gc_next_threshold`.
+- For each kind `strings`, `tables`, `closures`, `upvalues`:
+  `gc_<kind>_live_objects_{sum,min,max}`,
+  `gc_<kind>_live_bytes_{sum,min,max}`,
+  `gc_<kind>_{freed_objects,freed_bytes,slots_visited}_sum`,
+  `gc_first_<kind>_{live_objects,live_bytes}`.
+- `gc_pause_ns_{sum,max}` (aliases of `sum_ns_gc` and `max_ns_gc`),
+  `gc_pause_ms_{0_1,1_2,2_4,4_8,8_plus}`: counts of GC-containing calls in
+  left-inclusive, right-exclusive millisecond buckets, with the final bucket
+  including everything from 8 ms.
+
+The pinned Whitefoot `std::process::Inputs` and host interfaces provide
+arguments but no environment reader. Firn therefore accepts the authorized
+CLI alternative, `--halo-gc-pause <u64>`, defaults to 200 and reports the
+effective value clamped to at least 100, matching Halo. Every engine,
+including one created after SCRIPT FLUSH, receives it. Halo applies it to
+the threshold computed by the next collection, not the initial threshold.
+This experiment neither changes the language nor hides a rejected program.
+
+The harness translates `FIRN_HALO_GC_PAUSE` to that argument only for firn
+lines. A final `-p<number>` suffix overrides the environment, while the
+preceding driver count and AOF selection keep their meanings.
+`WORKLOAD_LINES='reference firn-{n}-p200 firn-{n}-p400 firn-{n}'` with
+`FIRN_HALO_GC_PAUSE=200` supplies a same-image pause-200 control; `{n}` expands
+to each selected CPU count and even passes reverse the complete line list.
+The workflow inputs `gc_pause` and `workload_lines` pass these settings
+through and enable `FIRN_SCRIPT_PROBE` in workloads mode. Probe readings
+follow each measured firn run and are cumulative, so successive readings
+must be differenced for run-local sums; extrema and the first live set
+remain lifetime values. All measured connection counts precede profiling.
+
+Validation remains unrun: the requested handoff prohibits local builds,
+tests and the Whitefoot checker and leaves changes uncommitted. The added
+Rust percentile cases distinguish p99 from p99.9 and exercise nearest-rank
+rounding on a sample count not divisible by 1000. CI must still establish
+Whitefoot acceptance, probe fields and boundaries, argument parsing and
+engine replacement, per-line launch arguments, Linux VmHWM capture and the
+CSV column agreement before a measurement is interpreted.
+
+Read-only completion review: a separate Codex agent using the inherited
+parent model reviewed `ef86edfeceb20ba61d95989f5b1e465ddeb89f52..working tree`,
+including the complete tracked diff and new `firn/scripting/probe.wf`, the
+previous probe, directly affected consumers, pinned language interfaces and
+Halo's collector. No findings within static scope. Checklist A1, T2, D1,
+G1–G3 and DC1–DC2 passed inspection; C2, T3 and DC4 remain unverified without
+compiler and runtime evidence; C1, T1, R1 and DC3 were not applicable. No
+checks were run and no review findings required fixes. The existing Halo
+checkout remains at `10a9b02e448bfcbb87d5dbb3ef8dc36e6bf6e4c2`; this work
+did not change `whitefoot.pin` or a submodule checkout, and filed no new
+Whitefoot gap. Changes remain uncommitted for the requested experiment
+handoff. This review record was appended after that inspection.

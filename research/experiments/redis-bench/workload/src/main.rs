@@ -1,4 +1,5 @@
 //! Depth-one consumer command forms for the deployment-performance investigation.
+//! CSV: workload,connections,requests,seconds,rate,p50_ms,p99_ms,p99_9_ms.
 //! Loopback RESP2; worker threads multiplex nonblocking connections using std only.
 mod limiter;
 
@@ -324,8 +325,8 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
     Ok((histogram, Instant::now()))
 }
 
-fn percentile(histogram: &BTreeMap<u64, u64>, count: u64, percent: u64) -> f64 {
-    let rank = (u128::from(count) * u128::from(percent)).div_ceil(100) as u64;
+fn percentile(histogram: &BTreeMap<u64, u64>, count: u64, permille: u64) -> f64 {
+    let rank = (u128::from(count) * u128::from(permille)).div_ceil(1000) as u64;
     let mut seen = 0;
     for (&us, &n) in histogram {
         seen += n;
@@ -376,9 +377,10 @@ fn run(opts: Options) -> Result<()> {
     // Timed runs stop issuing at the deadline and include draining in-flight work
     // in both the count and elapsed time; setup and histogram merging are excluded.
     let seconds = end.duration_since(begin).as_secs_f64();
-    println!("{},{},{},{:.6},{:.3},{:.3},{:.3}", opts.workload, opts.connections,
+    println!("{},{},{},{:.6},{:.3},{:.3},{:.3},{:.3}", opts.workload, opts.connections,
         count, seconds, count as f64 / seconds,
-        percentile(&histogram, count, 50), percentile(&histogram, count, 99));
+        percentile(&histogram, count, 500), percentile(&histogram, count, 990),
+        percentile(&histogram, count, 999));
     Ok(())
 }
 
@@ -505,8 +507,14 @@ mod tests {
             assert_eq!((0..50).map(|id| share(count, 50, id)).sum::<u64>(), count);
         }
         let bins = BTreeMap::from([(1, 50), (2, 48), (1_000_001, 2)]);
-        assert_eq!(percentile(&bins, 100, 50), 0.001);
-        assert_eq!(percentile(&bins, 100, 99), 1000.001);
+        assert_eq!(percentile(&bins, 100, 500), 0.001);
+        assert_eq!(percentile(&bins, 100, 990), 1000.001);
+        let tail = BTreeMap::from([(1, 990), (2, 8), (1_000_001, 1), (2_000_001, 1)]);
+        assert_eq!(percentile(&tail, 1000, 990), 0.001);
+        assert_eq!(percentile(&tail, 1000, 999), 1000.001);
+        assert_eq!(percentile(&tail, 1000, 1000), 2000.001);
+        let small = BTreeMap::from([(1, 999), (2, 1), (3, 1)]);
+        assert_eq!(percentile(&small, 1001, 999), 0.002);
     }
 
     #[test]

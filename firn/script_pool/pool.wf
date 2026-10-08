@@ -1,5 +1,14 @@
 fn new_pool() -> pool: EnginePool pure {
   let idle = box_slots_new::<PooledEngine>(capacity: 0_u64);
   let registry = box_slots_new::<Registered>(capacity: 0_u64);
-  return EnginePool(idle: move idle, out: 0_u64, registry: move registry, source_bytes: 0_u64, generation: 0_u64, running: 0_u64, kills: 0_u64);
+  let hist_gc = array_filled::<u64, 40>(value: 0_u64);
+  let hist_nogc = array_filled::<u64, 40>(value: 0_u64);
+  let probe_gc = new_probe_gc();
+  return EnginePool(idle: move idle, out: 0_u64, registry: move registry, source_bytes: 0_u64, generation: 0_u64, running: 0_u64, kills: 0_u64, probe_calls_gc: 0_u64, probe_calls_nogc: 0_u64, probe_sum_gc: 0_u64, probe_sum_nogc: 0_u64, probe_max_gc: 0_u64, probe_max_nogc: 0_u64, probe_collections: 0_u64, probe_hist_gc: hist_gc, probe_hist_nogc: hist_nogc, gc_pause: 200_u64, probe_gc: probe_gc);
+}
+
+fn new_probe_gc() -> probe: ProbeGc pure {
+  let kind = ProbeKind(live_objects_sum: 0_u64, live_objects_min: 0_u64, live_objects_max: 0_u64, live_bytes_sum: 0_u64, live_bytes_min: 0_u64, live_bytes_max: 0_u64, freed_objects_sum: 0_u64, freed_bytes_sum: 0_u64, slots_visited_sum: 0_u64, first_live_objects: 0_u64, first_live_bytes: 0_u64);
+  let histogram = array_filled::<u64, 5>(value: 0_u64);
+  return ProbeGc(samples: 0_u64, unobserved_collections: 0_u64, first_available: 0_u64, gray_pops_sum: 0_u64, gray_pops_min: 0_u64, gray_pops_max: 0_u64, next_threshold: 0_u64, strings: kind, tables: kind, closures: kind, upvalues: kind, pause_hist: histogram);
 }

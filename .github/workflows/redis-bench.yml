@@ -70,6 +70,14 @@ on:
         description: Client connections for workloads, space-separated values measured in turn
         type: string
         default: "50"
+      gc_pause:
+        description: "Firn GC pause percentage (empty keeps 200; per-line -p suffix wins)"
+        type: string
+        default: ""
+      workload_lines:
+        description: "Workload lines; {n} is CPUs, e.g. reference firn-{n}-p200 firn-{n}-p400; empty keeps defaults"
+        type: string
+        default: ""
       profile:
         description: "Record a perf profile of each image (compare), or rerun each firn line's first pass once more under perf (workloads: one extra unmeasured run per firn line, CPU count, workload and connection count)"
         type: boolean
@@ -302,6 +310,8 @@ jobs:
           WORKLOAD_SECONDS: ${{ inputs.seconds }}
           WORKLOAD_CONNECTIONS: ${{ inputs.connections }}
           WORKLOADS: ${{ inputs.tests }}
+          FIRN_HALO_GC_PAUSE: ${{ inputs.gc_pause }}
+          WORKLOAD_LINES: ${{ inputs.workload_lines }}
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"
@@ -332,6 +342,7 @@ jobs:
             export FIRN_BASELINE="$OUT/base"
             echo "firn: $(git rev-parse HEAD)" | tee -a "$OUT/host.txt"
             if [ "$MODE" = workloads ]; then
+              export FIRN_SCRIPT_PROBE=1
               echo "revision,firn,$(git rev-parse HEAD),$(cat whitefoot.pin)" | tee "$OUT/revisions.csv"
             fi
             run_session "$MODE" 2>&1 | tee "$OUT/$MODE.txt"

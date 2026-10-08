@@ -23,6 +23,48 @@ public struct EnginePool {
   public generation: u64;
   public running: u64;
   public kills: u64;
+  public probe_calls_gc: u64;
+  public probe_calls_nogc: u64;
+  public probe_sum_gc: u64;
+  public probe_sum_nogc: u64;
+  public probe_max_gc: u64;
+  public probe_max_nogc: u64;
+  public probe_collections: u64;
+  public probe_hist_gc: Array<u64, 40>;
+  public probe_hist_nogc: Array<u64, 40>;
+  public gc_pause: u64;
+  public probe_gc: ProbeGc;
 }
 
 public fn new_pool() -> pool: EnginePool pure doc "A pool with no engine yet, the engine made when first taken.";
+
+public struct ProbeKind {
+  public live_objects_sum: u64;
+  public live_objects_min: u64;
+  public live_objects_max: u64;
+  public live_bytes_sum: u64;
+  public live_bytes_min: u64;
+  public live_bytes_max: u64;
+  public freed_objects_sum: u64;
+  public freed_bytes_sum: u64;
+  public slots_visited_sum: u64;
+  public first_live_objects: u64;
+  public first_live_bytes: u64;
+}
+
+public struct ProbeGc {
+  public samples: u64;
+  public unobserved_collections: u64;
+  public first_available: u64;
+  public gray_pops_sum: u64;
+  public gray_pops_min: u64;
+  public gray_pops_max: u64;
+  public next_threshold: u64;
+  public strings: ProbeKind;
+  public tables: ProbeKind;
+  public closures: ProbeKind;
+  public upvalues: ProbeKind;
+  public pause_hist: Array<u64, 5>;
+}
+
+public fn new_probe_gc() -> probe: ProbeGc pure doc "Empty experiment counters; minima become meaningful with the first snapshot.";
