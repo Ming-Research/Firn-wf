@@ -109,6 +109,19 @@ difference between new and new-twin in that cell, in the same direction in
 every pass. A loss is claimed only for a test whose cells show it at both
 depths.
 
+**Calibration, before the measurement.** The sample (three tests, two
+passes, 50,000 requests at depth 1 and 300,000 at depth 16) ran each
+measurement for 0.1 to 0.25 seconds, too short to resolve. At depth 1 every
+image, Redis 7.0.15 included, reached the same 205,000 to 225,000 requests a
+second; with one to four client processes the total stayed between 208,000
+and 247,000 for both firn and Redis. Depth 1 on the M5 is therefore bound by
+the loopback round trip, not by the server, and cannot show a server's
+change; it waits for the 14900K. The measurement is depth 16 only: the ten
+tests of the 14900K comparison, `WF_DRIVERS` 1 and 2, three passes, each
+test's request count set from a short run of new to about 2.5 seconds. The
+rule above then claims a loss only for a test whose cells show it at both
+driver counts.
+
 ## Scripts, transactions and expiring keys
 
 ### The plan, stated before measuring
