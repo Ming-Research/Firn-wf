@@ -59,6 +59,45 @@ written while firn lived in the Whitefoot repository; a path such as
   Reopen now with the command integration and Lua vertical slice, and revisit
   deferred families when a real consumer makes them necessary.
 
+- **Session writes with the append-only file are slower than Redis on one
+  CPU.** connect-redis's `SET sess:<id> <200 bytes> EX 86400` with
+  `appendfsync everysec` on one server CPU ran at 0.92 of Redis 7.0.15's
+  rate (187 against 203 thousand a second, spreads 1.9% each) with a p99 of
+  0.84 ms against 0.65 ms; without the file, or on two CPUs, firn is faster
+  ([deployment record](../research/investigations/deployment-performance/README.md#results-1)). The cause is not measured: firn's
+  writer context shares the one CPU with the connections, where Redis writes
+  its buffer once per event-loop turn and syncs on a background thread.
+  The change: profile firn on this line (`perf` and per-request system
+  calls against Redis) and remove what the profile names. Validate with an
+  interleaved firn and Redis rerun of `session-set` with the file on, one
+  CPU, on the i9-14900K. Reopen with the append-only file's next change or
+  before the deployment milestone's evidence is reported.
+
+- **The transaction rate limiter's p99 with the append-only file on two
+  CPUs is above Redis's.** rate-limiter-flexible's `MULTI`, `INCRBY`,
+  `PTTL`, `EXEC` gave a p99 of 0.50 ms against Redis 7.0.15's 0.42 ms while
+  its rate was 2.24 times Redis's ([deployment record](../research/investigations/deployment-performance/README.md#results-1)). The run
+  gives no spread for p99, so this may be noise; with the file off firn's
+  p99 is lower than Redis's. The change: rerun the line with p99 per pass;
+  if it holds, find which waits (the writer, the transaction's statement)
+  make the tail. Reopen with the session-write item above, measured in the
+  same run.
+
+- **firn holds more memory than Redis for the same sessions.** After one
+  million connect-redis sessions of 200 bytes with a one-day expiry, firn's
+  resident set was 411 MB against Redis 7.0.15's 355 to 359 MB (16% more),
+  437 to 439 MB with the append-only file on one CPU (23%) and 523 to 559 MB
+  on two (47 to 58%), while Redis's did not change with the file
+  ([deployment record](../research/investigations/deployment-performance/README.md#results-1)). The causes are not measured: firn's
+  entry layout against Redis's, the allocator's retained memory, and what
+  the append-only path keeps; the growth with a second CPU suggests
+  per-thread allocator arenas. The change: read the counted heap beside
+  the resident set (Whitefoot's memory statistics,
+  [Whitefoot#277](https://github.com/Ming-Research/Whitefoot/pull/277)) to separate live data from allocator retention, then reduce whichever
+  dominates. Validate with `workloads-memory.csv` reporting both readings
+  for firn and Redis's `used_memory` beside its resident set. Reopen with
+  firn's memory accounting.
+
 - **Implement firn's Redis-compatible Lua interpreter in Whitefoot.** Missing
   scripting prevents applications from composing conditional multi-command
   operations through `EVAL` and `EVALSHA`. Target the Redis Lua 5.1 execution
