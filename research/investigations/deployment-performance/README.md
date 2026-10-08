@@ -317,3 +317,27 @@ Where firn falls below Redis:
 Every other line's rate is above Redis's: 1.08 to 1.41 times on one CPU and
 1.95 to 2.29 times on two, where Redis serves from one thread; their p99 is
 at or below Redis's.
+
+## Why the scripted limiter's tail is long
+
+### The question, stated before measuring
+
+On one CPU firn runs the rate limiter's script at 0.78 of Redis's rate with
+a p99 of 3.4 ms against Redis's 0.7 ms, while its median is close to
+Redis's. firn runs every script on one engine: a script takes it in an
+atomic statement whose guard waits while another script holds it
+(`take_engine` in `firn/scripting/entry.wf`), and putting it back wakes
+every context waiting on that guard, of which one takes it and the rest
+wait again, in no order. A long tail would follow if some contexts lose
+that race repeatedly.
+
+The comparison: the same build, one CPU, the limiter script with 1, 8 and 50
+connections, 2 passes of 5 seconds, firn and Redis, with the append-only
+file off. With one connection no script waits for the engine.
+
+- If waiting for the engine makes the tail, firn's p99 at one connection is
+  near Redis's and grows with the connections well beyond Redis's growth.
+- The hypothesis is rejected if firn's p99 at one connection is already
+  several times Redis's: the time is then in the script's own path (the
+  per-call copy of the source out of the registry, the cache lookup, the
+  engine's run, or the reply), which a profile of that path then locates.

@@ -41,9 +41,11 @@
 #   sh redis-bench.sh workloads   the deployment-performance investigation's
 #                                 std-only Rust client, built offline with
 #                                 cargo in release mode; Redis and firn, each
-#                                 without and with AOF, at depth 1 with 50
-#                                 connections and one thread per client CPU
-#                                 (up to 16 CPUs, as in scale); WORKLOAD_CPUS
+#                                 without and with AOF, at depth 1 with
+#                                 WORKLOAD_CONNECTIONS connections (default
+#                                 50; several values measure each in turn)
+#                                 and one thread per client CPU (up to 16
+#                                 CPUs, as in scale); WORKLOAD_CPUS
 #                                 (default 1 2), WORKLOAD_PASSES (default 3),
 #                                 WORKLOAD_SECONDS (default 10), WORKLOADS
 #                                 (default limiter-script limiter-tx setmany-tx
@@ -708,10 +710,12 @@ if [ "$MODE" = workloads ]; then
                         rss=$(awk '/^VmRSS:/ { print $2; found=1 } END { if (!found) exit 1 }' "/proc/$server/status")
                         echo "$line,$pass,$n,$workload,1000000,$rss" | tee -a "$OUT/workloads-memory.csv"
                     fi
-                    result=$(taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
-                        --threads "$CLIENT_THREADS" --connections 50 \
-                        --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
-                    echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
+                    for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                        result=$(taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
+                            --threads "$CLIENT_THREADS" --connections "$conns" \
+                            --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
+                        echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
+                    done
                     stop
                     server=
                 done

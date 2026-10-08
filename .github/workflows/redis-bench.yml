@@ -66,6 +66,10 @@ on:
         description: Seconds per measured run; probe with 5 first
         type: string
         default: "5"
+      connections:
+        description: Client connections for workloads, space-separated values measured in turn
+        type: string
+        default: "50"
       profile:
         description: Record a perf profile of each image (compare)
         type: boolean
@@ -296,6 +300,7 @@ jobs:
           WORKLOAD_CPUS: ${{ inputs.cpus }}
           WORKLOAD_PASSES: ${{ inputs.passes }}
           WORKLOAD_SECONDS: ${{ inputs.seconds }}
+          WORKLOAD_CONNECTIONS: ${{ inputs.connections }}
           WORKLOADS: ${{ inputs.tests }}
         run: |
           set -o pipefail
