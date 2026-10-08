@@ -68,8 +68,10 @@ Server CPUs 2, depth 16, thousands of requests a second (median of 2 passes of 5
 - **Against the earlier probe.** The firn-to-Redis ratios for `set`, `get`
   and `mset` are within a few percent of the probe's. That is inside this
   run's twin spread, apart from `mset` on one CPU, 1.56 against 1.67. With
-  this resolution, the command-path changes show no throughput loss beyond
-  about 5%.
+  a different compiler, LLVM major and day, and no interleaving, this
+  comparison does not separate a loss of a few percent from those
+  differences: the observed ratios are listed, and whether the command-path
+  changes cost `mset` on one CPU (1.56 against 1.67) stays open.
 - **What this does not measure.** Depth 1 is not measured here; scale mode
   runs depth 16 only.
 
@@ -194,7 +196,9 @@ Each workload is the selected consumers' own command forms, as the
   script, which runs `SET key 0 EX ttl NX`, `INCRBY`, `PTTL` and, for a key
   without an expiry, `EXPIRE`. Each call takes one of 100,000 keys at random.
 - **Rate limiting in a transaction.** `MULTI`, `INCRBY key 1`, `PTTL key`,
-  `EXEC`: the form rate-limiter-flexible's transactions take in 24 of its 29.
+  `EXEC`: the `INCRBY` variant of rate-limiter-flexible's transactions that
+  follow `SET`, `GET` or `INCRBY` with `PTTL`, a family that makes 24 of its
+  29.
 - **Cache `set_many`.** `MULTI`, `MSET` of three keys, `EXPIRE` of each,
   `EXEC`: Django's form in 19 of its 20.
 - **Session store.** connect-redis's `SET sess:<id> <200-byte value> EX
@@ -260,9 +264,11 @@ on the i9-14900K, 2026-10-08: Firn-wf 133119b (whitefoot.pin
 interleaved passes of 5 seconds per line after a probe of 1 pass of 3
 seconds ([37774316578](https://github.com/Ming-Research/Firn-wf/actions/runs/37774316578)).
 The plan asked for passes of 10 seconds; the passes were shortened to keep
-the machine's slot short, and every conclusion below holds by a margin
-larger than the spread between its passes, which the table gives as the
-range over the mean.
+the machine's slot short. The table gives each rate's spread between passes
+as the range over the mean; it gives no spread for p99, so the p99
+comparisons below rest on medians of three passes alone. One rate
+comparison does not clear its spread: the scripted limiter on one CPU with
+the append-only file on, 0.88, where firn's own rate varied by 14.6%.
 
 Rate in thousands a second (spread), firn over Redis, and median p99 in ms:
 
@@ -298,12 +304,16 @@ Where firn falls below Redis:
 - **The scripted rate limiter.** At 0.68 to 0.88 of Redis's rate, with a
   p99 of 3.4 to 5.5 ms against 0.6 to 1.0 ms, and worse on two CPUs than on
   one. firn runs every script on one engine that scripts take in turn
-  (`firn/script_pool`), so the second CPU adds waiting for the engine; why
-  one CPU's p99 is five times Redis's is not known.
+  (`firn/script_pool`); waiting for the engine is the hypothesis for the
+  second CPU's loss, not measured here, and why one CPU's p99 is five times
+  Redis's is not known.
 - **Session writes with the append-only file on one CPU,** at 0.92 with a
   p99 of 0.84 ms against 0.65 ms.
+- **The transaction rate limiter's p99 with the append-only file on two
+  CPUs,** 0.50 ms against 0.42 ms, while its rate is 2.24 times Redis's.
 - **Memory,** 16 percent above Redis for the same sessions, 23 percent with
   the append-only file on one CPU and 47 to 58 percent on two.
 
-Every other line is above Redis: 1.08 to 1.41 times on one CPU and 1.95
-to 2.29 times on two, where Redis serves from one thread.
+Every other line's rate is above Redis's: 1.08 to 1.41 times on one CPU and
+1.95 to 2.29 times on two, where Redis serves from one thread; their p99 is
+at or below Redis's.
