@@ -20,9 +20,8 @@ written while firn lived in the Whitefoot repository; a path such as
   `register` (`firn/scripting/entry.wf`) drops the source when growing the
   registry fails, after EVAL or SCRIPT LOAD has already compiled the script
   into the engine: SCRIPT LOAD then answers a SHA1 the registry does not
-  hold, and an EVALSHA retrying across a SCRIPT FLUSH could hit that engine's
-  cache for a script the registry never held, where Redis 7.0.15 answers
-  NOSCRIPT. It needs an allocation failure. The change: `register` reports
+  hold, so a later EVALSHA answers NOSCRIPT despite the successful load.
+  It needs an allocation failure. The change: `register` reports
   failure, and EVAL and SCRIPT LOAD then drop the compiled entry and answer
   as Redis does when it cannot store the script. Validate with an allocation
   limit once firn can set one (memory accounting); reopen with that work.
@@ -139,7 +138,11 @@ written while firn lived in the Whitefoot repository; a path such as
   whether or not it has written, keeps firn from stopping: after `EVAL
   "redis.call('SET','x','1'); while true do end" 0`, `SHUTDOWN NOSAVE` on
   another connection leaves firn running. firn has no threshold: a command
-  that needs the keyspace waits for the attempt to end. Redis's
+  that needs the keyspace waits for the attempt to end. `SCRIPT FLUSH`
+  waits until no script is in progress, including between its attempts,
+  as Redis does below the threshold; it must answer `BUSY` above the
+  threshold once those replies exist, since Redis does not allow FLUSH
+  while busy. Redis's
   suite test `just EXEC and script timeout` waits for `BUSY` before it sends
   `SCRIPT KILL`, so on firn it hangs until the suite's 120-second timeout
   and its retry. The change: the pool records when the running script

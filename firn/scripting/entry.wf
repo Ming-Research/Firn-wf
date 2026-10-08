@@ -322,7 +322,7 @@ fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &Conc
 }
 
 fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, keys_env: &KeyEnv, time: &Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(keys_env), reads(time), writes(client), writes(clock) waits {
-  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and, for each attempt whose engine has not compiled it, reads the registry again and copies the script's source from that read, answering NOSCRIPT then if a SCRIPT FLUSH has removed it; an attempt whose engine has compiled it copies nothing. An attempt that runs out of its budget having written nothing is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits for the engine is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
+  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and, for each attempt whose engine has not compiled it, reads the registry again and copies the script's source from that read, answering NOSCRIPT then if a SCRIPT FLUSH removed it before the script began; FLUSH waits while any script is in progress, so it cannot interrupt later attempts. An attempt whose engine has compiled it copies nothing. An attempt that runs out of its budget having written nothing is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits for the engine is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
   let count = args^.inner.len;
   let body = pkg::protocol::arg(args: args, index: 1_u64);
   if by_sha {
@@ -508,7 +508,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
 }
 
 fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> r: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "SCRIPT LOAD, EXISTS and FLUSH as Redis 7.0.15 answers them: an unknown subcommand is answered as Redis answers one, its name echoed to 128 bytes, and a subcommand outside its arity with Redis's arity error, both before a connection that must authenticate is answered NOAUTH. SYNC and ASYNC both invalidate the visible registry before replying OK, as in Redis; firn frees the registry's sources at once for either, and the engine discards its stale environment before its next use.";
+  doc "SCRIPT LOAD, EXISTS and FLUSH as Redis 7.0.15 answers them: an unknown subcommand is answered as Redis answers one, its name echoed to 128 bytes, and a subcommand outside its arity with Redis's arity error, both before a connection that must authenticate is answered NOAUTH. SYNC and ASYNC both wait until no script is in progress, then invalidate the visible registry before replying OK, as Redis does below its busy threshold; firn frees the registry's sources at once for either, and the engine discards its stale environment before its next use.";
   let count = args^.inner.len;
   let sub = pkg::protocol::arg(args: args, index: 1_u64);
   let exists = pkg::bytes::name_is(input: input, start: sub.start, length: sub.length, word: &entry_text_8[0_u64..6_u64]);
@@ -593,7 +593,7 @@ fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Clie
       reply_error(client: client, word: &entry_text_12[0_u64..47_u64]);
       return unit;
     }
-    atomic p = &store^.scripts {
+    atomic p = &store^.scripts when p^.running == 0_u64 {
       let empty = box_slots_new::<Registered>(capacity: 0_u64);
       set p^.registry = move empty;
       set p^.source_bytes = 0_u64;

@@ -4409,6 +4409,67 @@ fn firn_kills_a_looping_script_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// SCRIPT FLUSH waits for a running EVALSHA, including between attempts,
+/// as Redis 7.0.15 queues FLUSH below its busy threshold. SCRIPT KILL can
+/// still stop the script while FLUSH waits: the script gets Redis's killed
+/// error, FLUSH succeeds, and a later EVALSHA gets NOSCRIPT. The start delay
+/// and killed error are the same as in the SCRIPT KILL case above.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_script_flush_waits_for_a_looping_script_to_be_killed() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]);
+    let mut looping = connect_when_ready(port);
+    let mut flushing = connect_when_ready(port);
+    let mut killing = connect_when_ready(port);
+    let sha = "694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7";
+    looping
+        .write_all(&resp(&["SCRIPT", "LOAD", "while true do end"]))
+        .expect("load the looping script");
+    expect_replies(
+        &mut looping,
+        format!("$40\r\n{sha}\r\n").as_bytes(),
+        "the looping script's SHA1",
+    );
+    looping
+        .write_all(&resp(&["EVALSHA", sha, "0"]))
+        .expect("start the looping script by SHA1");
+    std::thread::sleep(Duration::from_millis(300));
+    flushing
+        .write_all(&resp(&["SCRIPT", "FLUSH"]))
+        .expect("flush while the script runs");
+    expect_silence(&mut flushing, "SCRIPT FLUSH while a script is in progress");
+    killing
+        .write_all(&resp(&["SCRIPT", "KILL"]))
+        .expect("kill the script while FLUSH waits");
+    expect_replies(&mut killing, b"+OK\r\n", "SCRIPT KILL while FLUSH waits");
+    expect_replies(
+        &mut looping,
+        format!("-ERR Script killed by user with SCRIPT KILL... script: {sha}, on @user_script:1.\r\n").as_bytes(),
+        "the killed script while FLUSH waits",
+    );
+    expect_replies(
+        &mut flushing,
+        b"+OK\r\n",
+        "SCRIPT FLUSH once the script ended",
+    );
+    looping
+        .write_all(&resp(&["EVALSHA", sha, "0"]))
+        .expect("run the flushed SHA1");
+    expect_replies(
+        &mut looping,
+        b"-NOSCRIPT No matching script. Please use EVAL.\r\n",
+        "EVALSHA after SCRIPT FLUSH",
+    );
+    drop(looping);
+    drop(flushing);
+    drop(killing);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn's scripts share one Lua state as Redis 7.0.15's do: the cjson
 /// precision one connection's script sets reaches another connection's
 /// script sent while a third connection's script runs. That script has
