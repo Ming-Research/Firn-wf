@@ -16,6 +16,17 @@ written while firn lived in the Whitefoot repository; a path such as
 
 ## Server
 
+- **A script compiled but not registered when the registry cannot grow.**
+  `register` (`firn/scripting/entry.wf`) drops the source when growing the
+  registry fails, after EVAL or SCRIPT LOAD has already compiled the script
+  into the engine: SCRIPT LOAD then answers a SHA1 the registry does not
+  hold, and an EVALSHA retrying across a SCRIPT FLUSH could hit that engine's
+  cache for a script the registry never held, where Redis 7.0.15 answers
+  NOSCRIPT. It needs an allocation failure. The change: `register` reports
+  failure, and EVAL and SCRIPT LOAD then drop the compiled entry and answer
+  as Redis does when it cannot store the script. Validate with an allocation
+  limit once firn can set one (memory accounting); reopen with that work.
+
 - **Scripts' p99 follows Halo's collection pause.** With 50 connections
   firn runs rate-limiter-flexible's script at 0.73 to 0.78 of Redis 7.0.15's
   rate on one CPU with a p99 of 3.4 ms against 0.6 to 1.0 ms, and at 0.68
