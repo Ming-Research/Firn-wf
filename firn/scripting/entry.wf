@@ -86,11 +86,14 @@ fn new_pooled(generation: u64) -> pooled: PooledEngine pure {
   return PooledEngine(engine: move engine, generation: generation, cache: move cache);
 }
 
-fn return_engine(store: &Keyspace, pooled: PooledEngine) -> r: unit reads(store) waits {
-  doc "Puts the engine back for the next script, which then may take it.";
+fn return_engine(store: &Keyspace, pooled: PooledEngine, record: Bool, nanos: u64, collections: u64) -> r: unit reads(store) waits {
+  doc "Puts the engine back for the next script, which then may take it, and, when record is set, counts a finished script call that held the engine for nanos nanoseconds while collections collections completed.";
   halo::embed::reset(engine: &pooled.engine);
   atomic p = &store^.scripts {
     set p^.out = 0_u64;
+    if record {
+      probe_record(pool: p, nanos: nanos, collections: collections);
+    }
     if p^.idle.inner.len == p^.idle.inner.cap {
       let room = p^.idle.inner.cap +sat 1_u64;
       let twice = p^.idle.inner.cap +sat p^.idle.inner.cap;
@@ -104,6 +107,97 @@ fn return_engine(store: &Keyspace, pooled: PooledEngine) -> r: unit reads(store)
     }
   }
   return unit;
+}
+
+fn probe_bucket(nanos: u64) -> bucket: u64 pure {
+  doc "The log2 bucket of a duration: bucket i counts durations from 2^i to below 2^(i+1) nanoseconds, bucket 0 also zero, and bucket 39 everything from 2^39.";
+  let bucket = 0_u64;
+  let rest = nanos;
+  loop {
+    if rest <= 1_u64 {
+      break;
+    }
+    set rest = rest / 2_u64;
+    set bucket = bucket +wrap 1_u64;
+  }
+  return imin(bucket, 39_u64);
+}
+
+fn probe_record(pool: &EnginePool, nanos: u64, collections: u64) -> r: unit writes(pool) {
+  doc "Counts one finished script call in the group of calls during which a collection completed or the group of those without one.";
+  let bucket = probe_bucket(nanos: nanos);
+  set pool^.probe_collections = pool^.probe_collections +sat collections;
+  if collections > 0_u64 {
+    set pool^.probe_calls_gc = pool^.probe_calls_gc +sat 1_u64;
+    set pool^.probe_sum_gc = pool^.probe_sum_gc +sat nanos;
+    set pool^.probe_max_gc = imax(pool^.probe_max_gc, nanos);
+    if bucket < 40_u64 {
+      set pool^.probe_hist_gc[bucket] = pool^.probe_hist_gc[bucket] +sat 1_u64;
+    }
+  } else {
+    set pool^.probe_calls_nogc = pool^.probe_calls_nogc +sat 1_u64;
+    set pool^.probe_sum_nogc = pool^.probe_sum_nogc +sat nanos;
+    set pool^.probe_max_nogc = imax(pool^.probe_max_nogc, nanos);
+    if bucket < 40_u64 {
+      set pool^.probe_hist_nogc[bucket] = pool^.probe_hist_nogc[bucket] +sat 1_u64;
+    }
+  }
+  return unit;
+}
+
+fn probe_line(out: &Box<Slots<u8>>, label: &[u8], value: u64) -> r: unit reads(label), writes(out) {
+  text_bytes(out: out, bytes: label);
+  decimal(out: out, n: value);
+  text_bytes(out: out, bytes: &entry_text_2[0_u64..2_u64]);
+  return unit;
+}
+
+fn probe_histogram(out: &Box<Slots<u8>>, label: &[u8], counts: &Array<u64, 40>) -> r: unit reads(label), reads(counts), writes(out) {
+  text_bytes(out: out, bytes: label);
+  for (i in 0_u64..40_u64) {
+    if i > 0_u64 {
+      push(out: out, byte: 44_u8);
+    }
+    decimal(out: out, n: counts^[i]);
+  }
+  text_bytes(out: out, bytes: &entry_text_2[0_u64..2_u64]);
+  return unit;
+}
+
+fn probe_info(store: &Keyspace) -> text: Box<Slots<u8>> reads(store) waits {
+  doc "INFO scriptprobe's text: the script calls counted since the server started, grouped by whether a collection completed while the call held the engine.";
+  let calls_gc = 0_u64;
+  let calls_nogc = 0_u64;
+  let sum_gc = 0_u64;
+  let sum_nogc = 0_u64;
+  let max_gc = 0_u64;
+  let max_nogc = 0_u64;
+  let collections = 0_u64;
+  let hist_gc = array_filled::<u64, 40>(value: 0_u64);
+  let hist_nogc = array_filled::<u64, 40>(value: 0_u64);
+  atomic p = &store^.scripts {
+    set calls_gc = p^.probe_calls_gc;
+    set calls_nogc = p^.probe_calls_nogc;
+    set sum_gc = p^.probe_sum_gc;
+    set sum_nogc = p^.probe_sum_nogc;
+    set max_gc = p^.probe_max_gc;
+    set max_nogc = p^.probe_max_nogc;
+    set collections = p^.probe_collections;
+    set hist_gc = p^.probe_hist_gc;
+    set hist_nogc = p^.probe_hist_nogc;
+  }
+  let text = box_slots_new::<u8>(capacity: 1024_u64);
+  text_bytes(out: &text, bytes: &probe_head[0_u64..15_u64]);
+  probe_line(out: &text, label: &probe_calls_gc_label[0_u64..9_u64], value: calls_gc);
+  probe_line(out: &text, label: &probe_calls_nogc_label[0_u64..11_u64], value: calls_nogc);
+  probe_line(out: &text, label: &probe_sum_gc_label[0_u64..10_u64], value: sum_gc);
+  probe_line(out: &text, label: &probe_sum_nogc_label[0_u64..12_u64], value: sum_nogc);
+  probe_line(out: &text, label: &probe_max_gc_label[0_u64..10_u64], value: max_gc);
+  probe_line(out: &text, label: &probe_max_nogc_label[0_u64..12_u64], value: max_nogc);
+  probe_line(out: &text, label: &probe_collections_label[0_u64..12_u64], value: collections);
+  probe_histogram(out: &text, label: &probe_hist_gc_label[0_u64..8_u64], counts: &hist_gc);
+  probe_histogram(out: &text, label: &probe_hist_nogc_label[0_u64..10_u64], counts: &hist_nogc);
+  return move text;
 }
 
 fn register(store: &Keyspace, sha: &Array<u8, 40>, source: &[u8]) -> r: unit reads(store), reads(sha), reads(source) waits {
@@ -373,8 +467,12 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
   let mark = 0_u64;
   let begun = False();
   let stopped_at = 0_u64;
+  let held_nanos = 0_u64;
+  let held_collections = 0_u64;
   loop {
     let pooled = take_engine(store: store);
+    let taken_at = std::time::now(clock: clock);
+    let collected_before = halo::embed::collection_count(engine: &pooled.engine);
     let killed = False();
     if begun {
       set killed = kill_requested(store: store, mark: mark);
@@ -485,7 +583,15 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
         }
       }
     }
-    return_engine(store: store, pooled: move pooled);
+    let returned_at = std::time::now(clock: clock);
+    let collected_after = halo::embed::collection_count(engine: &pooled.engine);
+    let held_for = std::time::nanoseconds_from(earlier: taken_at, later: returned_at);
+    let collected = collected_after -sat collected_before;
+    set held_nanos = held_nanos +sat held_for;
+    set held_collections = held_collections +sat collected;
+    let finished = bnot(retry);
+    let last = bor(stopped, finished);
+    return_engine(store: store, pooled: move pooled, record: last, nanos: held_nanos, collections: held_collections);
     if killed {
       reply_killed(client: client, sha: &sha, line: stopped_at);
       break;
@@ -618,7 +724,8 @@ fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Clie
         reply_bulk_input(client: client, input: &sha[0_u64..40_u64], start: 0_u64, length: 40_u64);
       }
     }
-    return_engine(store: store, pooled: move pooled);
+    let no_record = False();
+    return_engine(store: store, pooled: move pooled, record: no_record, nanos: 0_u64, collections: 0_u64);
     return unit;
   }
   return unit;
@@ -685,3 +792,23 @@ const killed_on: Array<u8, 18> = ", on @user_script:";
 const effects_multi: Array<u8, 5> = "MULTI";
 
 const effects_exec: Array<u8, 4> = "EXEC";
+
+const probe_head: Array<u8, 15> = "# Scriptprobe\r\n";
+
+const probe_calls_gc_label: Array<u8, 9> = "calls_gc:";
+
+const probe_calls_nogc_label: Array<u8, 11> = "calls_nogc:";
+
+const probe_sum_gc_label: Array<u8, 10> = "sum_ns_gc:";
+
+const probe_sum_nogc_label: Array<u8, 12> = "sum_ns_nogc:";
+
+const probe_max_gc_label: Array<u8, 10> = "max_ns_gc:";
+
+const probe_max_nogc_label: Array<u8, 12> = "max_ns_nogc:";
+
+const probe_collections_label: Array<u8, 12> = "collections:";
+
+const probe_hist_gc_label: Array<u8, 8> = "hist_gc:";
+
+const probe_hist_nogc_label: Array<u8, 10> = "hist_nogc:";

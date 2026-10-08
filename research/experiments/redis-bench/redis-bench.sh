@@ -56,7 +56,12 @@
 #                                 set, each firn line's first pass is run once
 #                                 more under perf record, unmeasured, and its
 #                                 flat profile kept as profile-<line>-<cpus>-
-#                                 <workload>-<connections>.txt. Probe with
+#                                 <workload>-<connections>.txt. With
+#                                 FIRN_SCRIPT_PROBE set, after each measured
+#                                 firn run, print INFO scriptprobe's lines
+#                                 prefixed probe,<line>,<pass>,<cpus>,
+#                                 <workload>,<connections>, (counters run from
+#                                 the server's start). Probe with
 #                                 WORKLOAD_PASSES=2 WORKLOAD_SECONDS=5 first.
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
@@ -720,6 +725,10 @@ if [ "$MODE" = workloads ]; then
                             --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
                         echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
                         case $line in firn-*) profiled=1 ;; *) profiled= ;; esac
+                        if [ -n "$FIRN_SCRIPT_PROBE" ] && [ -n "$profiled" ]; then
+                            redis-cli -p "$PORT" INFO scriptprobe | tr -d '\r' |
+                                sed -n "/./s/^/probe,$line,$pass,$n,$workload,$conns,/p"
+                        fi
                         if [ -n "$PERF" ] && [ -n "$profiled" ] && [ "$pass" -eq 1 ]; then
                             name="$line-$n-$workload-$conns"
                             "$PERF" record -F "${PERF_FREQUENCY:-4999}" -p "$server" \

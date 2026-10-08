@@ -23,6 +23,15 @@ public struct EnginePool {
   public generation: u64;
   public running: u64;
   public kills: u64;
+  public probe_calls_gc: u64;
+  public probe_calls_nogc: u64;
+  public probe_sum_gc: u64;
+  public probe_sum_nogc: u64;
+  public probe_max_gc: u64;
+  public probe_max_nogc: u64;
+  public probe_collections: u64;
+  public probe_hist_gc: Array<u64, 40>;
+  public probe_hist_nogc: Array<u64, 40>;
 }
 
 public fn new_pool() -> pool: EnginePool pure doc "A pool with no engine yet, the engine made when first taken.";

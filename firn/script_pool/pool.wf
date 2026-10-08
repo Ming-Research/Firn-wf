@@ -1,5 +1,7 @@
 fn new_pool() -> pool: EnginePool pure {
   let idle = box_slots_new::<PooledEngine>(capacity: 0_u64);
   let registry = box_slots_new::<Registered>(capacity: 0_u64);
-  return EnginePool(idle: move idle, out: 0_u64, registry: move registry, source_bytes: 0_u64, generation: 0_u64, running: 0_u64, kills: 0_u64);
+  let hist_gc = array_filled::<u64, 40>(value: 0_u64);
+  let hist_nogc = array_filled::<u64, 40>(value: 0_u64);
+  return EnginePool(idle: move idle, out: 0_u64, registry: move registry, source_bytes: 0_u64, generation: 0_u64, running: 0_u64, kills: 0_u64, probe_calls_gc: 0_u64, probe_calls_nogc: 0_u64, probe_sum_gc: 0_u64, probe_sum_nogc: 0_u64, probe_max_gc: 0_u64, probe_max_nogc: 0_u64, probe_collections: 0_u64, probe_hist_gc: hist_gc, probe_hist_nogc: hist_nogc);
 }

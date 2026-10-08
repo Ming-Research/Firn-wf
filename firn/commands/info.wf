@@ -15,6 +15,8 @@ const section_everything: Array<u8, 10> = "EVERYTHING";
 
 const section_module_list: Array<u8, 11> = "MODULE_LIST";
 
+const section_scriptprobe: Array<u8, 11> = "SCRIPTPROBE";
+
 const section_names: Array<u8, 105> = "SERVERCLIENTSMEMORYPERSISTENCESTATSREPLICATIONCPUMODULESCOMMANDSTATSERRORSTATSLATENCYSTATSCLUSTERKEYSPACE";
 
 const section_ends: Array<u64, 13> =[6_u64, 13_u64, 19_u64, 30_u64, 35_u64, 46_u64, 49_u64, 56_u64, 68_u64, 78_u64, 90_u64, 97_u64, 105_u64];
@@ -310,6 +312,15 @@ fn info_finish(client: &Client, text: &Box<Slots<u8>>) -> result: unit reads(tex
 
 fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no memory limit and so no eviction, no scripts or functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, memory used and processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
+  if args^.inner.len == 2_u64 {
+    let section = arg(args: args, index: 1_u64);
+    let probing = name_is(input: input, start: section.start, length: section.length, word: &section_scriptprobe[0_u64..11_u64]);
+    if probing {
+      let probed = pkg::scripting::probe_info(store: store);
+      info_finish(client: client, text: &probed);
+      return unit;
+    }
+  }
   let chosen = info_plan(input: input, args: args);
   let clients = 0_u64;
   if chosen[1_u64] == 1_u64 {

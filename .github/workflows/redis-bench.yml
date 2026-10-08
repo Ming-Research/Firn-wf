@@ -332,6 +332,7 @@ jobs:
             export FIRN_BASELINE="$OUT/base"
             echo "firn: $(git rev-parse HEAD)" | tee -a "$OUT/host.txt"
             if [ "$MODE" = workloads ]; then
+              export FIRN_SCRIPT_PROBE=1
               echo "revision,firn,$(git rev-parse HEAD),$(cat whitefoot.pin)" | tee "$OUT/revisions.csv"
             fi
             run_session "$MODE" 2>&1 | tee "$OUT/$MODE.txt"
