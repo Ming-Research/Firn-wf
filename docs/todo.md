@@ -641,12 +641,16 @@ written while firn lived in the Whitefoot repository; a path such as
   The change: a primitive that lets one context end other contexts' waits,
   such as a cancellation a host wait and a guarded atomic statement observe,
   ending with their own outcome, or an orderly program exit that ends every
-  context once the program has flushed what it chose. Either would replace
+  context once the program has flushed what it chose, with a status the
+  program chooses. Either would replace
   firn's polling, the stop-signal context's among it, which polls the
   shutdown request between waits for a signal so that it ends when firn
   stops for another reason. Reopen with the busy-script work, where
   `SHUTDOWN NOSAVE` must stop a script that never ends, or when another wait
-  must be ended from outside.
+  must be ended from outside. The exit with a chosen status is also what
+  matching Redis's handling of a second SIGTERM and of a signal during the
+  replay needs (the server entry on a second stop signal); the owner chose
+  to record it here and ship the signal stop without it.
 
 - **A program cannot read a socket address.** The specification (v0.93,
   section 14, `std::net`) makes `SocketAddress` opaque, built only by
