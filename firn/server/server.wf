@@ -549,6 +549,7 @@ struct Options {
   rewrite_percentage: u64;
   rewrite_min_size: u64;
   gc_pause: u64;
+  gc_floor: u64;
   valid: Bool;
 }
 
@@ -808,6 +809,8 @@ fn rewrite_option_size(text: &Box<Slots<u8>>) -> number: Decimal reads(text) {
 
 const option_gc_pause: Array<u8, 13> = "HALO-GC-PAUSE";
 
+const option_gc_floor: Array<u8, 13> = "HALO-GC-FLOOR";
+
 fn apply_named(options: &Options, name: Box<Slots<u8>>, value: Box<Slots<u8>>) -> applied: Bool writes(options) {
   doc "Applies one option given by name to the options, returning false for an unknown name or a value that does not read.";
   let is_gc_pause = option_named(text: &name, word: &option_gc_pause[0_u64..13_u64]);
@@ -815,6 +818,12 @@ fn apply_named(options: &Options, name: Box<Slots<u8>>, value: Box<Slots<u8>>) -
     let pause_number = decimal(text: &value, limit: 18446744073709551615_u64);
     set options^.gc_pause = imax(pause_number.value, 100_u64);
     return pause_number.valid;
+  }
+  let is_gc_floor = option_named(text: &name, word: &option_gc_floor[0_u64..13_u64]);
+  if is_gc_floor {
+    let floor_number = decimal(text: &value, limit: 18446744073709551615_u64);
+    set options^.gc_floor = floor_number.value;
+    return floor_number.valid;
   }
   let is_port = option_named(text: &name, word: &option_port[0_u64..4_u64]);
   let is_bind = option_named(text: &name, word: &option_bind[0_u64..4_u64]);
@@ -910,14 +919,14 @@ fn apply_positional(options: &Options, ordinal: u64, value: Box<Slots<u8>>) -> a
 }
 
 fn read_options(args: &std::text::Args) -> options: Options reads(args) {
-  doc "Reads firn's invocation. Up to four arguments come by position, as firn has always taken them: the port, how many clients to accept, the append-only file's name or - for none, and the idle limit in seconds. Options by name follow, each -- and a name in either case, then its value: --port; --bind, an IPv4 address or *; --timeout, the idle limit; --appendonly, yes or no; --appendfilename, the file's name, which alone does not turn the file on, as in Redis; --requirepass, the password clients must give, empty for none; and --clients, how many clients to accept before stopping; --auto-aof-rewrite-percentage, zero disabling automatic rewrites; and --auto-aof-rewrite-min-size, a byte count with Redis memory suffixes; the experiment option --halo-gc-pause sets the Lua collection pause percentage, default 200, clamped to at least 100. A later value replaces an earlier one, one by position included. The defaults are port 6379, the loopback address 127.0.0.1, no idle limit, no append-only file, named appendonly.aof once turned on, no password and no limit on clients. valid is false for an unknown name, a name without its value, an argument by position after one by name or past the fourth, and a value that does not read: a port past 65,535, an idle limit past 2,147,483,647 seconds, Redis's limit, an empty file name, or an argument that is not UTF-8 or holds more than 65,536 bytes.";
+  doc "Reads firn's invocation. Up to four arguments come by position, as firn has always taken them: the port, how many clients to accept, the append-only file's name or - for none, and the idle limit in seconds. Options by name follow, each -- and a name in either case, then its value: --port; --bind, an IPv4 address or *; --timeout, the idle limit; --appendonly, yes or no; --appendfilename, the file's name, which alone does not turn the file on, as in Redis; --requirepass, the password clients must give, empty for none; and --clients, how many clients to accept before stopping; --auto-aof-rewrite-percentage, zero disabling automatic rewrites; and --auto-aof-rewrite-min-size, a byte count with Redis memory suffixes; the experiment option --halo-gc-pause sets the Lua collection pause percentage, default 200, clamped to at least 100; --halo-gc-floor sets the minimum allocation threshold in bytes, default 1048576, accepting any u64 including zero. A later value replaces an earlier one, one by position included. The defaults are port 6379, the loopback address 127.0.0.1, no idle limit, no append-only file, named appendonly.aof once turned on, no password and no limit on clients. valid is false for an unknown name, a name without its value, an argument by position after one by name or past the fourth, and a value that does not read: a port past 65,535, an idle limit past 2,147,483,647 seconds, Redis's limit, an empty file name, or an argument that is not UTF-8 or holds more than 65,536 bytes.";
   let total = args_count(args: args);
   let aof = text_of(word: &default_file[0_u64..14_u64]);
   let bind = text_of(word: &default_bind[0_u64..9_u64]);
   let password = box_slots_new::<u8>(capacity: 0_u64);
   let off = False();
   let readable = True();
-  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, gc_pause: 200_u64, valid: readable);
+  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, gc_pause: 200_u64, gc_floor: 1048576_u64, valid: readable);
   let position = 1_u64;
   let ordinal = 0_u64;
   let named = False();
@@ -1007,6 +1016,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   let root = keyspace_new(seed: seed, logging: quiet, password: move password_text, timeout: idle, started: startup.time.unix_ms);
   atomic scripts = &root.scripts {
     set scripts^.gc_pause = options.gc_pause;
+    set scripts^.gc_floor = options.gc_floor;
   }
   atomic m = &root.meta {
     set m^.aof_rewrite_percentage = options.rewrite_percentage;

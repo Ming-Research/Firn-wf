@@ -56,10 +56,12 @@ fn take_engine(store: &Keyspace, first: Bool, mark: &u64) -> pooled: PooledEngin
   let held = None<PooledEngine>();
   let generation = 0_u64;
   let gc_pause = 200_u64;
+  let gc_floor = 1048576_u64;
   atomic p = &store^.scripts when p^.out == 0_u64 {
     set p^.out = 1_u64;
     set generation = p^.generation;
     set gc_pause = p^.gc_pause;
+    set gc_floor = p^.gc_floor;
     if first {
       set p^.running = p^.running +sat 1_u64;
       set mark^ = p^.kills;
@@ -73,20 +75,21 @@ fn take_engine(store: &Keyspace, first: Bool, mark: &u64) -> pooled: PooledEngin
     Some(value: engine) => {
       if engine.generation != generation {
         let stale = move engine;
-        return new_pooled(generation: generation, gc_pause: gc_pause);
+        return new_pooled(generation: generation, gc_pause: gc_pause, gc_floor: gc_floor);
       }
       return move engine;
     }
     None() => {
-      return new_pooled(generation: generation, gc_pause: gc_pause);
+      return new_pooled(generation: generation, gc_pause: gc_pause, gc_floor: gc_floor);
     }
   }
 }
 
-fn new_pooled(generation: u64, gc_pause: u64) -> pooled: PooledEngine pure {
+fn new_pooled(generation: u64, gc_pause: u64, gc_floor: u64) -> pooled: PooledEngine pure {
   doc "A flush generation starts a fresh Lua environment as Redis scriptingReset does, dropping compiled constants and library configuration as well as the cache index.";
   let engine = halo::embed::new_engine(limit: 18446744073709551615_u64);
   halo::embed::set_gc_pause(engine: &engine, percent: gc_pause);
+  halo::embed::set_gc_floor(engine: &engine, bytes: gc_floor);
   halo::embed::set_pcall_error_field(engine: &engine, field: &s_30[0_u64..3_u64]);
   install_host(engine: &engine);
   let cache = box_slots_new::<Cached>(capacity: 0_u64);

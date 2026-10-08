@@ -472,7 +472,7 @@ to separate names):
 
 - `calls_{gc,nogc}`, `sum_ns_{gc,nogc}`, `max_ns_{gc,nogc}`,
   `hist_{gc,nogc}`, `collections`.
-- `gc_pause`, `gc_samples`, `gc_unobserved_collections`,
+- `gc_pause`, `gc_floor`, `gc_samples`, `gc_unobserved_collections`,
   `gc_first_available`, `gc_gray_pops_{sum,min,max}`, `gc_next_threshold`.
 - For each kind `strings`, `tables`, `closures`, `upvalues`:
   `gc_<kind>_live_objects_{sum,min,max}`,
@@ -487,14 +487,20 @@ to separate names):
 The pinned Whitefoot `std::process::Inputs` and host interfaces provide
 arguments but no environment reader. Firn therefore accepts the authorized
 CLI alternative, `--halo-gc-pause <u64>`, defaults to 200 and reports the
-effective value clamped to at least 100, matching Halo. Every engine,
-including one created after SCRIPT FLUSH, receives it. Halo applies it to
-the threshold computed by the next collection, not the initial threshold.
+effective value clamped to at least 100, matching Halo. The companion
+`--halo-gc-floor <u64>` sets the minimum allocation threshold in bytes,
+defaults to 1048576 and accepts zero without clamping; `gc_floor` reports it.
+Every engine, including one created after SCRIPT FLUSH, receives both
+settings. Halo applies them to the threshold computed by the next collection,
+not the initial threshold.
 This experiment neither changes the language nor hides a rejected program.
 
 The harness translates `FIRN_HALO_GC_PAUSE` to that argument only for firn
-lines. A final `-p<number>` suffix overrides the environment, while the
-preceding driver count and AOF selection keep their meanings.
+lines. A `-p<number>` suffix overrides the environment; a `-f<bytes>` suffix
+passes `--halo-gc-floor`, for example `firn-1-f262144` or `firn-1-f65536`.
+Both suffixes combine in either order, as `firn-1-p400-f65536` or
+`firn-1-f65536-p400`, while the preceding driver count and AOF selection keep
+their meanings.
 `WORKLOAD_LINES='reference firn-{n}-p200 firn-{n}-p400 firn-{n}'` with
 `FIRN_HALO_GC_PAUSE=200` supplies a same-image pause-200 control; `{n}` expands
 to each selected CPU count and even passes reverse the complete line list.

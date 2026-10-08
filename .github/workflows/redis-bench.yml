@@ -75,7 +75,7 @@ on:
         type: string
         default: ""
       workload_lines:
-        description: "Workload lines; {n} is CPUs, e.g. reference firn-{n}-p200 firn-{n}-p400; empty keeps defaults"
+        description: "Workload lines; {n} is CPUs; firn suffixes -p<percent> and -f<bytes> combine in either order, e.g. reference firn-{n}-f262144 firn-{n}-p400-f65536; empty keeps defaults"
         type: string
         default: ""
       profile:

@@ -33,6 +33,7 @@ public struct EnginePool {
   public probe_hist_gc: Array<u64, 40>;
   public probe_hist_nogc: Array<u64, 40>;
   public gc_pause: u64;
+  public gc_floor: u64;
   public probe_gc: ProbeGc;
 }
 

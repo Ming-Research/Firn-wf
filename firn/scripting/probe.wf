@@ -80,9 +80,11 @@ fn probe_info(store: &Keyspace) -> text: Box<Slots<u8>> reads(store) waits {
   let hist_gc = array_filled::<u64, 40>(value: 0_u64);
   let hist_nogc = array_filled::<u64, 40>(value: 0_u64);
   let gc_pause = 200_u64;
+  let gc_floor = 1048576_u64;
   let gc = pkg::script_pool::new_probe_gc();
   atomic p = &store^.scripts {
     set gc_pause = p^.gc_pause;
+    set gc_floor = p^.gc_floor;
     set gc = p^.probe_gc;
     set calls_gc = p^.probe_calls_gc;
     set calls_nogc = p^.probe_calls_nogc;
@@ -106,6 +108,7 @@ fn probe_info(store: &Keyspace) -> text: Box<Slots<u8>> reads(store) waits {
   probe_histogram(out: &text, label: &probe_hist_gc_label[0_u64..8_u64], counts: &hist_gc);
   probe_histogram(out: &text, label: &probe_hist_nogc_label[0_u64..10_u64], counts: &hist_nogc);
   probe_line(out: &text, label: &probe_gc_pause_label[0_u64..9_u64], value: gc_pause);
+  probe_line(out: &text, label: &probe_gc_floor_label[0_u64..9_u64], value: gc_floor);
   probe_line(out: &text, label: &probe_gc_samples_label[0_u64..11_u64], value: gc.samples);
   probe_line(out: &text, label: &probe_gc_unobserved_collections_label[0_u64..26_u64], value: gc.unobserved_collections);
   probe_line(out: &text, label: &probe_gc_first_available_label[0_u64..19_u64], value: gc.first_available);
@@ -229,6 +232,8 @@ fn probe_kind_info(out: &Box<Slots<u8>>, prefix: &[u8], kind: &pkg::script_pool:
 }
 
 const probe_gc_pause_label: Array<u8, 9> = "gc_pause:";
+
+const probe_gc_floor_label: Array<u8, 9> = "gc_floor:";
 
 const probe_gc_samples_label: Array<u8, 11> = "gc_samples:";
 

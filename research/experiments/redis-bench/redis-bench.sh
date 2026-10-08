@@ -71,7 +71,12 @@
 #                                 FIRN_HALO_GC_PAUSE sets firn's --halo-gc-pause
 #                                 only (unset keeps 200). A firn line's -p<number>
 #                                 suffix overrides it, e.g. firn-1-p400 or
-#                                 firn-aof-1-p400. WORKLOAD_LINES overrides the
+#                                 firn-aof-1-p400. A -f<bytes> suffix sets
+#                                 --halo-gc-floor (default 1048576, accepts 0),
+#                                 e.g. firn-1-f262144 or firn-1-f65536. Combine
+#                                 with -p<percent> in either order, e.g.
+#                                 firn-1-p400-f65536 or firn-1-f65536-p400.
+#                                 WORKLOAD_LINES overrides the
 #                                 default lines; {n} expands to the CPU count:
 #                                 'reference firn-{n}-p200 firn-{n}-p400'.
 #                                 Order still reverses on even passes. Probe with
@@ -170,27 +175,41 @@ start() {
     start_line=$1
     launch_line=$start_line
     line_pause=
+    line_floor=
     case $start_line in
         firn-*)
             line_pause=${FIRN_HALO_GC_PAUSE:-}
-            case $start_line in
-                *-p*)
-                    launch_line=${start_line%-p*}
-                    line_pause=${start_line##*-p}
-                    case $line_pause in
-                        ''|*[!0-9]*) echo "invalid GC pause suffix: $start_line" >&2; exit 1 ;;
-                    esac
-                    ;;
-            esac
+            while :; do
+                line_suffix=${launch_line##*-}
+                case $line_suffix in
+                    p*)
+                        line_pause=${line_suffix#p}
+                        case $line_pause in
+                            ''|*[!0-9]*) echo "invalid GC pause suffix: $start_line" >&2; exit 1 ;;
+                        esac
+                        ;;
+                    f*)
+                        line_floor=${line_suffix#f}
+                        case $line_floor in
+                            ''|*[!0-9]*) echo "invalid GC floor suffix: $start_line" >&2; exit 1 ;;
+                        esac
+                        ;;
+                    *) break ;;
+                esac
+                launch_line=${launch_line%-*}
+            done
             ;;
     esac
-    # Positional parameters here contain only the optional firn argument pair.
+    # Positional parameters here contain only the optional firn argument pairs.
     set --
     if [ -n "$line_pause" ]; then
         case $line_pause in
             *[!0-9]*) echo "invalid FIRN_HALO_GC_PAUSE: $line_pause" >&2; exit 1 ;;
         esac
         set -- --halo-gc-pause "$line_pause"
+    fi
+    if [ -n "$line_floor" ]; then
+        set -- "$@" --halo-gc-floor "$line_floor"
     fi
     case $launch_line in
         reference)
