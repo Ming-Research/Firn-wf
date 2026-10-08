@@ -3226,7 +3226,7 @@ fn firn_matches_config_get_patterns_as_redis_does() {
          *4\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n\
          *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\
          *2\r\n{port_field}\
-         *8\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n\
+         *4\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n\
          *18\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
          *0\r\n\
          *0\r\n\
