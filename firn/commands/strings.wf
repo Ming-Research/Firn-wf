@@ -217,7 +217,7 @@ fn run_get(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   return unit;
 }
 
-fn get_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(client) {
+fn get_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), reads(slot), writes(journal), writes(slot.Some.value.access), writes(client) {
   doc "GET's work on its key's entry, held by the caller, against the client's now: a live string is written as a bulk string reply, recording done; another kind records wrong and an expired entry expired, writing nothing; an absent entry leaves the state as the caller set it.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {

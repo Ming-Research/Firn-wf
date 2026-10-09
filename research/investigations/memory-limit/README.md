@@ -202,7 +202,15 @@ paused the relaxed-field design (board item `firn-relaxed-field`). The miss
 cost is to be removed in Whitefoot's shared map instead: a statement that
 never inserts claims no cell for a missing key (Whitefoot PR #312, board
 item `coord-wfbl-03-06`), which GET reaches once its helpers' rows name only
-the stamp they write. Until that lands, this step keeps the locked stamp.
+the stamp they write. This step now builds with that release,
+`wf-a7b85f796649`, and declares GET's helpers (`get_body`, `refresh_access`,
+`update_access`) as reading the slot and writing only
+`slot.Some.value.access`. A same-source comparison on the i9-14900K with
+the experiment release of that change, GET at depth 16 on an empty keyspace
+([Firn-wf run 37986458410](https://github.com/Ming-Research/Firn-wf/actions/runs/37986458410)),
+put the narrowed build at 1.00, 1.04 and 1.00 of the unstamped build on 1, 2
+and 4 CPUs (same-image reruns 0.99, 1.00, 0.99) against 0.84, 0.88 and 0.80
+for the locked stamp; two passes, so exploratory.
 
 
 ## Step 2 implementation record
