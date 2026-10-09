@@ -26,9 +26,7 @@ const comma: Array<u8, 1> = ",";
 
 const newline: Array<u8, 1> = "\n";
 
-fn host_call(env: &unit, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64, id: u32) -> r: HostOutcome writes(env), writes(vm), writes(stack) contract {
-  ensures stack^.inner.len == entry(stack)^.inner.len;
-} {
+fn host_call(env: &unit, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64, id: u32) -> r: HostOutcome pure {
   return HostOutcome::Stop();
 }
 
