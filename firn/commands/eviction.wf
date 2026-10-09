@@ -93,17 +93,17 @@ fn eviction_draw(client: &Client, count: u64) -> index: u64 writes(client) contr
   }
 }
 
-fn eviction_score(entry: &Entry, client: &Client) -> score: u64 reads(entry), reads(client) {
+fn eviction_score(item: &Entry, client: &Client) -> score: u64 reads(item), reads(client) {
   doc "Redis 7.0.15 evictionPoolPopulate: idle seconds for LRU, 255 minus LFUDecrAndReturn for LFU, and ULLONG_MAX minus expiry for volatile-ttl. Inspection never refreshes or writes access stamps.";
   if client^.memory_policy == 3_u64 {
-    return 18446744073709551615_u64 -wrap entry^.expires;
+    return 18446744073709551615_u64 -wrap item^.expires;
   }
   if access_lfu(client: client) {
-    let frequency = access_frequency(stamp: entry^.access, client: client);
+    let frequency = access_frequency(stamp: item^.access, client: client);
     let inverted = 255_u32 -sat frequency;
     return cvt::<u32, u64>(inverted);
   }
-  return access_idle(stamp: entry^.access, client: client);
+  return access_idle(stamp: item^.access, client: client);
 }
 
 fn eviction_pool_add(pool: &Box<Slots<EvictionCandidate>>, candidate: EvictionCandidate) -> result: unit writes(pool) {
@@ -210,8 +210,8 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
   for (index in 0_u64..length) {
     if index < entries^.len {
       match entries^[index] {
-        Some(value: entry) => {
-          let expiring = entry^.expires != 0_u64;
+        Some(value: sampled) => {
+          let expiring = sampled^.expires != 0_u64;
           let all = bnot(volatile);
           if bor(all, expiring) {
             set seen = seen +sat 1_u64;
@@ -220,7 +220,7 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
               set position = eviction_draw(client: client, count: seen);
             }
             if position < client^.maxmemory_samples {
-              let score = eviction_score(entry: entry, client: client);
+              let score = eviction_score(item: sampled, client: client);
               let owned = scanned_key(keys: &gathered, index: index);
               let candidate = EvictionCandidate(key: move owned, score: score);
               if position < candidates.inner.len {
@@ -329,11 +329,11 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
             let lapsed = False();
             let eligible = False();
             match slot^ {
-              Some(value: entry) => {
-                let expiring = entry^.expires != 0_u64;
+              Some(value: current) => {
+                let expiring = current^.expires != 0_u64;
                 let all = bnot(volatile);
                 set eligible = bor(all, expiring);
-                set lapsed = pkg::store::expired(expires: entry^.expires, now: client^.now);
+                set lapsed = pkg::store::expired(expires: current^.expires, now: client^.now);
               }
               None() => {
               }
