@@ -251,7 +251,7 @@ fn arity_holds(arity: i64, count: u64) -> fits: Bool pure {
   return wide >= least;
 }
 
-fn script_get(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
+fn script_get(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
   doc "GET inside a script holding every key: the work and reply of run_get, an expired key removed at once, as Redis 7.0.15 removes one a script's lookup finds expired, its removal appended to the script's effects when the keyspace keeps a file.";
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
