@@ -105,7 +105,6 @@ fn redis_error_field(engine: &Engine, table: Value) -> r: Value reads(engine) {
       }
     }
   }
-  return Value::Nil();
 }
 
 fn format_redis_error(engine: &Engine, sha: &Array<u8, 40>, line: u64, locate: Bool) -> r: Box<Slots<u8>> reads(engine), reads(sha) {
