@@ -391,8 +391,8 @@ fn script_mset(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHas
   return appended;
 }
 
-fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME, 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH; 90 SADD, 91 SREM, 92 SPOP, 93 SCARD, 94 SMEMBERS, 95 SISMEMBER, 96 SMISMEMBER, 97 SRANDMEMBER, 98 SMOVE, 99 SINTER, 100 SUNION, 101 SDIFF, 102 SINTERCARD, 103 SINTERSTORE, 104 SUNIONSTORE, 105 SDIFFSTORE; 120 ZADD, 121 ZINCRBY, 122 ZREM, 123 ZPOPMIN, 124 ZPOPMAX, 125 ZCARD, 126 ZSCORE, 127 ZMSCORE, 128 ZRANK, 129 ZREVRANK, 130 ZRANGE, 131 ZREVRANGE, 132 ZRANGEBYSCORE, 133 ZREVRANGEBYSCORE, 134 ZRANGEBYLEX, 135 ZREVRANGEBYLEX, 136 ZCOUNT, 137 ZLEXCOUNT, 138 ZREMRANGEBYRANK, 139 ZREMRANGEBYSCORE, 140 ZREMRANGEBYLEX; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 164 FLUSHALL, 165 FLUSHDB, 166 COMMAND, 168 SCAN, 169 KEYS, 170 RANDOMKEY, 171 OBJECT, 167 being kept for INFO; the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
+fn command_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
+  doc "Shared command identity for admission and dispatch; kinds through 171 run by held parts: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME, 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH; 90 SADD, 91 SREM, 92 SPOP, 93 SCARD, 94 SMEMBERS, 95 SISMEMBER, 96 SMISMEMBER, 97 SRANDMEMBER, 98 SMOVE, 99 SINTER, 100 SUNION, 101 SDIFF, 102 SINTERCARD, 103 SINTERSTORE, 104 SUNIONSTORE, 105 SDIFFSTORE; 120 ZADD, 121 ZINCRBY, 122 ZREM, 123 ZPOPMIN, 124 ZPOPMAX, 125 ZCARD, 126 ZSCORE, 127 ZMSCORE, 128 ZRANK, 129 ZREVRANK, 130 ZRANGE, 131 ZREVRANGE, 132 ZRANGEBYSCORE, 133 ZREVRANGEBYSCORE, 134 ZRANGEBYLEX, 135 ZREVRANGEBYLEX, 136 ZCOUNT, 137 ZLEXCOUNT, 138 ZREMRANGEBYRANK, 139 ZREMRANGEBYSCORE, 140 ZREMRANGEBYLEX; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 164 FLUSHALL, 165 FLUSHDB, 166 COMMAND, 168 SCAN, 169 KEYS, 170 RANDOMKEY, 171 OBJECT, 167 is reserved. Network-only kinds are 172 EVAL, 173 EVALSHA, 174 SCRIPT, 175 INFO, 176 CONFIG, 177 AUTH, 178 HELLO, 179 QUIT, 180 CLIENT, 181 DEBUG, 182 FUNCTION, 183 SHUTDOWN, 184 BGREWRITEAOF, 185 MULTI, 186 EXEC, 187 DISCARD, 188 WATCH (only its inside-MULTI refusal), 189 RESET. Names are case insensitive; zero is unknown.";
   let code = name_code(input: input, start: name.start, length: name.length);
   if code == code_object {
     return 171_u64;
@@ -820,6 +820,70 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
       return 170_u64;
     }
   }
+  if code == code_eval {
+    return 172_u64;
+  }
+  if code == code_evalsha {
+    return 173_u64;
+  }
+  if code == code_script {
+    return 174_u64;
+  }
+  if code == code_info {
+    return 175_u64;
+  }
+  if code == code_config {
+    return 176_u64;
+  }
+  if code == code_auth {
+    return 177_u64;
+  }
+  if code == code_hello {
+    return 178_u64;
+  }
+  if code == code_quit {
+    return 179_u64;
+  }
+  if code == code_client {
+    return 180_u64;
+  }
+  if code == code_debug {
+    return 181_u64;
+  }
+  if code == code_function {
+    return 182_u64;
+  }
+  if code == code_shutdown {
+    return 183_u64;
+  }
+  if code == code_multi {
+    return 185_u64;
+  }
+  if code == code_exec {
+    return 186_u64;
+  }
+  if code == code_discard {
+    return 187_u64;
+  }
+  if code == code_watch {
+    return 188_u64;
+  }
+  if code == code_reset {
+    return 189_u64;
+  }
+  let rewrite = name_is(input: input, start: name.start, length: name.length, word: &aof_command_name[0_u64..12_u64]);
+  if rewrite {
+    return 184_u64;
+  }
+  return 0_u64;
+}
+
+fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
+  doc "The command identity when it has parts usable under EXEC or a script's atomic statement; zero otherwise.";
+  let kind = command_kind(input: input, name: name);
+  if kind <= 171_u64 {
+    return kind;
+  }
   return 0_u64;
 }
 
@@ -1163,7 +1227,7 @@ fn held_arity(kind: u64) -> arity: i64 pure {
 }
 
 fn held_run(journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
-  doc "Runs a command held_kind names, its arity already checked, by its parts inside a statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the caller's record of what it changed. journal is the attempt environment's first-refresh undo log, or None for EXEC; the client carries the read's unchanged memory settings. time is the statement's: its check is the instant the script or the transaction began, and its calendar time is frozen with it.";
+  doc "Runs a command held_kind names, its arity already checked, by its parts inside a statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the caller's record of what it changed. journal is the attempt environment's first-refresh undo log, or None for EXEC; the client carries the read's memory settings, refreshed after its own CONFIG SET. time is the statement's: its check is the instant the script or the transaction began, and its calendar time is frozen with it.";
   if kind == 171_u64 {
     return held_object(keys: keys, log: effects, logged: logged, input: input, args: args, client: client, time: time);
   }
@@ -1649,8 +1713,8 @@ fn held_run(journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &Concu
   return 0_u64;
 }
 
-fn script_command(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
-  doc "Runs one command a script calls, inside the script's statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the script's own record of what it changed, which the caller wraps in MULTI and EXEC when it holds more than one, as Redis 7.0.15 propagates a script's effects. time is the script's: its check is the instant the script began. COMMAND's subcommand is resolved by command_plan before it runs: an unknown one receives Redis's exact unknown-command refusal, a Redis subcommand firn does not run receives the extended refusal, and COUNT outside its arity receives Redis's script arity error. The commands held_kind names run through held_run; a count of arguments outside a command's arity is refused as Redis refuses it from a script, and AUTH, HELLO, QUIT, DEBUG, CONFIG, CLIENT, FUNCTION and SHUTDOWN, which Redis 7.0.15 marks noscript, as Redis refuses them, after the arity check of the command itself: AUTH, DEBUG, CONFIG, CLIENT and FUNCTION need an argument, HELLO, QUIT and SHUTDOWN none; a subcommand's own arity, such as CONFIG GET's, is not checked, so a short subcommand gets the refusal where Redis answers the arity error. Every other name is answered with Redis's error for a name no command has, extended to say that firn may know the command and not yet run it from scripts: firn names its commands only in execute's rows, so a script cannot tell an unknown name from a command firn has not split into its parts, and the extended text keeps the words Redis's own tests match.";
+fn script_command(memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(memory), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "Runs one command a script calls, inside the script's statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the script's own record of what it changed, which the caller wraps in MULTI and EXEC when it holds more than one, as Redis 7.0.15 propagates a script's effects. Redis 7.0.15 scriptVerifyOOM refuses DENYOOM before scriptCall has accepted any WRITE-flagged command under the captured pre-command OOM state. A missing-key DEL sets write_dirty even with no appended effect. time is the script's: its check is the instant the script began. COMMAND's subcommand is resolved by command_plan before it runs: an unknown one receives Redis's exact unknown-command refusal, a Redis subcommand firn does not run receives the extended refusal, and COUNT outside its arity receives Redis's script arity error. The commands held_kind names run through held_run; a count of arguments outside a command's arity is refused as Redis refuses it from a script, and AUTH, HELLO, QUIT, RESET, DEBUG, CONFIG, CLIENT, FUNCTION and SHUTDOWN, which Redis 7.0.15 marks noscript, as Redis refuses them, after the arity check of the command itself: AUTH, DEBUG, CONFIG, CLIENT and FUNCTION need an argument, HELLO, QUIT and SHUTDOWN none, RESET exactly none; a subcommand's own arity, such as CONFIG GET's, is not checked, so a short subcommand gets the refusal where Redis answers the arity error. Every other name is answered with Redis's error for a name no command has, extended to say that firn may know the command and not yet run it from scripts: command_kind now identifies known commands for admission, but the established extended refusal for an unsplit script command still keeps the words Redis's own tests match.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
@@ -1684,6 +1748,16 @@ fn script_command(journal: &Option<pkg::store::AccessJournal>, keys: &Concurrent
   if kind != 0_u64 {
     let arity = held_arity(kind: kind);
     if arity_holds(arity: arity, count: count) {
+      let denyoom = command_denyoom(kind: kind);
+      let unwritten = bnot(memory^.write_dirty);
+      let before_write = band(memory^.pre_command_oom, unwritten);
+      if band(before_write, denyoom) {
+        reply_error(client: client, word: &oom_error[0_u64..55_u64]);
+        return 0_u64;
+      }
+      if command_writes(kind: kind) {
+        set memory^.write_dirty = True();
+      }
       let appended = held_run(journal: journal, kind: kind, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
       return appended;
     }
@@ -1694,6 +1768,7 @@ fn script_command(journal: &Option<pkg::store::AccessJournal>, keys: &Concurrent
   let auth = code == code_auth;
   let hello = code == code_hello;
   let quit = code == code_quit;
+  let resetting = code == code_reset;
   let debug = code == code_debug;
   let config = code == code_config;
   let client_command = code == code_client;
@@ -1705,8 +1780,15 @@ fn script_command(journal: &Option<pkg::store::AccessJournal>, keys: &Concurrent
   let administration = bor(settings, function);
   let normal_refused = bor(connection, administration);
   let shutdown = code == code_shutdown;
-  let refused = bor(normal_refused, shutdown);
+  let process_refused = bor(normal_refused, shutdown);
+  let refused = bor(process_refused, resetting);
   if refused {
+    if resetting {
+      if count != 1_u64 {
+        reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
+        return 0_u64;
+      }
+    }
     let auth_or_debug = bor(auth, debug);
     let argued = bor(auth_or_debug, administration);
     if argued {

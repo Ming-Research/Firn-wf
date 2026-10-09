@@ -47,8 +47,7 @@ alias log_removal = pkg::store::log_removal;
 alias log_word = pkg::store::log_word;
 alias queue_expiry = pkg::store::queue_expiry;
 alias queue_due = pkg::store::queue_due;
-alias Due = pkg::store::Due;
-alias PriorityQueue = std::collections::priority_queue::PriorityQueue;
+alias ExpiryQueue = pkg::store::ExpiryQueue;
 alias read_integer = pkg::bytes::read_integer;
 alias reply_byte = pkg::protocol::reply_byte;
 alias reply_echoed = pkg::protocol::reply_echoed;
@@ -727,7 +726,7 @@ fn expire_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
   return 0_u64;
 }
 
-fn expire_meta(due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, plan: &ExpirePlan, outcome: u64, lapsed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log) {
+fn expire_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &ExpirePlan, outcome: u64, lapsed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log) {
   doc "EXPIRE's metadata after its work: queues a new expiry, and when logged appends what changed and answers how many commands it appended: a key found expired as log_removal records it, an expiry as PEXPIREAT key at with the options as they were sent or a PEXPIREAT as it was sent, and a removal as DEL key.";
   let appended = 0_u64;
   if lapsed {
@@ -1093,7 +1092,7 @@ fn rename_body(journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet
   return work;
 }
 
-fn transfer_meta(due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, work: &TransferWork, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(input), reads(args), reads(env), writes(due), writes(log) {
+fn transfer_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, work: &TransferWork, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(input), reads(args), reads(env), writes(due), writes(log) {
   doc "RENAME, RENAMENX and COPY metadata: records source then destination removals, queues a transferred expiry and records a successful command exactly as sent, returning the record count for a script or transaction's effects wrapper.";
   let source_place = key_bounds(input: input, args: args, index: 1_u64);
   let source_key = &input^[source_place.start..source_place.end];

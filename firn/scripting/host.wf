@@ -14,6 +14,7 @@ struct HeldState {
 }
 
 struct Env {
+  memory: ScriptMemory;
   held: HeldState;
   resp: u8;
   error: Bool;

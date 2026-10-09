@@ -50,7 +50,11 @@ fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>
 
 fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time) -> result: unit pure waits {
   doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Preserve a partial append for the next drain. Main sets stopping only after clients have left.";
-  let pending = box_slots_new::<u8>(capacity: 65536_u64);
+  let pending = box_slots_new::<u8>(capacity: 0_u64);
+  atomic pending_meta = &store.meta {
+    set pending = box_slots_new::<u8>(capacity: 65536_u64);
+    set pending_meta^.aof_pending_capacity = pending.inner.cap;
+  }
   let last_sync = std::time::now(clock: &clock);
   loop @writing {
     let started = std::time::now(clock: &clock);

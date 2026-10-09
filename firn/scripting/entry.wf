@@ -288,7 +288,7 @@ fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &Conc
   set client^.resp = scripted;
   set client^.now = time^.check;
   let logged = True();
-  let appended = ScriptCommands::call(journal: &env^.access, keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
+  let appended = ScriptCommands::call(memory: &env^.memory, journal: &env^.access, keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
   set client^.resp = protocol;
   if appended > 0_u64 {
     set env^.held.wrote = True();
@@ -341,6 +341,11 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     reply_error(client: client, word: &entry_text_5[0_u64..55_u64]);
     return unit;
   }
+  if bnot(by_sha) {
+    if refuse_shebang(input: input, body: body, client: client) {
+      return unit;
+    }
+  }
   let source = box_slots_new::<u8>(capacity: 0_u64);
   let yes_fold = True();
   let sha = read_sha(input: input, span: body, fold: yes_fold);
@@ -362,6 +367,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     reply_error(client: client, word: &entry_text_6[0_u64..45_u64]);
     return unit;
   }
+  let script_oom = client^.pre_command_oom;
   let budget = 1000_u64;
   let mark = 0_u64;
   let begun = False();
@@ -414,7 +420,8 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
           let held = HeldState(start_ms: time^.check, start_us: client^.unix_us, wrote: no, command_ran: no);
           let access = pkg::store::access_journal_new();
           let journal = Some<pkg::store::AccessJournal>(value: move access);
-          let env = Env(held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64, access: move journal, access_random: client^.random);
+          let memory = ScriptMemory(pre_command_oom: script_oom, write_dirty: no);
+          let env = Env(memory: memory, held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64, access: move journal, access_random: client^.random);
           let effects = box_slots_new::<u8>(capacity: 64_u64);
           let logged = store^.logging;
           let random = pooled.engine.vm.random_state;
@@ -603,6 +610,9 @@ fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Clie
   let load_arity = count == 3_u64;
   if band(loading, load_arity) {
     let body = pkg::protocol::arg(args: args, index: 2_u64);
+    if refuse_shebang(input: input, body: body, client: client) {
+      return unit;
+    }
     let source = copy_source(input: input, span: body);
     let n = source.inner.len;
     let sha = halo::embed::sha1hex(bytes: &source.inner[0_u64..n]);
@@ -686,3 +696,21 @@ const killed_on: Array<u8, 18> = ", on @user_script:";
 const effects_multi: Array<u8, 5> = "MULTI";
 
 const effects_exec: Array<u8, 4> = "EXEC";
+
+const unsupported_shebang: Array<u8, 56> = "ERR firn does not support Redis script shebangs or flags";
+
+fn refuse_shebang(input: &[u8], body: Span, client: &Client) -> refused: Bool reads(input), writes(client) {
+  doc "Redis 7.0.15 eval.c evalExtractShebangFlags and script.c scriptPrepareForRun distinguish shebang scripts from legacy EVAL. Firn currently implements only legacy scripts: EVAL and SCRIPT LOAD explicitly refuse every #! header, including #!lua with no flags and allow-oom, no-writes, allow-stale, no-cluster and allow-cross-slot-keys. No flag is silently ignored; EVALSHA can only find sources accepted by these paths.";
+  if body.length >= 2_u64 {
+    let first = pkg::bytes::byte_at(input: input, index: body.start);
+    let second_at = body.start +wrap 1_u64;
+    let second = pkg::bytes::byte_at(input: input, index: second_at);
+    let hash = first == 35_u8;
+    let bang = second == 33_u8;
+    if band(hash, bang) {
+      reply_error(client: client, word: &unsupported_shebang[0_u64..56_u64]);
+      return True();
+    }
+  }
+  return False();
+}

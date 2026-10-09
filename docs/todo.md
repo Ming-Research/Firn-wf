@@ -24,7 +24,10 @@ written while firn lived in the Whitefoot repository; a path such as
   It needs an allocation failure. The change: `register` reports
   failure, and EVAL and SCRIPT LOAD then drop the compiled entry and answer
   as Redis does when it cannot store the script. Validate with an allocation
-  limit once firn can set one (memory accounting); reopen with that work.
+  limit that can refuse an allocation. Revisited with maxmemory enforcement:
+  admission does not impose an allocator limit, and SCRIPT LOAD is not
+  DENYOOM, so the rare registry-growth boundary remains deferred until
+  allocation-failure injection or registry-growth work can exercise it.
 
 - **Scripts' p99 follows Halo's collection pause.** With 50 connections
   firn runs rate-limiter-flexible's script at 0.73 to 0.78 of Redis 7.0.15's
@@ -63,9 +66,9 @@ written while firn lived in the Whitefoot repository; a path such as
     The draft retains unwritten append bytes; client-visible write/sync
     error handling remains open. AOF presence alone is not durable-recovery
     evidence. RDB compatibility is not assumed by this item.
-  - Add memory accounting, `maxmemory` and the eviction behavior the selected
-    deployments need, including large-value reclamation and slow-client
-    pressure. Complete authentication, configuration, logs, connection limits,
+  - Validate the drafted memory accounting, `maxmemory` enforcement and all
+    eight eviction policies (see the [step-2 record](../research/investigations/memory-limit/README.md#step-2-implementation-record)),
+    including large-value reclamation and slow-client pressure. Complete authentication, configuration, logs, connection limits,
     core `INFO` metrics and build/run/recovery instructions for that scope.
   - Validate with independent Redis behavior and tests, real applications,
     concurrent histories, restart/crash cases and sustained memory-bounded
@@ -434,13 +437,17 @@ written while firn lived in the Whitefoot repository; a path such as
   (`firn/commands/info.wf`) reports real values for the port, the
   calendar time, the uptime, the clients connected, whether the append-only
   file is kept, the connections accepted and the keys held, and constants
-  that are true of firn, but no memory used, processor time, commands or
+  that are true of firn, plus heap, RSS, observed peak, AOF exclusion and
+  evicted keys in the maxmemory draft, but no processor time, commands or
   errors counted, keyspace hits or misses, keys expired or changes since a
   save, so its CPU, Commandstats, Errorstats and Latencystats sections are
   empty, and the keyspace line leaves out `expires` and `avg_ttl`. Tests of
   Redis's suite that read those fields fail on firn: all three
   of `unit/info-command`, which expect `rejected_calls` in Commandstats, and
-  those reading `used_memory`, `total_error_replies` or `expired_keys`.
+  those reading `total_error_replies` or `expired_keys`. The internal expiry
+  counter added for active expiry and eviction revalidation does not yet
+  cover every command-local lazy expiry; complete those paths before
+  exposing it as INFO expired_keys.
   Counting `expires` needs the statements that set, clear or remove an
   expiry to keep a count beside the table, or the table to count entries by a
   property; per-command counts need per-connection counters merged without a
@@ -586,17 +593,34 @@ written while firn lived in the Whitefoot repository; a path such as
   accepting the performance result. See the [snapshot ruling and earlier
   measurement](../research/investigations/memory-limit/step-1.md#recorded-outcome-settings-snapshot).
 
-- **INFO reports zero cached scripts after registering scripts.**
-  `info_memory_head` in `firn/commands/info.wf` hardcodes
-  `number_of_cached_scripts:0`, although EVAL and SCRIPT LOAD populate
-  the script registry. This can mislead operators and contradicts
-  `design/firn/reported-facts.md`; the source establishes the mismatch,
-  but no runtime case was run for it. Read the registry count for INFO
-  memory instead of the constant, without extending the key hold.
-  Validate an empty cache, a first load, repeated loads, EVAL and SCRIPT
-  FLUSH against Redis 7.0.15. Reopen with the next INFO metrics change,
-  before the deployment milestone; this continuation fixes the false
-  no-scripting prose and defers the count and its network coverage.
+- **Validate maxmemory enforcement and measure its costs.** The step-2
+  implementation and cases await CI, including shared candidate moves,
+  sparse volatile exhaustion, transaction/script refusal and AOF replay.
+  Fault injection must check partial writes and suffix replacement, and
+  concurrent histories must check SET/eviction DEL ordering and a victim
+  expiring or losing its TTL before revalidation, plus EXPIRE creating
+  eligibility behind a resumable scan. The latter now invalidates scans
+  through queue_due on actual expiry creation/transfer; cover network, script
+  and EXEC histories and queue-capacity refusal. The permanent-write case
+  protects progress across time slices, but does not establish concurrent
+  histories. Measure post-command peak recording's Meta-hold overhead even
+  with maxmemory disabled. Run the gate and ratchet, then the
+  14900K Zipf quality, limit-throughput and overshoot comparisons specified
+  in the [step-2 record](../research/investigations/memory-limit/README.md#step-2-implementation-record).
+  Reopen at this draft's next CI revision, before calling enforcement ready.
+  The related constant cached-script INFO defect is repaired in the draft,
+  with load/reload/EVAL/FLUSH coverage still unrun.
+
+- **Redis script shebang flags are unsupported.** EVAL and SCRIPT LOAD now
+  refuse all shebang sources explicitly rather than risk applying legacy
+  OOM rules to a flagged script. Plain #!lua and allow-oom, no-writes,
+  allow-stale, no-cluster and allow-cross-slot-keys are all unsupported.
+  Add source parsing and persisted registry flags with script admission
+  contracts before accepting them; validate normal, OOM and forbidden-write
+  calls against Redis's scriptPrepareForRun and scriptVerifyOOM.
+  Reopen when a selected consumer uses shebang scripts or scripting flags
+  are the next compatibility increment; this step's owner permitted this
+  documented boundary.
 
 ## Tests
 

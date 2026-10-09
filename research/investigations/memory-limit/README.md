@@ -7,8 +7,9 @@ evicts under a limit, and a session or rate-limit store that refuses writes
 rather than lose data when full
 ([TODO](../../../docs/todo.md#server), "Complete firn's standalone
 deployment workloads"). Redis 7.0.15 does both with `maxmemory`,
-`maxmemory-policy` and its `OOM` refusal. firn has none of it: `CONFIG SET
-maxmemory` is refused, and `INFO` reports a constant `maxmemory:0`.
+`maxmemory-policy` and its `OOM` refusal. At this investigation's start,
+firn refused `CONFIG SET maxmemory` and reported constant `maxmemory:0`.
+The implementation records below state the draft's current scope.
 Whitefoot now lets a program read the bytes its heap holds and its resident
 set ([memory statistics](https://github.com/Ming-Research/Whitefoot/pull/277)).
 What should firn count, when should it check and evict, and which keys may
@@ -68,8 +69,9 @@ give every key an expiry and document no policy.
 
 ## Proposals
 
-These are the direction-setting choices. Each needs the owner's ruling
-before implementation; the rest follows Redis.
+These were the initial direction-setting proposals. The recorded outcomes
+and step-2 record below supersede them where the owner's rulings differ;
+the historical alternatives explain what the owner selected.
 
 1. **What is counted.** `used_memory` is Whitefoot's `heap_in_use`, the
    requested bytes of live allocations, and `used_memory_rss` its resident
@@ -121,7 +123,8 @@ and the owner's two additional A rulings: snapshot memory settings once per
 request read, and restore first-refresh stamps and LFU random state before
 abandoning an unwritten script attempt. The owner selected all eight policies and
 the all-policy access stamp in the board rulings `firn-maxmemory-policies` A
-and `firn-access-stamp` A. Eviction and OOM refusal are the following step.
+and `firn-access-stamp` A. The step-2 record below covers eviction and OOM refusal; the access-stamp
+representation and its outstanding lock design remain unchanged.
 
 ## Results: cost of the access stamp
 
@@ -183,3 +186,262 @@ lock-free read path. The owner asked that its design first settle which
 types qualify on which platforms and how it relates to a shared object
 holding one value; that design is a Whitefoot investigation and card, and
 this step waits for it.
+
+
+## Step 2 implementation record
+
+Working-tree implementation on `claude/maxmemory` for
+[draft PR #35, maxmemory](https://github.com/Ming-Research/Firn-wf/pull/35),
+2026-10-09. This record describes source, not a passing implementation:
+no build, compiler, test, checker or performance run was made on the owner's
+machine. The owner will commit; CI must validate that revision. No pin or
+submodule was moved and no new Whitefoot gap has been established.
+
+### Admission and policy behavior
+
+`commands/admission.wf` records Redis 7.0.15's DENYOOM and WRITE flags for
+all commands firn implements as parts; `command_kind` extends the existing
+identity lookup to commands outside those parts. `execute_client` checks
+existence, command-table arity, authentication and SHUTDOWN's NO_MULTI
+restriction before `evict_before`. Unknown names now refuse at queue time;
+known commands without parts retain the established foreign-transaction
+abort. This changes the old transaction rationale, which could not separate
+unknown and unsplit commands. No command body is specialized for a client,
+test or benchmark.
+
+`eviction.wf` follows `evict.c performEvictions`, `evictionPoolPopulate` and
+`evictionTimeLimitUs`, and `object.c LFUDecrAndReturn` via the unchanged
+access functions. All eight policies are implemented; volatile eligibility
+requires a nonzero expiry. Meta owns the single pool of 16 owned names and
+scores: it already orders removal with propagation, so another shared object
+would add a hold without removing the existing one. A per-context pool would
+multiply retained candidates and history across connections. Sampling holds
+the map and Meta; deletion releases that hold and acquires only the selected
+entry and Meta, rechecking existence and volatile eligibility. DEL propagation,
+removal and the eviction counter share that statement. A key expired at
+revalidation follows active expiry's DEL path and increments the expiry
+counter instead. The new internal expiry counter covers active expiry and
+the store's removal helper; it is not advertised as a complete `expired_keys`
+metric, since command-local lazy expiry still lacks complete accounting.
+
+`map_scan` takes a random cursor and the snapshotted sample count. Its count
+is a hint, so the whole returned batch is consumed and a reservoir retains
+at most that many eligible keys. Random policies draw uniformly within that
+reservoir with rejection of the modulo remainder; ranking policies retain
+the best 16 scores across rounds. No sampling lookup refreshes a stamp.
+The pool is cleared when the sampling policy changes, since its scores have
+different meanings. A stale pool name is revalidated, not blindly removed.
+An empty batch does not establish exhaustion: scanning continues through the
+end and back to its starting position. The empty-search cursor lives in
+Meta across time slices, so an unchanged volatile keyspace eventually
+reaches FAIL even when proving absence needs several commands. To make
+that proof valid under concurrency, `ExpiryQueue` groups the existing active
+expiry queue with an `eligibility_changed` boolean. `queue_due` sets it in
+the same entry-and-Meta statement that creates or transfers a nonzero
+expiry, even if the queue cannot accept the active-expiry record. Sampling
+consumes the flag and restarts its saved search. SET with expiry, the EXPIRE
+family, GETEX with expiry, and RENAME/COPY with a transferred expiry all
+reach this helper on their network, script and EXEC paths. SET KEEPTTL
+preserves the same key's eligibility; plain SET, PERSIST, FLUSH, lazy/active
+expiry, stamp restoration and eviction cannot add volatile eligibility.
+FLUSH swaps only the inner queue and preserves the invalidation flag.
+
+Thus an EXPIRE behind the cursor cannot produce false exhaustion, while
+permanent writes and looping read-only scripts do not discard progress or
+block SCRIPT KILL. No second index, per-command mutation counters or command
+turn are added. Allkeys policies establish absence by live `map_count==0`
+under the sampling hold; a nonempty map cannot return FAIL merely because
+concurrent insertion put a key behind the cursor. The final heap/exhaustion
+comparison shares that map-and-Meta statement, which is its admission point
+if another command creates eligibility after the hold ends. Continuously
+creating new expiries can restart a volatile proof; this has real eligible
+work to retry and remains bounded by tenacity.
+
+The serving context rereads the heap before sampling and immediately before
+each victim, using its own `meter_share` handle. No global turn extends into
+a command. Tenacity 0 through 10 uses 50 times the setting in microseconds;
+11 through 99 uses floor(500 times 1.15 to the power setting minus 10), using
+the pinned Halo number implementation; 100 is unlimited. The monotonic clock
+is checked every 16 deletions and every 16 unsuccessful batches to bound
+sparse/ghost work. One scan and one deletion are indivisible. A time limit
+returns RUNNING, allowing the command; only exhaustion while still over the
+limit returns FAIL and sets pre-command OOM. The next command continues;
+there is no Redis `evictionTimeProc` continuation while clients are idle.
+
+### Settings, accounting and persistence
+
+The owner rulings `firn-evict-sampling` A, `firn-evict-config` A and
+`firn-aof-exclusion` A are recorded in the memory-limit design node.
+`access_settings` now copies limit, policy, samples, tenacity and LFU
+parameters once per read. This connection retakes that snapshot after
+executing CONFIG SET, including an attempted SET rejected for its values;
+other connections retain their own snapshot. Arity/unknown-subcommand
+refusals that never execute SET do not refresh it.
+
+`heap_in_use` is raw used_memory. The comparison subtracts, saturating at
+zero, `Meta.log.inner.cap` plus the writer's published private capacity when
+AOF is enabled. The writer publishes its allocation, swap, drain and
+partial-write suffix replacement in the same Meta statement as the change.
+An in-progress host write does not resize storage, so its full capacity
+remains excluded until replacement; the same unwritten bytes never switch
+between counted and excluded at a swap. INFO reports raw heap and exclusion
+separately, RSS on demand, observed peak, limit and policy, human-size forms,
+and live evicted_keys. CONFIG RESETSTAT zeroes evicted_keys and connection
+and active-expiry counts while preserving used_memory_peak, following
+Redis 7.0.15 [configResetStatCommand](https://github.com/redis/redis/blob/7.0.15/src/config.c)
+and [resetServerStats](https://github.com/redis/redis/blob/7.0.15/src/server.c).
+Every serving context receives a MemoryMeter share;
+no other context evicts. A related stale constant, cached script count, is
+fixed by reading the actual registry in its own short statement. Peak
+recording adds a short Meta hold even with a zero limit; its overhead is
+unmeasured and belongs in the nonbinding-limit comparison.
+
+### Transactions and scripts
+
+`processCommand` is the admission oracle: all MULTI queueing is denied under
+OOM, even reads, except EXEC, DISCARD, QUIT and RESET. EXEC uses the union of
+queued DENYOOM flags, then runs without further memory checks. RESET now
+clears the transaction, name, authentication and protocol state firn has.
+A queue-time OOM returns the plain OOM error and marks the transaction
+dirty. An admitted EXEC returns `-EXECABORT Transaction discarded because
+of previous errors.`, including after memory recovers. If queued DENYOOM
+flags instead cause EXEC admission itself to fail under OOM, it returns
+`-EXECABORT Transaction discarded because of: OOM command not allowed when
+used memory > 'maxmemory'.` before the dirty-state check. No separate OOM
+cause is retained. These paths follow
+[server.c rejectCommand/processCommand](https://github.com/redis/redis/blob/7.0.15/src/server.c)
+and [multi.c execCommand/execCommandAbort](https://github.com/redis/redis/blob/7.0.15/src/multi.c).
+As `queueMultiCommand` does, an already dirty transaction answers a later
+admitted command with QUEUED without extending its queue or DENYOOM union;
+memory recovery followed by another OOM cannot change EXEC's error merely
+because that discarded command was a write.
+
+`script.c scriptVerifyOOM` and `scriptCall` supply legacy-script behavior:
+pre-command OOM is captured once, and a separate attempt-local WRITE_DIRTY
+flag is set before an accepted WRITE command runs, including a no-effect or
+error result. A DEL of a missing key therefore permits a later SET even
+when `held.wrote` remains false. Each abandoned attempt restarts WRITE_DIRTY
+under the same captured OOM; the effects flag still controls retries and
+rollback. Shebangs are explicitly unsupported: EVAL and SCRIPT LOAD refuse
+plain `#!lua` and every flag, including `allow-oom`, `no-writes`,
+`allow-stale`, `no-cluster` and `allow-cross-slot-keys`. No flagged script
+is silently interpreted as legacy. Implementing those contracts is deferred.
+
+### Oracle differences and open evidence
+
+Accepted differences are requested rather than allocator-usable bytes,
+RSS on demand rather than Redis's periodic sample, per-read settings with
+own-SET refresh, the map_scan sampling distribution rather than Redis's
+separate expires dictionary, concurrent admission overshoot, and continuation
+on the next command. Eviction quality is unmeasured. The pinned Whitefoot
+meter currently misses shared-map tables and nodes, pending
+[Whitefoot PR #298, shared-map heap accounting](https://github.com/Ming-Research/Whitefoot/pull/298).
+All new memory-growth cases use 64 KiB values. After that fix, raw memory,
+peak, chosen relative limits and the number of victims needed may increase;
+no new test pins those amounts or an exact victim order, and no expected
+assertion is intended to change. Exact eligible-set counts under a one-byte
+limit still count keys, not bytes.
+
+`tests/memory_limit.rs`, registered by `tests/network.rs`, adds cases for
+all policies, all supported DENYOOM flags, preflight-before-eviction AOF
+ordering, sparse volatile exhaustion, continued exhaustion across permanent
+writes, bounded continuation, queue-time OOM and its previous-errors abort
+(including after memory recovery), EXEC admission's explicit OOM abort,
+all four MULTI OOM exemptions, and EXEC's single admission, legacy-script
+OOM before/after missing-key DEL
+including a budget retry, explicit shebang refusal, same-read CONFIG,
+heap/RSS/peak/eviction INFO, RESETSTAT preserving a peak above the reduced
+live heap while zeroing eviction counts, drained AOF capacities and replayed
+DEL, SCRIPT KILL progress with unlimited eviction and an in-flight script,
+and the cached-script count repair. Without step 2 the first refusal
+cases return OK/QUEUED, memory fields are absent and evicted_keys stays zero,
+keys survive writing past the limit and AOF replay, and cached scripts still
+report zero. The existing transaction unknown-name expectations are updated
+because the requested preflight now identifies them; no ratchet row is
+removed or weakened.
+
+Compiler acceptance and every new case are unverified. In particular, CI
+must check the new effects and interface signatures, MemoryMeter shares in
+Client, whole-map `map_scan` followed by entry-plus-Meta deletion, owned
+candidate moves and reservoir index proofs, and the attempt-local OOM state.
+These are natural forms written directly against the pinned specification;
+there is no compiler rejection yet and no fallback spelling masking one.
+Partial-write/suffix capacity races, concurrent SET/eviction AOF ordering,
+expiry at revalidation, configuration races, expiry-creation invalidation
+behind the cursor and crash recovery still need fault/concurrency evidence;
+the sequential replay case does not establish them. CI must run the gate and
+Redis ratchet and commit any new ratchet passes.
+
+The owed 14900K CI measurements remain: the specified Zipf hit-rate
+comparison against Redis (reject firn more than two percentage points below
+Redis), throughput and latency at the limit with and without AOF, unlimited
+versus high nonbinding limit admission overhead, and peak overshoot with
+multiple simultaneous writers, transactions and scripts. Use matched
+versions/settings/workloads, interleaved same-source before/after runs and
+base twins where attributing a cost; first time a small sample. None of the
+network assertions substitutes for those measurements. The access-stamp
+lock issue remains with the separate Whitefoot design, unchanged here.
+
+### Independent source review, 2026-10-09
+
+A separate read-only agent using the inherited session model reviewed
+`bbd53a2e3007eac0dafd03c6dd150ff301accaf1..working tree`, including the three
+new files, affected consumers, Redis 7.0.15 source, pinned Whitefoot rules,
+and relevant design nodes and ancestors. The tool did not expose a more
+specific model identifier. Every project and owner checklist group was in
+scope. Its final limited review covered the replacement exhaustion proof,
+ExpiryQueue interfaces and all eligibility creators, the two progress
+regressions, and corresponding documentation. No build, compiler, test,
+checker, Redis execution or measurement ran; review was source inspection.
+
+The review found and resolved these issues:
+
+- R1: cached-script INFO literal lengths were corrected to 35 and 58 bytes.
+- R2: a volatile absence scan spanning holds could miss a concurrent EXPIRE
+  behind its cursor. Actual expiry creation/transfer now invalidates the
+  scan, and the final heap comparison shares its whole-map and Meta hold.
+  Nonempty allkeys maps cannot claim exhaustion from such a scan.
+- R3: transaction unknown-command and settings-snapshot documentation was
+  brought into agreement with preflight refusal and own-CONFIG refresh.
+- R4: an interim unlimited-scan implementation needed an explicit borrow
+  for an owned option. That entire implementation was subsequently removed;
+  final victim extraction explicitly moves the sample and its option.
+- R5: an interim invalidation on every admitted WRITE could restart a
+  volatile scan forever during permanent overwrites. The final ExpiryQueue
+  flag records actual eligibility changes instead; a regression requires
+  eventual OOM across repeated permanent overwrites and bounded time slices.
+
+The reviewer reported no outstanding findings within inspected source scope.
+A1, C1, T2, D1, G1, G2 and DC1-DC3 pass within that scope; performance
+attribution R1 is not applicable. C2, T1, T3, G3 and DC4 remain unverified:
+compiler acceptance, new ratchet passes, gate/readiness, concurrency and
+performance adequacy, and runtime correspondence lack execution evidence.
+Formal design-lint node/depth diagnostics are also unverified. This is not
+approval or a passing CI result. No pin, submodule, workflow, Makefile or
+ratchet-list change is part of this implementation; no new Whitefoot gap has
+been established or filed.
+
+### Redis oracle corrections, 2026-10-09
+
+The earlier task prompt's peak-reset and queue-time OOM instructions were
+mistakes, not owner rulings. The statistics and transaction sections above
+now describe Redis's behavior, and those two entries have been removed from
+the retained differences. The related already-dirty queue flag defect is
+also fixed as described in the transaction section.
+
+No before/after execution was attempted: this correction task requires
+uncommitted edits and forbids local builds and tests. The changed assertions
+reject the former explicit abort after a queue-only OOM and the former
+reduced peak after RESETSTAT; the additional recovery case detects later
+commands incorrectly extending a dirty transaction's DENYOOM flags.
+
+A separate read-only review using the inherited GPT-6 session model (exact
+serving identifier unavailable) compared this correction with the initial
+dirty working tree, read the full step-2 diff and untracked files against
+`bbd53a2e3007eac0dafd03c6dd150ff301accaf1` for context, and inspected the
+affected consumers, Redis sources and relevant design nodes. It reported
+no findings within correction scope. Source-level checklist items pass;
+compiler acceptance, runtime correspondence, gate/readiness, new ratchet
+passes and formal design-lint diagnostics remain unverified. No build,
+test, checker or measurement ran, and no pin or submodule moved or new
+Whitefoot gap was filed.

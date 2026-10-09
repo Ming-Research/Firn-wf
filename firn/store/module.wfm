@@ -55,10 +55,32 @@ public struct Due {
   public at: u64;
 }
 
+public struct ExpiryQueue {
+  doc "Active-expiry queue plus invalidation of a resumable volatile-policy absence scan. Every successful creation or transfer of a nonzero expiry calls queue_due in the same entry-and-Meta statement, which sets eligibility_changed even if the queue is full. Removing expiry records or clearing the queue cannot add eligibility and preserves this flag.";
+  public queue: PriorityQueue<Due, ceiling>;
+  public eligibility_changed: Bool;
+}
+
+public struct EvictionCandidate {
+  doc "Redis 7.0.15 evictionPoolPopulate's owned key and score; larger scores are better victims. The shared pool keeps at most EVPOOL_SIZE (16) candidates without borrowing the map.";
+  public key: Box<Array<u8>>;
+  public score: u64;
+}
+
 public struct Meta {
-  doc "What the keyspace keeps beside its keys: the queued expiries, the append-only file's pending bytes, the active-file byte count and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion and automatic thresholds, the clients connected, whether the server is stopping, and the state SPOP draws from.";
-  public due: PriorityQueue<Due, ceiling>;
+  doc "What the keyspace keeps beside its keys: the queued expiries, the append-only file's collecting buffer and published writer capacity, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the active-file byte count and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion and automatic thresholds, the clients connected, whether the server is stopping, and the state SPOP draws from.";
+  public due: ExpiryQueue;
   public log: Box<Slots<u8>>;
+  public aof_pending_capacity: u64;
+  public memory_peak: u64;
+  public evicted_keys: u64;
+  public expired_keys: u64;
+  public eviction_pool: Box<Slots<EvictionCandidate>>;
+  public eviction_policy: u64;
+  public eviction_cursor: u64;
+  public eviction_start: u64;
+  public eviction_searching: Bool;
+  public eviction_wrapped: Bool;
   public aof_current_size: u64;
   public aof_base_size: u64;
   public aof_rewrite_in_progress: Bool;
@@ -76,7 +98,7 @@ public struct Meta {
 }
 
 public struct MemoryConfig {
-  doc "Redis 7.0.15 config.c memory settings; policies use maxmemory_policy_enum order, with noeviction at 7. Step 1 tracks accesses and reports these values; eviction and OOM enforcement follow separately.";
+  doc "Redis 7.0.15 config.c memory settings; policies use maxmemory_policy_enum order, with noeviction at 7. Access tracking and command admission share each connection read's snapshot, refreshed after its own CONFIG SET.";
   public maxmemory: u64;
   public maxmemory_policy: u64;
   public maxmemory_samples: u64;
@@ -144,7 +166,7 @@ public fn expire_batch(store: &Keyspace, now: u64, env: &KeyEnv, batch: &Box<Slo
 
 public fn queue_expiry(meta: &Meta, key: &[u8], at: u64, env: &KeyEnv) -> result: unit reads(key), reads(env), writes(meta) doc "Queues a key's new expiry for active removal; one past the queue's ceiling is left to lazy removal.";
 
-public fn queue_due(due: &PriorityQueue<Due, ceiling>, key: &[u8], at: u64, env: &KeyEnv) -> result: unit reads(key), reads(env), writes(due) doc "Queues a key's new expiry in the queue of expiries, as queue_expiry does, for a caller that holds the queue apart from the rest of the metadata.";
+public fn queue_due(due: &ExpiryQueue, key: &[u8], at: u64, env: &KeyEnv) -> result: unit reads(key), reads(env), writes(due) doc "Records new volatile eligibility and queues its expiry, as queue_expiry does, for a caller that holds expiry metadata apart from the rest of Meta. The call shares the atomic statement that creates or transfers the expiry, including when AOF is disabled.";
 
 public fn log_removal(log: &Box<Slots<u8>>, key: &[u8]) -> result: unit reads(key), writes(log) doc "Appends DEL key, as Redis 7.0.15 propagates the removal of a key whose expiry has passed, so that a replay, which counts no key as expired, removes the key where the server did and a later command finds it absent there too.";
 
@@ -162,7 +184,7 @@ public fn log_decimal(log: &Box<Slots<u8>>, value: u64) -> result: unit writes(l
 
 public fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>) -> result: unit reads(input), reads(args), writes(log) doc "Appends a command as the client sent it, every argument a RESP bulk string.";
 
-public fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) doc "Copies memory settings once per connection read, beside its clock snapshot and before any command holds keys. Every command of that read, including queued commands run by EXEC and script calls across attempts, uses this snapshot. A racing CONFIG SET may cause an old-policy stamp; this is accepted because Redis itself leaves stale stamps after policy switches. CONFIG and INFO still access ServerState directly.";
+public fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) doc "Copies memory settings once per connection read, beside its clock snapshot and before any command holds keys. Every command of that read, including queued commands run by EXEC and script calls across attempts, uses this snapshot; this connection refreshes it after executing CONFIG SET. A racing CONFIG SET may cause an old-policy stamp; this is accepted because Redis itself leaves stale stamps after policy switches. CONFIG and INFO still access ServerState directly.";
 
 public fn access_journal_new() -> journal: AccessJournal pure doc "An empty journal for one script attempt; allocation is total under Whitefoot STOR-8.";
 

@@ -25,6 +25,8 @@ const code_exec: u64 = 1128618053_u64;
 
 const code_discard: u64 = 19230738672208196_u64;
 
+const code_reset: u64 = 361940338002_u64;
+
 const code_watch: u64 = 310367240535_u64;
 
 const text_nested: Array<u8, 33> = "ERR MULTI calls can not be nested";
@@ -61,7 +63,7 @@ fn transaction_new() -> made: Transaction pure {
   let closed = False();
   let clean = False();
   let runnable = False();
-  return Transaction(open: closed, dirty: clean, foreign: runnable, bytes: move bytes, spans: move spans, counts: move counts);
+  return Transaction(open: closed, dirty: clean, foreign: runnable, denyoom: clean, bytes: move bytes, spans: move spans, counts: move counts);
 }
 
 fn transaction_reset(transaction: &Transaction) -> result: unit writes(transaction) {
@@ -69,6 +71,7 @@ fn transaction_reset(transaction: &Transaction) -> result: unit writes(transacti
   set transaction^.open = False();
   set transaction^.dirty = False();
   set transaction^.foreign = False();
+  set transaction^.denyoom = False();
   loop @bytes {
     if transaction^.bytes.inner.len > 0_u64 {
       let dropped = take_back(window: &transaction^.bytes.inner);
@@ -161,7 +164,7 @@ fn queue_fits(transaction: &Transaction, args: &Box<Slots<Span>>) -> fits: Bool 
 }
 
 fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(transaction), writes(client) {
-  doc "A command sent inside a transaction, other than EXEC, DISCARD, MULTI, WATCH and QUIT: checked in the order Redis 7.0.15's processCommand checks it before queueing, and either queued and answered QUEUED, or refused, marking the transaction dirty so that EXEC aborts it. COMMAND's subcommand is resolved by command_plan, an unknown one or COUNT outside its arity refused before queueing; a Redis subcommand firn does not run takes the same foreign path as a command without parts, regardless of argument count. A command held_kind names with a count of arguments outside its arity is answered Redis's arity error, then a connection that must authenticate first NOAUTH; SHUTDOWN is refused with Redis's CMD_NO_MULTI error and marks the transaction dirty before queueing; a command that would take the queue past 1 GiB of arguments is refused, firn's queue growing no further. A command held_kind does not name, which firn either does not know or does not run by its parts, is queued and answered QUEUED, marking the transaction foreign so that EXEC refuses it whole: firn names its commands only in execute's rows, and a client that stops at an error reply would otherwise be left inside the transaction.";
+  doc "A command sent inside a transaction, other than EXEC, DISCARD, MULTI, WATCH and QUIT: checked in the order Redis 7.0.15's processCommand checks it before queueing, and either queued and answered QUEUED, or refused, marking the transaction dirty so that EXEC aborts it. COMMAND's subcommand is resolved by command_plan, an unknown one or COUNT outside its arity refused before queueing; a Redis subcommand firn does not run takes the same foreign path as a command without parts, regardless of argument count. A command held_kind names with a count of arguments outside its arity is answered Redis's arity error, then a connection that must authenticate first NOAUTH; SHUTDOWN is refused with Redis's CMD_NO_MULTI error and marks the transaction dirty before queueing; a command that would take the queue past 1 GiB of arguments is refused, firn's queue growing no further. Admission has already refused unknown names. As Redis queueMultiCommand does, an already dirty transaction answers an admitted command QUEUED without adding its arguments or flags. A known command held_kind does not name lacks atomic parts and is queued and answered QUEUED, marking the transaction foreign so that EXEC refuses it whole; the same applies to deliberately unsupported COMMAND descriptors, preserving the established boundary for clients that would stop at an immediate error.";
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
   let count = args^.inner.len;
@@ -207,12 +210,18 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
     set transaction^.dirty = True();
     return unit;
   }
+  if transaction^.dirty {
+    reply_word(client: client, word: &reply_queued[0_u64..9_u64]);
+    return unit;
+  }
   let fits = queue_fits(transaction: transaction, args: args);
   if bnot(fits) {
     reply_error(client: client, word: &text_queue_full[0_u64..67_u64]);
     set transaction^.dirty = True();
     return unit;
   }
+  let denies = command_denyoom(kind: kind);
+  set transaction^.denyoom = bor(transaction^.denyoom, denies);
   queue_command(transaction: transaction, input: input, args: args);
   if kind == 0_u64 {
     set transaction^.foreign = True();
@@ -222,7 +231,7 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
 }
 
 fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transaction: &Transaction) -> result: unit reads(store), reads(env), reads(time), writes(client), writes(transaction) waits {
-  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order by its parts, in one statement holding every key and the keyspace's metadata so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. The transaction then closes.";
+  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order by its parts, in one statement holding every key and the keyspace's metadata so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. There are no memory checks between queued commands after EXEC admission. A queue-time OOM marks the transaction dirty, so an admitted EXEC returns Redis 7.0.15 execCommand's previous-errors abort, even after memory recovers. OOM rejection of EXEC itself happens earlier during admission and returns the explicit OOM cause. The transaction then closes.";
   let journal = None<pkg::store::AccessJournal>();
   if transaction^.dirty {
     reply_error(client: client, word: &text_execabort[0_u64..59_u64]);
@@ -282,7 +291,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
 }
 
 fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock, transaction: &Transaction) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock), writes(transaction) waits {
-  doc "Answers one command a connection sent, keeping its transaction as Redis 7.0.15's MULTI, EXEC and DISCARD do: MULTI opens one and answers OK, or is refused inside one; inside one, EXEC runs it as run_exec does, DISCARD drops it and answers OK, WATCH is refused, QUIT is answered as outside, and every other command is queued or refused as queue_or_refuse decides; outside one, EXEC and DISCARD are refused and every other command is answered as execute answers it. MULTI, EXEC and DISCARD take no argument. As Redis rejects a command before running it, an EXEC with arguments, or from a connection that must authenticate first, discards any transaction and answers EXECABORT with the reason, inside a transaction or not; MULTI and DISCARD so are answered Redis's arity error or NOAUTH, marking an open transaction, and so is WATCH inside one before it is refused.";
+  doc "Redis 7.0.15 processCommand admission resolves command and arity, authentication and NO_MULTI before performEvictions; EXEC uses queued DENYOOM flags, while all other MULTI queueing is denied under OOM except DISCARD, QUIT and RESET. Answers one command a connection sent, keeping its transaction as Redis 7.0.15's MULTI, EXEC and DISCARD do: MULTI opens one and answers OK, or is refused inside one; inside one, EXEC runs it as run_exec does, DISCARD drops it and answers OK, WATCH is refused, QUIT is answered as outside, and every other command is queued or refused as queue_or_refuse decides; outside one, EXEC and DISCARD are refused and every other command is answered as execute answers it. MULTI, EXEC and DISCARD take no argument. As Redis rejects a command before running it, an EXEC with arguments, or from a connection that must authenticate first, discards any transaction and answers EXECABORT with the reason, inside a transaction or not; MULTI and DISCARD so are answered Redis's arity error or NOAUTH, marking an open transaction, and so is WATCH inside one before it is refused.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let code = name_code(input: input, start: name.start, length: name.length);
@@ -316,6 +325,96 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       }
       return unit;
     }
+  }
+  let kind = command_kind(input: input, name: name);
+  let resetting = code == code_reset;
+  let watching = code == code_watch;
+  let outside = bnot(transaction^.open);
+  if band(watching, outside) {
+    pkg::protocol::reply_unknown(client: client, input: input, args: args);
+    return unit;
+  }
+  if bnot(control) {
+    let arity = admission_arity(kind: kind, input: input, args: args);
+    let known = arity != 0_i64;
+    let fits = arity_holds(arity: arity, count: count);
+    let valid = band(known, fits);
+    let foreign_command = False();
+    if kind == 166_u64 {
+      let planned = command_plan(input: input, args: args);
+      set foreign_command = planned == 4_u64;
+    }
+    let queue_foreign = band(transaction^.open, foreign_command);
+    let preflight = bor(valid, queue_foreign);
+    if bnot(preflight) {
+      let control_arity = bor(resetting, watching);
+      if control_arity {
+        reply_arity(client: client, input: input, name: name);
+      } else {
+        execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+      }
+      if transaction^.open {
+        set transaction^.dirty = True();
+      }
+      return unit;
+    }
+    let noauth = admission_noauth(kind: kind);
+    let requires_auth = bnot(noauth);
+    if band(client^.locked, requires_auth) {
+      let stopped = denied(client: client);
+      if transaction^.open {
+        set transaction^.dirty = True();
+      }
+      return unit;
+    }
+    if transaction^.open {
+      if code == code_shutdown {
+        reply_error(client: client, word: &text_no_multi[0_u64..44_u64]);
+        set transaction^.dirty = True();
+        return unit;
+      }
+    }
+  }
+  prepare_access(client: client, time: time);
+  set client^.now = time^.check;
+  let oom = evict_before(store: store, client: client, clock: clock);
+  set client^.pre_command_oom = oom;
+  let denyoom = command_denyoom(kind: kind);
+  if exec {
+    set denyoom = transaction^.denyoom;
+  }
+  if transaction^.open {
+    let quit = code == code_quit;
+    let exits = bor(ending, quit);
+    let exempt = bor(exits, resetting);
+    if bnot(exempt) {
+      set denyoom = True();
+    }
+  }
+  if band(oom, denyoom) {
+    if exec {
+      reply_error(client: client, word: &oom_execabort[0_u64..99_u64]);
+      transaction_reset(transaction: transaction);
+    } else {
+      reply_error(client: client, word: &oom_error[0_u64..55_u64]);
+      if transaction^.open {
+        set transaction^.dirty = True();
+      }
+    }
+    return unit;
+  }
+  if resetting {
+    transaction_reset(transaction: transaction);
+    let empty_name = slots_new::<u8, 24>();
+    set client^.name = pkg::bytes::Bytes::Short(bytes: move empty_name);
+    set client^.resp = 2_u64;
+    atomic reset_server = &store^.server {
+      let password_length = pkg::bytes::bytes_length(bytes: &reset_server^.password);
+      set client^.authenticated = password_length == 0_u64;
+      set client^.locked = password_length != 0_u64;
+    }
+    reply_word(client: client, word: &reset_reply[0_u64..8_u64]);
+    return unit;
   }
   if multi {
     if transaction^.open {
@@ -370,3 +469,5 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
 }
 
 const text_no_multi: Array<u8, 44> = "ERR Command not allowed inside a transaction";
+
+const reset_reply: Array<u8, 8> = "+RESET\r\n";

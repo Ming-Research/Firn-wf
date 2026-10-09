@@ -33,7 +33,9 @@ const info_clients_head: Array<u8, 29> = "# Clients\r\nconnected_clients:";
 
 const info_clients_tail: Array<u8, 92> = "\r\ncluster_connections:0\r\nblocked_clients:0\r\ntracking_clients:0\r\nclients_in_timeout_table:0\r\n";
 
-const info_memory_head: Array<u8, 94> = "# Memory\r\nnumber_of_cached_scripts:0\r\nnumber_of_functions:0\r\nnumber_of_libraries:0\r\nmaxmemory:";
+const info_memory_head: Array<u8, 35> = "# Memory\r\nnumber_of_cached_scripts:";
+
+const info_memory_limits: Array<u8, 58> = "\r\nnumber_of_functions:0\r\nnumber_of_libraries:0\r\nmaxmemory:";
 
 const info_memory_human: Array<u8, 18> = "\r\nmaxmemory_human:";
 
@@ -61,7 +63,7 @@ const info_rw_error: Array<u8, 3> = "err";
 
 const info_stats_head: Array<u8, 36> = "# Stats\r\ntotal_connections_received:";
 
-const info_stats_tail: Array<u8, 340> = "\r\nrejected_connections:0\r\nsync_full:0\r\nsync_partial_ok:0\r\nsync_partial_err:0\r\nevicted_keys:0\r\nevicted_clients:0\r\npubsub_channels:0\r\npubsub_patterns:0\r\npubsubshard_channels:0\r\nlatest_fork_usec:0\r\ntotal_forks:0\r\nmigrate_cached_sockets:0\r\ntracking_total_keys:0\r\ntracking_total_items:0\r\ntracking_total_prefixes:0\r\ndump_payload_sanitizations:0\r\n";
+const info_stats_tail: Array<u8, 324> = "\r\nrejected_connections:0\r\nsync_full:0\r\nsync_partial_ok:0\r\nsync_partial_err:0\r\nevicted_clients:0\r\npubsub_channels:0\r\npubsub_patterns:0\r\npubsubshard_channels:0\r\nlatest_fork_usec:0\r\ntotal_forks:0\r\nmigrate_cached_sockets:0\r\ntracking_total_keys:0\r\ntracking_total_items:0\r\ntracking_total_prefixes:0\r\ndump_payload_sanitizations:0\r\n";
 
 const info_replication: Array<u8, 209> = "# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_failover_state:no-failover\r\nmaster_repl_offset:0\r\nsecond_repl_offset:-1\r\nrepl_backlog_active:0\r\nrepl_backlog_first_byte_offset:0\r\nrepl_backlog_histlen:0\r\n";
 
@@ -218,7 +220,7 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
   return chosen;
 }
 
-fn info_body(maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
+fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
   doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
@@ -246,12 +248,31 @@ fn info_body(maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, client
         text_number(text: &text, value: clients);
         text_word(text: &text, word: &info_clients_tail[0_u64..92_u64]);
       } else if which == 2_u64 {
-        text_word(text: &text, word: &info_memory_head[0_u64..94_u64]);
+        text_word(text: &text, word: &info_memory_head[0_u64..35_u64]);
+        text_number(text: &text, value: cached_scripts);
+        text_word(text: &text, word: &info_memory_limits[0_u64..58_u64]);
         text_number(text: &text, value: maxmemory);
         text_word(text: &text, word: &info_memory_human[0_u64..18_u64]);
         memory_human(text: &text, value: maxmemory);
         text_word(text: &text, word: &info_memory_policy[0_u64..19_u64]);
         memory_policy_text(text: &text, policy: memory_policy);
+        text_word(text: &text, word: &info_used_memory[0_u64..14_u64]);
+        text_number(text: &text, value: used);
+        text_word(text: &text, word: &info_used_memory_human[0_u64..20_u64]);
+        memory_human(text: &text, value: used);
+        text_word(text: &text, word: &info_used_memory_peak[0_u64..19_u64]);
+        text_number(text: &text, value: persistence^.memory_peak);
+        text_word(text: &text, word: &info_memory_excluded[0_u64..28_u64]);
+        let excluded = memory_excluded(meta: persistence, logged: logged);
+        text_number(text: &text, value: excluded);
+        match rss {
+          Some(value: resident) => {
+            text_word(text: &text, word: &info_used_memory_rss[0_u64..18_u64]);
+            text_number(text: &text, value: resident);
+          }
+          None() => {
+          }
+        }
         text_word(text: &text, word: &info_memory_tail[0_u64..51_u64]);
       } else if which == 3_u64 {
         text_word(text: &text, word: &info_persistence_head[0_u64..121_u64]);
@@ -284,7 +305,9 @@ fn info_body(maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, client
       } else if which == 4_u64 {
         text_word(text: &text, word: &info_stats_head[0_u64..36_u64]);
         text_number(text: &text, value: connections);
-        text_word(text: &text, word: &info_stats_tail[0_u64..340_u64]);
+        text_word(text: &text, word: &info_evicted_keys[0_u64..15_u64]);
+        text_number(text: &text, value: persistence^.evicted_keys);
+        text_word(text: &text, word: &info_stats_tail[0_u64..324_u64]);
       } else if which == 5_u64 {
         text_word(text: &text, word: &info_replication[0_u64..209_u64]);
       } else if which == 6_u64 {
@@ -321,8 +344,24 @@ fn info_finish(client: &Client, text: &Box<Slots<u8>>) -> result: unit reads(tex
 }
 
 fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; enforcement follows in step 2. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. Apart from the legacy cached-script count, tracked in docs/todo.md because it incorrectly remains zero after scripts are registered, every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no eviction yet, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, memory used and processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
+  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; Redis 7.0.15 genRedisInfoString reports raw heap, its observed peak, and AOF exclusion separately. RSS is read on demand through resident_bytes and omitted if the host supplies None. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. The cached-script count reads the registry in a separate short statement. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
   let chosen = info_plan(input: input, args: args);
+  let cached_scripts = 0_u64;
+  let used = 0_u64;
+  let rss = None<u64>();
+  if chosen[2_u64] == 1_u64 {
+    atomic registry = &store^.scripts {
+      set cached_scripts = registry^.registry.inner.len;
+    }
+    set used = heap_read(client: client);
+    match client^.meter {
+      Some(value: meter) => {
+        set rss = std::process::resident_bytes(meter: meter);
+      }
+      None() => {
+      }
+    }
+  }
   let clients = 0_u64;
   if chosen[1_u64] == 1_u64 {
     atomic m = &store^.meta {
@@ -357,7 +396,8 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   }
   let text = box_slots_new::<u8>(capacity: 0_u64);
   atomic m = &store^.meta {
-    set text = info_body(maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
+    set m^.memory_peak = imax(m^.memory_peak, used);
+    set text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
   }
   info_finish(client: client, text: &text);
   return unit;
@@ -449,3 +489,15 @@ fn memory_human(text: &Box<Slots<u8>>, value: u64) -> result: unit writes(text) 
   }
   return unit;
 }
+
+const info_used_memory: Array<u8, 14> = "\r\nused_memory:";
+
+const info_used_memory_human: Array<u8, 20> = "\r\nused_memory_human:";
+
+const info_used_memory_rss: Array<u8, 18> = "\r\nused_memory_rss:";
+
+const info_used_memory_peak: Array<u8, 19> = "\r\nused_memory_peak:";
+
+const info_memory_excluded: Array<u8, 28> = "\r\nmem_not_counted_for_evict:";
+
+const info_evicted_keys: Array<u8, 15> = "\r\nevicted_keys:";
