@@ -136,11 +136,11 @@ has accepted.
 
 `SHUTDOWN` sends no reply, nor the replies its connection holds unsent
 from the commands before it, which Redis 7.0.15 does not send either; its
-connection closes, and firn stops accepting clients. Every other client sees
-the request when a wait for its next request ends, at most a second after it
-began, or at its first read a second or more after its last look while it
-sends, so a long command or batch delays it; it then sends the replies it
-holds and closes. A send blocked on a client that does not read is abandoned
+connection closes, and firn stops accepting clients. The request cancels
+the accept wait, each client's receive, the expiry sleep and the signal
+wait through one shared cancellation state. A command or batch already
+running still finishes before its client closes; cancellation does not
+interrupt scripts or the replies being sent. A send blocked on a client that does not read is abandoned
 at its next one-second deadline. Once every client has left, the append-only file's writer appends
 its last bytes, syncs and closes, and firn exits with status 0, as Redis
 does even when that sync fails. No snapshot is written: the `save` schedule
@@ -160,8 +160,8 @@ down gracefully on either signal under its default `shutdown-on-sigterm` and
 during the replay before that still ends firn at once, where Redis stops
 loading and exits with status 0, and a host that refuses to deliver them to
 firn stops it with status 3, as an address it cannot listen on does. Once
-firn has taken a signal, or has seen a `SHUTDOWN` request or let its last
-client go after its limit on clients, which it does within a tenth of a second, a
+firn has taken a signal, or cancellation has ended its signal wait after a
+`SHUTDOWN` request or its last client leaving after the client limit, a
 further SIGTERM or SIGINT ends it at once, without the rest of the drain;
 Redis ends at once, with status 1, on a second SIGINT, but ignores a second
 SIGTERM. `SHUTDOWN ABORT` answers `ERR No shutdown in progress.` after a

@@ -7646,17 +7646,19 @@ fn shutdown_finished(mut child: ProgramChild) {
 }
 
 /// No client limit or half-close can end these servers. A second client
-/// connects and answers a PING; the first pipelines 128 writes and reads their
-/// replies, then sends `SET held 1` and SHUTDOWN in one write. When both reach
+/// pipelines a large GET and `SET late after`; reading the GET's header
+/// proves that its command batch has begun, and leaving the body unread
+/// parks its send. The first pipelines 128 writes and reads their replies,
+/// then sends `SET held 1` and SHUTDOWN in one write. When both reach
 /// firn in one read, firn answers neither, not even `SET`, as redis-server
 /// 7.0.15 answers that read (Firn-wf probe run 37574985225); it answers `SET`
 /// alone when they arrive in two reads, which TCP allows, and the run starts
 /// over. 200 ms after the first client's connection closes, well past the
-/// writer's 10 ms cycle, the second client writes a key. Under 800 ms after it
-/// connected, it has not looked at the request since it began serving and its
-/// wait for that write began after its PONG, so it runs the write after the
-/// request and answers it; a run that took longer, or in which it closed
-/// instead, starts over. The replay finds the 128 writes, `held` and the
+/// writer's 10 ms cycle, the second client drains its GET, allowing the SET
+/// already in that batch to run after the request. Cancellation ends its next
+/// receive, not its in-progress send or batch. A run that splits either tiny
+/// pipeline across reads, or reaches the send's shutdown deadline before
+/// draining, starts over. The replay finds the 128 writes, `held` and the
 /// second client's write, which is lost when the writer drains once the
 /// request arrives instead of after every client has gone. Five runs bound
 /// the reruns; on Linux's loopback a write this small reaches firn in one read.
@@ -7675,7 +7677,6 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
             let child =
                 program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
             let mut client = connect_when_ready(port);
-            let ready = Instant::now();
             let mut late = connect_when_ready(port);
             late.write_all(&resp(&["PING"]))
                 .expect("establish the second client");
@@ -7690,6 +7691,14 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
             }
             client.write_all(&batch).expect("write the keys");
             expect_replies(&mut client, &b"+OK\r\n".repeat(128), "the writes");
+            let value = "x".repeat(16 * 1024 * 1024);
+            client
+                .write_all(&resp(&["SET", "large", &value]))
+                .expect("seed the pending send");
+            expect_replies(&mut client, b"+OK\r\n", "large value stored");
+            let pending = [resp(&["GET", "large"]), resp(&["SET", "late", "after"])].concat();
+            late.write_all(&pending).expect("begin the in-flight batch");
+            assert_eq!(reply_line(&mut late, "pending GET header"), "$16777216\r\n");
             let last = [resp(&["SET", "held", "1"]), resp(&["SHUTDOWN"])].concat();
             client
                 .write_all(&last)
@@ -7699,16 +7708,16 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
                 .read_to_end(&mut replies)
                 .expect("shutdown closes its client");
             std::thread::sleep(Duration::from_millis(200));
-            let mut answered = false;
-            if ready.elapsed() < Duration::from_millis(800) {
-                late.write_all(&resp(&["SET", "late", "after"]))
-                    .expect("write after the request");
-                let mut reply = Vec::new();
-                late.read_to_end(&mut reply)
-                    .expect("the second client closes");
-                answered = reply == b"+OK\r\n";
-                assert!(answered || reply.is_empty(), "{reply:?}");
-            }
+            let mut reply = Vec::new();
+            late.read_to_end(&mut reply)
+                .expect("drain the in-flight batch through closure");
+            let mut expected = value.into_bytes();
+            expected.extend_from_slice(b"\r\n+OK\r\n");
+            let answered = reply == expected;
+            assert!(
+                expected.starts_with(&reply),
+                "in-flight batch must send its reply prefix in order"
+            );
             shutdown_finished(child);
             if replies == b"+OK\r\n" || !answered {
                 continue;
@@ -7743,8 +7752,12 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
     }
 }
 
-/// The idle peer has completed a PING, remains open, and has no idle limit,
-/// so firn exits only if its receive's deadline lets it see the request.
+/// The idle peer has completed a PING, remains open, and has no idle limit.
+/// A fresh PONG places shutdown near the start of its next receive: the
+/// process must exit within 500 ms, well below the old one-second poll.
+/// The bound starts before PING so scheduling delays cannot make polling
+/// appear prompt. Both peers stay open until exit, excluding peer EOF as
+/// the reason the receive ended.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_shutdown_closes_an_idle_client_without_an_idle_limit_on_both_routes() {
@@ -7753,14 +7766,20 @@ fn firn_shutdown_closes_an_idle_client_without_an_idle_limit_on_both_routes() {
         let text = port.to_string();
         let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
         let mut idle = connect_when_ready(port);
+        let mut caller = connect_when_ready(port);
+        let started = Instant::now();
         idle.write_all(&resp(&["PING"]))
             .expect("establish idle peer");
         expect_replies(&mut idle, b"+PONG\r\n", "idle peer ready");
-        let mut caller = connect_when_ready(port);
         caller
             .write_all(&resp(&["sHuTdOwN", "nOw\0ignored", "nOsAvE", "NOSAVE"]))
             .expect("shutdown with case folding, C strings and duplicate flags");
         shutdown_finished(child);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "route {native_ring}: cancellation took {:?}",
+            started.elapsed()
+        );
         assert_eq!(caller.read(&mut [0]).expect("shutdown EOF"), 0);
         assert_eq!(idle.read(&mut [0]).expect("idle EOF"), 0);
     }
@@ -7779,6 +7798,26 @@ fn firn_shutdown_refusals_match_redis_on_both_routes() {
         let text = port.to_string();
         let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
         let mut client = connect_when_ready(port);
+        client
+            .write_all(&resp(&["CONFIG", "SET", "requirepass", "secret"]))
+            .expect("require authentication for a new shutdown caller");
+        expect_replies(&mut client, b"+OK\r\n", "password enabled");
+        let mut unauthenticated = connect_when_ready(port);
+        unauthenticated
+            .write_all(&resp(&["SHUTDOWN", "unknown"]))
+            .expect("try shutdown without authentication");
+        expect_replies(
+            &mut unauthenticated,
+            b"-NOAUTH Authentication required.\r\n",
+            "authentication precedes shutdown option parsing",
+        );
+        client.write_all(&resp(&["PING"])).expect("ping after NOAUTH");
+        expect_replies(&mut client, b"+PONG\r\n", "NOAUTH did not request shutdown");
+        drop(unauthenticated);
+        client
+            .write_all(&resp(&["CONFIG", "SET", "requirepass", ""]))
+            .expect("remove the password");
+        expect_replies(&mut client, b"+OK\r\n", "password removed");
         let cases: &[(&[&str], &[u8])] = &[
             (&["SHUTDOWN", "unknown"], b"-ERR syntax error\r\n"),
             (&["SHUTDOWN", "NOSAVE", "SAVE"], b"-ERR syntax error\r\n"),
@@ -7958,12 +7997,13 @@ fn firn_stops_in_order_on_sigterm_and_sigint_on_both_routes() {
 
 /// firn closes its stop listener on the first signal, restoring the host
 /// default, so a second signal ends it at once, by that signal, before its
-/// drain ends (design/firn/orderly-stop.md). Eight idle clients, connected
-/// 125 ms apart, each read the request at the end of their own one-second
-/// waits, so the drain lasts about 875 ms or more after the first signal;
-/// the second comes 400 ms after it, past the moment the first is taken.
-/// Were the second ignored, as Redis 7.0.15 ignores a second SIGTERM, firn
-/// would exit with status 0 once the drain ends.
+/// drain ends (design/firn/orderly-stop.md). An unfinished script keeps one
+/// client alive because cancelling script waits is outside host cancellation.
+/// SCRIPT EXISTS observes its registration after the script takes the engine;
+/// that observer then stays idle. Its EOF after the first signal proves the
+/// request was recorded, after the listener was closed, without a fixed delay.
+/// Were the second ignored, as Redis 7.0.15 ignores a second SIGTERM, the
+/// script would keep firn alive until the test's process watchdog failed.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
@@ -7971,19 +8011,36 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
     for (signal, number, native_ring) in [("TERM", 15, false), ("INT", 2, true)] {
         let port = free_port();
         let text = port.to_string();
-        let mut child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
-        let mut idle = Vec::new();
-        for _ in 0..8 {
-            let mut client = connect_when_ready(port);
-            client
-                .write_all(&resp(&["PING"]))
-                .expect("establish an idle client");
-            expect_replies(&mut client, b"+PONG\r\n", "idle client ready");
-            idle.push(client);
-            std::thread::sleep(Duration::from_millis(125));
+        let mut child = firn().spawn_on_route_with(
+            native_ring,
+            &[("WF_WORKERS", "2"), ("WF_DRIVERS", "2")],
+            &[text.as_bytes(), b"0"],
+        );
+        let mut looping = connect_when_ready(port);
+        let mut observer = connect_when_ready(port);
+        observer.write_all(&resp(&["PING"])).expect("establish observer");
+        expect_replies(&mut observer, b"+PONG\r\n", "observer ready");
+        looping
+            .write_all(&resp(&["EVAL", "while true do end", "0"]))
+            .expect("keep a script in progress through shutdown");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            observer
+                .write_all(&resp(&[
+                    "SCRIPT", "EXISTS", "694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7",
+                ]))
+                .expect("observe script registration");
+            expect_replies(&mut observer, b"*1\r\n", "one script queried");
+            let present = integer_reply(&mut observer, "script registration");
+            if present == 1 {
+                break;
+            }
+            assert_eq!(present, 0, "SCRIPT EXISTS result");
+            assert!(Instant::now() < deadline, "script never took the engine");
+            std::thread::sleep(Duration::from_millis(10));
         }
         send_signal(&child, signal);
-        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(observer.read(&mut [0]).expect("first signal closes observer"), 0);
         assert!(
             child.try_wait().expect("poll firn").is_none(),
             "{signal}: firn must still be draining when the second signal comes"
@@ -7995,7 +8052,7 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
             Some(number),
             "{signal} twice: {output:?}"
         );
-        drop(idle);
+        drop(looping);
     }
 }
 

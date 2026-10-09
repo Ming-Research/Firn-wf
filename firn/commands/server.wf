@@ -1109,8 +1109,11 @@ const shutdown_none: Array<u8, 28> = "ERR No shutdown in progress.";
 
 const shutdown_failed: Array<u8, 42> = "ERR Errors trying to SHUTDOWN. Check logs.";
 
-fn run_shutdown(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "Redis 7.0.15 SHUTDOWN: C-string options, no replica wait, and SAVE follows the failed snapshot path unless FORCE is set. Success requests draining and closes this client, discarding the replies it has not yet sent, as Redis exits before it writes the replies of the commands it ran ahead of SHUTDOWN in the same read.";
+fn run_shutdown(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: Bool reads(store), reads(input), reads(args), writes(client) waits {
+  doc "Redis 7.0.15 SHUTDOWN: C-string options, no replica wait, and SAVE follows the failed snapshot path unless FORCE is set. True reports an accepted shutdown request, with no wait after recording it, so the network caller can fire its cancellation source immediately; false reports a refusal. Success requests draining and closes this client, discarding the replies it has not yet sent, as Redis exits before it writes the replies of the commands it ran ahead of SHUTDOWN in the same read.";
+  if denied(client: client) {
+    return False();
+  }
   let save = False();
   let nosave = False();
   let now = False();
@@ -1131,7 +1134,7 @@ fn run_shutdown(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
       set abort = True();
     } else {
       reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
-      return unit;
+      return False();
     }
   }
   let saving = bor(save, nosave);
@@ -1141,20 +1144,20 @@ fn run_shutdown(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
   let conflict = band(save, nosave);
   if bor(aborted_options, conflict) {
     reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
-    return unit;
+    return False();
   }
   if abort {
     reply_error(client: client, word: &shutdown_none[0_u64..28_u64]);
-    return unit;
+    return False();
   }
   if save {
     if bnot(force) {
       reply_error(client: client, word: &shutdown_failed[0_u64..42_u64]);
-      return unit;
+      return False();
     }
   }
   pkg::store::request_shutdown(store: store);
   set client^.at = 0_u64;
   set client^.closing = True();
-  return unit;
+  return True();
 }
