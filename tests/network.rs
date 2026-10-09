@@ -8092,6 +8092,52 @@ fn firn_applies_an_idle_limit_to_a_previously_unlimited_receive() {
     shutdown_finished(child);
 }
 
+/// Redis 7.0.15 clientsCron applies the current timeout to already-idle
+/// clients. A receive must remain usable after its own client's timeout
+/// changes, then observe another client's re-enable while parked at zero.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_reapplies_an_idle_limit_after_disabling_it_on_both_routes() {
+    let program = firn();
+    for native_ring in [true, false] {
+        let what = format!("native ring: {native_ring}");
+        let port = free_port();
+        let text = port.to_string();
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
+        let mut idle = connect_when_ready(port);
+        let mut caller = connect_when_ready(port);
+        // This client stays active through its own configuration changes;
+        // the final PONG establishes activity after timeout is zero again.
+        let mut changes = resp(&["CONFIG", "SET", "timeout", "1"]);
+        changes.extend_from_slice(&resp(&["CONFIG", "SET", "timeout", "0"]));
+        changes.extend_from_slice(&resp(&["PING"]));
+        idle.write_all(&changes).expect("enable then disable timeout");
+        expect_replies(&mut idle, b"+OK\r\n+OK\r\n+PONG\r\n", &what);
+        expect_silence_for(&mut idle, Duration::from_millis(1200), &what);
+
+        // No further traffic on idle may wake its receive. A three-second
+        // socket bound permits the one-second limit plus CI scheduling margin.
+        caller
+            .write_all(&resp(&["CONFIG", "SET", "timeout", "1"]))
+            .expect("re-enable idle timeout");
+        expect_replies(&mut caller, b"+OK\r\n", &what);
+        idle.set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("bound idle closure after re-enable");
+        assert_eq!(
+            idle.read(&mut [0])
+                .unwrap_or_else(|error| panic!("{what}: new limit did not close idle client: {error}")),
+            0,
+            "{what}: idle client must close without another request"
+        );
+
+        let mut stopper = connect_when_ready(port);
+        stopper
+            .write_all(&resp(&["SHUTDOWN"]))
+            .expect("stop repeated idle-limit case");
+        shutdown_finished(child);
+    }
+}
+
 /// The first incremental file used by fresh starts and old-file upgrades.
 fn aof_incremental_path(directory: &std::path::Path, name: &str) -> std::path::PathBuf {
     directory
