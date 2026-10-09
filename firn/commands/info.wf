@@ -37,6 +37,8 @@ const info_memory_head: Array<u8, 35> = "# Memory\r\nnumber_of_cached_scripts:";
 
 const info_memory_limits: Array<u8, 58> = "\r\nnumber_of_functions:0\r\nnumber_of_libraries:0\r\nmaxmemory:";
 
+const info_minus: Array<u8, 1> = "-";
+
 const info_memory_human: Array<u8, 18> = "\r\nmaxmemory_human:";
 
 const info_memory_policy: Array<u8, 19> = "\r\nmaxmemory_policy:";
@@ -137,6 +139,18 @@ fn text_word(text: &Box<Slots<u8>>, word: &[u8]) -> result: unit reads(word), wr
       place_back(window: &text^.inner, value: byte);
     }
   }
+  return unit;
+}
+
+fn text_signed(text: &Box<Slots<u8>>, value: u64) -> result: unit writes(text) {
+  doc "Appends a 64-bit value in decimal as C's %lld reads it: values from 2^63 up are written as the negative two's-complement number, as Redis 7.0.15's INFO writes maxmemory.";
+  if value >= 9223372036854775808_u64 {
+    let magnitude = 0_u64 -wrap value;
+    text_word(text: text, word: &info_minus[0_u64..1_u64]);
+    text_number(text: text, value: magnitude);
+    return unit;
+  }
+  text_number(text: text, value: value);
   return unit;
 }
 
@@ -251,7 +265,7 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         text_word(text: &text, word: &info_memory_head[0_u64..35_u64]);
         text_number(text: &text, value: cached_scripts);
         text_word(text: &text, word: &info_memory_limits[0_u64..58_u64]);
-        text_number(text: &text, value: maxmemory);
+        text_signed(text: &text, value: maxmemory);
         text_word(text: &text, word: &info_memory_human[0_u64..18_u64]);
         memory_human(text: &text, value: maxmemory);
         text_word(text: &text, word: &info_memory_policy[0_u64..19_u64]);

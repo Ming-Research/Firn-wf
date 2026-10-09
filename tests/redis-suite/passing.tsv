@@ -134,7 +134,6 @@ unit/multi	DISCARD should not fail during OOM	1
 unit/multi	EXEC fails if there are errors while queueing commands #1	1
 unit/multi	EXEC fails if there are errors while queueing commands #2	1
 unit/multi	EXEC with at least one use-memory command should fail	1
-unit/multi	Flushall while watching several keys by one client	1
 unit/multi	If EXEC aborts, the client MULTI state is cleared	1
 unit/multi	MULTI / EXEC basics	1
 unit/multi	MULTI where commands alter argc/argv	1

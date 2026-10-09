@@ -471,13 +471,17 @@ The float literal exposed a Whitefoot disagreement: FORM-5's text makes
 `0.5e3_f64` the canonical spelling of 500, while the pinned compiler
 accepts only `5.0e2_f64`.
 
-Nine Redis suite tests that pass in both run 37904672454 and run 37906813127
+Eight Redis suite tests that pass in both run 37904672454 and run 37906813127
 are added to `passing.tsv`: FLUSHDB ASYNC can reclaim memory in background,
 DISCARD should not fail during OOM, EXEC fails if there are errors while
 queueing commands #2, EXEC with at least one use-memory command should
-fail, Flushall while watching several keys by one client, MULTI with
-SHUTDOWN, RESET clears and discards MULTI state, SCRIPTING FLUSH ASYNC and
-Script - disallow write on OOM. Twelve unit/introspection-2 "will not be
+fail, MULTI with SHUTDOWN, RESET clears and discards MULTI state, SCRIPTING
+FLUSH ASYNC and Script - disallow write on OOM. A ninth, Flushall while
+watching several keys by one client, also passed but falsely: firn answers
+WATCH outside MULTI as an unknown command, and that test asserts nothing; it
+passes only because the preceding MULTI with config error test fails while
+`readraw` is on, so the error line reads as ordinary text. It is listed in
+`unstable.tsv` with that reason instead of being required. Twelve unit/introspection-2 "will not be
 marked with movablekeys" tests passed only in run 37904672454, falsely: that
 run's connection was stuck inside MULTI, so `COMMAND INFO` answered QUEUED,
 which contains no movablekeys flag. firn does not answer COMMAND INFO, and

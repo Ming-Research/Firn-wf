@@ -9472,7 +9472,10 @@ fn firn_configures_and_reports_maxmemory() {
         assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "maxmemory"]).as_bytes(), resp(&["maxmemory", bytes]));
         client.write_all(&resp(&["INFO", "memory"])).unwrap();
         let info = bulk_reply(&mut client, "memory values");
-        assert_eq!(info_field(&info, "maxmemory"), Some(bytes.to_owned()));
+        // server.c genRedisInfoString writes maxmemory with %lld, so 2^64-1
+        // reads as -1 there while CONFIG GET keeps the unsigned value.
+        let info_bytes = if bytes == "18446744073709551615" { "-1" } else { bytes };
+        assert_eq!(info_field(&info, "maxmemory"), Some(info_bytes.to_owned()));
         assert_eq!(info_field(&info, "maxmemory_human"), Some(human.to_owned()));
     }
     // Step 2 enforces the stored limit using Redis DENYOOM admission.
