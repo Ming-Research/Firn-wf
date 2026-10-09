@@ -11,7 +11,7 @@
 #                 them, on each server CPU count in `cpus`
 #                 (redis-bench.sh scale)
 #   mode workloads  this checkout's firn and Redis, without and with AOF,
-#                   on the deployment-performance consumer command forms
+#                   on consumer command forms or opt-in memory-limit workloads
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
 #
@@ -51,7 +51,7 @@ on:
         type: string
         default: "1 2"
       tests:
-        description: "Tests or workloads, space-separated; empty uses mset set get for compare/scale, all five for workloads"
+        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits"
         type: string
         default: ""
       depths:
@@ -70,8 +70,12 @@ on:
         description: Client connections for workloads, space-separated values measured in turn
         type: string
         default: "50"
+      workload_options:
+        description: "Memory workloads only: space-separated --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Empty keeps workload defaults; seed is the pass."
+        type: string
+        default: ""
       profile:
-        description: "Record a perf profile of each image (compare), or rerun each firn line's first pass once more under perf (workloads: one extra unmeasured run per firn line, CPU count, workload and connection count)"
+        description: "Record a perf profile of each image (compare), or rerun each firn line's first pass under perf (original consumer workloads only; memory workloads have no perf pass)"
         type: boolean
         default: true
       profile_test:
@@ -302,6 +306,7 @@ jobs:
           WORKLOAD_SECONDS: ${{ inputs.seconds }}
           WORKLOAD_CONNECTIONS: ${{ inputs.connections }}
           WORKLOADS: ${{ inputs.tests }}
+          WORKLOAD_OPTIONS: ${{ inputs.workload_options }}
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"

@@ -62,6 +62,21 @@
 #                                 <connections>.txt; Redis lines are not
 #                                 profiled. Probe with
 #                                 WORKLOAD_PASSES=2 WORKLOAD_SECONDS=5 first.
+#                                 Opt-in evict-zipf measures cache-aside hits
+#                                 under allkeys-lru at half the filled heap;
+#                                 session-set-limits/session-get-limits compare
+#                                 unlimited and 64 GiB on the same images,
+#                                 with a twin of each. These start fresh for
+#                                 every connection count and variant, and do
+#                                 not run the optional perf pass. WORKLOAD_OPTIONS
+#                                 passes client options as whitespace-separated
+#                                 words (no shell quoting/evaluation); defaults:
+#                                 --keys 1000000 --value-size 64 --zipf-s 0.99
+#                                 for evict-zipf, --keys 100000 --value-size 200
+#                                 for session limits; --warmup-seconds 5 and
+#                                 --sample-ms 10 for both. Seed is the pass.
+#                                 evict-zipf.csv keeps memory/hit observations;
+#                                 all rates and latencies enter workloads.csv.
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
 # the records before the quick mode built it with none. The redis-bench
@@ -683,14 +698,47 @@ if [ "$MODE" = workloads ]; then
     client="$target/release/firn-workload"
     total=$(nproc)
     workloads=${WORKLOADS:-limiter-script limiter-tx setmany-tx session-set session-get}
+    memory_workloads=
     for workload in $workloads; do
         case $workload in
             limiter-script|limiter-tx|setmany-tx|session-set|session-get) ;;
+            evict-zipf|session-set-limits|session-get-limits) memory_workloads=1 ;;
             *) echo "unknown workload: $workload" >&2; exit 1 ;;
         esac
     done
+    if [ -n "$memory_workloads" ]; then
+        reference_version=$(redis-server --version)
+        case " $reference_version " in
+            *" v=7.0.15 "*) ;;
+            *) echo "memory workloads require Redis 7.0.15: $reference_version" >&2; exit 1 ;;
+        esac
+    fi
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"
     echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
+    echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections' >"$OUT/evict-zipf.csv"
+    echo 'line,pass,cpus,workload,connections,keys,value_size,seed,warmup_seconds,sample_ms,maxmemory' >"$OUT/session-limits-settings.csv"
+    # Accept only the measurement parameters shared by these opt-in workloads;
+    # the harness owns port, workload, duration, seed and maxmemory. Disable glob
+    # expansion and never eval workflow input. The client checks numeric values.
+    memory_options() {
+        set -f
+        set -- ${WORKLOAD_OPTIONS:-}
+        while [ "$#" -gt 0 ]; do
+            case $1 in
+                --keys|--value-size|--zipf-s|--warmup-seconds|--sample-ms) ;;
+                *) echo "unsupported WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
+            esac
+            [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
+            shift 2
+        done
+    }
+    memory_options
+    memory_run() {
+        taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
+            --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
+            --workload "$memory_workload" --seconds "${WORKLOAD_SECONDS:-10}" \
+            --seed "$pass" "$@"
+    }
     # Only this mode changes cleanup; the workflow's registered-session cleanup
     # also handles cancellation on the shared runner.
     trap '[ -z "$server" ] || { kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true; }' EXIT
@@ -711,6 +759,48 @@ if [ "$MODE" = workloads ]; then
                 order="firn-aof-$n firn-$n reference-aof reference"
             fi
             for workload in $workloads; do
+                case $workload in
+                    evict-zipf|session-set-limits|session-get-limits)
+                        # Each sample starts with empty memory and a fresh AOF,
+                        # including twins and additional connection counts.
+                        memory_workload=${workload%-limits}
+                        variants=eviction
+                        if [ "$workload" != evict-zipf ]; then
+                            variants="unlimited unlimited-twin nonbinding nonbinding-twin"
+                            if [ $((pass % 2)) -eq 0 ]; then
+                                variants="nonbinding-twin nonbinding unlimited-twin unlimited"
+                            fi
+                        fi
+                        for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                            for line in $order; do
+                                for variant in $variants; do
+                                    start "$line"
+                                    if [ "$variant" = eviction ]; then
+                                        result=$(memory_run)
+                                        echo "$line,$pass,$n,$result" | tee -a "$OUT/evict-zipf.csv"
+                                        rates=$(printf '%s\n' "$result" | cut -d, -f1-7)
+                                        echo "$line,$pass,$n,$rates" | tee -a "$OUT/workloads.csv"
+                                    else
+                                        case $variant in
+                                            unlimited*) limit=0 ;;
+                                            nonbinding*) limit=68719476736 ;;
+                                        esac
+                                        result=$(memory_run --maxmemory "$limit")
+                                        # Seven rate columns followed by the actual
+                                        # parsed settings; keep both as CSV artifacts.
+                                        rates=$(printf '%s\n' "$result" | cut -d, -f1-7)
+                                        settings=$(printf '%s\n' "$result" | cut -d, -f8-)
+                                        echo "$line-$variant,$pass,$n,$rates" | tee -a "$OUT/workloads.csv"
+                                        echo "$line-$variant,$pass,$n,$memory_workload,$conns,$settings" | tee -a "$OUT/session-limits-settings.csv"
+                                    fi
+                                    stop
+                                    server=
+                                done
+                            done
+                        done
+                        continue
+                        ;;
+                esac
                 for line in $order; do
                     start "$line"
                     if [ "$workload" = session-get ]; then

@@ -1,6 +1,7 @@
 //! Depth-one consumer command forms for the deployment-performance investigation.
 //! Loopback RESP2; worker threads multiplex nonblocking connections using std only.
 mod limiter;
+mod eviction;
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -14,8 +15,10 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKLOADS: &[&str] = &[
     "limiter-script", "limiter-tx", "setmany-tx", "session-set", "session-get",
+    "evict-zipf",
 ];
 
+#[derive(Clone)]
 struct Options {
     port: u16,
     connections: usize,
@@ -26,6 +29,11 @@ struct Options {
     value: Vec<u8>,
     workload: String,
     fill: Option<u64>,
+    seed: u64,
+    zipf_s: f64,
+    warmup: Duration,
+    sample_interval: Duration,
+    maxmemory: Option<u64>,
 }
 
 impl Options {
@@ -35,7 +43,10 @@ impl Options {
             threads: thread::available_parallelism()?.get(),
             seconds: None, requests: None, keys: 100_000,
             value: vec![b'x'; 200], workload: String::new(), fill: None,
+            seed: 1, zipf_s: 0.99, warmup: Duration::from_secs(5),
+            sample_interval: Duration::from_millis(10), maxmemory: None,
         };
+        let (mut keys_given, mut value_given) = (false, false);
         let mut args = env::args().skip(1);
         while let Some(flag) = args.next() {
             let value = args.next().ok_or("each option needs a value")?;
@@ -53,12 +64,28 @@ impl Options {
                     opts.seconds = Some(duration);
                 }
                 "--requests" => opts.requests = Some(value.parse()?),
-                "--keys" => opts.keys = value.parse()?,
-                "--value-size" => opts.value = vec![b'x'; value.parse()?],
+                "--keys" => { opts.keys = value.parse()?; keys_given = true; }
+                "--value-size" => { opts.value = vec![b'x'; value.parse()?]; value_given = true; }
                 "--workload" => opts.workload = value,
                 "--fill" => opts.fill = Some(value.parse()?),
+                "--seed" => opts.seed = value.parse()?,
+                "--zipf-s" => opts.zipf_s = value.parse()?,
+                "--warmup-seconds" => opts.warmup = Duration::try_from_secs_f64(value.parse()?)?,
+                "--sample-ms" => opts.sample_interval = Duration::from_millis(value.parse()?),
+                "--maxmemory" => opts.maxmemory = Some(value.parse()?),
                 _ => return Err(format!("unknown option: {flag}").into()),
             }
+        }
+        if opts.workload == "evict-zipf" {
+            if !keys_given { opts.keys = 1_000_000; }
+            if !value_given { opts.value = vec![b'x'; 64]; }
+        }
+        if !opts.zipf_s.is_finite() || opts.zipf_s < 0.0 || opts.sample_interval.is_zero() {
+            return Err("--zipf-s must be finite and nonnegative; --sample-ms must be positive".into());
+        }
+        if opts.maxmemory.is_some() && (!matches!(opts.workload.as_str(), "session-set" | "session-get")
+            || opts.fill.is_some()) {
+            return Err("--maxmemory only applies to measured session-set/session-get".into());
         }
         if opts.port == 0 || opts.connections == 0 || opts.threads == 0 || opts.keys == 0 {
             return Err("--port, --connections, --threads and --keys must be positive".into());
@@ -151,8 +178,13 @@ fn fill(opts: &Options, count: u64) -> Result<()> {
         out.clear();
         let mut batch = 0;
         while next < count && batch < 256 && out.len() < 1_048_576 {
-            let key = format!("sess:{next}");
-            command(&mut out, &[b"SET", key.as_bytes(), &opts.value, b"EX", b"86400"]);
+            if opts.workload == "evict-zipf" {
+                let key = format!("key:{next}");
+                command(&mut out, &[b"SET", key.as_bytes(), &opts.value]);
+            } else {
+                let key = format!("sess:{next}");
+                command(&mut out, &[b"SET", key.as_bytes(), &opts.value, b"EX", b"86400"]);
+            }
             next += 1;
             batch += 1;
         }
@@ -172,13 +204,17 @@ fn fill(opts: &Options, count: u64) -> Result<()> {
 
 // SplitMix64 per connection, fixed seeds for repeatable comparisons. Rejection
 // removes modulo bias so every key in 0..keys has equal probability.
+fn random_u64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e3779b97f4a7c15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+    z ^ (z >> 31)
+}
+
 fn random_key(state: &mut u64, keys: u64) -> u64 {
     loop {
-        *state = state.wrapping_add(0x9e3779b97f4a7c15);
-        let mut z = *state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-        z ^= z >> 31;
+        let z = random_u64(state);
         if z >= keys.wrapping_neg() % keys { return z % keys; }
     }
 }
@@ -233,6 +269,10 @@ struct Connection {
     input: Vec<u8>,
     replies: usize,
     started: Instant,
+    cache_key: Vec<u8>,
+    cache_set: bool,
+    hit: bool,
+    wrote: bool,
 }
 
 impl Connection {
@@ -253,13 +293,15 @@ impl Connection {
         }
         socket.set_nonblocking(true)?;
         let remaining = opts.requests.map_or(u64::MAX, |n| share(n, opts.connections, id));
-        Ok(Self { socket, sha, rng: id as u64, remaining, out: Vec::new(), sent: 0,
-            input: Vec::new(), replies: 0, started: Instant::now() })
+        // The default preserves the original uniform workload's sequence.
+        Ok(Self { socket, sha, rng: (id as u64) ^ opts.seed.wrapping_sub(1), remaining,
+            out: Vec::new(), sent: 0, input: Vec::new(), replies: 0,
+            started: Instant::now(), cache_key: Vec::new(), cache_set: false, hit: false, wrote: false })
     }
 
     // One whole transaction is buffered as a single logical write. Partial TCP
     // writes resume from sent; no next request is queued until every reply arrives.
-    fn advance(&mut self) -> Result<bool> {
+    fn advance(&mut self, opts: &Options) -> Result<bool> {
         if self.started.elapsed() > TIMEOUT { return Err("request exceeded 30 seconds".into()); }
         if self.sent < self.out.len() {
             match self.socket.write(&self.out[self.sent..]) {
@@ -278,12 +320,36 @@ impl Connection {
         }
         while self.replies > 0 {
             let Some(size) = reply(&self.input, 0)? else { break; };
+            if opts.workload == "evict-zipf" {
+                if self.cache_set {
+                    if &self.input[..size] != b"+OK\r\n" { return Err("cache SET did not return OK".into()); }
+                    self.wrote = true;
+                } else {
+                    self.hit = eviction::get_hit(&self.input[..size], &opts.value)?;
+                }
+            } else if opts.maxmemory.is_some() {
+                if opts.workload == "session-get" {
+                    if !eviction::get_hit(&self.input[..size], &opts.value)? {
+                        return Err("prefilled session GET missed".into());
+                    }
+                } else if &self.input[..size] != b"+OK\r\n" {
+                    return Err("session SET did not return OK".into());
+                }
+            }
             self.input.drain(..size);
             self.replies -= 1;
         }
         if self.replies == 0 {
             if self.sent != self.out.len() || !self.input.is_empty() {
                 return Err("unexpected extra or premature reply".into());
+            }
+            if opts.workload == "evict-zipf" && !self.cache_set && !self.hit {
+                self.out.clear();
+                command(&mut self.out, &[b"SET", &self.cache_key, &opts.value]);
+                self.sent = 0;
+                self.replies = 1;
+                self.cache_set = true;
+                return Ok(false);
             }
             return Ok(true);
         }
@@ -298,30 +364,41 @@ fn share(n: u64, total: usize, id: usize) -> u64 {
 // Exact, sparse one-microsecond bins, with no clipped tail or averaged percentiles.
 type Histogram = HashMap<u64, u64>;
 fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
-          cancelled: &AtomicBool) -> Result<(Histogram, Instant)> {
+          cancelled: &AtomicBool, zipf: Option<&eviction::Zipf>) -> Result<(Histogram, Instant, u64, usize)> {
     let mut histogram = Histogram::new();
+    let mut hits = 0;
     loop {
         if cancelled.load(Ordering::Relaxed) { return Err("another worker failed".into()); }
         let mut active = false;
         for c in &mut connections {
             if c.replies == 0 {
                 if c.remaining == 0 || opts.seconds.is_some_and(|s| start.elapsed() >= s) { continue; }
-                c.replies = request(&mut c.out, opts, &mut c.rng, &c.sha);
+                if let Some(zipf) = zipf {
+                    c.out.clear();
+                    c.cache_key = format!("key:{}", zipf.draw(&mut c.rng)).into_bytes();
+                    command(&mut c.out, &[b"GET", &c.cache_key]);
+                    c.replies = 1;
+                    c.cache_set = false;
+                    c.hit = false;
+                } else {
+                    c.replies = request(&mut c.out, opts, &mut c.rng, &c.sha);
+                }
                 c.sent = 0;
                 c.started = Instant::now();
                 c.remaining -= 1;
             }
             active = true;
-            if c.advance()? {
+            if c.advance(opts)? {
                 let us = c.started.elapsed().as_nanos().div_ceil(1000) as u64;
                 *histogram.entry(us).or_insert(0) += 1;
+                hits += u64::from(c.hit);
             }
         }
         if !active { break; }
         // No sleeping timer imposes a latency floor; idle scans yield to peers.
         thread::yield_now();
     }
-    Ok((histogram, Instant::now()))
+    Ok((histogram, Instant::now(), hits, connections.iter().filter(|c| c.wrote).count()))
 }
 
 fn percentile(histogram: &BTreeMap<u64, u64>, count: u64, percent: u64) -> f64 {
@@ -334,22 +411,42 @@ fn percentile(histogram: &BTreeMap<u64, u64>, count: u64, percent: u64) -> f64 {
     unreachable!()
 }
 
-fn run(opts: Options) -> Result<()> {
-    if let Some(count) = opts.fill { return fill(&opts, count); }
+struct Measurement {
+    count: u64,
+    hits: u64,
+    writers: usize,
+    seconds: f64,
+    p50: f64,
+    p99: f64,
+}
+
+impl Measurement {
+    fn csv(&self, opts: &Options) -> String {
+        format!("{},{},{},{:.6},{:.3},{:.3},{:.3}", opts.workload, opts.connections,
+            self.count, self.seconds, self.count as f64 / self.seconds, self.p50, self.p99)
+    }
+}
+
+fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
+           mut monitor: Option<&mut eviction::Monitor>) -> Result<Measurement> {
     let mut groups: Vec<Vec<Connection>> = (0..opts.threads).map(|_| Vec::new()).collect();
     // Connections and SCRIPT LOAD finish before the shared measurement clock.
     for id in 0..opts.connections { groups[id % opts.threads].push(Connection::new(&opts, id)?); }
-    let opts = Arc::new(opts);
+    // RESETSTAT and the initial INFO happen with all measured connections open,
+    // before releasing any worker. A failed setup cannot strand a barrier waiter.
+    if let Some(m) = monitor.as_deref_mut() { m.start()?; }
+    let opts = Arc::new(opts.clone());
     let barrier = Arc::new(Barrier::new(opts.threads + 1));
     let cancelled = Arc::new(AtomicBool::new(false));
     let start = Arc::new(std::sync::OnceLock::new());
     let mut handles = Vec::new();
     for connections in groups {
+        let zipf = zipf.clone();
         let (opts, barrier, cancelled, start) =
             (opts.clone(), barrier.clone(), cancelled.clone(), start.clone());
         handles.push(thread::spawn(move || {
             barrier.wait();
-            let result = worker(connections, &opts, *start.get().unwrap(), &cancelled);
+            let result = worker(connections, &opts, *start.get().unwrap(), &cancelled, zipf.as_deref());
             if result.is_err() { cancelled.store(true, Ordering::Relaxed); }
             result
         }));
@@ -357,28 +454,49 @@ fn run(opts: Options) -> Result<()> {
     let begin = Instant::now();
     start.set(begin).unwrap();
     barrier.wait();
+    let mut failure = None;
+    if let Some(m) = monitor.as_deref_mut() {
+        while handles.iter().any(|h| !h.is_finished()) {
+            thread::sleep(opts.sample_interval);
+            if let Err(e) = m.sample() {
+                cancelled.store(true, Ordering::Relaxed);
+                failure = Some(e);
+                break;
+            }
+        }
+    }
     let mut histogram = BTreeMap::new();
     let mut end = begin;
-    let mut failure = None;
+    let mut hits = 0;
+    let mut writers = 0;
     for handle in handles {
         match handle.join().unwrap_or_else(|_| Err("worker panicked".into())) {
-            Ok((bins, ended)) => {
+            Ok((bins, ended, found, wrote)) => {
                 end = end.max(ended);
+                hits += found;
+                writers += wrote;
                 for (us, n) in bins { *histogram.entry(us).or_insert(0) += n; }
             }
             Err(e) => { eprintln!("{e}"); failure = Some(e); }
         }
     }
     if let Some(e) = failure { return Err(e); }
+    if let Some(m) = monitor { m.sample()?; }
     let count: u64 = histogram.values().sum();
     if count == 0 { return Err("no requests completed".into()); }
     if opts.requests.is_some_and(|n| count != n) { return Err("request count mismatch".into()); }
     // Timed runs stop issuing at the deadline and include draining in-flight work
     // in both the count and elapsed time; setup and histogram merging are excluded.
     let seconds = end.duration_since(begin).as_secs_f64();
-    println!("{},{},{},{:.6},{:.3},{:.3},{:.3}", opts.workload, opts.connections,
-        count, seconds, count as f64 / seconds,
-        percentile(&histogram, count, 50), percentile(&histogram, count, 99));
+    Ok(Measurement { count, hits, writers, seconds,
+        p50: percentile(&histogram, count, 50), p99: percentile(&histogram, count, 99) })
+}
+
+fn run(opts: Options) -> Result<()> {
+    if let Some(count) = opts.fill { return fill(&opts, count); }
+    if opts.workload == "evict-zipf" { return eviction::run(&opts); }
+    if opts.maxmemory.is_some() { return eviction::session_limit(&opts); }
+    println!("{}", measure(&opts, None, None)?.csv(&opts));
     Ok(())
 }
 
@@ -393,12 +511,14 @@ fn main() {
 mod tests {
     use super::*;
 
-    fn options(port: u16, workload: &str) -> Options {
+    pub(super) fn options(port: u16, workload: &str) -> Options {
         Options { port, connections: 2, threads: 2, seconds: None, requests: Some(3),
-            keys: 1, value: vec![b'x'], workload: workload.into(), fill: None }
+            keys: 1, value: vec![b'x'], workload: workload.into(), fill: None,
+            seed: 1, zipf_s: 0.99, warmup: Duration::ZERO,
+            sample_interval: Duration::from_millis(10), maxmemory: None }
     }
 
-    fn expect_command(socket: &mut TcpStream, args: &[&[u8]]) {
+    pub(super) fn expect_command(socket: &mut TcpStream, args: &[&[u8]]) {
         let mut expected = Vec::new();
         command(&mut expected, args);
         let mut actual = vec![0; expected.len()];
@@ -410,6 +530,8 @@ mod tests {
     fn workloads_send_consumer_forms_and_count_transactions_once() {
         use std::net::TcpListener;
         for &workload in WORKLOADS {
+            // Cache-aside has its own hit/miss state-machine and setup cases.
+            if workload == "evict-zipf" { continue; }
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {
@@ -468,15 +590,21 @@ mod tests {
     #[test]
     fn fill_crosses_batch_boundary_and_checks_errors() {
         use std::net::TcpListener;
-        for fail in [false, true] {
+        for (workload, fail) in [("session-get", false), ("session-get", true),
+                                 ("evict-zipf", false), ("evict-zipf", true)] {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            let opts = options(listener.local_addr().unwrap().port(), "session-get");
+            let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket.set_read_timeout(Some(TIMEOUT)).unwrap();
                 for id in 0..257 {
-                    let key = format!("sess:{id}");
-                    expect_command(&mut socket, &[b"SET", key.as_bytes(), b"x", b"EX", b"86400"]);
+                    if workload == "evict-zipf" {
+                        let key = format!("key:{id}");
+                        expect_command(&mut socket, &[b"SET", key.as_bytes(), b"x"]);
+                    } else {
+                        let key = format!("sess:{id}");
+                        expect_command(&mut socket, &[b"SET", key.as_bytes(), b"x", b"EX", b"86400"]);
+                    }
                     socket.write_all(if fail && id == 256 { b"-ERR rejected\r\n" } else { b"+OK\r\n" }).unwrap();
                 }
             });

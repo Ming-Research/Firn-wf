@@ -115,6 +115,185 @@ the historical alternatives explain what the owner selected.
   Redis 7.0.15's. firn's is rejected if it is more than two percentage
   points below Redis's.
 
+## Eviction quality and at-limit measurements, stated before measuring
+
+The instrument is `redis-bench.sh workloads` and its existing std-only Rust
+client, built and tested offline by CI. **Results are pending.** The following
+protocol specifies the measurements owed by
+[PR #35, maxmemory](https://github.com/Ming-Research/Firn-wf/pull/35);
+adding the instrument establishes no hit-rate, throughput or memory result.
+No build, cargo command, harness, server or check was run for this edit.
+
+Compare this checkout's LTO firn with Redis **7.0.15** on the **i9-14900K**
+through `redis-bench.yml`, using the same client, parameters, CPU allocation
+and connection count. The memory workloads refuse another Redis version.
+Each workload, connection count and variant gets a fresh server and AOF.
+The lines are `reference`, `reference-aof`, `firn-<cpus>` and
+`firn-aof-<cpus>`; AOF uses the harness's existing every-second policy.
+Passes interleave these lines and reverse their order on even passes. Client
+CPUs are separate from server CPUs; the client multiplexes depth-one
+connections with at most 16 worker threads as in the existing harness.
+There is no optional perf pass for these memory workloads.
+
+### Zipf cache-aside traffic
+
+`evict-zipf` uses **N = 1,000,000**, **s = 0.99** and **64-byte values** by
+default. Keys are `key:0` through `key:N-1`, without expiry. The probability
+of rank r, for r in 1 through N, is `r^(-s) / sum(k^(-s), k=1..N)`.
+The client builds that finite cumulative distribution and applies it to a
+Fisher-Yates permutation of the keys. SplitMix64 supplies the permutation
+and per-connection draws, with the pass number as seed. Every server in a
+pass gets the same permutation and the same per-connection sequence prefix;
+wall-clock runs can complete different prefix lengths and interleave
+connections differently. Warm-up uses a separate stream and measured
+streams restart, so different warm-up throughput cannot shift the measured
+prefix. The client checks every hit's length and bytes against the fixed
+value and requires every miss SET to return OK.
+
+For each server, the client sets `maxmemory 0`, `allkeys-lru`, samples **5**
+and tenacity **10** (Redis 7.0.15's defaults), reads INFO's baseline
+`used_memory` B, fills each key once, and reads filled memory F. The limit
+is **B + floor((F - B) / 2)**; non-growth is an error. Thus each server gets
+half its own measured dataset allocation above its baseline, not a shared
+byte limit or a guarantee of retaining exactly N/2 keys. B and F are kept
+in the CSV. After setting the limit it warms for **5 seconds** by default,
+then measures for `seconds`. Every operation draws a key and GETs it; a
+miss SETs that same key before the operation completes. All connections
+use this cache-aside path, and a run without a completed miss SET on every
+connection fails instead of claiming simultaneous-writer evidence.
+
+`workloads.csv` keeps logical-operation count, elapsed seconds, operations
+per second and p50/p99 milliseconds. A logical operation is one GET plus
+its SET on a miss; latency includes both round trips on a miss. Timed runs
+stop issuing at the deadline and include draining in-flight operations in
+both count and time. Setup, warm-up and histogram merging are excluded.
+`evict-zipf.csv` also keeps N, s, value size, seed, warm-up, sample interval,
+GET count, hits, misses, **hit rate = hits / GET count** (a fraction),
+`evicted_keys` delta, final `used_memory`, limit and the following distinct
+peak observations:
+
+- With measured connections already open, the client sends
+  `CONFIG RESETSTAT` and reads INFO before releasing the workers. It reads
+  INFO periodically and after their completion. `evicted_keys_delta` is
+  final minus the post-reset initial counter; INFO-triggered eviction can
+  contribute to it. `used_memory_peak` is the final INFO lifetime peak,
+  and `peak_at_measurement_start` is the post-reset initial peak.
+  **RESETSTAT preserves Redis 7.0.15's peak.** The peak therefore includes
+  the unlimited prefill and warm-up. `lifetime_peak_excess_bytes` is
+  `max(0, used_memory_peak - maxmemory)` and its fraction divides by
+  maxmemory; neither is a measured-phase overshoot claim.
+- `sampled_max_memory` is the largest observed INFO `used_memory` across
+  the phase, including its initial and final boundary reads.
+  `sampled_excess_bytes = max(0, sampled_max_memory - maxmemory)` and
+  `sampled_excess_fraction = sampled_excess_bytes / maxmemory` report
+  observed at-limit excess with simultaneous writers. Sampling waits
+  **10 ms** between INFO requests by default; replies take additional time.
+  The CSV records sample count, maximum actual interval between completed
+  samples and `writer_connections`. The latter counts participating writers,
+  not how many SETs overlapped at an instant. This is a sampled lower bound, not
+  an exact instantaneous peak; brief overshoot between reads can be missed.
+  Raw memory includes excluded AOF buffers, so excess over maxmemory does
+  not by itself mean the eviction accounting bound was exceeded. Final
+  `mem_not_counted_for_evict` is recorded separately, not retroactively
+  subtracted from an earlier sample or lifetime peak.
+
+These runs report throughput and latency **at the limit, without and with
+AOF**, and the simultaneous ordinary-writer observations. They do not
+measure transaction or script overshoot; those remain owed under
+`firn-bl-01-02`, "Complete firn's standalone deployment workloads".
+
+### Unlimited and nonbinding session limits
+
+`session-set-limits` and `session-get-limits` select the existing session
+SET-with-EX-86400 and GET command forms. Each variant first fills its entire
+key range with maxmemory 0, then selects `noeviction` and either **0** or
+**68,719,476,736 bytes (64 GiB)**, warms up and measures. Defaults are
+**100,000 session keys** (the original workloads' draw range), **200-byte
+values**, uniform draws and the same 5-second warm-up and 10-ms sampling.
+Both variants start from the same filled set, including session-set, so
+growing a previously empty dataset cannot be mistaken for admission cost.
+This opt-in prefill differs from the original session-get RSS experiment,
+which fills one million sessions and draws from 100,000; that experiment's
+defaults are unchanged.
+
+For each server line the CSV distinguishes `-unlimited`, `-unlimited-twin`,
+`-nonbinding` and `-nonbinding-twin`; each twin restarts the same executable
+under the same setting as its stem. Variants run in that order on odd
+passes and reverse on even passes, providing same-source before/after
+observations and same-image noise controls for attributing admission-check
+cost. These are workload/configuration variants, not two source revisions.
+Both settings use identical sampling. The client requires the configured
+limit in INFO, zero measured evictions, valid replies, and a lifetime peak
+below the high limit. It fails a binding "nonbinding" run. These observations
+do not isolate peak-accounting overhead common to both settings.
+`workloads.csv` holds the rates/latencies under these line names and
+`session-limits-settings.csv` records the actual parsed parameters and limit.
+
+### Criteria and CI dispatch
+
+The existing eviction-quality criterion stands: **reject firn if its hit
+rate is more than two percentage points below Redis 7.0.15's**, comparing
+matched CPU/connection/AOF/parameter configurations over the interleaved
+passes. Keep individual pass results and their spread; a short functional
+probe does not settle that criterion. Throughput, latency and overshoot are
+reported without a new pass/fail threshold. The earlier access-stamp
+rejection criterion applies to its own before/after experiment, not to this
+new instrument. A nonbinding-limit attribution must distinguish the
+setting difference from its twins' spread.
+
+Use workflow mode `workloads`, `tests` (mapped to `WORKLOADS`) containing
+`evict-zipf session-set-limits session-get-limits`, and `profile=false`.
+Existing `cpus`, `connections`, `passes` and `seconds` map to
+`WORKLOAD_CPUS`, `WORKLOAD_CONNECTIONS`, `WORKLOAD_PASSES` and
+`WORKLOAD_SECONDS`. The new optional `workload_options` input maps to
+`WORKLOAD_OPTIONS`: whitespace-separated option/value pairs, with no shell
+evaluation or quoting syntax. It accepts `--keys`, `--value-size`,
+`--zipf-s`, `--warmup-seconds` and `--sample-ms`; an override applies to
+every selected memory workload where relevant. The last two default to
+5 seconds and 10 ms. A zero warm-up is supported for focused functional
+checks. The client also accepts `--seed` and session-only `--maxmemory`;
+the harness owns these, fixing seed to pass and limit to 0 or 64 GiB.
+The original five workloads remain the default selection and ignore
+`WORKLOAD_OPTIONS`. All three CSV artifacts above are kept by the existing
+workflow's `*.csv` upload, alongside host and revision records.
+
+A **probe is two passes of five measured seconds**, with smaller N when
+needed to keep the measurement job's workload phase below ten minutes.
+The hosted probe below uses 10,000 keys and a one-second warm-up; it checks
+functionality, not performance. Reduce N again if setup makes it too long;
+do not shorten its two measured passes. First run a probe on the 14900K as
+well, check its duration and spread, then choose the longer run's scale.
+The longer example is a proposed dispatch, not a claimed sufficient sample.
+
+| Input | GitHub functional probe | 14900K probe | 14900K longer run, after probe |
+|---|---|---|---|
+| `runner` | `github` | `14900k` | `14900k` |
+| `mode` | `workloads` | `workloads` | `workloads` |
+| `tests` | `evict-zipf session-set-limits session-get-limits` | same | same |
+| `cpus` | `1` | `1` | `1 2 4` |
+| `connections` | `16` | `50` | `50` |
+| `passes` | `2` | `2` | `3` |
+| `seconds` | `5` | `5` | `10` |
+| `workload_options` | `--keys 10000 --warmup-seconds 1` | `--keys 10000 --warmup-seconds 1` | empty (defaults above) |
+| `profile` | `false` | `false` | `false` |
+
+The 14900K must be idle and reserved through the coordinator before the
+long run, as for the existing harness. Compilation, client unit cases,
+mock-server reply checks, CI functional behavior, the comparison and every
+performance conclusion are **pending**. No pin or submodule is changed by
+this instrument, and it establishes no new Whitefoot gap.
+
+A separate read-only agent using the inherited session model (exact serving
+identifier unavailable) reviewed this instrument against the checkout at
+`675ae22ce6362f98abe7495e637a447078768259`, including the complete working
+diff and new client module, affected consumers, session cleanup, project
+checklist and relevant design nodes. It reported no findings within source
+scope. The review traced request counting, reply checks, seeded traffic,
+configuration, CSV correspondence, interleaving and observation limits.
+Compiler acceptance, client cases, runtime correspondence, formal lint and
+measurement adequacy remain unverified; no suite or checker ran. No new
+design decision or design-tree edit is part of this instrument.
+
 ## Step 1 implementation record
 
 The [access/configuration draft record](step-1.md) lists every lookup site,
