@@ -202,20 +202,53 @@ fn text_value(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
 }
 
 fn run_get(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "GET key: answers a live string as a bulk string, written into the reply inside the statement on the key that finds it; a key whose expiry has passed is removed there instead.";
-  let journal = None<pkg::store::AccessJournal>();
+  doc "GET key: answers in a read-only statement on the key, then refreshes a live entry in a second statement only when the observed access stamp differs from the refresh; an expired key is removed separately.";
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   set client^.state = state_absent;
+  let refresh = False();
   atomic slot = &store^.keys[key] {
-    get_body(journal: &journal, access_key: key, slot: slot, client: client);
+    set refresh = get_read_body(slot: slot, client: client);
+  }
+  if refresh {
+    atomic refresh_slot = &store^.keys[key] {
+      update_access(slot: refresh_slot, client: client);
+    }
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
   }
   get_finish(client: client);
   return unit;
+}
+
+fn get_read_body(slot: &Option<Entry>, client: &Client) -> refresh: Bool reads(slot), writes(client) {
+  doc "Answers GET without writing the entry and reports whether a live entry's stamp would change under update_access. An LFU draw that leaves the stamp unchanged is consumed here; a draw that changes it is restored for update_access to repeat in the second statement. Scripts retain get_body and its journal.";
+  match slot^ {
+    Some(value: observed) => {
+      let kind = text_value(env: client, value: observed);
+      if client^.state == state_expired {
+        return False();
+      }
+      let stamp = access_clock(client: client);
+      if access_lfu(client: client) {
+        let saved_random = client^.random;
+        let counter = access_frequency(stamp: observed^.access, client: client);
+        let increased = access_increment(counter: counter, client: client);
+        let minute = access_minute(client: client);
+        let high = ishl.wrap(minute, 8_u32);
+        set stamp = ior(high, increased);
+        if observed^.access != stamp {
+          set client^.random = saved_random;
+        }
+      }
+      return observed^.access != stamp;
+    }
+    None() => {
+      return False();
+    }
+  }
 }
 
 fn get_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(client) {
