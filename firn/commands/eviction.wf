@@ -211,7 +211,8 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
   let length = gathered.len;
   for (index in 0_u64..length) {
     if index < entries^.len {
-      match entries^[index] {
+      let slot = &entries^[index];
+      match slot^ {
         Some(value: sampled) => {
           let expiring = sampled^.expires != 0_u64;
           let all = bnot(volatile);
