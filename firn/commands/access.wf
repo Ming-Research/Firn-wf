@@ -87,7 +87,7 @@ fn access_increment(counter: u32, client: &Client) -> increased: u32 writes(clie
   return counter;
 }
 
-fn update_access(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
+fn update_access(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(slot.Some.value.access), writes(client) {
   doc "Redis 7.0.15 db.c lookupKey and updateLFU: refresh each live lookup, before type checks, under every policy; NOTOUCH callers omit this call. Firn has no fork child suppressing updates.";
   match slot^ {
     Some(value: accessed) => {
@@ -305,7 +305,7 @@ fn config_memory_value(input: &[u8], span: Span, which: u64, client: &Client) ->
   return Amount(value: value, valid: yes);
 }
 
-fn refresh_access(journal: &Option<pkg::store::AccessJournal>, key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(key), writes(journal), writes(slot), writes(client) {
+fn refresh_access(journal: &Option<pkg::store::AccessJournal>, key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(key), reads(slot), writes(journal), writes(slot.Some.value.access), writes(client) {
   doc "Journals a live key before its first refresh in a script attempt, including a wrong-type lookup. NOTOUCH callers omit this; absent and expired entries never enter the journal.";
   match slot^ {
     Some(value: original) => {
