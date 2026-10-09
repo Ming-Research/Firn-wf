@@ -202,14 +202,14 @@ fn text_value(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
 }
 
 fn run_get(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "GET key: answers a live string as a bulk string, written into the reply inside the statement on the key that finds it; a key whose expiry has passed is removed there instead.";
-  let journal = None<pkg::store::AccessJournal>();
+  doc "GET key: answers a live string inside a statement that reads its keyspace entry and refreshes its separate stamp entry; a key whose expiry has passed is removed afterward.";
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   set client^.state = state_absent;
-  atomic slot = &store^.keys[key] {
-    get_body(journal: &journal, access_key: key, slot: slot, client: client);
+  atomic slot = &store^.keys[key], st = &store^.stamps[key] {
+    refresh_get_access(slot: slot, st: st, client: client);
+    get_body(slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
@@ -218,9 +218,39 @@ fn run_get(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   return unit;
 }
 
-fn get_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(client) {
+fn refresh_get_access(slot: &Option<Entry>, st: &Option<u32>, client: &Client) -> result: unit reads(slot), writes(st), writes(client) {
+  doc "C2 GET-only cost control: refreshes a live key's separate stamp before type checks using the client's access snapshot, leaving Entry.access untouched. LFU refreshes the separate map's previous stamp, initializing missing stamps as new_access does; other commands do not maintain this map.";
+  match slot^ {
+    Some(value: accessed) => {
+      let lapsed = expired(expires: accessed^.expires, now: client^.now);
+      if bnot(lapsed) {
+        let stamp = access_clock(client: client);
+        if access_lfu(client: client) {
+          let previous = new_access(client: client);
+          match st^ {
+            Some(value: recorded) => {
+              set previous = recorded^;
+            }
+            None() => {
+            }
+          }
+          let counter = access_frequency(stamp: previous, client: client);
+          let increased = access_increment(counter: counter, client: client);
+          let minute = access_minute(client: client);
+          let high = ishl.wrap(minute, 8_u32);
+          set stamp = ior(high, increased);
+        }
+        set st^ = Some<u32>(value: stamp);
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn get_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
   doc "GET's work on its key's entry, held by the caller, against the client's now: a live string is written as a bulk string reply, recording done; another kind records wrong and an expired entry expired, writing nothing; an absent entry leaves the state as the caller set it.";
-  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let kind = text_value(env: client, value: held);

@@ -258,7 +258,8 @@ fn script_get(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHash
   set client^.now = time^.check;
   set client^.state = state_absent;
   let slot = &keys^[key];
-  get_body(journal: journal, access_key: key, slot: slot, client: client);
+  refresh_access(journal: journal, key: key, slot: slot, client: client);
+  get_body(slot: slot, client: client);
   let appended = 0_u64;
   if client^.state == state_expired {
     set slot^ = None<Entry>();
