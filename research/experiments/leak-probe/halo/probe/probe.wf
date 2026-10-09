@@ -1,0 +1,253 @@
+alias Inputs = std::process::Inputs;
+alias ExitStatus = std::process::ExitStatus;
+alias MemoryMeter = std::process::MemoryMeter;
+alias HandleFactory = std::io::HandleFactory;
+alias OutputStream = std::io::OutputStream;
+alias Engine = halo::embed::Engine;
+alias ScriptId = halo::embed::ScriptId;
+alias Host = halo::vm::Host;
+alias HostOutcome = halo::vm::HostOutcome;
+alias Vm = halo::vm::Vm;
+alias Value = halo::value::Value;
+
+const source_text: Array<u8, 8> = "return 1";
+
+const chunk_text: Array<u8, 12> = "@user_script";
+
+const error_field: Array<u8, 3> = "err";
+
+const keys_name: Array<u8, 4> = "KEYS";
+
+const argv_name: Array<u8, 4> = "ARGV";
+
+const variant_names: Array<u8, 3> = "abc";
+
+const comma: Array<u8, 1> = ",";
+
+const newline: Array<u8, 1> = "\n";
+
+fn host_call(env: &unit, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64, id: u32) -> r: HostOutcome pure contract {
+  ensures stack^.inner.len == entry(stack)^.inner.len;
+} {
+  return HostOutcome::Stop();
+}
+
+binding ProbeHost : Host<unit> {
+  call = host_call;
+}
+
+fn prepare(engine: &Engine) -> ok: Bool writes(engine) {
+  let keys_table = halo::embed::new_table(engine: engine, asize: 0_u32, hsize: 0_u32);
+  let argv_table = halo::embed::new_table(engine: engine, asize: 0_u32, hsize: 0_u32);
+  let keys_result = halo::embed::set_global(engine: engine, name: &keys_name[0_u64..4_u64], value: keys_table);
+  let argv_result = halo::embed::set_global(engine: engine, name: &argv_name[0_u64..4_u64], value: argv_table);
+  match keys_result {
+    Err(..) => {
+      return False();
+    }
+    Ok(..) => {
+    }
+  }
+  match argv_result {
+    Err(..) => {
+      return False();
+    }
+    Ok(..) => {
+      return True();
+    }
+  }
+}
+
+fn attempt(engine: &Engine, script: ScriptId) -> ok: Bool writes(engine) {
+  let env = unit;
+  let outcome = halo::embed::start::<ProbeHost>(engine: engine, env: &env, script: script, budget: 1000_u64);
+  loop {
+    match outcome {
+      Budget() => {
+        set outcome = halo::embed::resume::<ProbeHost>(engine: engine, env: &env, budget: 18446744073709551615_u64);
+      }
+      Done(count: returned) => {
+        if returned != 1_u64 {
+          return False();
+        }
+        match halo::embed::result(engine: engine, index: 0_u64) {
+          Some(value: result_value) => {
+            match halo::embed::number_of(value: result_value) {
+              Is(x: number) => {
+                return feq(number, 1.0_f64);
+              }
+              Not() => {
+                return False();
+              }
+            }
+          }
+          None() => {
+            return False();
+          }
+        }
+      }
+      Error() => {
+        return False();
+      }
+      HostStopped() => {
+        return False();
+      }
+      HostCall() => {
+        return False();
+      }
+    }
+  }
+  return False();
+}
+
+fn batch(engine: &Engine, script: ScriptId, calls: u64, arguments: Bool, resetting: Bool) -> ok: Bool writes(engine) {
+  for (i in 0_u64..calls) {
+    if arguments {
+      let prepared = prepare(engine: engine);
+      if bnot(prepared) {
+        return False();
+      }
+    }
+    let completed = attempt(engine: engine, script: script);
+    if bnot(completed) {
+      return False();
+    }
+    if resetting {
+      halo::embed::reset(engine: engine);
+    }
+  }
+  return True();
+}
+
+fn write_bytes(factory: &HandleFactory, output: &OutputStream, bytes: &[u8]) -> ok: Bool reads(bytes), writes(factory), writes(output) waits {
+  let sent = 0_u64;
+  let end = bytes^.len;
+  let deadline = None<std::time::Instant>();
+  loop {
+    if sent >= end {
+      break;
+    }
+    match std::io::write_once(factory: factory, output: output, source: bytes, start: sent, end: end, deadline: deadline) {
+      Ok(value: next) => {
+        if next == sent {
+          return False();
+        }
+        set sent = next;
+      }
+      Err(..) => {
+        return False();
+      }
+    }
+  }
+  return True();
+}
+
+fn write_number(factory: &HandleFactory, output: &OutputStream, value: u64) -> ok: Bool writes(factory), writes(output) waits {
+  let digits = array_filled::<u8, 20>(value: 0_u8);
+  let start = 20_u64;
+  let remaining = value;
+  loop {
+    if start == 0_u64 {
+      return False();
+    }
+    set start = start - 1_u64;
+    let remainder = remaining % 10_u64;
+    let digit = cvt::<u64, u8>(remainder);
+    let byte = digit + 48_u8;
+    if start < 20_u64 {
+      set digits[start] = byte;
+    }
+    set remaining = remaining / 10_u64;
+    if remaining == 0_u64 {
+      break;
+    }
+  }
+  if start <= 20_u64 {
+    return write_bytes(factory: factory, output: output, bytes: &digits[start..20_u64]);
+  }
+  return False();
+}
+
+fn measure(engine: &Engine, script: ScriptId, meter: &MemoryMeter, factory: &HandleFactory, output: &OutputStream, name: &[u8], arguments: Bool, resetting: Bool) -> ok: Bool reads(name), writes(engine), writes(meter), writes(factory), writes(output) waits {
+  let warmed = batch(engine: engine, script: script, calls: 1000_u64, arguments: arguments, resetting: resetting);
+  if bnot(warmed) {
+    return False();
+  }
+  let warm_heap = std::process::heap_in_use(meter: meter);
+  let first = batch(engine: engine, script: script, calls: 10000_u64, arguments: arguments, resetting: resetting);
+  if bnot(first) {
+    return False();
+  }
+  let first_heap = std::process::heap_in_use(meter: meter);
+  let second = batch(engine: engine, script: script, calls: 10000_u64, arguments: arguments, resetting: resetting);
+  if bnot(second) {
+    return False();
+  }
+  let second_heap = std::process::heap_in_use(meter: meter);
+  let named = write_bytes(factory: factory, output: output, bytes: name);
+  if bnot(named) {
+    return False();
+  }
+  let samples = array_filled::<u64, 3>(value: warm_heap);
+  set samples[1_u64] = first_heap;
+  set samples[2_u64] = second_heap;
+  for (column in 0_u64..3_u64) {
+    let separated = write_bytes(factory: factory, output: output, bytes: &comma[0_u64..1_u64]);
+    if bnot(separated) {
+      return False();
+    }
+    let printed = write_number(factory: factory, output: output, value: samples[column]);
+    if bnot(printed) {
+      return False();
+    }
+  }
+  return write_bytes(factory: factory, output: output, bytes: &newline[0_u64..1_u64]);
+}
+
+fn variant_a(engine: &Engine, script: ScriptId, meter: &MemoryMeter, factory: &HandleFactory, output: &OutputStream) -> ok: Bool writes(engine), writes(meter), writes(factory), writes(output) waits {
+  let no = False();
+  return measure(engine: engine, script: script, meter: meter, factory: factory, output: output, name: &variant_names[0_u64..1_u64], arguments: no, resetting: no);
+}
+
+fn variant_b(engine: &Engine, script: ScriptId, meter: &MemoryMeter, factory: &HandleFactory, output: &OutputStream) -> ok: Bool writes(engine), writes(meter), writes(factory), writes(output) waits {
+  let yes = True();
+  let no = False();
+  return measure(engine: engine, script: script, meter: meter, factory: factory, output: output, name: &variant_names[1_u64..2_u64], arguments: yes, resetting: no);
+}
+
+fn variant_c(engine: &Engine, script: ScriptId, meter: &MemoryMeter, factory: &HandleFactory, output: &OutputStream) -> ok: Bool writes(engine), writes(meter), writes(factory), writes(output) waits {
+  let yes = True();
+  return measure(engine: engine, script: script, meter: meter, factory: factory, output: output, name: &variant_names[2_u64..3_u64], arguments: yes, resetting: yes);
+}
+
+fn main(inputs: Inputs) -> status: ExitStatus pure waits {
+  let Inputs(cwd: directory, stdout: output, handles: factory, memory_meter: meter, ..) = move inputs;
+  let std::fs::Directory(read: directory_read, write: directory_write) = move directory;
+  std::fs::close_directory_write(factory: &factory, directory: move directory_write);
+  std::fs::close_directory(factory: &factory, directory: move directory_read);
+  let engine = halo::embed::new_engine(limit: 18446744073709551615_u64);
+  halo::embed::set_gc_pause(engine: &engine, percent: 200_u64);
+  halo::embed::set_gc_floor(engine: &engine, bytes: 1048576_u64);
+  halo::embed::set_pcall_error_field(engine: &engine, field: &error_field[0_u64..3_u64]);
+  let compiled = halo::embed::compile(engine: &engine, chunk_name: &chunk_text[0_u64..12_u64], source: &source_text[0_u64..8_u64]);
+  match move compiled {
+    Err(..) => {
+      return std::process::exit_status(code: 1_u8);
+    }
+    Ok(value: script_id) => {
+      let passed_a = variant_a(engine: &engine, script: script_id, meter: &meter, factory: &factory, output: &output);
+      if bnot(passed_a) {
+        return std::process::exit_status(code: 2_u8);
+      }
+      let passed_b = variant_b(engine: &engine, script: script_id, meter: &meter, factory: &factory, output: &output);
+      if bnot(passed_b) {
+        return std::process::exit_status(code: 3_u8);
+      }
+      let passed_c = variant_c(engine: &engine, script: script_id, meter: &meter, factory: &factory, output: &output);
+      if bnot(passed_c) {
+        return std::process::exit_status(code: 4_u8);
+      }
+      return std::process::exit_status(code: 0_u8);
+    }
+  }
+}

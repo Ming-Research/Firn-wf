@@ -1,0 +1,5 @@
+package halo = "../../../../deps/halo-wf/lib/halo";
+
+pkg::probe: [halo::embed, halo::vm, halo::value, std::process, std::fs, std::io, std::time];
+
+entry halo_leak = pkg::probe::main;

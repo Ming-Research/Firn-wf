@@ -1,0 +1,4 @@
+alias Inputs = std::process::Inputs;
+alias ExitStatus = std::process::ExitStatus;
+
+public fn main(inputs: Inputs) -> status: ExitStatus pure waits doc "Prints counted heap samples for cached Halo execution, empty arguments, and explicit reset.";
