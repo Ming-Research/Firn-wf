@@ -7,7 +7,7 @@ OUT=$1
 shift
 PORT=7511
 TRIALS=${TRIALS:-10}
-echo "image,load,trial,stop_ms" >"$OUT"
+echo "image,load,trial,clients,stop_ms" >"$OUT"
 cleanup() { pkill -f "redis-benchmark -p $PORT" 2>/dev/null; pkill -f "idle-clients.py $PORT" 2>/dev/null; [ -n "${pid:-}" ] && kill -KILL "$pid" 2>/dev/null; }
 trap cleanup EXIT
 cat > /tmp/idle-clients.py <<'PY'
@@ -31,6 +31,7 @@ for spec in "$@"; do
             fi
             load_pid=$!
             sleep 2
+            clients=$(redis-cli -p "$PORT" INFO clients | tr -d '\r' | sed -n 's/^connected_clients://p')
             start=$(date +%s%N)
             kill -TERM "$pid"
             wait "$pid" 2>/dev/null
@@ -38,7 +39,7 @@ for spec in "$@"; do
             kill -KILL "$load_pid" 2>/dev/null
             wait "$load_pid" 2>/dev/null
             pid=
-            echo "$name,$load,$trial,$(( (end - start) / 1000000 ))" | tee -a "$OUT"
+            echo "$name,$load,$trial,$clients,$(( (end - start) / 1000000 ))" | tee -a "$OUT"
             sleep 0.5
         done
     done

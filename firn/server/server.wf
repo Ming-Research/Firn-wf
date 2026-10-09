@@ -477,15 +477,13 @@ fn expire_keys(store: Keyspace, clock: Clock, wall: WallClock) -> result: unit p
 }
 
 fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspace, clock: Clock, source: CancelSource) -> result: unit pure waits {
-  doc "Waits in a context of its own for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either. The listener is closed before the request is recorded, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops. Each wait lasts at most a tenth of a second, as the expiry context's cycle does, so that firn's exit after it stops for another reason waits no longer than that, after which the context reads the shutdown request, in the server's state alone so that a script holding the keyspace's metadata cannot keep it from its next wait, and ends without a request once it is set: by SHUTDOWN, or by main once it stops for another reason, such as the limit on clients. A wait that fails otherwise closes the listener, leaving the host default. In this cancellation experiment, a heard signal fires the shared source immediately after requesting shutdown; every exit closes this context's source handle, without firing when no signal was heard.";
+  doc "Waits in a context of its own for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either. The listener is closed before the request is recorded, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops. In this experiment each wait has no deadline, so a stop for another reason waits for a signal; otherwise the context reads the shutdown request, in the server's state alone so that a script holding the keyspace's metadata cannot keep it from its next wait, and ends without a request once it is set: by SHUTDOWN, or by main once it stops for another reason, such as the limit on clients. A wait that fails otherwise closes the listener, leaving the host default. In this cancellation experiment, a heard signal fires the shared source immediately after requesting shutdown; every exit closes this context's source handle, without firing when no signal was heard.";
   let heard = False();
   loop @waiting {
     if shutdown_requested(store: &store) {
       break @waiting;
     }
-    let before = std::time::now(clock: &clock);
-    let bound = instant_after(instant: before, nanoseconds: 100000000_u64);
-    let limit = Some<Instant>(value: bound);
+    let limit = None<Instant>();
     match stop_next(factory: &factory, listener: &listener, deadline: limit) {
       Ok(value: kind) => {
         set heard = True();
