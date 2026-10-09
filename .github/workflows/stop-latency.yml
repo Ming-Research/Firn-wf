@@ -1,0 +1,36 @@
+# Experiment only (branch exp/cancel-firn, never merged): SIGTERM-to-exit time
+# of today's polling firn against the cancellation prototype's watch build,
+# on the 14900K. Pushed only once the machine's coordinator grants a slot.
+name: stop-latency
+
+on:
+  push:
+    branches: [exp/cancel-firn]
+    paths: [research/experiments/stop-latency/**, .github/workflows/stop-latency.yml]
+
+jobs:
+  stop:
+    runs-on: [self-hosted, 14900k]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build the two images
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          for b in exp/cancel-firn-poll exp/cancel-firn; do
+            d="$RUNNER_TEMP/$(basename $b)"
+            git worktree add --detach "$d" "origin/$b"
+            (cd "$d" && git submodule update --init whitefoot-kit deps/halo-wf && make firn-lto)
+          done
+      - name: Measure
+        run: |
+          bash research/experiments/stop-latency/stop-latency.sh "$RUNNER_TEMP/stop-latency.csv" \
+            poll="$RUNNER_TEMP/cancel-firn-poll/build/firn-lto" \
+            watch="$RUNNER_TEMP/cancel-firn/build/firn-lto"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stop-latency
+          path: ${{ runner.temp }}/stop-latency.csv
