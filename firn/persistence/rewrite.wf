@@ -380,10 +380,16 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
       let worker_clock = std::time::clock_share(clock: clock);
       let snapshot = aof_rw_manifest(original: &manifest);
       let rebuilt = spawn aof_rw_worker(store: move worker_store, factory: move worker_factory, directory: move directory, file: move opened, manifest: move snapshot, clock: move worker_clock, time: time^);
+      let never = std::time::cancel_never();
       loop @rebuilding {
         let reading = std::time::now(clock: clock);
         let wake = std::time::instant_after(instant: reading, nanoseconds: 10000000_u64);
-        std::time::sleep_until(deadline: wake);
+        match std::time::sleep_until(deadline: wake, cancel: &never) {
+          Ok(..) => {
+          }
+          Err(..) => {
+          }
+        }
         let done = False();
         let stopping = False();
         atomic m = &store^.meta {
@@ -395,6 +401,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
           break @rebuilding;
         }
       }
+      std::time::close_cancel_watch(watch: move never);
       let AofRebuilt(directory: returned, size: size, accepted: built) = move rebuilt;
       let accepted = False();
       let prefix_length = prefix.inner.len;

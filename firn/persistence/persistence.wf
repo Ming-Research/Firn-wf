@@ -56,10 +56,16 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
     set pending_meta^.aof_pending_capacity = pending.inner.cap;
   }
   let last_sync = std::time::now(clock: &clock);
+  let never = std::time::cancel_never();
   loop @writing {
     let started = std::time::now(clock: &clock);
     let wake = instant_after(instant: started, nanoseconds: 10000000_u64);
-    sleep_until(deadline: wake);
+    match sleep_until(deadline: wake, cancel: &never) {
+      Ok(..) => {
+      }
+      Err(..) => {
+      }
+    }
     let stop = False();
     atomic m = &store.meta {
       set stop = m^.stopping;
@@ -107,6 +113,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
       }
     }
   }
+  std::time::close_cancel_watch(watch: move never);
   let AofLog(directory: directory, writable: writable, prefix: prefix, manifest: manifest, file: file) = move log;
   close_write(factory: &factory, file: move file);
   std::fs::close_directory(factory: &factory, directory: move directory);

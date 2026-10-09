@@ -527,6 +527,9 @@ fn aof_missing(error: &std::io::IoError, directories: Bool) -> passed: Bool read
     DeadlinePassed() => {
       return False();
     }
+    Cancelled() => {
+      return False();
+    }
     BrokenPipe(code: native_code, origin: native_origin) => {
       return False();
     }
