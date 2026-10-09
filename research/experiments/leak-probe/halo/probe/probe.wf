@@ -26,11 +26,22 @@ const comma: Array<u8, 1> = ",";
 
 const newline: Array<u8, 1> = "\n";
 
-fn host_call(env: &unit, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64, id: u32) -> r: HostOutcome pure {
+struct Calls {
+  count: u64;
+}
+
+fn host_call(env: &Calls, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64, id: u32) -> r: HostOutcome writes(env), writes(vm), writes(stack) contract {
+  ensures stack^.inner.len == entry(stack)^.inner.len;
+} {
+  set env^.count = env^.count +sat 1_u64;
+  if func < stack^.inner.len {
+    set stack^.inner[func] = Value::Nil();
+  }
+  set vm^.error = Value::Nil();
   return HostOutcome::Stop();
 }
 
-binding ProbeHost : Host<unit> {
+binding ProbeHost : Host<Calls> {
   call = host_call;
 }
 
@@ -57,7 +68,7 @@ fn prepare(engine: &Engine) -> ok: Bool writes(engine) {
 }
 
 fn attempt(engine: &Engine, script: ScriptId) -> ok: Bool writes(engine) {
-  let env = unit;
+  let env = Calls(count: 0_u64);
   let outcome = halo::embed::start::<ProbeHost>(engine: engine, env: &env, script: script, budget: 1000_u64);
   loop {
     match outcome {
