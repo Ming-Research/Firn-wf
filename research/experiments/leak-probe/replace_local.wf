@@ -1,0 +1,28 @@
+alias ExitStatus = std::process::ExitStatus;
+alias Inputs = std::process::Inputs;
+alias MemoryMeter = std::process::MemoryMeter;
+alias exit_status = std::process::exit_status;
+
+fn main(inputs: Inputs) -> status: ExitStatus pure waits {
+  let Inputs(cwd: directory, handles: factory, memory_meter: meter, ..) = move inputs;
+  let std::fs::Directory(read: directory_read, write: directory_write) = move directory;
+  std::fs::close_directory_write(factory: &factory, directory: move directory_write);
+  std::fs::close_directory(factory: &factory, directory: move directory_read);
+  let held = box_slots_new::<u8>(capacity: 64_u64);
+  let before = std::process::heap_in_use(meter: &meter);
+  for (i in 0_u64..1000_u64) {
+    let fresh = box_slots_new::<u8>(capacity: 64_u64);
+    set held = move fresh;
+  }
+  let after = std::process::heap_in_use(meter: &meter);
+  if after > before {
+    let growth = after - before;
+    if growth >= 8000_u64 {
+      return exit_status(code: 13_u8);
+    }
+  }
+  if held.inner.cap == 64_u64 {
+    return exit_status(code: 0_u8);
+  }
+  return exit_status(code: 0_u8);
+}

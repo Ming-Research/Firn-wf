@@ -23,6 +23,14 @@ jobs:
           make toolchain
       - name: Build firn
         run: make firn
+      - name: Minimal replacement programs
+        run: |
+          W=$(ls -d build/whitefoot/*/whitefootc | head -1)
+          for f in replace_local replace_field replace_slot_field; do
+            "$W" research/experiments/leak-probe/$f.wf -o build/$f || { echo "$f: compile failed"; continue; }
+            set +e; build/$f; code=$?; set -e
+            echo "$f: exit $code (0: no growth; 11-13: grew by 8 or more bytes per replacement)" | tee -a leak-min.txt
+          done
       - name: Probe
         run: sh research/experiments/leak-probe/leak-probe.sh build/firn leak-probe.csv
       - uses: actions/upload-artifact@v4
@@ -31,4 +39,5 @@ jobs:
           name: leak-probe
           path: |
             leak-probe.csv
+            leak-min.txt
             /tmp/firn-*.log
