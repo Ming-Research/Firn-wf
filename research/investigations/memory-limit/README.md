@@ -203,11 +203,18 @@ submodule was moved and no new Whitefoot gap has been established.
 all commands firn implements as parts; `command_kind` extends the existing
 identity lookup to commands outside those parts. `execute_client` checks
 existence, command-table arity, authentication and SHUTDOWN's NO_MULTI
-restriction before `evict_before`. Unknown names now refuse at queue time;
-known commands without parts retain the established foreign-transaction
-abort. This changes the old transaction rationale, which could not separate
-unknown and unsplit commands. No command body is specialized for a client,
-test or benchmark.
+restriction before `evict_before`. Outside a transaction an unknown name is
+refused before admission. Inside one, a name `command_kind` does not
+identify keeps the established foreign-transaction path with known commands
+without parts: it is queued and EXEC refuses the whole transaction. A draft
+that refused such names when sent regressed 94 ratchet rows in
+[Firn-wf run 37904672454](https://github.com/Ming-Research/Firn-wf/actions/runs/37904672454):
+Redis's suite sends commands firn does not run, such as BRPOPLPUSH and XADD,
+inside MULTI, stops at the immediate error, and leaves its connection inside
+the transaction for every later test, the failure the transactions node's
+rejection already records. firn cannot tell a name Redis lacks from a Redis
+command it does not run without a table of Redis's names. No command body is
+specialized for a client, test or benchmark.
 
 `eviction.wf` follows `evict.c performEvictions`, `evictionPoolPopulate` and
 `evictionTimeLimitUs`, and `object.c LFUDecrAndReturn` via the unchanged
@@ -356,9 +363,9 @@ DEL, SCRIPT KILL progress with unlimited eviction and an in-flight script,
 and the cached-script count repair. Without step 2 the first refusal
 cases return OK/QUEUED, memory fields are absent and evicted_keys stays zero,
 keys survive writing past the limit and AOF replay, and cached scripts still
-report zero. The existing transaction unknown-name expectations are updated
-because the requested preflight now identifies them; no ratchet row is
-removed or weakened.
+report zero. The existing transaction unknown-name expectations are
+unchanged, since unidentified names still queue inside a transaction; no
+ratchet row is removed or weakened.
 
 Compiler acceptance and every new case are unverified. In particular, CI
 must check the new effects and interface signatures, MemoryMeter shares in

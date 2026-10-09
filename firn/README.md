@@ -67,10 +67,11 @@ clients send on their own:
   `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
   `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`; `INFO` is not among
   them. These same command parts run in scripts.
-  A known command without parts is queued and makes `EXEC` refuse the whole
-  transaction without running any of it. Unknown names or subcommands and
-  commands outside their table arity are refused when sent and make `EXEC`
-  abort, as Redis refuses them; `WATCH` is refused inside one and unknown outside;
+  A command without parts, or any name firn does not run, is queued and makes
+  `EXEC` refuse the whole transaction without running any of it, where Redis
+  refuses a name it lacks when it is sent; unknown subcommands and commands
+  outside their table arity are refused when sent and make `EXEC` abort, as
+  Redis refuses them; `WATCH` is refused inside one and unknown outside;
   `SHUTDOWN` is refused when sent and makes `EXEC` abort the transaction;
 - server: `SHUTDOWN [NOSAVE|SAVE] [NOW] [FORCE] [ABORT]`, described below,
   `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
