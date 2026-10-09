@@ -148,7 +148,9 @@ wall-clock runs can complete different prefix lengths and interleave
 connections differently. Warm-up uses a separate stream and measured
 streams restart, so different warm-up throughput cannot shift the measured
 prefix. The client checks every hit's length and bytes against the fixed
-value and requires every miss SET to return OK.
+value. A miss SET must return OK or the exact Redis refusal
+`-OOM command not allowed when used memory > 'maxmemory'.`; any other
+error is fatal. OOM during the unlimited fill is also fatal.
 
 For each server, the client sets `maxmemory 0`, `allkeys-lru`, samples **5**
 and tenacity **10** (Redis 7.0.15's defaults), reads INFO's baseline
@@ -159,8 +161,9 @@ byte limit or a guarantee of retaining exactly N/2 keys. B and F are kept
 in the CSV. After setting the limit it warms for **5 seconds** by default,
 then measures for `seconds`. Every operation draws a key and GETs it; a
 miss SETs that same key before the operation completes. All connections
-use this cache-aside path, and a run without a completed miss SET on every
-connection fails instead of claiming simultaneous-writer evidence.
+use this cache-aside path, and a run without a completed miss SET attempt
+(accepted or refused) on every connection fails instead of claiming
+simultaneous-writer evidence.
 
 `workloads.csv` keeps logical-operation count, elapsed seconds, operations
 per second and p50/p99 milliseconds. A logical operation is one GET plus
@@ -168,7 +171,7 @@ its SET on a miss; latency includes both round trips on a miss. Timed runs
 stop issuing at the deadline and include draining in-flight operations in
 both count and time. Setup, warm-up and histogram merging are excluded.
 `evict-zipf.csv` also keeps N, s, value size, seed, warm-up, sample interval,
-GET count, hits, misses, **hit rate = hits / GET count** (a fraction),
+GET count, hits, misses, `refused_sets`, **hit rate = hits / GET count** (a fraction),
 `evicted_keys` delta, final `used_memory`, limit and the following distinct
 peak observations:
 
@@ -189,13 +192,19 @@ peak observations:
   observed at-limit excess with simultaneous writers. Sampling waits
   **10 ms** between INFO requests by default; replies take additional time.
   The CSV records sample count, maximum actual interval between completed
-  samples and `writer_connections`. The latter counts participating writers,
+  samples and `writer_connections`. The latter counts participating writers
+  with completed SET attempts, including refusals,
   not how many SETs overlapped at an instant. This is a sampled lower bound, not
   an exact instantaneous peak; brief overshoot between reads can be missed.
   Raw memory includes excluded AOF buffers, so excess over maxmemory does
   not by itself mean the eviction accounting bound was exceeded. Final
   `mem_not_counted_for_evict` is recorded separately, not retroactively
   subtracted from an earlier sample or lifetime peak.
+
+Refused miss SETs are reported in `refused_sets`; a nonzero count means the
+server could not evict under that limit. The preceding GET is still counted
+as a miss, and that run's hit rate is still computed over completed GETs.
+The count covers the measured phase, excluding warm-up as with hits and misses.
 
 These runs report throughput and latency **at the limit, without and with
 AOF**, and the simultaneous ordinary-writer observations. They do not
@@ -259,10 +268,11 @@ workflow's `*.csv` upload, alongside host and revision records.
 
 A **probe is two passes of five measured seconds**, with smaller N when
 needed to keep the measurement job's workload phase below ten minutes.
-The hosted probe below uses 10,000 keys and a one-second warm-up; it checks
-functionality, not performance. Reduce N again if setup makes it too long;
-do not shorten its two measured passes. First run a probe on the 14900K as
-well, check its duration and spread, then choose the longer run's scale.
+The probes below use 100,000 keys and a one-second warm-up, keeping the
+dataset well above per-connection memory; the hosted probe checks
+functionality, not performance. Do not shorten its two measured passes.
+First run a probe on the 14900K as well, check its duration and spread, then
+choose the longer run's scale.
 The longer example is a proposed dispatch, not a claimed sufficient sample.
 
 | Input | GitHub functional probe | 14900K probe | 14900K longer run, after probe |
@@ -274,7 +284,7 @@ The longer example is a proposed dispatch, not a claimed sufficient sample.
 | `connections` | `16` | `50` | `50` |
 | `passes` | `2` | `2` | `3` |
 | `seconds` | `5` | `5` | `10` |
-| `workload_options` | `--keys 10000 --warmup-seconds 1` | `--keys 10000 --warmup-seconds 1` | empty (defaults above) |
+| `workload_options` | `--keys 100000 --warmup-seconds 1` | `--keys 100000 --warmup-seconds 1` | empty (defaults above) |
 | `profile` | `false` | `false` | `false` |
 
 The 14900K must be idle and reserved through the coordinator before the

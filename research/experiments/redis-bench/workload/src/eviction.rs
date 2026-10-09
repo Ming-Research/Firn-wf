@@ -3,6 +3,8 @@
 //! separate, explicitly lower-bound observation of excess during measurement.
 use super::*;
 
+pub(super) const OOM_REPLY: &[u8] = b"-OOM command not allowed when used memory > 'maxmemory'.\r\n";
+
 pub(super) struct Zipf {
     cumulative: Vec<f64>,
     permutation: Vec<u64>,
@@ -189,7 +191,7 @@ pub(super) fn run(opts: &Options) -> Result<()> {
     let mut monitor = Monitor::new(control);
     let measured = measure(opts, Some(zipf), Some(&mut monitor))?;
     if measured.writers != opts.connections {
-        return Err("not every connection completed a miss SET; increase the run duration or dataset".into());
+        return Err("not every connection completed a miss SET attempt; increase the run duration or dataset".into());
     }
     if monitor.first.limit != limit || monitor.last.limit != limit {
         return Err("INFO maxmemory differs from the configured limit".into());
@@ -198,10 +200,10 @@ pub(super) fn run(opts: &Options) -> Result<()> {
     let lifetime_excess = monitor.last.peak.saturating_sub(limit);
     // The shell copies the leading seven columns to workloads.csv; the full
     // row goes to evict-zipf.csv under its own explicit header.
-    println!("{},{},{},{},{},{},{:.3},{},{},{},{:.9},{},{},{},{},{},{},{},{},{:.9},{},{},{:.9},{},{:.3},{},{}",
+    println!("{},{},{},{},{},{},{:.3},{},{},{},{},{:.9},{},{},{},{},{},{},{},{},{:.9},{},{},{:.9},{},{:.3},{},{}",
         measured.csv(opts), opts.keys, opts.zipf_s, opts.value.len(), opts.seed,
         opts.warmup.as_secs_f64(), opts.sample_interval.as_secs_f64() * 1000.0,
-        measured.count, measured.hits, measured.count - measured.hits,
+        measured.count, measured.hits, measured.count - measured.hits, measured.refused_sets,
         measured.hits as f64 / measured.count as f64, monitor.evicted_delta()?,
         monitor.last.used, monitor.last.peak, limit, before, filled, monitor.first.peak,
         lifetime_excess, lifetime_excess as f64 / limit as f64,
@@ -307,7 +309,8 @@ mod tests {
     #[test]
     fn cache_aside_counts_one_get_and_checks_miss_set_and_hit() {
         use std::net::TcpListener;
-        for bad in [false, true] {
+        for (set_reply, bad) in [(b"+OK\r\n".as_slice(), false), (OOM_REPLY, false),
+                                 (b"+OK\r\n".as_slice(), true)] {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let mut opts = super::super::tests::options(listener.local_addr().unwrap().port(), "evict-zipf");
             opts.connections = 1;
@@ -321,7 +324,8 @@ mod tests {
                 socket.write_all(b"$-1\r").unwrap();
                 socket.write_all(b"\n").unwrap();
                 super::super::tests::expect_command(&mut socket, &[b"SET", b"key:0", b"x"]);
-                socket.write_all(b"+OK\r\n").unwrap();
+                socket.write_all(&set_reply[..set_reply.len() - 1]).unwrap();
+                socket.write_all(&set_reply[set_reply.len() - 1..]).unwrap();
                 super::super::tests::expect_command(&mut socket, &[b"GET", b"key:0"]);
                 socket.write_all(if bad { b"$1\r\ny\r\n" } else { b"$1\r\nx\r\n" }).unwrap();
             });
@@ -332,7 +336,39 @@ mod tests {
             } else {
                 let measured = result.unwrap();
                 assert_eq!((measured.count, measured.hits), (2, 1));
+                assert_eq!(measured.refused_sets, u64::from(set_reply == OOM_REPLY));
+                assert_eq!(measured.writers, 1);
             }
+        }
+    }
+
+    #[test]
+    fn cache_aside_rejects_other_set_errors_and_get_oom() {
+        use std::net::TcpListener;
+        for (on_set, response, message) in [
+            (true, b"-ERR rejected\r\n".as_slice(), "server error: ERR rejected"),
+            (true, b"-OOM different error\r\n".as_slice(), "server error: OOM different error"),
+            (true, b":1\r\n".as_slice(), "cache SET did not return OK"),
+            (false, OOM_REPLY, "server error: OOM"),
+        ] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let mut opts = super::super::tests::options(listener.local_addr().unwrap().port(), "evict-zipf");
+            opts.connections = 1;
+            opts.threads = 1;
+            opts.requests = Some(1);
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+                super::super::tests::expect_command(&mut socket, &[b"GET", b"key:0"]);
+                if on_set {
+                    socket.write_all(b"$-1\r\n").unwrap();
+                    super::super::tests::expect_command(&mut socket, &[b"SET", b"key:0", b"x"]);
+                }
+                socket.write_all(response).unwrap();
+            });
+            let result = measure(&opts, Some(Arc::new(Zipf::new(1, 0.99, 1).unwrap())), None);
+            server.join().unwrap();
+            assert!(result.err().unwrap().to_string().contains(message));
         }
     }
 }

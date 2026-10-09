@@ -687,7 +687,8 @@ fi
 
 # Consumer workloads, isolated so the session RSS is not a mixed keyspace.
 # Keep the client's exit status outside a pipeline or echo substitution: a
-# RESP error, including one nested in EXEC, must fail the measurement.
+# RESP error, including one nested in EXEC, must fail the measurement, except
+# for the exact OOM refusal counted by the eviction workload's miss SET.
 if [ "$MODE" = workloads ]; then
     PATH="$HOME/.cargo/bin:$PATH"
     export PATH
@@ -715,7 +716,7 @@ if [ "$MODE" = workloads ]; then
     fi
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"
     echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
-    echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections' >"$OUT/evict-zipf.csv"
+    echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,refused_sets,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections' >"$OUT/evict-zipf.csv"
     echo 'line,pass,cpus,workload,connections,keys,value_size,seed,warmup_seconds,sample_ms,maxmemory' >"$OUT/session-limits-settings.csv"
     # Accept only the measurement parameters shared by these opt-in workloads;
     # the harness owns port, workload, duration, seed and maxmemory. Disable glob
@@ -737,7 +738,11 @@ if [ "$MODE" = workloads ]; then
         taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
             --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
             --workload "$memory_workload" --seconds "${WORKLOAD_SECONDS:-10}" \
-            --seed "$pass" "$@"
+            --seed "$pass" "$@" || {
+                memory_status=$?
+                echo "memory workload failed: line=$line pass=$pass cpus=$n workload=$workload variant=$variant connections=$conns (exit $memory_status)" >&2
+                return "$memory_status"
+            }
     }
     # Only this mode changes cleanup; the workflow's registered-session cleanup
     # also handles cancellation on the shared runner.

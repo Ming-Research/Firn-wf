@@ -273,6 +273,7 @@ struct Connection {
     cache_set: bool,
     hit: bool,
     wrote: bool,
+    refused_sets: u64,
 }
 
 impl Connection {
@@ -296,7 +297,8 @@ impl Connection {
         // The default preserves the original uniform workload's sequence.
         Ok(Self { socket, sha, rng: (id as u64) ^ opts.seed.wrapping_sub(1), remaining,
             out: Vec::new(), sent: 0, input: Vec::new(), replies: 0,
-            started: Instant::now(), cache_key: Vec::new(), cache_set: false, hit: false, wrote: false })
+            started: Instant::now(), cache_key: Vec::new(), cache_set: false, hit: false, wrote: false,
+            refused_sets: 0 })
     }
 
     // One whole transaction is buffered as a single logical write. Partial TCP
@@ -319,10 +321,23 @@ impl Connection {
             Err(e) => return Err(e.into()),
         }
         while self.replies > 0 {
-            let Some(size) = reply(&self.input, 0)? else { break; };
+            // Only a cache-aside miss SET may be refused. Fill, GET, control
+            // commands and every other error retain the fatal RESP path.
+            let refused = opts.workload == "evict-zipf" && self.cache_set
+                && self.input.starts_with(eviction::OOM_REPLY);
+            let size = if refused { eviction::OOM_REPLY.len() } else {
+                let Some(size) = reply(&self.input, 0)? else { break; };
+                size
+            };
             if opts.workload == "evict-zipf" {
                 if self.cache_set {
-                    if &self.input[..size] != b"+OK\r\n" { return Err("cache SET did not return OK".into()); }
+                    if refused {
+                        self.refused_sets += 1;
+                    } else if &self.input[..size] != b"+OK\r\n" {
+                        return Err("cache SET did not return OK".into());
+                    }
+                    // Participation counts a completed SET attempt, including
+                    // refusal; the preceding GET remains a miss either way.
                     self.wrote = true;
                 } else {
                     self.hit = eviction::get_hit(&self.input[..size], &opts.value)?;
@@ -364,7 +379,7 @@ fn share(n: u64, total: usize, id: usize) -> u64 {
 // Exact, sparse one-microsecond bins, with no clipped tail or averaged percentiles.
 type Histogram = HashMap<u64, u64>;
 fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
-          cancelled: &AtomicBool, zipf: Option<&eviction::Zipf>) -> Result<(Histogram, Instant, u64, usize)> {
+          cancelled: &AtomicBool, zipf: Option<&eviction::Zipf>) -> Result<(Histogram, Instant, u64, usize, u64)> {
     let mut histogram = Histogram::new();
     let mut hits = 0;
     loop {
@@ -398,7 +413,8 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
         // No sleeping timer imposes a latency floor; idle scans yield to peers.
         thread::yield_now();
     }
-    Ok((histogram, Instant::now(), hits, connections.iter().filter(|c| c.wrote).count()))
+    Ok((histogram, Instant::now(), hits, connections.iter().filter(|c| c.wrote).count(),
+        connections.iter().map(|c| c.refused_sets).sum()))
 }
 
 fn percentile(histogram: &BTreeMap<u64, u64>, count: u64, percent: u64) -> f64 {
@@ -415,6 +431,7 @@ struct Measurement {
     count: u64,
     hits: u64,
     writers: usize,
+    refused_sets: u64,
     seconds: f64,
     p50: f64,
     p99: f64,
@@ -469,12 +486,14 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
     let mut end = begin;
     let mut hits = 0;
     let mut writers = 0;
+    let mut refused_sets = 0;
     for handle in handles {
         match handle.join().unwrap_or_else(|_| Err("worker panicked".into())) {
-            Ok((bins, ended, found, wrote)) => {
+            Ok((bins, ended, found, wrote, refused)) => {
                 end = end.max(ended);
                 hits += found;
                 writers += wrote;
+                refused_sets += refused;
                 for (us, n) in bins { *histogram.entry(us).or_insert(0) += n; }
             }
             Err(e) => { eprintln!("{e}"); failure = Some(e); }
@@ -488,7 +507,7 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
     // Timed runs stop issuing at the deadline and include draining in-flight work
     // in both the count and elapsed time; setup and histogram merging are excluded.
     let seconds = end.duration_since(begin).as_secs_f64();
-    Ok(Measurement { count, hits, writers, seconds,
+    Ok(Measurement { count, hits, writers, refused_sets, seconds,
         p50: percentile(&histogram, count, 50), p99: percentile(&histogram, count, 99) })
 }
 
@@ -590,8 +609,13 @@ mod tests {
     #[test]
     fn fill_crosses_batch_boundary_and_checks_errors() {
         use std::net::TcpListener;
-        for (workload, fail) in [("session-get", false), ("session-get", true),
-                                 ("evict-zipf", false), ("evict-zipf", true)] {
+        for (workload, last_reply, error) in [
+            ("session-get", b"+OK\r\n".as_slice(), None),
+            ("session-get", b"-ERR rejected\r\n".as_slice(), Some("ERR rejected")),
+            ("evict-zipf", b"+OK\r\n".as_slice(), None),
+            ("evict-zipf", b"-ERR rejected\r\n".as_slice(), Some("ERR rejected")),
+            ("evict-zipf", eviction::OOM_REPLY, Some("server error: OOM")),
+        ] {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {
@@ -605,12 +629,12 @@ mod tests {
                         let key = format!("sess:{id}");
                         expect_command(&mut socket, &[b"SET", key.as_bytes(), b"x", b"EX", b"86400"]);
                     }
-                    socket.write_all(if fail && id == 256 { b"-ERR rejected\r\n" } else { b"+OK\r\n" }).unwrap();
+                    socket.write_all(if id == 256 { last_reply } else { b"+OK\r\n" }).unwrap();
                 }
             });
             let result = fill(&opts, 257);
             server.join().unwrap();
-            if fail { assert!(result.unwrap_err().to_string().contains("ERR rejected")); }
+            if let Some(message) = error { assert!(result.unwrap_err().to_string().contains(message)); }
             else { result.unwrap(); }
         }
     }
