@@ -164,6 +164,15 @@ remove the cost: the statement still may write. Which change closes it is the
 owner's ruling on the board card `firn-stamp-lock`; the profile used clock
 sampling only, so cache effects are not separated.
 
+These runs measured GET on an empty keyspace: each build ran in a fresh
+server and the `get` test wrote no keys, so every GET missed. A missing key
+is where the lock costs most: for an absent key `wf_cmap_lock_entry` claims a
+cell, allocates and fills a node and frees it again at unlock, which a
+read-only statement never does. Later same-source controls with keys present
+found the locked stamp's cost on hits at most a few percent and unresolved
+at a 1% noise ceiling; they are recorded with their departures from protocol
+in [Whitefoot's relaxed-field investigation](https://github.com/Ming-Research/Whitefoot/blob/claude/relaxed-fields/research/investigations/relaxed-fields/README.md#controls-and-the-pause-2026-10-09).
+
 ## Recorded outcome: who evicts
 
 The owner chose **A** on board card `firn-evict-admission` at 2026-10-09
@@ -186,6 +195,14 @@ lock-free read path. The owner asked that its design first settle which
 types qualify on which platforms and how it relates to a shared object
 holding one value; that design is a Whitefoot investigation and card, and
 this step waits for it.
+
+The investigation's controls then located the measured loss on missing keys
+(see the note under the stamp-cost results), and on 2026-10-09 the owner
+paused the relaxed-field design (board item `firn-relaxed-field`). The miss
+cost is to be removed in Whitefoot's shared map instead: a statement that
+never inserts claims no cell for a missing key (Whitefoot PR #312, board
+item `coord-wfbl-03-06`), which GET reaches once its helpers' rows name only
+the stamp they write. Until that lands, this step keeps the locked stamp.
 
 
 ## Step 2 implementation record
@@ -341,12 +358,13 @@ RSS on demand rather than Redis's periodic sample, per-read settings with
 own-SET refresh, the map_scan sampling distribution rather than Redis's
 separate expires dictionary, concurrent admission overshoot, and continuation
 on the next command. Eviction quality is unmeasured. The pinned Whitefoot
-meter currently misses shared-map tables and nodes, pending
-[Whitefoot PR #298, shared-map heap accounting](https://github.com/Ming-Research/Whitefoot/pull/298).
-All new memory-growth cases use 64 KiB values. After that fix, raw memory,
-peak, chosen relative limits and the number of victims needed may increase;
-no new test pins those amounts or an exact victim order, and no expected
-assertion is intended to change. Exact eligible-set counts under a one-byte
+release, `wf-5268f516c3f8`, counts shared-map tables, nodes and spare tables
+in `heap_in_use`
+([Whitefoot PR #298, shared-map heap accounting](https://github.com/Ming-Research/Whitefoot/pull/298)).
+All new memory-growth cases use 64 KiB values. With that accounting, raw
+memory, peak, chosen relative limits and the number of victims needed may
+increase; no new test pins those amounts or an exact victim order, and no
+expected assertion is intended to change. Exact eligible-set counts under a one-byte
 limit still count keys, not bytes.
 
 `tests/memory_limit.rs`, registered by `tests/network.rs`, adds cases for

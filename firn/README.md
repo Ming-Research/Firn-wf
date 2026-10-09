@@ -246,9 +246,8 @@ the actual registered-script count. Heap readings use `heap_in_use`; RSS
 uses `resident_bytes` on demand. Peak tracks heap readings after commands,
 at admission and at INFO, rather than every transient allocation. AOF
 exclusion uses capacities even when drained, not lengths. `INFO stats`
-reports live `evicted_keys`. The pinned Whitefoot heap meter does not yet
-count shared-map tables and nodes (Whitefoot PR #298); value storage and
-other accounted heap allocations still drive enforcement.
+reports live `evicted_keys`. The heap meter counts the keyspace's own
+storage, its shared-map tables and nodes, as well as values.
 
 `INFO`, with no section, `default`, `all`, `everything` or named sections,
 answers Redis's sections in Redis's order and form. Its fields carry real
