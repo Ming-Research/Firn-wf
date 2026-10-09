@@ -28,7 +28,7 @@ clients ([design](design/firn.md)).
   Dragonfly and Garnet ([measurements](research/investigations/firn/DESIGN.md)).
 - **Not yet:** scripts' and transactions' commands beyond those
   `firn/README.md` lists, `WATCH`, memory limits and eviction, replication
-  and clustering, among the gaps [docs/todo.md](docs/todo.md) lists. firn
+  and clustering, among the gaps the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip) lists. firn
   is a research server, not a production database.
 
 ## Build and run
@@ -64,7 +64,7 @@ passes.
 - `research/`: the server's design and measurements
   (`research/investigations/firn/`) and the instruments behind them
   (`research/experiments/`).
-- `docs/todo.md`: known gaps and defects.
+- [Shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip): known gaps and defects.
 - [AGENTS.md](AGENTS.md): how work on firn proceeds.
 
 firn's history before it moved here is in the Whitefoot repository, where it

@@ -5,7 +5,7 @@
 The deployment milestone needs memory-bounded operation: a cache that
 evicts under a limit, and a session or rate-limit store that refuses writes
 rather than lose data when full
-([TODO](../../../docs/todo.md#server), "Complete firn's standalone
+(status-board item firn-bl-01-02, "Complete firn's standalone
 deployment workloads"). Redis 7.0.15 does both with `maxmemory`,
 `maxmemory-policy` and its `OOM` refusal. At this investigation's start,
 firn refused `CONFIG SET maxmemory` and reported constant `maxmemory:0`.

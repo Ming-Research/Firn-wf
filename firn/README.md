@@ -221,7 +221,7 @@ Options are read in either case up to a zero byte, and an unknown option,
 `SAVE` with `NOSAVE`, or `ABORT` with another option is a syntax error.
 Scripts cannot call `SHUTDOWN`, and a script that is running holds its
 client until it ends, so one that never ends keeps firn from stopping (the
-busy-script entry of [docs/todo.md](../docs/todo.md#server)).
+[board item `firn-bl-01-07`](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip) on busy scripts).
 
 SIGTERM and SIGINT stop firn as `SHUTDOWN` does, with the same drain, the
 append-only file's last append and sync, and status 0, as Redis 7.0.15 shuts
@@ -280,7 +280,7 @@ whose replies firn follows.
 long double has another format answers it, and `INCRBYFLOAT`, differently:
 in binary128 on aarch64 Linux, and in a double where long double is one.
 
-What is not there yet is listed in [docs/todo.md](../docs/todo.md); the
+What is not there yet is listed on the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip); the
 measurements and the design are in
 [research/investigations/firn](../research/investigations/firn/DESIGN.md).
 
@@ -362,7 +362,9 @@ base: if its appendfilename is literally `temp-F.base`, rewriting `F` can
 truncate that dataset's base. Do not share a directory with that overlap.
 Whitefoot does not yet offer exclusive file creation to refuse the collision;
 Redis's `temp-F.incr` has the same class of collision. The remaining work is
-recorded under [Whitefoot requirements](../docs/todo.md#whitefoot-requirements).
+exclusive creation for temporary append-only files, board item
+`firn-wf-excl-create` on the
+[shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip).
 With appendonly off, `BGREWRITEAOF` answers
 `ERR Can't execute an AOF background rewriting. Please check the server logs for more information.`
 because there is no closed log to rebuild; Redis can rewrite in that state.

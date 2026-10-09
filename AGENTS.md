@@ -38,8 +38,11 @@ When priorities conflict, first:
   design, rulings, criteria and measurements) and `research/experiments/`
   (the instruments and their results). Records from before firn moved here
   cite Whitefoot's paths of their time, such as `apps/firn/`.
-- Maintained TODO: `docs/todo.md`, with Whitefoot's gaps under *Whitefoot
-  requirements*.
+- Maintained TODO: the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip),
+  the only TODO; repositories keep no TODO file. firn's backlog is in
+  `firn-server` and `firn-ops`; Whitefoot gaps are in "firn 需要的 Whitefoot 工作"
+  (`firn-wf`) and Whitefoot's own areas. Code, documents and checks that
+  refer to unfinished work cite its board item key.
 - Review checklist: [docs/review-checklist.md](docs/review-checklist.md).
 - Performance comparisons build firn with `make firn-lto` and run
   `research/experiments/redis-bench/redis-bench.sh` on the 14900K through the
@@ -84,5 +87,6 @@ Whitefoot gap filed.
 
 `README.md` introduces and navigates, `firn/README.md` describes the server's
 commands and invocation, `docs/review-checklist.md` holds the review items,
-`docs/todo.md` open defects and Whitefoot requirements until resolved, and
-`research/` questions, experiments and results.
+the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip)
+tracks open defects and Whitefoot requirements in the areas named above, and
+`research/` holds questions, experiments and results.

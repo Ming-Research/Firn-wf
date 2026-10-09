@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-09 Design nodes cite status-board keys instead of docs/todo.md
+
+Nodes: firn/aof-rewrite, firn/orderly-stop, firn/scripts
+
+Owner-approved: The owner decided on 2026-10-09, relayed by the coordinator session in Chinese and recorded as board item coord-todo-firn, that the shared status board is each project's only TODO, that repositories delete docs/todo.md, and that code, documents and checks citing unfinished work cite the board item's key (translated).
+
+Summary: The three nodes' references to docs/todo.md entries now cite the board items that hold them (firn-bl-01-29, firn-bl-03-00, firn-wf-excl-create, firn-cancel, firn-bl-01-00). No decision, reason or rejected alternative changed.
+
 ## 2026-10-08 EVALSHA reuses the engine's compiled script; SCRIPT FLUSH waits for running scripts
 
 Nodes: firn/scripts

@@ -56,7 +56,8 @@ been established: compilation and its diagnostics have not been obtained.
   the container has arity -2 and no flags. Firn does not yet expose command
   descriptors through COMMAND, so the flags are documented rather than
   added to a nonexistent descriptor table. ENCODING and REFCOUNT remain
-  deliberately unsupported and have one follow-up in `docs/todo.md`.
+  deliberately unsupported and have one follow-up, status-board item
+  firn-bl-01-31.
 - EXEC and scripts use the same command bodies. AOF replay creates stamps
   from the calendar clock passed to replay, while keeping the expiry-check
   time zero as before; access stamps are not serialized into the log.
@@ -309,8 +310,8 @@ Findings and dispositions:
   the README incorrectly described firn as having no scripts. That prose
   is corrected. The preexisting `number_of_cached_scripts:0` remains false
   after EVAL or SCRIPT LOAD registers a script, contrary to reported-facts;
-  `docs/todo.md` records the impact, correction, validation and reopening
-  condition. Correcting that metric and its coverage is outside this
+  the TODO of that time recorded the impact, correction, validation and
+  reopening condition. Correcting that metric and its coverage is outside this
   continuation.
 - **U1, random-state evidence, unverified.** The new rollback cases use
   log factor zero, so their expected counts detect stamp rollback and
