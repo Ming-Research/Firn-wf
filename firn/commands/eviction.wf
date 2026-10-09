@@ -124,10 +124,12 @@ fn eviction_pool_add(pool: &Box<Slots<EvictionCandidate>>, candidate: EvictionCa
       set worst = index;
     }
   }
-  if candidate.score > least {
-    if worst < pool^.inner.len {
-      set pool^.inner[worst] = move candidate;
-    }
+  let better = candidate.score > least;
+  let placed = worst < pool^.inner.len;
+  if band(better, placed) {
+    set pool^.inner[worst] = move candidate;
+  } else {
+    let unused = move candidate;
   }
   return unit;
 }
@@ -236,6 +238,8 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
                 }
                 if candidates.inner.len < candidates.inner.cap {
                   place_back(window: &candidates.inner, value: move candidate);
+                } else {
+                  let unplaced = move candidate;
                 }
               }
             }
