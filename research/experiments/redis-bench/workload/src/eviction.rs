@@ -62,16 +62,33 @@ impl Control {
     fn new(port: u16) -> Result<Self> { Ok(Self { socket: connect(port)? }) }
 
     fn call(&mut self, args: &[&[u8]]) -> Result<Vec<u8>> {
+        self.call_before(args, None)
+    }
+
+    fn call_before(&mut self, args: &[&[u8]], deadline: Option<Instant>) -> Result<Vec<u8>> {
+        let remaining = || -> Result<Duration> {
+            match deadline {
+                Some(end) => end.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())
+                    .ok_or_else(|| "timed out after 120 s waiting for AOF rewrite to finish (in progress or scheduled)".into()),
+                None => Ok(TIMEOUT),
+            }
+        };
         let mut out = Vec::new();
         command(&mut out, args);
-        self.socket.write_all(&out)?;
+        self.socket.set_write_timeout(Some(remaining()?))?;
+        let result = self.socket.write_all(&out);
+        remaining()?;
+        result?;
         let mut input = Vec::new();
         loop {
+            self.socket.set_read_timeout(Some(remaining()?))?;
             if let Some(size) = reply(&input, 0)? {
                 if size != input.len() { return Err("extra control reply".into()); }
                 return Ok(input);
             }
-            read_more(&mut self.socket, &mut input)?;
+            let result = read_more(&mut self.socket, &mut input);
+            remaining()?;
+            result?;
         }
     }
 
@@ -86,10 +103,60 @@ impl Control {
 
     fn info(&mut self) -> Result<Memory> {
         let wire = self.call(&[b"INFO"])?;
-        if wire.first() != Some(&b'$') || wire == b"$-1\r\n" { return Err("INFO is not a bulk string".into()); }
-        let start = wire.windows(2).position(|w| w == b"\r\n").ok_or("missing INFO header")? + 2;
-        Memory::parse(std::str::from_utf8(&wire[start..wire.len() - 2])?)
+        Memory::parse(info_body(&wire)?)
     }
+
+    fn dbsize(&mut self) -> Result<u64> {
+        parse_dbsize(&self.call(&[b"DBSIZE"])?)
+    }
+
+    /// Firn replays AOF files into private keyspaces in the process heap during
+    /// rewrite; Redis rewrites in a fork child. A fill reaching the automatic
+    /// rewrite minimum (64 MiB) can therefore inflate firn's half-dataset limit:
+    /// the 14900K probe (Firn-wf run 37996029478) read 390 MB with AOF versus
+    /// 226 MB without. Wait for rewrite quiescence, then discard the first of
+    /// two memory readings 200 ms apart before selecting filled_used_memory.
+    fn filled_memory(&mut self) -> Result<u64> {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let wire = self.call_before(&[b"INFO", b"persistence"], Some(deadline))?;
+            if rewrite_idle(info_body(&wire)?)? { break; }
+            thread::sleep(Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now())));
+        }
+        self.info()?;
+        thread::sleep(Duration::from_millis(200));
+        Ok(self.info()?.used)
+    }
+}
+
+// Control::call has already validated RESP framing before these parsers run.
+fn info_body(wire: &[u8]) -> Result<&str> {
+    if wire.first() != Some(&b'$') || wire == b"$-1\r\n" { return Err("INFO is not a bulk string".into()); }
+    let start = wire.windows(2).position(|w| w == b"\r\n").ok_or("missing INFO header")? + 2;
+    Ok(std::str::from_utf8(&wire[start..wire.len() - 2])?)
+}
+
+fn rewrite_idle(info: &str) -> Result<bool> {
+    let fields: HashMap<&str, &str> = info.lines().filter_map(|line| line.split_once(':')).collect();
+    let flag = |name, optional| -> Result<bool> {
+        match fields.get(name).copied() {
+            Some("0") => Ok(false),
+            Some("1") => Ok(true),
+            None if optional => Ok(false),
+            None => Err(format!("INFO persistence missing {name}").into()),
+            Some(value) => Err(format!("INFO persistence invalid {name}: {value}").into()),
+        }
+    };
+    let in_progress = flag("aof_rewrite_in_progress", false)?;
+    let scheduled = flag("aof_rewrite_scheduled", true)?;
+    Ok(!in_progress && !scheduled)
+}
+
+fn parse_dbsize(wire: &[u8]) -> Result<u64> {
+    let value = wire.strip_prefix(b":").and_then(|s| s.strip_suffix(b"\r\n"))
+        .ok_or("DBSIZE is not an integer reply")?;
+    let count = std::str::from_utf8(value)?.parse::<i64>()?;
+    Ok(u64::try_from(count).map_err(|_| "DBSIZE returned a negative key count")?)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -121,17 +188,20 @@ pub(super) struct Monitor {
     samples: u64,
     last_sample: Instant,
     max_gap: Duration,
+    keys_at_start: u64,
 }
 
 impl Monitor {
     fn new(control: Control) -> Self {
         Self { control, first: Memory::default(), last: Memory::default(),
-            sampled_max: 0, samples: 0, last_sample: Instant::now(), max_gap: Duration::ZERO }
+            sampled_max: 0, samples: 0, last_sample: Instant::now(), max_gap: Duration::ZERO,
+            keys_at_start: 0 }
     }
 
     pub(super) fn start(&mut self) -> Result<()> {
         self.control.ok(&[b"CONFIG", b"RESETSTAT"])?;
         self.first = self.control.info()?;
+        self.keys_at_start = self.control.dbsize()?;
         self.last = self.first;
         self.sampled_max = self.first.used;
         self.samples = 1;
@@ -184,12 +254,13 @@ pub(super) fn run(opts: &Options) -> Result<()> {
     control.config(b"maxmemory-eviction-tenacity", b"10")?;
     let before = control.info()?.used;
     fill(opts, opts.keys)?;
-    let filled = control.info()?.used;
+    let filled = control.filled_memory()?;
     let limit = half_dataset_limit(before, filled)?;
     control.config(b"maxmemory", limit.to_string().as_bytes())?;
     warmup(opts, Some(zipf.clone()))?;
     let mut monitor = Monitor::new(control);
     let measured = measure(opts, Some(zipf), Some(&mut monitor))?;
+    let keys_at_end = monitor.control.dbsize()?;
     if measured.writers != opts.connections {
         return Err("not every connection completed a miss SET attempt; increase the run duration or dataset".into());
     }
@@ -200,7 +271,7 @@ pub(super) fn run(opts: &Options) -> Result<()> {
     let lifetime_excess = monitor.last.peak.saturating_sub(limit);
     // The shell copies the leading seven columns to workloads.csv; the full
     // row goes to evict-zipf.csv under its own explicit header.
-    println!("{},{},{},{},{},{},{:.3},{},{},{},{},{:.9},{},{},{},{},{},{},{},{},{:.9},{},{},{:.9},{},{:.3},{},{}",
+    println!("{},{},{},{},{},{},{:.3},{},{},{},{},{:.9},{},{},{},{},{},{},{},{},{:.9},{},{},{:.9},{},{:.3},{},{},{},{}",
         measured.csv(opts), opts.keys, opts.zipf_s, opts.value.len(), opts.seed,
         opts.warmup.as_secs_f64(), opts.sample_interval.as_secs_f64() * 1000.0,
         measured.count, measured.hits, measured.count - measured.hits, measured.refused_sets,
@@ -208,7 +279,8 @@ pub(super) fn run(opts: &Options) -> Result<()> {
         monitor.last.used, monitor.last.peak, limit, before, filled, monitor.first.peak,
         lifetime_excess, lifetime_excess as f64 / limit as f64,
         monitor.sampled_max, sampled_excess, sampled_excess as f64 / limit as f64,
-        monitor.samples, monitor.max_gap.as_secs_f64() * 1000.0, monitor.last.excluded, measured.writers);
+        monitor.samples, monitor.max_gap.as_secs_f64() * 1000.0, monitor.last.excluded, measured.writers,
+        monitor.keys_at_start, keys_at_end);
     Ok(())
 }
 
@@ -277,6 +349,43 @@ mod tests {
     }
 
     #[test]
+    fn persistence_requires_idle_rewrite_and_optional_schedule() {
+        for (fields, idle) in [
+            ("aof_rewrite_in_progress:0\r\n", true),
+            ("aof_rewrite_in_progress:1\r\n", false),
+            ("aof_rewrite_in_progress:0\r\naof_rewrite_scheduled:0\r\n", true),
+            ("aof_rewrite_in_progress:1\r\naof_rewrite_scheduled:0\r\n", false),
+            ("aof_rewrite_in_progress:0\r\naof_rewrite_scheduled:1\r\n", false),
+            ("aof_rewrite_scheduled:1\r\naof_rewrite_in_progress:1\r\n", false),
+        ] {
+            let info = format!("# Persistence\r\naof_enabled:1\r\n{fields}aof_last_bgrewrite_status:ok\r\n");
+            assert_eq!(rewrite_idle(&info).unwrap(), idle, "{fields}");
+        }
+        for info in [
+            "", "aof_rewrite_scheduled:0\r\n", "aof_rewrite_in_progress:2\r\n",
+            "aof_rewrite_in_progress:-1\r\n", "aof_rewrite_in_progress:\r\n",
+            "aof_rewrite_in_progress:garbage\r\n",
+            "aof_rewrite_in_progress:0\r\naof_rewrite_scheduled:2\r\n",
+            "aof_rewrite_in_progress:0\r\naof_rewrite_scheduled:\r\n",
+            "aof_rewrite_in_progress:1\r\naof_rewrite_scheduled:garbage\r\n",
+        ] {
+            assert!(rewrite_idle(info).is_err(), "{info}");
+        }
+    }
+
+    #[test]
+    fn dbsize_requires_a_nonnegative_integer_reply() {
+        for (wire, count) in [(b":0\r\n".as_slice(), 0), (b":42\r\n", 42),
+                              (b":9223372036854775807\r\n", i64::MAX as u64)] {
+            assert_eq!(parse_dbsize(wire).unwrap(), count);
+        }
+        for wire in [b":-1\r\n".as_slice(), b"+OK\r\n", b"$1\r\n0\r\n",
+                     b":\r\n", b":abc\r\n", b":1", b":9223372036854775808\r\n"] {
+            assert!(parse_dbsize(wire).is_err(), "{wire:?}");
+        }
+    }
+
+    #[test]
     fn reset_keeps_lifetime_peak_separate_from_sampled_memory() {
         use std::net::TcpListener;
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -290,6 +399,10 @@ mod tests {
                 super::super::tests::expect_command(&mut socket, &[b"INFO"]);
                 let info = format!("used_memory:{used}\r\nused_memory_peak:400\r\nevicted_keys:{evicted}\r\nmaxmemory:150\r\nmem_not_counted_for_evict:0\r\n");
                 write!(socket, "${}\r\n{info}\r\n", info.len()).unwrap();
+                if evicted == 2 {
+                    super::super::tests::expect_command(&mut socket, &[b"DBSIZE"]);
+                    socket.write_all(b":17\r\n").unwrap();
+                }
             }
         });
         let mut monitor = Monitor::new(Control::new(port).unwrap());
@@ -302,6 +415,7 @@ mod tests {
         assert_eq!(monitor.last.peak.saturating_sub(monitor.last.limit), 250);
         assert_eq!(monitor.sampled_max.saturating_sub(monitor.last.limit), 30);
         assert_eq!(monitor.samples, 3);
+        assert_eq!(monitor.keys_at_start, 17);
         monitor.last.evicted = 1;
         assert!(monitor.evicted_delta().is_err());
     }

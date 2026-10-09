@@ -154,7 +154,23 @@ error is fatal. OOM during the unlimited fill is also fatal.
 
 For each server, the client sets `maxmemory 0`, `allkeys-lru`, samples **5**
 and tenacity **10** (Redis 7.0.15's defaults), reads INFO's baseline
-`used_memory` B, fills each key once, and reads filled memory F. The limit
+`used_memory` B, and fills each key once. Before reading filled memory F,
+it polls `INFO persistence` every **100 ms** until
+`aof_rewrite_in_progress:0` and, where present, `aof_rewrite_scheduled:0`.
+Both Redis 7.0.15 and firn report `aof_rewrite_in_progress`; its absence is
+an error. The wait fails with a clear timeout after **120 seconds**. Once
+idle, the client reads memory twice **200 ms** apart and uses the second
+reading as F (`filled_used_memory`).
+
+Firn rewrites the append-only file in-process by replaying it into private
+keyspaces whose memory is in the process heap, while Redis rewrites in a
+fork child. A fill large enough to trigger automatic rewrite (the minimum
+is **64 MiB**) can otherwise include rewrite memory in F and inflate the
+half-dataset limit. The 14900K probe in
+[Firn-wf run 37996029478, AOF fill memory](https://github.com/Ming-Research/Firn-wf/actions/runs/37996029478)
+read **390 MB** for firn with AOF against **226 MB** without AOF.
+
+The limit
 is **B + floor((F - B) / 2)**; non-growth is an error. Thus each server gets
 half its own measured dataset allocation above its baseline, not a shared
 byte limit or a guarantee of retaining exactly N/2 keys. B and F are kept
@@ -172,7 +188,9 @@ stop issuing at the deadline and include draining in-flight operations in
 both count and time. Setup, warm-up and histogram merging are excluded.
 `evict-zipf.csv` also keeps N, s, value size, seed, warm-up, sample interval,
 GET count, hits, misses, `refused_sets`, **hit rate = hits / GET count** (a fraction),
-`evicted_keys` delta, final `used_memory`, limit and the following distinct
+`evicted_keys` delta, final `used_memory`, limit, and live `DBSIZE` counts
+`keys_at_start` (after warm-up, before releasing measured workers) and
+`keys_at_end` (after all measured workers finish). It keeps the following distinct
 peak observations:
 
 - With measured connections already open, the client sends
