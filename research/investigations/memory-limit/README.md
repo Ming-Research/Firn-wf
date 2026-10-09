@@ -122,3 +122,41 @@ request read, and restore first-refresh stamps and LFU random state before
 abandoning an unwritten script attempt. The owner selected all eight policies and
 the all-policy access stamp in the board rulings `firn-maxmemory-policies` A
 and `firn-access-stamp` A. Eviction and OOM refusal are the following step.
+
+## Results: cost of the access stamp
+
+Measured on the i9-14900K through the `redis-bench.yml` workflow, mode
+compare, LTO builds, two interleaved passes of five seconds:
+`base` is main's firn (`exp/memlimit-base`, 6585531) built with the same
+experiment compiler (`wf-exp-81609eda3c84`) and Halo-wf (d116d6a) as `head`,
+this branch at 66ff776; each has a `-twin` measuring its image again. Median
+throughput relative to `base`, with the twins' ratio as the noise control
+([Firn-wf run 37888136395](https://github.com/Ming-Research/Firn-wf/actions/runs/37888136395)):
+
+| CPUs | test | depth | base-twin | head | head-twin |
+|---|---|---|---|---|---|
+| 1 | get | 16 | 1.031 | 0.860 | 0.905 |
+| 1 | get | 1 | 0.993 | 1.006 | 0.982 |
+| 1 | set | 16 | 1.011 | 1.009 | 1.024 |
+| 1 | set | 1 | 1.005 | 1.005 | 1.007 |
+| 2 | get | 16 | 0.973 | 0.898 | 0.909 |
+| 2 | get | 1 | 1.022 | 0.995 | 0.976 |
+| 2 | set | 16 | 1.008 | 0.998 | 0.961 |
+| 2 | set | 1 | 1.012 | 0.996 | 1.016 |
+
+By the criterion stated before measuring, the stamp in this form is
+rejected: `get` at depth 16 loses 9 to 14%, beyond its twins' spread, on one
+and two CPUs. A profiled rerun of `get` at depth 16 on one CPU
+([Firn-wf run 37889202069](https://github.com/Ming-Research/Firn-wf/actions/runs/37889202069);
+head 0.912 and head-twin 0.912 of base, base-twin 1.004) attributes the loss
+to the entry lock: head adds `acquire_entry` (6.5% of samples) and
+`wf__table_unlock_entry` (1.8%), and `wf__table_lock_entry` rises from 1.6%
+to 3.5%, while `run_get`, where the stamp is computed, stays at 0.7%. Before
+the stamp, GET's statement only read its entry, and Whitefoot's shared map
+serves a statement that only reads its entry on its lock-free read path
+(`wf_cmap_read_entry`); a statement that may write the entry takes the entry
+lock (`wf_cmap_lock_entry`) whether or not it writes. The stated fallback, a
+stamp written only when the clock it holds has advanced, therefore does not
+remove the cost: the statement still may write. Which change closes it is the
+owner's ruling on the board card `firn-stamp-lock`; the profile used clock
+sampling only, so cache effects are not separated.
