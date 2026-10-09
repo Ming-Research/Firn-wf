@@ -41,3 +41,4 @@ probe eval-call-get EVAL "return redis.call('GET', KEYS[1])" 1 key:__rand_int__
 probe eval-call-incrby EVAL "return redis.call('INCRBY', KEYS[1], 1)" 1 key:__rand_int__
 probe eval-call-set-ex-nx EVAL "return redis.call('SET', KEYS[1], 0, 'EX', 100, 'NX')" 1 key:__rand_int__
 probe eval-call-pttl EVAL "return redis.call('PTTL', KEYS[1])" 1 key:__rand_int__
+probe eval-limiter-script EVAL "redis.call('set', KEYS[1], 0, 'EX', ARGV[2], 'NX') local consumed = redis.call('incrby', KEYS[1], ARGV[1]) local ttl = redis.call('pttl', KEYS[1]) if ttl == -1 then   redis.call('expire', KEYS[1], ARGV[2])   ttl = 1000 * ARGV[2] end return {consumed, ttl} " 1 key:__rand_int__ 1 60 1 60
