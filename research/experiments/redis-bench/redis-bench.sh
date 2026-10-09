@@ -549,7 +549,7 @@ compare_client() {
     begin=$(date +%s%N)
     if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
         taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" --threads "$CLIENT_THREADS" \
-            -c 50 -n "$3" -r 100000 -d 3 -P "$2" -t "$1" --csv >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
+            -c 50 -n "$3" -r "${COMPARE_KEYSPACE:-100000}" -d 3 -P "$2" -t "$1" --csv >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
     else
         # One process per client CPU, three connections each: one process's
         # threads stop near 6.6M requests a second on the 14900K, below what
@@ -558,7 +558,7 @@ compare_client() {
         index=0
         for cpu in $(echo "$CLIENT_CPUS" | tr ',' ' '); do
             taskset -c "$cpu" redis-benchmark -p "$PORT" -c 3 -n $(($3 / CLIENT_THREADS)) \
-                -r 100000 -d 3 -P "$2" -t "$1" --csv >"$OUT/compare-client-$index.csv" 2>"$OUT/compare-client.err" &
+                -r "${COMPARE_KEYSPACE:-100000}" -d 3 -P "$2" -t "$1" --csv >"$OUT/compare-client-$index.csv" 2>"$OUT/compare-client.err" &
             pids="$pids $!"
             index=$((index + 1))
         done

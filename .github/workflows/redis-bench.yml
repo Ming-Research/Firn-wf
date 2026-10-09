@@ -74,6 +74,10 @@ on:
         description: "Record a perf profile of each image (compare), or rerun each firn line's first pass once more under perf (workloads: one extra unmeasured run per firn line, CPU count, workload and connection count)"
         type: boolean
         default: true
+      keyspace:
+        description: "Experiment only (exp/bench-keyspace): redis-benchmark -r for compare"
+        type: string
+        default: "100000"
       profile_test:
         description: The test and depth each image is profiled under
         type: string
@@ -287,6 +291,7 @@ jobs:
           COMPARE_TESTS: ${{ inputs.tests || 'mset set get' }}
           COMPARE_DEPTHS: ${{ inputs.depths }}
           COMPARE_PASSES: ${{ inputs.passes }}
+          COMPARE_KEYSPACE: ${{ inputs.keyspace }}
           COMPARE_SECONDS: ${{ inputs.seconds }}
           PROFILE: ${{ inputs.profile }}
           COMPARE_PROFILE: ${{ inputs.profile_test }}
