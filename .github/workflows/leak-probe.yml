@@ -4,7 +4,9 @@
 name: leak-probe
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [exp/halo-gc-stats]
+    paths: [research/experiments/leak-probe/**, .github/workflows/leak-probe.yml]
 
 jobs:
   probe:
