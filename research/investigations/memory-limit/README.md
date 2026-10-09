@@ -452,3 +452,37 @@ compiler acceptance, runtime correspondence, gate/readiness, new ratchet
 passes and formal design-lint diagnostics remain unverified. No build,
 test, checker or measurement ran, and no pin or submodule moved or new
 Whitefoot gap was filed.
+
+### CI validation, 2026-10-09
+
+[Firn-wf run 37906813127](https://github.com/Ming-Research/Firn-wf/actions/runs/37906813127)
+passed the gate at 319c26d: the pinned compiler accepted firn, all 132
+network cases passed, including every memory-limit case, the ratchet passed
+595 of 595 required tests, and the design lint passed. Reaching it took
+these repairs to the step-2 source, each directed by a checker diagnostic or
+a failing case: renaming bindings spelled `entry`, a grammar keyword
+(FORM-3); `=[` for array constants and no final blank line (FORM-2); the
+literal `5.0e2_f64` for 500 (FORM-7); consuming a rejected eviction
+candidate on every path (LIV-1); matching a sampled entry through a slot
+reference (OWN-1); a one-byte value for the unauthenticated SET, since
+Redis 7.0.15 refuses an unauthenticated bulk over 16384 bytes first; and
+queueing unidentified names inside MULTI, described under admission above.
+The float literal exposed a Whitefoot disagreement: FORM-5's text makes
+`0.5e3_f64` the canonical spelling of 500, while the pinned compiler
+accepts only `5.0e2_f64`.
+
+Nine Redis suite tests that pass in both run 37904672454 and run 37906813127
+are added to `passing.tsv`: FLUSHDB ASYNC can reclaim memory in background,
+DISCARD should not fail during OOM, EXEC fails if there are errors while
+queueing commands #2, EXEC with at least one use-memory command should
+fail, Flushall while watching several keys by one client, MULTI with
+SHUTDOWN, RESET clears and discards MULTI state, SCRIPTING FLUSH ASYNC and
+Script - disallow write on OOM. Twelve unit/introspection-2 "will not be
+marked with movablekeys" tests passed only in run 37904672454, falsely: that
+run's connection was stuck inside MULTI, so `COMMAND INFO` answered QUEUED,
+which contains no movablekeys flag. firn does not answer COMMAND INFO, and
+they are not added.
+
+These runs establish compiler acceptance and the sequential network and
+suite behavior only. The concurrency, fault and crash evidence and the owed
+14900K measurements listed above remain open.
