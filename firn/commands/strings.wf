@@ -1394,7 +1394,10 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let stored = False();
   atomic slots = &store^.keys[keys], m = &store^.meta {
     let blocked = False();
-    for @checked (rank in 0_u64..keys.len) {
+    for @checked (
+      rank in 0_u64..keys.len,
+      invariant aligned: slots^.len == keys.len
+    ) {
       if rank < slots^.len {
         refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
         let kind = entry_kind(slot: &slots^[rank], client: client);

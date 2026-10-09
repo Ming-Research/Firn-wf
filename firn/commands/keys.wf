@@ -417,7 +417,10 @@ fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let live = 0_u64;
   let logged = store^.logging;
   atomic slots = &store^.keys[keys], m = &store^.meta {
-    for @named (index in 1_u64..count) {
+    for @named (
+      index in 1_u64..count,
+      invariant aligned: slots^.len == keys.len
+    ) {
       if index < client^.key_metadata.inner.len {
         let rank = client^.key_metadata.inner[index];
         if rank < slots^.len {

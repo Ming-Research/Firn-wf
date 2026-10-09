@@ -947,7 +947,10 @@ fn survey(journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, k
       }
     }
   }
-  for @lookups (position in first..client^.key_lookups.inner.len) {
+  for @lookups (
+    position in first..client^.key_lookups.inner.len,
+    invariant aligned: slots^.len == keys^.len
+  ) {
     if position < client^.key_lookups.inner.len {
       let rank = client^.key_lookups.inner[position];
       if rank < slots^.len {
