@@ -1,6 +1,5 @@
 //! Redis 7.0.15 evict.c, server.c processCommand, multi.c and script.c are
 //! the oracle, including RESETSTAT's retained peak and both EXECABORT paths.
-//! Values are heap allocated even before Whitefoot counts shared-map nodes.
 
 use super::*;
 
@@ -98,6 +97,41 @@ fn allkeys_lru_bounds_heap_and_counts_evictions() {
     assert!(counted <= limit + (2 * VALUE_BYTES) as u64, "limit={limit}: {measured}");
     assert!(number(&info(&mut client, "stats"), "evicted_keys") > 0);
     assert!(memory_request(&mut client, &["DBSIZE"]).trim().trim_start_matches(':').parse::<u64>().unwrap() < 48);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Redis counts the keyspace's own dictionary and key storage in used_memory,
+/// so keys with empty values alone reach the limit. Only the shared map's
+/// tables and nodes grow here: without them in heap_in_use, no write is refused.
+#[test]
+fn keyspace_growth_with_empty_values_reaches_the_limit() {
+    let (child, mut client, _) = start(b"1");
+    let baseline = number(&info(&mut client, "memory"), "used_memory");
+    let limit = baseline + (1 << 20);
+    configure(&mut client, &["maxmemory", &limit.to_string(), "maxmemory-policy", "noeviction"]);
+    let (mut accepted, mut refused) = (0_u64, false);
+    for batch in 0..100 {
+        let mut requests = Vec::new();
+        for index in 0..1000 {
+            requests.extend(resp(&["SET", &format!("key:{batch}:{index}"), ""]));
+        }
+        client.write_all(&requests).unwrap();
+        for _ in 0..1000 {
+            match reply_line(&mut client, "empty-value SET").as_str() {
+                "+OK\r\n" => accepted += 1,
+                OOM => refused = true,
+                other => panic!("unexpected reply {other:?}"),
+            }
+        }
+        if refused {
+            break;
+        }
+    }
+    assert!(refused, "100000 empty-value keys never reached a limit 1 MiB above {baseline}");
+    let used = number(&info(&mut client, "memory"), "used_memory");
+    assert!(used > limit, "refused at used_memory {used} under limit {limit}");
+    assert_eq!(memory_request(&mut client, &["DBSIZE"]), format!(":{accepted}\r\n"));
     drop(client);
     assert_eq!(finished(child).0, 0);
 }
