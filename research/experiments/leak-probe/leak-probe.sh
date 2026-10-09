@@ -6,7 +6,7 @@ set -eu
 FIRN=$1
 OUT=$2
 PORT=7411
-N=${LEAK_N:-200000}
+N=${LEAK_N:-500000}
 echo "variant,warm_heap,heap_after_n,heap_after_2n,bytes_per_command" >"$OUT"
 heap() { redis-cli -p "$PORT" INFO scriptprobe | tr -d '\r' | sed -n 's/^heap_in_use://p'; }
 probe() {

@@ -89,7 +89,6 @@ fn new_pooled(generation: u64, gc_pause: u64, gc_floor: u64) -> pooled: PooledEn
   doc "A flush generation starts a fresh Lua environment as Redis scriptingReset does, dropping compiled constants and library configuration as well as the cache index.";
   let engine = halo::embed::new_engine(limit: 18446744073709551615_u64);
   halo::embed::set_gc_pause(engine: &engine, percent: gc_pause);
-  halo::embed::set_gc_floor(engine: &engine, bytes: gc_floor);
   halo::embed::set_pcall_error_field(engine: &engine, field: &s_30[0_u64..3_u64]);
   install_host(engine: &engine);
   let cache = box_slots_new::<Cached>(capacity: 0_u64);
