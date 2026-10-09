@@ -380,4 +380,3 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
     }
   }
 }
-

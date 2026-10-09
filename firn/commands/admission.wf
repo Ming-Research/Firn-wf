@@ -8,7 +8,7 @@ const oom_error: Array<u8, 55> = "OOM command not allowed when used memory > 'ma
 
 const oom_execabort: Array<u8, 99> = "EXECABORT Transaction discarded because of: OOM command not allowed when used memory > 'maxmemory'.";
 
-const command_denyoom_kinds: Array<u64, 34> = [2_u64, 3_u64, 4_u64, 5_u64, 6_u64, 15_u64, 24_u64, 25_u64, 26_u64, 27_u64, 30_u64, 31_u64, 35_u64, 36_u64, 39_u64, 40_u64, 41_u64, 42_u64, 52_u64, 53_u64, 60_u64, 61_u64, 62_u64, 63_u64, 69_u64, 72_u64, 74_u64, 75_u64, 90_u64, 103_u64, 104_u64, 105_u64, 120_u64, 121_u64];
+const command_denyoom_kinds: Array<u64, 34> =[2_u64, 3_u64, 4_u64, 5_u64, 6_u64, 15_u64, 24_u64, 25_u64, 26_u64, 27_u64, 30_u64, 31_u64, 35_u64, 36_u64, 39_u64, 40_u64, 41_u64, 42_u64, 52_u64, 53_u64, 60_u64, 61_u64, 62_u64, 63_u64, 69_u64, 72_u64, 74_u64, 75_u64, 90_u64, 103_u64, 104_u64, 105_u64, 120_u64, 121_u64];
 
 fn command_denyoom(kind: u64) -> marked: Bool pure {
   doc "Redis 7.0.15 src/commands/*.json DENYOOM flags for firn's held commands. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF.";
@@ -20,7 +20,7 @@ fn command_denyoom(kind: u64) -> marked: Bool pure {
   return False();
 }
 
-const command_writes_kinds: Array<u64, 61> = [2_u64, 3_u64, 4_u64, 5_u64, 6_u64, 7_u64, 8_u64, 9_u64, 10_u64, 15_u64, 16_u64, 17_u64, 20_u64, 24_u64, 25_u64, 26_u64, 27_u64, 28_u64, 29_u64, 30_u64, 31_u64, 35_u64, 36_u64, 37_u64, 38_u64, 39_u64, 40_u64, 41_u64, 42_u64, 45_u64, 52_u64, 53_u64, 60_u64, 61_u64, 62_u64, 63_u64, 64_u64, 65_u64, 69_u64, 70_u64, 71_u64, 72_u64, 74_u64, 75_u64, 90_u64, 91_u64, 92_u64, 98_u64, 103_u64, 104_u64, 105_u64, 120_u64, 121_u64, 122_u64, 123_u64, 124_u64, 138_u64, 139_u64, 140_u64, 164_u64, 165_u64];
+const command_writes_kinds: Array<u64, 61> =[2_u64, 3_u64, 4_u64, 5_u64, 6_u64, 7_u64, 8_u64, 9_u64, 10_u64, 15_u64, 16_u64, 17_u64, 20_u64, 24_u64, 25_u64, 26_u64, 27_u64, 28_u64, 29_u64, 30_u64, 31_u64, 35_u64, 36_u64, 37_u64, 38_u64, 39_u64, 40_u64, 41_u64, 42_u64, 45_u64, 52_u64, 53_u64, 60_u64, 61_u64, 62_u64, 63_u64, 64_u64, 65_u64, 69_u64, 70_u64, 71_u64, 72_u64, 74_u64, 75_u64, 90_u64, 91_u64, 92_u64, 98_u64, 103_u64, 104_u64, 105_u64, 120_u64, 121_u64, 122_u64, 123_u64, 124_u64, 138_u64, 139_u64, 140_u64, 164_u64, 165_u64];
 
 fn command_writes(kind: u64) -> marked: Bool pure {
   doc "Redis 7.0.15 src/commands/*.json WRITE flags for firn's held commands. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF.";
