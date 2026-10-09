@@ -8,6 +8,8 @@ Decision: access tracking uses memory settings read once per connection read bes
 
 Decision: an unwritten script attempt abandoned for its interpreter step budget restores every refreshed key's stamp to its value before that attempt's first refresh and restores firn's LFU random state before releasing the same atomic keyspace statement, using a first-refresh journal owned and dropped by the attempt environment, because Redis runs a script once and an abandoned attempt's LFU increments are ones Redis never makes, instead of accepting counter drift or holding the keyspace across attempts; completed attempts and attempts that wrote retain their stamps, and SCRIPT KILL remains reachable between attempts ([owner's retry ruling](../../research/investigations/memory-limit/step-1.md#recorded-outcome-script-retry-access)).
 
+Decision: when maxmemory is set, each command's own context checks the limit before the command runs and evicts there, re-reading the heap before each victim, because firn runs independent commands in parallel and an ordering of every command's check and execution would serialize them whenever a limit is set, while the difference from Redis's single-threaded order is only a brief overshoot by the allocations of commands in flight and at most one extra eviction per concurrently evicting context, which Redis's own bounded eviction already permits in kind, instead of one dedicated evictor context or a command turn serializing admission through execution.
+
 Rejected:
 - Only noeviction, allkeys-lru and volatile-lru: rejected because the owner selected the complete eight-policy interface and the sampling, refusal and reporting machinery is shared.
 - Refreshing the stamp only under LRU or LFU policies: rejected because OBJECT IDLETIME would report the wrong idle time under noeviction and the other non-LFU policies.
@@ -15,3 +17,5 @@ Rejected:
 - Requiring concurrent configuration publication before completing access tracking: rejected because the per-read snapshot meets the accepted policy-switch behavior without a new publication mechanism whose representation has not been selected.
 - Accepting abandoned attempts' LFU drift: rejected because OBJECT FREQ can then report increments Redis's single script execution never performs.
 - Continuing indefinitely after the first access refresh while holding the keyspace: rejected because a read-only infinite script could then permanently hold the keyspace and evade SCRIPT KILL, contradicting the approved retry design.
+- One dedicated evictor context: rejected because its completion can go stale before the command runs, so it gives no closer order than each context evicting, and adds wake-ups and waiting.
+- Serializing every command's check and execution while a limit is set: rejected because cache deployments set a limit and would lose parallel execution, against firn's goal of scaling the keyspace past two cores.

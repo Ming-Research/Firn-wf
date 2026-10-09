@@ -160,3 +160,26 @@ stamp written only when the clock it holds has advanced, therefore does not
 remove the cost: the statement still may write. Which change closes it is the
 owner's ruling on the board card `firn-stamp-lock`; the profile used clock
 sampling only, so cache effects are not separated.
+
+## Recorded outcome: who evicts
+
+The owner chose **A** on board card `firn-evict-admission` at 2026-10-09
+06:01 UTC: each command's own context checks the limit before running and
+evicts there. Option B, one dedicated evictor, and option C, serializing
+admission through execution while a limit is set, were rejected for the
+reasons recorded in [design/firn/memory-limit.md](../../../design/firn/memory-limit.md).
+The admission-to-execution interval this leaves open, a command checking
+below the limit while another command's allocation takes the heap over it,
+is the accepted difference; it shows only as overshoot and in when
+`evicted_keys` grows. Its size is to be measured with the eviction-quality
+workload.
+
+## Recorded outcome: the access stamp's lock
+
+The owner chose **A** on board card `firn-stamp-lock` at 2026-10-09 06:01
+UTC: Whitefoot is to provide a field of a basic type that can be updated
+atomically under a read-only hold, so that GET keeps the shared map's
+lock-free read path. The owner asked that its design first settle which
+types qualify on which platforms and how it relates to a shared object
+holding one value; that design is a Whitefoot investigation and card, and
+this step waits for it.
