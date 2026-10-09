@@ -70,9 +70,11 @@ fn noeviction_refuses_denyoom_but_allows_reads_and_deletes() {
     assert_eq!(number(&info(&mut client, "stats"), "evicted_keys"), 0);
     configure(&mut client, &["requirepass", "secret"]);
     assert_eq!(memory_request(&mut client, &["RESET"]), "+RESET\r\n");
-    assert_eq!(memory_request(&mut client, &["SET", "new", &value]), "-NOAUTH Authentication required.\r\n");
+    // networking.c refuses an unauthenticated bulk over 16384 bytes before
+    // lookup, so the authentication order is shown with a short value.
+    assert_eq!(memory_request(&mut client, &["SET", "new", "v"]), "-NOAUTH Authentication required.\r\n");
     assert_eq!(memory_request(&mut client, &["AUTH", "secret"]), "+OK\r\n");
-    assert_eq!(memory_request(&mut client, &["SET", "new", &value]), OOM);
+    assert_eq!(memory_request(&mut client, &["SET", "new", "v"]), OOM);
     drop(client);
     assert_eq!(finished(child).0, 0);
 }
