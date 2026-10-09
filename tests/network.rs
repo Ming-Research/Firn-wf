@@ -9619,3 +9619,79 @@ fn firn_initializes_access_stamps_during_aof_replay() {
     drop(client);
     assert_eq!(finished(child).0, 0);
 }
+
+/// Redis executes these lookups once. Retrying an unwritten firn attempt
+/// must preserve the first stamp even for duplicate, binary and wrong-type
+/// lookups; completed attempts, errors and writes retain their refreshes.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_restores_first_access_stamps_on_script_retries() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu", "lfu-log-factor", "0", "lfu-decay-time", "0"]), "+OK\r\n");
+    for (args, expected) in [
+        (vec!["SET", "", "v"], "+OK\r\n"),
+        (vec!["SET", "a\0b", "v"], "+OK\r\n"),
+        (vec!["HSET", "hash", "f", "v"], ":1\r\n"),
+        (vec!["RPUSH", "list", "v"], ":1\r\n"),
+        (vec!["SADD", "set", "v"], ":1\r\n"),
+        (vec!["ZADD", "sorted", "1", "v"], ":1\r\n"),
+    ] {
+        assert_eq!(memory_request(&mut client, &args), expected);
+    }
+    let script = "redis.call('GET',KEYS[1]); redis.call('GET',KEYS[1]); \
+        redis.call('MGET',KEYS[2],KEYS[2],'missing'); \
+        redis.call('HGET',KEYS[3],'f'); redis.pcall('GET',KEYS[3]); \
+        redis.call('LLEN',KEYS[4]); redis.call('SINTER',KEYS[5],KEYS[5]); \
+        redis.call('ZSCORE',KEYS[6],'v'); \
+        local n=0; for i=1,20000 do n=n+i end; \
+        local r={}; for i=1,6 do r[i]=redis.call('OBJECT','FREQ',KEYS[i]) end; return r";
+    assert_eq!(memory_request(&mut client, &["EVAL", script, "6", "", "a\0b", "hash", "list", "set", "sorted"]),
+        "*6\r\n:7\r\n:7\r\n:7\r\n:6\r\n:7\r\n:6\r\n");
+    let failed = memory_request(&mut client, &["EVAL", "redis.call('GET',KEYS[1]); error('after refresh')", "1", ""]);
+    assert!(failed.starts_with("-ERR ") && failed.contains("after refresh"), "{failed:?}");
+    assert_eq!(memory_object(&mut client, "FREQ", ""), 8);
+    let writing = "redis.call('GET',KEYS[1]); redis.call('SET','written','v'); \
+        local n=0; for i=1,20000 do n=n+i end; return redis.call('OBJECT','FREQ',KEYS[1])";
+    assert_eq!(memory_request(&mut client, &["EVAL", writing, "1", ""]), ":9\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "written"), 5);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// An abandoned attempt restores metadata before releasing the keyspace.
+/// SCRIPT KILL still reaches the pool and leaves those stamps restored.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_restores_access_stamps_when_a_read_only_script_is_killed() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]);
+    let mut looping = connect_when_ready(port);
+    let mut other = connect_when_ready(port);
+    assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu", "lfu-log-factor", "0", "lfu-decay-time", "0"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut other, &["SET", "kill-access", "v"]), "+OK\r\n");
+    looping.write_all(&resp(&["EVAL", "redis.call('GET',KEYS[1]); redis.call('GET',KEYS[1]); while true do end", "1", "kill-access"])).expect("start refreshing script");
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let reply = memory_request(&mut other, &["SCRIPT", "KILL"]);
+        if reply == "+OK\r\n" {
+            break;
+        }
+        assert_eq!(reply, "-NOTBUSY No scripts in execution right now.\r\n");
+        assert!(Instant::now() < until, "script did not start");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let killed = whole_reply(&mut looping, "killed refreshing script");
+    assert!(killed.starts_with("-ERR Script killed by user with SCRIPT KILL... script: "), "{killed:?}");
+    assert_eq!(memory_object(&mut other, "FREQ", "kill-access"), 5);
+    assert_eq!(memory_request(&mut looping, &["GET", "kill-access"]), "$1\r\nv\r\n");
+    assert_eq!(memory_object(&mut other, "FREQ", "kill-access"), 6);
+    drop(looping);
+    drop(other);
+    assert_eq!(finished(child).0, 0);
+}

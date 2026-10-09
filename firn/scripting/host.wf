@@ -19,6 +19,8 @@ struct Env {
   error: Bool;
   reply: Box<Slots<u8>>;
   appended: u64;
+  access: Option<pkg::store::AccessJournal>;
+  access_random: u64;
 }
 
 fn raw(vm: &Vm, table: Value, key: Value, value: Value) -> r: unit writes(vm) {

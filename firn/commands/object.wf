@@ -129,8 +129,7 @@ fn run_object(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let place = key_bounds(input: input, args: args, index: 2_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
+  atomic slot = &store^.keys[key], m = &store^.meta {
     let lapsed = object_body(slot: slot, client: client, kind: kind);
     let appended = mset_lapse_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, key: key);
   }

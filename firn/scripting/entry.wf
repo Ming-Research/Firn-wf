@@ -288,7 +288,7 @@ fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &Conc
   set client^.resp = scripted;
   set client^.now = time^.check;
   let logged = True();
-  let appended = ScriptCommands::call(keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
+  let appended = ScriptCommands::call(journal: &env^.access, keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
   set client^.resp = protocol;
   if appended > 0_u64 {
     set env^.held.wrote = True();
@@ -316,7 +316,7 @@ fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &Conc
 }
 
 fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, keys_env: &KeyEnv, time: &Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(keys_env), reads(time), writes(client), writes(clock) waits {
-  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and, for each attempt whose engine has not compiled it, reads the registry again and copies the script's source from that read, answering NOSCRIPT then only if SCRIPT FLUSH came after the registry check and before the script first took the engine, as if the FLUSH came first; the first take counts the script and records its kill mark atomically with taking the engine, and FLUSH waits for it until it ends, including between attempts. An attempt whose engine has compiled it copies nothing. An attempt that runs out of its budget having written nothing is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits to take the engine again is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
+  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and, for each attempt whose engine has not compiled it, reads the registry again and copies the script's source from that read, answering NOSCRIPT then only if SCRIPT FLUSH came after the registry check and before the script first took the engine, as if the FLUSH came first; the first take counts the script and records its kill mark atomically with taking the engine, and FLUSH waits for it until it ends, including between attempts. An attempt whose engine has compiled it copies nothing. An attempt that runs out of its budget having written nothing restores every first-refresh journal entry and the client random state used by LFU before releasing the keys, then is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits to take the engine again is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
   let count = args^.inner.len;
   let body = pkg::protocol::arg(args: args, index: 1_u64);
   if by_sha {
@@ -412,14 +412,15 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
           let reply = box_slots_new::<u8>(capacity: 0_u64);
           let no = False();
           let held = HeldState(start_ms: time^.check, start_us: client^.unix_us, wrote: no, command_ran: no);
-          let env = Env(held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64);
+          let access = pkg::store::access_journal_new();
+          let journal = Some<pkg::store::AccessJournal>(value: move access);
+          let env = Env(held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64, access: move journal, access_random: client^.random);
           let effects = box_slots_new::<u8>(capacity: 64_u64);
           let logged = store^.logging;
           let random = pooled.engine.vm.random_state;
           let configs = config_snapshot(vm: &pooled.engine.vm);
           let config_active = pooled.engine.vm.cjson_active_config;
-          atomic t = &store^.keys, m = &store^.meta, access_state = &store^.server {
-            pkg::store::access_settings(server: access_state, client: client);
+          atomic t = &store^.keys, m = &store^.meta {
             let held_keys = map_count::<pkg::store::Entry>(map: t);
             let held_clients = m^.clients;
             let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
@@ -429,6 +430,8 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   if env.held.wrote {
                     set outcome = halo::embed::resume::<ScriptHost>(engine: &pooled.engine, env: &env, budget: 18446744073709551615_u64);
                   } else {
+                    pkg::store::restore_access(journal: &env.access, keys: t);
+                    set client^.random = env.access_random;
                     set retry = True();
                     set stopped_at = paused_line(vm: &pooled.engine.vm);
                     set pooled.engine.vm.random_state = random;

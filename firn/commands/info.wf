@@ -218,7 +218,7 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
   return chosen;
 }
 
-fn info_body(chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
+fn info_body(maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
   doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
@@ -247,11 +247,11 @@ fn info_body(chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u
         text_word(text: &text, word: &info_clients_tail[0_u64..92_u64]);
       } else if which == 2_u64 {
         text_word(text: &text, word: &info_memory_head[0_u64..94_u64]);
-        text_number(text: &text, value: client^.maxmemory);
+        text_number(text: &text, value: maxmemory);
         text_word(text: &text, word: &info_memory_human[0_u64..18_u64]);
-        memory_human(text: &text, value: client^.maxmemory);
+        memory_human(text: &text, value: maxmemory);
         text_word(text: &text, word: &info_memory_policy[0_u64..19_u64]);
-        memory_policy_text(text: &text, policy: client^.memory_policy);
+        memory_policy_text(text: &text, policy: memory_policy);
         text_word(text: &text, word: &info_memory_tail[0_u64..51_u64]);
       } else if which == 3_u64 {
         text_word(text: &text, word: &info_persistence_head[0_u64..121_u64]);
@@ -321,7 +321,7 @@ fn info_finish(client: &Client, text: &Box<Slots<u8>>) -> result: unit reads(tex
 }
 
 fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy report the CONFIG values; enforcement follows in step 2. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no eviction yet, no scripts or functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, memory used and processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
+  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; enforcement follows in step 2. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. Apart from the legacy cached-script count, tracked in docs/todo.md because it incorrectly remains zero after scripts are registered, every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no eviction yet, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, memory used and processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
   let chosen = info_plan(input: input, args: args);
   let clients = 0_u64;
   if chosen[1_u64] == 1_u64 {
@@ -341,6 +341,14 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       set connections = v^.connections;
     }
   }
+  let maxmemory = 0_u64;
+  let memory_policy = 7_u64;
+  if chosen[2_u64] == 1_u64 {
+    atomic memory_state = &store^.server {
+      set maxmemory = memory_state^.memory.maxmemory;
+      set memory_policy = memory_state^.memory.maxmemory_policy;
+    }
+  }
   let keys = 0_u64;
   if chosen[12_u64] == 1_u64 {
     atomic t = &store^.keys {
@@ -348,9 +356,8 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
   }
   let text = box_slots_new::<u8>(capacity: 0_u64);
-  atomic m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    set text = info_body(chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
+  atomic m = &store^.meta {
+    set text = info_body(maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
   }
   info_finish(client: client, text: &text);
   return unit;

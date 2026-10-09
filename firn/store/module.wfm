@@ -37,6 +37,18 @@ public struct Entry {
   public access: u32;
 }
 
+public struct AccessUndo {
+  doc "One key's access stamp before its first live refresh in a script attempt.";
+  public key: Box<Array<u8>>;
+  public stamp: u32;
+}
+
+public struct AccessJournal {
+  doc "Owned by one script attempt's environment and dropped with it. keys deduplicates binary key names; entries keeps each key and its original stamp in first-refresh order. Ordinary commands and EXEC pass None instead of allocating a journal.";
+  public keys: KeySet;
+  public entries: Box<Slots<AccessUndo>>;
+}
+
 public struct Due {
   doc "An expiry queued for active removal: the key's bytes and the calendar milliseconds it was set to expire at.";
   public key: Bytes;
@@ -150,4 +162,10 @@ public fn log_decimal(log: &Box<Slots<u8>>, value: u64) -> result: unit writes(l
 
 public fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>) -> result: unit reads(input), reads(args), writes(log) doc "Appends a command as the client sent it, every argument a RESP bulk string.";
 
-public fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) doc "Redis 7.0.15 db.c lookupKey observes one server policy and LFU configuration with the key lookup. The caller holds this server state in the same atomic statement as the keys, including throughout EXEC or a script attempt, so CONFIG cannot reinterpret access bits midway through a command.";
+public fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) doc "Copies memory settings once per connection read, beside its clock snapshot and before any command holds keys. Every command of that read, including queued commands run by EXEC and script calls across attempts, uses this snapshot. A racing CONFIG SET may cause an old-policy stamp; this is accepted because Redis itself leaves stale stamps after policy switches. CONFIG and INFO still access ServerState directly.";
+
+public fn access_journal_new() -> journal: AccessJournal pure doc "An empty journal for one script attempt; allocation is total under Whitefoot STOR-8.";
+
+public fn record_access(journal: &Option<AccessJournal>, key: &[u8], stamp: u32) -> result: unit reads(key), writes(journal) doc "Records the original stamp at a key's first live refresh in this attempt; later refreshes preserve that first value. None disables journaling for commands outside a script attempt.";
+
+public fn restore_access(journal: &Option<AccessJournal>, keys: &ConcurrentHashMap<Entry>) -> result: unit reads(journal), writes(keys) doc "Restores every journaled stamp before an abandoned, unwritten script attempt releases its atomic keyspace hold. Completed attempts and attempts that wrote never call this.";

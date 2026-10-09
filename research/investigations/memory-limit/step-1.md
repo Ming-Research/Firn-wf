@@ -2,14 +2,15 @@
 
 ## Scope and state
 
-At 2026-10-08 22:34 UTC, the uncommitted implementation for
+The step-1 draft on
 [Firn-wf PR 35, maxmemory](https://github.com/Ming-Research/Firn-wf/pull/35)
 adds access stamps, the six CONFIG parameters, INFO's configured limit and
 policy, and OBJECT IDLETIME/FREQ/HELP. Eviction and OOM refusal remain step 2.
-This is not a completed or validated implementation: script retries still
-repeat LFU updates, and the settings hold described below awaits direction.
-No build, compiler, Whitefoot checker, test, design lint, benchmark or CI run
-was performed for this working diff. No commit was made.
+The current uncommitted continuation implements the owner's A rulings on
+settings snapshots and script retry rollback, recorded below. It is not
+validated: no build, compilation, Whitefoot checker, test, design lint,
+benchmark or CI run was performed for these working changes. No commit was
+made, and `design/log.md` was left unchanged as requested.
 
 The reference is Redis 7.0.15 source, not output from this implementation.
 The Whitefoot pin and all submodules are unchanged. No Whitefoot gap has
@@ -144,60 +145,95 @@ and keys.wf `held_copy`. All eleven Entry constructors put `access` after
 replacement; COPY creates a new one; the other sites construct a missing
 key and use `new_access`.
 
-## Open direction: access updates across script retries
+## Recorded outcome: script retry access
 
-**How should script attempts undo access updates when their interpreter
-budget expires before any dataset write?**
+The owner chose **A** on board card `firn-script-retry-access` at
+2026-10-09 01:17 UTC: restore abandoned attempts' access stamps and firn's
+random state. Redis runs a script once; increments made by an attempt firn
+abandons must not survive into another attempt. Marking a refresh as a
+dataset write would instead make a read-only infinite script unkillable.
 
-Background: the approved script design retries such attempts from the
-beginning. A GET now changes the LFU counter and the random generator, so
-`redis.call('GET','k');` followed by a long calculation increments it once
-per attempt. The added finite-loop test expects one increment and exposes
-this unresolved behavior. Treating a refresh as a dataset write instead
-would make `redis.call('GET','k'); while true do end` unkillable, including
-under noeviction. That proposal was withdrawn; the draft retains retries
-and therefore remains incomplete.
+The attempt's `Env.access` owns an optional `AccessJournal`. It consists of
+a `KeySet` for binary-name deduplication and a growable array of `AccessUndo`
+rows, each holding an owned key and its original `u32` stamp. The first live
+refresh inserts the key and saves its stamp before changing it; later
+refreshes find its insertion index and keep the first row. Missing and
+expired keys and NOTOUCH calls do not record a row. The journal is passed
+explicitly through `ScriptCommands.call`, `script_command`, `held_run` and
+the shared command bodies. Ordinary commands and EXEC pass `None` and
+allocate no journal. Key-set bodies carry the matching key set with an
+explicit equality contract on the entry count, so a row names the key that
+was actually refreshed, including duplicate operands and wrong-type lookups.
 
-- **A, recommended:** journal original access stamps and random state,
-  restore them before abandoning a read-only attempt, and retain normal
-  SCRIPT KILL behavior. This needs an ownership/interface design for the
-  journal and failure handling, followed by retry and kill tests.
-- **B:** stop retrying after the first refresh, so only one attempt's
-  accesses happen. It is simpler but changes the accepted meaning of a
-  read-only script and can permanently hold the keyspace. Not recommended.
+`Env.access_random` saves `Client.random`, the generator LFU uses, before
+starting the attempt. In `scripting/entry.wf`, only `Budget()` with
+`env.held.wrote` false calls `store.restore_access` and restores this random
+state, inside the existing keys/metadata statement, before releasing it.
+The existing Lua random/configuration restoration follows there. A completed
+attempt, including a script error, or an attempt that wrote retains its
+refreshes. The attempt environment and its journal are dropped together;
+the retry wait and SCRIPT KILL check remain between attempts, so a kill
+following abandonment leaves the restored stamps intact.
 
-**Confidence 4/5.** The repeated mutation and killability conflict follow
-from the existing retry loop; the rollback representation and allocation
-failure behavior have not been designed or checked. Owner direction was
-requested; none is recorded here yet. No journal is implemented.
+Allocation follows the pinned Whitefoot specification's STOR-8: allocation
+is total in source and heap exhaustion terminates from the trusted base.
+There is no recoverable allocation failure to handle by skipping a row;
+recording finishes before the access stamp changes.
 
-## Open direction: settings and keyspace ordering
+Rejected card options:
 
-The draft reads ServerState's memory settings in the same atomic statement
-as each command that tracks or inspects a stamp, and holds them through
-EXEC and a script attempt. A snapshot taken before the key statement allows
-CONFIG to change the policy and another client to read or modify that key
-before the old-policy lookup runs, so the setting and key mutation would
-not have a common command order.
+- **B, accept LFU drift and defer it:** OBJECT FREQ could expose increments
+  Redis's single execution never makes.
+- **C, retain the keyspace after the first refresh:** a read-only infinite
+  script could permanently block key operations and evade SCRIPT KILL,
+  changing the approved retry design.
 
-The shared hold prevents that interleaving but adds ServerState to GET's
-otherwise per-key statement. Whitefoot's SHARE-3 specifies exclusive access
-to the targets; a read-only optimization is permitted, not promised. It may
-serialize unrelated keys and delays server-state operations for a long
-script. No cost is measured. The proposed fourth decision in
-`design/firn/memory-limit.md` records this draft choice; it is not part of
-the owner's three earlier rulings.
+## Recorded outcome: settings snapshot
 
-- **A, recommended for this step:** retain the common hold as the correct
-  baseline and include it in the already planned 14900K stamp-cost
-  experiment. Cost beyond the twin spread reopens the representation.
-- **B:** design concurrent configuration publication before completing
-  step 1. It must preserve CONFIG/key lookup ordering and SCRIPT KILL,
-  without a stale-policy fallback. No such representation is selected yet.
+The owner chose **A** on board card `firn-policy-read` at
+2026-10-09 01:19 UTC: read settings once per request read beside the clock,
+then let key statements hold only the keys and metadata they otherwise need.
 
-**Confidence 3/5.** Correctness of the joint hold follows from the atomic
-contract; its practical concurrency cost is unmeasured. Owner direction was
-requested and remains open.
+`server.serve` takes the snapshot immediately after `read_time` and before
+its command loop, in a short statement holding only `store.server`.
+`store.access_settings` copies policy, maxmemory, LFU log factor and decay
+time to the connection's `Client`. `prepare_access` takes the calendar time
+from that read's `Time`. Every command parsed from the read uses that client;
+`run_exec` supplies it unchanged to queued commands, using the read that
+contains EXEC, and `scripting.eval` supplies it to every attempt and every
+script command. No command refreshes these settings while holding keys.
+CONFIG GET/SET continue to access ServerState, and INFO obtains its reporting
+values directly from ServerState without changing the client's snapshot.
+AOF replay keeps the initialized default settings and the replay calendar
+clock; access stamps remain absent from the persisted log.
+
+A command racing CONFIG SET may write an old-policy stamp, and CONFIG SET
+inside a pipeline does not change the lookup snapshot of that same read.
+This is accepted: Redis itself reinterprets rather than rewrites existing
+stamps when policy changes, and OBJECT's error says LRU and LFU data take
+time to adjust. The prior strict CONFIG/key ordering is no longer required.
+
+The shared hold in the draft serialized commands across cores. The owner's
+roughly 7–10% two-CPU, depth-16 loss summary comes from
+[Firn-wf run 37859919278](https://github.com/Ming-Research/Firn-wf/actions/runs/37859919278):
+Redis benchmark GET and SET, LTO builds on the i9-14900K, two interleaved
+passes of five seconds, main versus the draft and a draft twin. The artifact's
+`revisions.csv` names base `ef86edfeceb20ba61d95989f5b1e465ddeb89f52` and
+head `7d27b2718ef7c88a49965789cbbea3edd14888bf`, both pinned to
+`wf-d9d6c92fcb64`; `host.txt` records Redis benchmark 7.0.15 and Clang/LLD
+22.1.8. This measures the combined stamp-and-hold draft, not the isolated
+cost of the hold. It supports removing that serialization point; a new
+comparison must establish the cost of the snapshot and journal implementation.
+The investigation's original stamp-cost criterion still applies.
+
+Rejected card options:
+
+- **B, keep the settings/key hold:** independent key commands share one
+  serialization point, with the draft's two-CPU loss exceeding twin spread.
+- **C, first design concurrent configuration publication:** the accepted
+  snapshot already permits Redis's stale-stamp transition; a versioned or
+  lock-free publication mechanism has no selected representation and is
+  unnecessary for this step.
 
 ## Validation and review
 
@@ -205,23 +241,27 @@ Four network cases were added: CONFIG/INFO/validation and stored-only
 limits; idle time, NOTOUCH, OBJECT errors and preflight; LFU initialization,
 lookup multiplicity, overwrites, EXEC and script retry; and AOF load-time
 initialization. Existing CONFIG GET expectations include the six new
-parameters. These cases are unrun, and the script retry case is expected
-to expose the known blocker until its design is resolved. Assertions were
-not weakened to hide it.
+parameters. For the current continuation they remain unrun. The existing long
+read-only EVAL expectation remains `:9` unchanged. Two additional unrun cases
+cover first-refresh deduplication across repeated/binary/empty keys and
+command families, retaining refreshes after completion/errors/writes, and
+restoring stamps when SCRIPT KILL ends a read-only attempt. The pre-fix
+failure was reported by the owner; no local before/after run was made.
 
 Still unverified: Whitefoot form/effect/bounds acceptance, all network cases
 and the Redis ratchet, LFU decay across a minute and wrap boundaries, the
-probability distribution, simultaneous CONFIG/lookup behavior, SCRIPT KILL
+probability distribution and the exact random-state rollback sequence,
+simultaneous CONFIG/lookup behavior, SCRIPT KILL
 with a refreshing script, and performance. No local execution was used in
 place of CI. A long script's clock follows the existing frozen-time design;
 its correspondence with Redis's cached LRU/LFU clock over a long run has
 not been demonstrated.
 
-The required separate read-only review inspected the diff and Redis source.
+The initial draft's separate read-only review inspected the diff and Redis source.
 It found and prompted fixes to a CONFIG name boundary, floating-operation
 spellings, an INFO divisor whose nonzero proof was unclear, a new atomic
 binder collision, OBJECT preflight/unknown error text and license notices.
-It also exposed both open direction items above. The reviewer identified itself as GPT-6 (a finer runtime identifier was
+It also exposed the two directions now ruled above. The reviewer identified itself as GPT-6 (a finer runtime identifier was
 unavailable) and read origin/main `ef86edfeceb20ba61d95989f5b1e465ddeb89f52`
 through HEAD `fa0a912069eff098cbe626c7980990611830d070`, the tracked working
 diff, and the four then-untracked design/access/OBJECT/license files. It
@@ -236,12 +276,61 @@ DC2 and DC4 retained the script-retry and settings-hold findings; DC3 was
 not applicable. No design lint counts were obtained. The limited follow-up read the subsequent record, fourth decision, TODO,
 cleanup and OBJECT preflight cases and found no new defect. G1, G2 and DC1
 passed there; G3 passed for explicit disposition. The missing-record part
-of the settings finding is closed, while its owner acceptance and cost
-remain unverified. The script retry defect remains open. No passing gate
+of the settings finding was closed at that review, while owner acceptance
+and cost were then unverified and the script retry defect remained open. No passing gate
 or exact-revision approval is claimed.
 
 After the main review, local repairs removed the unused access-touched flag
 and unnecessary settings holds from commands that neither read nor refresh
 stamps (DEL, TYPE, TTL, DBSIZE, enumeration, INFO's key count and FLUSH),
-and added OBJECT preflight cases in EXEC and scripts. The remaining
-settings holds still have the concurrency consequence above.
+and added OBJECT preflight cases in EXEC and scripts. The current continuation removes the remaining shared settings holds.
+
+## Continuation review
+
+A separate read-only GPT-6 agent (finer runtime identifier unavailable)
+reviewed origin/main `dfe7cfe53a0ae56c0f07970d8162e56517655bc0` through
+HEAD `92e25637be738c4d02a45c4e08ee82417d397da4` plus the current working
+changes; there were no untracked files. It inspected the complete diff,
+affected command bodies and callers, interfaces, cases, records, the owner's
+board rulings and the earlier benchmark artifact. Its design scope included
+`design/firn.md` and the memory-limit, scripts, transactions, command-parts
+and reported-facts nodes. It read the pinned Whitefoot contracts and Redis
+7.0.15 reference source. Every project checklist group and G1–G3/DC1–DC4
+was considered; none was skipped. No checker or lint ran, so there are no
+lint-derived node, depth or decision counts.
+
+Findings and dispositions:
+
+- **F1, effect order, fixed.** Fourteen changed signatures placed reads or
+  writes outside argument order. Their rows now retain the same effects
+  in pinned EFF-1 order; the reviewer inspected the repairs. This is a
+  source-form correction, not evidence of compiler acceptance.
+- **F2, INFO script count, prose fixed and behavior deferred.** INFO and
+  the README incorrectly described firn as having no scripts. That prose
+  is corrected. The preexisting `number_of_cached_scripts:0` remains false
+  after EVAL or SCRIPT LOAD registers a script, contrary to reported-facts;
+  `docs/todo.md` records the impact, correction, validation and reopening
+  condition. Correcting that metric and its coverage is outside this
+  continuation.
+- **U1, random-state evidence, unverified.** The new rollback cases use
+  log factor zero, so their expected counts detect stamp rollback and
+  first-refresh deduplication but do not distinguish a restored random
+  generator from consumed draws. The restore statement is present; its
+  exact runtime sequence has no discriminating evidence yet.
+
+| Review item | Disposition |
+| --- | --- |
+| A1, C1, T1, T2 | Pass within source inspection: independent Redis expectations, unchanged `:9`, no vendoring, ratchet or selection change |
+| C2, T3 | Unverified: interfaces inspected and effect order repaired, but no compiler or gate result |
+| R1 | Pass only for the historical comparison's stated scope; current performance unverified |
+| D1, G1, G2, G3, DC1, DC3 | Pass within source inspection after the documented repairs and disposition |
+| DC2 | Existing INFO count contradiction deferred as F2; no new snapshot/journal contradiction found |
+| DC4 | Unverified: paths inspected, compiler and runtime evidence absent |
+
+The reviewer found no remaining actionable defect in the snapshot or journal
+implementation within that source-only scope. No build, compiler, tests,
+Whitefoot checker, custom checker, design lint or measurement ran locally;
+no CI validation was run for these uncommitted changes. No passing gate or
+performance result is claimed. No pin or submodule moved, no Whitefoot gap
+was established or filed, no commit was made, and `design/log.md` remains
+unchanged as requested.

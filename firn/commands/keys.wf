@@ -398,6 +398,7 @@ fn run_del(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
 
 fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "Redis 7.0.15 db.c existsCommand uses LOOKUP_NOTOUCH; expire.c touchCommand refreshes each argument's live lookup, including duplicates in argument order. Both remove and log expired entries.";
+  let journal = None<pkg::store::AccessJournal>();
   let count = args^.inner.len;
   let keys = key_set_new(capacity: count);
   key_positions(positions: &client^.key_metadata, count: count);
@@ -415,14 +416,13 @@ fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.now = time^.check;
   let live = 0_u64;
   let logged = store^.logging;
-  atomic slots = &store^.keys[keys], m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
+  atomic slots = &store^.keys[keys], m = &store^.meta {
     for @named (index in 1_u64..count) {
       if index < client^.key_metadata.inner.len {
         let rank = client^.key_metadata.inner[index];
         if rank < slots^.len {
           if touching {
-            refresh_access(slot: &slots^[rank], client: client);
+            refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
           }
           let kind = entry_kind(slot: &slots^[rank], client: client);
           if kind != 0_u64 {
@@ -704,9 +704,9 @@ fn expire_refused(client: &Client, input: &[u8], args: &Box<Slots<Span>>, plan: 
   return True();
 }
 
-fn expire_body(slot: &Option<Entry>, client: &Client, plan: &ExpirePlan) -> outcome: u64 reads(plan), writes(slot), writes(client) {
+fn expire_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, plan: &ExpirePlan) -> outcome: u64 reads(access_key), reads(plan), writes(journal), writes(slot), writes(client) {
   doc "EXPIRE's work on its key's entry, held by the caller: when the entry is live and the options allow the deadline, removes it if the deadline has passed and answers 2, or gives it the expiry and answers 1; otherwise 0. An entry found expired is removed, client's state recording it for the file.";
-  refresh_access(slot: slot, client: client);
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let kind = entry_kind(slot: slot, client: client);
   if kind == 0_u64 {
     return 0_u64;
@@ -765,6 +765,7 @@ fn expire_finish(client: &Client, outcome: u64) -> result: unit writes(client) {
 
 fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, scale: u64, absolute: Bool, invalid: &[u8]) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(client) waits {
   doc "EXPIRE key seconds (scale 1000), PEXPIRE key milliseconds (scale 1), EXPIREAT key unix-seconds (absolute, scale 1000) and PEXPIREAT key unix-milliseconds (absolute), each with NX, XX, GT or LT: gives a live key the expiry at those calendar milliseconds, a relative amount counting from the command's time, when the options allow it, or removes the key when that time has passed, and answers 1 when it did either and 0 otherwise, as Redis 7.0.15's expireGenericCommand does, in its four parts: expire_plan, expire_body, expire_meta and expire_finish. The options are judged first, then the amount: one whose milliseconds, or their sum with the command's time, leave the range of i64 is answered with invalid. The file records an expiry as PEXPIREAT key at with the options as they were sent, a PEXPIREAT as it was sent, a removal as DEL key, and a key found expired as log_removal does. While a file is replayed an expiry already past is kept as one already reached, as Redis keeps it while loading, so a later PERSIST in the file still finds the key.";
+  let journal = None<pkg::store::AccessJournal>();
   let plan = expire_plan(input: input, args: args, unix_ms: time^.unix_ms, loading: time^.loading, scale: scale, absolute: absolute);
   let refused = expire_refused(client: client, input: input, args: args, plan: &plan, invalid: invalid);
   if refused {
@@ -775,9 +776,8 @@ fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let logged = store^.logging;
   set client^.now = time^.check;
   let outcome = 0_u64;
-  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    set outcome = expire_body(slot: slot, client: client, plan: &plan);
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    set outcome = expire_body(journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
     let lapsed = client^.state == state_expired;
     let appended = expire_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, outcome: outcome, lapsed: lapsed, input: input, args: args, key: key, env: env);
   }
@@ -851,13 +851,13 @@ fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
 
 fn run_persist(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "PERSIST key: removes a live key's expiry and answers 1 when it had one, 0 otherwise, removing an expired key, which the file records as log_removal does.";
+  let journal = None<pkg::store::AccessJournal>();
   let expiry = Expiry(at: 0_u64, now: time^.check, state: state_absent);
   let key_span = arg(args: args, index: 1_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    persist_body(client: client, slot: slot, expiry: &expiry);
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    persist_body(journal: &journal, access_key: key, client: client, slot: slot, expiry: &expiry);
     let appended = persist_meta(log: &m^.log, logged: store^.logging, expiry: &expiry, input: input, key_span: key_span, key: key);
   }
   persist_finish(client: client, expiry: &expiry);
@@ -1013,7 +1013,7 @@ fn copy_value(value: &Value) -> made: Value reads(value) {
   }
 }
 
-fn held_copy(client: &Client, slot: &Option<Entry>) -> made: Option<Entry> reads(slot), reads(client) {
+fn held_copy(client: &Client, slot: &Option<Entry>) -> made: Option<Entry> reads(client), reads(slot) {
   doc "A copy of the value an entry holds, its expiry kept, as COPY makes one; None for an absent entry.";
   match slot^ {
     Some(value: held) => {
@@ -1056,19 +1056,22 @@ fn rename_parse(input: &[u8], args: &Box<Slots<Span>>, keys: &KeySet) -> pair: K
   return KeyPair(source: source, target: target);
 }
 
-fn rename_body(slots: &Entries<Entry>, source: u64, target: u64, client: &Client, fresh: Bool) -> work: TransferWork writes(slots), writes(client) {
+fn rename_body(journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet, slots: &Entries<Entry>, source: u64, target: u64, client: &Client, fresh: Bool) -> work: TransferWork reads(access_keys), writes(journal), writes(slots), writes(client) contract {
+  requires slots^.len == access_keys^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
   doc "RENAME and RENAMENX over the named entries, checking the source before an equal or occupied target, moving the value with its expiry, and recording which lookups removed expired entries. The caller sets client.now to its statement's time.";
   let no = False();
   let work = TransferWork(outcome: rename_missing, at: 0_u64, source_expired: no, target_expired: no);
   if source < slots^.len {
-    refresh_access(slot: &slots^[source], client: client);
+    refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: source, client: client);
     let kind = entry_kind(slot: &slots^[source], client: client);
     set work.source_expired = client^.state == state_expired;
     if kind == 0_u64 {
     } else if source == target {
       set work.outcome = rename_same;
     } else if target < slots^.len {
-      refresh_access(slot: &slots^[target], client: client);
+      refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: target, client: client);
       let held = entry_kind(slot: &slots^[target], client: client);
       set work.target_expired = client^.state == state_expired;
       let occupied = held != 0_u64;
@@ -1173,17 +1176,20 @@ fn copy_parse(input: &[u8], args: &Box<Slots<Span>>) -> plan: CopyPlan reads(inp
   return CopyPlan(replace: replace, error: 0_u64);
 }
 
-fn copy_body(slots: &Entries<Entry>, source: u64, target: u64, client: &Client, replace: Bool) -> work: TransferWork writes(slots), writes(client) {
+fn copy_body(journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet, slots: &Entries<Entry>, source: u64, target: u64, client: &Client, replace: Bool) -> work: TransferWork reads(access_keys), writes(journal), writes(slots), writes(client) contract {
+  requires slots^.len == access_keys^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
   doc "COPY over the distinct entries copy_parse accepted, looking up the source before the target, retaining the source and copying its value and expiry when the target is vacant or REPLACE was given. Records expired removals for transfer_meta; rename_done means a copy was made. The caller sets client.now to its statement's time.";
   let no = False();
   let work = TransferWork(outcome: rename_missing, at: 0_u64, source_expired: no, target_expired: no);
   if source < slots^.len {
-    refresh_access(slot: &slots^[source], client: client);
+    refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: source, client: client);
     let kind = entry_kind(slot: &slots^[source], client: client);
     set work.source_expired = client^.state == state_expired;
     if kind != 0_u64 {
       if target < slots^.len {
-        refresh_access(slot: &slots^[target], client: client);
+        refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: target, client: client);
         let held = entry_kind(slot: &slots^[target], client: client);
         set work.target_expired = client^.state == state_expired;
         let vacant = held == 0_u64;
@@ -1222,14 +1228,14 @@ fn copy_finish(client: &Client, error: u64, outcome: u64) -> result: unit writes
 
 fn run_rename(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, fresh: Bool) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
   doc "RENAME and RENAMENX by rename_parse, rename_body, transfer_meta and rename_finish, in one statement on both named entries and the metadata.";
+  let journal = None<pkg::store::AccessJournal>();
   let keys = key_set_new(capacity: 2_u64);
   let pair = rename_parse(input: input, args: args, keys: &keys);
   set client^.now = time^.check;
   let logged = store^.logging;
   let outcome = rename_missing;
-  atomic slots = &store^.keys[keys], m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    let work = rename_body(slots: slots, source: pair.source, target: pair.target, client: client, fresh: fresh);
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let work = rename_body(journal: &journal, access_keys: &keys, slots: slots, source: pair.source, target: pair.target, client: client, fresh: fresh);
     let appended = transfer_meta(due: &m^.due, log: &m^.log, logged: logged, work: &work, input: input, args: args, env: env);
     set outcome = work.outcome;
   }
@@ -1248,6 +1254,7 @@ fn copy_refused(client: &Client, plan: &CopyPlan) -> rejected: Bool reads(plan),
 
 fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
   doc "COPY by copy_parse and rename_parse, copy_body, transfer_meta and copy_finish, in one statement on both named entries and the metadata; parse errors reach neither entry.";
+  let journal = None<pkg::store::AccessJournal>();
   let plan = copy_parse(input: input, args: args);
   let rejected = copy_refused(client: client, plan: &plan);
   if rejected {
@@ -1258,9 +1265,8 @@ fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   set client^.now = time^.check;
   let logged = store^.logging;
   let outcome = rename_missing;
-  atomic slots = &store^.keys[keys], m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    let work = copy_body(slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
+  atomic slots = &store^.keys[keys], m = &store^.meta {
+    let work = copy_body(journal: &journal, access_keys: &keys, slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
     let appended = transfer_meta(due: &m^.due, log: &m^.log, logged: logged, work: &work, input: input, args: args, env: env);
     set outcome = work.outcome;
   }
@@ -1296,10 +1302,10 @@ fn type_finish(client: &Client, kind: u64) -> result: unit writes(client) {
   return unit;
 }
 
-fn persist_body(client: &Client, slot: &Option<Entry>, expiry: &Expiry) -> result: unit writes(slot), writes(expiry), writes(client) {
+fn persist_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], client: &Client, slot: &Option<Entry>, expiry: &Expiry) -> result: unit reads(access_key), writes(journal), writes(client), writes(slot), writes(expiry) {
   doc "PERSIST's work on a held entry, including removal when expired.";
   set client^.now = expiry^.now;
-  refresh_access(slot: slot, client: client);
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let outcome = clear_expiry(env: expiry, value: held);

@@ -116,7 +116,9 @@ before implementation; the rest follows Redis.
 ## Step 1 implementation record
 
 The [access/configuration draft record](step-1.md) lists every lookup site,
-its Redis oracle, the unrun validation and the open script-retry and
-configuration-ordering choices. The owner selected all eight policies and
+its Redis oracle, validation still required for the current working changes,
+and the owner's two additional A rulings: snapshot memory settings once per
+request read, and restore first-refresh stamps and LFU random state before
+abandoning an unwritten script attempt. The owner selected all eight policies and
 the all-policy access stamp in the board rulings `firn-maxmemory-policies` A
 and `firn-access-stamp` A. Eviction and OOM refusal are the following step.

@@ -152,7 +152,15 @@ reads and writes refresh access state; `EXISTS`, `TYPE`, the four TTL/time
 queries, `OBJECT`, and SCAN's TYPE filter do not. `TOUCH` refreshes it.
 Policy changes reinterpret the existing bits, as Redis does, so values need
 time to adjust. `OBJECT HELP` returns Redis's help; `ENCODING` and `REFCOUNT`
-remain unsupported. Scripts and EXEC use the same tracking command bodies.
+remain unsupported. Settings used for access tracking are read once per
+connection read, beside its clock; every command in that read uses them,
+including queued commands run by EXEC and script calls. A lookup racing
+CONFIG SET may therefore write an old-policy stamp. CONFIG and INFO still
+read current server settings. Scripts and EXEC use the same tracking command
+bodies. An unwritten script attempt abandoned for its step budget restores
+the first stamp of every key it refreshed and firn's LFU random state before
+releasing the keys; completed attempts and attempts that wrote retain them.
+SCRIPT KILL between attempts therefore leaves abandoned refreshes undone.
 
 `CONFIG RESETSTAT` answers OK and zeroes the count of connections the server
 has accepted.
@@ -198,12 +206,15 @@ a tenth of a second, before its next cron acts on it.
 answers Redis's sections in Redis's order and form. Its fields carry real
 values for the port, the calendar time, the uptime, the clients connected,
 whether the append-only file is kept, the connections accepted and the keys
-held, which it counts holding the table whole, as `DBSIZE` does; the other
-fields it reports have values that are fixed and true of firn: Redis's
+held, which it counts holding the table whole, as `DBSIZE` does. The legacy
+`number_of_cached_scripts` field incorrectly stays zero after EVAL or
+SCRIPT LOAD registers a script; correcting it is tracked in
+[the TODO](../docs/todo.md#server). The other fields it reports have values
+that are fixed and true of firn: Redis's
 version 7.0.15, no git revision, `redis_git_sha1` being 00000000 as in
 Redis's builds from a release, standalone mode, 64 bits, its active
 expiry's 10 runs a second, no configuration file or eviction yet,
-script, function, replica, background save, fork, module, publish
+function, replica, background save, fork, module, publish
 and subscribe, tracking or cluster. What firn does not measure, memory and
 processor time, per-command and per-error counts among them, is left out,
 so its CPU, Commandstats, Errorstats and Latencystats sections are empty

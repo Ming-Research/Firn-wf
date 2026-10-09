@@ -222,7 +222,8 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
 }
 
 fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transaction: &Transaction) -> result: unit reads(store), reads(env), reads(time), writes(client), writes(transaction) waits {
-  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order by its parts, in one statement holding every key and the keyspace's metadata so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. The transaction then closes.";
+  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order by its parts, in one statement holding every key and the keyspace's metadata so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. The transaction then closes.";
+  let journal = None<pkg::store::AccessJournal>();
   if transaction^.dirty {
     reply_error(client: client, word: &text_execabort[0_u64..59_u64]);
     transaction_reset(transaction: transaction);
@@ -242,8 +243,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
   let total = transaction^.bytes.inner.len;
   let queued = &transaction^.bytes.inner[0_u64..total];
   set client^.now = time^.check;
-  atomic t = &store^.keys, m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
+  atomic t = &store^.keys, m = &store^.meta {
     let appended = 0_u64;
     let first = 0_u64;
     for @commands (index in 0_u64..commands) {
@@ -260,7 +260,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
       let name = arg(args: &args, index: 0_u64);
       let kind = held_kind(input: queued, name: name);
       if kind != 0_u64 {
-        let ran = held_run(kind: kind, keys: t, meta: m, effects: &effects, logged: logged, input: queued, args: &args, client: client, env: env, time: time);
+        let ran = held_run(journal: &journal, kind: kind, keys: t, meta: m, effects: &effects, logged: logged, input: queued, args: &args, client: client, env: env, time: time);
         set appended = appended +wrap ran;
       } else {
         reply_error(client: client, word: &text_foreign_abort[0_u64..92_u64]);

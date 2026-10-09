@@ -403,10 +403,69 @@ fn request_shutdown(store: &Keyspace) -> result: unit reads(store) waits {
 }
 
 fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) {
-  doc "Redis 7.0.15 db.c lookupKey and config.c memory settings, read while the caller holds server and keys together so a policy change is ordered with every affected lookup.";
+  doc "Copies config.c memory settings into the connection once per request read, before its commands hold any keys. A lookup racing CONFIG SET may write an old-policy stamp, accepted as Redis policy switches leave stale stamps.";
   set client^.memory_policy = server^.memory.maxmemory_policy;
   set client^.maxmemory = server^.memory.maxmemory;
   set client^.lfu_log_factor = server^.memory.lfu_log_factor;
   set client^.lfu_decay_time = server^.memory.lfu_decay_time;
+  return unit;
+}
+
+fn access_journal_new() -> journal: AccessJournal pure {
+  let keys = key_set_new(capacity: 0_u64);
+  let entries = box_slots_new::<AccessUndo>(capacity: 0_u64);
+  return AccessJournal(keys: move keys, entries: move entries);
+}
+
+fn record_access(journal: &Option<AccessJournal>, key: &[u8], stamp: u32) -> result: unit reads(key), writes(journal) {
+  doc "Insertion-order indices identify duplicate keys without replacing their first stamp. The append grows before mutation; Whitefoot STOR-8 has no recoverable allocation failure, so no failed allocation can leave an unjournaled refresh.";
+  match journal^ {
+    Some(value: recording) => {
+      let index = key_set_insert(keys: &recording^.keys, key: key);
+      if index < recording^.entries.inner.len {
+        return unit;
+      }
+      let capacity = recording^.entries.inner.cap;
+      if recording^.entries.inner.len == capacity {
+        let needed = recording^.keys.len;
+        let doubled = capacity +sat capacity;
+        let target = imax(needed, doubled);
+        grow(cell: &recording^.entries, capacity: target);
+      }
+      if recording^.entries.inner.len < recording^.entries.inner.cap {
+        let copied = box_array_filled::<u8>(count: key^.len, value: 0_u8);
+        for (at in 0_u64..key^.len) {
+          set copied.inner[at] = key^[at];
+        }
+        let undo = AccessUndo(key: move copied, stamp: stamp);
+        place_back(window: &recording^.entries.inner, value: move undo);
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn restore_access(journal: &Option<AccessJournal>, keys: &ConcurrentHashMap<Entry>) -> result: unit reads(journal), writes(keys) {
+  match journal^ {
+    Some(value: saved) => {
+      for (index in 0_u64..saved^.entries.inner.len) {
+        let undo = &saved^.entries.inner[index];
+        let length = undo^.key.inner.len;
+        let name = &undo^.key.inner[0_u64..length];
+        let slot = &keys^[name];
+        match slot^ {
+          Some(value: restored) => {
+            set restored^.access = undo^.stamp;
+          }
+          None() => {
+          }
+        }
+      }
+    }
+    None() => {
+    }
+  }
   return unit;
 }

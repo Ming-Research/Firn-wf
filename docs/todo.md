@@ -567,28 +567,36 @@ written while firn lived in the Whitefoot repository; a path such as
   Reopen when a selected consumer requires either query or the next object
   representation investigation chooses that contract.
 
-- **Preserve script retry semantics with access tracking.** The maxmemory
-  step 1 draft refreshes LRU/LFU metadata on GET, but a read-only script
-  attempt that exhausts its interpreter budget runs again and repeats LFU
-  updates. Treating that metadata change as a dataset write would make a
-  read-only infinite script unkillable. Owner direction is pending on
-  journaling and restoring original stamps and random state before a retry;
-  the journal's representation and allocation failures remain undesigned.
-  Finish this within step 1 before claiming Redis-compatible script access
-  counts. The new finite-loop LFU network assertion must count one GET,
-  and a GET followed by an infinite loop must remain killable. See the
-  [decision and alternatives](../research/investigations/memory-limit/step-1.md#open-direction-access-updates-across-script-retries).
+- **Validate script retry rollback with access tracking.** The owner chose
+  first-refresh journaling and restoration, now implemented in the step-1
+  working changes. CI must establish the unchanged finite-loop LFU result,
+  repeated/binary/empty keys, completed/error/written attempts, and SCRIPT
+  KILL after refreshing a key. The factor-zero cases do not discriminate
+  random-state restoration; add independent-control evidence for that
+  sequence. Compiler acceptance and these behaviors are still unverified; finish this before claiming Redis-compatible script access
+  counts. See the [recorded retry outcome](../research/investigations/memory-limit/step-1.md#recorded-outcome-script-retry-access).
 
-- **Measure the common settings hold added by access tracking.** The draft
-  holds ServerState with tracked key lookups to order CONFIG changes with
-  the lookup. This adds a common target to otherwise independent GETs and
-  holds it through a script attempt; Whitefoot does not promise concurrent
-  read-only holds. Retaining this baseline awaits owner direction. Include
-  it in the existing same-source 14900K stamp-cost experiment, with base
-  twins; reopen the publication representation if its cost exceeds the
-  twins' spread. No slowdown is asserted without that measurement. An
-  alternative must also preserve concurrent CONFIG/lookup ordering. See
-  the [ordering analysis](../research/investigations/memory-limit/step-1.md#open-direction-settings-and-keyspace-ordering).
+- **Measure access tracking after removing the common settings hold.** The
+  owner chose one settings snapshot per request read, accepting old-policy
+  stamps during CONFIG races as Redis already leaves stale stamps on a
+  policy switch. The implementation removes ServerState from key statements;
+  the earlier draft's combined stamp/hold measurement does not establish
+  this version's cost. Run the original same-source, interleaved 14900K
+  comparison with noise controls and its stated stamp-cost criterion before
+  accepting the performance result. See the [snapshot ruling and earlier
+  measurement](../research/investigations/memory-limit/step-1.md#recorded-outcome-settings-snapshot).
+
+- **INFO reports zero cached scripts after registering scripts.**
+  `info_memory_head` in `firn/commands/info.wf` hardcodes
+  `number_of_cached_scripts:0`, although EVAL and SCRIPT LOAD populate
+  the script registry. This can mislead operators and contradicts
+  `design/firn/reported-facts.md`; the source establishes the mismatch,
+  but no runtime case was run for it. Read the registry count for INFO
+  memory instead of the constant, without extending the key hold.
+  Validate an empty cache, a first load, repeated loads, EVAL and SCRIPT
+  FLUSH against Redis 7.0.15. Reopen with the next INFO metrics change,
+  before the deployment milestone; this continuation fixes the false
+  no-scripting prose and defers the count and its network coverage.
 
 ## Tests
 

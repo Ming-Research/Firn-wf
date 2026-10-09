@@ -10,7 +10,7 @@ alias Span = pkg::protocol::Span;
 alias expired = pkg::store::expired;
 
 fn prepare_access(client: &Client, time: &Time) -> result: unit reads(time), writes(client) {
-  doc "Redis 7.0.15 object.c createObject and db.c lookupKey use the calendar clock, including during AOF loading when the expiry-check time is zero. Settings are read by store.access_settings in the same atomic statement as each command's key lookups.";
+  doc "Redis 7.0.15 object.c createObject and db.c lookupKey use the calendar clock, including during AOF loading when the expiry-check time is zero. Settings are the connection's per-read snapshot, also used by EXEC and scripts. A racing CONFIG SET may leave an old-policy stamp, accepted as Redis policy switches leave stale stamps.";
   set client^.access_ms = time^.unix_ms;
   return unit;
 }
@@ -87,7 +87,7 @@ fn access_increment(counter: u32, client: &Client) -> increased: u32 writes(clie
   return counter;
 }
 
-fn refresh_access(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
+fn update_access(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
   doc "Redis 7.0.15 db.c lookupKey and updateLFU: refresh each live lookup, before type checks, under every policy; NOTOUCH callers omit this call. Firn has no fork child suppressing updates.";
   match slot^ {
     Some(value: accessed) => {
@@ -303,4 +303,39 @@ fn config_memory_value(input: &[u8], span: Span, which: u64, client: &Client) ->
   }
   let value = cvt.wrap::<i64, u64>(number.value);
   return Amount(value: value, valid: yes);
+}
+
+fn refresh_access(journal: &Option<pkg::store::AccessJournal>, key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(key), writes(journal), writes(slot), writes(client) {
+  doc "Journals a live key before its first refresh in a script attempt, including a wrong-type lookup. NOTOUCH callers omit this; absent and expired entries never enter the journal.";
+  match slot^ {
+    Some(value: original) => {
+      let lapsed = expired(expires: original^.expires, now: client^.now);
+      if bnot(lapsed) {
+        pkg::store::record_access(journal: journal, key: key, stamp: original^.access);
+      }
+    }
+    None() => {
+    }
+  }
+  update_access(slot: slot, client: client);
+  return unit;
+}
+
+fn refresh_access_at(journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, access_keys: &KeySet, index: u64, client: &Client) -> result: unit reads(access_keys), writes(journal), writes(slots), writes(client) contract {
+  requires slots^.len == access_keys^.len;
+  requires index < slots^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "Refreshes the key at the same insertion index as the held entry. Only a script journal needs to materialize its binary key; ordinary commands keep their key-set access path.";
+  match journal^ {
+    Some(..) => {
+      let key = scanned_key(keys: access_keys, index: index);
+      let length = key.inner.len;
+      refresh_access(journal: journal, key: &key.inner[0_u64..length], slot: &slots^[index], client: client);
+    }
+    None() => {
+      update_access(slot: &slots^[index], client: client);
+    }
+  }
+  return unit;
 }

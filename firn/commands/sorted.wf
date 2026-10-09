@@ -412,9 +412,9 @@ fn zadd_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, increment:
   return True();
 }
 
-fn zadd_body(slot: &Option<Entry>, client: &Client, plan: &ZaddPlan) -> lapsed: Bool writes(slot), writes(client), writes(plan) {
+fn zadd_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, plan: &ZaddPlan) -> lapsed: Bool reads(access_key), writes(journal), writes(slot), writes(client), writes(plan) {
   doc "Runs ZADD over its key's entry; the caller owns the statement.";
-  refresh_access(slot: slot, client: client);
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let edited = add_scores(env: client, value: held, adding: &plan^.adding);
@@ -487,6 +487,7 @@ fn zadd_finish(client: &Client, plan: &ZaddPlan) -> result: unit reads(plan), wr
 
 fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, increment: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...] and ZINCRBY key increment member (increment): reads the options, letters in either case and compared up to a zero byte, then checks the pairs and the options together and reads every score, all before the key is read, in Redis's order; then gives each member its score as add_ranked does, creating the set for an absent key unless XX is given. ZADD answers how many members it added, or added or rescored with CH; with INCR or as ZINCRBY it answers the member's new score, or the null bulk string when it passed over the member. A change is appended to the file as the command was sent, as Redis propagates it.";
+  let journal = None<pkg::store::AccessJournal>();
   let plan = zadd_plan();
   let valid = zadd_parse(input: input, args: args, client: client, increment: increment, plan: &plan);
   if bnot(valid) {
@@ -495,9 +496,8 @@ fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    let lapsed = zadd_body(slot: slot, client: client, plan: &plan);
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let lapsed = zadd_body(journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
     let appended = zadd_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, plan: &plan, input: input, args: args, key: key);
   }
   zadd_finish(client: client, plan: &plan);
@@ -568,9 +568,9 @@ fn zrem_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> valid: 
   return True();
 }
 
-fn zrem_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool writes(slot), writes(client) {
+fn zrem_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "Runs ZREM over its key's entry; the caller owns the statement.";
-  refresh_access(slot: slot, client: client);
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let edited = remove_ranked(env: client, value: held);
@@ -608,6 +608,7 @@ fn zrem_finish(client: &Client) -> result: unit writes(client) {
 
 fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "ZREM key member [member ...]: removes the members from the sorted set, removing the key when the set is left empty, and answers how many it held.";
+  let journal = None<pkg::store::AccessJournal>();
   let valid = zrem_parse(input: input, args: args, client: client);
   if bnot(valid) {
     return unit;
@@ -615,9 +616,8 @@ fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    let lapsed = zrem_body(slot: slot, client: client);
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let lapsed = zrem_body(journal: &journal, access_key: key, slot: slot, client: client);
     let appended = zrem_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
   }
   zrem_finish(client: client);
@@ -795,9 +795,9 @@ fn zpop_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, from_top: 
   return True();
 }
 
-fn zpop_body(slot: &Option<Entry>, client: &Client) -> lapsed: Bool writes(slot), writes(client) {
+fn zpop_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "Runs ZPOP over its key's entry; the caller owns the statement.";
-  refresh_access(slot: slot, client: client);
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let edited = pop_ranked(env: client, value: held);
@@ -843,6 +843,7 @@ fn zpop_finish(client: &Client) -> result: unit writes(client) {
 
 fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, from_top: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "ZPOPMIN key [count] and ZPOPMAX (from_top): removes and answers the sorted set's lowest member, or its highest, and its score, or up to count of them, as one array, each member and score nested as a pair under RESP3 when a count is given, as Redis 7.0.15 nests them, removing the key when the set is left empty; an absent key answers an empty array. More than one count is a syntax error, and a count that is not an integer or is negative is out of range, as Redis's getPositiveLongFromObjectOrReply reads it, before the key is read; only a pop that removed a member is appended to the file.";
+  let journal = None<pkg::store::AccessJournal>();
   let valid = zpop_parse(input: input, args: args, client: client, from_top: from_top);
   if bnot(valid) {
     return unit;
@@ -850,9 +851,8 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  atomic slot = &store^.keys[key], m = &store^.meta, access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    let lapsed = zpop_body(slot: slot, client: client);
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let lapsed = zpop_body(journal: &journal, access_key: key, slot: slot, client: client);
     let appended = zpop_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
   }
   zpop_finish(client: client);
@@ -898,9 +898,9 @@ fn zcard_parse(client: &Client) -> valid: Bool writes(client) {
   return True();
 }
 
-fn zcard_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
+fn zcard_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "Runs ZCARD over its key's entry; the caller owns the statement.";
-  refresh_access(slot: slot, client: client);
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = sorted_size(env: client, value: held);
@@ -924,6 +924,7 @@ fn zcard_finish(client: &Client) -> result: unit writes(client) {
 
 fn run_zcard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "ZCARD key: answers the sorted set's size, 0 for an absent key.";
+  let journal = None<pkg::store::AccessJournal>();
   let valid = zcard_parse(client: client);
   if bnot(valid) {
     return unit;
@@ -931,9 +932,8 @@ fn run_zcard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  atomic slot = &store^.keys[key], access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    zcard_body(slot: slot, client: client);
+  atomic slot = &store^.keys[key] {
+    zcard_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
@@ -993,9 +993,9 @@ fn zscore_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> valid
   return True();
 }
 
-fn zscore_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
+fn zscore_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "Runs ZSCORE over its key's entry; the caller owns the statement.";
-  refresh_access(slot: slot, client: client);
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = member_score(env: client, value: held);
@@ -1022,6 +1022,7 @@ fn zscore_finish(client: &Client) -> result: unit writes(client) {
 
 fn run_zscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "ZSCORE key member: answers the member's score, or the null bulk string when the key or the member is absent.";
+  let journal = None<pkg::store::AccessJournal>();
   let valid = zscore_parse(input: input, args: args, client: client);
   if bnot(valid) {
     return unit;
@@ -1029,9 +1030,8 @@ fn run_zscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  atomic slot = &store^.keys[key], access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    zscore_body(slot: slot, client: client);
+  atomic slot = &store^.keys[key] {
+    zscore_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
@@ -1096,9 +1096,9 @@ fn zmscore_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> vali
   return True();
 }
 
-fn zmscore_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
+fn zmscore_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "Runs ZMSCORE over its key's entry; the caller owns the statement.";
-  refresh_access(slot: slot, client: client);
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = member_scores(env: client, value: held);
@@ -1128,6 +1128,7 @@ fn zmscore_finish(client: &Client, members: u64) -> result: unit writes(client) 
 
 fn run_zmscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "ZMSCORE key member [member ...]: answers each member's score as an array, the null bulk string for a member the set does not hold and for every member of an absent key.";
+  let journal = None<pkg::store::AccessJournal>();
   let valid = zmscore_parse(input: input, args: args, client: client);
   if bnot(valid) {
     return unit;
@@ -1136,9 +1137,8 @@ fn run_zmscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let members = args^.inner.len -sat 2_u64;
-  atomic slot = &store^.keys[key], access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    zmscore_body(slot: slot, client: client);
+  atomic slot = &store^.keys[key] {
+    zmscore_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
@@ -1266,9 +1266,9 @@ fn zrank_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, reverse: 
   return True();
 }
 
-fn zrank_body(slot: &Option<Entry>, client: &Client) -> result: unit writes(slot), writes(client) {
+fn zrank_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "Runs ZRANK over its key's entry; the caller owns the statement.";
-  refresh_access(slot: slot, client: client);
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = member_rank(env: client, value: held);
@@ -1297,6 +1297,7 @@ fn zrank_finish(client: &Client) -> result: unit writes(client) {
 
 fn run_zrank(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, reverse: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "ZRANK key member and ZREVRANK (reverse): answers the member's rank, counted from 0 at the lowest member, or at the highest, or the null bulk string when the key or the member is absent.";
+  let journal = None<pkg::store::AccessJournal>();
   let valid = zrank_parse(input: input, args: args, client: client, reverse: reverse);
   if bnot(valid) {
     return unit;
@@ -1304,9 +1305,8 @@ fn run_zrank(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  atomic slot = &store^.keys[key], access_state = &store^.server {
-    pkg::store::access_settings(server: access_state, client: client);
-    zrank_body(slot: slot, client: client);
+  atomic slot = &store^.keys[key] {
+    zrank_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
