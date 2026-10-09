@@ -1,5 +1,6 @@
 alias Keyspace = pkg::store::Keyspace;
 alias EnginePool = pkg::script_pool::EnginePool;
+alias ceiling = pkg::store::ceiling;
 
 fn probe_bucket(nanos: u64) -> bucket: u64 pure {
   doc "The log2 bucket of a duration: bucket i counts durations from 2^i to below 2^(i+1) nanoseconds, bucket 0 also zero, and bucket 39 everything from 2^39.";
@@ -69,7 +70,31 @@ fn probe_histogram(out: &Box<Slots<u8>>, label: &[u8], counts: &Array<u64, 40>) 
 }
 
 fn probe_info(store: &Keyspace) -> text: Box<Slots<u8>> reads(store) waits {
-  doc "INFO scriptprobe's text: the script calls counted since the server started, grouped by whether a collection completed while the call held the engine.";
+  doc "INFO scriptprobe's text: process memory and current structure sizes sampled separately before formatting, followed by the script calls counted since the server started, grouped by whether a collection completed while the call held the engine. resident_bytes is zero when the host cannot report it.";
+  let heap_bytes = 0_u64;
+  let resident = 0_u64;
+  atomic meter = &store^.memory_meter {
+    set heap_bytes = std::process::heap_in_use(meter: meter);
+    match std::process::resident_bytes(meter: meter) {
+      Some(value: measured_resident) => {
+        set resident = measured_resident;
+      }
+      None() => {
+      }
+    }
+  }
+  let due_len = 0_u64;
+  let log_len = 0_u64;
+  atomic metadata = &store^.meta {
+    set due_len = std::collections::priority_queue::priority_queue_len::<pkg::store::Due, ceiling>(queue: &metadata^.due);
+    set log_len = metadata^.log.inner.len;
+  }
+  let keys = 0_u64;
+  atomic key_map = &store^.keys {
+    set keys = map_count::<pkg::store::Entry>(map: key_map);
+  }
+  let registry_len = 0_u64;
+  let registry_source_bytes = 0_u64;
   let calls_gc = 0_u64;
   let calls_nogc = 0_u64;
   let sum_gc = 0_u64;
@@ -83,6 +108,8 @@ fn probe_info(store: &Keyspace) -> text: Box<Slots<u8>> reads(store) waits {
   let gc_floor = 1048576_u64;
   let gc = pkg::script_pool::new_probe_gc();
   atomic p = &store^.scripts {
+    set registry_len = p^.registry.inner.len;
+    set registry_source_bytes = p^.source_bytes;
     set gc_pause = p^.gc_pause;
     set gc_floor = p^.gc_floor;
     set gc = p^.probe_gc;
@@ -98,6 +125,13 @@ fn probe_info(store: &Keyspace) -> text: Box<Slots<u8>> reads(store) waits {
   }
   let text = box_slots_new::<u8>(capacity: 1024_u64);
   text_bytes(out: &text, bytes: &probe_head[0_u64..15_u64]);
+  probe_line(out: &text, label: &probe_heap_in_use_label[0_u64..12_u64], value: heap_bytes);
+  probe_line(out: &text, label: &probe_resident_bytes_label[0_u64..15_u64], value: resident);
+  probe_line(out: &text, label: &probe_due_len_label[0_u64..8_u64], value: due_len);
+  probe_line(out: &text, label: &probe_keys_label[0_u64..5_u64], value: keys);
+  probe_line(out: &text, label: &probe_registry_len_label[0_u64..13_u64], value: registry_len);
+  probe_line(out: &text, label: &probe_registry_source_bytes_label[0_u64..22_u64], value: registry_source_bytes);
+  probe_line(out: &text, label: &probe_log_len_label[0_u64..8_u64], value: log_len);
   probe_line(out: &text, label: &probe_calls_gc_label[0_u64..9_u64], value: calls_gc);
   probe_line(out: &text, label: &probe_calls_nogc_label[0_u64..11_u64], value: calls_nogc);
   probe_line(out: &text, label: &probe_sum_gc_label[0_u64..10_u64], value: sum_gc);
@@ -139,6 +173,20 @@ fn probe_info(store: &Keyspace) -> text: Box<Slots<u8>> reads(store) waits {
 }
 
 const probe_head: Array<u8, 15> = "# Scriptprobe\r\n";
+
+const probe_heap_in_use_label: Array<u8, 12> = "heap_in_use:";
+
+const probe_resident_bytes_label: Array<u8, 15> = "resident_bytes:";
+
+const probe_due_len_label: Array<u8, 8> = "due_len:";
+
+const probe_keys_label: Array<u8, 5> = "keys:";
+
+const probe_registry_len_label: Array<u8, 13> = "registry_len:";
+
+const probe_registry_source_bytes_label: Array<u8, 22> = "registry_source_bytes:";
+
+const probe_log_len_label: Array<u8, 8> = "log_len:";
 
 const probe_calls_gc_label: Array<u8, 9> = "calls_gc:";
 

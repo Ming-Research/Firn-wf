@@ -484,6 +484,27 @@ to separate names):
   left-inclusive, right-exclusive millisecond buckets, with the final bucket
   including everything from 8 ms.
 
+The memory diagnostic adds `heap_in_use` and `resident_bytes` in bytes,
+`due_len` (queued expiries, including stale entries), `keys` (map entries),
+`registry_len` (registered scripts), `registry_source_bytes` (the pool's
+`source_bytes`), and `log_len` (pending append-only log bytes). It asks
+whether request-proportional RSS growth also appears in PRE-2's counted
+heap and tracks one of these structures. Flat counted heap with rising RSS
+would reject growth of live counted allocations as the explanation;
+structure lengths alone cannot attribute byte growth conclusively.
+
+The meter comes from `Inputs.memory_meter` and lives in
+`Keyspace.memory_meter: Shared<MemoryMeter>`. All handles, including private
+replay keyspaces, share it. Whitefoot v0.105 at the pinned release permits
+this: `MemoryMeter` is nocopy but droppable, and `Shared` requires drop,
+not copy. The probe samples it in its own atomic statement before allocating
+the response text; structure sizes are separate atomic observations, not
+one consistent snapshot. `resident_bytes` is current RSS, not peak RSS,
+and is zero when the host returns `None`. PRE-2's heap count excludes
+allocator rounding, unused pool reserves, allocator-retained released
+blocks, executable mappings and stacks. These additions remain uncompiled
+and unmeasured under the requested no-run handoff.
+
 The pinned Whitefoot `std::process::Inputs` and host interfaces provide
 arguments but no environment reader. Firn therefore accepts the authorized
 CLI alternative, `--halo-gc-pause <u64>`, defaults to 200 and reports the

@@ -73,11 +73,12 @@ public struct ServerState {
 }
 
 public struct Keyspace {
-  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served.";
+  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state, to the script engine's pool and to the process memory meter, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served.";
   public keys: Shared<ConcurrentHashMap<Entry>>;
   public meta: Shared<Meta>;
   public server: Shared<ServerState>;
   public scripts: Shared<pkg::script_pool::EnginePool>;
+  public memory_meter: Shared<std::process::MemoryMeter>;
   public logging: Bool;
 }
 
@@ -102,7 +103,7 @@ public binding DueOrder : PriorityOrder<Due, KeyEnv> {
 
 public const keyspace_capacity: u64 = 262144_u64;
 
-public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
+public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64, memory_meter: Shared<std::process::MemoryMeter>) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started. Keeps the shared process memory meter for INFO scriptprobe.";
 
 public fn shutdown_requested(store: &Keyspace) -> requested: Bool reads(store) waits doc "Whether SHUTDOWN or a stop signal requested that contexts drain and close, before the last client lets main stop the writer, or main has stopped it.";
 

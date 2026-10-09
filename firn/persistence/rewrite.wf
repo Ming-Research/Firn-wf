@@ -64,7 +64,8 @@ fn aof_rw_close_tail(store: &Keyspace, factory: &HandleFactory, log: &AofLog, ti
       let empty = array_filled::<u8, 0>(value: 0_u8);
       let password = pkg::bytes::bytes_new(input: &empty[0_u64..0_u64], start: 0_u64, length: 0_u64);
       let quiet = False();
-      let private_store = pkg::store::keyspace_new(seed: 1_u64, logging: quiet, password: move password, timeout: 0_u64, started: time^.unix_ms);
+      let memory_meter = shared_share::<std::process::MemoryMeter>(shared: &store^.memory_meter);
+      let private_store = pkg::store::keyspace_new(seed: 1_u64, logging: quiet, password: move password, timeout: 0_u64, started: time^.unix_ms, memory_meter: move memory_meter);
       let length = part^.name.inner.len;
       let name = &part^.name.inner[0_u64..length];
       let loaded = replay(store: &private_store, factory: factory, root: &log^.directory, name: name, name_length: length, time: time, clock: clock);
@@ -182,7 +183,8 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, directory: DirectoryRe
   let empty = array_filled::<u8, 0>(value: 0_u8);
   let password = pkg::bytes::bytes_new(input: &empty[0_u64..0_u64], start: 0_u64, length: 0_u64);
   let quiet = False();
-  let private_store = pkg::store::keyspace_new(seed: 1_u64, logging: quiet, password: move password, timeout: 0_u64, started: time.unix_ms);
+  let memory_meter = shared_share::<std::process::MemoryMeter>(shared: &store.memory_meter);
+  let private_store = pkg::store::keyspace_new(seed: 1_u64, logging: quiet, password: move password, timeout: 0_u64, started: time.unix_ms, memory_meter: move memory_meter);
   let accepted = aof_rw_replay(private_store: &private_store, live_store: &store, factory: &factory, directory: &directory, manifest: &manifest, time: &time, clock: &clock);
   let size = 0_u64;
   if accepted {
