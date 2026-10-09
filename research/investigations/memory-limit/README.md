@@ -333,6 +333,61 @@ the all-policy access stamp in the board rulings `firn-maxmemory-policies` A
 and `firn-access-stamp` A. The step-2 record below covers eviction and OOM refusal; the access-stamp
 representation and its outstanding lock design remain unchanged.
 
+## Results: eviction quality and at-limit behaviour
+
+Measured on the i9-14900K through `redis-bench.yml` mode workloads
+([Firn-wf run 37998440715](https://github.com/Ming-Research/Firn-wf/actions/runs/37998440715),
+2026-10-09 22:18–23:17 UTC; branch `claude/maxmemory` at 2cf6776, Whitefoot
+`wf-a7b85f796649`, Redis 7.0.15): 50 connections, three interleaved passes
+of 10 seconds after a 5-second warm-up, on one and two server CPUs, each line
+in a fresh server, the limit set after any AOF rewrite finished. A probe
+([run 37996029478](https://github.com/Ming-Research/Firn-wf/actions/runs/37996029478))
+sized it and exposed the rewrite defect below.
+
+**Eviction quality** (`evict-zipf`, 1,000,000 keys, Zipf 0.99, 64-byte
+values, allkeys-lru, limit half the dataset): hit rate per pass.
+
+| Line | 1 CPU | 2 CPUs |
+|---|---|---|
+| Redis | 0.9092, 0.9092, 0.9095 | 0.9102, 0.9102, 0.9096 |
+| Redis, AOF | 0.9088, 0.9085, 0.9081 | 0.9088, 0.9087, 0.9084 |
+| firn | 0.9012, 0.9011, 0.9017 | 0.9054, 0.9053, 0.9053 |
+| firn, AOF | 0.9015, 0.9005, 0.9010 | 0.9049, 0.9101, 0.9048 |
+
+firn is 0.5 to 0.8 percentage points below Redis, within the two-point
+criterion stated before measuring, so the sampling and pool design is not
+rejected. No line refused a write. At the limit firn served 276k operations
+a second on one CPU and 493k on two, against Redis's 257k and 261k; p99 was
+0.45 ms and 0.27–0.38 ms against Redis's 0.48–0.49 ms.
+
+**Overshoot** (sampled every 10 ms during the measured phase, maximum excess
+over the limit as a fraction of it): firn without AOF 0; Redis 0.00002;
+Redis with AOF 0.0001–0.0003; firn with AOF on one CPU 0.001–0.002, and on
+two CPUs 0.20, 0.08 and 0.20. In those two-CPU passes an automatic AOF
+rewrite ran during the measured phase, and in one the live keyspace fell
+from 423,241 to 120,031 keys.
+
+**The rewrite defect.** firn rewrites the append-only file in-process: the
+rewrite replays the incremental file, and then all files, into private
+keyspaces held in the same heap that `heap_in_use` meters, while only the
+AOF buffers are excluded from admission. Redis 7.0.15 rewrites in a fork
+child, whose allocations its parent's counter never sees (`evict.c`
+`freeMemoryGetNotCountedMemory`, `aof.c` `rewriteAppendOnlyFileBackground`).
+So while a rewrite runs, firn evicts live keys to make room for the rewrite's
+copy, and once the keyspace is empty it refuses writes: in the probe, with
+the limit read during a rewrite, firn with AOF refused 35,244 and 38,549
+writes in a measured phase and its hit rate fell to 0.76, where Redis
+refused none. Whitefoot offers one process-wide meter and no way to count a
+context's allocations apart, so firn cannot exclude the rewrite; the
+remedy is the owner's decision on board card `firn-aofrw-meter-card`, item
+`firn-aofrw-meter`.
+
+**Cost of the admission check** (`session-set` and `session-get`, maxmemory
+0 against 64 GiB, each with a same-image twin): firn's nonbinding-limit
+throughput is 0.960–1.012 of unlimited, against twin spreads of 0.968–1.027;
+Redis's is 0.956–1.039 against 0.973–1.024. No cost is resolved at this
+noise, about 3%.
+
 ## Results: cost of the access stamp
 
 Measured on the i9-14900K through the `redis-bench.yml` workflow, mode
