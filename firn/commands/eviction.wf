@@ -53,7 +53,7 @@ fn eviction_limit(tenacity: u64) -> microseconds: f64 pure {
   let exponent = tenacity -sat 10_u64;
   let power = cvt.nearest::<u64, f64>(exponent);
   let growth = halo::number::pow(a: 1.15_f64, b: power);
-  let scaled = fmul.strict(0.5e3_f64, growth);
+  let scaled = fmul.strict(5.0e2_f64, growth);
   return ffloor(scaled);
 }
 
