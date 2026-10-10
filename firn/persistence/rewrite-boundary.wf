@@ -3,6 +3,14 @@ alias HandleFactory = std::io::HandleFactory;
 alias Keyspace = pkg::store::Keyspace;
 alias Span = pkg::protocol::Span;
 
+struct AofBoundary {
+  doc "Whether the sealed file reads whole, and, when it ends inside an unfinished block, the offset of that block's first MULTI and the bytes read.";
+  whole: Bool;
+  unfinished: Bool;
+  reverted: u64;
+  size: u64;
+}
+
 fn aof_block_command(input: &[u8], args: &Box<Slots<Span>>) -> kind: u64 reads(input), reads(args) {
   doc "Shared loader and syntax-only boundary rule: only a one-argument MULTI or EXEC changes block state; nested MULTI retains the first unfinished boundary while advancing Redis's latest-MULTI truncation boundary.";
   let command = pkg::protocol::arg(args: args, index: 0_u64);
@@ -24,9 +32,12 @@ fn aof_block_word(input: &[u8], start: u64, length: u64, count: u64) -> kind: u6
   return 0_u64;
 }
 
-fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> accepted: Bool reads(store), reads(log), writes(factory), writes(clock) waits {
-  doc "Validate only syntax and block boundaries, never reconstruct a keyspace. The initial 64-KiB input and 32768 inline argument slots are charged before allocation. RESP bulk bodies stream through that window regardless of historical command size; incomplete headers or inline lines can grow only after charging the full new backing storage, using the ordinary parser rules. A sealed file must end outside every MULTI, so an unexpected unfinished region is refused without truncating acknowledged live writes.";
+fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> result: AofBoundary reads(store), reads(log), writes(factory), writes(clock) waits {
+  doc "Validate only syntax and block boundaries, never reconstruct a keyspace. The initial 64-KiB input and 32768 inline argument slots are charged before allocation. RESP bulk bodies stream through that window regardless of historical command size; incomplete headers or inline lines can grow only after charging the full new backing storage, using the ordinary parser rules. A sealed file that ends inside a block reports the first MULTI after the last EXEC that closed one, so the caller can cut there.";
   let accepted = False();
+  let unfinished = False();
+  let reverted = 0_u64;
+  let size = 0_u64;
   for (index in 0_u64..log^.manifest.parts.inner.len) {
     let part = &log^.manifest.parts.inner[index];
     let incremental = part^.kind == 105_u8;
@@ -39,7 +50,8 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
       }
       if charged {
       } else {
-        return False();
+        let refused = False();
+        return AofBoundary(whole: refused, unfinished: refused, reverted: 0_u64, size: 0_u64);
       }
       let length = part^.name.inner.len;
       let name = &part^.name.inner[0_u64..length];
@@ -123,10 +135,11 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
               let empty = held == 0_u64;
               let at_boundary = stream.phase == 0_u64;
               let whole = band(empty, at_boundary);
-              let closed = bnot(scanning);
-              let complete = band(whole, closed);
               let readable = bnot(failed);
-              set accepted = band(complete, readable);
+              set accepted = band(whole, readable);
+              set unfinished = scanning;
+              set reverted = first_multi;
+              set size = offset;
               break @chunks;
             }
             let consumed = 0_u64;
@@ -190,5 +203,5 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
       }
     }
   }
-  return accepted;
+  return AofBoundary(whole: accepted, unfinished: unfinished, reverted: reverted, size: size);
 }

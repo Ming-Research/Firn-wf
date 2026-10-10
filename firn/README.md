@@ -370,8 +370,9 @@ a delay of up to an hour. Each observation or mutating statement permits at
 most 1024 payload visits and 64 KiB of measured serialized work. A collection
 element counts as two visits, so a key above 512 elements or about 64 KiB
 serialized makes every rewrite abort while it exists. The fixed journal
-directory permits at most 8188 chunks. A startup-retained unfinished MULTI
-refuses capture until a restart resolves the live/reloadable divergence.
+directory permits at most 8188 chunks. If startup left the file inside an
+unfinished MULTI, the rewrite cuts the sealed file before that MULTI; the new
+base holds the live writes appended after it, as Redis's rewrite does.
 
 The scan currently uses count hint 1 and charges the returned KeySet before
 copying payloads. This permits one scan step's allocation before charging,

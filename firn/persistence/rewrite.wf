@@ -49,11 +49,24 @@ fn aof_rw_manifest(original: &AofManifest) -> made: AofManifest reads(original) 
 }
 
 fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> accepted: Bool reads(store), writes(factory), writes(log), writes(clock) waits {
-  doc "Flush is complete before entry. Validate the sealed current file without executing commands, then sync it before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts.";
-  let whole = aof_rw_boundary(store: store, factory: factory, log: log, clock: clock);
-  if whole {
+  doc "Flush is complete before entry. Validate the sealed current file without executing commands; if it ends inside an unfinished block, as a startup-retained MULTI leaves it, cut it before that block's first MULTI, whose writes base(S1) holds as live state, then sync it before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts.";
+  let boundary = aof_rw_boundary(store: store, factory: factory, log: log, clock: clock);
+  if boundary.whole {
   } else {
     return False();
+  }
+  if boundary.unfinished {
+    match std::fs::truncate_file(factory: factory, file: &log^.file, length: boundary.reverted) {
+      Ok(value: truncated) => {
+        let removed = boundary.size -sat boundary.reverted;
+        atomic m = &store^.meta {
+          set m^.aof_current_size = m^.aof_current_size -sat removed;
+        }
+      }
+      Err(error: problem) => {
+        return False();
+      }
+    }
   }
   match std::fs::sync_file(factory: factory, file: &log^.file) {
     Ok(value: synced) => {
@@ -277,14 +290,12 @@ fn aof_rw_abort(store: &Keyspace) -> result: unit reads(store) waits {
 }
 
 fn aof_rw_admit(store: &Keyspace, meter: &std::process::MemoryMeter, manual: Bool, overhead: u64) -> accepted: Bool reads(store), writes(meter) waits {
-  doc "S0 is one Meta-and-settings statement. R is floor(maxmemory/20), or 16 MiB without maxmemory; require R plus max(R,1 MiB) service headroom. The charged fixed directory is at most 64 KiB. A retained startup MULTI is refused even if a later EXEC closes it: its previously unapplied prefix still differs from live state until a restart replays it.";
+  doc "S0 is one Meta-and-settings statement. R is floor(maxmemory/20), or 16 MiB without maxmemory; require R plus max(R,1 MiB) service headroom. The charged fixed directory is at most 64 KiB.";
   let admitted = False();
   atomic m = &store^.meta, v = &store^.server {
     let exhausted = m^.aof_rewrite_seq_exhausted;
-    let inherited = m^.aof_rewrite_startup_unfinished;
     let stopping = bor(m^.stopping, v^.shutdown);
-    let unsafe_cut = bor(exhausted, inherited);
-    let refused = bor(unsafe_cut, stopping);
+    let refused = bor(exhausted, stopping);
     let reserve = 16777216_u64;
     let limit = v^.memory.maxmemory;
     if limit > 0_u64 {

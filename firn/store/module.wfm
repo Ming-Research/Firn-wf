@@ -120,7 +120,6 @@ public struct Meta {
   public aof_rewrite_seq_exhausted: Bool;
   public rewrite: RewriteCapture;
   public aof_rewrite_retry_blocked: Bool;
-  public aof_rewrite_startup_unfinished: Bool;
   public aof_rewrite_reserve: u64;
   public aof_rewrite_scan_peak: u64;
   public aof_rewrite_cut: Bool;

@@ -9046,11 +9046,11 @@ fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
 }
 
 /// The partial-command-in-block fixture retains MULTI at startup. Redis's
-/// loader reverts the unfinished block, including later appended commands;
-/// the live scan must refuse before S0 rather than install those normally
-/// reverted writes into an authoritative base.
+/// loader reverts the unfinished block, including later appended commands,
+/// but its BGREWRITEAOF writes the live dataset, which holds them. The rewrite
+/// cuts the sealed file before that MULTI and its base keeps the live writes.
 #[test]
-fn firn_rewrite_refuses_a_retained_unfinished_startup_block() {
+fn firn_rewrite_cuts_a_retained_unfinished_block_before_switching() {
     let program = CompiledProgram::from_environment();
     let name = "appendonly.aof";
     let path = aof_incremental_fixture(program.working_directory(), name);
@@ -9069,22 +9069,24 @@ fn firn_rewrite_refuses_a_retained_unfinished_startup_block() {
     assert_eq!(std::fs::read(&path).unwrap(), retained);
     client.write_all(&resp(&["SET", "after", "1"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "append inside retained block");
-    rewrite_refused(&mut client);
+    rewrite_start(&mut client);
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
     multipart_values(&mut client, &[("after", Some("1"))]);
     client.write_all(&resp(&["SET", "new", "2"])).unwrap();
-    expect_replies(&mut client, b"+OK\r\n", "append after refused capture");
+    expect_replies(&mut client, b"+OK\r\n", "append after switch");
     rewrite_stop(&mut client, child);
     multipart_load(&program, name, &[
         ("a", Some("1")), ("b", None), ("c", None),
-        ("after", None), ("new", None),
+        ("after", Some("1")), ("new", Some("2")),
     ]);
 }
 
 /// loadSingleAppendOnlyFile queues the retained SET and the appended MULTI
-/// until EXEC, then applies all the queued writes. Both restart paths must
-/// satisfy these Redis expectations; the no-rewrite run is not the oracle.
+/// until EXEC, then applies all the queued writes, so a restart without a
+/// rewrite gains `b`. Redis's BGREWRITEAOF writes the live dataset, where the
+/// retained block never applied, so a restart after it has no `b`.
 #[test]
-fn firn_rewrite_refuses_startup_divergence_after_appended_exec() {
+fn firn_rewrite_keeps_a_retained_block_closed_by_an_appended_transaction() {
     for rewrite in [false, true] {
         let program = CompiledProgram::from_environment();
         let name = "appendonly.aof";
@@ -9114,12 +9116,14 @@ fn firn_rewrite_refuses_startup_divergence_after_appended_exec() {
             "transaction closes the retained block in the file",
         );
         if rewrite {
-            rewrite_refused(&mut client);
+            rewrite_start(&mut client);
+            assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
         }
         multipart_values(&mut client, &[("b", None), ("x", Some("1")), ("y", Some("2"))]);
         rewrite_stop(&mut client, child);
+        let b = if rewrite { None } else { Some("2") };
         multipart_load(&program, name, &[
-            ("a", Some("1")), ("b", Some("2")), ("c", None),
+            ("a", Some("1")), ("b", b), ("c", None),
             ("x", Some("1")), ("y", Some("2")),
         ]);
     }
@@ -9127,9 +9131,10 @@ fn firn_rewrite_refuses_startup_divergence_after_appended_exec() {
 
 /// Redis reverts every queued write when EOF leaves CLIENT_MULTI set.
 /// Startup's partial-command cut retains both MULTIs; closing this file
-/// before only the latest one would leave an incomplete earlier file.
+/// before only the latest one would leave an incomplete earlier file. A
+/// rewrite keeps the live `after`, as Redis's live rewrite does.
 #[test]
-fn firn_rewrite_refuses_nested_retained_startup_blocks() {
+fn firn_rewrite_cuts_before_both_retained_unmatched_multis() {
     for rewrite in [false, true] {
         let program = CompiledProgram::from_environment();
         let name = "appendonly.aof";
@@ -9156,12 +9161,14 @@ fn firn_rewrite_refuses_nested_retained_startup_blocks() {
         client.write_all(&resp(&["SET", "after", "1"])).unwrap();
         expect_replies(&mut client, b"+OK\r\n", "append inside nested unfinished blocks");
         if rewrite {
-            rewrite_refused(&mut client);
+            rewrite_start(&mut client);
+            assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
         }
         multipart_values(&mut client, &[("after", Some("1"))]);
         rewrite_stop(&mut client, child);
+        let after = if rewrite { Some("1") } else { None };
         multipart_load(&program, name, &[
-            ("a", Some("2")), ("b", None), ("c", None), ("d", None), ("after", None),
+            ("a", Some("2")), ("b", None), ("c", None), ("d", None), ("after", after),
         ]);
     }
 }
@@ -9792,12 +9799,4 @@ fn firn_restores_access_stamps_when_a_read_only_script_is_killed() {
     drop(looping);
     drop(other);
     assert_eq!(finished(child).0, 0);
-}
-
-fn rewrite_refused(client: &mut TcpStream) {
-    client.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
-    expect_replies(client, b"-ERR Can't execute an AOF background rewriting. Please check the server logs for more information.\r\n", "refuse a live/reloadable startup divergence before S0");
-    let info = rewrite_info(client);
-    assert_eq!(info["aof_rewrite_in_progress"], "0");
-    assert_eq!(info["aof_rewrites"], "0");
 }

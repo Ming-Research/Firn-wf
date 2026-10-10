@@ -674,13 +674,17 @@ cleanup without recording a cancellation that can no longer be honored.
 Stalled host calls can delay this wait, as the unresolved cleanup contract
 already warns.
 
-Startup records whether truncation left a first unfinished MULTI region
-containing unapplied commands. Capture remains refused even if a subsequently
-appended EXEC closes that region: those earlier commands still were never
-applied to the live dataset. A restart that replays the now-complete file
-clears the discrepancy. This is a conservative refusal, not a recovery-policy
-change. Existing nested/partial startup cases now require refusal rather than
-private-replay reconstruction.
+A startup-retained unfinished MULTI no longer refuses capture (status board
+card `firn-q-rw-startup-multi`, implemented on its recommendation A). If the
+sealed file still ends inside that block at S1, the boundary reader reports
+the block's first MULTI and the writer cuts the file there before syncing and
+publishing it, as main's switch-time cut did; base(S1) is the live dataset,
+which holds the writes appended inside the block, as Redis's live rewrite
+does. A block closed by a later appended EXEC needs no cut, and base(S1) then
+omits the never-applied prefix, again as Redis's live rewrite does. A crash
+between rotation and installation restarts without the writes appended inside
+the block, where Redis refuses to start because its truncated file is not the
+last one.
 
 ### Network evidence to run in CI
 
@@ -728,18 +732,19 @@ bounded values while the scan continues. No server test hook is added.
   only new ignored test, pending `firn-gap-scan-bound`, with the exact reason
   requested in the addendum.
 
-Existing rewrite cases remain wired. Startup-tail cases now require the
-proposed pre-S0 refusal; failure cases now require started followed by err
+Existing rewrite cases remain wired. Startup-tail cases require Redis's
+live-rewrite results after a rewrite and its reload results without one;
+failure cases now require started followed by err
 because rotation moved after admission; shutdown during a scan keeps the
 original manifest. The older concurrent growing-list case retains 100 strict
 non-idempotent writes instead of growing without limit past the explicit
 capture work budget; the new continuous bounded-value case supplies observed
 scan-window interleaving. No ratchet row or existing command expectation is
-removed.
-Removing the inherited-startup-MULTI refusal makes the three retained-tail
-cases fail their immediate-refusal and zero-admitted-attempt assertions;
-closing such a block later does not make its unapplied prefix part of live
-state, so those cases continue to require refusal until restart.
+removed. Restoring the refusal fails the retained-tail cases' rewrite
+status and restored `after`/`new` values. The switch-time cut itself matters
+only if the process stops between rotation and installation, because the
+installed manifest no longer loads the old increment; no case covers that
+window.
 
 The repair cases additionally require a 128-KiB overwritten historical SET
 and a mixed-case RESP MULTI/EXEC block to rewrite successfully with a small
@@ -776,7 +781,7 @@ by R and allows a successful rewrite, failing the required err outcome.
 | Ordered reconciliation; sync, rename and manifest publication | `aof_rw_reconcile` in `firn/persistence/rewrite-dataset.wf`; `aof_rw_worker`, `aof_rw_install` |
 | Reserve/flush/exhaustion abort and bounded release | `rewrite_abort`, `sequence_publish`; `flush_body` in `firn/commands/server.wf`; `aof_rw_worker`, `aof_rw_discard` |
 | Pressure cancellation before installation; eviction waits after commitment | `memory_over`, `evict_before` in `firn/commands/eviction.wf`; `aof_rw_cycle` |
-| Startup retained-MULTI refusal | `aof_load_parts` in `firn/persistence/startup.wf`; `firn_rewrite_refuses_a_retained_unfinished_startup_block` in `tests/network.rs` |
+| Switch-time cut before a startup-retained MULTI | `aof_rw_boundary` in `firn/persistence/rewrite-boundary.wf`; `aof_rw_switch`; `firn_rewrite_cuts_a_retained_unfinished_block_before_switching` in `tests/network.rs` |
 | Final status and automatic-retry suppression | `aof_rw_complete` in `firn/persistence/rewrite.wf`; `write_log` in `firn/persistence/persistence.wf` |
 
 ### Stage 2 validation and review (2026-10-10)
@@ -821,10 +826,11 @@ findings and their dispositions:
   main's replay and Redis rewrite such keys. This is a decision for the
   owner on the status board; the node and README now state the effective
   limit.
-- A startup-retained unfinished `MULTI` refuses the rewrite, so writes
-  appended after it are lost at restart, where Redis's live rewrite keeps
-  them and main's switch-time cut keeps the later ones. This is a decision
-  for the owner on the status board.
+- A startup-retained unfinished `MULTI` refused the rewrite, so writes
+  appended after it were lost at restart, where Redis's live rewrite keeps
+  them. On status board card `firn-q-rw-startup-multi` the recommended
+  option A is implemented pending the owner's ruling: the sealed file is cut
+  before that MULTI at S1 and base(S1) keeps the live writes.
 - Stale status text in this record, the investigation index, the stage-1
   record and the firn README is corrected.
 - Transfer and store commands (LMOVE, SMOVE, SUNIONSTORE) now run in the
