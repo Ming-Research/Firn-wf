@@ -18,6 +18,10 @@ Decision: SCRIPT KILL stops a script that has written nothing when its current a
 
 Decision: The commands a script calls reach the scripting module as an interface, ScriptCommands, that the commands module binds to script_command, because the commands module already depends on the scripting module for EVAL's dispatch and a call back into it would close a cycle of modules, instead of moving the script's statement out of the scripting module into the commands module, which would split the Lua environment's handling between the two.
 
+Decision: legacy scripts capture their pre-command OOM state and keep an attempt-local WRITE_DIRTY flag separate from the effects flag, because Redis 7.0.15 scriptVerifyOOM refuses DENYOOM only before an accepted WRITE command, including DEL of a missing key, while firn's effects flag must still control retry and rollback, instead of treating no-effect writes as unwritten for OOM or rechecking memory inside a script; each retry restarts WRITE_DIRTY under the original captured OOM state.
+
+Decision: EVAL and SCRIPT LOAD explicitly refuse every source starting with a shebang, including plain #!lua and allow-oom or no-writes flags, because the owner permits precisely documented unsupported flags and firn currently has no script-flag admission contract, instead of running a flagged script with legacy OOM semantics ([step-2 scope](../../research/investigations/memory-limit/README.md#step-2-implementation-record)).
+
 Rejected:
 - Freezing expiry checks alone, as Redis 7.0.15 does: rejected because Redis moved to one time for the whole execution unit in 7.2, and following 7.0.15 would carry a live clock into every command part for a difference seen only while a script runs long.
 - Releasing the statement around each of a script's commands: rejected because another client's command could then come between them, which Redis does not allow.

@@ -251,14 +251,14 @@ fn arity_holds(arity: i64, count: u64) -> fits: Bool pure {
   return wide >= least;
 }
 
-fn script_get(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_get(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "GET inside a script holding every key: the work and reply of run_get, an expired key removed at once, as Redis 7.0.15 removes one a script's lookup finds expired, its removal appended to the script's effects when the keyspace keeps a file.";
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   set client^.state = state_absent;
   let slot = &keys^[key];
-  get_body(slot: slot, client: client);
+  get_body(journal: journal, access_key: key, slot: slot, client: client);
   let appended = 0_u64;
   if client^.state == state_expired {
     set slot^ = None<Entry>();
@@ -271,13 +271,13 @@ fn script_get(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged:
   return appended;
 }
 
-fn script_incr(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, delta: i64) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_incr(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, delta: i64) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "INCR (delta 1), DECR (delta -1), and INCRBY and DECRBY once their amount is read, inside a script holding every key: the work, effects and reply of run_incr.";
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let counted = Counted(value: 0_i64, delta: delta, now: time^.check, state: state_absent);
   let slot = &keys^[key];
-  let removed = incr_body(slot: slot, counted: &counted);
+  let removed = incr_body(journal: journal, access_key: key, client: client, slot: slot, counted: &counted);
   let appended = 0_u64;
   if logged {
     set appended = incr_log(log: effects, removed: removed, counted: &counted, input: input, args: args, key: key);
@@ -286,7 +286,7 @@ fn script_incr(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   return appended;
 }
 
-fn script_set(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+fn script_set(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "SET inside a script holding every key and the metadata: the options, work, effects and reply of run_set, its expiry options read against the script's frozen calendar time.";
   let setting = True();
   let options = string_options(input: input, args: args, first: 3_u64, setting: setting);
@@ -317,24 +317,24 @@ fn script_set(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<
   set client^.now = time^.check;
   let plan = SetPlan(flags: options.flags, at: at, mode: mode_set, key_index: 1_u64, value_index: 2_u64);
   let slot = &keys^[key];
-  let work = set_body(slot: slot, client: client, value: move value, flags: options.flags, at: at);
+  let work = set_body(journal: journal, access_key: key, slot: slot, client: client, value: move value, flags: options.flags, at: at);
   let appended = set_meta(due: &meta^.due, log: effects, logged: logged, plan: &plan, work: &work, input: input, args: args, key: key, env: env);
   set_finish(client: client, plan: &plan, work: &work);
   return appended;
 }
 
-fn script_incrby(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, negate: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_incrby(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, negate: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "INCRBY and DECRBY (negate) inside a script holding every key: the amount read as incrby_delta reads it, then the work, effects and reply of run_incr.";
   let delta = incrby_delta(input: input, args: args, negate: negate);
   let refused = delta_refused(client: client, delta: &delta);
   if refused {
     return 0_u64;
   }
-  let appended = script_incr(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: delta.value);
+  let appended = script_incr(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: delta.value);
   return appended;
 }
 
-fn script_expire(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, scale: u64, absolute: Bool, invalid: &[u8]) -> appended: u64 reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(keys), writes(meta), writes(effects), writes(client) {
+fn script_expire(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, scale: u64, absolute: Bool, invalid: &[u8]) -> appended: u64 reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "EXPIRE, PEXPIRE, EXPIREAT and PEXPIREAT inside a script holding every key and the metadata: the plan, work, effects and reply of run_expire, its deadline read against the script's frozen calendar time.";
   let not_loading = False();
   let plan = expire_plan(input: input, args: args, unix_ms: time^.unix_ms, loading: not_loading, scale: scale, absolute: absolute);
@@ -346,7 +346,7 @@ fn script_expire(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slo
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let slot = &keys^[key];
-  let outcome = expire_body(slot: slot, client: client, plan: &plan);
+  let outcome = expire_body(journal: journal, access_key: key, slot: slot, client: client, plan: &plan);
   let lapsed = client^.state == state_expired;
   let appended = expire_meta(due: &meta^.due, log: effects, logged: logged, plan: &plan, outcome: outcome, lapsed: lapsed, input: input, args: args, key: key, env: env);
   expire_finish(client: client, outcome: outcome);
@@ -365,7 +365,7 @@ fn script_ttl(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged:
   return appended;
 }
 
-fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_mset(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "MSET inside a script holding every key: the work, effects and reply of run_mset, its pairs stored in order so that a key named twice keeps its last value. An even count of arguments is answered with MSET's own arity error, as Redis's msetGenericCommand answers it inside a script.";
   let count = args^.inner.len;
   let rejected = mset_pairs_refused(input: input, args: args, client: client);
@@ -381,7 +381,7 @@ fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
     let key = &input^[place.start..place.end];
     let value_index = index +wrap 1_u64;
     let slot = &keys^[key];
-    let lapsed = mset_body(slot: slot, input: input, args: args, value_index: value_index, now: time^.check);
+    let lapsed = mset_body(journal: journal, client: client, slot: slot, input: input, args: args, value_index: value_index, now: time^.check);
     let removal = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
     set appended = appended +wrap removal;
   }
@@ -391,9 +391,12 @@ fn script_mset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   return appended;
 }
 
-fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "Which command a statement holding every key and the metadata runs by its parts, for a script's call or a transaction's EXEC: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME, 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH; 90 SADD, 91 SREM, 92 SPOP, 93 SCARD, 94 SMEMBERS, 95 SISMEMBER, 96 SMISMEMBER, 97 SRANDMEMBER, 98 SMOVE, 99 SINTER, 100 SUNION, 101 SDIFF, 102 SINTERCARD, 103 SINTERSTORE, 104 SUNIONSTORE, 105 SDIFFSTORE; 120 ZADD, 121 ZINCRBY, 122 ZREM, 123 ZPOPMIN, 124 ZPOPMAX, 125 ZCARD, 126 ZSCORE, 127 ZMSCORE, 128 ZRANK, 129 ZREVRANK, 130 ZRANGE, 131 ZREVRANGE, 132 ZRANGEBYSCORE, 133 ZREVRANGEBYSCORE, 134 ZRANGEBYLEX, 135 ZREVRANGEBYLEX, 136 ZCOUNT, 137 ZLEXCOUNT, 138 ZREMRANGEBYRANK, 139 ZREMRANGEBYSCORE, 140 ZREMRANGEBYLEX; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 164 FLUSHALL, 165 FLUSHDB, 166 COMMAND, 168 SCAN, 169 KEYS, 170 RANDOMKEY, 167 being kept for INFO; the command's name read in either case; 0 for any other name, firn naming its commands only in execute's rows.";
+fn command_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
+  doc "Shared command identity for admission and dispatch; kinds through 171 run by held parts: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME, 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH; 90 SADD, 91 SREM, 92 SPOP, 93 SCARD, 94 SMEMBERS, 95 SISMEMBER, 96 SMISMEMBER, 97 SRANDMEMBER, 98 SMOVE, 99 SINTER, 100 SUNION, 101 SDIFF, 102 SINTERCARD, 103 SINTERSTORE, 104 SUNIONSTORE, 105 SDIFFSTORE; 120 ZADD, 121 ZINCRBY, 122 ZREM, 123 ZPOPMIN, 124 ZPOPMAX, 125 ZCARD, 126 ZSCORE, 127 ZMSCORE, 128 ZRANK, 129 ZREVRANK, 130 ZRANGE, 131 ZREVRANGE, 132 ZRANGEBYSCORE, 133 ZREVRANGEBYSCORE, 134 ZRANGEBYLEX, 135 ZREVRANGEBYLEX, 136 ZCOUNT, 137 ZLEXCOUNT, 138 ZREMRANGEBYRANK, 139 ZREMRANGEBYSCORE, 140 ZREMRANGEBYLEX; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 164 FLUSHALL, 165 FLUSHDB, 166 COMMAND, 168 SCAN, 169 KEYS, 170 RANDOMKEY, 171 OBJECT, 167 is reserved. Network-only kinds are 172 EVAL, 173 EVALSHA, 174 SCRIPT, 175 INFO, 176 CONFIG, 177 AUTH, 178 HELLO, 179 QUIT, 180 CLIENT, 181 DEBUG, 182 FUNCTION, 183 SHUTDOWN, 184 BGREWRITEAOF, 185 MULTI, 186 EXEC, 187 DISCARD, 188 WATCH (only its inside-MULTI refusal), 189 RESET. Names are case insensitive; zero is unknown.";
   let code = name_code(input: input, start: name.start, length: name.length);
+  if code == code_object {
+    return 171_u64;
+  }
   if code == code_get {
     return 1_u64;
   }
@@ -817,11 +820,78 @@ fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
       return 170_u64;
     }
   }
+  if code == code_eval {
+    return 172_u64;
+  }
+  if code == code_evalsha {
+    return 173_u64;
+  }
+  if code == code_script {
+    return 174_u64;
+  }
+  if code == code_info {
+    return 175_u64;
+  }
+  if code == code_config {
+    return 176_u64;
+  }
+  if code == code_auth {
+    return 177_u64;
+  }
+  if code == code_hello {
+    return 178_u64;
+  }
+  if code == code_quit {
+    return 179_u64;
+  }
+  if code == code_client {
+    return 180_u64;
+  }
+  if code == code_debug {
+    return 181_u64;
+  }
+  if code == code_function {
+    return 182_u64;
+  }
+  if code == code_shutdown {
+    return 183_u64;
+  }
+  if code == code_multi {
+    return 185_u64;
+  }
+  if code == code_exec {
+    return 186_u64;
+  }
+  if code == code_discard {
+    return 187_u64;
+  }
+  if code == code_watch {
+    return 188_u64;
+  }
+  if code == code_reset {
+    return 189_u64;
+  }
+  let rewrite = name_is(input: input, start: name.start, length: name.length, word: &aof_command_name[0_u64..12_u64]);
+  if rewrite {
+    return 184_u64;
+  }
+  return 0_u64;
+}
+
+fn held_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
+  doc "The command identity when it has parts usable under EXEC or a script's atomic statement; zero otherwise.";
+  let kind = command_kind(input: input, name: name);
+  if kind <= 171_u64 {
+    return kind;
+  }
   return 0_u64;
 }
 
 fn held_arity(kind: u64) -> arity: i64 pure {
   doc "The arity Redis 7.0.15's command table gives a command held_kind names, positive for exactly that many arguments with its name and negative for at least its magnitude.";
+  if kind == 171_u64 {
+    return arity_object;
+  }
   if kind == 1_u64 {
     return arity_get;
   }
@@ -1156,8 +1226,11 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   return 0_i64;
 }
 
-fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
-  doc "Runs a command held_kind names, its arity already checked, by its parts inside a statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the caller's record of what it changed. time is the statement's: its check is the instant the script or the transaction began, and its calendar time is frozen with it.";
+fn held_run(journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "Runs a command held_kind names, its arity already checked, by its parts inside a statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the caller's record of what it changed. journal is the attempt environment's first-refresh undo log, or None for EXEC; the client carries the read's memory settings, refreshed after its own CONFIG SET. time is the statement's: its check is the instant the script or the transaction began, and its calendar time is frozen with it.";
+  if kind == 171_u64 {
+    return held_object(keys: keys, log: effects, logged: logged, input: input, args: args, client: client, time: time);
+  }
   if kind == 164_u64 {
     return held_flush(keys: keys, due: &meta^.due, log: effects, logged: logged, input: input, args: args, client: client);
   }
@@ -1177,43 +1250,43 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
   let relative = False();
   let calendar = True();
   if kind == 1_u64 {
-    let got = script_get(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let got = script_get(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return got;
   }
   if kind == 2_u64 {
-    let stored = script_set(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let stored = script_set(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     return stored;
   }
   if kind == 3_u64 {
-    let bumped = script_incr(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: 1_i64);
+    let bumped = script_incr(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: 1_i64);
     return bumped;
   }
   if kind == 4_u64 {
-    let lowered = script_incr(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: -1_i64);
+    let lowered = script_incr(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: -1_i64);
     return lowered;
   }
   if kind == 5_u64 {
-    let added = script_incrby(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: relative);
+    let added = script_incrby(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: relative);
     return added;
   }
   if kind == 6_u64 {
-    let taken = script_incrby(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: calendar);
+    let taken = script_incrby(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: calendar);
     return taken;
   }
   if kind == 7_u64 {
-    let expiring = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: relative, invalid: &text_expire_expire[0_u64..43_u64]);
+    let expiring = script_expire(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: relative, invalid: &text_expire_expire[0_u64..43_u64]);
     return expiring;
   }
   if kind == 8_u64 {
-    let expiring = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: relative, invalid: &text_expire_pexpire[0_u64..44_u64]);
+    let expiring = script_expire(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: relative, invalid: &text_expire_pexpire[0_u64..44_u64]);
     return expiring;
   }
   if kind == 9_u64 {
-    let expiring = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: calendar, invalid: &text_expire_expireat[0_u64..45_u64]);
+    let expiring = script_expire(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: calendar, invalid: &text_expire_expireat[0_u64..45_u64]);
     return expiring;
   }
   if kind == 10_u64 {
-    let expiring = script_expire(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: calendar, invalid: &text_expire_pexpireat[0_u64..46_u64]);
+    let expiring = script_expire(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: calendar, invalid: &text_expire_pexpireat[0_u64..46_u64]);
     return expiring;
   }
   if kind == 11_u64 {
@@ -1237,19 +1310,19 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
     return read;
   }
   if kind == 15_u64 {
-    let stored = script_mset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let stored = script_mset(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return stored;
   }
   if kind == 16_u64 {
-    let appended = script_named(kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_named(journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 17_u64 {
-    let appended = script_named(kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_named(journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 18_u64 {
-    let appended = script_named(kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_named(journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 19_u64 {
@@ -1257,7 +1330,7 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
     return appended;
   }
   if kind == 20_u64 {
-    let appended = script_persist(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_persist(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 21_u64 {
@@ -1274,355 +1347,355 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
     return 0_u64;
   }
   if kind == 24_u64 {
-    let appended = script_set_key(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 2_u64, flags: option_nx, at: 0_u64, mode: mode_setnx);
+    let appended = script_set_key(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 2_u64, flags: option_nx, at: 0_u64, mode: mode_setnx);
     return appended;
   }
   if kind == 25_u64 {
-    let appended = script_setex(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, in_seconds: calendar, invalid: &text_expire_setex[0_u64..42_u64]);
+    let appended = script_setex(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, in_seconds: calendar, invalid: &text_expire_setex[0_u64..42_u64]);
     return appended;
   }
   if kind == 26_u64 {
-    let appended = script_setex(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, in_seconds: relative, invalid: &text_expire_psetex[0_u64..43_u64]);
+    let appended = script_setex(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, in_seconds: relative, invalid: &text_expire_psetex[0_u64..43_u64]);
     return appended;
   }
   if kind == 27_u64 {
-    let appended = script_set_key(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 2_u64, flags: option_get, at: 0_u64, mode: mode_getset);
+    let appended = script_set_key(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 2_u64, flags: option_get, at: 0_u64, mode: mode_getset);
     return appended;
   }
   if kind == 28_u64 {
-    let appended = script_getdel(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_getdel(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 29_u64 {
-    let appended = script_getex(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let appended = script_getex(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     return appended;
   }
   if kind == 30_u64 {
-    let appended = script_append(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_append(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 31_u64 {
-    let appended = script_setrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_setrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 32_u64 {
-    let appended = script_strlen(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_strlen(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 33_u64 {
-    let appended = script_getrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_getrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 34_u64 {
-    let appended = script_named(kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_named(journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 35_u64 {
-    let appended = script_msetnx(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_msetnx(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 36_u64 {
-    let appended = script_incrbyfloat(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_incrbyfloat(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 37_u64 {
-    let appended = script_rename(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, fresh: relative);
+    let appended = script_rename(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, fresh: relative);
     return appended;
   }
   if kind == 38_u64 {
-    let appended = script_rename(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, fresh: calendar);
+    let appended = script_rename(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, fresh: calendar);
     return appended;
   }
   if kind == 39_u64 {
-    let appended = script_copy(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let appended = script_copy(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     return appended;
   }
   if kind == 40_u64 {
-    let appended = script_hset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, counted: calendar);
+    let appended = script_hset(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, counted: calendar);
     return appended;
   }
   if kind == 41_u64 {
-    let appended = script_hset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, counted: relative);
+    let appended = script_hset(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, counted: relative);
     return appended;
   }
   if kind == 42_u64 {
-    let appended = script_hsetnx(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hsetnx(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 43_u64 {
-    let appended = script_hget(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hget(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 44_u64 {
-    let appended = script_hmget(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hmget(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 45_u64 {
-    let appended = script_hdel(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hdel(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 46_u64 {
-    let appended = script_hfield(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, length: relative);
+    let appended = script_hfield(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, length: relative);
     return appended;
   }
   if kind == 47_u64 {
-    let appended = script_hfield(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, length: calendar);
+    let appended = script_hfield(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, length: calendar);
     return appended;
   }
   if kind == 48_u64 {
-    let appended = script_hlen(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hlen(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 49_u64 {
-    let appended = script_hall(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 2_i64);
+    let appended = script_hall(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 2_i64);
     return appended;
   }
   if kind == 50_u64 {
-    let appended = script_hall(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 0_i64);
+    let appended = script_hall(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 0_i64);
     return appended;
   }
   if kind == 51_u64 {
-    let appended = script_hall(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 1_i64);
+    let appended = script_hall(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 1_i64);
     return appended;
   }
   if kind == 52_u64 {
-    let appended = script_hincrby(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hincrby(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 53_u64 {
-    let appended = script_hincrbyfloat(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hincrbyfloat(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 54_u64 {
-    let appended = script_hrandfield(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hrandfield(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 60_u64 {
-    let appended = script_push(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar, existing: relative);
+    let appended = script_push(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar, existing: relative);
     return appended;
   }
   if kind == 61_u64 {
-    let appended = script_push(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative, existing: relative);
+    let appended = script_push(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative, existing: relative);
     return appended;
   }
   if kind == 62_u64 {
-    let appended = script_push(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar, existing: calendar);
+    let appended = script_push(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar, existing: calendar);
     return appended;
   }
   if kind == 63_u64 {
-    let appended = script_push(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative, existing: calendar);
+    let appended = script_push(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative, existing: calendar);
     return appended;
   }
   if kind == 64_u64 {
-    let appended = script_pop(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar);
+    let appended = script_pop(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar);
     return appended;
   }
   if kind == 65_u64 {
-    let appended = script_pop(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative);
+    let appended = script_pop(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative);
     return appended;
   }
   if kind == 66_u64 {
-    let appended = script_lrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_lrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 67_u64 {
-    let appended = script_llen(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_llen(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 68_u64 {
-    let appended = script_lindex(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_lindex(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 69_u64 {
-    let appended = script_lset(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_lset(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 70_u64 {
-    let appended = script_lrem(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_lrem(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 71_u64 {
-    let appended = script_ltrim(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_ltrim(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 72_u64 {
-    let appended = script_linsert(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_linsert(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 73_u64 {
-    let appended = script_lpos(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_lpos(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 74_u64 {
-    let appended = script_lmove(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, named: calendar);
+    let appended = script_lmove(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, named: calendar);
     return appended;
   }
   if kind == 75_u64 {
-    let appended = script_lmove(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, named: relative);
+    let appended = script_lmove(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, named: relative);
     return appended;
   }
   if kind == 90_u64 {
-    let appended = script_sadd(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_sadd(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 91_u64 {
-    let appended = script_srem(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_srem(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 92_u64 {
-    let appended = script_spop(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_spop(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 93_u64 {
-    let appended = script_scard(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_scard(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 94_u64 {
-    let appended = script_smembers(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_smembers(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 95_u64 {
     let many = False();
-    let appended = script_sismember(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, many: many);
+    let appended = script_sismember(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, many: many);
     return appended;
   }
   if kind == 96_u64 {
     let many = True();
-    let appended = script_sismember(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, many: many);
+    let appended = script_sismember(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, many: many);
     return appended;
   }
   if kind == 97_u64 {
-    let appended = script_srandmember(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_srandmember(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 98_u64 {
-    let appended = script_smove(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_smove(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 99_u64 {
     let storing = False();
-    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_inter, storing: storing);
+    let appended = script_set_combine(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_inter, storing: storing);
     return appended;
   }
   if kind == 100_u64 {
     let storing = False();
-    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_union, storing: storing);
+    let appended = script_set_combine(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_union, storing: storing);
     return appended;
   }
   if kind == 101_u64 {
     let storing = False();
-    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
+    let appended = script_set_combine(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
     return appended;
   }
   if kind == 102_u64 {
-    let appended = script_sintercard(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let appended = script_sintercard(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     return appended;
   }
   if kind == 103_u64 {
     let storing = True();
-    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_inter, storing: storing);
+    let appended = script_set_combine(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_inter, storing: storing);
     return appended;
   }
   if kind == 104_u64 {
     let storing = True();
-    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_union, storing: storing);
+    let appended = script_set_combine(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_union, storing: storing);
     return appended;
   }
   if kind == 105_u64 {
     let storing = True();
-    let appended = script_set_combine(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
+    let appended = script_set_combine(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
     return appended;
   }
   if kind == 120_u64 {
-    let appended = script_zadd(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, increment: relative);
+    let appended = script_zadd(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, increment: relative);
     return appended;
   }
   if kind == 121_u64 {
-    let appended = script_zadd(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, increment: calendar);
+    let appended = script_zadd(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, increment: calendar);
     return appended;
   }
   if kind == 122_u64 {
-    let appended = script_zrem(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_zrem(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 123_u64 {
-    let appended = script_zpop(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, from_top: relative);
+    let appended = script_zpop(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, from_top: relative);
     return appended;
   }
   if kind == 124_u64 {
-    let appended = script_zpop(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, from_top: calendar);
+    let appended = script_zpop(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, from_top: calendar);
     return appended;
   }
   if kind == 125_u64 {
-    let appended = script_zcard(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_zcard(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 126_u64 {
-    let appended = script_zscore(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_zscore(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 127_u64 {
-    let appended = script_zmscore(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_zmscore(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 128_u64 {
-    let appended = script_zrank(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, reverse: relative);
+    let appended = script_zrank(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, reverse: relative);
     return appended;
   }
   if kind == 129_u64 {
-    let appended = script_zrank(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, reverse: calendar);
+    let appended = script_zrank(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, reverse: calendar);
     return appended;
   }
   if kind == 130_u64 {
-    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 0_u64, direction: 0_u64);
+    let appended = script_zrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 0_u64, direction: 0_u64);
     return appended;
   }
   if kind == 131_u64 {
-    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64, direction: 2_u64);
+    let appended = script_zrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64, direction: 2_u64);
     return appended;
   }
   if kind == 132_u64 {
-    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64, direction: 1_u64);
+    let appended = script_zrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64, direction: 1_u64);
     return appended;
   }
   if kind == 133_u64 {
-    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64, direction: 2_u64);
+    let appended = script_zrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64, direction: 2_u64);
     return appended;
   }
   if kind == 134_u64 {
-    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 3_u64, direction: 1_u64);
+    let appended = script_zrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 3_u64, direction: 1_u64);
     return appended;
   }
   if kind == 135_u64 {
-    let appended = script_zrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 3_u64, direction: 2_u64);
+    let appended = script_zrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 3_u64, direction: 2_u64);
     return appended;
   }
   if kind == 136_u64 {
-    let appended = script_zcount(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64);
+    let appended = script_zcount(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64);
     return appended;
   }
   if kind == 137_u64 {
-    let appended = script_zcount(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64);
+    let appended = script_zcount(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64);
     return appended;
   }
   if kind == 138_u64 {
-    let appended = script_zremrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 0_u64);
+    let appended = script_zremrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 0_u64);
     return appended;
   }
   if kind == 139_u64 {
-    let appended = script_zremrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64);
+    let appended = script_zremrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64);
     return appended;
   }
   if kind == 140_u64 {
-    let appended = script_zremrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64);
+    let appended = script_zremrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64);
     return appended;
   }
   if kind == 160_u64 {
-    let appended = script_named(kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_named(journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 161_u64 {
-    let appended = script_getrange(keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_getrange(journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 162_u64 {
@@ -1640,11 +1713,23 @@ fn held_run(kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &B
   return 0_u64;
 }
 
-fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
-  doc "Runs one command a script calls, inside the script's statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the script's own record of what it changed, which the caller wraps in MULTI and EXEC when it holds more than one, as Redis 7.0.15 propagates a script's effects. time is the script's: its check is the instant the script began. COMMAND's subcommand is resolved by command_plan before it runs: an unknown one receives Redis's exact unknown-command refusal, a Redis subcommand firn does not run receives the extended refusal, and COUNT outside its arity receives Redis's script arity error. The commands held_kind names run through held_run; a count of arguments outside a command's arity is refused as Redis refuses it from a script, and AUTH, HELLO, QUIT, DEBUG, CONFIG, CLIENT, FUNCTION and SHUTDOWN, which Redis 7.0.15 marks noscript, as Redis refuses them, after the arity check of the command itself: AUTH, DEBUG, CONFIG, CLIENT and FUNCTION need an argument, HELLO, QUIT and SHUTDOWN none; a subcommand's own arity, such as CONFIG GET's, is not checked, so a short subcommand gets the refusal where Redis answers the arity error. Every other name is answered with Redis's error for a name no command has, extended to say that firn may know the command and not yet run it from scripts: firn names its commands only in execute's rows, so a script cannot tell an unknown name from a command firn has not split into its parts, and the extended text keeps the words Redis's own tests match.";
+fn script_command(memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(memory), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
+  doc "Runs one command a script calls, inside the script's statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the script's own record of what it changed, which the caller wraps in MULTI and EXEC when it holds more than one, as Redis 7.0.15 propagates a script's effects. Redis 7.0.15 scriptVerifyOOM refuses DENYOOM before scriptCall has accepted any WRITE-flagged command under the captured pre-command OOM state. A missing-key DEL sets write_dirty even with no appended effect. time is the script's: its check is the instant the script began. COMMAND's subcommand is resolved by command_plan before it runs: an unknown one receives Redis's exact unknown-command refusal, a Redis subcommand firn does not run receives the extended refusal, and COUNT outside its arity receives Redis's script arity error. The commands held_kind names run through held_run; a count of arguments outside a command's arity is refused as Redis refuses it from a script, and AUTH, HELLO, QUIT, RESET, DEBUG, CONFIG, CLIENT, FUNCTION and SHUTDOWN, which Redis 7.0.15 marks noscript, as Redis refuses them, after the arity check of the command itself: AUTH, DEBUG, CONFIG, CLIENT and FUNCTION need an argument, HELLO, QUIT and SHUTDOWN none, RESET exactly none; a subcommand's own arity, such as CONFIG GET's, is not checked, so a short subcommand gets the refusal where Redis answers the arity error. Every other name is answered with Redis's error for a name no command has, extended to say that firn may know the command and not yet run it from scripts: command_kind now identifies known commands for admission, but the established extended refusal for an unsplit script command still keeps the words Redis's own tests match.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
+  if kind == 171_u64 {
+    let object_count = object_arity(input: input, args: args);
+    if object_count == 0_i64 {
+      reply_error(client: client, word: &text_script_unknown[0_u64..44_u64]);
+      return 0_u64;
+    }
+    let object_fits = arity_holds(arity: object_count, count: count);
+    if bnot(object_fits) {
+      reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
+      return 0_u64;
+    }
+  }
   if kind == 166_u64 {
     let command = command_plan(input: input, args: args);
     if command == 3_u64 {
@@ -1663,7 +1748,17 @@ fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
   if kind != 0_u64 {
     let arity = held_arity(kind: kind);
     if arity_holds(arity: arity, count: count) {
-      let appended = held_run(kind: kind, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+      let denyoom = command_denyoom(kind: kind);
+      let unwritten = bnot(memory^.write_dirty);
+      let before_write = band(memory^.pre_command_oom, unwritten);
+      if band(before_write, denyoom) {
+        reply_error(client: client, word: &oom_error[0_u64..55_u64]);
+        return 0_u64;
+      }
+      if command_writes(kind: kind) {
+        set memory^.write_dirty = True();
+      }
+      let appended = held_run(journal: journal, kind: kind, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
       return appended;
     }
     reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
@@ -1673,6 +1768,7 @@ fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
   let auth = code == code_auth;
   let hello = code == code_hello;
   let quit = code == code_quit;
+  let resetting = code == code_reset;
   let debug = code == code_debug;
   let config = code == code_config;
   let client_command = code == code_client;
@@ -1684,8 +1780,15 @@ fn script_command(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
   let administration = bor(settings, function);
   let normal_refused = bor(connection, administration);
   let shutdown = code == code_shutdown;
-  let refused = bor(normal_refused, shutdown);
+  let process_refused = bor(normal_refused, shutdown);
+  let refused = bor(process_refused, resetting);
   if refused {
+    if resetting {
+      if count != 1_u64 {
+        reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
+        return 0_u64;
+      }
+    }
     let auth_or_debug = bor(auth, debug);
     let argued = bor(auth_or_debug, administration);
     if argued {
@@ -1723,7 +1826,7 @@ fn script_type(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   return records;
 }
 
-fn script_persist(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_persist(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "run_persist through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
   let expiry = Expiry(at: 0_u64, now: time^.check, state: state_absent);
@@ -1731,14 +1834,14 @@ fn script_persist(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, log
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  persist_body(slot: slot, expiry: &expiry);
+  persist_body(journal: journal, access_key: key, client: client, slot: slot, expiry: &expiry);
   let recorded_part = persist_meta(log: effects, logged: logged, expiry: &expiry, input: input, key_span: key_span, key: key);
   set records = records +wrap recorded_part;
   persist_finish(client: client, expiry: &expiry);
   return records;
 }
 
-fn script_getdel(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_getdel(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "run_getdel through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
   let key_span = arg(args: args, index: 1_u64);
@@ -1747,7 +1850,7 @@ fn script_getdel(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   set client^.now = time^.check;
   let kind = 0_u64;
   let slot = &keys^[key];
-  set kind = getdel_body(slot: slot, client: client);
+  set kind = getdel_body(journal: journal, access_key: key, slot: slot, client: client);
   let removed = client^.state == state_expired;
   let recorded_part = getdel_meta(log: effects, logged: logged, removed: removed, kind: kind, input: input, key_span: key_span, key: key);
   set records = records +wrap recorded_part;
@@ -1755,7 +1858,7 @@ fn script_getdel(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   return records;
 }
 
-fn script_getex(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+fn script_getex(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "run_getex through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
   let options = getex_options(input: input, args: args, client: client);
@@ -1770,14 +1873,14 @@ fn script_getex(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slot
   let none = False();
   let work = GetexWork(kind: 0_u64, removed: none, change: 0_u64);
   let slot = &keys^[key];
-  set work = getex_body(slot: slot, client: client, plan: &plan);
+  set work = getex_body(journal: journal, access_key: key, slot: slot, client: client, plan: &plan);
   let recorded_part = getex_meta(due: &meta^.due, log: effects, logged: logged, plan: &plan, work: &work, input: input, key_span: key_span, key: key, env: env);
   set records = records +wrap recorded_part;
   getex_finish(client: client, plan: &plan, work: &work);
   return records;
 }
 
-fn script_append(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_append(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "run_append through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -1787,7 +1890,7 @@ fn script_append(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   let none = False();
   let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
   let slot = &keys^[key];
-  set work = append_body(slot: slot, input: input, client: client, value_span: value_span);
+  set work = append_body(journal: journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span);
   let changed = work.outcome == state_done;
   let recorded_part = changed_meta(log: effects, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key);
   set records = records +wrap recorded_part;
@@ -1795,7 +1898,7 @@ fn script_append(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   return records;
 }
 
-fn script_setrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_setrange(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "run_setrange through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
   let plan = setrange_plan(input: input, args: args);
@@ -1811,7 +1914,7 @@ fn script_setrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, lo
   let none = False();
   let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
   let slot = &keys^[key];
-  set work = setrange_body(slot: slot, input: input, client: client, value_span: value_span, offset: offset);
+  set work = setrange_body(journal: journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span, offset: offset);
   let changed = work.outcome == state_done;
   let recorded_part = changed_meta(log: effects, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key);
   set records = records +wrap recorded_part;
@@ -1819,7 +1922,7 @@ fn script_setrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, lo
   return records;
 }
 
-fn script_strlen(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_strlen(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "run_strlen through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -1828,14 +1931,14 @@ fn script_strlen(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   let none = False();
   let work = StringWork(outcome: 0_u64, length: 0_u64, removed: none);
   let slot = &keys^[key];
-  set work = strlen_body(slot: slot, client: client);
+  set work = strlen_body(journal: journal, access_key: key, slot: slot, client: client);
   let recorded_part = mset_lapse_meta(log: effects, logged: logged, lapsed: work.removed, key: key);
   set records = records +wrap recorded_part;
   strlen_finish(client: client, work: &work);
   return records;
 }
 
-fn script_getrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_getrange(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "run_getrange through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
   let plan = getrange_plan(input: input, args: args);
@@ -1848,7 +1951,7 @@ fn script_getrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, lo
   set client^.now = time^.check;
   let kind = 0_u64;
   let slot = &keys^[key];
-  set kind = getrange_body(slot: slot, client: client, start: plan.start, end: plan.end);
+  set kind = getrange_body(journal: journal, access_key: key, slot: slot, client: client, start: plan.start, end: plan.end);
   let removed = client^.state == state_expired;
   let recorded_part = mset_lapse_meta(log: effects, logged: logged, lapsed: removed, key: key);
   set records = records +wrap recorded_part;
@@ -1856,7 +1959,7 @@ fn script_getrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, lo
   return records;
 }
 
-fn script_incrbyfloat(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_incrbyfloat(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "run_incrbyfloat through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
   let increment = incrbyfloat_parse(input: input, args: args);
@@ -1867,14 +1970,14 @@ fn script_incrbyfloat(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>,
   let empty = Bytes::Short(bytes: move nothing);
   let summed = FloatSum(increment: increment, text: move empty, now: time^.check, state: state_absent);
   let slot = &keys^[key];
-  let removed = incrbyfloat_body(slot: slot, summed: &summed);
+  let removed = incrbyfloat_body(journal: journal, access_key: key, client: client, slot: slot, summed: &summed);
   let recorded_part = incrbyfloat_meta(log: effects, logged: logged, removed: removed, summed: &summed, input: input, key_span: key_span, key: key);
   set records = records +wrap recorded_part;
   incrbyfloat_finish(client: client, summed: &summed);
   return records;
 }
 
-fn script_set_key(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, key_index: u64, value_index: u64, flags: u64, at: u64, mode: u64) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+fn script_set_key(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, key_index: u64, value_index: u64, flags: u64, at: u64, mode: u64) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "set_key through its shared parts while EXEC or a script holds the keyspace; returns its propagated record count.";
   let records = 0_u64;
   let value_span = arg(args: args, index: value_index);
@@ -1888,7 +1991,7 @@ fn script_set_key(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
   let none = False();
   let work = SetWork(outcome: state_absent, answered: none, removed: none);
   let slot = &keys^[key];
-  set work = set_body(slot: slot, client: client, value: move value, flags: flags, at: at);
+  set work = set_body(journal: journal, access_key: key, slot: slot, client: client, value: move value, flags: flags, at: at);
   let stored = work.outcome == state_done;
   let queued = band(stored, timed);
   let changed = bor(stored, work.removed);
@@ -1902,7 +2005,7 @@ fn script_set_key(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Sl
   return records;
 }
 
-fn script_setex(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, invalid: &[u8]) -> appended: u64 reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(keys), writes(meta), writes(effects), writes(client) {
+fn script_setex(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, invalid: &[u8]) -> appended: u64 reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "SETEX and PSETEX read their expiry before lookup and use SET's shared parts.";
   let parsed = setex_parse(input: input, args: args, client: client, time: time, in_seconds: in_seconds, invalid: invalid);
   let plan = match parsed {
@@ -1913,11 +2016,11 @@ fn script_setex(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slot
       return 0_u64;
     }
   }
-  let appended = script_set_key(keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: plan.key_index, value_index: plan.value_index, flags: plan.flags, at: plan.at, mode: plan.mode);
+  let appended = script_set_key(journal: journal, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: plan.key_index, value_index: plan.value_index, flags: plan.flags, at: plan.at, mode: plan.mode);
   return appended;
 }
 
-fn script_named(kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_named(journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "DEL and UNLINK remove each named entry, EXISTS and TOUCH count every occurrence, and MGET answers each in order, using the network bodies and metadata.";
   let count = args^.inner.len;
   let many = count -sat 1_u64;
@@ -1940,10 +2043,13 @@ fn script_named(kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<
       }
       set lapsed = found == 2_u64;
     } else if kind == 34_u64 {
-      let found = mget_body(slot: slot, client: client);
+      let found = mget_body(journal: journal, access_key: key, slot: slot, client: client);
       set lapsed = client^.state == state_expired;
       mget_finish(client: client, kind: found);
     } else {
+      if kind == 160_u64 {
+        refresh_access(journal: journal, key: key, slot: slot, client: client);
+      }
       let found = entry_kind(slot: slot, client: client);
       set lapsed = client^.state == state_expired;
       if found != 0_u64 {
@@ -1965,7 +2071,7 @@ fn script_named(kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<
   return appended;
 }
 
-fn script_msetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_msetnx(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "MSETNX probes entries in argument order, stopping at the first live entry, then stores each pair through mset_body only if all were absent.";
   let count = args^.inner.len;
   let rejected = mset_pairs_refused(input: input, args: args, client: client);
@@ -1981,6 +2087,7 @@ fn script_msetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
     let place = key_bounds(input: input, args: args, index: index);
     let key = &input^[place.start..place.end];
     let slot = &keys^[key];
+    refresh_access(journal: journal, key: key, slot: slot, client: client);
     let kind = entry_kind(slot: slot, client: client);
     let lapsed = client^.state == state_expired;
     let removal = mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key);
@@ -1998,7 +2105,7 @@ fn script_msetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
     let key = &input^[place.start..place.end];
     let value_index = index +wrap 1_u64;
     let slot = &keys^[key];
-    let replaced = mset_body(slot: slot, input: input, args: args, value_index: value_index, now: time^.check);
+    let replaced = mset_body(journal: journal, client: client, slot: slot, input: input, args: args, value_index: value_index, now: time^.check);
   }
   let recorded = mset_meta(log: effects, logged: logged, input: input, args: args);
   set appended = appended +wrap recorded;
@@ -2007,19 +2114,19 @@ fn script_msetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   return appended;
 }
 
-fn script_rename(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, fresh: Bool) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+fn script_rename(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, fresh: Bool) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "RENAME and RENAMENX under a statement holding every key: the same parts as the network, with entries selected by the same key set and records appended to the caller's effects.";
   let ks = key_set_new(capacity: 2_u64);
   let pair = rename_parse(input: input, args: args, keys: &ks);
   set client^.now = time^.check;
   let slots = &keys^[ks];
-  let work = rename_body(slots: slots, source: pair.source, target: pair.target, client: client, fresh: fresh);
+  let work = rename_body(journal: journal, access_keys: &ks, slots: slots, source: pair.source, target: pair.target, client: client, fresh: fresh);
   let appended = transfer_meta(due: &meta^.due, log: effects, logged: logged, work: &work, input: input, args: args, env: env);
   rename_finish(client: client, outcome: work.outcome, fresh: fresh);
   return appended;
 }
 
-fn script_copy(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(meta), writes(effects), writes(client) {
+fn script_copy(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "COPY under a statement holding every key: the same parsing, entries body, metadata and reply as the network, with records appended to the caller's effects.";
   let plan = copy_parse(input: input, args: args);
   let rejected = copy_refused(client: client, plan: &plan);
@@ -2030,13 +2137,13 @@ fn script_copy(keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots
   let pair = rename_parse(input: input, args: args, keys: &ks);
   set client^.now = time^.check;
   let slots = &keys^[ks];
-  let work = copy_body(slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
+  let work = copy_body(journal: journal, access_keys: &ks, slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
   let appended = transfer_meta(due: &meta^.due, log: effects, logged: logged, work: &work, input: input, args: args, env: env);
   copy_finish(client: client, error: 0_u64, outcome: work.outcome);
   return appended;
 }
 
-fn script_hset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, counted: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hset(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, counted: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HSET and HMSET through the network command parts while EXEC or a script holds every key.";
   let valid = hset_parse(input: input, args: args, client: client);
   if valid {
@@ -2049,14 +2156,14 @@ fn script_hset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   set client^.state = state_absent;
   set client^.number = 0_u64;
   let slot = &keys^[key];
-  let removed = hset_body(slot: slot, client: client);
+  let removed = hset_body(journal: journal, access_key: key, slot: slot, client: client);
   let changed = client^.state == state_done;
   let appended = changed_meta(log: effects, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
   hset_finish(client: client, counted: counted);
   return appended;
 }
 
-fn script_hsetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hsetnx(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HSETNX through the network command parts while EXEC or a script holds every key.";
   prepare_keys(input: input, args: args, client: client, first: 2_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -2065,7 +2172,7 @@ fn script_hsetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   set client^.state = state_absent;
   set client^.number = 0_u64;
   let slot = &keys^[key];
-  let removed = hsetnx_body(slot: slot, client: client);
+  let removed = hsetnx_body(journal: journal, access_key: key, slot: slot, client: client);
   let stored = client^.state == state_done;
   let added = client^.number > 0_u64;
   let changed = band(stored, added);
@@ -2074,7 +2181,7 @@ fn script_hsetnx(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   return appended;
 }
 
-fn script_hget(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hget(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HGET through the network command parts while EXEC or a script holds every key.";
   hash_field_parse(input: input, args: args, client: client);
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -2082,7 +2189,7 @@ fn script_hget(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   set client^.now = time^.check;
   set client^.state = state_absent;
   let slot = &keys^[key];
-  hget_body(slot: slot, client: client);
+  hget_body(journal: journal, access_key: key, slot: slot, client: client);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2092,7 +2199,7 @@ fn script_hget(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   return appended;
 }
 
-fn script_hmget(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hmget(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HMGET through the network command parts while EXEC or a script holds every key.";
   prepare_keys(input: input, args: args, client: client, first: 2_u64);
   let fields = args^.inner.len -sat 2_u64;
@@ -2101,7 +2208,7 @@ fn script_hmget(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logge
   set client^.now = time^.check;
   set client^.state = state_absent;
   let slot = &keys^[key];
-  hmget_body(slot: slot, client: client);
+  hmget_body(journal: journal, access_key: key, slot: slot, client: client);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2111,7 +2218,7 @@ fn script_hmget(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logge
   return appended;
 }
 
-fn script_hdel(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hdel(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HDEL through the network command parts while EXEC or a script holds every key.";
   prepare_keys(input: input, args: args, client: client, first: 2_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -2120,14 +2227,14 @@ fn script_hdel(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   set client^.state = state_absent;
   set client^.number = 0_u64;
   let slot = &keys^[key];
-  let removed = hdel_body(slot: slot, client: client);
+  let removed = hdel_body(journal: journal, access_key: key, slot: slot, client: client);
   let changed = client^.number > 0_u64;
   let appended = changed_meta(log: effects, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
   hdel_finish(client: client);
   return appended;
 }
 
-fn script_hfield(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, length: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hfield(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, length: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HEXISTS and HSTRLEN through the network command parts while EXEC or a script holds every key.";
   hash_field_parse(input: input, args: args, client: client);
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -2136,7 +2243,7 @@ fn script_hfield(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   set client^.state = state_absent;
   set client^.number = 0_u64;
   let slot = &keys^[key];
-  hfield_body(slot: slot, client: client);
+  hfield_body(journal: journal, access_key: key, slot: slot, client: client);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2146,7 +2253,7 @@ fn script_hfield(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   return appended;
 }
 
-fn script_hlen(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hlen(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HLEN through the network command parts while EXEC or a script holds every key.";
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
@@ -2154,7 +2261,7 @@ fn script_hlen(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   set client^.state = state_absent;
   set client^.number = 0_u64;
   let slot = &keys^[key];
-  hlen_body(slot: slot, client: client);
+  hlen_body(journal: journal, access_key: key, slot: slot, client: client);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2164,7 +2271,7 @@ fn script_hlen(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   return appended;
 }
 
-fn script_hall(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, shown: i64) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hall(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, shown: i64) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HGETALL, HKEYS and HVALS through the network command parts while EXEC or a script holds every key.";
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
@@ -2172,7 +2279,7 @@ fn script_hall(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   set client^.state = state_absent;
   set client^.low = shown;
   let slot = &keys^[key];
-  hall_body(slot: slot, client: client);
+  hall_body(journal: journal, access_key: key, slot: slot, client: client);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2182,7 +2289,7 @@ fn script_hall(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   return appended;
 }
 
-fn script_hincrby(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hincrby(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HINCRBY through the network command parts while EXEC or a script holds every key.";
   let valid = hincrby_parse(input: input, args: args, client: client);
   if valid {
@@ -2195,14 +2302,14 @@ fn script_hincrby(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, log
   set client^.state = state_absent;
   set client^.high = 0_i64;
   let slot = &keys^[key];
-  let removed = hincrby_body(slot: slot, client: client);
+  let removed = hincrby_body(journal: journal, access_key: key, slot: slot, client: client);
   let changed = client^.state == state_done;
   let appended = changed_meta(log: effects, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
   hincrby_finish(client: client);
   return appended;
 }
 
-fn script_hincrbyfloat(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hincrbyfloat(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HINCRBYFLOAT through the network command parts while EXEC or a script holds every key.";
   let read = hincrbyfloat_parse(input: input, args: args);
   let refused = hincrbyfloat_refused(client: client, read: &read);
@@ -2219,13 +2326,13 @@ fn script_hincrbyfloat(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>
   let empty = decimal_text(value: 0_i64);
   let floating = Floating(increment: read, text: move empty, state: state_absent);
   let slot = &keys^[key];
-  let removed = hincrbyfloat_body(slot: slot, client: client, floating: &floating);
+  let removed = hincrbyfloat_body(journal: journal, access_key: key, slot: slot, client: client, floating: &floating);
   let appended = hincrbyfloat_meta(log: effects, logged: logged, removed: removed, client: client, floating: &floating, input: input, key_span: key_span, field_span: field_span, key: key);
   hincrbyfloat_finish(client: client, floating: &floating);
   return appended;
 }
 
-fn script_hrandfield(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_hrandfield(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "HRANDFIELD through the network command parts while EXEC or a script holds every key.";
   let valid = hrandfield_parse(input: input, args: args, client: client);
   if valid {
@@ -2240,7 +2347,7 @@ fn script_hrandfield(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, 
   let single = client^.low == 0_i64;
   let reading = bor(asked, single);
   let slot = &keys^[key];
-  hrandfield_body(slot: slot, client: client, reading: reading);
+  hrandfield_body(journal: journal, access_key: key, slot: slot, client: client, reading: reading);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2250,19 +2357,19 @@ fn script_hrandfield(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, 
   return appended;
 }
 
-fn script_push(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool, existing: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_push(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool, existing: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
   push_parse(input: input, args: args, client: client, time: time, front: front);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let work = push_body(slot: slot, client: client, front: front, existing: existing);
+  let work = push_body(journal: journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
   let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   push_finish(client: client);
   return appended;
 }
 
-fn script_pop(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_pop(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
   let ready = pop_parse(input: input, args: args, client: client, time: time, front: front);
   if bnot(ready) {
@@ -2271,13 +2378,13 @@ fn script_pop(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged:
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let work = pop_body(slot: slot, client: client);
+  let work = pop_body(journal: journal, access_key: key, slot: slot, client: client);
   let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   pop_finish(client: client);
   return appended;
 }
 
-fn script_lrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_lrange(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
   let ready = lrange_parse(input: input, args: args, client: client, time: time);
   if bnot(ready) {
@@ -2286,7 +2393,7 @@ fn script_lrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  lrange_body(slot: slot, client: client);
+  lrange_body(journal: journal, access_key: key, slot: slot, client: client);
   let removed = client^.state == state_expired;
   if removed {
     set slot^ = None<Entry>();
@@ -2296,13 +2403,13 @@ fn script_lrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   return appended;
 }
 
-fn script_llen(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_llen(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
   llen_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  llen_body(slot: slot, client: client);
+  llen_body(journal: journal, access_key: key, slot: slot, client: client);
   let removed = client^.state == state_expired;
   if removed {
     set slot^ = None<Entry>();
@@ -2312,13 +2419,13 @@ fn script_llen(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   return appended;
 }
 
-fn script_lindex(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_lindex(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
   lindex_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  lindex_body(slot: slot, client: client);
+  lindex_body(journal: journal, access_key: key, slot: slot, client: client);
   let removed = client^.state == state_expired;
   if removed {
     set slot^ = None<Entry>();
@@ -2328,19 +2435,19 @@ fn script_lindex(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   return appended;
 }
 
-fn script_lset(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_lset(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
   lset_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let work = lset_body(slot: slot, client: client, input: input, args: args);
+  let work = lset_body(journal: journal, access_key: key, slot: slot, client: client, input: input, args: args);
   let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   lset_finish(client: client);
   return appended;
 }
 
-fn script_lrem(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_lrem(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
   let ready = lrem_parse(input: input, args: args, client: client, time: time);
   if bnot(ready) {
@@ -2349,13 +2456,13 @@ fn script_lrem(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let work = lrem_body(slot: slot, client: client, input: input, args: args);
+  let work = lrem_body(journal: journal, access_key: key, slot: slot, client: client, input: input, args: args);
   let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   lrem_finish(client: client);
   return appended;
 }
 
-fn script_ltrim(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_ltrim(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
   let ready = ltrim_parse(input: input, args: args, client: client, time: time);
   if bnot(ready) {
@@ -2364,13 +2471,13 @@ fn script_ltrim(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logge
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let work = ltrim_body(slot: slot, client: client);
+  let work = ltrim_body(journal: journal, access_key: key, slot: slot, client: client);
   let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   ltrim_finish(client: client);
   return appended;
 }
 
-fn script_linsert(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_linsert(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "The network command parts under EXEC or a script, with expired removals recorded in the caller's effects.";
   let ready = linsert_parse(input: input, args: args, client: client, time: time);
   if bnot(ready) {
@@ -2379,13 +2486,13 @@ fn script_linsert(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, log
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let work = linsert_body(slot: slot, client: client, input: input, args: args);
+  let work = linsert_body(journal: journal, access_key: key, slot: slot, client: client, input: input, args: args);
   let appended = changed_meta(log: effects, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   linsert_finish(client: client);
   return appended;
 }
 
-fn script_lpos(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_lpos(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "LPOS by the network parts under EXEC or a script; expired keys are removed and recorded immediately.";
   let no = False();
   let seek = Seek(rank: 1_i64, count: 0_i64, counted: no, maxlen: 0_u64, now: time^.check, state: state_absent);
@@ -2397,7 +2504,7 @@ fn script_lpos(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   let key = &input^[place.start..place.end];
   let positions = box_slots_new::<u64>(capacity: 0_u64);
   let slot = &keys^[key];
-  lpos_body(slot: slot, input: input, args: args, seek: &seek, positions: &positions);
+  lpos_body(journal: journal, access_key: key, client: client, slot: slot, input: input, args: args, seek: &seek, positions: &positions);
   let removed = seek.state == state_expired;
   if removed {
     set slot^ = None<Entry>();
@@ -2407,7 +2514,7 @@ fn script_lpos(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   return appended;
 }
 
-fn script_lmove(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, named: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_lmove(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, named: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "LMOVE or RPOPLPUSH through the same key-set body and metadata as the network, under the caller's statement.";
   let from_head = False();
   let to_head = True();
@@ -2423,37 +2530,37 @@ fn script_lmove(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logge
   let pair = rename_parse(input: input, args: args, keys: &ks);
   set client^.now = time^.check;
   let slots = &keys^[ks];
-  let work = lmove_body(slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
+  let work = lmove_body(journal: journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
   let appended = lmove_meta(log: effects, logged: logged, work: &work, input: input, args: args);
   lmove_finish(client: client);
   return appended;
 }
 
-fn script_sadd(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_sadd(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "SADD under a held statement, through the network parts, removing and recording an expired entry at once.";
   sadd_parse(input: input, args: args, client: client, now: time^.check);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let lapsed = sadd_body(slot: slot, client: client);
+  let lapsed = sadd_body(journal: journal, access_key: key, slot: slot, client: client);
   let appended = set_members_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
   sadd_finish(client: client);
   return appended;
 }
 
-fn script_srem(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_srem(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "SREM under a held statement, through the network parts, removing and recording an expired entry at once.";
   srem_parse(input: input, args: args, client: client, now: time^.check);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let lapsed = srem_body(slot: slot, client: client);
+  let lapsed = srem_body(journal: journal, access_key: key, slot: slot, client: client);
   let appended = set_members_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
   srem_finish(client: client);
   return appended;
 }
 
-fn script_spop(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_spop(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "SPOP under a held statement, through the network parts, removing and recording an expired entry at once.";
   let ready = spop_parse(input: input, args: args, client: client, now: time^.check);
   if bnot(ready) {
@@ -2462,19 +2569,19 @@ fn script_spop(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let lapsed = spop_body(slot: slot, client: client);
+  let lapsed = spop_body(journal: journal, access_key: key, slot: slot, client: client);
   let appended = spop_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
   spop_finish(client: client);
   return appended;
 }
 
-fn script_scard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_scard(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "SCARD under a held statement, through the network parts, removing and recording an expired entry at once.";
   scard_parse(client: client, now: time^.check);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let lapsed = scard_body(slot: slot, client: client);
+  let lapsed = scard_body(journal: journal, access_key: key, slot: slot, client: client);
   if lapsed {
     set slot^ = None<Entry>();
   }
@@ -2483,13 +2590,13 @@ fn script_scard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logge
   return appended;
 }
 
-fn script_smembers(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_smembers(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "SMEMBERS under a held statement, through the network parts, removing and recording an expired entry at once.";
   smembers_parse(client: client, now: time^.check);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let lapsed = smembers_body(slot: slot, client: client);
+  let lapsed = smembers_body(journal: journal, access_key: key, slot: slot, client: client);
   if lapsed {
     set slot^ = None<Entry>();
   }
@@ -2498,14 +2605,14 @@ fn script_smembers(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, lo
   return appended;
 }
 
-fn script_sismember(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, many: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_sismember(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, many: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "SISMEMBER under a held statement, through the network parts, removing and recording an expired entry at once.";
   sismember_parse(input: input, args: args, client: client, now: time^.check, many: many);
   let count = client^.items.inner.len;
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let lapsed = sismember_body(slot: slot, client: client);
+  let lapsed = sismember_body(journal: journal, access_key: key, slot: slot, client: client);
   if lapsed {
     set slot^ = None<Entry>();
   }
@@ -2514,7 +2621,7 @@ fn script_sismember(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, l
   return appended;
 }
 
-fn script_srandmember(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_srandmember(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "SRANDMEMBER under a held statement, through the network parts, removing and recording an expired entry at once.";
   let ready = srandmember_parse(input: input, args: args, client: client, now: time^.check);
   if bnot(ready) {
@@ -2523,7 +2630,7 @@ fn script_srandmember(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>,
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let slot = &keys^[key];
-  let lapsed = srandmember_body(slot: slot, client: client);
+  let lapsed = srandmember_body(journal: journal, access_key: key, slot: slot, client: client);
   if lapsed {
     set slot^ = None<Entry>();
   }
@@ -2532,29 +2639,29 @@ fn script_srandmember(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>,
   return appended;
 }
 
-fn script_smove(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_smove(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "SMOVE under a held statement, using the same key set, entries body, metadata and reply as the network.";
   let ks = key_set_new(capacity: 2_u64);
   let pair = smove_parse(input: input, args: args, client: client, keys: &ks, now: time^.check);
   let slots = &keys^[ks];
-  let work = smove_body(slots: slots, source: pair.source, destination: pair.target, client: client);
+  let work = smove_body(journal: journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client);
   let appended = smove_meta(log: effects, logged: logged, work: &work, input: input, args: args);
   smove_finish(client: client);
   return appended;
 }
 
-fn script_set_combine(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, operation: u64, storing: Bool) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_set_combine(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, operation: u64, storing: Bool) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "SINTER, SUNION, SDIFF and their STORE forms under a held statement, through the shared ordered operand lookup, removal records and reply, including wrong-type refusals.";
   let ks = set_combine_parse(input: input, args: args, client: client, storing: storing, now: time^.check);
   let members = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
   let slots = &keys^[ks];
-  let work = set_combine_body(slots: slots, keys: &ks, client: client, env: env, operation: operation, storing: storing, members: &members);
+  let work = set_combine_body(journal: journal, slots: slots, keys: &ks, client: client, env: env, operation: operation, storing: storing, members: &members);
   let appended = set_operands_meta(log: effects, logged: logged, removed: &work.removed, changed: work.changed, input: input, args: args);
   set_combine_finish(client: client, storing: storing, members: &members);
   return appended;
 }
 
-fn script_sintercard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_sintercard(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "SINTERCARD under a held statement, through the network parts, removing and recording each expired operand once.";
   let plan = sintercard_parse(input: input, args: args, client: client);
   if bnot(plan.valid) {
@@ -2562,14 +2669,14 @@ fn script_sintercard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, 
   }
   let ks = sintercard_keys(input: input, args: args, client: client, end: plan.end, now: time^.check);
   let slots = &keys^[ks];
-  let removed = sintercard_body(slots: slots, keys: &ks, client: client, env: env, limit: plan.limit);
+  let removed = sintercard_body(journal: journal, slots: slots, keys: &ks, client: client, env: env, limit: plan.limit);
   let changed = False();
   let appended = set_operands_meta(log: effects, logged: logged, removed: &removed, changed: changed, input: input, args: args);
   sintercard_finish(client: client);
   return appended;
 }
 
-fn script_zadd(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, increment: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_zadd(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, increment: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "Runs the same ZADD parts while EXEC or a script holds every key.";
   let plan = zadd_plan();
   let valid = zadd_parse(input: input, args: args, client: client, increment: increment, plan: &plan);
@@ -2580,13 +2687,13 @@ fn script_zadd(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let slot = &keys^[key];
-  let lapsed = zadd_body(slot: slot, client: client, plan: &plan);
+  let lapsed = zadd_body(journal: journal, access_key: key, slot: slot, client: client, plan: &plan);
   let appended = zadd_meta(log: effects, logged: logged, lapsed: lapsed, plan: &plan, input: input, args: args, key: key);
   zadd_finish(client: client, plan: &plan);
   return appended;
 }
 
-fn script_zrem(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_zrem(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "Runs the same ZREM parts while EXEC or a script holds every key.";
   let valid = zrem_parse(input: input, args: args, client: client);
   if bnot(valid) {
@@ -2596,13 +2703,13 @@ fn script_zrem(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let slot = &keys^[key];
-  let lapsed = zrem_body(slot: slot, client: client);
+  let lapsed = zrem_body(journal: journal, access_key: key, slot: slot, client: client);
   let appended = zrem_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
   zrem_finish(client: client);
   return appended;
 }
 
-fn script_zpop(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, from_top: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_zpop(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, from_top: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "Runs the same ZPOP parts while EXEC or a script holds every key.";
   let valid = zpop_parse(input: input, args: args, client: client, from_top: from_top);
   if bnot(valid) {
@@ -2612,13 +2719,13 @@ fn script_zpop(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let slot = &keys^[key];
-  let lapsed = zpop_body(slot: slot, client: client);
+  let lapsed = zpop_body(journal: journal, access_key: key, slot: slot, client: client);
   let appended = zpop_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
   zpop_finish(client: client);
   return appended;
 }
 
-fn script_zcard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_zcard(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "Runs the same ZCARD parts while EXEC or a script holds every key.";
   let valid = zcard_parse(client: client);
   if bnot(valid) {
@@ -2628,7 +2735,7 @@ fn script_zcard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logge
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let slot = &keys^[key];
-  zcard_body(slot: slot, client: client);
+  zcard_body(journal: journal, access_key: key, slot: slot, client: client);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2641,7 +2748,7 @@ fn script_zcard(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logge
   return appended;
 }
 
-fn script_zscore(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_zscore(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "Runs the same ZSCORE parts while EXEC or a script holds every key.";
   let valid = zscore_parse(input: input, args: args, client: client);
   if bnot(valid) {
@@ -2651,7 +2758,7 @@ fn script_zscore(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let slot = &keys^[key];
-  zscore_body(slot: slot, client: client);
+  zscore_body(journal: journal, access_key: key, slot: slot, client: client);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2661,7 +2768,7 @@ fn script_zscore(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   return appended;
 }
 
-fn script_zmscore(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_zmscore(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "Runs the same ZMSCORE parts while EXEC or a script holds every key.";
   let valid = zmscore_parse(input: input, args: args, client: client);
   if bnot(valid) {
@@ -2672,7 +2779,7 @@ fn script_zmscore(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, log
   set client^.now = time^.check;
   let members = args^.inner.len -sat 2_u64;
   let slot = &keys^[key];
-  zmscore_body(slot: slot, client: client);
+  zmscore_body(journal: journal, access_key: key, slot: slot, client: client);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2682,7 +2789,7 @@ fn script_zmscore(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, log
   return appended;
 }
 
-fn script_zrank(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, reverse: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_zrank(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, reverse: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "Runs the same ZRANK parts while EXEC or a script holds every key.";
   let valid = zrank_parse(input: input, args: args, client: client, reverse: reverse);
   if bnot(valid) {
@@ -2692,7 +2799,7 @@ fn script_zrank(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logge
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let slot = &keys^[key];
-  zrank_body(slot: slot, client: client);
+  zrank_body(journal: journal, access_key: key, slot: slot, client: client);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2702,7 +2809,7 @@ fn script_zrank(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logge
   return appended;
 }
 
-fn script_zrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64, direction: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_zrange(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64, direction: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "Runs the same ZRANGE parts while EXEC or a script holds every key.";
   let forward = False();
   let walk = walk_new(reverse: forward, kind: 0_u64, act: 0_u64, input: input);
@@ -2714,7 +2821,7 @@ fn script_zrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let slot = &keys^[key];
-  zrange_body(slot: slot, client: client, walk: &walk);
+  zrange_body(journal: journal, access_key: key, slot: slot, client: client, walk: &walk);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2724,7 +2831,7 @@ fn script_zrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   return appended;
 }
 
-fn script_zcount(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_zcount(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "Runs the same ZCOUNT parts while EXEC or a script holds every key.";
   let forward = False();
   let walk = walk_new(reverse: forward, kind: 0_u64, act: 0_u64, input: input);
@@ -2736,7 +2843,7 @@ fn script_zcount(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let slot = &keys^[key];
-  zcount_body(slot: slot, client: client, walk: &walk);
+  zcount_body(journal: journal, access_key: key, slot: slot, client: client, walk: &walk);
   let lapsed = client^.state == state_expired;
   if lapsed {
     set slot^ = None<Entry>();
@@ -2749,7 +2856,7 @@ fn script_zcount(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logg
   return appended;
 }
 
-fn script_zremrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(effects), writes(client) {
+fn script_zremrange(journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "Runs the same ZREMRANGE parts while EXEC or a script holds every key.";
   let forward = False();
   let walk = walk_new(reverse: forward, kind: 0_u64, act: 0_u64, input: input);
@@ -2761,7 +2868,7 @@ fn script_zremrange(keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, l
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   let slot = &keys^[key];
-  let lapsed = zremrange_body(slot: slot, client: client, walk: &walk);
+  let lapsed = zremrange_body(journal: journal, access_key: key, slot: slot, client: client, walk: &walk);
   let appended = zremrange_meta(log: effects, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key);
   zremrange_finish(client: client);
   return appended;

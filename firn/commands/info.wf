@@ -33,7 +33,17 @@ const info_clients_head: Array<u8, 29> = "# Clients\r\nconnected_clients:";
 
 const info_clients_tail: Array<u8, 92> = "\r\ncluster_connections:0\r\nblocked_clients:0\r\ntracking_clients:0\r\nclients_in_timeout_table:0\r\n";
 
-const info_memory: Array<u8, 195> = "# Memory\r\nnumber_of_cached_scripts:0\r\nnumber_of_functions:0\r\nnumber_of_libraries:0\r\nmaxmemory:0\r\nmaxmemory_human:0B\r\nmaxmemory_policy:noeviction\r\nlazyfree_pending_objects:0\r\nlazyfreed_objects:0\r\n";
+const info_memory_head: Array<u8, 35> = "# Memory\r\nnumber_of_cached_scripts:";
+
+const info_memory_limits: Array<u8, 58> = "\r\nnumber_of_functions:0\r\nnumber_of_libraries:0\r\nmaxmemory:";
+
+const info_minus: Array<u8, 1> = "-";
+
+const info_memory_human: Array<u8, 18> = "\r\nmaxmemory_human:";
+
+const info_memory_policy: Array<u8, 19> = "\r\nmaxmemory_policy:";
+
+const info_memory_tail: Array<u8, 51> = "\r\nlazyfree_pending_objects:0\r\nlazyfreed_objects:0\r\n";
 
 const info_persistence_head: Array<u8, 121> = "# Persistence\r\nloading:0\r\nasync_loading:0\r\nrdb_bgsave_in_progress:0\r\nrdb_last_bgsave_status:ok\r\nrdb_saves:0\r\naof_enabled:";
 
@@ -55,7 +65,7 @@ const info_rw_error: Array<u8, 3> = "err";
 
 const info_stats_head: Array<u8, 36> = "# Stats\r\ntotal_connections_received:";
 
-const info_stats_tail: Array<u8, 340> = "\r\nrejected_connections:0\r\nsync_full:0\r\nsync_partial_ok:0\r\nsync_partial_err:0\r\nevicted_keys:0\r\nevicted_clients:0\r\npubsub_channels:0\r\npubsub_patterns:0\r\npubsubshard_channels:0\r\nlatest_fork_usec:0\r\ntotal_forks:0\r\nmigrate_cached_sockets:0\r\ntracking_total_keys:0\r\ntracking_total_items:0\r\ntracking_total_prefixes:0\r\ndump_payload_sanitizations:0\r\n";
+const info_stats_tail: Array<u8, 324> = "\r\nrejected_connections:0\r\nsync_full:0\r\nsync_partial_ok:0\r\nsync_partial_err:0\r\nevicted_clients:0\r\npubsub_channels:0\r\npubsub_patterns:0\r\npubsubshard_channels:0\r\nlatest_fork_usec:0\r\ntotal_forks:0\r\nmigrate_cached_sockets:0\r\ntracking_total_keys:0\r\ntracking_total_items:0\r\ntracking_total_prefixes:0\r\ndump_payload_sanitizations:0\r\n";
 
 const info_replication: Array<u8, 209> = "# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_failover_state:no-failover\r\nmaster_repl_offset:0\r\nsecond_repl_offset:-1\r\nrepl_backlog_active:0\r\nrepl_backlog_first_byte_offset:0\r\nrepl_backlog_histlen:0\r\n";
 
@@ -129,6 +139,18 @@ fn text_word(text: &Box<Slots<u8>>, word: &[u8]) -> result: unit reads(word), wr
       place_back(window: &text^.inner, value: byte);
     }
   }
+  return unit;
+}
+
+fn text_signed(text: &Box<Slots<u8>>, value: u64) -> result: unit writes(text) {
+  doc "Appends a 64-bit value in decimal as C's %lld reads it: values from 2^63 up are written as the negative two's-complement number, as Redis 7.0.15's INFO writes maxmemory.";
+  if value >= 9223372036854775808_u64 {
+    let magnitude = 0_u64 -wrap value;
+    text_word(text: text, word: &info_minus[0_u64..1_u64]);
+    text_number(text: text, value: magnitude);
+    return unit;
+  }
+  text_number(text: text, value: value);
   return unit;
 }
 
@@ -212,7 +234,7 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
   return chosen;
 }
 
-fn info_body(chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
+fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
   doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
@@ -240,7 +262,32 @@ fn info_body(chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u
         text_number(text: &text, value: clients);
         text_word(text: &text, word: &info_clients_tail[0_u64..92_u64]);
       } else if which == 2_u64 {
-        text_word(text: &text, word: &info_memory[0_u64..195_u64]);
+        text_word(text: &text, word: &info_memory_head[0_u64..35_u64]);
+        text_number(text: &text, value: cached_scripts);
+        text_word(text: &text, word: &info_memory_limits[0_u64..58_u64]);
+        text_signed(text: &text, value: maxmemory);
+        text_word(text: &text, word: &info_memory_human[0_u64..18_u64]);
+        memory_human(text: &text, value: maxmemory);
+        text_word(text: &text, word: &info_memory_policy[0_u64..19_u64]);
+        memory_policy_text(text: &text, policy: memory_policy);
+        text_word(text: &text, word: &info_used_memory[0_u64..14_u64]);
+        text_number(text: &text, value: used);
+        text_word(text: &text, word: &info_used_memory_human[0_u64..20_u64]);
+        memory_human(text: &text, value: used);
+        text_word(text: &text, word: &info_used_memory_peak[0_u64..19_u64]);
+        text_number(text: &text, value: persistence^.memory_peak);
+        text_word(text: &text, word: &info_memory_excluded[0_u64..28_u64]);
+        let excluded = memory_excluded(meta: persistence, logged: logged);
+        text_number(text: &text, value: excluded);
+        match rss {
+          Some(value: resident) => {
+            text_word(text: &text, word: &info_used_memory_rss[0_u64..18_u64]);
+            text_number(text: &text, value: resident);
+          }
+          None() => {
+          }
+        }
+        text_word(text: &text, word: &info_memory_tail[0_u64..51_u64]);
       } else if which == 3_u64 {
         text_word(text: &text, word: &info_persistence_head[0_u64..121_u64]);
         let kept = 0_u64;
@@ -272,7 +319,9 @@ fn info_body(chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u
       } else if which == 4_u64 {
         text_word(text: &text, word: &info_stats_head[0_u64..36_u64]);
         text_number(text: &text, value: connections);
-        text_word(text: &text, word: &info_stats_tail[0_u64..340_u64]);
+        text_word(text: &text, word: &info_evicted_keys[0_u64..15_u64]);
+        text_number(text: &text, value: persistence^.evicted_keys);
+        text_word(text: &text, word: &info_stats_tail[0_u64..324_u64]);
       } else if which == 5_u64 {
         text_word(text: &text, word: &info_replication[0_u64..209_u64]);
       } else if which == 6_u64 {
@@ -309,8 +358,24 @@ fn info_finish(client: &Client, text: &Box<Slots<u8>>) -> result: unit reads(tex
 }
 
 fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no memory limit and so no eviction, no scripts or functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, memory used and processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
+  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; Redis 7.0.15 genRedisInfoString reports raw heap, its observed peak, and AOF exclusion separately. RSS is read on demand through resident_bytes and omitted if the host supplies None. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. The cached-script count reads the registry in a separate short statement. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
   let chosen = info_plan(input: input, args: args);
+  let cached_scripts = 0_u64;
+  let used = 0_u64;
+  let rss = None<u64>();
+  if chosen[2_u64] == 1_u64 {
+    atomic registry = &store^.scripts {
+      set cached_scripts = registry^.registry.inner.len;
+    }
+    set used = heap_read(client: client);
+    match client^.meter {
+      Some(value: meter) => {
+        set rss = std::process::resident_bytes(meter: meter);
+      }
+      None() => {
+      }
+    }
+  }
   let clients = 0_u64;
   if chosen[1_u64] == 1_u64 {
     atomic m = &store^.meta {
@@ -329,6 +394,14 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       set connections = v^.connections;
     }
   }
+  let maxmemory = 0_u64;
+  let memory_policy = 7_u64;
+  if chosen[2_u64] == 1_u64 {
+    atomic memory_state = &store^.server {
+      set maxmemory = memory_state^.memory.maxmemory;
+      set memory_policy = memory_state^.memory.maxmemory_policy;
+    }
+  }
   let keys = 0_u64;
   if chosen[12_u64] == 1_u64 {
     atomic t = &store^.keys {
@@ -337,8 +410,108 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   }
   let text = box_slots_new::<u8>(capacity: 0_u64);
   atomic m = &store^.meta {
-    set text = info_body(chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
+    set m^.memory_peak = imax(m^.memory_peak, used);
+    set text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
   }
   info_finish(client: client, text: &text);
   return unit;
 }
+
+const human_units: Array<u8, 5> = "KMGTP";
+
+const human_byte: Array<u8, 1> = "B";
+
+const human_dot: Array<u8, 1> = ".";
+
+fn memory_human(text: &Box<Slots<u8>>, value: u64) -> result: unit writes(text) {
+  doc "Redis 7.0.15 server.c bytesToHuman: bytes below 1024 or at least 2^60, otherwise binary K/M/G/T/P with two decimals. Integer arithmetic reproduces the uint64-to-double rounding and printf's nearest-even decimal rounding without dropping trailing zeroes.";
+  let small = value < 1024_u64;
+  let huge = value >= 1152921504606846976_u64;
+  if bor(small, huge) {
+    text_number(text: text, value: value);
+    text_word(text: text, word: &human_byte[0_u64..1_u64]);
+    return unit;
+  }
+  let quantum = 1_u64;
+  let magnitude = value;
+  loop {
+    if magnitude < 9007199254740992_u64 {
+      break;
+    }
+    set magnitude = magnitude / 2_u64;
+    set quantum = quantum *wrap 2_u64;
+  }
+  let rounded = value;
+  if quantum > 1_u64 {
+    let quotient = value / quantum;
+    let residual = value % quantum;
+    let half = quantum / 2_u64;
+    let odd = quotient % 2_u64;
+    let tie = residual == half;
+    let odd_quotient = odd == 1_u64;
+    let tied_up = band(tie, odd_quotient);
+    let above = residual > half;
+    let up = bor(above, tied_up);
+    if up {
+      set quotient = quotient +wrap 1_u64;
+    }
+    set rounded = quotient *wrap quantum;
+  }
+  let divisor = 1024_u64;
+  let suffix = 0_u64;
+  if value < 1048576_u64 {
+  } else if value < 1073741824_u64 {
+    set divisor = 1048576_u64;
+    set suffix = 1_u64;
+  } else if value < 1099511627776_u64 {
+    set divisor = 1073741824_u64;
+    set suffix = 2_u64;
+  } else if value < 1125899906842624_u64 {
+    set divisor = 1099511627776_u64;
+    set suffix = 3_u64;
+  } else {
+    set divisor = 1125899906842624_u64;
+    set suffix = 4_u64;
+  }
+  let whole = rounded / divisor;
+  let residue = rounded % divisor;
+  let scaled = residue *wrap 100_u64;
+  let base = whole *wrap 100_u64;
+  let fraction = scaled / divisor;
+  let cents = base +wrap fraction;
+  let remainder = scaled % divisor;
+  let halfway = divisor / 2_u64;
+  let parity = cents % 2_u64;
+  let equal = remainder == halfway;
+  let odd_cents = parity == 1_u64;
+  let tied_round = band(equal, odd_cents);
+  let beyond = remainder > halfway;
+  if bor(beyond, tied_round) {
+    set cents = cents +wrap 1_u64;
+  }
+  let integral = cents / 100_u64;
+  let decimals = cents % 100_u64;
+  let tens = decimals / 10_u64;
+  let ones = decimals % 10_u64;
+  text_number(text: text, value: integral);
+  text_word(text: text, word: &human_dot[0_u64..1_u64]);
+  text_number(text: text, value: tens);
+  text_number(text: text, value: ones);
+  if suffix < 5_u64 {
+    let end = suffix +wrap 1_u64;
+    text_word(text: text, word: &human_units[suffix..end]);
+  }
+  return unit;
+}
+
+const info_used_memory: Array<u8, 14> = "\r\nused_memory:";
+
+const info_used_memory_human: Array<u8, 20> = "\r\nused_memory_human:";
+
+const info_used_memory_rss: Array<u8, 18> = "\r\nused_memory_rss:";
+
+const info_used_memory_peak: Array<u8, 19> = "\r\nused_memory_peak:";
+
+const info_memory_excluded: Array<u8, 28> = "\r\nmem_not_counted_for_evict:";
+
+const info_evicted_keys: Array<u8, 15> = "\r\nevicted_keys:";

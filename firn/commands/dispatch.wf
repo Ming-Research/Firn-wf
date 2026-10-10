@@ -215,6 +215,7 @@ fn refused(client: &Client, input: &[u8], name: Span, fits: Bool) -> result: uni
 
 fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
   doc "Answers one command, whose arguments are spans of the input, by appending its reply to the client's. A command that changes the keyspace does so in one atomic statement, which also appends the change to the append-only file's pending bytes when the keyspace keeps them. As in Redis, an unknown command or a known one outside its command-table arity is answered so whether or not the connection has authenticated, and every other command but AUTH, HELLO and QUIT from a connection that must authenticate first is answered NOAUTH.";
+  prepare_access(client: client, time: time);
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let code = name_code(input: input, start: name.start, length: name.length);
@@ -265,6 +266,24 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
     if go {
       run_echo(input: input, args: args, client: client);
+    }
+    return unit;
+  }
+  if code == code_object {
+    let fits = arity_holds(arity: arity_object, count: count);
+    let go = band(fits, open);
+    let subarity = object_arity(input: input, args: args);
+    let subfits = arity_holds(arity: subarity, count: count);
+    let subfails = bnot(subfits);
+    if band(fits, subfails) {
+      let rejected_object = object_plan(input: input, args: args, client: client);
+      return unit;
+    }
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      run_object(store: store, input: input, args: args, client: client, time: time);
     }
     return unit;
   }

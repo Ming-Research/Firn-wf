@@ -230,23 +230,25 @@ fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool
 }
 
 fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, force: Bool) -> drained: Bool reads(store), writes(factory), writes(file), writes(pending), writes(clock), writes(last_sync) waits {
-  doc "Take pending records atomically only when the previous append has drained. Preserve an unwritten suffix across host refusals so a failed rewrite switch cannot discard acknowledged commands.";
+  doc "Take pending records atomically only when the previous append has drained. Preserve an unwritten suffix across host refusals so a failed rewrite switch cannot discard acknowledged commands. Redis 7.0.15 freeMemoryGetNotCountedMemory excludes allocated AOF capacity: publish the private pending capacity in the same Meta statement as each swap, drain or partial-write suffix replacement. Until replacement even partially written storage retains its full allocated capacity.";
   if pending^.inner.len == 0_u64 {
     atomic m = &store^.meta {
       swap(first: &m^.log, second: pending);
+      set m^.aof_pending_capacity = pending^.inner.cap;
     }
   }
   let appended = append_all(factory: factory, file: file, source: pending);
-  atomic m = &store^.meta {
-    set m^.aof_current_size = m^.aof_current_size +wrap appended;
-  }
   let length = pending^.inner.len;
   let drained = appended == length;
-  if drained {
-    set pending^ = box_slots_new::<u8>(capacity: 65536_u64);
-  } else if appended <= length {
-    let suffix = aof_copy(input: &pending^.inner[appended..length]);
-    set pending^ = move suffix;
+  atomic m = &store^.meta {
+    set m^.aof_current_size = m^.aof_current_size +wrap appended;
+    if drained {
+      set pending^ = box_slots_new::<u8>(capacity: 65536_u64);
+    } else if appended <= length {
+      let suffix = aof_copy(input: &pending^.inner[appended..length]);
+      set pending^ = move suffix;
+    }
+    set m^.aof_pending_capacity = pending^.inner.cap;
   }
   let reading = std::time::now(clock: clock);
   let elapsed = std::time::nanoseconds_from(earlier: last_sync^, later: reading);

@@ -15,7 +15,8 @@ clients send on their own:
 - keys: `DEL`, `UNLINK`, `EXISTS`, `TOUCH`, `TYPE`, `RENAME`, `RENAMENX`,
   `COPY` with `REPLACE` and `DB 0`, `EXPIRE`, `PEXPIRE`, `EXPIREAT` and
   `PEXPIREAT` with their options `NX`, `XX`, `GT` and `LT`, `TTL`, `PTTL`,
-  `EXPIRETIME`, `PEXPIRETIME`, `PERSIST`, `DBSIZE`,
+  `EXPIRETIME`, `PEXPIRETIME`, `PERSIST`, `DBSIZE`, `OBJECT IDLETIME`,
+  `OBJECT FREQ`, `OBJECT HELP`,
   `SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]`, `KEYS pattern`
   and `RANDOMKEY`;
 - strings: `GET`, `SET` with its options `NX`, `XX`, `GET`, `KEEPTTL`,
@@ -55,7 +56,7 @@ clients send on their own:
   through Halo's resumable host call; any other command is answered with
   Redis's error for an unknown one, noting that firn may not run it from
   scripts yet;
-- connection: `PING`, `ECHO`, `QUIT`, `AUTH`, `HELLO` with no version,
+- connection: `PING`, `ECHO`, `QUIT`, `RESET`, `AUTH`, `HELLO` with no version,
   version 2 or version 3, which switches the connection to RESP3,
   `SELECT 0`, firn having one database, and `CLIENT ID`, `CLIENT GETNAME`,
   `CLIENT SETNAME` and `CLIENT INFO`, described below;
@@ -66,10 +67,11 @@ clients send on their own:
   `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
   `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`; `INFO` is not among
   them. These same command parts run in scripts.
-  Any other command sent inside a transaction is queued, and `EXEC` then
-  refuses the whole transaction, but for a `COMMAND` subcommand Redis does
-  not have, or `COUNT` outside its arity, which is refused when sent, as
-  Redis refuses it; `WATCH` is refused inside one and unknown outside;
+  A command without parts, or any name firn does not run, is queued and makes
+  `EXEC` refuse the whole transaction without running any of it, where Redis
+  refuses a name it lacks when it is sent; unknown subcommands and commands
+  outside their table arity are refused when sent and make `EXEC` abort, as
+  Redis refuses them; `WATCH` is refused inside one and unknown outside;
   `SHUTDOWN` is refused when sent and makes `EXEC` abort the transaction;
 - server: `SHUTDOWN [NOSAVE|SAVE] [NOW] [FORCE] [ABORT]`, described below,
   `CONFIG GET`, `CONFIG SET`, `CONFIG RESETSTAT` and `INFO`,
@@ -134,8 +136,76 @@ refuses them. An `appendonly`, `port` or `bind` other than the one firn
 started with, and a `save` schedule other than the empty one, are refused in
 Redis's form for a refused value with firn's own reason, since firn cannot
 change them while it runs and saves no snapshot; Redis would apply them.
-`CONFIG RESETSTAT` answers OK and zeroes the count of connections the server
-has accepted.
+The memory parameters are `maxmemory` (default 0, Redis memory units accepted),
+`maxmemory-policy` (default `noeviction`), `maxmemory-samples` (default 5,
+minimum 1), `lfu-log-factor` (default 10, minimum 0), `lfu-decay-time`
+(default 1 minute, 0 disables decay), and `maxmemory-eviction-tenacity`
+(default 10, from 0 through 100). The integer sampling and LFU parameters
+have Redis's maximum of 2,147,483,647. All eight policy names are accepted:
+`noeviction`, `allkeys-lru`, `allkeys-lfu`, `allkeys-random`, `volatile-lru`,
+`volatile-lfu`, `volatile-random`, and `volatile-ttl`.
+A nonzero limit compares Whitefoot's live requested heap bytes minus the
+allocated capacity of both pending append-only buffers, saturating at zero.
+Each command's context evicts before running, after command lookup, arity,
+authentication and transaction restrictions. LRU, LFU and TTL policies keep
+a shared pool of 16 candidates sampled through `map_scan`; random policies
+pick uniformly from a gathered batch. Volatile policies consider only keys
+with an expiry. An expired victim counts as an expiry. Removal and its AOF
+`DEL` are atomic with each other.
+
+If no eligible key remains and the counted heap is still over the limit,
+Redis's DENYOOM commands, including `SET`, answer
+`-OOM command not allowed when used memory > 'maxmemory'.`; `GET` and `DEL`
+remain allowed. With a bounded eviction time slice, the command proceeds
+and the next command continues evicting. Tenacity uses Redis's time limit,
+checked every 16 deletions; 100 is unlimited. This is admission control:
+a command, transaction, script or concurrent commands can overshoot it.
+There is no background eviction continuation during an idle interval.
+
+While `MULTI` is open, OOM refuses every command except `EXEC`, `DISCARD`,
+`QUIT` and `RESET`, including reads and memory-releasing writes. A refused
+command receives `-OOM command not allowed when used memory > 'maxmemory'.`
+and marks the transaction dirty. An admitted `EXEC` then answers
+`-EXECABORT Transaction discarded because of previous errors.`, even after
+memory recovers. `EXEC` first checks the queued DENYOOM flags: if that
+admission itself fails under OOM, it answers `-EXECABORT Transaction
+discarded because of: OOM command not allowed when used memory >
+'maxmemory'.` instead. After admission there are no memory checks between
+queued commands. These replies follow Redis 7.0.15. `RESET` discards a
+transaction and resets the name, authentication and protocol to RESP2.
+
+A script without a shebang captures OOM at its start. A DENYOOM call is
+refused until it has accepted a WRITE-flagged command: `DEL` of a missing
+key counts, independently of whether it changes data or appends an effect.
+The OOM state survives script retries, with write acceptance restarted on
+each attempt. `EVAL` and `SCRIPT LOAD` explicitly reject **all** shebang
+sources, including plain `#!lua` and the Redis flags `allow-oom`,
+`no-writes`, `allow-stale`, `no-cluster` and `allow-cross-slot-keys`.
+They are not executed with legacy semantics; no shebang flags are supported.
+
+`OBJECT IDLETIME key` reports idle seconds at one-second resolution under
+any non-LFU policy, including `noeviction`; `OBJECT FREQ key` reports Redis's
+logarithmic, decayed frequency under an LFU policy. Each rejects the other
+policy kind with Redis's error, and missing keys return null. Ordinary
+reads and writes refresh access state; `EXISTS`, `TYPE`, the four TTL/time
+queries, `OBJECT`, and SCAN's TYPE filter do not. `TOUCH` refreshes it.
+Policy changes reinterpret the existing bits, as Redis does, so values need
+time to adjust. `OBJECT HELP` returns Redis's help; `ENCODING` and `REFCOUNT`
+remain unsupported. Settings used for access tracking are read once per
+connection read, beside its clock; every command in that read uses them,
+including queued commands run by EXEC and script calls. After this connection
+executes CONFIG SET, it refreshes the snapshot for the read's remaining
+commands; other connections keep their snapshot until their next read. A lookup racing
+CONFIG SET may therefore write an old-policy stamp. CONFIG and INFO still
+read current server settings. Scripts and EXEC use the same tracking command
+bodies. An unwritten script attempt abandoned for its step budget restores
+the first stamp of every key it refreshed and firn's LFU random state before
+releasing the keys; completed attempts and attempts that wrote retain them.
+SCRIPT KILL between attempts therefore leaves abandoned refreshes undone.
+
+`CONFIG RESETSTAT` answers OK and zeroes connections accepted, evicted keys
+and active-expiry counts. It preserves `used_memory_peak`, the observed
+heap maximum since startup, as Redis 7.0.15 does.
 
 `SHUTDOWN` sends no reply, nor the replies its connection holds unsent
 from the commands before it, which Redis 7.0.15 does not send either; its
@@ -172,17 +242,28 @@ SIGTERM. `SHUTDOWN ABORT` answers `ERR No shutdown in progress.` after a
 signal too, where Redis's cancels a signal's request in the moment, at most
 a tenth of a second, before its next cron acts on it.
 
+`INFO memory` reports raw `used_memory` and `used_memory_human`,
+`used_memory_rss` when the host supplies it, `used_memory_peak`,
+`mem_not_counted_for_evict`, the configured `maxmemory`, `maxmemory_human`
+and `maxmemory_policy`, with Redis's human-size formatting. It also reports
+the actual registered-script count. Heap readings use `heap_in_use`; RSS
+uses `resident_bytes` on demand. Peak tracks heap readings after commands,
+at admission and at INFO, rather than every transient allocation. AOF
+exclusion uses capacities even when drained, not lengths. `INFO stats`
+reports live `evicted_keys`. The heap meter counts the keyspace's own
+storage, its shared-map tables and nodes, as well as values.
+
 `INFO`, with no section, `default`, `all`, `everything` or named sections,
 answers Redis's sections in Redis's order and form. Its fields carry real
 values for the port, the calendar time, the uptime, the clients connected,
 whether the append-only file is kept, the connections accepted and the keys
-held, which it counts holding the table whole, as `DBSIZE` does; the other
-fields it reports have values that are fixed and true of firn: Redis's
+held, which it counts holding the table whole, as `DBSIZE` does. The other fields it reports have values
+that are fixed and true of firn: Redis's
 version 7.0.15, no git revision, `redis_git_sha1` being 00000000 as in
 Redis's builds from a release, standalone mode, 64 bits, its active
-expiry's 10 runs a second, no configuration file, memory limit, eviction,
-script, function, replica, background save, fork, module, publish
-and subscribe, tracking or cluster. What firn does not measure, memory and
+expiry's 10 runs a second, no configuration file,
+function, replica, background save, fork, module, publish
+and subscribe, tracking or cluster. What firn does not measure,
 processor time, per-command and per-error counts among them, is left out,
 so its CPU, Commandstats, Errorstats and Latencystats sections are empty
 and its keyspace line gives `keys` alone, without the `expires` and

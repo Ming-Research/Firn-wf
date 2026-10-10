@@ -1,0 +1,151 @@
+alias Client = pkg::protocol::Client;
+alias Span = pkg::protocol::Span;
+alias arg = pkg::protocol::arg;
+alias name_code = pkg::bytes::name_code;
+alias name_is = pkg::bytes::name_is;
+
+const oom_error: Array<u8, 55> = "OOM command not allowed when used memory > 'maxmemory'.";
+
+const oom_execabort: Array<u8, 99> = "EXECABORT Transaction discarded because of: OOM command not allowed when used memory > 'maxmemory'.";
+
+const command_denyoom_kinds: Array<u64, 34> =[2_u64, 3_u64, 4_u64, 5_u64, 6_u64, 15_u64, 24_u64, 25_u64, 26_u64, 27_u64, 30_u64, 31_u64, 35_u64, 36_u64, 39_u64, 40_u64, 41_u64, 42_u64, 52_u64, 53_u64, 60_u64, 61_u64, 62_u64, 63_u64, 69_u64, 72_u64, 74_u64, 75_u64, 90_u64, 103_u64, 104_u64, 105_u64, 120_u64, 121_u64];
+
+fn command_denyoom(kind: u64) -> marked: Bool pure {
+  doc "Redis 7.0.15 src/commands/*.json DENYOOM flags for firn's held commands. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF.";
+  for (index in 0_u64..34_u64) {
+    if command_denyoom_kinds[index] == kind {
+      return True();
+    }
+  }
+  return False();
+}
+
+const command_writes_kinds: Array<u64, 61> =[2_u64, 3_u64, 4_u64, 5_u64, 6_u64, 7_u64, 8_u64, 9_u64, 10_u64, 15_u64, 16_u64, 17_u64, 20_u64, 24_u64, 25_u64, 26_u64, 27_u64, 28_u64, 29_u64, 30_u64, 31_u64, 35_u64, 36_u64, 37_u64, 38_u64, 39_u64, 40_u64, 41_u64, 42_u64, 45_u64, 52_u64, 53_u64, 60_u64, 61_u64, 62_u64, 63_u64, 64_u64, 65_u64, 69_u64, 70_u64, 71_u64, 72_u64, 74_u64, 75_u64, 90_u64, 91_u64, 92_u64, 98_u64, 103_u64, 104_u64, 105_u64, 120_u64, 121_u64, 122_u64, 123_u64, 124_u64, 138_u64, 139_u64, 140_u64, 164_u64, 165_u64];
+
+fn command_writes(kind: u64) -> marked: Bool pure {
+  doc "Redis 7.0.15 src/commands/*.json WRITE flags for firn's held commands. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF.";
+  for (index in 0_u64..61_u64) {
+    if command_writes_kinds[index] == kind {
+      return True();
+    }
+  }
+  return False();
+}
+
+fn admission_arity(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> arity: i64 reads(input), reads(args) {
+  doc "Redis 7.0.15 processCommand resolves existence and command-table arity before authentication and eviction. Zero means unknown/unsupported: the existing dispatcher emits its refusal without admission. Syntax beyond command-table arity is checked by the command after admission. COMMAND's deliberately unsupported descriptors remain foreign when queued.";
+  if kind == 0_u64 {
+    return 0_i64;
+  }
+  if kind == 171_u64 {
+    return object_arity(input: input, args: args);
+  }
+  if kind == 166_u64 {
+    let planned = command_plan(input: input, args: args);
+    if planned == 1_u64 {
+      return -1_i64;
+    }
+    if planned == 2_u64 {
+      return 2_i64;
+    }
+    return 0_i64;
+  }
+  if kind < 172_u64 {
+    return held_arity(kind: kind);
+  }
+  if kind == 172_u64 {
+    return -3_i64;
+  }
+  if kind == 173_u64 {
+    return -3_i64;
+  }
+  if kind == 174_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    let code = name_code(input: input, start: sub.start, length: sub.length);
+    if code == 1145130828_u64 {
+      return 3_i64;
+    }
+    if code == code_exists {
+      return -3_i64;
+    }
+    if code == 310635744326_u64 {
+      return -2_i64;
+    }
+    if code == 1280067915_u64 {
+      return 2_i64;
+    }
+    return 0_i64;
+  }
+  if kind == 176_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    let code = name_code(input: input, start: sub.start, length: sub.length);
+    if code == code_get {
+      return -3_i64;
+    }
+    if code == code_set {
+      return -4_i64;
+    }
+    let reset = name_is(input: input, start: sub.start, length: sub.length, word: &word_resetstat[0_u64..9_u64]);
+    if reset {
+      return 2_i64;
+    }
+    return 0_i64;
+  }
+  if kind == 180_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    let code = name_code(input: input, start: sub.start, length: sub.length);
+    if code == 17481_u64 {
+      return 2_i64;
+    }
+    if code == 19506716275393863_u64 {
+      return 2_i64;
+    }
+    if code == 19506716275393875_u64 {
+      return 3_i64;
+    }
+    if code == code_info {
+      return 2_i64;
+    }
+    return 0_i64;
+  }
+  if kind == 182_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    let code = name_code(input: input, start: sub.start, length: sub.length);
+    if code == 310635744326_u64 {
+      return -2_i64;
+    }
+    return 0_i64;
+  }
+  if kind == 175_u64 {
+    return -1_i64;
+  }
+  if kind == 177_u64 {
+    return -2_i64;
+  }
+  if kind == 178_u64 {
+    return -1_i64;
+  }
+  if kind == 179_u64 {
+    return -1_i64;
+  }
+  if kind == 181_u64 {
+    return -2_i64;
+  }
+  if kind == 183_u64 {
+    return -1_i64;
+  }
+  if kind == 188_u64 {
+    return -2_i64;
+  }
+  return 1_i64;
+}
+
+fn admission_noauth(kind: u64) -> allowed: Bool pure {
+  let auth = kind == 177_u64;
+  let hello = kind == 178_u64;
+  let quit = kind == 179_u64;
+  let reset = kind == 189_u64;
+  let greeting = bor(auth, hello);
+  let leaving = bor(quit, reset);
+  return bor(greeting, leaving);
+}

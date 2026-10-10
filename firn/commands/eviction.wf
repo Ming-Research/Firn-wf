@@ -1,0 +1,406 @@
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias EvictionCandidate = pkg::store::EvictionCandidate;
+alias Keyspace = pkg::store::Keyspace;
+alias Meta = pkg::store::Meta;
+alias Clock = std::time::Clock;
+alias Instant = std::time::Instant;
+
+fn heap_read(client: &Client) -> bytes: u64 writes(client) {
+  doc "Whitefoot PRE-2 requested live heap bytes. Serving clients own meter_share handles; AOF replay has no meter and never enters admission.";
+  match client^.meter {
+    Some(value: meter) => {
+      return std::process::heap_in_use(meter: meter);
+    }
+    None() => {
+      return 0_u64;
+    }
+  }
+}
+
+fn release_reserve(store: &Keyspace, client: &Client) -> freed: u64 reads(store), writes(client) {
+  doc "Gives back the keyspace map's reserve, the cells it keeps for its next move, and answers the bytes that lowered the heap reading; zero when the map holds none or a move or reclaim holds it. AOF replay has no meter and never enters admission.";
+  match client^.meter {
+    Some(value: meter) => {
+      return std::process::release_map_reserve::<Entry>(map: &store^.keys, meter: meter);
+    }
+    None() => {
+      return 0_u64;
+    }
+  }
+}
+
+fn memory_excluded(meta: &Meta, logged: Bool) -> bytes: u64 reads(meta) {
+  doc "Redis 7.0.15 freeMemoryGetNotCountedMemory excludes allocated AOF storage. Both the collecting capacity and the writer's published private capacity remain excluded across swaps and partial writes; with AOF disabled neither is an AOF buffer.";
+  if logged {
+    return meta^.log.inner.cap +sat meta^.aof_pending_capacity;
+  }
+  return 0_u64;
+}
+
+fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(store), writes(client) waits {
+  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading. This short Meta statement does not cover command execution.";
+  let used = heap_read(client: client);
+  atomic meta = &store^.meta {
+    set meta^.memory_peak = imax(meta^.memory_peak, used);
+  }
+  return unit;
+}
+
+fn memory_over(meta: &Meta, client: &Client, logged: Bool) -> over: Bool writes(meta), writes(client) {
+  doc "Redis 7.0.15 getMaxmemoryState: raw used_memory minus excluded AOF capacity, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed.";
+  let used = heap_read(client: client);
+  set meta^.memory_peak = imax(meta^.memory_peak, used);
+  let excluded = memory_excluded(meta: meta, logged: logged);
+  let counted = used -sat excluded;
+  return counted > client^.maxmemory;
+}
+
+fn eviction_limit(tenacity: u64) -> microseconds: f64 pure {
+  doc "Redis 7.0.15 evictionTimeLimitUs: 50*t through 10 and floor(500*pow(1.15,t-10)) through 99. The caller handles 100 as unlimited. Keeping the integral threshold as f64 avoids a narrowing conversion; elapsed whole microseconds are compared with the same strict greater-than relation.";
+  if tenacity <= 10_u64 {
+    let linear = tenacity *wrap 50_u64;
+    return cvt.nearest::<u64, f64>(linear);
+  }
+  let exponent = tenacity -sat 10_u64;
+  let power = cvt.nearest::<u64, f64>(exponent);
+  let growth = halo::number::pow(a: 1.15_f64, b: power);
+  let scaled = fmul.strict(5.0e2_f64, growth);
+  return ffloor(scaled);
+}
+
+fn eviction_timed_out(clock: &Clock, started: Instant, limit: f64, tenacity: u64) -> exhausted: Bool writes(clock) {
+  if tenacity == 100_u64 {
+    return False();
+  }
+  let now = std::time::now(clock: clock);
+  let nanos = std::time::nanoseconds_from(earlier: started, later: now);
+  let micros = nanos / 1000_u64;
+  let elapsed = cvt.nearest::<u64, f64>(micros);
+  return fgt(elapsed, limit);
+}
+
+fn eviction_volatile(policy: u64) -> volatile: Bool pure {
+  return policy < 4_u64;
+}
+
+fn eviction_random(policy: u64) -> random: Bool pure {
+  let all = policy == 6_u64;
+  let timed = policy == 2_u64;
+  return bor(all, timed);
+}
+
+fn eviction_draw(client: &Client, count: u64) -> index: u64 writes(client) contract {
+  requires count > 0_u64;
+} {
+  doc "Uniform index in a gathered batch. next_random visits the nonzero u64 states; rejection removes the modulo remainder rather than favoring the first key after a sparse bucket run.";
+  let remainder = 18446744073709551615_u64 % count;
+  let ceiling = 18446744073709551615_u64 -wrap remainder;
+  loop {
+    set client^.random = next_random(state: client^.random);
+    if client^.random <= ceiling {
+      let zero_based = client^.random -wrap 1_u64;
+      return zero_based % count;
+    }
+  }
+}
+
+fn eviction_score(item: &Entry, client: &Client) -> score: u64 reads(item), reads(client) {
+  doc "Redis 7.0.15 evictionPoolPopulate: idle seconds for LRU, 255 minus LFUDecrAndReturn for LFU, and ULLONG_MAX minus expiry for volatile-ttl. Inspection never refreshes or writes access stamps.";
+  if client^.memory_policy == 3_u64 {
+    return 18446744073709551615_u64 -wrap item^.expires;
+  }
+  if access_lfu(client: client) {
+    let frequency = access_frequency(stamp: item^.access, client: client);
+    let inverted = 255_u32 -sat frequency;
+    return cvt::<u32, u64>(inverted);
+  }
+  return access_idle(stamp: item^.access, client: client);
+}
+
+fn eviction_pool_add(pool: &Box<Slots<EvictionCandidate>>, candidate: EvictionCandidate) -> result: unit writes(pool) {
+  doc "Redis 7.0.15 evictionPoolPopulate's 16 best scores, represented without ordering: a full pool replaces only its least score with a better candidate. Names are owned; ghost names are removed when selected. No reference into the map escapes sampling.";
+  if pool^.inner.len < 16_u64 {
+    if pool^.inner.len < pool^.inner.cap {
+      place_back(window: &pool^.inner, value: move candidate);
+      return unit;
+    }
+  }
+  let worst = 0_u64;
+  let least = 18446744073709551615_u64;
+  let length = pool^.inner.len;
+  for (index in 0_u64..length) {
+    let score = pool^.inner[index].score;
+    if score < least {
+      set least = score;
+      set worst = index;
+    }
+  }
+  let better = candidate.score > least;
+  let placed = worst < pool^.inner.len;
+  if band(better, placed) {
+    set pool^.inner[worst] = move candidate;
+  } else {
+    let unused = move candidate;
+  }
+  return unit;
+}
+
+fn eviction_pool_take(pool: &Box<Slots<EvictionCandidate>>) -> key: Option<Box<Array<u8>>> writes(pool) {
+  let length = pool^.inner.len;
+  if length == 0_u64 {
+    return None<Box<Array<u8>>>();
+  }
+  let best = 0_u64;
+  let highest = 0_u64;
+  for (index in 0_u64..length) {
+    let score = pool^.inner[index].score;
+    if score >= highest {
+      set highest = score;
+      set best = index;
+    }
+  }
+  if pool^.inner.len > 0_u64 {
+    let candidate = take_back(window: &pool^.inner);
+    if best < pool^.inner.len {
+      swap(first: &candidate, second: &pool^.inner[best]);
+    }
+    let EvictionCandidate(key: owned, score: unused_score) = move candidate;
+    return Some<Box<Array<u8>>>(value: move owned);
+  }
+  return None<Box<Array<u8>>>();
+}
+
+struct EvictionSample {
+  key: Option<Box<Array<u8>>>;
+  exhausted: Bool;
+}
+
+fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client) -> sample: EvictionSample reads(keys), writes(meta), writes(client) {
+  doc "Redis 7.0.15 performEvictions/evictionPoolPopulate, using map_scan from a random cursor and maxmemory-samples as its count. Meta owns the single shared pool and empty-search cursor; it is already held when deletion must log DEL. A failed batch continues around the map before declaring exhaustion. Empty searches retain their cursor across time slices and connections, so static sparse volatile keyspaces do not repeatedly restart and permanently avoid EVICT_FAIL. queue_due marks actual expiry creation or transfer in the same entry-and-Meta statement; consuming that flag restarts the absence scan, so EXPIRE behind the cursor cannot cause false EVICT_FAIL. Permanent writes and looping read-only scripts do not invalidate a volatile scan. Allkeys exhaustion uses live map_count rather than a scan spanning concurrent insertions; a nonempty map never certifies no allkeys candidates. Eligibility is checked again when the entry is deleted. map_scan count is a hint: consume the returned batch whole, selecting at most maxmemory-samples eligible keys by reservoir sampling.";
+  let policy = client^.memory_policy;
+  if meta^.eviction_policy != policy {
+    set meta^.eviction_pool = box_slots_new::<EvictionCandidate>(capacity: 16_u64);
+    set meta^.eviction_policy = policy;
+    set meta^.eviction_searching = False();
+  }
+  if meta^.due.eligibility_changed {
+    set meta^.eviction_searching = False();
+    set meta^.due.eligibility_changed = False();
+  }
+  let count = map_count::<Entry>(map: keys);
+  if count == 0_u64 {
+    set meta^.eviction_pool = box_slots_new::<EvictionCandidate>(capacity: 16_u64);
+    set meta^.eviction_searching = False();
+    let absent = None<Box<Array<u8>>>();
+    let complete = True();
+    return EvictionSample(key: move absent, exhausted: complete);
+  }
+  if bnot(meta^.eviction_searching) {
+    set client^.random = next_random(state: client^.random);
+    set meta^.eviction_start = client^.random;
+    set meta^.eviction_cursor = client^.random;
+    set meta^.eviction_wrapped = False();
+    set meta^.eviction_searching = True();
+  }
+  let gathered = key_set_new(capacity: 16_u64);
+  let next = map_scan::<Entry>(map: keys, cursor: meta^.eviction_cursor, count: client^.maxmemory_samples, keys: &gathered);
+  let exhausted = False();
+  if meta^.eviction_wrapped {
+    let ended = next == 0_u64;
+    let reached = next >= meta^.eviction_start;
+    set exhausted = bor(ended, reached);
+  } else if next == 0_u64 {
+    set meta^.eviction_wrapped = True();
+    set exhausted = meta^.eviction_start == 0_u64;
+  }
+  set meta^.eviction_cursor = next;
+  let volatile = eviction_volatile(policy: policy);
+  let random = eviction_random(policy: policy);
+  let candidates = box_slots_new::<EvictionCandidate>(capacity: 0_u64);
+  let seen = 0_u64;
+  let entries = &keys^[gathered];
+  let length = gathered.len;
+  for (index in 0_u64..length) {
+    if index < entries^.len {
+      let slot = &entries^[index];
+      match slot^ {
+        Some(value: sampled) => {
+          let expiring = sampled^.expires != 0_u64;
+          let all = bnot(volatile);
+          if bor(all, expiring) {
+            set seen = seen +sat 1_u64;
+            let position = candidates.inner.len;
+            if position >= client^.maxmemory_samples {
+              set position = eviction_draw(client: client, count: seen);
+            }
+            if position < client^.maxmemory_samples {
+              let score = eviction_score(item: sampled, client: client);
+              let owned = scanned_key(keys: &gathered, index: index);
+              let candidate = EvictionCandidate(key: move owned, score: score);
+              if position < candidates.inner.len {
+                set candidates.inner[position] = move candidate;
+              } else {
+                if candidates.inner.len == candidates.inner.cap {
+                  let needed = candidates.inner.cap +sat 1_u64;
+                  let twice = candidates.inner.cap *sat 2_u64;
+                  let capacity = imax(needed, twice);
+                  if capacity >= candidates.inner.cap {
+                    grow(cell: &candidates, capacity: capacity);
+                  }
+                }
+                if candidates.inner.len < candidates.inner.cap {
+                  place_back(window: &candidates.inner, value: move candidate);
+                } else {
+                  let unplaced = move candidate;
+                }
+              }
+            }
+          }
+        }
+        None() => {
+        }
+      }
+    }
+  }
+  let picked = None<Box<Array<u8>>>();
+  if candidates.inner.len > 0_u64 {
+    set meta^.eviction_searching = False();
+    if random {
+      let position = eviction_draw(client: client, count: candidates.inner.len);
+      if position < candidates.inner.len {
+        let candidate = take_back(window: &candidates.inner);
+        if position < candidates.inner.len {
+          swap(first: &candidate, second: &candidates.inner[position]);
+        }
+        let EvictionCandidate(key: owned, score: unused_score) = move candidate;
+        set picked = Some<Box<Array<u8>>>(value: move owned);
+      }
+    } else {
+      loop {
+        if candidates.inner.len == 0_u64 {
+          break;
+        }
+        let candidate = take_back(window: &candidates.inner);
+        eviction_pool_add(pool: &meta^.eviction_pool, candidate: move candidate);
+      }
+    }
+  }
+  if bnot(random) {
+    set picked = eviction_pool_take(pool: &meta^.eviction_pool);
+  }
+  if exhausted {
+    set meta^.eviction_searching = False();
+  }
+  if bnot(volatile) {
+    set exhausted = False();
+  }
+  return EvictionSample(key: move picked, exhausted: exhausted);
+}
+
+fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool reads(store), writes(client), writes(clock) waits {
+  doc "Redis 7.0.15 performEvictions: only EVICT_FAIL sets OOM. Over the limit, the keyspace map's reserve is given back first and the limit read again, since that storage holds no key. Each command's context re-reads the heap before every victim; no global command turn is held. EVICT_RUNNING permits the command and the next command resumes, replacing Redis's evictionTimeProc continuation as the owner ruled. Check monotonic tenacity every 16 deletions, and every 16 unsuccessful batches to bound sparse/ghost searches. An exhaustion decision reads the heap in the same whole-map and Meta statement as its final sample, which is its admission point even if a writer starts afterward. Each deletion, DEL propagation and statistic update holds the chosen entry plus Meta together; an entry now expired follows active expiry instead of eviction. A single map_scan and a single deletion remain indivisible, as Redis's sampling and deletion do.";
+  if client^.maxmemory == 0_u64 {
+    return False();
+  }
+  let logged = store^.logging;
+  let over = False();
+  atomic meta = &store^.meta {
+    set over = memory_over(meta: meta, client: client, logged: logged);
+  }
+  if bnot(over) {
+    return False();
+  }
+  release_reserve(store: store, client: client);
+  atomic released_meta = &store^.meta {
+    set over = memory_over(meta: released_meta, client: client, logged: logged);
+  }
+  if bnot(over) {
+    return False();
+  }
+  if client^.memory_policy == 7_u64 {
+    return True();
+  }
+  let started = std::time::now(clock: clock);
+  let limit = eviction_limit(tenacity: client^.maxmemory_tenacity);
+  let deleted = 0_u64;
+  let attempts = 0_u64;
+  loop {
+    atomic check_meta = &store^.meta {
+      set over = memory_over(meta: check_meta, client: client, logged: logged);
+    }
+    if bnot(over) {
+      return False();
+    }
+    let no_key = None<Box<Array<u8>>>();
+    let sample = EvictionSample(key: move no_key, exhausted: over);
+    atomic keys = &store^.keys, meta = &store^.meta {
+      set sample = eviction_sample(keys: keys, meta: meta, client: client);
+      if sample.exhausted {
+        set over = memory_over(meta: meta, client: client, logged: logged);
+      }
+    }
+    let EvictionSample(key: victim, exhausted: exhausted) = move sample;
+    let removed = False();
+    match move victim {
+      Some(value: owned) => {
+        let length = owned.inner.len;
+        let name = &owned.inner[0_u64..length];
+        let volatile = eviction_volatile(policy: client^.memory_policy);
+        atomic slot = &store^.keys[name], meta = &store^.meta {
+          set over = memory_over(meta: meta, client: client, logged: logged);
+          if over {
+            let lapsed = False();
+            let eligible = False();
+            match slot^ {
+              Some(value: current) => {
+                let expiring = current^.expires != 0_u64;
+                let all = bnot(volatile);
+                set eligible = bor(all, expiring);
+                set lapsed = pkg::store::expired(expires: current^.expires, now: client^.now);
+              }
+              None() => {
+              }
+            }
+            if eligible {
+              set slot^ = None<Entry>();
+              if logged {
+                pkg::store::log_removal(log: &meta^.log, key: name);
+              }
+              if lapsed {
+                set meta^.expired_keys = meta^.expired_keys +wrap 1_u64;
+              } else {
+                set meta^.evicted_keys = meta^.evicted_keys +wrap 1_u64;
+              }
+              set removed = True();
+            }
+          }
+        }
+        if bnot(over) {
+          return False();
+        }
+      }
+      None() => {
+        if exhausted {
+          return over;
+        }
+      }
+    }
+    if removed {
+      set deleted = deleted +wrap 1_u64;
+      set attempts = 0_u64;
+    } else {
+      set attempts = attempts +wrap 1_u64;
+    }
+    let deletion_batch = deleted % 16_u64;
+    let full = deletion_batch == 0_u64;
+    let check_deletions = band(removed, full);
+    let check_attempts = attempts >= 16_u64;
+    if bor(check_deletions, check_attempts) {
+      if eviction_timed_out(clock: clock, started: started, limit: limit, tenacity: client^.maxmemory_tenacity) {
+        return False();
+      }
+      set attempts = 0_u64;
+    }
+  }
+}

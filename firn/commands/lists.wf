@@ -213,12 +213,13 @@ fn push_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
 
 fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, front: Bool, existing: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LPUSH key element [element ...] and RPUSH: pushes each element in turn at the list's head (front) or tail, creating the list for an absent key, and answers its length; LPUSHX and RPUSHX (existing) push only onto a list that exists and answer 0 for an absent key. A key whose expiry has been reached is removed first, the removal recorded before the push.";
+  let journal = None<pkg::store::AccessJournal>();
   push_parse(input: input, args: args, client: client, time: time, front: front);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = push_body(slot: slot, client: client, front: front, existing: existing);
+    let work = push_body(journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
   push_finish(client: client);
@@ -291,6 +292,7 @@ fn pop_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(value
 
 fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, front: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LPOP key [count] and RPOP: removes and answers the element at the list's head (front) or tail, or an array of up to count of them, removing the key when the list is left empty; an absent key answers the null bulk string, or the null array when a count is given. A pop that removes nothing, of a count of 0, is not recorded, as Redis does not propagate it, and a key whose expiry has been reached is removed with its removal recorded.";
+  let journal = None<pkg::store::AccessJournal>();
   let ready = pop_parse(input: input, args: args, client: client, time: time, front: front);
   if bnot(ready) {
     return unit;
@@ -299,7 +301,7 @@ fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = pop_body(slot: slot, client: client);
+    let work = pop_body(journal: &journal, access_key: key, slot: slot, client: client);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
   pop_finish(client: client);
@@ -374,6 +376,7 @@ fn range_items(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
 
 fn run_lrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LRANGE key start stop: answers the list's elements from start to stop, both inclusive and counted from the tail when negative, written into the reply inside the atomic statement that finds the list.";
+  let journal = None<pkg::store::AccessJournal>();
   let ready = lrange_parse(input: input, args: args, client: client, time: time);
   if bnot(ready) {
     return unit;
@@ -381,7 +384,7 @@ fn run_lrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   atomic slot = &store^.keys[key] {
-    lrange_body(slot: slot, client: client);
+    lrange_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
@@ -424,11 +427,12 @@ fn list_length(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
 
 fn run_llen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LLEN key: answers the list's length, 0 for an absent key.";
+  let journal = None<pkg::store::AccessJournal>();
   llen_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   atomic slot = &store^.keys[key] {
-    llen_body(slot: slot, client: client);
+    llen_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
@@ -527,11 +531,12 @@ fn index_item(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
 
 fn run_lindex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LINDEX key index: answers the element at the index, counted from the tail when negative, written into the reply inside the statement that finds the list, or the null bulk string for an index past either end or an absent key. An index that is no integer is refused only for a key holding a list, since Redis looks the key up first.";
+  let journal = None<pkg::store::AccessJournal>();
   lindex_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   atomic slot = &store^.keys[key] {
-    lindex_body(slot: slot, client: client);
+    lindex_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
     remove_expired(store: store, key: key, now: client^.now);
@@ -591,12 +596,13 @@ fn set_item(env: &Client, value: &Entry, element: Box<Slots<u8>>) -> kind: u64 w
 
 fn run_lset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LSET key index element: replaces the element at the index, counted from the tail when negative, and answers OK; an absent key is refused as no such key and an index past either end as out of range. An index that is no integer is refused only for a key holding a list, since Redis looks the key up first.";
+  let journal = None<pkg::store::AccessJournal>();
   lset_parse(input: input, args: args, client: client, time: time);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = lset_body(slot: slot, client: client, input: input, args: args);
+    let work = lset_body(journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
   lset_finish(client: client);
@@ -696,6 +702,7 @@ fn remove_items(env: &Client, value: &Entry, input: &[u8], element: Span) -> kin
 
 fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LREM key count element: removes the elements equal to element, the first count of them for a positive count, the last ones for a negative count and every one for 0, removing the key when the list is left empty, and answers how many it removed; a count that is no integer is refused before the key is looked up, as Redis refuses it.";
+  let journal = None<pkg::store::AccessJournal>();
   let ready = lrem_parse(input: input, args: args, client: client, time: time);
   if bnot(ready) {
     return unit;
@@ -704,7 +711,7 @@ fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = lrem_body(slot: slot, client: client, input: input, args: args);
+    let work = lrem_body(journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
   lrem_finish(client: client);
@@ -792,6 +799,7 @@ fn trim_items(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
 
 fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LTRIM key start stop: keeps the list's elements from start to stop, both inclusive and counted from the tail when negative, removing the key when none is kept, and answers OK, for an absent key too. A trim that removes nothing is not recorded, as Redis does not propagate it.";
+  let journal = None<pkg::store::AccessJournal>();
   let ready = ltrim_parse(input: input, args: args, client: client, time: time);
   if bnot(ready) {
     return unit;
@@ -800,7 +808,7 @@ fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = ltrim_body(slot: slot, client: client);
+    let work = ltrim_body(journal: &journal, access_key: key, slot: slot, client: client);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
   ltrim_finish(client: client);
@@ -885,6 +893,7 @@ fn insert_item(env: &Client, value: &Entry, input: &[u8], pivot: Span, element: 
 
 fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LINSERT key BEFORE|AFTER pivot element: inserts the element just before or after the first element equal to the pivot and answers the list's new length, -1 when no element equals the pivot and 0 for an absent key. BEFORE and AFTER are read in either case up to a zero byte, as Redis's strcasecmp reads them, and anything else is a syntax error before the key is looked up.";
+  let journal = None<pkg::store::AccessJournal>();
   let ready = linsert_parse(input: input, args: args, client: client, time: time);
   if bnot(ready) {
     return unit;
@@ -893,7 +902,7 @@ fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = linsert_body(slot: slot, client: client, input: input, args: args);
+    let work = linsert_body(journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
   }
   linsert_finish(client: client);
@@ -991,6 +1000,7 @@ fn seek_items(env: &Seek, value: &Entry, input: &[u8], element: Span, positions:
 
 fn run_lpos(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LPOS key element [RANK rank] [COUNT num-matches] [MAXLEN len]: answers the position of the element's match the rank names, counted from the tail for a negative rank, or with COUNT an array of up to that many positions from that match on, every one for 0, scanning at most MAXLEN elements when it is not 0. Options come in any order, a later one replacing an earlier, each read in either case up to a zero byte and refused, as Redis refuses it, before the key is looked up: a rank that is no integer or is 0, a count or length that is no integer or negative, and an option without its value or unknown. No match, or an absent key, answers the null bulk string, or an empty array with COUNT.";
+  let journal = None<pkg::store::AccessJournal>();
   let no = False();
   let seek = Seek(rank: 1_i64, count: 0_i64, counted: no, maxlen: 0_u64, now: time^.check, state: state_absent);
   let ready = lpos_parse(input: input, args: args, client: client, time: time, seek: &seek);
@@ -1001,7 +1011,7 @@ fn run_lpos(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let positions = box_slots_new::<u64>(capacity: 0_u64);
   atomic slot = &store^.keys[key] {
-    lpos_body(slot: slot, input: input, args: args, seek: &seek, positions: &positions);
+    lpos_body(journal: &journal, access_key: key, client: client, slot: slot, input: input, args: args, seek: &seek, positions: &positions);
   }
   if seek.state == state_expired {
     remove_expired(store: store, key: key, now: seek.now);
@@ -1072,7 +1082,7 @@ fn take_element(slot: &Option<Entry>, from_head: Bool, client: &Client) -> poppe
   }
 }
 
-fn place_element(slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -> result: unit writes(slot) {
+fn place_element(client: &Client, slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -> result: unit reads(client), writes(slot) {
   doc "Pushes an element onto the head (to_head) or tail of the list an entry holds, creating the list, without an expiry, for an entry holding none; an entry holding another kind, which the caller has refused, drops it.";
   match slot^ {
     Some(value: held) => {
@@ -1105,7 +1115,8 @@ fn place_element(slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -
   let list = deque_new::<Box<Slots<u8>>, ceiling>(capacity: 8_u64);
   push_element(list: &list, element: move element, front: to_head);
   let made = Value::Items(items: move list);
-  let fresh = Entry(value: move made, expires: 0_u64);
+  let stamp = new_access(client: client);
+  let fresh = Entry(value: move made, expires: 0_u64, access: stamp);
   set slot^ = Some<Entry>(value: move fresh);
   return unit;
 }
@@ -1137,12 +1148,13 @@ fn run_lmove_named(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
 
 fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, from_head: Bool, to_head: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "LMOVE source destination LEFT|RIGHT LEFT|RIGHT and RPOPLPUSH source destination, which moves from the tail to the head: removes the element at the source list's head (from_head) or tail, pushes it onto the destination list's head (to_head) or tail, creating the destination for an absent key and removing the source when it is left empty, and answers the element; a source equal to the destination rotates the list. One statement holds both keys' entries through a key set whose returned indices identify the source and destination, so that the move takes effect at one point. As in Redis, an absent source answers the null bulk string without the destination being looked at, a key holding another kind is refused, and a key found expired is removed, its removal recorded before the move.";
+  let journal = None<pkg::store::AccessJournal>();
   let ks = key_set_new(capacity: 2_u64);
   let pair = rename_parse(input: input, args: args, keys: &ks);
   set client^.now = time^.check;
   let logged = store^.logging;
   atomic slots = &store^.keys[ks], m = &store^.meta {
-    let work = lmove_body(slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
+    let work = lmove_body(journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
     let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args);
   }
   lmove_finish(client: client);
@@ -1166,8 +1178,9 @@ fn push_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return unit;
 }
 
-fn push_body(slot: &Option<Entry>, client: &Client, front: Bool, existing: Bool) -> work: ListWork writes(slot), writes(client) {
+fn push_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, front: Bool, existing: Bool) -> work: ListWork reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "PUSH over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
   let changed = False();
   match slot^ {
@@ -1194,7 +1207,8 @@ fn push_body(slot: &Option<Entry>, client: &Client, front: Bool, existing: Bool)
       push_all(list: &list, client: client, front: front);
       set client^.number = list.inner.len;
       let made = Value::Items(items: move list);
-      let fresh = Entry(value: move made, expires: 0_u64);
+      let stamp = new_access(client: client);
+      let fresh = Entry(value: move made, expires: 0_u64, access: stamp);
       set slot^ = Some<Entry>(value: move fresh);
       set client^.state = state_done;
     }
@@ -1256,8 +1270,9 @@ fn pop_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time
   return True();
 }
 
-fn pop_body(slot: &Option<Entry>, client: &Client) -> work: ListWork writes(slot), writes(client) {
+fn pop_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> work: ListWork reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "POP over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
   let changed = False();
   match slot^ {
@@ -1326,8 +1341,9 @@ fn lrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &T
   return True();
 }
 
-fn lrange_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn lrange_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "LRANGE over its held entry; live values use the existing reply writer and expired entries record state_expired.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = range_items(env: client, value: held);
@@ -1359,8 +1375,9 @@ fn llen_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return unit;
 }
 
-fn llen_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn llen_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "LLEN over its held entry; live values use the existing reply writer and expired entries record state_expired.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = list_length(env: client, value: held);
@@ -1393,8 +1410,9 @@ fn lindex_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &T
   return unit;
 }
 
-fn lindex_body(slot: &Option<Entry>, client: &Client) -> result: unit reads(slot), writes(client) {
+fn lindex_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "LINDEX over its held entry; live values use the existing reply writer and expired entries record state_expired.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
     Some(value: held) => {
       let found = index_item(env: client, value: held);
@@ -1433,8 +1451,9 @@ fn lset_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return unit;
 }
 
-fn lset_body(slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(input), reads(args), writes(slot), writes(client) {
+fn lset_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(access_key), reads(input), reads(args), writes(journal), writes(slot), writes(client) {
   doc "LSET over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
   let changed = False();
   let value_span = arg(args: args, index: 3_u64);
@@ -1494,8 +1513,9 @@ fn lrem_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return True();
 }
 
-fn lrem_body(slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(input), reads(args), writes(slot), writes(client) {
+fn lrem_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(access_key), reads(input), reads(args), writes(journal), writes(slot), writes(client) {
   doc "LREM over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
   let changed = False();
   let element = arg(args: args, index: 3_u64);
@@ -1558,8 +1578,9 @@ fn ltrim_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Ti
   return True();
 }
 
-fn ltrim_body(slot: &Option<Entry>, client: &Client) -> work: ListWork writes(slot), writes(client) {
+fn ltrim_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> work: ListWork reads(access_key), writes(journal), writes(slot), writes(client) {
   doc "LTRIM over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
   let changed = False();
   match slot^ {
@@ -1616,8 +1637,9 @@ fn linsert_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &
   return True();
 }
 
-fn linsert_body(slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(input), reads(args), writes(slot), writes(client) {
+fn linsert_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(access_key), reads(input), reads(args), writes(journal), writes(slot), writes(client) {
   doc "LINSERT over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
   let changed = False();
   let value_span = arg(args: args, index: 4_u64);
@@ -1725,8 +1747,10 @@ fn lpos_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return True();
 }
 
-fn lpos_body(slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, seek: &Seek, positions: &Box<Slots<u64>>) -> result: unit reads(slot), reads(input), reads(args), writes(seek), writes(positions) {
+fn lpos_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], client: &Client, slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, seek: &Seek, positions: &Box<Slots<u64>>) -> result: unit reads(access_key), reads(input), reads(args), writes(journal), writes(client), writes(slot), writes(seek), writes(positions) {
   doc "LPOS over its held entry, collecting matching positions and recording expired or wrong-type entries.";
+  set client^.now = seek^.now;
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let element = arg(args: args, index: 2_u64);
   match slot^ {
     Some(value: held) => {
@@ -1797,13 +1821,17 @@ struct ListMoveWork {
   changed: Bool;
 }
 
-fn lmove_body(slots: &Entries<Entry>, source: u64, destination: u64, client: &Client, from_head: Bool, to_head: Bool) -> work: ListMoveWork writes(slots), writes(client) {
+fn lmove_body(journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet, slots: &Entries<Entry>, source: u64, destination: u64, client: &Client, from_head: Bool, to_head: Bool) -> work: ListMoveWork reads(access_keys), writes(journal), writes(slots), writes(client) contract {
+  requires slots^.len == access_keys^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
   doc "LMOVE and RPOPLPUSH over their key set entries, including equal indices; source lookup precedes destination lookup.";
   let no = False();
   let work = ListMoveWork(source_expired: no, target_expired: no, changed: no);
   set client^.state = state_absent;
   let found = entry_none;
   if source < slots^.len {
+    refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: source, client: client);
     set found = list_kind(slot: &slots^[source], now: client^.now);
   }
   if found == entry_lapsed {
@@ -1818,6 +1846,7 @@ fn lmove_body(slots: &Entries<Entry>, source: u64, destination: u64, client: &Cl
   if found == entry_wanted {
     let target = entry_none;
     if destination < slots^.len {
+      refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: destination, client: client);
       set target = list_kind(slot: &slots^[destination], now: client^.now);
     }
     if target == entry_lapsed {
@@ -1835,7 +1864,7 @@ fn lmove_body(slots: &Entries<Entry>, source: u64, destination: u64, client: &Cl
         Some(value: element) => {
           reply_bulk(client: client, stored: &element);
           if destination < slots^.len {
-            place_element(slot: &slots^[destination], element: move element, to_head: to_head);
+            place_element(client: client, slot: &slots^[destination], element: move element, to_head: to_head);
           } else {
             let dropped = move element;
           }
