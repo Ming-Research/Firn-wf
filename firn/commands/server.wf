@@ -5,6 +5,7 @@ alias ExpiryQueue = pkg::store::ExpiryQueue;
 alias Entry = pkg::store::Entry;
 alias ServerState = pkg::store::ServerState;
 alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
 alias Keyspace = pkg::store::Keyspace;
 alias arg = pkg::protocol::arg;
 alias bytes_new = pkg::bytes::bytes_new;
