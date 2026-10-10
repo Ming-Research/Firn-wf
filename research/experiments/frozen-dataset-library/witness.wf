@@ -1,0 +1,337 @@
+struct Registry {
+  root: Frozen<Node>;
+  generation: u64;
+}
+
+struct Capture {
+  root: Frozen<Node>;
+  generation: u64;
+}
+
+struct Digest {
+  count: u64;
+  checksum: u64;
+  invalid: Bool;
+}
+
+struct Report {
+  code: u8;
+  before: u64;
+  after: u64;
+  bound: u64;
+  released: u64;
+  snapshot_checksum: u64;
+  live_checksum: u64;
+}
+
+const boundary_keys: Array<u64, 3> =[0_u64, first_bit, 18446744073709551615_u64];
+
+const boundary_values: Array<u8, 3> =[7_u8, 9_u8, 11_u8];
+
+fn discard<T: drop>(value: T) -> result: unit pure {
+  return unit;
+}
+
+fn capture(dataset: &Shared<Registry>) -> result: Capture reads(dataset) waits {
+  atomic state = &dataset^ {
+    let root = frozen_share::<Node>(frozen: &state^.root);
+    return Capture(root: move root, generation: state^.generation);
+  }
+}
+
+fn publish(dataset: &Shared<Registry>, root: &Frozen<Node>, generation: u64) -> result: unit reads(dataset), reads(root) waits {
+  let retained = frozen_share::<Node>(frozen: root);
+  atomic state = &dataset^ {
+    set state^.root = move retained;
+    set state^.generation = generation;
+  }
+  return unit;
+}
+
+fn writer(dataset: Shared<Registry>) -> result: u64 pure waits {
+  let captured = capture(dataset: &dataset);
+  let Capture(root: root, generation: previous_generation) = move captured;
+  for (step in 0_u64..operation_count) {
+    let round = step / 3_u64;
+    let kind = step % 3_u64;
+    if kind == 0_u64 {
+      let replacement = Some<u8>(value: 255_u8);
+      set root = map_edit(root: &root, key: round, value: replacement);
+    } else if kind == 1_u64 {
+      let insertion_key = initial_keys + round;
+      let insertion = Some<u8>(value: 254_u8);
+      set root = map_edit(root: &root, key: insertion_key, value: insertion);
+    } else {
+      let last_key = initial_keys - 1_u64;
+      let deletion_key = last_key - round;
+      let deletion = None<u8>();
+      set root = map_edit(root: &root, key: deletion_key, value: deletion);
+    }
+    let generation = step + 1_u64;
+    publish(dataset: &dataset, root: &root, generation: generation);
+  }
+  return operation_count;
+}
+
+fn same_byte(left: Option<u8>, right: Option<u8>) -> result: Bool pure {
+  match left {
+    None() => {
+      match right {
+        None() => {
+          return True();
+        }
+        Some(value: unexpected_byte) => {
+          return False();
+        }
+      }
+    }
+    Some(value: left_byte) => {
+      match right {
+        None() => {
+          return False();
+        }
+        Some(value: right_byte) => {
+          return left_byte == right_byte;
+        }
+      }
+    }
+  }
+}
+
+fn enumerate(root: &Frozen<Node>, observed: &[Option<u8>], digest: &Digest) -> result: unit reads(root), writes(observed), writes(digest) {
+  match &root^.inner {
+    Empty() => {
+    }
+    Leaf(key: held_key, byte: held_byte) => {
+      let key = held_key^;
+      let byte = held_byte^;
+      if key < observed^.len {
+        match observed^[key] {
+          None() => {
+            set observed^[key] = Some<u8>(value: byte);
+          }
+          Some(value: duplicate_byte) => {
+            set digest^.invalid = True();
+          }
+        }
+      } else {
+        set digest^.invalid = True();
+      }
+      let number = cvt::<u8, u64>(byte);
+      let key_term = key +wrap 1_u64;
+      let byte_term = number +wrap 1_u64;
+      let term = key_term *wrap byte_term;
+      set digest^.count = digest^.count +wrap 1_u64;
+      set digest^.checksum = digest^.checksum +wrap term;
+    }
+    Branch(zero: zero_subtree, one: one_subtree) => {
+      enumerate(root: zero_subtree, observed: observed, digest: digest);
+      enumerate(root: one_subtree, observed: observed, digest: digest);
+    }
+  }
+  return unit;
+}
+
+fn model_digest(model: &[Option<u8>]) -> result: Digest reads(model) {
+  let count = 0_u64;
+  let checksum = 0_u64;
+  for (key in 0_u64..model^.len) {
+    match model^[key] {
+      None() => {
+      }
+      Some(value: expected_byte) => {
+        let number = cvt::<u8, u64>(expected_byte);
+        let coefficient = key +wrap 1_u64;
+        let magnitude = number +wrap 1_u64;
+        let term = coefficient *wrap magnitude;
+        set count = count +wrap 1_u64;
+        set checksum = checksum +wrap term;
+      }
+    }
+  }
+  let valid = False();
+  return Digest(count: count, checksum: checksum, invalid: valid);
+}
+
+fn verify(root: &Frozen<Node>, model: &[Option<u8>], observed: &[Option<u8>]) -> result: Bool reads(root), reads(model), writes(observed) {
+  for (index in 0_u64..observed^.len) {
+    set observed^[index] = None<u8>();
+  }
+  let valid = False();
+  let actual = Digest(count: 0_u64, checksum: 0_u64, invalid: valid);
+  enumerate(root: root, observed: observed, digest: &actual);
+  let expected = model_digest(model: model);
+  if actual.invalid {
+    return False();
+  }
+  if actual.count != expected.count {
+    return False();
+  }
+  if actual.checksum != expected.checksum {
+    return False();
+  }
+  if observed^.len != model^.len {
+    return False();
+  }
+  for (key in 0_u64..model^.len) {
+    let expected_byte = model^[key];
+    let seen_byte = observed^[key];
+    let enumeration_matches = same_byte(left: expected_byte, right: seen_byte);
+    if bnot(enumeration_matches) {
+      return False();
+    }
+    let looked_up = map_lookup(root: root, key: key);
+    let lookup_matches = same_byte(left: expected_byte, right: looked_up);
+    if bnot(lookup_matches) {
+      return False();
+    }
+  }
+  return True();
+}
+
+fn deep_duplicate(root: &Frozen<Node>) -> result: Frozen<Node> reads(root) {
+  match &root^.inner {
+    Empty() => {
+      return map_empty();
+    }
+    Leaf(key: source_key, byte: source_byte) => {
+      let leaf = Node::Leaf(key: source_key^, byte: source_byte^);
+      return frozen_new::<Node>(value: move leaf);
+    }
+    Branch(zero: source_zero, one: source_one) => {
+      let zero = deep_duplicate(root: source_zero);
+      let one = deep_duplicate(root: source_one);
+      let branch = Node::Branch(zero: move zero, one: move one);
+      return frozen_new::<Node>(value: move branch);
+    }
+  }
+}
+
+fn boundary_cases() -> result: Bool pure {
+  let absent = None<u8>();
+  let empty = map_empty();
+  let missing = map_lookup(root: &empty, key: 0_u64);
+  let empty_ok = same_byte(left: missing, right: absent);
+  if bnot(empty_ok) {
+    return False();
+  }
+  let seven = Some<u8>(value: 7_u8);
+  let nine = Some<u8>(value: 9_u8);
+  let eleven = Some<u8>(value: 11_u8);
+  let root = map_edit(root: &empty, key: 0_u64, value: seven);
+  set root = map_edit(root: &root, key: first_bit, value: nine);
+  set root = map_edit(root: &root, key: 18446744073709551615_u64, value: eleven);
+  let retained = frozen_share::<Node>(frozen: &root);
+  set root = map_edit(root: &root, key: first_bit, value: seven);
+  let replaced = map_lookup(root: &root, key: first_bit);
+  let replacement_ok = same_byte(left: replaced, right: seven);
+  if bnot(replacement_ok) {
+    return False();
+  }
+  set root = map_edit(root: &root, key: 1_u64, value: absent);
+  let absent_read = map_lookup(root: &root, key: 1_u64);
+  let absent_ok = same_byte(left: absent_read, right: absent);
+  if bnot(absent_ok) {
+    return False();
+  }
+  for (index in 0_u64..3_u64) {
+    let key = boundary_keys[index];
+    set root = map_edit(root: &root, key: key, value: absent);
+    let old = map_lookup(root: &retained, key: key);
+    let expected = Some<u8>(value: boundary_values[index]);
+    let retained_ok = same_byte(left: old, right: expected);
+    if bnot(retained_ok) {
+      return False();
+    }
+  }
+  return map_is_empty(root: &root);
+}
+
+fn witness(meter: &std::process::MemoryMeter) -> result: Report writes(meter) waits {
+  let boundary_ok = boundary_cases();
+  let slots = initial_keys + operation_count;
+  let absent = None<u8>();
+  let version_zero = box_array_filled::<Option<u8>>(count: slots, value: absent);
+  let final_model = box_array_filled::<Option<u8>>(count: slots, value: absent);
+  let observed = box_array_filled::<Option<u8>>(count: slots, value: absent);
+  for (key in 0_u64..initial_keys) {
+    let remainder = key % 251_u64;
+    let byte = cvt::<u64, u8>(remainder);
+    let present = Some<u8>(value: byte);
+    set version_zero.inner[key] = present;
+    set final_model.inner[key] = present;
+  }
+  let rounds = operation_count / 3_u64;
+  for (offset in 0_u64..rounds) {
+    let inserted_key = initial_keys + offset;
+    let final_key = initial_keys - 1_u64;
+    let removed_key = final_key - offset;
+    set final_model.inner[offset] = Some<u8>(value: 255_u8);
+    set final_model.inner[inserted_key] = Some<u8>(value: 254_u8);
+    set final_model.inner[removed_key] = None<u8>();
+  }
+  let initial = map_empty();
+  for (key in 0_u64..initial_keys) {
+    let remainder = key % 251_u64;
+    let byte = cvt::<u64, u8>(remainder);
+    let present = Some<u8>(value: byte);
+    set initial = map_edit(root: &initial, key: key, value: present);
+  }
+  let state = Registry(root: move initial, generation: 0_u64);
+  let dataset = shared_new::<Registry>(value: move state);
+  let snapshot = capture(dataset: &dataset);
+  let selected = frozen_share::<Node>(frozen: &snapshot.root);
+  let extra = map_empty();
+  let worker_dataset = shared_share::<Registry>(shared: &dataset);
+  let baseline_ok = verify(root: &snapshot.root, model: &version_zero.inner[0_u64..slots], observed: &observed.inner[0_u64..slots]);
+  let before = std::process::heap_in_use(meter: meter);
+  let job = spawn writer(dataset: move worker_dataset);
+  let during_ok = verify(root: &snapshot.root, model: &version_zero.inner[0_u64..slots], observed: &observed.inner[0_u64..slots]);
+  let completed = job;
+  let live = capture(dataset: &dataset);
+  if wrong_live {
+    set selected = frozen_share::<Node>(frozen: &live.root);
+  }
+  if wrong_copy {
+    set extra = deep_duplicate(root: &live.root);
+  }
+  let after = std::process::heap_in_use(meter: meter);
+  let after_ok = verify(root: &selected, model: &version_zero.inner[0_u64..slots], observed: &observed.inner[0_u64..slots]);
+  let live_ok = verify(root: &live.root, model: &final_model.inner[0_u64..slots], observed: &observed.inner[0_u64..slots]);
+  let snapshot_digest = model_digest(model: &version_zero.inner[0_u64..slots]);
+  let live_digest = model_digest(model: &final_model.inner[0_u64..slots]);
+  let snapshot_generation_ok = snapshot.generation == 0_u64;
+  let live_generation_ok = live.generation == operation_count;
+  let generation_ok = band(snapshot_generation_ok, live_generation_ok);
+  discard::<Frozen<Node>>(value: move selected);
+  let before_release = std::process::heap_in_use(meter: meter);
+  discard::<Capture>(value: move snapshot);
+  let after_release = std::process::heap_in_use(meter: meter);
+  let node_budget = 512_u64 * operation_count;
+  let path_budget = node_budget * 65_u64;
+  let bound = path_budget + 262144_u64;
+  let ceiling = before +sat bound;
+  let code = 0_u8;
+  if bnot(boundary_ok) {
+    set code = 73_u8;
+  } else if bnot(baseline_ok) {
+    set code = 70_u8;
+  } else if bnot(during_ok) {
+    set code = 70_u8;
+  } else if bnot(after_ok) {
+    set code = 70_u8;
+  } else if bnot(live_ok) {
+    set code = 71_u8;
+  } else if bnot(generation_ok) {
+    set code = 71_u8;
+  } else if completed != operation_count {
+    set code = 71_u8;
+  } else if after > ceiling {
+    set code = 72_u8;
+  } else if after_release >= before_release {
+    set code = 74_u8;
+  }
+  let released = before_release -sat after_release;
+  discard::<Frozen<Node>>(value: move extra);
+  return Report(code: code, before: before, after: after, bound: bound, released: released, snapshot_checksum: snapshot_digest.checksum, live_checksum: live_digest.checksum);
+}

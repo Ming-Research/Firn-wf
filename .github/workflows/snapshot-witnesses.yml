@@ -34,7 +34,7 @@ jobs:
       - name: Run each witness
         run: |
           status=0
-          for name in frozen-dataset-witness frozen-dataset-prototype snapshot-log-witness; do
+          for name in frozen-dataset-witness frozen-dataset-prototype frozen-dataset-library snapshot-log-witness; do
             echo "== $name"
             code=0
             OUT="$RUNNER_TEMP/$name" sh "research/experiments/$name/run.sh" || code=$?

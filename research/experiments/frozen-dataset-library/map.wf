@@ -1,0 +1,119 @@
+enum Node {
+  Empty();
+  Leaf(key: u64, byte: u8);
+  Branch(zero: Frozen<Node>, one: Frozen<Node>);
+}
+
+const first_bit: u64 = 9223372036854775808_u64;
+
+fn map_empty() -> result: Frozen<Node> pure {
+  let vacant = Node::Empty();
+  return frozen_new::<Node>(value: move vacant);
+}
+
+fn map_is_empty(root: &Frozen<Node>) -> result: Bool reads(root) {
+  match &root^.inner {
+    Empty() => {
+      return True();
+    }
+    Leaf(key: held_key, byte: held_byte) => {
+      return False();
+    }
+    Branch(zero: held_zero, one: held_one) => {
+      return False();
+    }
+  }
+}
+
+fn map_branch(zero: Frozen<Node>, one: Frozen<Node>) -> result: Frozen<Node> pure {
+  let zero_empty = map_is_empty(root: &zero);
+  let one_empty = map_is_empty(root: &one);
+  if band(zero_empty, one_empty) {
+    return move zero;
+  }
+  let branch = Node::Branch(zero: move zero, one: move one);
+  return frozen_new::<Node>(value: move branch);
+}
+
+fn map_path(empty: &Frozen<Node>, key: u64, byte: u8, mask: u64) -> result: Frozen<Node> reads(empty) {
+  if mask == 0_u64 {
+    let leaf = Node::Leaf(key: key, byte: byte);
+    return frozen_new::<Node>(value: move leaf);
+  }
+  let next_mask = ishr(mask, 1_u32);
+  let child = map_path(empty: empty, key: key, byte: byte, mask: next_mask);
+  let sibling = frozen_share::<Node>(frozen: empty);
+  let selected = iand(key, mask);
+  if selected == 0_u64 {
+    return map_branch(zero: move child, one: move sibling);
+  }
+  return map_branch(zero: move sibling, one: move child);
+}
+
+fn map_edit_at(root: &Frozen<Node>, key: u64, value: Option<u8>, mask: u64) -> result: Frozen<Node> reads(root) {
+  match &root^.inner {
+    Empty() => {
+      match value {
+        None() => {
+          return frozen_share::<Node>(frozen: root);
+        }
+        Some(value: inserted_byte) => {
+          return map_path(empty: root, key: key, byte: inserted_byte, mask: mask);
+        }
+      }
+    }
+    Leaf(key: old_key, byte: old_byte) => {
+      match value {
+        None() => {
+          return map_empty();
+        }
+        Some(value: replacement_byte) => {
+          let replacement = Node::Leaf(key: key, byte: replacement_byte);
+          return frozen_new::<Node>(value: move replacement);
+        }
+      }
+    }
+    Branch(zero: old_zero, one: old_one) => {
+      let next_mask = ishr(mask, 1_u32);
+      let selected = iand(key, mask);
+      if selected == 0_u64 {
+        let changed_zero = map_edit_at(root: old_zero, key: key, value: value, mask: next_mask);
+        let retained_one = frozen_share::<Node>(frozen: old_one);
+        return map_branch(zero: move changed_zero, one: move retained_one);
+      }
+      let retained_zero = frozen_share::<Node>(frozen: old_zero);
+      let changed_one = map_edit_at(root: old_one, key: key, value: value, mask: next_mask);
+      return map_branch(zero: move retained_zero, one: move changed_one);
+    }
+  }
+}
+
+fn map_edit(root: &Frozen<Node>, key: u64, value: Option<u8>) -> result: Frozen<Node> reads(root) {
+  return map_edit_at(root: root, key: key, value: value, mask: first_bit);
+}
+
+fn map_lookup_at(root: &Frozen<Node>, key: u64, mask: u64) -> result: Option<u8> reads(root) {
+  match &root^.inner {
+    Empty() => {
+      return None<u8>();
+    }
+    Leaf(key: found_key, byte: found_byte) => {
+      if found_key^ == key {
+        return Some<u8>(value: found_byte^);
+      }
+      return None<u8>();
+    }
+    Branch(zero: zero_child, one: one_child) => {
+      let next_mask = ishr(mask, 1_u32);
+      let selected = iand(key, mask);
+      if selected == 0_u64 {
+        return map_lookup_at(root: zero_child, key: key, mask: next_mask);
+      }
+      return map_lookup_at(root: one_child, key: key, mask: next_mask);
+    }
+  }
+}
+
+fn map_lookup(root: &Frozen<Node>, key: u64) -> result: Option<u8> reads(root) {
+  return map_lookup_at(root: root, key: key, mask: first_bit);
+}

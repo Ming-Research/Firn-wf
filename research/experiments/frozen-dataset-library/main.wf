@@ -1,0 +1,65 @@
+const number_pattern: Array<u8, 24> = "00=00000000000000000000\n";
+
+fn report_number(factory: &std::io::HandleFactory, output: &std::io::OutputStream, field: u8, value: u64) -> result: Bool writes(factory), writes(output) waits {
+  let text = number_pattern;
+  let tens = field / 10_u8;
+  let ones = field % 10_u8;
+  set text[0_u64] = tens + 48_u8;
+  set text[1_u64] = ones + 48_u8;
+  let remaining = value;
+  for (index in 0_u64..20_u64) {
+    let digit = remaining % 10_u64;
+    let byte = cvt::<u64, u8>(digit);
+    let position = 22_u64 - index;
+    set text[position] = byte + 48_u8;
+    set remaining = remaining / 10_u64;
+  }
+  let sent = 0_u64;
+  loop {
+    if sent >= 24_u64 {
+      return True();
+    }
+    let deadline = None<std::time::Instant>();
+    let cancel = std::time::cancel_never();
+    let outcome = std::io::write_once(factory: factory, output: output, source: &text[0_u64..24_u64], start: sent, end: 24_u64, deadline: deadline, cancel: &cancel);
+    std::time::close_cancel_watch(watch: move cancel);
+    match outcome {
+      Ok(value: next_position) => {
+        if next_position == sent {
+          return False();
+        }
+        set sent = next_position;
+      }
+      Err(error: problem) => {
+        return False();
+      }
+    }
+  }
+}
+
+fn main(inputs: std::process::Inputs) -> status: std::process::ExitStatus pure waits {
+  let std::process::Inputs(cwd: directory, stdout: output, handles: factory, memory_meter: meter, ..) = move inputs;
+  let std::fs::Directory(read: directory_read, write: directory_write) = move directory;
+  std::fs::close_directory_write(factory: &factory, directory: move directory_write);
+  std::fs::close_directory(factory: &factory, directory: move directory_read);
+  let report = witness(meter: &meter);
+  let numbers = array_filled::<u64, 10>(value: 0_u64);
+  set numbers[0_u64] = initial_keys;
+  set numbers[1_u64] = operation_count;
+  set numbers[2_u64] = report.before;
+  set numbers[3_u64] = report.after;
+  set numbers[4_u64] = report.bound;
+  set numbers[5_u64] = report.released;
+  set numbers[6_u64] = report.snapshot_checksum;
+  set numbers[7_u64] = report.live_checksum;
+  set numbers[8_u64] = cvt::<u8, u64>(report.code);
+  set numbers[9_u64] = 64_u64;
+  for (index in 0_u64..10_u64) {
+    let field = cvt::<u64, u8>(index);
+    let written = report_number(factory: &factory, output: &output, field: field, value: numbers[index]);
+    if bnot(written) {
+      return std::process::exit_status(code: 75_u8);
+    }
+  }
+  return std::process::exit_status(code: report.code);
+}
