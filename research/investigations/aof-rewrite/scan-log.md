@@ -409,3 +409,127 @@ independent review and unverified compiler/layout/behavioral evidence.
 This supersedes the investigation-only stopping point above. Scanning,
 capture, rotation, emission and resource-limit implementation are later
 stages; the other unresolved protocol questions above remain unresolved.
+
+## Stage 2 prerequisite inspection (2026-10-10)
+
+**Stage 2 is blocked before implementation by the bounded-scan contract.**
+The requested implementation includes the scan KeySet and transient growth
+in R and requires charging before allocation. At the unchanged pin
+`wf-f3d081b90a8d`, `map_scan` provides no way to impose these per-call
+bounds for general live keyspaces. This is
+the existing [board item `firn-gap-scan-bound`](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip),
+owned by the Whitefoot runtime session, not a new Firn command limitation.
+The owner-selected end cut, ordered replacements, inline stamps,
+flush-aborts and service-first reserve remain the requested direction.
+
+Inspection was against Firn-wf
+`5faa658597d6c786f791c6e3a54db7ba7c891ad0`, the local and remote head of
+[draft PR #42, reconciled-scan AOF rewrite](https://github.com/Ming-Research/Firn-wf/pull/42),
+and Whitefoot `f3d081b90a8d36e4cc2175dbf2d3734a074336ff`, resolved from the
+pinned revision in a read-only local clone. The repository's uninitialized
+Whitefoot-kit submodule was read from its separate clone at the recorded
+submodule commit, without changing the checkout or its pin.
+
+### Contract and implementation evidence
+
+- [SHARE-1, line 2276 at the pin](https://github.com/Ming-Research/Whitefoot/blob/f3d081b90a8d36e4cc2175dbf2d3734a074336ff/spec/kernel-spec.md#L2276)
+  makes the scan extent an execution input; count is only a hint. It
+  promises no key-byte, allocation-capacity or visited-work ceiling.
+- [The prelude boundary, line 388](https://github.com/Ming-Research/Whitefoot/blob/f3d081b90a8d36e4cc2175dbf2d3734a074336ff/compiler/src/prelude.rs#L388)
+  takes only `map`, `cursor`, `count` and `keys`, returning the next cursor.
+  Its only postcondition says KeySet length does not decrease. There is no
+  byte allowance, bounded destination or budget-exhaustion result.
+- [Runtime scan, line 2597](https://github.com/Ming-Research/Whitefoot/blob/f3d081b90a8d36e4cc2175dbf2d3734a074336ff/compiler/src/backend/concurrent_map.c#L2597)
+  can inspect up to the table's capacity. It grows its temporary `scanned`
+  array before releasing the old allocation, then copies every selected
+  key into the KeySet at line 2671. That scratch also belongs in R.
+- [KeySet growth, line 1523](https://github.com/Ming-Research/Whitefoot/blob/f3d081b90a8d36e4cc2175dbf2d3734a074336ff/compiler/src/backend/concurrent_map.c#L1523)
+  allocates a larger key arena before releasing its predecessor.
+  `wf_cmap_key_set_insert` at line 1565 copies the entire key. The
+  `capacity: 64` constructor argument is not a key-byte cap, and the
+  opaque KeySet exposes no reservation operation to Firn.
+
+### Minimal semantic witness
+
+This reduced function is a semantic example, not a complete runnable
+program. It has not been compiled or run. A hypothetical remaining scan
+allowance of 65,536 bytes cannot cover even the key copy below, before
+KeySet metadata or runtime scratch is counted:
+
+```whitefoot
+fn scan_key_bytes() -> result: u64 pure waits {
+  let store = shared_map_new::<u64>(capacity: 1_u64);
+  let key = box_array_filled::<u8>(count: 65537_u64, value: 0_u8);
+  let length = key.inner.len;
+  let bytes = &key.inner[0_u64..length];
+  atomic slot = &store[bytes] {
+    set slot^ = Some<u64>(value: 1_u64);
+  }
+  let keys = key_set_new(capacity: 64_u64);
+  atomic table = &store {
+    let next = map_scan::<u64>(map: table, cursor: 0_u64, count: 64_u64, keys: &keys);
+  }
+  return keys.len;
+}
+```
+
+At the inspected runtime, a map containing one live key and count 64 scans
+through the end and inserts that key. `room_for` must provide at least
+65,537 key bytes before returning. Reading its length afterward cannot
+prevent this allocation. Choosing a larger default R does not turn count
+into a byte or work limit. Precharging a conservative bound for all live
+key bytes and runtime scratch would require global bounds and admission
+against the entire keyspace, rather than the selected bounded batches;
+it would not provide the missing general-scan contract. This is a
+resource-interface gap, not a rejected spelling:
+there is no observed compiler diagnostic, and none is claimed under the
+owner's prohibition on local builds and execution.
+
+The upstream acceptance case must cover a single binary key larger than
+the allowance and batches of individually small keys whose total exceeds
+it. Enumeration must either return an explicit budget refusal before any
+overshoot, or provide bounded progress with an exact continuation; it must
+never silently skip or truncate keys. Peak allocation must include KeySet
+metadata/capacity, scan scratch and overlapping growth, rather than only
+returned byte lengths. A separate visited-work limit must cover sparse
+tables and collision runs. Firn must then be able to abort capture on
+refusal without refusing the client's mutation. A check only after return
+fails this acceptance case even if it immediately discards the batch.
+
+### Disposition and delivery limits
+
+The existing board requirement needs to precede this strict-reserve stage,
+with priority at least that of `firn-wf-snap-log`. The board currently lists
+it as P2 and the route as P1. Its published UI was read, but this session
+has no ArtifactData row-writing capability; neither the dependency nor the
+priority nor a progress log was updated. No upstream implementation or
+new filing is claimed. The coordinator/runtime session must update that
+existing item and supply the bounded interface before this implementation
+can meet its stated acceptance condition; adopting a new compiler remains
+a separate owner action because this task prohibits moving the pin.
+
+Only this investigation was changed. No S0 admission, scan worker, journal,
+S1 cut, rotation, reconciliation, abort path or network test was implemented
+in this turn. The requested startup-MULTI refusal and design-tree replacement
+also remain unimplemented; the existing private-replay code and its current
+design nodes remain together. No fixed unlimited-maxmemory reserve is
+selected for an implementation that does not yet exist. No local build,
+execution, test, lint, measurement, commit, push or CI dispatch was performed.
+The pin, submodules, `docs/todo.md` and `design/log.md` are unchanged. There
+is consequently no new gate result or mutation-test evidence to report.
+The separate stalled-filesystem cleanup-time contract remains unverified as
+described above; it is not needed to establish this earlier scan blocker.
+
+An independent read-only Codex/GPT-6 agent reviewed the complete uncommitted
+documentation diff against the Firn revision above, the untracked-file
+inventory, relevant design nodes and persistence code, and the cited pinned
+Whitefoot sources. Its exact runtime model identifier was not exposed.
+Finding F1 narrowed an overbroad impossibility claim to the missing general
+bounded-scan interface and added the whole-keyspace precharging alternative
+and its disposition; the reviewer inspected that repair and reported no
+remaining findings within scope. A1, D1, G2, G3 and DC1/DC2 passed for this
+documentation scope; code, test, pin, measurement and tree-edit checks were
+not applicable. Requested stage-2 completeness (DC4), compiler acceptance
+and executable witness evidence remain unverified. The review used only
+Git/source inspection, did not independently verify remote PR or board
+state, and establishes no gate, memory measurement or implementation result.
