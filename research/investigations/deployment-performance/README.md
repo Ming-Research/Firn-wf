@@ -256,6 +256,41 @@ Measured requests keep the planned 100,000-key range. The client also takes
 and either `--seconds` or a total `--requests`; fill emits no timing row,
 and any protocol, I/O or Redis error fails the run.
 
+Opt in to `rewrite-during` with `redis-bench.yml` inputs `mode=workloads`,
+`tests=rewrite-during`, `runner=14900k`, `seconds=5`, `passes=2`, and
+`connections=50`. Set `workload_images=true` to compare Redis and every
+image in `revisions` (including twins); otherwise the lines are Redis and
+this checkout's firn. This workload uses AOF on only, a fresh server for
+each connection count, and no perf pass. Equivalently, set
+`WORKLOADS=rewrite-during` for the script's `workloads` mode.
+
+The Rust client fills exactly 1,000,000 nonexpiring keys with 64-byte values,
+disables automatic AOF rewrites and memory limits, warms up for 5 seconds,
+then sends continuous uniform depth-one SETs to the same keys. It samples
+completed requests at the three phase boundaries: a before phase of
+`seconds`, a during phase from issuing BGREWRITEAOF until INFO persistence
+confirms idle, unscheduled completion with `aof_rewrites` advanced by one
+and `aof_last_bgrewrite_status:ok`, and an after phase of `seconds`.
+The start reply is checked on a separate connection while INFO sampling
+and SETs continue. The request and completion polling share a 120-second
+absolute deadline; an error reply, failed rewrite, timeout or additional
+rewrite fails the run. Default sampling is every 10 ms, so the during
+interval includes request/polling overhead and can overestimate a very
+short rewrite. Boundary counters count completed SETs, including requests
+issued in the previous phase; they do not provide phase-specific latency.
+`workload_options` can override `--keys`, `--value-size`,
+`--warmup-seconds`, and `--sample-ms`; the pass is the random seed.
+
+`rewrite-during.csv` holds
+`line,pass,cpus,workload,connections,keys,value_size,seed,before_rate,during_rate,after_rate,during_seconds,aof_last_rewrite_time_sec,aof_last_bgrewrite_status,rewrite_completed`.
+Rates are completed SETs per second. `during_seconds` is the sampled client
+interval; `aof_last_rewrite_time_sec` is the server's integer-seconds
+duration from INFO persistence, reported as `unavailable` when absent or
+not yet recorded. Firn on main currently omits that duration field, so its
+wall interval is kept separately and is never substituted for server time.
+Successful rows report `ok,1`; failures exit without a successful row.
+These observations are kept separately from `workloads.csv`.
+
 ### Results
 
 Run [37775047771](https://github.com/Ming-Research/Firn-wf/actions/runs/37775047771)
