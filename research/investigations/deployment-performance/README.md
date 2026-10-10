@@ -523,7 +523,7 @@ of 5 seconds. Rate in requests a second and p50/p99 in ms, pass 1 / pass 2:
 | turns | 50 | 4411 / 4394 | 7.959 / 7.879 | 51.211 / 52.503 |
 
 The control and its twin agree within about 2% on rate; their p50 and p99
-differ by up to about 30% and 12%. Turns cuts the scripted rate 7.5 times at
+differ by up to about 40% and 12%. Turns cuts the scripted rate 7.5 times at
 8 connections and 48 times at 50, and its p99 at 50 connections is 32-34
 times the control's. The likely cause, not yet
 profiled: every script checks out the one engine under a guard, so each
