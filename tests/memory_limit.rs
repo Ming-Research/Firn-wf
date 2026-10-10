@@ -519,13 +519,12 @@ fn aof_rewrite_private_memory_does_not_evict_the_live_dataset() {
     let program = CompiledProgram::from_environment();
     let port = free_port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2", b"scoped-memory.aof"]);
+    let child = program.spawn_on_route(true, &[
+        text.as_bytes(), b"2", b"scoped-memory.aof", b"--auto-aof-rewrite-percentage", b"0",
+    ]);
     let mut client = connect_when_ready(port);
     let mut requester = connect_when_ready(port);
-    configure(&mut client, &[
-        "auto-aof-rewrite-percentage", "0", "maxmemory-policy", "allkeys-lru",
-        "maxmemory-eviction-tenacity", "100",
-    ]);
+    configure(&mut client, &["maxmemory-policy", "allkeys-lru", "maxmemory-eviction-tenacity", "100"]);
     let value = "r".repeat(BYTES);
     let mut written = 0_u64;
     // Sixteen MiB of values and 32768 replayed commands give both phases
