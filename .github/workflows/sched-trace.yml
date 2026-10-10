@@ -22,8 +22,6 @@ jobs:
   trace:
     runs-on: [self-hosted, 14900k]
     timeout-minutes: 30
-    env:
-      OUT: ${{ runner.temp }}/sched-trace
     steps:
       - uses: actions/checkout@v4
       - name: Check out Whitefoot-kit and Halo
@@ -33,6 +31,8 @@ jobs:
       # This host has no passwordless sudo. Never change its perf settings.
       - name: Build the pinned firn and workload client
         run: |
+          # The runner context is unavailable in job-level env, so each step sets OUT.
+          export OUT="$RUNNER_TEMP/sched-trace"
           export PATH="$HOME/.cargo/bin:$PATH"
           mkdir -p "$OUT"
           {
@@ -58,6 +58,7 @@ jobs:
       - name: Trace eight connections and one-connection control
         timeout-minutes: 5
         run: |
+          export OUT="$RUNNER_TEMP/sched-trace"
           # Reuse redis-bench.yml's persistent, identity-checked session cleanup;
           # a separate record cannot stop an unrelated benchmark session.
           session_py="$GITHUB_WORKSPACE/research/experiments/redis-bench/session.py"
