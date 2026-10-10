@@ -439,3 +439,7 @@ run with interleaved traversal. The interleaving coverage is thin (1 of 20):
 the result shows the reconciliation is expressible under current rules and
 correct in these runs, not that it has been exercised under heavy
 concurrent writes; the comparison's write-heavy workloads must supply that.
+
+### Rerun on wf-0c0a2eda83ae (2026-10-10)
+
+[Run 38091715743](https://github.com/Ming-Research/Firn-wf/actions/runs/38091715743), the same program and runner on the release that adds `Frozen<T>`: the correct reconciliation matched in all 20 samples and the wrong control mismatched in all 20, but no correct sample observed a writer commit between two scan batches (`interleaved_correct=0`, against 1 of 20 on wf-fe5589ec5f45), so the run is inconclusive by the criteria above, not a failure of reconciliation. The writer only waits for the first batch, so a finite scan can finish before it resumes; neither WAIT-2 nor SHARE-1 promises alternation, on either release. Coverage needs a schedule that forces a commit between batches while keeping this oracle.

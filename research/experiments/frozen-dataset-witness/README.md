@@ -245,3 +245,7 @@ baseline check fails because `heap_in_use` counts a retained, empty frame
 chunk. Whether PRE-2 should count such a chunk is a runtime accounting
 question outside this witness; it is recorded for the runtime's owner. The
 pre-registered failure stands as recorded.
+
+### Rerun on wf-0c0a2eda83ae (2026-10-10)
+
+[Run 38091715743](https://github.com/Ming-Research/Firn-wf/actions/runs/38091715743) reproduces the earlier result exactly: exit 9 at step 9 (before 1536, after 9728 bytes), and the diagnostic's frame-only recursion again leaves one 8192-byte block counted after its first call and none after repeats. The retained block is the runtime's frame-arena spare, still counted in `heap_in_use`; whether PRE-2 should exclude it is gran's open item `gran-blg-ctx-spare-chunk`. The concurrent phase is still not reached. This witness predates `Frozen<T>` and still uses `Shared`/`SharedRead`.
