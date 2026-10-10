@@ -1,20 +1,18 @@
 struct Registry {
-  root: SharedRead<u8>;
+  root: Frozen<u8>;
   position: u64;
 }
 
-fn freeze(value: u8) -> result: SharedRead<u8> pure {
-  let writer = shared_new::<u8>(value: value);
-  return shared_read::<u8>(shared: &writer);
-}
-
 fn main() -> status: std::process::ExitStatus pure waits {
-  let root = freeze(value: 7_u8);
-  let held = shared_read_share::<u8>(shared: &root);
+  let root = frozen_new::<u8>(value: 7_u8);
+  let held = frozen_share::<u8>(frozen: &root);
   let state = Registry(root: move held, position: 0_u64);
   let dataset = shared_new::<Registry>(value: move state);
-  atomic registry = &dataset, byte = &root {
-    if byte^ != 7_u8 {
+  atomic registry = &dataset {
+    if root.inner != 7_u8 {
+      return std::process::exit_status(code: 12_u8);
+    }
+    if registry^.root.inner != 7_u8 {
       return std::process::exit_status(code: 12_u8);
     }
     set registry^.position = 1_u64;
@@ -23,6 +21,16 @@ fn main() -> status: std::process::ExitStatus pure waits {
     if registry^.position != 1_u64 {
       return std::process::exit_status(code: 13_u8);
     }
+  }
+  let replacement = frozen_new::<u8>(value: 9_u8);
+  atomic registry = &dataset {
+    set registry^.root = move replacement;
+    if registry^.root.inner != 9_u8 {
+      return std::process::exit_status(code: 14_u8);
+    }
+  }
+  if root.inner != 7_u8 {
+    return std::process::exit_status(code: 15_u8);
   }
   return std::process::exit_status(code: 0_u8);
 }

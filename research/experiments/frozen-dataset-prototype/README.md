@@ -1,497 +1,236 @@
-# Persistent dataset prototype: reserve ownership boundary
+# Persistent dataset prototype: Frozen acceptance probes
 
-> Moved on 2026-10-10 from Whitefoot branch `claude/snap-lib-proto` (75d4ddddf plus uncommitted managed-cursor probes) into Firn-wf, because only Whitefoot's own sessions change the Whitefoot repository. Programs now compile with the release in firn's `whitefoot.pin` (run by the temporary workflow `.github/workflows/snapshot-witnesses.yml`); file and line citations of `spec/`, `compiler/` and `design/` refer to the Whitefoot repository at the revision each section names, and the investigation this extends is Whitefoot's [consistent-snapshots record](https://github.com/Ming-Research/Whitefoot/blob/main/research/investigations/consistent-snapshots/README.md). Results recorded below were obtained in Whitefoot's CI with that repository's compiler build.
+Results: pending CI on wf-0c0a2eda83ae
 
+These standalone probes exercise the ownership boundary of the persistent
+dataset snapshot route. Whitefoot's [Frozen implementation, PR #338](https://github.com/Ming-Research/Whitefoot/pull/338)
+supplies the missing immutable shared value: specification v0.123, revision
+`0c0a2eda83ae0270a7c3e12f969aee5655a4301f`, compiler release
+`wf-0c0a2eda83ae`. This is an expressibility experiment; the HAMT, retention
+ledger and complete reserve protocol remain unimplemented.
 
-## Question and pre-registration
+## What changed and why
 
-Can an opt-in persistent dataset library meet contracts B1–B5 and B8 of the
-[snapshot investigation](../../investigations/consistent-snapshots/README.md#contracts-required-before-implementation)
-under current ownership rules, including exact snapshot-only retention
-accounting, automatic last-handle reclamation, and service-first reserve abort?
+The managed probes now build uniquely owned values with `frozen_new` and
+retain the same immutable value with `frozen_share`. Their nodes use
+`Frozen<u8>` rather than `SharedRead<u8>`. SHARE-1 permits reading `inner`
+without an atomic statement, including inside the registry's atomic block.
+There is no writable node handle to relinquish, nested atomic statement or
+dependent atomic target. Only the mutable publication/registry cell still
+uses `Shared<Registry>` and SHARE-2 holds.
 
-Written before any run, against main
-`fc98b8f1aee54a2d57c55dd25b099f2819320d3f`, active specification v0.121.
-Nothing here has been compiled or executed. This is a stopped expressibility
-probe, **not an implemented HAMT or a passing library prototype**. The first
-unresolved step is releasing a stalled reader's retained root on reserve
-abort, together with observing ordinary capture drop in the dataset ledger.
-The task explicitly requires stopping at an ownership obstruction. The
-programs below isolate that step before constructing the map around it.
+The two formerly rejected managed-next probes are positive acceptance tests.
+Their filenames remain unchanged so historical diagnostics and CI artifacts
+still identify the same witnesses. Each preserves its original scalar oracle
+7 and cursor update from position 0 to 1. A separately spawned writer
+publishes a new frozen live value 9 while the reader retains version 7. The
+reader observes 7 without a hold before spawning the writer, while the writer
+context is outstanding, and again after publication. It waits for publication
+without holding registry state; the writer requires no reader acknowledgement.
+Inside the registry statement, the reader records the captured and live bytes
+and advances the cursor. It joins
+the writer explicitly before checking the recorded bytes against 7 and 9
+and the position against 1. No assertion's return edge implicitly joins the
+writer before those observations (WAIT-3).
+The direct-field and ordinary-reference forms separately replace the former
+nested hold and dependent target. All successful observations exit 0;
+returning the observed byte as exit 7 is no longer the oracle check.
 
-The owner's service-first reserve and opt-in library rulings remain in force.
-A new storage domain is an option for the owner to consider, not a conclusion
-that these probes select. In particular, rejection of a destructive write
-through SharedRead proves that operation unavailable; it does not prove that
-every possible managed snapshot API is inexpressible.
+`managed-atomic-control.wf` retains its separately available handle control,
+now frozen, and checks both that handle and the registry root within one
+registry statement. It also replaces the live registry root with 9 and
+checks that the separately retained snapshot still reads 7 without a hold.
+That external handle remains a diagnostic/ownership control, rather than
+the registry-only managed-cursor API.
 
-The existing [expressibility witness](https://github.com/Ming-Research/Whitefoot/blob/2bb8a342539930f04ed661bcf1c677ed5bb7eb07/research/experiments/frozen-dataset-witness/README.md#results)
-reports update, capture, enumeration and reclamation working in its CI runs.
-Its 8,192-byte whole-process residue was isolated to a retained runtime frame
-chunk, not retained dataset nodes. Those are prior results, not runs of this
-prototype. Its binary tree and scalar values do not establish the requested
-HAMT, byte-array values or reserve protocol.
-
-The intended full-program observations remain fixed:
-
-| Program, not yet implemented | Expected outcome | Contracts |
-| --- | --- | --- |
-| Sequential | Print a deterministic PRNG seed; replay set, delete and multi-key batch histories into an independent sorted association list; every captured enumeration equals the list at its generation. Include empty keys/values, replacements, absent deletes, hash collisions and multiple captures. Exit 0. | B1, B2, B3, B5 |
-| Concurrent | Writer publishes whole batches while the reader captures at racing points and waits between enumeration steps; replay the same history independently through the returned generation. No partial batch or mixed generation; writer completes. Exit 0. | B3, B4, B5 |
-| Reclamation | Multiple captures share immutable nodes; after their last handles and the dataset drop, quiescent heap readings in one activation return to baseline without deepening the waiting frame stack between readings. Exit 0. | B1, B8 |
-| Reserve | Stall a small-reserve capture while the writer replaces every key. Before excess retention is admitted the capture aborts, publication does not depend on reader progress, and actual retained bytes reach zero. Exit 0. | B1, B4, B8 |
-
-An inexpressible required operation, any oracle mismatch, an abort that waits
-for the stalled reader, or retention surviving the promised cleanup boundary
-rejects the proposed library contract. A compiler implementation failure,
-timeout or unrelated diagnostic establishes no language rejection. No expected
-result may be weakened to obtain a green run. The full harnesses have no exit
-codes assigned yet because they have not been written; the executable probes'
-distinct codes are below.
-
-Performance, fork, scan-plus-log, file export and durability are out of scope.
-The timing comparison belongs later on the idle i9-14900K through CI, under
-the investigation's pre-registered comparison and consumer-set targets.
-
-## Intended representation and accounting
-
-The requested map would use a fixed-fan-out-16 hash array mapped trie with
-path copying, immutable shared child edges and collision storage for distinct
-keys with equal complete hashes. Each leaf owns its key and value as
-`Box<Array<u8>>`. A node is constructed uniquely, moved into `Shared`, retained
-as `SharedRead`, then loses its only writable handle. Unchanged descendants
-are retained, never copied as unique owners. Nested mutable values, outside
-writers and host resources are outside this dataset; capture copies nothing
-mutable. A single publication cell holds the complete root and generation;
-batch construction is private and only its final root is published. Neither
-hash choice nor collision layout nor generation-exhaustion behavior has been
-implemented or selected by this stopped probe.
-
-The exact quantity needed is
-
-`V = sum(bytes(a), a in (union of capture-reachable allocations) minus live-root-reachable allocations)`.
-
-This is a set of allocation identities, not a sum of generation sizes. Nodes
-shared by two captures count once, and a node also reachable from the live
-root counts zero. Keys, values, node backing and shared-state allocation
-overhead belong in those allocation sizes; capture metadata and traversal
-scratch belong in the separate buffer/metadata budget. Logical payload bytes
-alone are insufficient. Process-wide PRE-2 heap samples cannot compute this
-set in concurrent service. This probe chooses no unverified physical-byte
-formula and implements no counter pretending to be V.
-
-At publication, the proposed ledger would determine which live allocations
-become capture-only and admit the resulting V only within the reserve. A
-last-capture drop must remove its otherwise unreachable allocations from V.
-An abort must both communicate `aborted` and retire the capture's retention;
-setting a counter to zero while another handle keeps the nodes alive is not
-accounting or cleanup. The following ownership alternatives prevent finishing
-that protocol as requested.
-
-## Minimal boundary and alternatives
-
-1. **Return an independently retained root.** SHARE-1 releases only the
-   particular handle dropped. Dropping the writer's registry reference cannot
-   release the reader's handle or its nodes. A stalled reader can hold an
-   arbitrary old subtree. Setting an abort flag does not consume that handle.
-   With reserve zero, one replaced value is already a counterexample: the old
-   allocation becomes capture-only even after the writer drops all its handles.
-2. **Keep the root exclusively in a shared capture controller.** A writer can
-   clear that controller, provided no node/root handle escaped. But if the
-   writer retains the controller in its registry, dropping the reader's last
-   controller handle leaves the registry handle and root live. Automatic
-   capture drop does not unregister it. STOR-3 provides no source finalizer;
-   the PRE-1 handle interface provides neither weak handles nor a strong-count
-   observation. Holding a `Shared` ledger inside the capture only releases
-   that ledger handle on drop; it does not write its counter.
-3. **Managed cursor and explicit close.** This is a plausible different API:
-   keep all retained owners under writer-controlled state, return detached
-   bytes between waits, and require explicit close/unregister. It needs its
-   own analysis of traversal pins, multi-reader accounting and bounded scratch.
-   It changes automatic last-handle cleanup and the independently retained
-   root interface; it has not been silently substituted. A linear handle can
-   enforce close, but cannot attach work to ordinary drop.
-4. **Cooperative cancellation.** The reader can notice an abort and drop its
-   own handles. That does not bound cleanup while the reader waits indefinitely
-   on unrelated work; blocking publication until it acknowledges instead
-   changes the service-first policy. PRE-2 explicitly distinguishes cancellation
-   request from completed cleanup and gives file operations no cancel bound.
-
-The minimal forbidden mutation is in [revoke-rejected.wf](revoke-rejected.wf):
+`revoke-rejected.wf` remains negative. Its intended operation is still
+destructive replacement of a captured one-byte value with an empty array.
+Writing `root^.inner` is forbidden by TYPE-2's readonly-path rule; a
+replacement of the handle itself would merely release that handle and would
+not revoke another holder's value. The explicit `writes(root)` row prevents
+a missing write effect from being the reason for rejection:
 
 ```wf
-fn revoke(root: &SharedRead<Box<Array<u8>>>) -> result: unit reads(root) waits {
+fn revoke(root: &Frozen<Box<Array<u8>>>) -> result: unit writes(root) {
   let empty = box_array_filled::<u8>(count: 0_u64, value: 0_u8);
-  atomic bytes = &root^ {
-    set bytes^ = move empty;
-  }
+  set root^.inner = move empty;
   return unit;
 }
 ```
 
-SHARE-2 rejects whole-state replacement through a read-only target. Changing
-that target to writable would mutate the captured generation and violate B2/B3;
-it would still not remotely consume the reader's handle. There is no finalizer
-syntax to offer as a second validly formed program: STOR-3 expressly excludes
-attaching any user-defined action to release. [control.wf](control.wf) instead
-exhibits the permitted drop behavior, including a retained ledger unchanged
-by dropping its ticket.
+The unchanged `control.wf` still tests the three original Shared ownership
+consequences. It is an independent baseline for handle-local release, not a
+Frozen library implementation or a substituted reserve protocol.
 
-**Status:** normative rejection expected, diagnostic not yet observed. CI must
-establish canonical acceptance of the control and SHARE-2 attribution for the
-negative at `set bytes^ = move empty;`. Earlier FORM/GRAM/type rejection,
-internal errors and resource stops are not the intended evidence. These
-sources are research evidence, not new conformance verdicts.
+## Expected results and independent oracles
 
-## Executable probes and failure codes
-
-`control.wf` reduces the storage to one immutable one-byte value with literal
-oracle 7. It checks three independent consequences of the current rules:
-
-- Dropping the writable handle leaves the captured value and heap allocation
-  intact; dropping the last read handle releases it.
-- Dropping the reader's controller handle leaves the registry-owned root
-  intact; clearing the registry root releases its allocation.
-- Dropping a ticket releases its root but leaves the separately retained
-  ledger's outstanding count at 1, demonstrating that there is no drop action.
-
-Each heap comparison brackets allocations and releases inside one function,
-without recursion, spawn or deeper waiting calls between its readings. It
-does not subtract a magic frame-chunk constant or reinterpret a discrepancy
-as a pass. PRE-2's quiescent heap count is the oracle for release, not RSS.
+| Probe | Expected result | Purpose and oracle |
+| --- | --- | --- |
+| [control.wf](control.wf) | Compiles, exits 0 | Literal byte 7 and same-function PRE-2 heap comparisons: releasing a writer preserves the reader's allocation; last read-handle drop releases it; a registry retains a dropped reader's root until cleared; dropping a ticket does not decrement a separately retained ledger's outstanding count of 1. |
+| [revoke-rejected.wf](revoke-rejected.wf) | Rejected citing TYPE-2 at `set root^.inner = move empty;` | An immutable captured generation cannot be overwritten or remotely revoked through its frozen value. Never executed. |
+| [managed-atomic-control.wf](managed-atomic-control.wf) | Compiles, exits 0 | Separately retained and registry-owned frozen handles both read 7 inside the registry statement; cursor position persists as 1; replacing the registry root with 9 leaves the external snapshot at 7. |
+| [managed-next-nested-rejected.wf](managed-next-nested-rejected.wf) | Compiles, exits 0 | Direct `registry^.root.inner` reads 7 within the registry hold, replacing the formerly nested node hold. A writer publishes live 9, position becomes 1, and a reader-held snapshot reads 7 without a hold before and after publication. |
+| [managed-next-target-rejected.wf](managed-next-target-rejected.wf) | Compiles, exits 0 | `let byte = &registry^.root.inner;` and `byte^` read 7 within the registry hold, replacing the formerly dependent node target. The same independent live-9, position-1 and no-hold snapshot-7 oracles apply. The reference never escapes the block. |
 
 | Program exit | Meaning |
 | --- | --- |
-| control: 0 | All three specified ownership consequences observed; this is **not** success of the requested reserve contract. |
-| control: 1 | Dropping the writer unexpectedly changed heap while a read handle remained. |
-| control: 2 | Retained root had the wrong length. |
-| control: 3 | Retained byte differed from the independent literal 7. |
+| Any positive: 0 | Every specified observation for that probe matched. This does not establish the full library contract. |
+| control: 1 | Writer drop changed heap while a read handle remained. |
+| control: 2 / 3 | Captured length was not 1 / captured byte was not 7. |
 | control: 4 | Last root drop did not return to the same-function baseline. |
-| control: 5 | Dropping the reader controller changed the registry-held heap. |
-| control: 6 | Registry lost its root when only the reader handle dropped. |
-| control: 7 | Clearing the registry did not release any storage. |
-| control: 8 | Dropping the registry did not return to baseline. |
-| control: 9 | Ticket drop changed the separately held ledger's count. |
-| control: 10 | Ticket drop did not return to the ledger-only heap level. |
-| control: 11 | Dropping the ledger did not return to baseline. |
+| control: 5 / 6 | Reader-controller drop changed registry-held heap / registry lost its root. |
+| control: 7 / 8 | Clearing the registry released no storage / registry drop did not return to baseline. |
+| control: 9 / 10 / 11 | Ticket drop changed ledger count 1 / did not return to ledger-only heap / ledger drop did not return to baseline. |
+| Any managed probe: 12 / 13 | Captured byte was not 7 / cursor position was not 1. |
+| Any managed probe: 14 / 15 | Published live byte was not 9 / retained reader byte changed from 7. |
+| run.sh: 81 | Negative compiled, or its source rejection did not match the registered TYPE-2 operation. |
 
-The negative is compiled only, never executed. Compiler exit statuses are
-reported separately from program statuses. [run.sh](run.sh) records all raw
-statuses and diagnostics, and deliberately exits **80** after a successful
-control because the requested library route remains unresolved; a failing
-control instead returns its actual failure. It does not classify an arbitrary
-compiler failure as a successful rejection. A human must inspect the negative
-diagnostic at the specified operation. Unexpected negative acceptance also
-leaves the workflow failed. GNU timeout status 124 and signal termination are
-infrastructure failures, never source verdicts.
+`run.sh` records the compiler's own exit status and each positive program's
+own exit status separately in `results.tsv`, together with an expectation
+verdict. It tries every probe even after a mismatch. Positives must compile
+and exit 0. The negative must produce compiler status 1 and exactly one
+source error, `error[TYPE-2]: ReadonlyWriteTarget`, at
+`revoke-rejected.wf:3:7`, with the registered write in its diagnostic. An
+unrelated error, unexpected acceptance, internal failure, timeout or signal
+termination fails the job. The old unconditional expressibility-stop exit
+80 is removed: the runner exits 0 only when all five expectations hold.
+Raw compile/run failures retain the first failure's status. Logs remain
+available to inspect the actual diagnostic and runtime behavior.
 
-The [temporary workflow](../../../.github/workflows/frozen-dataset-prototype.yml)
-runs only on pushes to `claude/snap-lib-proto`, using ubuntu-24.04 and
-`make -C compiler build`; it records revision, specification digest and host,
-then compiles/runs these smallest probes. Remove it before any pull request.
-No canonical gate consumes this research. No local build, compilation, test,
-script run or commit is authorized or performed by this change.
+## CI invocation
 
-After CI builds `compiler/target/gate/whitefootc`, the explicit invocation is:
+The branch-only [snapshot-witnesses workflow](../../../.github/workflows/snapshot-witnesses.yml)
+installs the witness release separately from `whitefoot.pin`, exports `WFC`,
+and runs this runner alongside the other snapshot witnesses on ubuntu-24.04.
+It uploads all logs. Neither firn's compiler pin nor any submodule is moved.
+The workflow is temporary and no canonical gate consumes these probes.
+
+For CI after the workflow has installed the compiler:
 
 ```sh
-sh research/experiments/frozen-dataset-prototype/run.sh
+WFC="$PWD/build/whitefoot/wf-0c0a2eda83ae/whitefootc" \
+  sh research/experiments/frozen-dataset-prototype/run.sh
 ```
 
-It needs GNU `timeout`. Logs and `results.tsv` go under `$OUT`, defaulting to
+GNU `timeout` is required. Outputs go to `$OUT`, defaulting to
 `$RUNNER_TEMP/frozen-dataset-prototype` or `/tmp/frozen-dataset-prototype`.
+The runner retains its existing `whitefoot.pin` compiler fallback when
+`WFC` is unset; use the explicit witness compiler above for this experiment.
+The concurrent managed-next probes use `WF_DRIVERS=2 WF_WORKERS=1`, allowing
+the spawned writer to progress while the reader waits. The two controls keep
+`WF_DRIVERS=1 WF_WORKERS=1`. No timing or performance claim is made.
+No local build, compilation, test or runner execution accompanies this edit.
+Changes are left in the working tree for the handoff owner to commit and
+push before CI can validate them.
 
-## Contract disposition and handoff
+## Remaining library obligations
 
-| Contract | Disposition at the stop |
-| --- | --- |
-| B1: frozen ownership/reclamation | SHARE-1 construction and last-handle reclamation have prior witness evidence. New minimal control pending CI. Exact automatic capture-ledger retirement is unresolved. No HAMT implementation. |
-| B2: transitive closure | Intended payload closure is owned byte arrays plus immutable shared edges, with no outside writer. Minimal control follows it. Nested mutable values are excluded explicitly. |
-| B3: complete generation/cut | Intended one-cell root/generation publication and private batch construction; not implemented here. Destructive read-handle revocation would violate the captured generation. |
-| B4: physical sharing | Shared ownership and atomic state transitions use SHARE-1/3. No concurrent accounting or HAMT publication evidence yet. |
-| B5: proof facts | Every probe array access proves its bound in the same atomic read. No pre-capture length fact is imported. Full capture contracts remain unwritten. |
-| B6: host-resource disposition | No export job; captures contain no host resources. The control consumes both Inputs directory handles normally. |
-| B7: fork frontier | Out of scope; no fork. |
-| B8: cancellation/cleanup | Blocking requirement: an independently retained root survives writer abort; a registry retains a dropped holder's root. No bounded cleanup guarantee or wall-clock bound is claimed. |
-| B9: expressibility boundary | Two complete minimal programs isolate the boundary; negative attribution and positive behavior await CI. This is narrower than rejecting all persistent libraries. |
+The original pre-registration against Whitefoot
+`fc98b8f1aee54a2d57c55dd25b099f2819320d3f` (v0.121) asked whether the
+opt-in persistent dataset library could meet B1-B5 and B8 of the
+[consistent-snapshots investigation](https://github.com/Ming-Research/Whitefoot/blob/main/research/investigations/consistent-snapshots/README.md#contracts-required-before-implementation).
+The service-first reserve and opt-in library rulings remain in force.
+These scalar probes close only the first immutable-node read obstruction if
+CI passes; they do not implement or validate the four full programs below.
 
-No specification, conformance case, compiler, standard library, design decision
-or `docs/todo.md` is changed. No API workaround or new storage domain has been
-adopted. The HAMT module, module graph and four full correctness programs are
-intentionally absent at this explicit stop, rather than placeholders that
-could be mistaken for a completed prototype.
+The intended representation remains a path-copying, fan-out-16 HAMT with
+owned `Box<Array<u8>>` keys/values, frozen child edges, complete-hash collision
+storage and one publication cell for root and generation. Frozen payloads
+must contain no Shared, SharedRead or host handle at any depth (SHARE-1).
+Hash choice, collision layout and generation exhaustion remain unselected.
 
-Found along the way: the requested automatic-drop ledger and forced-abort
-requirements meet a handle-lifetime boundary not tested by the earlier
-witness; isolated here. The frame-chunk residue remains with its existing
-runtime owner, without a duplicate runtime change.
+The selected managed API keeps capture roots in writer-controlled registry
+entries, returns a linear capture identifier, yields detached bytes from
+`cursor_next`, and requires explicit `capture_close`. Publication and cursor
+observation each occur in one statement; abort removes the entry and releases
+its root during publication. No retaining node owner may escape that API.
+The reader-held frozen handle in these scalar witnesses deliberately tests
+snapshot lifetime; it is not a claim that external owners are revocable.
 
-## Read-only review
+The exact original snapshot-only quantity is
+`V = sum(bytes(a), a in (union of capture-reachable allocations) minus live-root-reachable allocations)`.
+Allocation identities count once, including node backing, keys/values and
+object overhead. Last-capture drop and abort must remove real retention,
+not just zero counters. Frozen's ordinary drop still supplies no user-defined
+ledger action (STOR-3), and releasing one handle does not release others
+(SHARE-1). For example, retaining
+`let reader = frozen_share::<u8>(frozen: &root);` leaves the old object live
+after the writer replaces or releases `root`. Freezing a ticket containing
+`ledger: Shared<Ledger>` is also forbidden by SHARE-1's payload closure;
+this does not supply an automatic ledger-notification mechanism.
 
-A separate GPT-6 agent reviewed the complete five-file working change against
-the recorded main revision, the requested outcome and constraints, relevant
-specification and library interfaces, the earlier witness, and the governing
-design nodes and ancestors. It also inspected the negative's final `freeze`
-helper, which drops the writable handle before the attempted revocation.
-No actionable findings remained within that scope. The review ran no builds,
-compilations, tests or scripts.
-
-Repository/citation checks and construction/research-boundary checks passed
-by inspection, as did design consistency and correspondence for the probes.
-Specification delivery, changed compiler acceptance, canonical-gate selection,
-new timing labels and deleted implementation checks were not applicable.
-Actual diagnostic attribution, control behavior, heap equalities and DC4's
-full implementation evidence remain unverified. The review supports the
-handle-local lifetime argument, not impossibility of every managed API; that
-broader design claim remains unverified. This is a blocked edit-only handoff,
-not completion or approval of the requested HAMT prototype.
-
-## Managed cursor continuation: pre-registration and first obstruction
-
-Recorded 2026-10-10 against branch head
-`75d4ddddff9a444f4f5a7c0e3cc69588567e1b0c`, specification v0.121, before
-any compilation or execution of this continuation. The sections above and
-the original two WF probes are preserved. The owner selected alternative 3
-for this trial: writer-owned captures, a linear handle, detached results and
-explicit close. This authorizes investigating that API; it does not establish
-its expressibility or change the specification.
-
-**Stop:** the first `cursor_next` cannot observe a registry-owned
-`SharedRead` node inside the registry's atomic statement under SHARE-2.
-The obstruction needs only one capture and one scalar node. No hashing,
-collision handling, allocation accounting, cursor stack or batch is involved.
-Following the task's stop condition, this continuation adds minimal rejected
-sources and a positive control, not a library with a substituted read protocol
-or four programs that claim to exercise one. Diagnostics and positive behavior
-remain pending CI; no compiler diagnostic has been observed locally.
-
-### Requested API and representation at the stop
-
-These are intended operations, **not implemented exports**:
-
-| Operation | Required result and ownership |
-| --- | --- |
-| `capture_open(dataset)` | Register the live root and its generation at one publication cut; return a private `nodrop Capture` naming that entry. No node handle leaves the dataset. |
-| `cursor_next(dataset, capture)` | Borrow the handle; observe the entry and required nodes in one atomic statement, copy owned `Box<Array<u8>>` key/value bytes, advance the entry's position, and return `Next(key, value)`, `Done` or `Aborted`. Only detached bytes survive the call. |
-| `capture_close(dataset, capture)` | Consume the linear handle, remove its entry if still present, release its root and subtract its charge in one statement. Closing an aborted capture still consumes its handle. |
-| `publish_batch(dataset, operations)` | Construct one complete replacement root, then publish it and its generation together with reserve accounting and any required capture aborts. |
-
-The intended dataset shared state holds the live root, generation, reserve,
-total charge and registry. Each registry entry holds a capture identifier,
-generation, immutable retained root, cursor position and retained-byte charge.
-Identifiers must prevent stale handles from naming a reused entry. If abort
-removes the entry entirely, a missing non-reused identifier denotes `Aborted`;
-no unbounded aborted-entry tombstone list is intended. Dataset/handle association
-and identifier exhaustion still need a concrete checked interface; this stop
-does not claim they are solved. A handle must remain closable after abort.
-
-The requested node representation remains a 16-way path-copying HAMT: each
-node is initialized uniquely and retained through SHARE-1 after the writable
-handle is released. Nodes own byte-array payloads and immutable shared edges.
-No HAMT is implemented or hash selected. The single-node reduction is an
-expressibility witness, not a simpler map selected on unmeasured hash cost.
-A shared linked list or binary tree has the same obstruction at its first
-registry-to-node edge. An arena of uniquely owned nodes addressed by integers
-would require a different retention/reclamation design; it has not been
-substituted for immutable shared nodes.
-
-### Minimal rejected steps and expected diagnostics
-
-SHARE-1 permits a path into a shared object's state only through an atomic
-target. SHARE-2 requires the targets to be available before the statement
-holds any state, and forbids both nested atomic statements and calls to
-waiting functions inside the block. A read-only handle is still subject to
-these rules even after its last writable handle has gone.
-
-1. [managed-next-nested-rejected.wf](managed-next-nested-rejected.wf) stores
-   the sole `SharedRead<u8>` in the registry and tries:
-
-   ```wf
-   atomic registry = &dataset {
-     atomic byte = &registry^.root {
-       set registry^.position = 1_u64;
-       return std::process::exit_status(code: byte^);
-     }
-   }
-   ```
-
-   Expected: SHARE-2 at the inner `atomic` statement, because an atomic block
-   contains another atomic statement. The current checker source identifies
-   this diagnostic as `WaitInsideAtomic`; this is source inspection, not an
-   observed compilation result.
-2. [managed-next-target-rejected.wf](managed-next-target-rejected.wf) instead
-   writes `atomic registry = &dataset, byte = &registry^.root`. Expected:
-   SHARE-2 at the dependent target, because its handle place reads through
-   another target's binding before the statement holds that state. The
-   checker diagnostic kind is `AtomicKeyReadsTheState` (despite its name,
-   this check also covers handle places). The existing conformance case
-   `share-neg-target-reads-a-binding` independently states this expectation.
-3. [managed-atomic-control.wf](managed-atomic-control.wf) retains an extra
-   handle outside the registry, so both targets are available at entry. Its
-   fixed operation history is store scalar 7, observe it, advance position
-   from 0 to 1; independent literal expectations check the byte and position.
-   Expected: acceptance and exit 0. **This is only a diagnostic control:** its
-   external node handle deliberately fails the managed ownership constraint.
-
-The reductions omit key/value copying, handle identifiers and close because
-they do not cause the refused operation. Both negatives drop the writable
-node handle before constructing the registry. Neither negative is executed.
-Extracting a retaining handle in an earlier statement would hold that handle
-across the next atomic statement, which itself counts as a waiting call; the
-writer could no longer bound release at abort. A registry-state reference
-cannot escape its atomic block (REF-2). A waiting traversal helper inside the
-block is also forbidden by SHARE-2. These are not accepted repairs of the
-requested contract, and no workaround was implemented.
-
-### Accounting rule and conditional bound
-
-The following specifies the intended per-capture charge precisely; it is
-**not an implemented ledger or an established physical-byte bound**. Let
-`L` be the allocations reachable from the committed live root, `C_c` those
-reachable from active capture c, and `b(a)` a nonnegative byte charge covering
-allocation a, including node backing, owned key/value storage and shared
-object overhead. Count each allocation identity once within each set. Define:
-
+For the managed continuation, let `L` be live-root allocations, `C_c` the
+allocations reachable from active capture c and `b(a)` a nonnegative charge
+covering actual allocation bytes. Its proposed conservative charge is
 `r_c = sum(b(a), a in C_c minus L)` and `S = sum(r_c, active captures c)`.
+For m captures, `V_b <= S <= m * V_b`, where `V_b` counts the union once.
+Before publication completes, abort oldest captures until `S <= reserve`;
+close also subtracts the entire charge and releases the registry root.
+This conditional bound does not establish a physical-byte formula, identity
+ledger, incremental accounting algorithm, scratch limit or total heap bound.
+Detached results, metadata and private batch construction need separate
+budgets. Cleanup work is proportional to newly unreferenced allocations,
+not a constant-time or wall-clock promise. These obligations remain open.
 
-At publication to `L_new`, compute each surviving capture's charge against
-`L_new`; newly capture-only allocations enter then, and allocations reachable
-from `L_new` are excluded. Before completing that publication, abort oldest
-captures until `S <= reserve`: remove their entries, subtract their entire
-charges and release their roots in the same statement that replaces the live
-root. Close performs the same subtraction/release without publication. An
-aborted capture with no subsequent close retains neither root nor entry.
-This requires all transient node owners to be released by the same boundary,
-including the replaced live root; zeroing counters alone is not cleanup.
-
-For `m` active captures and
-`V_b = sum(b(a), a in (union C_c) minus L)`, the accounting satisfies
-`V_b <= S <= m * V_b` (all are zero when m is zero). Thus `S <= reserve`
-bounds capture-only storage by the reserve **if** each `b(a)` bounds its
-actual storage. Sharing between captures is conservatively charged once per
-capture, not once globally: aborting one may free no node still retained by
-another. Live-shared nodes cost zero. This approximation may abort earlier
-than an exact union ledger; it never justifies understating retention.
-Counter arithmetic also needs proved bounds, not wrapping or saturation.
-
-No physical size formula, identity ledger, incremental set-difference
-algorithm or scratch limit has been established. Logical payload lengths
-alone do not cover the overhead above, and process-wide `heap_in_use` cannot
-attribute it during concurrent service. Registry metadata, detached output,
-private batch construction and traversal scratch require their own budget;
-the formula does not bound total process heap or pre-publication peaks.
-The intended cleanup boundary is root release during publication, independent
-of reader progress, with release work proportional to the newly unreferenced
-nodes/allocations (and a registry/accounting walk). This is no constant-time
-or wall-clock guarantee; both a concrete work bound and its implementation
-remain unverified at this stop.
-
-### Full-program observations still required
-
-The earlier expected outcomes are unchanged. Under the selected managed API,
-the following remain the pre-registered acceptance criteria; their source
-programs are deliberately absent because the first read step is blocked.
-
-| Program | Independent oracle and required observation |
+| Full program, still unimplemented | Fixed independent oracle and rejection criterion |
 | --- | --- |
-| Sequential | Replay the same seeded set/delete/batch history into a sorted association list without calling the persistent implementation; enumerate captures at many generations and compare every key/value and end-of-stream with the replay at that generation. Retain the earlier empty-byte, replacement, absent-delete, collision and multiple-capture cases. Expected exit 0. |
-| Concurrent | Separate writer and reader contexts; the reader captures at racing cuts and waits between `cursor_next` calls. Replay the operation history through each returned generation independently; every complete enumeration equals that state and contains all or none of each batch. Expected exit 0. |
-| Reserve | Hold the reader on a guard that stays false until the writer finishes replacing every key with a small reserve. The writer must finish without a reader acknowledgement. Check zero retained bytes at abort before satisfying that guard; the next cursor call reports `Aborted`. Independently replay the same replacements to check the final live dataset. Expected exit 0; timeout is failure, never evidence of progress. |
-| Reclamation | Replay the history independently and verify captures before closing them. With all captures closed and the dataset dropped, compare quiescent `heap_in_use` with the baseline in one activation around a call that does not deepen the waiting-frame stack. Expected exit 0 with exact equality; never subtract a guessed frame constant. The separately tracked retained frame chunk stays with board item `gran-blg-ctx-spare-chunk`. |
+| Sequential (B1/B2/B3/B5) | Print a deterministic PRNG seed; replay set/delete/multi-key batch histories into an independent sorted association list. Every captured enumeration equals that generation, covering empty keys/values, replacement, absent deletes, collisions and multiple captures. Expected exit 0. |
+| Concurrent (B3/B4/B5) | Writer publishes complete batches while reader captures at racing cuts and waits between cursor steps. Independently replay through the returned generation: no partial batch or mixed generation, and writer completes. Expected exit 0. |
+| Reserve (B1/B4/B8) | Stall a small-reserve reader while writer replaces every key. Abort before excess retention is admitted, complete publication without reader acknowledgement, and observe actual retained bytes zero before waking the reader; its next cursor call reports Aborted. Independently verify final live state. Expected exit 0; timeout fails. |
+| Reclamation (B1/B8) | Multiple captures share immutable nodes and match independent replay. After captures close and dataset drops, quiescent PRE-2 heap returns exactly to baseline within one activation, without deeper waiting frames between readings or subtracting a guessed frame constant. Expected exit 0. |
 
-There are no full-program exit codes to claim yet. The executable continuation
-has these distinct codes, fixed before any run:
+Any required inexpressible operation, oracle mismatch, abort awaiting a
+stalled reader or retained storage past the cleanup boundary rejects the
+proposed library contract. Compiler failure or an unrelated diagnostic does
+not establish language rejection. No expected result is weakened to obtain
+a green run. B6/B7 export, host-resource/fork behavior, performance and
+durability are outside these probes. The prior retained runtime frame-chunk
+finding stays with board item `gran-blg-ctx-spare-chunk`.
 
-| Program/harness exit | Meaning |
-| --- | --- |
-| managed-atomic-control: 0 | Independently available targets read 7 and persist the cursor-position update. No library acceptance claim. |
-| managed-atomic-control: 12 | The observed byte differs from the literal oracle 7. |
-| managed-atomic-control: 13 | The registry position is not 1 after the read statement. |
-| run.sh: 80 | Expressibility stop still open; inspect raw negative diagnostics. Neither a pass nor an attributed rejection. |
-| run.sh: 81 | A new negative unexpectedly compiled; its binary was not executed. |
+## Historical rejection on wf-fe5589ec5f45
 
-The runner keeps the original probes first, then compiles the new control and
-both new negatives, running only the control. Original control failures and
-new control failures retain their raw status; compilation and execution stay
-separate in `results.tsv`. Failure of any negative compilation is only a raw
-observation. A human must confirm SHARE-2 at the registered operation; an
-earlier type/grammar error, timeout, crash or unrelated rejection settles
-nothing. The workflow remains failed with 80 even if both positive controls
-pass and all negative compilations fail. The temporary branch-only workflow
-uploads every log and makes no canonical-gate claim.
-
-### Contract disposition and edit-only handoff
-
-| Contract | Managed design obligation and present evidence |
-| --- | --- |
-| B1: ownership/reclamation | Registry-only roots plus explicit close would remove the earlier reader-retention obstacle. SHARE-1 and the original control cover handle release, but this continuation cannot supply the required cursor read. Full ownership/reclamation unverified. |
-| B2: closure | Intended nodes own byte arrays and immutable shared edges with no outside writers or host resources. Both reductions relinquish writable node authority. Transitive map closure not implemented. |
-| B3: generation/cut | Intended one-statement root/generation/batch publication and one-statement cursor observation. SHARE-2 prevents discovering the retained node in that cursor statement. No all-or-none batch evidence. |
-| B4: physical sharing | SHARE-1 would share unchanged immutable nodes; SHARE-3 orders registry updates. No retained owner may escape to bridge the blocked read. Concurrent implementation and writer-progress evidence absent. |
-| B5: proof facts | Bounds must be established while the selected generation is observed; returned arrays carry their own owned storage and declared facts. The reduction removes arrays so no missing bound can explain the intended rejection. Full byte-copy proofs unverified. |
-| B8: cleanup | Abort/close must release registry-only roots at publication/close, without reader cooperation. Detached bytes already returned have their own lifetime and budget. The conditional accounting bound above and the old release control do not establish a working abort protocol. |
-
-Found along the way: immutable read handles still need atomic acquisition,
-and a registry-reached target cannot be added to its own atomic header. This
-is isolated here; no compiler, runtime, specification, conformance or design
-rule is changed. No finding about cheap HAMT hashing is made. The runtime
-frame-chunk issue remains with its existing owner.
-
-CI must first settle acceptance of both controls and exact rejection
-attribution for all three negative sources, recording the compiled revision,
-specification digest, raw statuses and diagnostics. It cannot settle the
-unwritten library's four correctness obligations. No local build, compilation,
-test, script execution or commit was performed. No PR exists for this branch
-at this handoff. The working edits must be committed and pushed by the
-handoff owner before the branch workflow can run them.
-
-### Managed continuation read-only review
-
-A separate GPT-6 agent reviewed the complete branch change from
-`fc98b8f1aee54a2d57c55dd25b099f2819320d3f` through
-`75d4ddddff9a444f4f5a7c0e3cc69588567e1b0c`, the uncommitted continuation and
-all three new WF sources, against the task and stop condition. It inspected
-the changed regions and consumers, specification, conformance expectations,
-atomic checker, build recipe, workflow, constitution and governing design
-ancestors. **Findings: none within scope.** It performed no builds,
-compilations, tests, script runs or commits.
-
-By inspection, A4, D2 (local citations), T1 (verdict integrity), T4, T6,
-G2/G3 and DC1/DC2 passed. T5's selection/status handling passed inspection;
-execution and sensitivity to representative faults remain unverified.
-D1, C4, T7/T8, V3, G1 and DC3 were not applicable: no constitutional,
-compiler, canonical-gate, timing-label, specification, design-node or removed
-implementation change. DC4 remains unverified for actual diagnostics and
-control behavior, and unimplemented for the full library contracts.
-Historical external results were not revalidated. No findings needed repair;
-the review is not approval or evidence that the proposed library works.
-
-The report is retained here because this session has no ArtifactData
-row-write tool for the shared status board; its browser view exposes owner
-notes/actions, not item/log editing. No board row was updated, no owner note
-was impersonated, and no new language or representation decision was selected.
-
-## Results, 2026-10-10
+These probes moved on 2026-10-10 from Whitefoot branch
+`claude/snap-lib-proto` (`75d4ddddf` plus the managed-cursor working edits)
+into Firn-wf. Earlier Whitefoot investigations reported update, capture,
+enumeration and reclamation in the binary-tree
+[expressibility witness](https://github.com/Ming-Research/Whitefoot/blob/2bb8a342539930f04ed661bcf1c677ed5bb7eb07/research/experiments/frozen-dataset-witness/README.md#results);
+those were not runs of this prototype or evidence for its HAMT/reserve API.
 
 [Firn-wf CI 38047195263](https://github.com/Ming-Research/Firn-wf/actions/runs/38047195263),
-revision abf063d, compiler release `wf-fe5589ec5f45`:
+revision `abf063d`, compiler release `wf-fe5589ec5f45`, recorded the
+pre-Frozen outcomes:
 
-| Program | Outcome | Diagnostic |
-| --- | --- | --- |
-| control.wf | compiled, exit 0 | none |
-| revoke-rejected.wf | rejected | `error[SHARE-2]: ReadonlyWriteTarget` at `set bytes^ = move empty;` (4:9) |
-| managed-atomic-control.wf | compiled, exit 0 | none |
-| managed-next-nested-rejected.wf | rejected | `error[SHARE-2]: WaitInsideAtomic` at the inner `atomic byte = &registry^.root` (16:5) |
-| managed-next-target-rejected.wf | rejected | `error[SHARE-2]: AtomicKeyReadsTheState` at the dependent target `byte = &registry^.root` (15:39) |
+| Original probe | Historical outcome and diagnostic |
+| --- | --- |
+| control.wf | Compiled, exit 0. |
+| revoke-rejected.wf | SHARE-2 ReadonlyWriteTarget at `set bytes^ = move empty;` (4:9). |
+| managed-atomic-control.wf | Compiled, exit 0 with independently available targets. |
+| managed-next-nested-rejected.wf | SHARE-2 WaitInsideAtomic at inner `atomic byte = &registry^.root` (16:5). |
+| managed-next-target-rejected.wf | SHARE-2 AtomicKeyReadsTheState at dependent target `byte = &registry^.root` (15:39). |
 
-Each negative is refused by the rule and at the source extent predicted
-above, and both controls compile and pass, so the stops are attributed:
-under current rules a reader-retained root cannot be revoked, and a
-registry-held node cannot be read within the registry's statement. The
-owner chose to close this with a new language type, `Frozen<T>` (born frozen
-from an owned value, deeply immutable, reference-counted, read without an
-atomic statement; status board card `firn-q-frozen-type`, option A,
-implemented by the specification owner as item `proof-frozen`). The managed
-cursor library resumes on a release that carries it, with these two
-negatives rewritten to `Frozen<T>` as its acceptance tests. `run.sh` exits 80
-by design while the stop is open.
+Those rejections established the SharedRead traversal obstruction on that
+release. The owner selected Frozen on board card `firn-q-frozen-type`, option
+A, implemented as Whitefoot item `proof-frozen`; the managed-next probes
+became its acceptance tests. The old runner returned 80 even when both
+controls passed and all negatives were rejected. The Frozen expectations
+above replace that stop while preserving immutable-generation protection.
+Prior read-only reviews covered the pre-Frozen reductions and did not
+validate the rewritten sources or the unimplemented full library.
+
+## Frozen rewrite read-only review
+
+An independent GPT-6 agent inspected all seven changed files against Firn-wf
+`0958448784cb4f42f05e238728dacf00efb7b2b2`, unchanged control and affected
+workflow context, the original oracles, project checklist, governing design
+nodes and Whitefoot's v0.123 specification/conformance evidence. A limited
+follow-up inspected the managed-next observation and explicit-join changes.
+Findings: none within scope. Canonical syntax, ownership/effects, readonly
+reference provenance, fixed oracles, WAIT-3 join placement and runner verdict
+handling passed inspection. No production pin, submodule, design tree,
+Redis ratchet or performance result changed.
+
+Neither review executed builds, compilations, tests or scripts. Actual
+compiler/runtime outcomes, representative-fault sensitivity of the runner
+and compatibility of the other workflow witnesses remain unverified pending
+CI. No new Whitefoot gap was identified by inspection; the existing ledger
+and reserve obligations above remain open.

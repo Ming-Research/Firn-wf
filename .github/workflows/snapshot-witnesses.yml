@@ -1,5 +1,5 @@
 # Temporary: runs the consistent-snapshot witnesses and prototype under
-# research/experiments/ with firn's pinned Whitefoot release. Removed before
+# research/experiments/ with the witness Whitefoot release below. Removed before
 # any pull request.
 name: snapshot-witnesses
 
@@ -21,7 +21,7 @@ jobs:
       # own pin waits on Halo (status board firn-pin-v0121).
       - name: Install the host toolchain and the witness compiler
         env:
-          WITNESS_RELEASE: wf-fe5589ec5f45
+          WITNESS_RELEASE: wf-0c0a2eda83ae
         run: |
           echo "release = $WITNESS_RELEASE" > "$RUNNER_TEMP/witness.pin"
           make toolchain PIN="$RUNNER_TEMP/witness.pin"
