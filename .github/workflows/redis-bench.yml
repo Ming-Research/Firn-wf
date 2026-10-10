@@ -133,6 +133,32 @@ jobs:
           sudo apt-get install -y --no-install-recommends linux-tools-common \
             linux-tools-generic "linux-tools-$(uname -r)" || true
 
+      # firn's reference is Redis 7.0.15 (AGENTS.md). A host whose Redis is
+      # another version, as the reinstalled self-hosted machine's packaged
+      # 8.0.5 is, builds 7.0.15 once from the release tarball, checked against
+      # redis/redis-hashes, into a cache the machine keeps, and puts it ahead
+      # of the packaged one on PATH for every later step.
+      - name: Put the reference Redis 7.0.15 first on PATH
+        run: |
+          if redis-server --version 2>/dev/null | grep -q ' v=7\.0\.15 '; then
+            exit 0
+          fi
+          prefix="$HOME/.cache/firn-redis-7.0.15"
+          if ! "$prefix/bin/redis-server" --version 2>/dev/null | grep -q ' v=7\.0\.15 '; then
+            work="$RUNNER_TEMP/redis-7.0.15-build"
+            rm -rf "$work" "$prefix"
+            mkdir -p "$work"
+            curl -fsSL -o "$work/redis-7.0.15.tar.gz" https://download.redis.io/releases/redis-7.0.15.tar.gz
+            echo "98066f5363504b26c34dd20fbcc3c957990d764cdf42576c836fc021073f4341  $work/redis-7.0.15.tar.gz" | sha256sum -c -
+            tar -xzf "$work/redis-7.0.15.tar.gz" -C "$work"
+            compiler=cc
+            command -v cc >/dev/null || compiler=clang
+            make -C "$work/redis-7.0.15" -j"$(nproc)" CC="$compiler"
+            make -C "$work/redis-7.0.15" PREFIX="$prefix" install
+          fi
+          "$prefix/bin/redis-server" --version | grep ' v=7\.0\.15 '
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
       - name: Check the host's tools
         run: |
           if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
