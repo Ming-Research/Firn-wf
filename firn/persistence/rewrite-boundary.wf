@@ -93,6 +93,9 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
               } else {
                 break @chunks;
               }
+              if held >= input.inner.len {
+                break @chunks;
+              }
             }
             let capacity = input.inner.len;
             let ended = False();
