@@ -1,0 +1,87 @@
+# Temporary experiment; removed before any pull request, together with sched-trace.sh/.py.
+# Runs on pushes to exp/sched-trace only (a workflow absent from main cannot be
+# dispatched); it does not change the project gate or any pin.
+name: sched-trace
+
+on:
+  push:
+    branches: [exp/sched-trace]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: sched-trace-14900k
+  cancel-in-progress: false
+
+jobs:
+  trace:
+    runs-on: [self-hosted, 14900k]
+    timeout-minutes: 30
+    env:
+      OUT: ${{ runner.temp }}/sched-trace
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out Whitefoot-kit and Halo
+        run: git submodule update --init whitefoot-kit deps/halo-wf
+
+      # Same self-hosted toolchain and compiler path as redis-bench.yml.
+      # This host has no passwordless sudo. Never change its perf settings.
+      - name: Build the pinned firn and workload client
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          mkdir -p "$OUT"
+          {
+            git rev-parse HEAD
+            cat whitefoot.pin
+            git submodule status
+            uname -srvmo
+            cat /proc/loadavg
+            lscpu
+            cat /proc/sys/kernel/perf_event_paranoid
+            cat /proc/sys/kernel/kptr_restrict
+          } > "$OUT/host.txt"
+          cat "$OUT/host.txt"
+          make toolchain-check
+          make compiler
+          make firn-lto
+          manifest=research/experiments/redis-bench/workload/Cargo.toml
+          # redis-bench.sh:679-683, including its client checks, in CI only.
+          cargo test --offline --locked --release --manifest-path "$manifest" --target-dir "$OUT/workload-target"
+          cargo build --offline --locked --release --manifest-path "$manifest" --target-dir "$OUT/workload-target"
+          python3 research/experiments/redis-bench/sched-trace.py --self-test
+
+      - name: Trace eight connections and one-connection control
+        timeout-minutes: 5
+        run: |
+          # Reuse redis-bench.yml's persistent, identity-checked session cleanup;
+          # a separate record cannot stop an unrelated benchmark session.
+          session_py="$GITHUB_WORKSPACE/research/experiments/redis-bench/session.py"
+          export FIRN_REDIS_BENCH_RECORD="$HOME/.cache/firn-sched-trace/session"
+          mkdir -p "$(dirname "$FIRN_REDIS_BENCH_RECORD")"
+          python3 "$session_py" stop "$FIRN_REDIS_BENCH_RECORD"
+          status=0
+          setsid --wait bash -c 'python3 "$1" record "$FIRN_REDIS_BENCH_RECORD" $$ && exec bash research/experiments/redis-bench/sched-trace.sh' trace "$session_py" \
+            > "$OUT/experiment.txt" 2>&1 || status=$?
+          python3 "$session_py" stop "$FIRN_REDIS_BENCH_RECORD" || status=1
+          cat "$OUT/experiment.txt"
+          exit "$status"
+
+      - name: Clean up the recorded session
+        if: always()
+        run: python3 research/experiments/redis-bench/session.py stop "$HOME/.cache/firn-sched-trace/session"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sched-trace-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/sched-trace/*.txt
+            ${{ runner.temp }}/sched-trace/*.csv
+            ${{ runner.temp }}/sched-trace/*.tsv
+            ${{ runner.temp }}/sched-trace/*.data
+          if-no-files-found: warn
