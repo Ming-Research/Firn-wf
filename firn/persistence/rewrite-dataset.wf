@@ -186,9 +186,10 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
       break @records;
     }
     if decoder^.remaining > 0_u64 {
-      let available = length -sat offset;
-      let count = imin(available, decoder^.remaining);
-      let end = offset +sat count;
+      let end = offset +sat decoder^.remaining;
+      if end > length {
+        set end = length;
+      }
       let bytes = &block^.inner[0_u64..length];
       loop @append {
         if offset >= end {
