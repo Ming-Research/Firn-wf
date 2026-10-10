@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-10 Shutdown and idle-limit changes end waits through cancellation
+
+Nodes: firn/orderly-stop
+
+Owner-approved: On the shared status board on 2026-10-10, written in Chinese, the owner approved the item request on "firn's stop moves to cross-context cancellation, removing the polling" that asked to approve PR #40's changes to design node orderly-stop (a shutdown request fires the wake generation and a separate shutdown cancellation; server state holds a replaceable cancellation source, and CONFIG SET timeout fires the old generation outside the atomic statement after replacing it; the signal context waits without a deadline; propagating shutdown only by polling and waking every second to observe configuration changes rejected) with "agree" (translated), after choosing option A on the board card firn-adopt-timeout-wake.
+
+Summary: A shutdown request fires a shutdown cancellation that main, the signal context and the expiry context watch, and the current receive wake generation, so every wait ends without a polling deadline; a CONFIG SET timeout that changes the idle limit installs a fresh generation in the statement that changes it and fires the old one after it, because firing waits, so parked clients see a new limit at once and clients with no limit wait without a timer. The signal context waits without a deadline. Polling deadlines were rejected because they cannot end a wait without a deadline, arm a timer per parked receive and delay exit; on the i9-14900K the change showed no loss at the stated 1% rule, and main's polling failed the new 500 ms stop bound at 1.103 s (research/investigations/orderly-stop/README.md).
+
 ## 2026-10-09 Design nodes cite status-board keys instead of docs/todo.md
 
 Nodes: firn/aof-rewrite, firn/orderly-stop, firn/scripts

@@ -759,9 +759,6 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   if code == code_shutdown {
-    if denied(client: client) {
-      return unit;
-    }
     run_shutdown(store: store, input: input, args: args, client: client);
     return unit;
   }
