@@ -1,0 +1,25 @@
+# Temporary: runs research/experiments/guard-fairness on the owner's
+# i9-14900K, two drivers pinned to distinct performance cores (CPUs 2 and 4).
+# Experiment branch only; never merged.
+name: guard-fairness
+
+on:
+  push:
+    branches: [exp/engine-probe]
+    paths: [.github/workflows/guard-fairness.yml]
+
+jobs:
+  probe:
+    runs-on: [self-hosted, 14900k]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Build the pinned compiler and run the probe
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          make toolchain-check
+          make compiler
+          cat /proc/loadavg
+          CPUS=2,4 OUT="$RUNNER_TEMP/guard-fairness" sh research/experiments/guard-fairness/run.sh
