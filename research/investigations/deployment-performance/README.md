@@ -424,3 +424,65 @@ The profile of the same run no longer lists `text_bytes`, the per-call copy
 this branch removed. The collector belongs to Halo, whose design records a
 whole-heap collection as an owner decision; these figures go to Halo's
 session as the evidence for its card.
+
+## Scripts on two cores, on the native host
+
+The i9-14900K runner was reinstalled as native Ubuntu (kernel 7.0) on
+2026-10-10, replacing the Hyper-V guest of every earlier section; numbers
+from before and after are not compared. The benchmark placement was also
+corrected (PR #43): until then a "two-CPU" server ran on one physical
+core's two hyperthreads. The runs below place the server on CPU 2 (one CPU)
+or CPUs 2 and 4 (two CPUs), each on its own performance core, and the
+client on the remaining performance cores' threads (4-15 or 6-15).
+
+### Baseline
+
+Run [38052762047](https://github.com/Ming-Research/Firn-wf/actions/runs/38052762047),
+Firn-wf 0cfcf57 (whitefoot.pin `wf-78223721f77d`), 2026-10-10
+12:39-12:56 UTC, Redis 7.0.15, 2 passes of 10 seconds. Rate in thousands a
+second as firn / Redis (ratio), p99 in ms as firn / Redis, append-only file
+off:
+
+| workload | CPUs | connections | rate | p99 |
+|---|---|---|---|---|
+| limiter-script | 1 | 1 | 121 / 136 (0.89) | 0.01 / 0.02 |
+| limiter-script | 1 | 8 | 216 / 231 (0.94) | 0.08 / 0.06 |
+| limiter-script | 1 | 50 | 219 / 231 (0.95) | 0.27 / 0.41 |
+| limiter-script | 2 | 8 | 159 / 233 (0.68) | 0.73-0.84 / 0.06 |
+| limiter-script | 2 | 50 | 211 / 231 (0.91) | 1.45-1.46 / 0.41 |
+| limiter-tx | 1 | 50 | 435 / 371 (1.17) | 0.12 / 0.25-0.26 |
+| limiter-tx | 2 | 8 | 676 / 356 (1.90) | 0.01 / 0.04 |
+| limiter-tx | 2 | 50 | 767 / 375 (2.05) | 0.08-0.09 / 0.25 |
+
+With the append-only file on, the ratios are within 0.15 of these. On one CPU
+the script path is within 11% of Redis with an equal or lower tail, the
+collection pause of the previous section being gone at Halo's 64 KiB
+collection floor. On two CPUs transactions scale (1.9 to 2.05 times
+Redis) and scripts do not: their rate falls below the one-CPU rate at 8
+connections and their p99 is several times Redis's.
+
+### Where scripts wait
+
+Run [38050875132](https://github.com/Ming-Research/Firn-wf/actions/runs/38050875132),
+experiment branch `exp/engine-probe` (not merged), which counts in the
+engine pool every checkout's wait (from the first attempt to taking the
+engine) and the engine's hold, reset before each measured run and read
+after it, same placement, 2 passes of 10 seconds:
+
+| CPUs | connections | waits under 10 us | 10-100 us | 0.1-1 ms | 1-10 ms | longest wait | longest hold |
+|---|---|---|---|---|---|---|---|
+| 1 | 50 | 100% | 0 | 0 | 0 | 1.9 us | 0.16 ms |
+| 2 | 8 | 82.5% | 7.5% | 9.9% | 0.09% | 3.4 ms | 0.07 ms |
+| 2 | 50 | 54.0% | 7.7% | 31.9% | 6.5% | 8.8 ms | 0.08 ms |
+
+On two CPUs with 50 connections the waits sum to 446 seconds over a
+10-second run, 89% of the 50 connections' time, while the engine is held for
+8.1 seconds in total and never longer than 75 us at a time. Two causes
+compound: one engine serves every script, and each script holds the whole
+keyspace while it runs, so two scripts never run at once; and the waiters on
+the engine's guard are all woken at each release and race, in no order, so
+some lose many times in a row. The second is a Whitefoot runtime question,
+recorded on the status board as `firn-gap-guard-fairness` with a standalone
+reproducer. The first is firn's design; the direction (an engine per driver
+with scripts holding only their declared keys) awaits the owner on card
+`firn-q-script-engine`.
