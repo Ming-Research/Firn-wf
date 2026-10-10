@@ -115,6 +115,9 @@ fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
       }
       if records^.inner.len < records^.inner.cap {
         place_back(window: &records^.inner, value: move image);
+      } else {
+        let discarded = move image;
+        set sequence^.failed = True();
       }
     }
     None() => {
