@@ -284,11 +284,12 @@ fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads
 fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), reads(meta.log), writes(meta.rewrite) {
   doc "Journals the statement's own append-only bytes as one framed unit. Its single key's previous write is already in the journal, so replaying these bytes in sequence order reproduces the key exactly, at the cost of the bytes rather than the key's size.";
   let end = meta^.log.inner.len;
-  if sequence^.log_start > end {
+  let start = sequence^.log_start;
+  if start > end {
     rewrite_abort(capture: &meta^.rewrite);
     return unit;
   }
-  let length = end - sequence^.log_start;
+  let length = end - start;
   let framed = length +sat 16_u64;
   let room = rewrite_journal_room(capture: &meta^.rewrite, length: framed);
   if room {
@@ -296,7 +297,7 @@ fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: uni
       Some(value: chunks) => {
         rewrite_journal_number(chunks: chunks, value: sequence^.value);
         rewrite_journal_number(chunks: chunks, value: length);
-        for (offset in sequence^.log_start..end) {
+        for (offset in start..end) {
           let byte = meta^.log.inner[offset];
           rewrite_journal_put(chunks: chunks, value: byte);
         }
