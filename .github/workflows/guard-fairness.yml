@@ -6,7 +6,7 @@ name: guard-fairness
 on:
   push:
     branches: [exp/engine-probe]
-    paths: [.github/workflows/guard-fairness.yml]
+    paths: [.github/workflows/guard-fairness.yml, research/experiments/guard-fairness/**]
 
 jobs:
   probe:

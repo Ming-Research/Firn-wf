@@ -1,11 +1,7 @@
 alias Clock = std::time::Clock;
-
 alias Instant = std::time::Instant;
-
 alias Inputs = std::process::Inputs;
-
 alias ExitStatus = std::process::ExitStatus;
-
 alias PriorityOrder = std::collections::priority_queue::PriorityOrder;
 
 struct State {
