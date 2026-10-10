@@ -166,53 +166,21 @@ expectations and sizing times appear separately in `results.tsv`.
 
 ## Gaps
 
-No new language gap identified by source inspection. Compilation and runtime
-behavior remain unverified until CI; no local build, compiler, runner or
-test invocation is authorized for this handoff. Existing reserve and ledger
-obligations remain as described above.
+### Recursive readers' effect rows (resolved)
 
-## Read-only review
+On wf-0c0a2eda83ae the compiler's suggested repair for a recursive reader of a Frozen tree listed
+exact leaf paths one level deeper on each attempt, which never converges (run
+[38093338376](https://github.com/Ming-Research/Firn-wf/actions/runs/38093338376)). The
+specification admits a covering prefix: `reads(root.inner)` is accepted on every recursive reader
+(run [38093834993](https://github.com/Ming-Research/Firn-wf/actions/runs/38093834993) onward), so
+the program is written as the language intends. The misleading repair is Whitefoot's diagnostic
+item `proof-bl-frozen-recursive-row`. A function that only matches a node's tag reads nothing
+below the handle and is `pure`.
 
-An independent Codex reviewer (GPT-6 family) inspected all five experiment
-files and the workflow diff against `eeee118d6f311755f2871f2c9253c31836e8954b`,
-the project checklist, governing design nodes and v0.123 contracts. Findings:
-none within scope. Grammar, ownership, trie paths, independent oracles,
-publication, heap-charge derivation and runner verdicts passed source review.
-Runtime correspondence, compiler acceptance and actual control sensitivity
-remain unverified. No builds, compilers, tests, lint or runners were executed.
-The implementing agent subsequently clarified that the post-join traversal
-follows all M publications and that total growth, rather than separately
-attributed runtime storage, is compared with B; no behavior changed.
+### Lowering failure (open)
 
-## Gaps
-
-### A recursive read of a Frozen tree has no acceptable effect row (wf-0c0a2eda83ae)
-
-`map_lookup_at` in `map.wf` recurses into a `Branch`'s child handles. Run
-[38093338376](https://github.com/Ming-Research/Firn-wf/actions/runs/38093338376)
-rejects every row offered for it (EFF-2):
-
-- `pure` is refused: the body reads `root.inner.Leaf.key` and `.byte`.
-- That exact row is refused: the recursive call adds
-  `root.inner.Branch.zero.inner.Leaf.key` and the like, one level deeper per call, so no finite
-  list of paths covers a recursion of unbounded depth.
-- `reads(root)` was refused earlier on `map_is_empty` as wider than the body's reads.
-
-Minimal form:
-
-```text
-enum Node { Empty(); Leaf(key: u64, byte: u8); Branch(zero: Frozen<Node>, one: Frozen<Node>); }
-fn lookup(root: &Frozen<Node>, key: u64, mask: u64) -> result: Option<u8> <row?> {
-  match &root^.inner {
-    Empty() => { return None<u8>(); }
-    Leaf(key: k, byte: b) => { if k^ == key { return Some<u8>(value: b^); } return None<u8>(); }
-    Branch(zero: z, one: o) => { ... return lookup(root: z, key: key, mask: next); }
-  }
-}
-```
-
-Acceptance: this recursion compiles with a finite row, for instance because a frozen object's
-contents can never be written and so reading them needs no row, or because a covering row such
-as `reads(root)` is admitted. The prototype stops here rather than rewriting the lookup as a
-loop over local handles, which would avoid the row without the language accepting the natural
-form. Filed as status board item `proof-bl-frozen-recursive-row`.
+With the rows corrected the checker accepts the program, and the compiler then stops with
+`lowering failure in Lowering: InvalidCheckedProgram`
+(run [38094105415](https://github.com/Ming-Research/Firn-wf/actions/runs/38094105415), commit
+6ea0cd6). That is a compiler defect, reported with this program as the reproducer
+(status board item `proof-bl-frozen-lowering`). The prototype waits for a release with the fix.
