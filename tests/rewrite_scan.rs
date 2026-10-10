@@ -116,10 +116,12 @@ fn fixture(program: &CompiledProgram) {
     std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
 }
 
+#[track_caller]
 fn start(program: &CompiledProgram) -> (ProgramChild, TcpStream, u16) {
     start_with_minimum(program, b"67108864")
 }
 
+#[track_caller]
 fn start_with_minimum(program: &CompiledProgram, minimum: &[u8]) -> (ProgramChild, TcpStream, u16) {
     let port = free_port();
     let text = port.to_string();
@@ -387,9 +389,11 @@ fn reconciled_scan_streams_large_history_for_a_small_live_value() {
     let payload: Vec<u8> = wire(&[b"MULTI"]).into_iter().cycle().take(128 * 1024).collect();
     let mut history = wire(&[b"SET", b"history", &payload]);
     history.extend(wire(&[b"SET", b"history", b"small"]));
-    history.extend_from_slice(b"mUlTi\r\n");
+    // Redis's loader accepts only RESP arrays in an AOF; mixed case still
+    // exercises the case-insensitive MULTI/EXEC classification.
+    history.extend(wire(&[b"mUlTi"]));
     history.extend(wire(&[b"INCR", b"once"]));
-    history.extend_from_slice(b"'EXEC'\r\n");
+    history.extend(wire(&[b"eXeC"]));
     multipart_files(&program, &[("appendonly.aof.1.base.aof", &[]), ("appendonly.aof.1.incr.aof", &[])], &rewrite_manifest(1, 1));
     std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), history).unwrap();
     let (child, mut client, _) = start(&program);
@@ -454,7 +458,10 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     for _ in 0..4096 { history.write_all(&record).unwrap(); }
     history.write_all(&wire(&[b"SET", b"hot", b"seed"])).unwrap();
     drop(history);
-    let (child, mut client, _) = start(&program);
+    // The 128 MiB history exceeds the default minimum, and Redis starts an
+    // automatic rewrite from it as from any grown AOF; raise the minimum so
+    // this case's BGREWRITEAOF is the only rewrite.
+    let (child, mut client, _) = start_with_minimum(&program, b"4294967296");
     request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"67108864"]);
     rewrite_start(&mut client);
     let deadline = Instant::now() + Duration::from_secs(30);
