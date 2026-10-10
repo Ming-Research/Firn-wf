@@ -289,10 +289,10 @@ fn witness(meter: &std::process::MemoryMeter) -> result: Report writes(meter) wa
   let during_ok = verify(root: &snapshot.root, model: &version_zero.inner[0_u64..slots], observed: &observed.inner[0_u64..slots]);
   let completed = job;
   let live = capture(dataset: &dataset);
-  if wrong_live {
+  if wrong_live == 1_u8 {
     set selected = frozen_share::<Node>(frozen: &live.root);
   }
-  if wrong_copy {
+  if wrong_copy == 1_u8 {
     set extra = deep_duplicate(root: &live.root);
   }
   let after = std::process::heap_in_use(meter: meter);

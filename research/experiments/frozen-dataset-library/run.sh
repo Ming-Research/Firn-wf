@@ -13,16 +13,18 @@ compile_case() {
     name=$1
     keys=$2
     operations=$3
-    live_flag=$4
-    copy_flag=$5
+    live_flag=0
+    [ "$4" = True ] && live_flag=1
+    copy_flag=0
+    [ "$5" = True ] && copy_flag=1
     cat > "$OUT/$name.wf" <<EOF
 const initial_keys: u64 = ${keys}_u64;
 
 const operation_count: u64 = ${operations}_u64;
 
-const wrong_live: Bool = $live_flag();
+const wrong_live: u8 = ${live_flag}_u8;
 
-const wrong_copy: Bool = $copy_flag();
+const wrong_copy: u8 = ${copy_flag}_u8;
 EOF
     code=0
     /usr/bin/time -p -o "$OUT/$name.compile.time" \
