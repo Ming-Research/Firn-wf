@@ -12,7 +12,7 @@ fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads
   doc "The statement holds one key, so its append-only bytes change that key alone.";
   let sequence = sequence_new(meta: meta, loading: loading);
   set sequence.single = True();
-  return sequence;
+  return move sequence;
 }
 
 fn sequence_anchor(sequence: &WriteSequence, previous: u64) -> result: unit writes(sequence) {
