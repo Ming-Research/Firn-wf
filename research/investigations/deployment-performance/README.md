@@ -485,8 +485,8 @@ in ms as firn / Redis, append-only file off:
 | limiter-tx | 2 | 50 | 769 / 366 (2.10) | 0.069-0.093 / 0.26 |
 
 With the append-only file on, firn / Redis is 0.96-1.10 for the scripted
-limiter and 1.11-1.15 for transactions on one CPU, and 0.81-1.03 and
-1.88-1.94 on two. Redis 7.0.15 runs the scripted limiter about 9% slower
+limiter and 1.11-1.16 for transactions on one CPU, and 0.81-1.03 and
+1.85-1.95 on two. Redis 7.0.15 runs the scripted limiter about 9% slower
 than the host's 8.0.5 did above (210 against 231 thousand a second), so on
 one CPU firn's scripts now match or exceed the reference with a lower tail.
 The two-CPU picture is unchanged: transactions scale to about twice Redis,
