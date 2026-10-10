@@ -463,6 +463,35 @@ collection floor. On two CPUs transactions scale (1.9 to 2.05 times
 Redis) and scripts do not: their rate falls below the one-CPU rate at 8
 connections and their p99 is several times Redis's.
 
+### Against the reference Redis 7.0.15
+
+Run [38066137541](https://github.com/Ming-Research/Firn-wf/actions/runs/38066137541),
+Firn-wf main 8744d72 (whitefoot.pin `wf-78223721f77d`) on the workflow of
+PR #46, which builds Redis 7.0.15 from its release tarball; the host log
+shows `Redis server v=7.0.15` and `redis-benchmark 7.0.15`. 2026-10-10
+16:04-16:11 UTC, same placement, 2 passes of 5 seconds, both passes shown
+where they differ. Rate in thousands a second as firn / Redis (ratio), p99
+in ms as firn / Redis, append-only file off:
+
+| workload | CPUs | connections | rate | p99 |
+|---|---|---|---|---|
+| limiter-script | 1 | 8 | 213 / 210 (1.01) | 0.079-0.080 / 0.066 |
+| limiter-script | 1 | 50 | 219 / 210 (1.05) | 0.26 / 0.45 |
+| limiter-script | 2 | 8 | 158 / 208 (0.76) | 0.71-0.73 / 0.064-0.065 |
+| limiter-script | 2 | 50 | 209 / 210 (1.00) | 1.51-1.57 / 0.45 |
+| limiter-tx | 1 | 8 | 409 / 347 (1.18) | 0.021 / 0.036-0.037 |
+| limiter-tx | 1 | 50 | 432 / 364 (1.19) | 0.12 / 0.26 |
+| limiter-tx | 2 | 8 | 672 / 352 (1.91) | 0.014-0.015 / 0.035 |
+| limiter-tx | 2 | 50 | 769 / 366 (2.10) | 0.069-0.093 / 0.26 |
+
+With the append-only file on, firn / Redis is 0.96-1.10 for the scripted
+limiter and 1.11-1.15 for transactions on one CPU, and 0.81-1.03 and
+1.88-1.94 on two. Redis 7.0.15 runs the scripted limiter about 9% slower
+than the host's 8.0.5 did above (210 against 231 thousand a second), so on
+one CPU firn's scripts now match or exceed the reference with a lower tail.
+The two-CPU picture is unchanged: transactions scale to about twice Redis,
+scripts do not, and their p99 is several times Redis's.
+
 ### Where scripts wait
 
 Run [38050875132](https://github.com/Ming-Research/Firn-wf/actions/runs/38050875132),
