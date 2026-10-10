@@ -3167,7 +3167,7 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
 
 /// firn answers CONFIG GET for the parameters it reports as Redis 7.0 does,
 /// matching an argument that holds [, * or ? as Redis's stringmatchlen
-/// matches a pattern, in either case: * reaches all 22, the encoding
+/// matches a pattern, in either case: * reaches all 30, the encoding
 /// parameters and their aliases among them, each with Redis's default; an
 /// argument naming a parameter and a pattern reaching it answer it once,
 /// spelled as the first argument spells it; a class with a range, ? and a
@@ -3177,7 +3177,8 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
 /// and an argument with none of the three bytes is a name, \Port among them.
 /// The options --timeout and --appendfilename set the values reported. Every
 /// reply holds what redis-server 7.0.15 answers for these parameters with the
-/// same settings, in firn's stable parameter order, one of the orders Redis answers in. The memory parameters extend the wildcard result and make maxmemory a known name.
+/// same settings, in firn's stable parameter order, one of Redis's possible
+/// orders. Memory settings and automatic rewrite thresholds join glob results.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_matches_config_get_patterns_as_redis_does() {
@@ -3223,13 +3224,14 @@ fn firn_matches_config_get_patterns_as_redis_does() {
     let s_fields = "$4\r\nsave\r\n$0\r\n\r\n$22\r\nset-max-intset-entries\r\n$3\r\n512\r\n$21\r\nstream-node-max-bytes\r\n$4\r\n4096\r\n$23\r\nstream-node-max-entries\r\n$3\r\n100\r\n";
     let zset_fields = "$25\r\nzset-max-listpack-entries\r\n$3\r\n128\r\n$23\r\nzset-max-listpack-value\r\n$2\r\n64\r\n$24\r\nzset-max-ziplist-entries\r\n$3\r\n128\r\n$22\r\nzset-max-ziplist-value\r\n$2\r\n64\r\n";
     let memory_fields = "$9\r\nmaxmemory\r\n$1\r\n0\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n$17\r\nmaxmemory-samples\r\n$1\r\n5\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$14\r\nlfu-decay-time\r\n$1\r\n1\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n";
+    let rewrite_fields = "$27\r\nauto-aof-rewrite-percentage\r\n$3\r\n100\r\n$25\r\nauto-aof-rewrite-min-size\r\n$8\r\n67108864\r\n";
     let expected = format!(
-        "*56\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}\
-         *4\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n\
-         *4\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n\
+        "*60\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}\
+         *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n{rewrite_fields}\
+         *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n{rewrite_fields}\
          *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\
          *2\r\n{port_field}\
-         *4\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n\
+         *8\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n{rewrite_fields}\
          *18\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
          *0\r\n\
          *0\r\n\
@@ -9539,6 +9541,175 @@ fn memory_object(client: &mut TcpStream, sub: &str, key: &str) -> i64 {
     let reply = memory_request(client, &["OBJECT", sub, key]);
     reply.strip_prefix(':').and_then(|s| s.strip_suffix("\r\n"))
         .and_then(|s| s.parse().ok()).unwrap_or_else(|| panic!("OBJECT {sub} {key}: {reply:?}"))
+}
+
+/// Redis 7.0.15 config.c declares an integer percentage and a signed off_t
+/// memory value. util.c string2ll/memtoull determine the accepted spellings.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_configures_and_reports_automatic_aof_rewrite_thresholds() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let percentage = "auto-aof-rewrite-percentage";
+    let minimum = "auto-aof-rewrite-min-size";
+    for (name, value) in [(percentage, "100"), (minimum, "67108864")] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, value]));
+    }
+    for value in ["0", "1", "100", "2147483647"] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", percentage, value]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", percentage]).as_bytes(), resp(&[percentage, value]));
+    }
+    for (value, bytes) in [
+        ("0", "0"), ("1", "1"), ("1b", "1"), ("1k", "1000"),
+        ("1KB", "1024"), ("1m", "1000000"), ("64mb", "67108864"),
+        ("1g", "1000000000"), ("1Gb", "1073741824"), ("0002kb", "2048"),
+        ("", "0"), ("mb", "0"), ("12\0mb", "12"),
+        ("9223372036854775807", "9223372036854775807"),
+        // memtoull multiplies modulo 2^64 before the signed bounds check.
+        ("17179869184gb", "0"), ("17179869185gb", "1073741824"),
+    ] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", minimum, value]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", minimum]).as_bytes(), resp(&[minimum, bytes]));
+    }
+    assert_eq!(memory_request(&mut client, &[
+        "CONFIG", "SET", "AUTO-AOF-REWRITE-PERCENTAGE", "0", minimum, "2kb", "lfu-log-factor", "11",
+    ]), "+OK\r\n");
+    let both = resp(&[percentage, "0", minimum, "2048"]);
+    for patterns in [
+        vec!["auto-aof-rewrite-*"], vec!["AUTO-AOF-REWRITE-*"],
+        vec!["auto-aof-rewrite-?*", minimum],
+        vec!["auto-aof-rewrite-[mp]*"], vec!["auto-aof-rewrite-*\0ignored"],
+    ] {
+        let mut args = vec!["CONFIG", "GET"];
+        args.extend(patterns);
+        assert_eq!(memory_request(&mut client, &args).as_bytes(), both);
+    }
+    assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "AUTO-AOF-REWRITE-PERCENTAGE", "auto-aof-rewrite-*"]).as_bytes(),
+        resp(&["AUTO-AOF-REWRITE-PERCENTAGE", "0", minimum, "2048"]));
+    assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "auto-aof-rewrite-*-size"]).as_bytes(), resp(&[minimum, "2048"]));
+    assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "auto-aof-rewrite-nothing"]), "*0\r\n");
+
+    let integer_error = "argument couldn't be parsed into an integer";
+    let memory_error = "argument must be a memory value";
+    let percentage_bounds = "argument must be between 0 and 2147483647 inclusive";
+    let minimum_bounds = "argument must be between 0 and 9223372036854775807 inclusive";
+    let long_digits = "9".repeat(128);
+    for (name, value, reason) in [
+        (percentage, "-1", percentage_bounds), (percentage, "2147483648", percentage_bounds),
+        (percentage, "9223372036854775807", percentage_bounds),
+        (percentage, "", integer_error), (percentage, "01", integer_error),
+        (percentage, "-0", integer_error), (percentage, "+1", integer_error),
+        (percentage, " 1", integer_error), (percentage, "1 ", integer_error),
+        (percentage, "1.0", integer_error), (percentage, "100%", integer_error),
+        (percentage, "1kb", integer_error), (percentage, "1\0", integer_error),
+        (percentage, "9223372036854775808", integer_error),
+        (minimum, "-1", memory_error), (minimum, "+1", memory_error),
+        (minimum, "1.5mb", memory_error), (minimum, "1tb", memory_error),
+        (minimum, " 1kb", memory_error), (minimum, "1kb ", memory_error),
+        (minimum, long_digits.as_str(), memory_error),
+        (minimum, "9223372036854775808", minimum_bounds),
+        (minimum, "18446744073709551615", minimum_bounds),
+        (minimum, "18446744073709551616", minimum_bounds),
+        (minimum, "8589934592gb", minimum_bounds),
+    ] {
+        // A later invalid value must also roll back valid earlier pairs in
+        // Meta and ServerState, regardless of which threshold fails.
+        assert_eq!(memory_request(&mut client, &[
+            "CONFIG", "SET", "lfu-log-factor", "12",
+            if name == percentage { minimum } else { percentage }, "1", name, value,
+        ]), format!("-ERR CONFIG SET failed (possibly related to argument '{name}') - {reason}\r\n"));
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "auto-aof-rewrite-*"]).as_bytes(), both);
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "lfu-log-factor"]).as_bytes(), resp(&["lfu-log-factor", "11"]));
+    }
+    for name in [percentage, minimum] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", name, "1", &name.to_uppercase(), "2"]),
+            format!("-ERR CONFIG SET failed (possibly related to argument '{}') - duplicate parameter\r\n", name.to_uppercase()));
+    }
+    // Name validation precedes value validation, and application failures
+    // cannot partially install the new Meta settings either.
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", percentage, "bad", "no-such-config", "1"]),
+        "-ERR Unknown option or number of arguments for CONFIG SET - 'no-such-config'\r\n");
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", percentage, "1", minimum, "1", "appendonly", "yes"]),
+        "-ERR CONFIG SET failed (possibly related to argument 'appendonly') - firn cannot change it while running\r\n");
+    assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "auto-aof-rewrite-*"]).as_bytes(), both);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_uses_config_set_thresholds_for_the_next_automatic_rewrite() {
+    let program = CompiledProgram::from_environment();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
+    let mut client = connect_when_ready(port);
+    assert_eq!(memory_request(&mut client, &[
+        "CONFIG", "SET", "auto-aof-rewrite-percentage", "0", "auto-aof-rewrite-min-size", "1kb",
+    ]), "+OK\r\n");
+    let value = "x".repeat(256);
+    let write = resp(&["SET", "rewrite-key", &value]);
+    for _ in 0..64 {
+        client.write_all(&write).unwrap();
+        expect_replies(&mut client, b"+OK\r\n", "grow AOF with automatic rewrites disabled");
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let info = rewrite_info(&mut client);
+        assert_eq!(info["aof_rewrites"], "0");
+        if info["aof_current_size"].parse::<usize>().unwrap() >= write.len() * 64 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "writer did not drain the disabled-rewrite workload: {info:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(250));
+    assert_eq!(rewrite_info(&mut client)["aof_rewrites"], "0");
+    // Turning the percentage on alone must still honor the larger minimum.
+    assert_eq!(memory_request(&mut client, &[
+        "CONFIG", "SET", "auto-aof-rewrite-percentage", "100", "auto-aof-rewrite-min-size", "64mb",
+    ]), "+OK\r\n");
+    std::thread::sleep(Duration::from_millis(250));
+    assert_eq!(rewrite_info(&mut client)["aof_rewrites"], "0");
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "auto-aof-rewrite-min-size", "1kb"]), "+OK\r\n");
+    // Already-written growth is reconsidered on the next writer decision;
+    // CONFIG SET needs neither a new write nor a manual BGREWRITEAOF.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let info = rewrite_info(&mut client);
+        if info["aof_rewrites"] == "1" && info["aof_rewrite_in_progress"] == "0" {
+            assert_eq!(info["aof_last_bgrewrite_status"], "ok");
+            break;
+        }
+        assert!(Instant::now() < deadline, "updated thresholds did not trigger a successful rewrite: {info:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "auto-aof-rewrite-percentage", "0"]), "+OK\r\n");
+    let baseline = rewrite_info(&mut client)["aof_base_size"].parse::<usize>().unwrap();
+    for _ in 0..64 {
+        client.write_all(&write).unwrap();
+        expect_replies(&mut client, b"+OK\r\n", "grow AOF after disabling automatic rewrites again");
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let info = rewrite_info(&mut client);
+        assert_eq!(info["aof_rewrites"], "1");
+        if info["aof_current_size"].parse::<usize>().unwrap() >= baseline + write.len() * 64 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "writer did not drain the second workload: {info:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(250));
+    let info = rewrite_info(&mut client);
+    assert_eq!(info["aof_rewrites"], "1");
+    assert_eq!(info["aof_rewrite_in_progress"], "0");
+    assert!(info["aof_current_size"].parse::<usize>().unwrap() > baseline * 2);
+    rewrite_stop(&mut client, child);
+    multipart_load(&program, "appendonly.aof", &[("rewrite-key", Some(&value))]);
 }
 
 /// Redis 7.0.15 config.c defaults, numericConfigSet/enumConfigSet and util.c
