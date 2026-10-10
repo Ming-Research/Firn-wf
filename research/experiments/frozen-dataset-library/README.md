@@ -183,3 +183,36 @@ remain unverified. No builds, compilers, tests, lint or runners were executed.
 The implementing agent subsequently clarified that the post-join traversal
 follows all M publications and that total growth, rather than separately
 attributed runtime storage, is compared with B; no behavior changed.
+
+## Gaps
+
+### A recursive read of a Frozen tree has no acceptable effect row (wf-0c0a2eda83ae)
+
+`map_lookup_at` in `map.wf` recurses into a `Branch`'s child handles. Run
+[38093338376](https://github.com/Ming-Research/Firn-wf/actions/runs/38093338376)
+rejects every row offered for it (EFF-2):
+
+- `pure` is refused: the body reads `root.inner.Leaf.key` and `.byte`.
+- That exact row is refused: the recursive call adds
+  `root.inner.Branch.zero.inner.Leaf.key` and the like, one level deeper per call, so no finite
+  list of paths covers a recursion of unbounded depth.
+- `reads(root)` was refused earlier on `map_is_empty` as wider than the body's reads.
+
+Minimal form:
+
+```text
+enum Node { Empty(); Leaf(key: u64, byte: u8); Branch(zero: Frozen<Node>, one: Frozen<Node>); }
+fn lookup(root: &Frozen<Node>, key: u64, mask: u64) -> result: Option<u8> <row?> {
+  match &root^.inner {
+    Empty() => { return None<u8>(); }
+    Leaf(key: k, byte: b) => { if k^ == key { return Some<u8>(value: b^); } return None<u8>(); }
+    Branch(zero: z, one: o) => { ... return lookup(root: z, key: key, mask: next); }
+  }
+}
+```
+
+Acceptance: this recursion compiles with a finite row, for instance because a frozen object's
+contents can never be written and so reading them needs no row, or because a covering row such
+as `reads(root)` is admitted. The prototype stops here rather than rewriting the lookup as a
+loop over local handles, which would avoid the row without the language accepting the natural
+form. Filed as status board item `proof-bl-frozen-recursive-row`.
