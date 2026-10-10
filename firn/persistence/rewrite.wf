@@ -538,7 +538,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
           aof_rw_abort(store: store);
         }
       }
-      let AofScanResult(size: size, accepted: built) = move rebuilt;
+      let AofScanResult(size: size, accepted: built) = rebuilt;
       let accepted = False();
       if built {
         let install = False();
