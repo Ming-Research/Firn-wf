@@ -11,16 +11,11 @@ const aof_rw_incr_suffix: Array<u8, 9> = ".incr.aof";
 
 const aof_rw_temp_suffix: Array<u8, 5> = ".base";
 
-struct AofRebuilt {
-  directory: DirectoryRead;
-  size: u64;
-  accepted: Bool;
-}
-
 fn aof_rw_cancelled(store: &Keyspace) -> cancelled: Bool reads(store) waits {
   let cancelled = pkg::store::shutdown_requested(store: store);
   atomic m = &store^.meta {
-    set cancelled = bor(cancelled, m^.stopping);
+    let stopped = bor(m^.stopping, m^.rewrite.aborted);
+    set cancelled = bor(cancelled, stopped);
   }
   return cancelled;
 }
@@ -29,13 +24,13 @@ fn aof_rw_name(prefix: &[u8], sequence: i64, suffix: &[u8]) -> made: Box<Slots<u
   let made = aof_copy(input: prefix);
   aof_emit(log: &made, value: 46_u8);
   aof_decimal(log: &made, value: sequence);
-  pkg::store::log_append(log: &made, bytes: suffix);
+  pkg::store::log_append_plain(log: &made, bytes: suffix);
   return move made;
 }
 
 fn aof_rw_temporary(prefix: &[u8]) -> made: Box<Slots<u8>> reads(prefix) {
   let made = aof_named(prefix: &aof_temp_prefix[0_u64..5_u64], suffix: prefix);
-  pkg::store::log_append(log: &made, bytes: &aof_rw_temp_suffix[0_u64..5_u64]);
+  pkg::store::log_append_plain(log: &made, bytes: &aof_rw_temp_suffix[0_u64..5_u64]);
   return move made;
 }
 
@@ -53,48 +48,9 @@ fn aof_rw_manifest(original: &AofManifest) -> made: AofManifest reads(original) 
   return move made;
 }
 
-fn aof_rw_close_tail(store: &Keyspace, factory: &HandleFactory, log: &AofLog, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(time), writes(factory), writes(log), writes(clock) waits {
-  doc "Read the current incremental file through replay into a private keyspace. If EOF leaves an unfinished region, cut before its first MULTI so the closed file replays whole. A later EXEC can close a startup-retained block, so no startup offset is carried here. The live keyspace is unchanged.";
-  for (index in 0_u64..log^.manifest.parts.inner.len) {
-    let part = &log^.manifest.parts.inner[index];
-    let incremental = part^.kind == 105_u8;
-    let current = part^.sequence == log^.manifest.incr_sequence;
-    let selected = band(incremental, current);
-    if selected {
-      let empty = array_filled::<u8, 0>(value: 0_u8);
-      let password = pkg::bytes::bytes_new(input: &empty[0_u64..0_u64], start: 0_u64, length: 0_u64);
-      let quiet = False();
-      let private_store = pkg::store::keyspace_new(seed: 1_u64, logging: quiet, password: move password, timeout: 0_u64, started: time^.unix_ms);
-      let length = part^.name.inner.len;
-      let name = &part^.name.inner[0_u64..length];
-      let loaded = replay(store: &private_store, factory: factory, root: &log^.directory, name: name, name_length: length, time: time, clock: clock);
-      if loaded.stopped {
-        return False();
-      }
-      if loaded.unfinished {
-        match std::fs::truncate_file(factory: factory, file: &log^.file, length: loaded.reverted) {
-          Ok(value: truncated) => {
-            let removed = loaded.size -sat loaded.reverted;
-            atomic m = &store^.meta {
-              set m^.aof_current_size = m^.aof_current_size -sat removed;
-            }
-          }
-          Err(error: problem) => {
-            return False();
-          }
-        }
-      } else if loaded.cut {
-        return False();
-      }
-      return True();
-    }
-  }
-  return False();
-}
-
-fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(time), writes(factory), writes(log), writes(clock) waits {
-  doc "Flush is complete before entry. Find the unfinished region in the current file, cut it and sync the file before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts.";
-  let whole = aof_rw_close_tail(store: store, factory: factory, log: log, time: time, clock: clock);
+fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> accepted: Bool reads(store), writes(factory), writes(log), writes(clock) waits {
+  doc "Flush is complete before entry. Validate the sealed current file without executing commands, then sync it before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts.";
+  let whole = aof_rw_boundary(store: store, factory: factory, log: log, clock: clock);
   if whole {
   } else {
     return False();
@@ -105,6 +61,10 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, time: 
     Err(error: problem) => {
       return False();
     }
+  }
+  let aborted = aof_rw_cancelled(store: store);
+  if aborted {
+    return False();
   }
   if log^.manifest.incr_sequence == 9223372036854775807_i64 {
     return False();
@@ -144,81 +104,14 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, time: 
   }
 }
 
-fn aof_rw_replay(private_store: &Keyspace, live_store: &Keyspace, factory: &HandleFactory, directory: &DirectoryRead, manifest: &AofManifest, time: &Time, clock: &Clock) -> accepted: Bool reads(private_store), reads(live_store), reads(directory), reads(manifest), reads(time), writes(factory), writes(clock) waits {
-  doc "The switch's last incremental file is live and is never replayed by the child. All older active files must load whole; history is ignored.";
-  for (pass in 0_u64..2_u64) {
-    let kind = 98_u8;
-    if pass == 1_u64 {
-      set kind = 105_u8;
-    }
-    for (index in 0_u64..manifest^.parts.inner.len) {
-      let part = &manifest^.parts.inner[index];
-      let selected = part^.kind == kind;
-      if kind == 105_u8 {
-        if part^.sequence == manifest^.incr_sequence {
-          set selected = False();
-        }
-      }
-      if selected {
-        let cancelled = aof_rw_cancelled(store: live_store);
-        if cancelled {
-          return False();
-        }
-        let length = part^.name.inner.len;
-        let name = &part^.name.inner[0_u64..length];
-        let loaded = replay(store: private_store, factory: factory, root: directory, name: name, name_length: length, time: time, clock: clock);
-        let failed = bor(loaded.stopped, loaded.cut);
-        if failed {
-          return False();
-        }
-      }
-    }
-  }
-  return True();
-}
-
-fn aof_rw_worker(store: Keyspace, factory: HandleFactory, directory: DirectoryRead, file: WriteFile, manifest: AofManifest, clock: Clock, time: Time) -> rebuilt: AofRebuilt pure waits {
-  doc "Own the directory read half until completion, returning it through the structured spawn result. Completion is published only after the temporary base is synced and closed; the parent joins before installing or removing it.";
-  let empty = array_filled::<u8, 0>(value: 0_u8);
-  let password = pkg::bytes::bytes_new(input: &empty[0_u64..0_u64], start: 0_u64, length: 0_u64);
-  let quiet = False();
-  let private_store = pkg::store::keyspace_new(seed: 1_u64, logging: quiet, password: move password, timeout: 0_u64, started: time.unix_ms);
-  let accepted = aof_rw_replay(private_store: &private_store, live_store: &store, factory: &factory, directory: &directory, manifest: &manifest, time: &time, clock: &clock);
-  let size = 0_u64;
-  if accepted {
-    match aof_rw_dataset(private_store: &private_store, live_store: &store, factory: &factory, file: &file) {
-      Ok(value: written) => {
-        set size = written;
-        match std::fs::sync_file(factory: &factory, file: &file) {
-          Ok(value: synced) => {
-          }
-          Err(error: problem) => {
-            set accepted = False();
-          }
-        }
-      }
-      Err(error: problem) => {
-        set accepted = False();
-      }
-    }
-  }
-  match std::fs::close_write(factory: &factory, file: move file) {
-    Ok(value: closed) => {
-    }
-    Err(error: problem) => {
-      set accepted = False();
-    }
-  }
-  atomic m = &store.meta {
-    set m^.aof_worker_done = True();
-  }
-  return AofRebuilt(directory: move directory, size: size, accepted: accepted);
-}
-
 fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool) -> result: unit reads(store) waits {
   atomic m = &store^.meta {
     set m^.aof_rewrite_in_progress = False();
     set m^.aof_rewrite_ok = accepted;
+    set m^.aof_rewrite_retry_blocked = bnot(accepted);
+    set m^.aof_rewrite_scan_peak = m^.rewrite.scan_peak;
+    set m^.aof_rewrite_cut = m^.rewrite.cut;
+    set m^.rewrite = pkg::store::rewrite_capture_new();
     if manual {
       if started {
       } else {
@@ -237,19 +130,7 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pen
       set m^.aof_pending_capacity = pending^.inner.cap;
     }
   }
-  let appended = append_all(factory: factory, file: file, source: pending);
-  let length = pending^.inner.len;
-  let drained = appended == length;
-  atomic m = &store^.meta {
-    set m^.aof_current_size = m^.aof_current_size +wrap appended;
-    if drained {
-      set pending^ = box_slots_new::<u8>(capacity: 65536_u64);
-    } else if appended <= length {
-      let suffix = aof_copy(input: &pending^.inner[appended..length]);
-      set pending^ = move suffix;
-    }
-    set m^.aof_pending_capacity = pending^.inner.cap;
-  }
+  let drained = aof_rw_drain(store: store, factory: factory, file: file, pending: pending);
   let reading = std::time::now(clock: clock);
   let elapsed = std::time::nanoseconds_from(earlier: last_sync^, later: reading);
   let due = elapsed >= 1000000000_u64;
@@ -288,7 +169,7 @@ fn aof_rw_open(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name
 }
 
 fn aof_rw_install(store: &Keyspace, factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest, temporary: &[u8], size: u64, closed_size: u64) -> accepted: Bool reads(store), reads(prefix), reads(temporary), writes(factory), writes(writable), writes(manifest) waits {
-  doc "The caller holds aof_installing, excluding shutdown acceptance until installation ends. Adopt a published manifest even when its directory sync fails, retaining every file and history entry and reporting failure; only durable publication permits history cleanup.";
+  doc "The caller commits installation under Meta after ruling out abort and holds aof_installing, excluding shutdown acceptance and pressure-triggered abort until publication ends; eviction waits for completion instead. Adopt a published manifest even when its directory sync fails, retaining every file and history entry and reporting failure; only durable publication permits history cleanup.";
   let candidate = aof_rw_manifest(original: manifest);
   let next = candidate.base_sequence +wrap 1_i64;
   let name = aof_rw_name(prefix: prefix, sequence: next, suffix: &aof_rw_base_suffix[0_u64..9_u64]);
@@ -335,106 +216,6 @@ fn aof_rw_install(store: &Keyspace, factory: &HandleFactory, writable: &std::fs:
   return False();
 }
 
-fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, time: &Time, manual: Bool) -> continued: AofLog reads(store), reads(time), writes(factory), writes(pending), writes(clock), writes(last_sync) waits {
-  doc "One structured rebuild, with the writer continuing to drain the live log until its child finishes. The install manifest commits the rewrite; history deletion follows only after that commit.";
-  let yes = True();
-  let no = False();
-  let flushed = aof_rw_flush(store: store, factory: factory, file: &log.file, pending: pending, clock: clock, last_sync: last_sync, force: yes);
-  let cancelled = aof_rw_cancelled(store: store);
-  let failed = bnot(flushed);
-  let abandon = bor(cancelled, failed);
-  if abandon {
-    aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
-    return move log;
-  }
-  if log.manifest.base_sequence == 9223372036854775807_i64 {
-    aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
-    return move log;
-  }
-  let switched = aof_rw_switch(store: store, factory: factory, log: &log, time: time, clock: clock);
-  if switched {
-  } else {
-    aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
-    return move log;
-  }
-  atomic m = &store^.meta {
-    set m^.aof_rewrites = m^.aof_rewrites +wrap 1_u64;
-    if manual {
-      set m^.aof_rewrite_reply = 1_u64;
-    }
-  }
-  let filename_length = log.prefix.inner.len;
-  let temporary = aof_rw_temporary(prefix: &log.prefix.inner[0_u64..filename_length]);
-  let temp_length = temporary.inner.len;
-  let temp_name = &temporary.inner[0_u64..temp_length];
-  match aof_rw_open(factory: factory, writable: &log.writable, name: temp_name) {
-    Ok(value: opened) => {
-      let AofLog(directory: directory, writable: writable, prefix: prefix, manifest: manifest, file: file) = move log;
-      let closed_size = 0_u64;
-      atomic m = &store^.meta {
-        set closed_size = m^.aof_current_size;
-        set m^.aof_worker_done = False();
-      }
-      let worker_store = pkg::store::keyspace_share(store: store);
-      let worker_factory = std::io::factory_share(factory: factory);
-      let worker_clock = std::time::clock_share(clock: clock);
-      let snapshot = aof_rw_manifest(original: &manifest);
-      let rebuilt = spawn aof_rw_worker(store: move worker_store, factory: move worker_factory, directory: move directory, file: move opened, manifest: move snapshot, clock: move worker_clock, time: time^);
-      let never = std::time::cancel_never();
-      loop @rebuilding {
-        let reading = std::time::now(clock: clock);
-        let wake = std::time::instant_after(instant: reading, nanoseconds: 10000000_u64);
-        match std::time::sleep_until(deadline: wake, cancel: &never) {
-          Ok(..) => {
-          }
-          Err(..) => {
-          }
-        }
-        let done = False();
-        let stopping = False();
-        atomic m = &store^.meta {
-          set done = m^.aof_worker_done;
-          set stopping = m^.stopping;
-        }
-        let drained = aof_rw_flush(store: store, factory: factory, file: &file, pending: pending, clock: clock, last_sync: last_sync, force: stopping);
-        if done {
-          break @rebuilding;
-        }
-      }
-      std::time::close_cancel_watch(watch: move never);
-      let AofRebuilt(directory: returned, size: size, accepted: built) = move rebuilt;
-      let accepted = False();
-      let prefix_length = prefix.inner.len;
-      let prefix_bytes = &prefix.inner[0_u64..prefix_length];
-      if built {
-        let install = False();
-        atomic m = &store^.meta, v = &store^.server {
-          let stopping = bor(m^.stopping, v^.shutdown);
-          if stopping {
-          } else {
-            set m^.aof_installing = 1_u64;
-            set install = True();
-          }
-        }
-        if install {
-          set accepted = aof_rw_install(store: store, factory: factory, writable: &writable, prefix: prefix_bytes, manifest: &manifest, temporary: temp_name, size: size, closed_size: closed_size);
-          atomic m = &store^.meta {
-            set m^.aof_installing = 0_u64;
-          }
-        }
-      }
-      std::fs::remove_file(factory: factory, root: &writable, name: temp_name, start: 0_u64, end: temp_length);
-      aof_rw_complete(store: store, accepted: accepted, manual: manual, started: yes);
-      return AofLog(directory: move returned, writable: move writable, prefix: move prefix, manifest: move manifest, file: move file);
-    }
-    Err(error: problem) => {
-      std::fs::remove_file(factory: factory, root: &log.writable, name: temp_name, start: 0_u64, end: temp_length);
-      aof_rw_complete(store: store, accepted: no, manual: manual, started: yes);
-      return move log;
-    }
-  }
-}
-
 fn aof_rw_growth(current_size: u64, base_size: u64, percentage: u64, minimum: u64) -> due: Bool pure {
   doc "serverCron's threshold: strict minimum size, percentage zero disables, and a zero baseline uses one byte. Compare the integer percentage without multiplying the full file size.";
   if percentage == 0_u64 {
@@ -466,4 +247,378 @@ fn aof_rw_growth(current_size: u64, base_size: u64, percentage: u64, minimum: u6
   let extra = rounded / 100_u64;
   let threshold = major +wrap extra;
   return remainder >= threshold;
+}
+
+fn aof_rw_pause(clock: &Clock) -> result: unit writes(clock) waits {
+  doc "A nonempty sleep is also used for empty scan steps and chunk cleanup; a zero-byte append would not yield.";
+  let now = std::time::now(clock: clock);
+  let wake = std::time::instant_after(instant: now, nanoseconds: 100000_u64);
+  let never = std::time::cancel_never();
+  match std::time::sleep_until(deadline: wake, cancel: &never) {
+    Ok(..) => {
+    }
+    Err(..) => {
+    }
+  }
+  std::time::close_cancel_watch(watch: move never);
+  return unit;
+}
+
+fn aof_rw_abort(store: &Keyspace) -> result: unit reads(store) waits {
+  atomic m = &store^.meta {
+    pkg::store::rewrite_abort(capture: &m^.rewrite);
+  }
+  return unit;
+}
+
+fn aof_rw_admit(store: &Keyspace, meter: &std::process::MemoryMeter, manual: Bool, overhead: u64) -> accepted: Bool reads(store), writes(meter) waits {
+  doc "S0 is one Meta-and-settings statement. R is floor(maxmemory/20), or 16 MiB without maxmemory; require R plus max(R,1 MiB) service headroom. The charged fixed directory is at most 64 KiB. A retained startup MULTI is refused even if a later EXEC closes it: its previously unapplied prefix still differs from live state until a restart replays it.";
+  let admitted = False();
+  atomic m = &store^.meta, v = &store^.server {
+    let exhausted = m^.aof_rewrite_seq_exhausted;
+    let inherited = m^.aof_rewrite_startup_unfinished;
+    let stopping = bor(m^.stopping, v^.shutdown);
+    let unsafe_cut = bor(exhausted, inherited);
+    let refused = bor(unsafe_cut, stopping);
+    let reserve = 16777216_u64;
+    let limit = v^.memory.maxmemory;
+    if limit > 0_u64 {
+      set reserve = limit / 20_u64;
+    }
+    let headroom = imax(reserve, 1048576_u64);
+    let heap = std::process::heap_in_use(meter: meter);
+    let excluded = m^.log.inner.cap +sat m^.aof_pending_capacity;
+    let counted = heap -sat excluded;
+    let room = counted +sat reserve;
+    let needed = room +sat headroom;
+    if limit > 0_u64 {
+      if needed > limit {
+        set refused = True();
+      }
+    }
+    let chunks = reserve / 65536_u64;
+    let capacity = imin(chunks, 8188_u64);
+    let directory = capacity *sat 8_u64;
+    let fixed = directory +sat overhead;
+    let minimum = fixed +sat 65560_u64;
+    if reserve < minimum {
+      set refused = True();
+    }
+    if refused {
+    } else {
+      set m^.rewrite = pkg::store::rewrite_capture_new();
+      set m^.rewrite.limit = reserve;
+      set m^.rewrite.used = fixed;
+      set m^.rewrite.peak = fixed;
+      set m^.aof_rewrite_reserve = reserve;
+      set m^.aof_rewrite_scan_peak = 0_u64;
+      set m^.aof_rewrite_cut = False();
+      let journal = box_ring_new::<Box<Slots<u8>>>(capacity: capacity);
+      set m^.rewrite.journal = Some<Box<Ring<Box<Slots<u8>>>>>(value: move journal);
+      set m^.rewrite.start = m^.commit_seq;
+      set m^.rewrite.active = True();
+      set m^.aof_worker_done = False();
+      set m^.aof_rewrites = m^.aof_rewrites +wrap 1_u64;
+      set m^.aof_rewrite_retry_blocked = False();
+      if manual {
+        set m^.aof_rewrite_reply = 1_u64;
+      }
+      set admitted = True();
+    }
+  }
+  return admitted;
+}
+
+fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, clock: Clock, meter: std::process::MemoryMeter) -> rebuilt: AofScanResult pure waits {
+  doc "Scan while the sole writer appends to the original increment. Wait for its atomic S1 cut and rotation before reconciling the frozen journal. On every exit, release journal chunks with waits before announcing completion.";
+  let size = 0_u64;
+  let accepted = False();
+  match aof_rw_dataset(store: &store, factory: &factory, file: &file, clock: &clock, meter: &meter) {
+    Ok(value: scanned) => {
+      set size = scanned;
+      atomic m = &store.meta {
+        set m^.rewrite.scan_done = True();
+      }
+      atomic cut = &store.meta when cut^.rewrite.cut_done {
+        let live = bnot(cut^.rewrite.aborted);
+        set accepted = band(cut^.rewrite.rotated, live);
+      }
+    }
+    Err(error: problem) => {
+      aof_rw_abort(store: &store);
+    }
+  }
+  let journal = None<Box<Ring<Box<Slots<u8>>>>>();
+  let first = 0_u64;
+  let last = 0_u64;
+  atomic frozen = &store.meta {
+    set frozen^.rewrite.active = False();
+    swap(first: &journal, second: &frozen^.rewrite.journal);
+    set first = frozen^.rewrite.start;
+    set last = frozen^.rewrite.end;
+  }
+  let decoder = AofReconcile(sequence: 0_u64, length: 0_u64, header: 0_u64, factor: 1_u64, remaining: 0_u64, previous: first, end: last);
+  match move journal {
+    Some(value: chunks) => {
+      loop @releasing {
+        if chunks.inner.len == 0_u64 {
+          break @releasing;
+        }
+        {
+          let block = take_front(window: &chunks.inner);
+          if accepted {
+            let stopped = aof_rw_cancelled(store: &store);
+            if stopped {
+              set accepted = False();
+            } else {
+              if size == 0_u64 {
+                match aof_rw_select_empty(factory: &factory, file: &file) {
+                  Ok(value: selected) => {
+                    set size = selected;
+                  }
+                  Err(error: problem) => {
+                    set accepted = False();
+                  }
+                }
+              }
+              if accepted {
+                match aof_rw_reconcile(factory: &factory, file: &file, block: &block, decoder: &decoder) {
+                  Ok(value: appended) => {
+                    set size = size +sat appended;
+                  }
+                  Err(error: problem) => {
+                    set accepted = False();
+                  }
+                }
+              }
+            }
+          }
+        }
+        aof_rw_pause(clock: &clock);
+      }
+    }
+    None() => {
+    }
+  }
+  let unfinished = decoder.remaining != 0_u64;
+  let partial_header = decoder.header != 0_u64;
+  let incomplete = bor(unfinished, partial_header);
+  if incomplete {
+    set accepted = False();
+  }
+  if accepted {
+    match std::fs::sync_file(factory: &factory, file: &file) {
+      Ok(value: synced) => {
+      }
+      Err(error: problem) => {
+        set accepted = False();
+      }
+    }
+  }
+  match std::fs::close_write(factory: &factory, file: move file) {
+    Ok(value: closed) => {
+    }
+    Err(error: problem) => {
+      set accepted = False();
+    }
+  }
+  atomic done = &store.meta {
+    set done^.aof_worker_done = True();
+  }
+  return AofScanResult(size: size, accepted: accepted);
+}
+
+struct AofScanResult {
+  size: u64;
+  accepted: Bool;
+}
+
+fn aof_rw_cut(store: &Keyspace, pending: &Box<Slots<u8>>) -> accepted: Bool reads(store), writes(pending) waits {
+  doc "The sole writer enters only after its prior private partial append drained. Disable capture, freeze the journal and exchange collecting bytes through S1 with the empty private buffer in one Meta statement. Later commands collect separately; no ordinary flush may swap those bytes before this sealed prefix drains.";
+  let cut = False();
+  atomic m = &store^.meta {
+    let ready = band(m^.rewrite.active, m^.rewrite.scan_done);
+    let empty = pending^.inner.len == 0_u64;
+    let allowed = band(ready, empty);
+    if allowed {
+      set m^.rewrite.end = m^.commit_seq;
+      set m^.rewrite.cut = True();
+      set m^.rewrite.active = False();
+      set m^.rewrite.rotating = True();
+      swap(first: pending, second: &m^.log);
+      set m^.aof_pending_capacity = pending^.inner.cap;
+      set cut = True();
+    }
+  }
+  return cut;
+}
+
+fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, manual: Bool, meter: &std::process::MemoryMeter) -> continued: AofLog reads(store), writes(factory), writes(pending), writes(clock), writes(last_sync), writes(meter) waits {
+  let yes = True();
+  let no = False();
+  if log.manifest.base_sequence == 9223372036854775807_i64 {
+    aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
+    return move log;
+  }
+  let overhead = aof_rw_overhead(log: &log);
+  let admitted = aof_rw_admit(store: store, meter: meter, manual: manual, overhead: overhead);
+  if admitted {
+  } else {
+    aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
+    return move log;
+  }
+  let filename_length = log.prefix.inner.len;
+  let temporary = aof_rw_temporary(prefix: &log.prefix.inner[0_u64..filename_length]);
+  let temp_length = temporary.inner.len;
+  let temp_name = &temporary.inner[0_u64..temp_length];
+  match aof_rw_open(factory: factory, writable: &log.writable, name: temp_name) {
+    Ok(value: opened) => {
+      let worker_store = pkg::store::keyspace_share(store: store);
+      let worker_factory = std::io::factory_share(factory: factory);
+      let worker_clock = std::time::clock_share(clock: clock);
+      let worker_meter = std::process::meter_share(meter: meter);
+      let rebuilt = spawn aof_rw_worker(store: move worker_store, factory: move worker_factory, file: move opened, clock: move worker_clock, meter: move worker_meter);
+      let closed_size = 0_u64;
+      loop @rebuilding {
+        aof_rw_pause(clock: clock);
+        let done = False();
+        let scan_done = False();
+        let cut_done = False();
+        let aborted = False();
+        let stopping = aof_rw_cancelled(store: store);
+        atomic m = &store^.meta {
+          set done = m^.aof_worker_done;
+          set scan_done = m^.rewrite.scan_done;
+          set cut_done = m^.rewrite.cut_done;
+          if stopping {
+            pkg::store::rewrite_abort(capture: &m^.rewrite);
+          }
+          set aborted = m^.rewrite.aborted;
+        }
+        if done {
+          break @rebuilding;
+        }
+        let uncut = bnot(cut_done);
+        let needs_cut = band(scan_done, uncut);
+        if needs_cut {
+          let switched = False();
+          if aborted {
+          } else {
+            let prior_drained = aof_rw_drain(store: store, factory: factory, file: &log.file, pending: pending);
+            if prior_drained {
+              let cut = aof_rw_cut(store: store, pending: pending);
+              if cut {
+                let sealed = aof_rw_drain(store: store, factory: factory, file: &log.file, pending: pending);
+                if sealed {
+                  set switched = aof_rw_switch(store: store, factory: factory, log: &log, clock: clock);
+                  atomic size_meta = &store^.meta {
+                    set closed_size = size_meta^.aof_current_size;
+                  }
+                }
+              }
+            }
+          }
+          atomic outcome = &store^.meta {
+            set outcome^.rewrite.rotated = switched;
+            set outcome^.rewrite.cut_done = True();
+            set outcome^.rewrite.rotating = False();
+            if switched {
+            } else {
+              pkg::store::rewrite_abort(capture: &outcome^.rewrite);
+            }
+          }
+        }
+        let drained = aof_rw_flush(store: store, factory: factory, file: &log.file, pending: pending, clock: clock, last_sync: last_sync, force: stopping);
+        if drained {
+        } else {
+          aof_rw_abort(store: store);
+        }
+      }
+      let AofScanResult(size: size, accepted: built) = move rebuilt;
+      let accepted = False();
+      if built {
+        let install = False();
+        atomic install_meta = &store^.meta, state = &store^.server {
+          let stopping = bor(install_meta^.stopping, state^.shutdown);
+          let refused = bor(stopping, install_meta^.rewrite.aborted);
+          if refused {
+          } else {
+            set install_meta^.aof_installing = 1_u64;
+            set install = True();
+          }
+        }
+        if install {
+          let prefix_length = log.prefix.inner.len;
+          let prefix_bytes = &log.prefix.inner[0_u64..prefix_length];
+          set accepted = aof_rw_install(store: store, factory: factory, writable: &log.writable, prefix: prefix_bytes, manifest: &log.manifest, temporary: temp_name, size: size, closed_size: closed_size);
+          atomic installed = &store^.meta {
+            set installed^.aof_installing = 0_u64;
+          }
+        }
+      }
+      std::fs::remove_file(factory: factory, root: &log.writable, name: temp_name, start: 0_u64, end: temp_length);
+      aof_rw_complete(store: store, accepted: accepted, manual: manual, started: yes);
+    }
+    Err(error: problem) => {
+      aof_rw_abort(store: store);
+      aof_rw_discard(store: store, clock: clock);
+      aof_rw_complete(store: store, accepted: no, manual: manual, started: yes);
+    }
+  }
+  return move log;
+}
+
+fn aof_rw_discard(store: &Keyspace, clock: &Clock) -> result: unit reads(store), writes(clock) waits {
+  let journal = None<Box<Ring<Box<Slots<u8>>>>>();
+  atomic m = &store^.meta {
+    swap(first: &journal, second: &m^.rewrite.journal);
+  }
+  match move journal {
+    Some(value: chunks) => {
+      loop @cleanup {
+        if chunks.inner.len == 0_u64 {
+          break @cleanup;
+        }
+        {
+          let released = take_front(window: &chunks.inner);
+        }
+        aof_rw_pause(clock: clock);
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pending: &Box<Slots<u8>>) -> drained: Bool reads(store), writes(factory), writes(file), writes(pending) waits {
+  let appended = append_all(factory: factory, file: file, source: pending);
+  let length = pending^.inner.len;
+  let drained = appended == length;
+  atomic m = &store^.meta {
+    set m^.aof_current_size = m^.aof_current_size +wrap appended;
+    if drained {
+      set pending^ = box_slots_new::<u8>(capacity: 65536_u64);
+    } else if appended <= length {
+      let suffix = aof_copy(input: &pending^.inner[appended..length]);
+      set pending^ = move suffix;
+    }
+    set m^.aof_pending_capacity = pending^.inner.cap;
+  }
+  return drained;
+}
+
+fn aof_rw_overhead(log: &AofLog) -> bytes: u64 reads(log) {
+  doc "Precharge rewrite filenames, manifest candidate copies, serialization and their growth overlap before S0. Sixteen times the escaped-name and record ceilings covers the old/new candidates, serialization's doubling and transient growth; the ordinary two AOF buffers are reused, never a third sealed buffer.";
+  let names = log^.prefix.inner.len *sat 128_u64;
+  let records = log^.manifest.parts.inner.len +sat 2_u64;
+  let headers = records *sat 512_u64;
+  let estimate = names +sat headers;
+  for (index in 0_u64..log^.manifest.parts.inner.len) {
+    let length = log^.manifest.parts.inner[index].name.inner.len;
+    let escaped = length *sat 4_u64;
+    set estimate = estimate +sat escaped;
+  }
+  let overlap = estimate *sat 16_u64;
+  return overlap +sat 8192_u64;
 }

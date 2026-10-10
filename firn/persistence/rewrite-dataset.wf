@@ -1,173 +1,247 @@
-alias aof_ceiling = pkg::store::ceiling;
+alias Clock = std::time::Clock;
+alias Entry = pkg::store::Entry;
 alias Keyspace = pkg::store::Keyspace;
 alias HandleFactory = std::io::HandleFactory;
 alias WriteFile = std::fs::WriteFile;
-alias AofEntry = pkg::store::Entry;
-alias AofBytes = pkg::bytes::Bytes;
-alias AofKey = pkg::bytes::Key;
-alias aof_log_count = pkg::store::log_count;
-alias aof_log_word = pkg::store::log_word;
-alias aof_log_text = pkg::store::log_text;
-alias aof_log_decimal = pkg::store::log_decimal;
-alias aof_map_each = std::collections::hash_map::hash_map_each;
-alias aof_map_len = std::collections::hash_map::hash_map_len;
 
-const aof_rw_set: Array<u8, 3> = "SET";
+const aof_rw_select: Array<u8, 23> = "*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n";
 
-const aof_rw_rpush: Array<u8, 5> = "RPUSH";
-
-const aof_rw_sadd: Array<u8, 4> = "SADD";
-
-const aof_rw_zadd: Array<u8, 4> = "ZADD";
-
-const aof_rw_hmset: Array<u8, 5> = "HMSET";
-
-const aof_rw_expire: Array<u8, 9> = "PEXPIREAT";
-
-const aof_rw_select: Array<u8, 6> = "SELECT";
-
-struct AofEmitter {
-  key: AofBytes;
-  output: Box<Slots<u8>>;
-  remaining: u64;
-  batch: u64;
-}
-
-fn aof_rw_header(emitter: &AofEmitter, word: &[u8], width: u64) -> result: unit reads(word), writes(emitter) {
-  if emitter^.batch == 0_u64 {
-    let items = imin(emitter^.remaining, 64_u64);
-    let arguments = items *wrap width;
-    let count = arguments +wrap 2_u64;
-    aof_log_count(log: &emitter^.output, count: count, room: 256_u64);
-    aof_log_word(log: &emitter^.output, word: word);
-    aof_log_text(log: &emitter^.output, text: &emitter^.key);
-    set emitter^.batch = items;
-  }
-  set emitter^.batch = emitter^.batch -wrap 1_u64;
-  set emitter^.remaining = emitter^.remaining -wrap 1_u64;
-  return unit;
-}
-
-fn aof_rw_member(env: &AofEmitter, key: &AofKey, value: &unit) -> result: unit reads(key.bytes), writes(env) {
-  aof_rw_header(emitter: env, word: &aof_rw_sadd[0_u64..4_u64], width: 1_u64);
-  aof_log_text(log: &env^.output, text: &key^.bytes);
-  return unit;
-}
-
-fn aof_rw_field(env: &AofEmitter, key: &AofKey, value: &AofBytes) -> result: unit reads(key.bytes), reads(value), writes(env) {
-  aof_rw_header(emitter: env, word: &aof_rw_hmset[0_u64..5_u64], width: 2_u64);
-  aof_log_text(log: &env^.output, text: &key^.bytes);
-  aof_log_text(log: &env^.output, text: value);
-  return unit;
-}
-
-fn aof_rw_score(env: &AofEmitter, key: &AofKey, value: &f64) -> result: unit reads(key.bytes), reads(value), writes(env) {
-  aof_rw_header(emitter: env, word: &aof_rw_zadd[0_u64..4_u64], width: 2_u64);
-  let digits = pkg::scores::score_bytes(score: value^);
-  aof_log_text(log: &env^.output, text: &digits);
-  aof_log_text(log: &env^.output, text: &key^.bytes);
-  return unit;
-}
-
-fn aof_rw_entry(slot: &Option<AofEntry>, emitter: &AofEmitter) -> result: unit reads(slot), writes(emitter) {
-  doc "Redis rewriteAppendOnlyFileRio: retain even elapsed expiries, emit at most 64 collection elements per command, and follow each expiring value with its absolute PEXPIREAT. Script caches have no AOF records and firn implements no persisted functions.";
-  match slot^ {
-    Some(value: held) => {
-      match held^.value {
-        Text(bytes: stored) => {
-          aof_log_count(log: &emitter^.output, count: 3_u64, room: 256_u64);
-          aof_log_word(log: &emitter^.output, word: &aof_rw_set[0_u64..3_u64]);
-          aof_log_text(log: &emitter^.output, text: &emitter^.key);
-          aof_log_text(log: &emitter^.output, text: stored);
-        }
-        Items(items: listed) => {
-          set emitter^.remaining = listed^.inner.len;
-          for (index in 0_u64..listed^.inner.len) {
-            aof_rw_header(emitter: emitter, word: &aof_rw_rpush[0_u64..5_u64], width: 1_u64);
-            let element = &listed^.inner[index];
-            let length = element^.inner.len;
-            aof_log_word(log: &emitter^.output, word: &element^.inner[0_u64..length]);
-          }
-        }
-        Members(members: stored_members) => {
-          set emitter^.remaining = aof_map_len::<AofKey, unit, aof_ceiling>(map: stored_members);
-          aof_map_each::<AofKey, unit, AofEmitter, fn aof_rw_member, aof_ceiling>(map: stored_members, env: emitter);
-        }
-        Fields(fields: stored_fields) => {
-          set emitter^.remaining = aof_map_len::<AofKey, AofBytes, aof_ceiling>(map: stored_fields);
-          aof_map_each::<AofKey, AofBytes, AofEmitter, fn aof_rw_field, aof_ceiling>(map: stored_fields, env: emitter);
-        }
-        Ranked(ranked: stored_ranked) => {
-          set emitter^.remaining = aof_map_len::<AofKey, f64, aof_ceiling>(map: &stored_ranked^.scores);
-          aof_map_each::<AofKey, f64, AofEmitter, fn aof_rw_score, aof_ceiling>(map: &stored_ranked^.scores, env: emitter);
-        }
-      }
-      if held^.expires != 0_u64 {
-        aof_log_count(log: &emitter^.output, count: 3_u64, room: 128_u64);
-        aof_log_word(log: &emitter^.output, word: &aof_rw_expire[0_u64..9_u64]);
-        aof_log_text(log: &emitter^.output, text: &emitter^.key);
-        aof_log_decimal(log: &emitter^.output, value: held^.expires);
-      }
-    }
-    None() => {
-    }
-  }
-  return unit;
-}
-
-fn aof_rw_key(keys: &KeySet, index: u64) -> bytes: Box<Array<u8>> reads(keys) contract {
-  requires index < keys^.len;
-} {
-  let probe = array_filled::<u8, 0>(value: 0_u8);
-  let length = key_set_read_key(keys: keys, index: index, out: &probe[0_u64..0_u64]);
-  let bytes = box_array_filled::<u8>(count: length, value: 0_u8);
-  let size = bytes.inner.len;
-  key_set_read_key(keys: keys, index: index, out: &bytes.inner[0_u64..size]);
-  return move bytes;
-}
-
-fn aof_rw_dataset(private_store: &Keyspace, live_store: &Keyspace, factory: &HandleFactory, file: &WriteFile) -> result: Result<u64, unit> reads(private_store), reads(live_store), writes(factory), writes(file) waits {
-  doc "Scan only the private replayed map; emit one key outside its atomic statement so host IO never holds a map. A shutdown is observed between keys. Return the exact number of bytes written, or refuse a partial write.";
+fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, clock: &Clock, meter: &std::process::MemoryMeter) -> result: Result<u64, unit> reads(store), writes(factory), writes(file), writes(clock), writes(meter) waits {
+  doc "One whole-map-and-Meta statement observes membership, complete owned payload, absolute expiry and last_write per step. Count 1 is the owner-authorized temporary limit pending firn-gap-scan-bound: the returned KeySet is charged immediately, before any payload copy. The pinned count is only a hint; a collision step can contain multiple keys. Empty steps also wait outside every hold.";
   let cursor = 0_u64;
   let size = 0_u64;
   let selected = False();
   loop @scanning {
-    let keys = key_set_new(capacity: 64_u64);
-    atomic table = &private_store^.keys {
-      set cursor = map_scan::<AofEntry>(map: table, cursor: cursor, count: 64_u64, keys: &keys);
+    let output = None<Box<Slots<u8>>>();
+    let step_charge = 0_u64;
+    let okay = False();
+    let cancelled = aof_rw_cancelled(store: store);
+    if cancelled {
+      return Err<u64, unit>(error: unit);
     }
-    let count = keys.len;
-    for (index in 0_u64..count) {
-      let cancelled = aof_rw_cancelled(store: live_store);
-      if cancelled {
-        return Err<u64, unit>(error: unit);
+    {
+      atomic table = &store^.keys, m = &store^.meta {
+        if m^.rewrite.active {
+          let baseline = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 99328_u64);
+          if baseline {
+            set step_charge = 99328_u64;
+            let heap_before = std::process::heap_in_use(meter: meter);
+            let keys = key_set_new(capacity: 1_u64);
+            set cursor = map_scan::<Entry>(map: table, cursor: cursor, count: 1_u64, keys: &keys);
+            let heap_after = std::process::heap_in_use(meter: meter);
+            let observed_heap = heap_after -sat heap_before;
+            set m^.rewrite.scan_peak = imax(m^.rewrite.scan_peak, observed_heap);
+            let key_bytes = 0_u64;
+            let probe = array_filled::<u8, 0>(value: 0_u8);
+            for (index in 0_u64..keys.len) {
+              let length = key_set_read_key(keys: &keys, index: index, out: &probe[0_u64..0_u64]);
+              set key_bytes = key_bytes +sat length;
+            }
+            let key_charge = key_bytes;
+            if keys.len > 1_u64 {
+              let arena = key_bytes *sat 3_u64;
+              let entries = keys.len *sat 128_u64;
+              set key_charge = arena +sat entries;
+            }
+            let observed = m^.rewrite.used +sat key_charge;
+            set m^.rewrite.peak = imax(m^.rewrite.peak, observed);
+            let charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: key_charge);
+            if charged {
+              set step_charge = step_charge +sat key_charge;
+              let scratch = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 65560_u64);
+              if scratch {
+                set step_charge = step_charge +sat 65560_u64;
+                let buffer = box_slots_new::<u8>(capacity: 65536_u64);
+                let work = 0_u64;
+                let total = 0_u64;
+                if selected {
+                } else if keys.len > 0_u64 {
+                  pkg::store::log_append_plain(log: &buffer, bytes: &aof_rw_select[0_u64..23_u64]);
+                  set selected = True();
+                  set total = 23_u64;
+                }
+                for (index in 0_u64..keys.len) {
+                  if m^.rewrite.active {
+                    let length = key_set_read_key(keys: &keys, index: index, out: &probe[0_u64..0_u64]);
+                    let key_allocation = length +sat 16_u64;
+                    let key_room = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: key_allocation);
+                    if key_room {
+                      set step_charge = step_charge +sat key_allocation;
+                      let copied = box_array_filled::<u8>(count: length, value: 0_u8);
+                      let copied_length = copied.inner.len;
+                      let key = &copied.inner[0_u64..copied_length];
+                      key_set_read_key(keys: &keys, index: index, out: key);
+                      let slot = &table^[key];
+                      let stamp = 0_u64;
+                      match slot^ {
+                        Some(value: held) => {
+                          set stamp = held^.last_write;
+                        }
+                        None() => {
+                        }
+                      }
+                      let work_left = 1024_u64 -sat work;
+                      let measure = pkg::store::rewrite_measure(slot: slot, key_length: length, work_left: work_left);
+                      set work = work +sat measure.elements;
+                      set total = total +sat measure.bytes;
+                      let too_much = work > 1024_u64;
+                      let too_large = total > 65536_u64;
+                      let over = bor(too_much, too_large);
+                      let future = stamp > m^.commit_seq;
+                      let invalid = bor(over, future);
+                      if invalid {
+                        pkg::store::rewrite_abort(capture: &m^.rewrite);
+                      } else {
+                        let with_key = measure.bytes +sat length;
+                        let bytes = with_key +sat 256_u64;
+                        let room = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: bytes);
+                        if room {
+                          set step_charge = step_charge +sat bytes;
+                          let no = False();
+                          let image = pkg::store::rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: no);
+                          let written = image.inner.len;
+                          pkg::store::log_append_plain(log: &buffer, bytes: &image.inner[0_u64..written]);
+                        }
+                      }
+                    }
+                  }
+                }
+                set okay = m^.rewrite.active;
+                set output = Some<Box<Slots<u8>>>(value: move buffer);
+              }
+            }
+          }
+        }
       }
-      if index < keys.len {
-        let bytes = aof_rw_key(keys: &keys, index: index);
-        let length = bytes.inner.len;
-        let key = &bytes.inner[0_u64..length];
-        let copied = pkg::bytes::bytes_new(input: key, start: 0_u64, length: length);
-        let output = box_slots_new::<u8>(capacity: 4096_u64);
-        let emitter = AofEmitter(key: move copied, output: move output, remaining: 0_u64, batch: 0_u64);
-        if selected {
-        } else {
-          aof_log_count(log: &emitter.output, count: 2_u64, room: 32_u64);
-          aof_log_word(log: &emitter.output, word: &aof_rw_select[0_u64..6_u64]);
-          aof_log_decimal(log: &emitter.output, value: 0_u64);
-          set selected = True();
+      match move output {
+        Some(value: bytes) => {
+          if okay {
+            let appended = append_all(factory: factory, file: file, source: &bytes);
+            if appended == bytes.inner.len {
+              set size = size +sat appended;
+            } else {
+              set okay = False();
+            }
+          }
         }
-        atomic slot = &private_store^.keys[key] {
-          aof_rw_entry(slot: slot, emitter: &emitter);
+        None() => {
         }
-        let appended = append_all(factory: factory, file: file, source: &emitter.output);
-        if appended != emitter.output.inner.len {
-          return Err<u64, unit>(error: unit);
-        }
-        set size = size +wrap appended;
       }
+    }
+    atomic released = &store^.meta {
+      set released^.rewrite.used = released^.rewrite.used -sat step_charge;
+      if okay {
+      } else {
+        pkg::store::rewrite_abort(capture: &released^.rewrite);
+      }
+    }
+    aof_rw_pause(clock: clock);
+    if okay {
+    } else {
+      return Err<u64, unit>(error: unit);
     }
     if cursor == 0_u64 {
       break @scanning;
+    }
+  }
+  return Ok<u64, unit>(value: size);
+}
+
+struct AofReconcile {
+  sequence: u64;
+  length: u64;
+  header: u64;
+  factor: u64;
+  remaining: u64;
+  previous: u64;
+  end: u64;
+}
+
+fn aof_rw_select_empty(factory: &HandleFactory, file: &WriteFile) -> result: Result<u64, unit> writes(factory), writes(file) waits {
+  doc "Select database zero before journal output when the scan emitted no image; no scratch owner is needed.";
+  let offset = 0_u64;
+  loop {
+    match std::fs::append_once(factory: factory, file: file, source: &aof_rw_select[0_u64..23_u64], start: offset, end: 23_u64) {
+      Ok(value: next) => {
+        if next <= offset {
+          return Err<u64, unit>(error: unit);
+        }
+        set offset = next;
+      }
+      Err(error: problem) => {
+        return Err<u64, unit>(error: unit);
+      }
+    }
+    if offset >= 23_u64 {
+      return Ok<u64, unit>(value: offset);
+    }
+  }
+}
+
+fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots<u8>>, decoder: &AofReconcile) -> result: Result<u64, unit> reads(block), writes(factory), writes(file), writes(decoder) waits {
+  doc "Strip the internal sequence/length frames while streaming chronological complete replacement units. A frame may cross a chunk; no output allocation is needed and each append borrows only this one at-most-64-KiB chunk.";
+  let size = 0_u64;
+  let offset = 0_u64;
+  let length = block^.inner.len;
+  loop @records {
+    if offset >= length {
+      break @records;
+    }
+    if decoder^.remaining > 0_u64 {
+      let available = length -sat offset;
+      let count = imin(available, decoder^.remaining);
+      let end = offset +sat count;
+      let bytes = &block^.inner[0_u64..length];
+      loop @append {
+        match std::fs::append_once(factory: factory, file: file, source: bytes, start: offset, end: end) {
+          Ok(value: next) => {
+            if next <= offset {
+              return Err<u64, unit>(error: unit);
+            }
+            let written = next -sat offset;
+            set decoder^.remaining = decoder^.remaining -sat written;
+            set size = size +sat written;
+            set offset = next;
+          }
+          Err(error: problem) => {
+            return Err<u64, unit>(error: unit);
+          }
+        }
+        if offset >= end {
+          break @append;
+        }
+      }
+    } else if offset < block^.inner.len {
+      let byte = block^.inner[offset];
+      let wide = cvt.wrap::<u8, u64>(byte);
+      let part = wide *wrap decoder^.factor;
+      if decoder^.header < 8_u64 {
+        set decoder^.sequence = decoder^.sequence +wrap part;
+      } else {
+        set decoder^.length = decoder^.length +wrap part;
+      }
+      set offset = offset +sat 1_u64;
+      set decoder^.header = decoder^.header +sat 1_u64;
+      set decoder^.factor = decoder^.factor *wrap 256_u64;
+      if decoder^.header == 8_u64 {
+        set decoder^.factor = 1_u64;
+      } else if decoder^.header == 16_u64 {
+        if decoder^.sequence <= decoder^.previous {
+          return Err<u64, unit>(error: unit);
+        }
+        if decoder^.sequence > decoder^.end {
+          return Err<u64, unit>(error: unit);
+        }
+        if decoder^.length > 65536_u64 {
+          return Err<u64, unit>(error: unit);
+        }
+        set decoder^.remaining = decoder^.length;
+        set decoder^.previous = decoder^.sequence;
+        set decoder^.sequence = 0_u64;
+        set decoder^.length = 0_u64;
+        set decoder^.header = 0_u64;
+        set decoder^.factor = 1_u64;
+      }
     }
   }
   return Ok<u64, unit>(value: size);

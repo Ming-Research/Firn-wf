@@ -171,7 +171,7 @@ fn set_fields(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
   }
 }
 
-fn fresh_hash(sequence: &pkg::store::WriteSequence, slot: &Option<Entry>, client: &Client) -> result: unit writes(sequence), writes(slot), writes(client) {
+fn fresh_hash(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &Option<Entry>, client: &Client) -> result: unit reads(capture_key), writes(sequence), writes(slot), writes(client) {
   doc "Stores a new hash of the prepared pairs in an entry that holds no live value, recording how many fields it holds in number and done.";
   let pairs = client^.items.inner.len / 2_u64;
   let capacity = imax(pairs, 4_u64);
@@ -182,7 +182,7 @@ fn fresh_hash(sequence: &pkg::store::WriteSequence, slot: &Option<Entry>, client
     let stamp = new_access(client: client);
     let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
     set slot^ = Some<Entry>(value: move fresh);
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: capture_key);
     set client^.state = state_done;
   }
   return unit;
@@ -204,10 +204,11 @@ fn run_hset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = hset_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let changed = client^.state == state_done;
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   hset_finish(client: client, counted: counted);
   return unit;
@@ -278,12 +279,13 @@ fn run_hsetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = hsetnx_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let stored = client^.state == state_done;
     let added = client^.number > 0_u64;
     let changed = band(stored, added);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   hsetnx_finish(client: client);
   return unit;
@@ -481,10 +483,11 @@ fn run_hdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = hdel_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let changed = client^.number > 0_u64;
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   hdel_finish(client: client);
   return unit;
@@ -767,10 +770,11 @@ fn run_hincrby(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = hincrby_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let changed = client^.state == state_done;
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   hincrby_finish(client: client);
   return unit;
@@ -882,9 +886,10 @@ fn run_hincrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = hincrbyfloat_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, floating: &floating);
-    let appended = hincrbyfloat_meta(log: &m^.log, logged: logged, removed: removed, client: client, floating: &floating, input: input, key_span: key_span, field_span: field_span, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = hincrbyfloat_meta(log: &m^.log, logged: logged, removed: removed, client: client, floating: &floating, input: input, key_span: key_span, field_span: field_span, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   hincrbyfloat_finish(client: client, floating: &floating);
   return unit;
@@ -1375,14 +1380,14 @@ fn hset_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   let removed = client^.state == state_expired;
   let create = client^.state == state_absent;
   if client^.state == state_expired {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set create = True();
   }
   if create {
-    fresh_hash(sequence: sequence, slot: slot, client: client);
+    fresh_hash(sequence: sequence, capture_key: access_key, slot: slot, client: client);
   }
   if client^.state == state_done {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return removed;
 }
@@ -1412,14 +1417,14 @@ fn hsetnx_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   let removed = client^.state == state_expired;
   let create = client^.state == state_absent;
   if client^.state == state_expired {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set create = True();
   }
   if create {
-    fresh_hash(sequence: sequence, slot: slot, client: client);
+    fresh_hash(sequence: sequence, capture_key: access_key, slot: slot, client: client);
   }
   if client^.number > 0_u64 {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return removed;
 }
@@ -1507,10 +1512,10 @@ fn hdel_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
   }
   if client^.number > 0_u64 {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return lapsed;
 }
@@ -1629,7 +1634,7 @@ fn hincrby_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   let removed = client^.state == state_expired;
   let create = client^.state == state_absent;
   if client^.state == state_expired {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set create = True();
   }
   if create {
@@ -1643,12 +1648,12 @@ fn hincrby_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
     let stamp = new_access(client: client);
     let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
     set slot^ = Some<Entry>(value: move fresh);
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
     set client^.high = client^.low;
     set client^.state = state_done;
   }
   if client^.state == state_done {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return removed;
 }
@@ -1685,7 +1690,7 @@ fn hincrbyfloat_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg:
   let removed = client^.state == state_expired;
   let create = client^.state == state_absent;
   if client^.state == state_expired {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set create = True();
   }
   if create {
@@ -1702,7 +1707,7 @@ fn hincrbyfloat_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg:
       let stamp = new_access(client: client);
       let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
       set slot^ = Some<Entry>(value: move fresh);
-      pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+      pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
       set client^.state = state_done;
     }
   }
@@ -1710,7 +1715,7 @@ fn hincrbyfloat_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg:
   let live = client^.state == state_done;
   let changed = band(stored_sum, live);
   if changed {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return removed;
 }
@@ -1757,9 +1762,9 @@ fn hrandfield_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8
   return unit;
 }
 
-fn hincrbyfloat_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, client: &Client, floating: &Floating, input: &[u8], key_span: Span, field_span: Span, key: &[u8]) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), writes(log) {
+fn hincrbyfloat_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, client: &Client, floating: &Floating, input: &[u8], key_span: Span, field_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), writes(log), writes(budget) {
   doc "Records an expired removal before HSET key field sum, Redis's propagation of HINCRBYFLOAT.";
-  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
   let stored_sum = floating^.state == state_done;
   let live = client^.state == state_done;
   let changed = band(stored_sum, live);
@@ -1768,11 +1773,11 @@ fn hincrbyfloat_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, client: 
       let both = key_span.length +wrap field_span.length;
       let text_length = bytes_length(bytes: &floating^.text);
       let room = both +wrap text_length;
-      log_count(log: log, count: 4_u64, room: room);
-      log_word(log: log, word: &word_hset[0_u64..4_u64]);
-      log_input(log: log, input: input, span: key_span);
-      log_input(log: log, input: input, span: field_span);
-      log_text(log: log, text: &floating^.text);
+      log_count(log: log, count: 4_u64, room: room, budget: budget);
+      log_word(log: log, word: &word_hset[0_u64..4_u64], budget: budget);
+      log_input(log: log, input: input, span: key_span, budget: budget);
+      log_input(log: log, input: input, span: field_span, budget: budget);
+      log_text(log: log, text: &floating^.text, budget: budget);
       set appended = appended +wrap 1_u64;
     }
   }

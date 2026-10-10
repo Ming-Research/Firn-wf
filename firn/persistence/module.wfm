@@ -5,7 +5,7 @@ alias Keyspace = pkg::store::Keyspace;
 alias Time = pkg::store::Time;
 alias WriteFile = std::fs::WriteFile;
 
-public fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time) -> result: unit pure waits doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Preserve a partial append for the next drain. Main sets stopping only after clients have left.";
+public fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time, meter: std::process::MemoryMeter) -> result: unit pure waits doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Preserve a partial append for the next drain. Main sets stopping only after clients have left.";
 
 public struct Loaded {
   doc "What replaying an append-only file found: applied, how many commands it applied, size, how many bytes were read, and, when cut, kept, the length the file is to be cut to before anything is appended to it, as Redis 7.0.15 truncates a file whose end it could not load, and stopped, that the replay ended at a record it could not load and the server must not start, as Redis 7.0.15 exits. At EOF inside a block, unfinished is true and reverted is the first MULTI offset after the last closing EXEC, before every command the incomplete block leaves unapplied; kept still follows Redis's partial-command or latest-MULTI truncation rule.";
@@ -38,7 +38,7 @@ public struct AofManifest {
 }
 
 public struct AofLog {
-  doc "The writer owns the directory halves, appendfilename, manifest and last incremental file; a structured rebuild owns the read half until its result returns it to the writer.";
+  doc "The writer owns the directory halves, appendfilename, manifest and last incremental file; the scan worker owns only its temporary base handle, leaving boundary validation and authoritative appends with the writer.";
   public directory: DirectoryRead;
   public writable: std::fs::DirectoryWrite;
   public prefix: Box<Slots<u8>>;

@@ -10,7 +10,7 @@ const aof_command_busy: Array<u8, 61> = "ERR Background append only file rewriti
 const aof_command_failed: Array<u8, 97> = "ERR Can't execute an AOF background rewriting. Please check the server logs for more information.";
 
 fn run_aof_rewrite(store: &Keyspace, client: &Client) -> result: unit reads(store), writes(client) waits {
-  doc "Reserve one rewrite under the metadata statement, then await the writer's switch result before answering. Keep its result until this caller consumes it so a fast rebuild cannot lose the start outcome.";
+  doc "Reserve one rewrite under the metadata statement, then await the writer's S0 admission result before answering. Keep its result until this caller consumes it so a fast rebuild cannot lose the start outcome.";
   if store^.logging {
   } else {
     pkg::protocol::reply_error(client: client, word: &aof_command_failed[0_u64..97_u64]);

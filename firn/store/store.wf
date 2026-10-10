@@ -57,7 +57,8 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   let running = False();
   let rewrite_ok = True();
   let eviction_pool = box_slots_new::<EvictionCandidate>(capacity: 16_u64);
-  let meta = Meta(due: move due, commit_seq: 0_u64, aof_rewrite_seq_exhausted: running, log: move log, aof_pending_capacity: 0_u64, memory_peak: 0_u64, evicted_keys: 0_u64, expired_keys: 0_u64, eviction_pool: move eviction_pool, eviction_policy: 7_u64, eviction_cursor: 0_u64, eviction_start: 0_u64, eviction_searching: running, eviction_wrapped: running, aof_current_size: 0_u64, aof_base_size: 0_u64, aof_rewrite_in_progress: running, aof_rewrite_requested: running, aof_rewrite_reply: 0_u64, aof_rewrites: 0_u64, aof_rewrite_ok: rewrite_ok, aof_worker_done: running, aof_installing: 0_u64, aof_rewrite_percentage: 100_u64, aof_rewrite_min_size: 67108864_u64, clients: 0_u64, stopping: running, random: seed);
+  let capture = rewrite_capture_new();
+  let meta = Meta(due: move due, commit_seq: 0_u64, aof_rewrite_seq_exhausted: running, rewrite: move capture, aof_rewrite_retry_blocked: running, aof_rewrite_startup_unfinished: running, aof_rewrite_reserve: 0_u64, aof_rewrite_scan_peak: 0_u64, aof_rewrite_cut: running, log: move log, aof_pending_capacity: 0_u64, memory_peak: 0_u64, evicted_keys: 0_u64, expired_keys: 0_u64, eviction_pool: move eviction_pool, eviction_policy: 7_u64, eviction_cursor: 0_u64, eviction_start: 0_u64, eviction_searching: running, eviction_wrapped: running, aof_current_size: 0_u64, aof_base_size: 0_u64, aof_rewrite_in_progress: running, aof_rewrite_requested: running, aof_rewrite_reply: 0_u64, aof_rewrites: 0_u64, aof_rewrite_ok: rewrite_ok, aof_worker_done: running, aof_installing: 0_u64, aof_rewrite_percentage: 100_u64, aof_rewrite_min_size: 67108864_u64, clients: 0_u64, stopping: running, random: seed);
   let kept = shared_new::<Meta>(value: move meta);
   let encodings = array_filled::<i64, 9>(value: 0_i64);
   for @defaults (slot in 0_u64..9_u64) {
@@ -125,14 +126,14 @@ fn take_due(meta: &Meta, now: u64, env: &KeyEnv, batch: &Box<Slots<Due>>) -> mor
   return True();
 }
 
-fn log_removal(log: &Box<Slots<u8>>, key: &[u8]) -> result: unit reads(key), writes(log) {
+fn log_removal(log: &Box<Slots<u8>>, key: &[u8], budget: &LogBudget) -> result: unit reads(key), writes(log), writes(budget) {
   doc "Appends DEL key, as Redis 7.0.15 propagates the removal of a key whose expiry has passed, so that a replay, which counts no key as expired, removes the key where the server did and a later command finds it absent there too.";
   let length = key^.len;
   let room = length +wrap 32_u64;
-  log_count(log: log, count: 2_u64, room: room);
-  log_word(log: log, word: &word_del[0_u64..3_u64]);
+  log_count(log: log, count: 2_u64, room: room, budget: budget);
+  log_word(log: log, word: &word_del[0_u64..3_u64], budget: budget);
   let span = Span(start: 0_u64, length: length);
-  log_input(log: log, input: key, span: span);
+  log_input(log: log, input: key, span: span, budget: budget);
   return unit;
 }
 
@@ -142,6 +143,7 @@ fn expire_key(store: &Keyspace, key: &[u8], at: u64) -> result: unit reads(store
   atomic slot = &store^.keys[key], m = &store^.meta {
     let loading = False();
     let sequence = sequence_new(meta: m, loading: loading);
+    let log_budget = log_budget_begin(meta: m, loading: loading);
     if m^.stopping {
       return unit;
     }
@@ -157,12 +159,12 @@ fn expire_key(store: &Keyspace, key: &[u8], at: u64) -> result: unit reads(store
     }
     if matched {
       set m^.expired_keys = m^.expired_keys +wrap 1_u64;
-      sequence_delete(sequence: &sequence, slot: slot);
+      sequence_delete_key(sequence: &sequence, slot: slot, key: key);
       if logged {
-        log_removal(log: &m^.log, key: key);
+        log_removal(log: &m^.log, key: key, budget: &log_budget);
       }
     }
-    sequence_commit(meta: m, sequence: &sequence);
+    sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   return unit;
 }
@@ -173,6 +175,7 @@ fn remove_expired(store: &Keyspace, key: &[u8], now: u64) -> result: unit reads(
   atomic slot = &store^.keys[key], m = &store^.meta {
     let loading = False();
     let sequence = sequence_new(meta: m, loading: loading);
+    let log_budget = log_budget_begin(meta: m, loading: loading);
     let lapsed = False();
     match slot^ {
       Some(value: held) => {
@@ -183,12 +186,12 @@ fn remove_expired(store: &Keyspace, key: &[u8], now: u64) -> result: unit reads(
     }
     if lapsed {
       set m^.expired_keys = m^.expired_keys +wrap 1_u64;
-      sequence_delete(sequence: &sequence, slot: slot);
+      sequence_delete_key(sequence: &sequence, slot: slot, key: key);
       if logged {
-        log_removal(log: &m^.log, key: key);
+        log_removal(log: &m^.log, key: key, budget: &log_budget);
       }
     }
-    sequence_commit(meta: m, sequence: &sequence);
+    sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   return unit;
 }
@@ -235,8 +238,8 @@ fn queue_due(due: &ExpiryQueue, key: &[u8], at: u64, env: &KeyEnv) -> result: un
   return unit;
 }
 
-fn log_reserve(log: &Box<Slots<u8>>, needed: u64) -> result: unit writes(log) {
-  doc "Grows the append-only file's buffer, at least doubling it, until it has room for needed more bytes. No host allocates the 2^62 bytes the growth stops at; a host that cannot allocate less stops the program [SCOPE-3], as Redis stops when its buffer exhausts memory.";
+fn log_reserve(log: &Box<Slots<u8>>, needed: u64, budget: &LogBudget) -> result: unit writes(log), writes(budget) {
+  doc "Grows the append-only file's buffer, at least doubling it, until it has room for needed more bytes. During rotation charge the full new capacity before grow; overflow marks the statement-local rewrite abort before allocation while allowing the ordinary command append. Its enclosing Meta statement publishes that abort before any other statement observes it. No host allocates the 2^62 bytes the growth stops at; a host that cannot allocate less stops the program [SCOPE-3], as Redis stops when its buffer exhausts memory.";
   let length = log^.inner.len;
   let capacity = log^.inner.cap;
   let wanted = length +wrap needed;
@@ -246,6 +249,16 @@ fn log_reserve(log: &Box<Slots<u8>>, needed: u64) -> result: unit writes(log) {
     let fits = target <= 4611686018427387904_u64;
     if fits {
       if target >= log^.inner.cap {
+        if budget^.enabled {
+          let charge = target +sat 24_u64;
+          let available = budget^.allowance -sat budget^.charged;
+          if charge > available {
+            set budget^.failed = True();
+            set budget^.enabled = False();
+          } else {
+            set budget^.charged = budget^.charged +sat charge;
+          }
+        }
         grow(cell: log, capacity: target);
       }
     }
@@ -298,30 +311,30 @@ fn log_crlf(log: &Box<Slots<u8>>) -> result: unit writes(log) {
   return unit;
 }
 
-fn log_length(log: &Box<Slots<u8>>, length: u64) -> result: unit writes(log) {
+fn log_length(log: &Box<Slots<u8>>, length: u64, budget: &LogBudget) -> result: unit writes(log), writes(budget) {
   doc "Makes room for a bulk string of length bytes and appends its header.";
   let needed = length +wrap 32_u64;
-  log_reserve(log: log, needed: needed);
+  log_reserve(log: log, needed: needed, budget: budget);
   log_byte(log: log, value: 36_u8);
   log_number(log: log, value: length);
   log_crlf(log: log);
   return unit;
 }
 
-fn log_count(log: &Box<Slots<u8>>, count: u64, room: u64) -> result: unit writes(log) {
+fn log_count(log: &Box<Slots<u8>>, count: u64, room: u64, budget: &LogBudget) -> result: unit writes(log), writes(budget) {
   doc "Makes room for a command of about room bytes and appends the header of a RESP array of count elements.";
   let needed = room +wrap 32_u64;
-  log_reserve(log: log, needed: needed);
+  log_reserve(log: log, needed: needed, budget: budget);
   log_byte(log: log, value: 42_u8);
   log_number(log: log, value: count);
   log_crlf(log: log);
   return unit;
 }
 
-fn log_append(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), writes(log) {
+fn log_append(log: &Box<Slots<u8>>, bytes: &[u8], budget: &LogBudget) -> result: unit reads(bytes), writes(log), writes(budget) {
   doc "Appends bytes already in the file's form, such as the commands a transaction recorded, as they are.";
   let count = bytes^.len;
-  log_reserve(log: log, needed: count);
+  log_reserve(log: log, needed: count, budget: budget);
   for @bytes (offset in 0_u64..count) {
     let byte = bytes^[offset];
     log_byte(log: log, value: byte);
@@ -329,10 +342,10 @@ fn log_append(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), 
   return unit;
 }
 
-fn log_word(log: &Box<Slots<u8>>, word: &[u8]) -> result: unit reads(word), writes(log) {
+fn log_word(log: &Box<Slots<u8>>, word: &[u8], budget: &LogBudget) -> result: unit reads(word), writes(log), writes(budget) {
   doc "Appends a constant word as a RESP bulk string.";
   let count = word^.len;
-  log_length(log: log, length: count);
+  log_length(log: log, length: count, budget: budget);
   for @word (offset in 0_u64..count) {
     let byte = word^[offset];
     log_byte(log: log, value: byte);
@@ -341,10 +354,10 @@ fn log_word(log: &Box<Slots<u8>>, word: &[u8]) -> result: unit reads(word), writ
   return unit;
 }
 
-fn log_input(log: &Box<Slots<u8>>, input: &[u8], span: Span) -> result: unit reads(input), writes(log) {
+fn log_input(log: &Box<Slots<u8>>, input: &[u8], span: Span, budget: &LogBudget) -> result: unit reads(input), writes(log), writes(budget) {
   doc "Appends an argument of the input as a RESP bulk string.";
   let length = span.length;
-  log_length(log: log, length: length);
+  log_length(log: log, length: length, budget: budget);
   for @copy (offset in 0_u64..length) {
     let position = span.start +wrap offset;
     let byte = byte_at(input: input, index: position);
@@ -354,26 +367,26 @@ fn log_input(log: &Box<Slots<u8>>, input: &[u8], span: Span) -> result: unit rea
   return unit;
 }
 
-fn log_text(log: &Box<Slots<u8>>, text: &Bytes) -> result: unit reads(text), writes(log) {
+fn log_text(log: &Box<Slots<u8>>, text: &Bytes, budget: &LogBudget) -> result: unit reads(text), writes(log), writes(budget) {
   doc "Appends a stored string as a RESP bulk string.";
   match text^ {
     Short(bytes: short) => {
       let length = short^.len;
       let window = &short^[0_u64..length];
       let span = Span(start: 0_u64, length: length);
-      log_input(log: log, input: window, span: span);
+      log_input(log: log, input: window, span: span, budget: budget);
     }
     Long(bytes: long) => {
       let length = long^.inner.len;
       let window = &long^.inner[0_u64..length];
       let span = Span(start: 0_u64, length: length);
-      log_input(log: log, input: window, span: span);
+      log_input(log: log, input: window, span: span, budget: budget);
     }
   }
   return unit;
 }
 
-fn log_decimal(log: &Box<Slots<u8>>, value: u64) -> result: unit writes(log) {
+fn log_decimal(log: &Box<Slots<u8>>, value: u64, budget: &LogBudget) -> result: unit writes(log), writes(budget) {
   doc "Appends a number as a RESP bulk string of its decimal digits.";
   let digits = 1_u64;
   let rest = value / 10_u64;
@@ -384,19 +397,19 @@ fn log_decimal(log: &Box<Slots<u8>>, value: u64) -> result: unit writes(log) {
     set digits = digits +wrap 1_u64;
     set rest = rest / 10_u64;
   }
-  log_length(log: log, length: digits);
+  log_length(log: log, length: digits, budget: budget);
   log_number(log: log, value: value);
   log_crlf(log: log);
   return unit;
 }
 
-fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>) -> result: unit reads(input), reads(args), writes(log) {
+fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> result: unit reads(input), reads(args), writes(log), writes(budget) {
   doc "Appends a command as the client sent it, every argument a RESP bulk string.";
   let count = args^.inner.len;
-  log_count(log: log, count: count, room: 0_u64);
+  log_count(log: log, count: count, room: 0_u64, budget: budget);
   for @arguments (index in 0_u64..count) {
     let span = args^.inner[index];
-    log_input(log: log, input: input, span: span);
+    log_input(log: log, input: input, span: span, budget: budget);
   }
   return unit;
 }
@@ -494,4 +507,23 @@ fn restore_access(journal: &Option<AccessJournal>, keys: &ConcurrentHashMap<Entr
     }
   }
   return unit;
+}
+
+fn log_budget_new() -> budget: LogBudget pure {
+  let no = False();
+  return LogBudget(enabled: no, allowance: 0_u64, charged: 0_u64, failed: no);
+}
+
+fn log_append_plain(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), writes(log) {
+  let budget = log_budget_new();
+  log_append(log: log, bytes: bytes, budget: &budget);
+  return unit;
+}
+
+fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.rewrite) {
+  let budget = log_budget_new();
+  let serving = bnot(loading);
+  set budget.enabled = band(meta^.rewrite.rotating, serving);
+  set budget.allowance = meta^.rewrite.limit -sat meta^.rewrite.used;
+  return budget;
 }

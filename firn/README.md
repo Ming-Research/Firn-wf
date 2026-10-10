@@ -353,11 +353,30 @@ when both copies exist and the manifest names `F`, the directory copy wins.
 
 The following rewrite behavior is an **unvalidated draft** awaiting CI.
 
-With append-only persistence enabled, the draft `BGREWRITEAOF` starts a
-background rewrite. The writer switches to a new incremental file, and another context
-replays the closed files into a private keyspace and writes a new command
-base. Clients continue writing to the new incremental file. Installation
-persists a manifest selecting the new base before removing the old files.
+With append-only persistence enabled, `BGREWRITEAOF` answers started after
+S0 admission. The worker scans the live map in separate statements while
+mutations retain complete after-images. The writer seals the old increment
+and rotates once at S1, then the worker reconciles the scan with ordered
+DEL-plus-reconstruction images. Installation selects base(S1) and only the
+increment containing later writes, before removing old files.
+
+R is five percent of maxmemory, or 16 MiB when maxmemory is zero. Admission
+also requires max(R, 1 MiB) of service headroom. Capture overflow, oversized
+images, flush, exhaustion, shutdown and I/O failure abort the attempt; client
+commands and ordinary AOF appends continue. Aborts report `err` and do not
+automatically retry. Each observation or mutating statement permits at most
+1024 payload visits and 64 KiB of measured serialized work. The fixed journal
+directory permits at most 8188 chunks. A startup-retained unfinished MULTI
+refuses capture until a restart resolves the live/reloadable divergence.
+
+The scan currently uses count hint 1 and charges the returned KeySet before
+copying payloads. This permits one scan step's allocation before charging,
+under board item `firn-gap-scan-bound`; count is a hint, and collisions can
+return multiple keys. It is not the strict reserve guarantee. The exact
+long-key regression remains ignored for that gap. File calls still have no
+bounded cancellation contract, so prompt cleanup under stalled I/O is
+unverified.
+
 The temporary base is `temp-F.base` beside `temp-F.manifest`, so servers
 sharing `appendonlydir` with distinct appendfilenames use distinct temporary
 base names. Those names can still collide with another dataset's upgraded
@@ -370,7 +389,7 @@ exclusive creation for temporary append-only files, board item
 [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip).
 With appendonly off, `BGREWRITEAOF` answers
 `ERR Can't execute an AOF background rewriting. Please check the server logs for more information.`
-because there is no closed log to rebuild; Redis can rewrite in that state.
+as the existing firn limitation; Redis can rewrite in that state.
 The base writes hashes with `HMSET`, and collections in commands of at most
 64 elements, followed by each key's absolute expiry. Scripts persist their
 command effects, not their cached sources; firn has no persisted functions.
@@ -395,16 +414,27 @@ removes expired data. Both flush commands advance it even on
 an empty database. Accepted overwrites remain writes, even when their value
 is equal. The counter saturates at u64's maximum and records that later
 reconciled-scan captures must be refused; it never wraps. This sequencing
-support does not yet change the rewrite worker's replay implementation.
+support now orders capture and the S1 end cut.
 
-Failure before manifest publication
-leaves the switch manifest replayable. If manifest rename succeeds but
+`firn_aof_rewrite_reserve` and `firn_aof_rewrite_scan_peak` report the
+admitted allowance and the largest PRE-2 heap increase observed across
+KeySet creation and one map_scan call in the most recent attempt. The latter
+supports the ignored quiescent long-key regression independently of the
+reservation ledger. Other contexts can affect this process-wide sample; it
+is neither total rewrite peak nor RSS. `firn_aof_rewrite_cut` is 1 once the
+latest admitted attempt has crossed S1 (also retained after completion),
+and 0 otherwise; it lets the backlog regression begin writes after capture
+has stopped.
+
+Failure before rotation leaves the original manifest authoritative. After
+rotation it leaves the manifest naming the old base and all increments
+replayable. If manifest rename succeeds but
 directory sync fails, the new manifest stays in force, all files and history
 entries are retained, and `aof_last_bgrewrite_status` reports `err`.
 `SHUTDOWN` accepted before installation cancels the rebuild at its next step;
 once installation starts, shutdown waits for it to finish. Shutdown drains
 the incremental file after clients leave and joins the rebuild before exiting.
-See the [rewrite design](../research/investigations/aof-rewrite/README.md#design).
+See the [reconciled-scan protocol](../research/investigations/aof-rewrite/scan-log.md).
 
 `WF_DRIVERS` sets how many threads serve the connections, one per CPU by
 default.

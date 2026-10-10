@@ -40,11 +40,47 @@ public struct Entry {
 }
 
 public struct WriteSequence {
-  doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; loading leaves the sequence and entry stamps zero. No key collection or heap allocation is retained.";
+  doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; loading leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed key before the outer statement commits; the inactive path allocates nothing.";
   public value: u64;
   public taken: Bool;
   public loading: Bool;
   public exhausted: Bool;
+  public capturing: Bool;
+  public failed: Bool;
+  public allowance: u64;
+  public retained: u64;
+  public work: u64;
+  public encoded: u64;
+  public images: Option<Box<Slots<RewriteImage>>>;
+}
+
+public struct RewriteImage {
+  doc "One execution unit's final replacement for a binary key, including DEL, reconstruction and its absolute expiry. Replacing this record coalesces repeated writes under the same hold.";
+  public key: Box<Slots<u8>>;
+  public output: Box<Slots<u8>>;
+}
+
+public struct RewriteCapture {
+  doc "The reserve remains owned until worker and chunk cleanup finish. active covers (start,end]; aborted permanently prevents installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result. Journal chunks contain little-endian sequence and byte-count frames followed by owned RESP replacements, in Meta commit order.";
+  public active: Bool;
+  public aborted: Bool;
+  public scan_done: Bool;
+  public cut: Bool;
+  public cut_done: Bool;
+  public rotated: Bool;
+  public rotating: Bool;
+  public start: u64;
+  public end: u64;
+  public limit: u64;
+  public used: u64;
+  public peak: u64;
+  public scan_peak: u64;
+  public journal: Option<Box<Ring<Box<Slots<u8>>>>>;
+}
+
+public struct RewriteMeasure {
+  public bytes: u64;
+  public elements: u64;
 }
 
 public struct AccessUndo {
@@ -82,6 +118,12 @@ public struct Meta {
   public due: ExpiryQueue;
   public commit_seq: u64;
   public aof_rewrite_seq_exhausted: Bool;
+  public rewrite: RewriteCapture;
+  public aof_rewrite_retry_blocked: Bool;
+  public aof_rewrite_startup_unfinished: Bool;
+  public aof_rewrite_reserve: u64;
+  public aof_rewrite_scan_peak: u64;
+  public aof_rewrite_cut: Bool;
   public log: Box<Slots<u8>>;
   public aof_pending_capacity: u64;
   public memory_peak: u64;
@@ -161,7 +203,7 @@ public binding DueOrder : PriorityOrder<Due, KeyEnv> {
 
 public const keyspace_capacity: u64 = 262144_u64;
 
-public fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted) doc "Starts one outer atomic statement's sequence token from its held metadata; nested command parts reuse this token.";
+public fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite) doc "Starts one outer atomic statement's sequence token from its held metadata; nested command parts reuse this token.";
 
 public fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) doc "Takes one sequence lazily for an actual dataset mutation, reusing it for the rest of the statement. Reaching u64's maximum saturates the counter and permanently refuses future captures until a quiescent reset protocol exists; service mutations continue. Loading takes no sequence.";
 
@@ -171,7 +213,7 @@ public fn sequence_entry(sequence: &WriteSequence, value: &Entry) -> result: uni
 
 public fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit writes(sequence), writes(slot) doc "Removes a present entry and takes the statement's sequence; an absent entry changes nothing. Expiry, eviction and command deletion share this contract.";
 
-public fn sequence_commit(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted) doc "Publishes a taken sequence and exhaustion flag before the outer atomic statement releases its keys and Meta. An unwritten or loading statement leaves Meta unchanged.";
+public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) doc "Publishes a taken sequence, after-images and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
 
 public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
 
@@ -193,21 +235,21 @@ public fn queue_expiry(meta: &Meta, key: &[u8], at: u64, env: &KeyEnv) -> result
 
 public fn queue_due(due: &ExpiryQueue, key: &[u8], at: u64, env: &KeyEnv) -> result: unit reads(key), reads(env), writes(due) doc "Records new volatile eligibility and queues its expiry, as queue_expiry does, for a caller that holds expiry metadata apart from the rest of Meta. The call shares the atomic statement that creates or transfers the expiry, including when AOF is disabled.";
 
-public fn log_removal(log: &Box<Slots<u8>>, key: &[u8]) -> result: unit reads(key), writes(log) doc "Appends DEL key, as Redis 7.0.15 propagates the removal of a key whose expiry has passed, so that a replay, which counts no key as expired, removes the key where the server did and a later command finds it absent there too.";
+public fn log_removal(log: &Box<Slots<u8>>, key: &[u8], budget: &LogBudget) -> result: unit reads(key), writes(log), writes(budget) doc "Appends DEL key, as Redis 7.0.15 propagates the removal of a key whose expiry has passed, so that a replay, which counts no key as expired, removes the key where the server did and a later command finds it absent there too.";
 
-public fn log_count(log: &Box<Slots<u8>>, count: u64, room: u64) -> result: unit writes(log) doc "Makes room for a command of about room bytes and appends the header of a RESP array of count elements.";
+public fn log_count(log: &Box<Slots<u8>>, count: u64, room: u64, budget: &LogBudget) -> result: unit writes(log), writes(budget) doc "Makes room for a command of about room bytes and appends the header of a RESP array of count elements.";
 
-public fn log_append(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), writes(log) doc "Appends bytes already in the file's form, such as the commands a transaction recorded, as they are.";
+public fn log_append(log: &Box<Slots<u8>>, bytes: &[u8], budget: &LogBudget) -> result: unit reads(bytes), writes(log), writes(budget) doc "Appends bytes already in the file's form, such as the commands a transaction recorded, as they are.";
 
-public fn log_word(log: &Box<Slots<u8>>, word: &[u8]) -> result: unit reads(word), writes(log) doc "Appends a constant word as a RESP bulk string.";
+public fn log_word(log: &Box<Slots<u8>>, word: &[u8], budget: &LogBudget) -> result: unit reads(word), writes(log), writes(budget) doc "Appends a constant word as a RESP bulk string.";
 
-public fn log_input(log: &Box<Slots<u8>>, input: &[u8], span: Span) -> result: unit reads(input), writes(log) doc "Appends an argument of the input as a RESP bulk string.";
+public fn log_input(log: &Box<Slots<u8>>, input: &[u8], span: Span, budget: &LogBudget) -> result: unit reads(input), writes(log), writes(budget) doc "Appends an argument of the input as a RESP bulk string.";
 
-public fn log_text(log: &Box<Slots<u8>>, text: &Bytes) -> result: unit reads(text), writes(log) doc "Appends a stored string as a RESP bulk string.";
+public fn log_text(log: &Box<Slots<u8>>, text: &Bytes, budget: &LogBudget) -> result: unit reads(text), writes(log), writes(budget) doc "Appends a stored string as a RESP bulk string.";
 
-public fn log_decimal(log: &Box<Slots<u8>>, value: u64) -> result: unit writes(log) doc "Appends a number as a RESP bulk string of its decimal digits.";
+public fn log_decimal(log: &Box<Slots<u8>>, value: u64, budget: &LogBudget) -> result: unit writes(log), writes(budget) doc "Appends a number as a RESP bulk string of its decimal digits.";
 
-public fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>) -> result: unit reads(input), reads(args), writes(log) doc "Appends a command as the client sent it, every argument a RESP bulk string.";
+public fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> result: unit reads(input), reads(args), writes(log), writes(budget) doc "Appends a command as the client sent it, every argument a RESP bulk string.";
 
 public fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) doc "Copies memory settings once per connection read, beside its clock snapshot and before any command holds keys. Every command of that read, including queued commands run by EXEC and script calls across attempts, uses this snapshot; this connection refreshes it after executing CONFIG SET. A racing CONFIG SET may cause an old-policy stamp; this is accepted because Redis itself leaves stale stamps after policy switches. CONFIG and INFO still access ServerState directly.";
 
@@ -216,3 +258,39 @@ public fn access_journal_new() -> journal: AccessJournal pure doc "An empty jour
 public fn record_access(journal: &Option<AccessJournal>, key: &[u8], stamp: u32) -> result: unit reads(key), writes(journal) doc "Records the original stamp at a key's first live refresh in this attempt; later refreshes preserve that first value. None disables journaling for commands outside a script attempt.";
 
 public fn restore_access(journal: &Option<AccessJournal>, keys: &ConcurrentHashMap<Entry>) -> result: unit reads(journal), writes(keys) doc "Restores every journaled stamp before an abandoned, unwritten script attempt releases its atomic keyspace hold. Completed attempts and attempts that wrote never call this.";
+
+public fn sequence_stamp_key(sequence: &WriteSequence, slot: &Option<Entry>, key: &[u8]) -> result: unit reads(slot), reads(key), writes(sequence), writes(slot.Some.value.last_write) doc "Takes the shared statement sequence, stamps a changed surviving entry and coalesces its complete replacement image when capturing. A missing changed slot records a tombstone.";
+
+public fn sequence_delete_key(sequence: &WriteSequence, slot: &Option<Entry>, key: &[u8]) -> result: unit reads(key), writes(sequence), writes(slot) doc "Removes a present key and records its tombstone through the same sequence token. An absent key changes neither sequence nor capture.";
+
+public fn sequence_stamp_at(sequence: &WriteSequence, slot: &Option<Entry>, keys: &KeySet, index: u64) -> result: unit reads(slot), reads(keys), writes(sequence), writes(slot.Some.value.last_write) doc "The key-set-index form of sequence_stamp_key. Capture charges an owned key copy before reading the complete name; an inactive capture allocates nothing.";
+
+public fn sequence_delete_at(sequence: &WriteSequence, slot: &Option<Entry>, keys: &KeySet, index: u64) -> result: unit reads(keys), writes(sequence), writes(slot) doc "The key-set-index form of sequence_delete_key, sharing the actual-removal test and bounded tombstone capture.";
+
+public fn rewrite_capture_new() -> capture: RewriteCapture pure doc "An inactive empty capture with no journal allocation; construct only after any previous worker and bounded cleanup have completed.";
+
+public fn rewrite_abort(capture: &RewriteCapture) -> result: unit writes(capture.active), writes(capture.aborted), writes(capture.rotating) doc "Disables capture and permanently marks this attempt failed. Journal ownership and its charge remain until bounded worker cleanup.";
+
+public fn rewrite_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes(capture) doc "Reserves bytes before allocation, or logically aborts this attempt without allocating when they exceed the remaining allowance. Includes peak reservation accounting.";
+
+public fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) doc "Coalesces an actual changed key into the already-taken outer sequence. Owns complete replacement bytes and bounds aggregate image work, scratch and allocation overlap; failure aborts capture at commit, never the client command.";
+
+public fn sequence_capture_at(sequence: &WriteSequence, keys: &KeySet, index: u64, slot: &Option<Entry>) -> result: unit reads(keys), reads(slot), writes(sequence) doc "Captures the changed slot under its key-set index after charging the temporary key copy. Used when mutation helpers already stamped an entry through a matched payload.";
+
+public fn rewrite_measure(slot: &Option<Entry>, key_length: u64, work_left: u64) -> measured: RewriteMeasure reads(slot) doc "Allocation-free upper bound for complete replacement bytes including RESP framing and encoder lookahead. Reports total measurement and serialization payload visits; no payload traversal exceeds the supplied remaining work.";
+
+public fn rewrite_image(slot: &Option<Entry>, key: &[u8], capacity: u64, replacement: Bool) -> output: Box<Slots<u8>> reads(slot), reads(key) doc "Serializes the complete held image using Redis command-format reconstruction and absolute expiry. The caller must first charge rewrite_measure bytes plus temporary key and formatting storage; replacement prepends DEL.";
+
+public struct LogBudget {
+  doc "A statement-local allowance for collecting-buffer growth while the sole writer rotates. Charge full new backing capacity before grow, preserving overlap; failed disables only rewrite accounting, never the ordinary append. sequence_commit publishes this local failure under the same Meta hold.";
+  public enabled: Bool;
+  public allowance: u64;
+  public charged: u64;
+  public failed: Bool;
+}
+
+public fn log_budget_new() -> budget: LogBudget pure doc "An unmetered ordinary encoder budget for buffers that are not stalled by rotation.";
+
+public fn log_append_plain(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), writes(log) doc "Appends bytes in a private non-command builder, with no rotation-related collecting-buffer budget.";
+
+public fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.rewrite) doc "Snapshots remaining R under the statement's Meta hold only while the writer rotates; service encoders charge collecting-buffer growth before allocation, and sequence_commit publishes overflow without failing the command.";

@@ -220,9 +220,10 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   push_finish(client: client);
   return unit;
@@ -304,9 +305,10 @@ fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = pop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   pop_finish(client: client);
   return unit;
@@ -607,9 +609,10 @@ fn run_lset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = lset_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   lset_finish(client: client);
   return unit;
@@ -718,9 +721,10 @@ fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = lrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   lrem_finish(client: client);
   return unit;
@@ -817,9 +821,10 @@ fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = ltrim_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   ltrim_finish(client: client);
   return unit;
@@ -913,9 +918,10 @@ fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = linsert_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   linsert_finish(client: client);
   return unit;
@@ -1169,9 +1175,10 @@ fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let logged = store^.logging;
   atomic slots = &store^.keys[ks], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
-    let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   lmove_finish(client: client);
   return unit;
@@ -1207,7 +1214,7 @@ fn push_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
     }
   }
   if client^.state == state_expired {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set client^.state = state_absent;
     set removed = True();
   }
@@ -1226,7 +1233,7 @@ fn push_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
       let stamp = new_access(client: client);
       let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
       set slot^ = Some<Entry>(value: move fresh);
-      pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+      pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
       set client^.state = state_done;
     }
   }
@@ -1234,7 +1241,7 @@ fn push_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
     set changed = True();
   }
   if changed {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1306,7 +1313,7 @@ fn pop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::A
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
   }
   if lapsed {
     set removed = True();
@@ -1319,7 +1326,7 @@ fn pop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::A
     set changed = True();
   }
   if changed {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1490,14 +1497,14 @@ fn lset_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
     }
   }
   if client^.state == state_expired {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set removed = True();
   }
   if client^.state == state_done {
     set changed = True();
   }
   if changed {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1556,7 +1563,7 @@ fn lrem_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
   }
   if lapsed {
     set client^.number = 0_u64;
@@ -1570,7 +1577,7 @@ fn lrem_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
     set changed = True();
   }
   if changed {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1623,7 +1630,7 @@ fn ltrim_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
   }
   if lapsed {
     set client^.number = 0_u64;
@@ -1633,7 +1640,7 @@ fn ltrim_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
     set changed = True();
   }
   if changed {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1687,14 +1694,14 @@ fn linsert_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
     }
   }
   if client^.state == state_expired {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set removed = True();
   }
   if client^.state == state_done {
     set changed = True();
   }
   if changed {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1871,7 +1878,7 @@ fn lmove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   }
   if found == entry_lapsed {
     if source < slots^.len {
-      pkg::store::sequence_delete(sequence: sequence, slot: &slots^[source]);
+      pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[source], keys: access_keys, index: source);
     }
     set work.source_expired = True();
   }
@@ -1886,7 +1893,7 @@ fn lmove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
     }
     if target == entry_lapsed {
       if destination < slots^.len {
-        pkg::store::sequence_delete(sequence: sequence, slot: &slots^[destination]);
+        pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[destination], keys: access_keys, index: destination);
       }
       set work.target_expired = True();
     }
@@ -1900,12 +1907,13 @@ fn lmove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
           reply_bulk(client: client, stored: &element);
           if destination < slots^.len {
             place_element(sequence: sequence, client: client, slot: &slots^[destination], element: move element, to_head: to_head);
+            pkg::store::sequence_capture_at(sequence: sequence, keys: access_keys, index: destination, slot: &slots^[destination]);
           } else {
             let dropped = move element;
           }
           if left == 0_u64 {
             if source != destination {
-              pkg::store::sequence_delete(sequence: sequence, slot: &slots^[source]);
+              pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[source], keys: access_keys, index: source);
             }
           }
           set client^.state = state_done;
@@ -1918,20 +1926,20 @@ fn lmove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   }
   if work.changed {
     if source < slots^.len {
-      pkg::store::sequence_stamp(sequence: sequence, slot: &slots^[source]);
+      pkg::store::sequence_stamp_at(sequence: sequence, slot: &slots^[source], keys: access_keys, index: source);
     }
   }
   return work;
 }
 
-fn lmove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ListMoveWork, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(work), reads(input), reads(args), writes(log) {
+fn lmove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ListMoveWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget) {
   doc "Records source then destination expiry removals followed by the move exactly as sent; returns the effects record count.";
   let source_place = key_bounds(input: input, args: args, index: 1_u64);
   let source_key = &input^[source_place.start..source_place.end];
   let target_place = key_bounds(input: input, args: args, index: 2_u64);
   let target_key = &input^[target_place.start..target_place.end];
-  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: work^.source_expired, key: source_key);
-  let remaining = changed_meta(log: log, logged: logged, removed: work^.target_expired, changed: work^.changed, input: input, args: args, key: target_key);
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: work^.source_expired, key: source_key, budget: budget);
+  let remaining = changed_meta(log: log, logged: logged, removed: work^.target_expired, changed: work^.changed, input: input, args: args, key: target_key, budget: budget);
   set appended = appended +wrap remaining;
   return appended;
 }

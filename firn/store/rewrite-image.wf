@@ -1,0 +1,202 @@
+alias Bytes = pkg::bytes::Bytes;
+alias Key = pkg::bytes::Key;
+alias aof_map_each = std::collections::hash_map::hash_map_each;
+alias aof_map_len = std::collections::hash_map::hash_map_len;
+
+const rewrite_set: Array<u8, 3> = "SET";
+
+const rewrite_rpush: Array<u8, 5> = "RPUSH";
+
+const rewrite_sadd: Array<u8, 4> = "SADD";
+
+const rewrite_zadd: Array<u8, 4> = "ZADD";
+
+const rewrite_hmset: Array<u8, 5> = "HMSET";
+
+const rewrite_expire: Array<u8, 9> = "PEXPIREAT";
+
+const rewrite_select: Array<u8, 6> = "SELECT";
+
+struct RewriteEmitter {
+  key: Bytes;
+  output: Box<Slots<u8>>;
+  remaining: u64;
+  batch: u64;
+  budget: LogBudget;
+}
+
+fn rewrite_header(emitter: &RewriteEmitter, word: &[u8], width: u64) -> result: unit reads(word), writes(emitter) {
+  if emitter^.batch == 0_u64 {
+    let items = imin(emitter^.remaining, 64_u64);
+    let arguments = items *wrap width;
+    let count = arguments +wrap 2_u64;
+    log_count(log: &emitter^.output, count: count, room: 256_u64, budget: &emitter^.budget);
+    log_word(log: &emitter^.output, word: word, budget: &emitter^.budget);
+    log_text(log: &emitter^.output, text: &emitter^.key, budget: &emitter^.budget);
+    set emitter^.batch = items;
+  }
+  set emitter^.batch = emitter^.batch -wrap 1_u64;
+  set emitter^.remaining = emitter^.remaining -wrap 1_u64;
+  return unit;
+}
+
+fn rewrite_member(env: &RewriteEmitter, key: &Key, value: &unit) -> result: unit reads(key.bytes), writes(env) {
+  rewrite_header(emitter: env, word: &rewrite_sadd[0_u64..4_u64], width: 1_u64);
+  log_text(log: &env^.output, text: &key^.bytes, budget: &env^.budget);
+  return unit;
+}
+
+fn rewrite_field(env: &RewriteEmitter, key: &Key, value: &Bytes) -> result: unit reads(key.bytes), reads(value), writes(env) {
+  rewrite_header(emitter: env, word: &rewrite_hmset[0_u64..5_u64], width: 2_u64);
+  log_text(log: &env^.output, text: &key^.bytes, budget: &env^.budget);
+  log_text(log: &env^.output, text: value, budget: &env^.budget);
+  return unit;
+}
+
+fn rewrite_score(env: &RewriteEmitter, key: &Key, value: &f64) -> result: unit reads(key.bytes), reads(value), writes(env) {
+  rewrite_header(emitter: env, word: &rewrite_zadd[0_u64..4_u64], width: 2_u64);
+  let digits = pkg::scores::score_bytes(score: value^);
+  log_text(log: &env^.output, text: &digits, budget: &env^.budget);
+  log_text(log: &env^.output, text: &key^.bytes, budget: &env^.budget);
+  return unit;
+}
+
+fn rewrite_entry(slot: &Option<Entry>, emitter: &RewriteEmitter) -> result: unit reads(slot), writes(emitter) {
+  doc "Redis rewriteAppendOnlyFileRio: retain even elapsed expiries, emit at most 64 collection elements per command, and follow each expiring value with its absolute PEXPIREAT. Script caches have no AOF records and firn implements no persisted functions.";
+  match slot^ {
+    Some(value: held) => {
+      match held^.value {
+        Text(bytes: stored) => {
+          log_count(log: &emitter^.output, count: 3_u64, room: 256_u64, budget: &emitter^.budget);
+          log_word(log: &emitter^.output, word: &rewrite_set[0_u64..3_u64], budget: &emitter^.budget);
+          log_text(log: &emitter^.output, text: &emitter^.key, budget: &emitter^.budget);
+          log_text(log: &emitter^.output, text: stored, budget: &emitter^.budget);
+        }
+        Items(items: listed) => {
+          set emitter^.remaining = listed^.inner.len;
+          for (index in 0_u64..listed^.inner.len) {
+            rewrite_header(emitter: emitter, word: &rewrite_rpush[0_u64..5_u64], width: 1_u64);
+            let element = &listed^.inner[index];
+            let length = element^.inner.len;
+            log_word(log: &emitter^.output, word: &element^.inner[0_u64..length], budget: &emitter^.budget);
+          }
+        }
+        Members(members: stored_members) => {
+          set emitter^.remaining = aof_map_len::<Key, unit, ceiling>(map: stored_members);
+          aof_map_each::<Key, unit, RewriteEmitter, fn rewrite_member, ceiling>(map: stored_members, env: emitter);
+        }
+        Fields(fields: stored_fields) => {
+          set emitter^.remaining = aof_map_len::<Key, Bytes, ceiling>(map: stored_fields);
+          aof_map_each::<Key, Bytes, RewriteEmitter, fn rewrite_field, ceiling>(map: stored_fields, env: emitter);
+        }
+        Ranked(ranked: stored_ranked) => {
+          set emitter^.remaining = aof_map_len::<Key, f64, ceiling>(map: &stored_ranked^.scores);
+          aof_map_each::<Key, f64, RewriteEmitter, fn rewrite_score, ceiling>(map: &stored_ranked^.scores, env: emitter);
+        }
+      }
+      if held^.expires != 0_u64 {
+        log_count(log: &emitter^.output, count: 3_u64, room: 128_u64, budget: &emitter^.budget);
+        log_word(log: &emitter^.output, word: &rewrite_expire[0_u64..9_u64], budget: &emitter^.budget);
+        log_text(log: &emitter^.output, text: &emitter^.key, budget: &emitter^.budget);
+        log_decimal(log: &emitter^.output, value: held^.expires, budget: &emitter^.budget);
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn rewrite_measure_member(env: &RewriteMeasure, key: &Key, value: &unit) -> result: unit reads(key.bytes), writes(env) {
+  let length = pkg::bytes::bytes_length(bytes: &key^.bytes);
+  let room = length +sat 32_u64;
+  set env^.bytes = env^.bytes +sat room;
+  return unit;
+}
+
+fn rewrite_measure_field(env: &RewriteMeasure, key: &Key, value: &Bytes) -> result: unit reads(key.bytes), reads(value), writes(env) {
+  let length = pkg::bytes::bytes_length(bytes: &key^.bytes);
+  let payload = pkg::bytes::bytes_length(bytes: value);
+  let room = length +sat payload;
+  let framed = room +sat 64_u64;
+  set env^.bytes = env^.bytes +sat framed;
+  return unit;
+}
+
+fn rewrite_measure_score(env: &RewriteMeasure, key: &Key, value: &f64) -> result: unit reads(key.bytes), writes(env) {
+  let length = pkg::bytes::bytes_length(bytes: &key^.bytes);
+  let room = length +sat 128_u64;
+  set env^.bytes = env^.bytes +sat room;
+  return unit;
+}
+
+fn rewrite_measure(slot: &Option<Entry>, key_length: u64, work_left: u64) -> measured: RewriteMeasure reads(slot) {
+  doc "Allocation-free upper bound before copying a complete image. Refuse before visiting more than the unit's remaining 1024 payload elements. RESP bulk overhead, 64-element command headers, DEL, expiry and the encoder's reserve lookahead are included; saturating arithmetic cannot admit an oversized image.";
+  let measured = RewriteMeasure(bytes: 512_u64, elements: 1_u64);
+  let visiting = work_left / 2_u64;
+  let commands = 3_u64;
+  match slot^ {
+    Some(value: held) => {
+      match held^.value {
+        Text(bytes: stored) => {
+          let length = pkg::bytes::bytes_length(bytes: stored);
+          set measured.bytes = measured.bytes +sat length;
+        }
+        Items(items: listed) => {
+          set measured.elements = listed^.inner.len;
+          if measured.elements <= visiting {
+            for (index in 0_u64..listed^.inner.len) {
+              let length = listed^.inner[index].inner.len;
+              let framed = length +sat 32_u64;
+              set measured.bytes = measured.bytes +sat framed;
+            }
+          }
+        }
+        Members(members: stored_members) => {
+          set measured.elements = aof_map_len::<Key, unit, ceiling>(map: stored_members);
+          if measured.elements <= visiting {
+            aof_map_each::<Key, unit, RewriteMeasure, fn rewrite_measure_member, ceiling>(map: stored_members, env: &measured);
+          }
+        }
+        Fields(fields: stored_fields) => {
+          set measured.elements = aof_map_len::<Key, Bytes, ceiling>(map: stored_fields);
+          if measured.elements <= visiting {
+            aof_map_each::<Key, Bytes, RewriteMeasure, fn rewrite_measure_field, ceiling>(map: stored_fields, env: &measured);
+          }
+        }
+        Ranked(ranked: stored_ranked) => {
+          set measured.elements = aof_map_len::<Key, f64, ceiling>(map: &stored_ranked^.scores);
+          if measured.elements <= visiting {
+            aof_map_each::<Key, f64, RewriteMeasure, fn rewrite_measure_score, ceiling>(map: &stored_ranked^.scores, env: &measured);
+          }
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  let rounded = measured.elements +sat 63_u64;
+  let batches = rounded / 64_u64;
+  set commands = commands +sat batches;
+  let key_room = key_length +sat 128_u64;
+  let headers = commands *sat key_room;
+  set measured.bytes = measured.bytes +sat headers;
+  let payloads = imax(measured.elements, 1_u64);
+  set measured.elements = payloads *sat 2_u64;
+  return measured;
+}
+
+fn rewrite_image(slot: &Option<Entry>, key: &[u8], capacity: u64, replacement: Bool) -> output: Box<Slots<u8>> reads(slot), reads(key) {
+  doc "The caller charged the measured capacity, the temporary key copy and score formatting before entry. Scan and journal use the same Redis reconstruction, retaining physical expiry metadata. Replacements clear the previous type, contents and TTL first.";
+  let length = key^.len;
+  let copied = pkg::bytes::bytes_new(input: key, start: 0_u64, length: length);
+  let buffer = box_slots_new::<u8>(capacity: capacity);
+  let budget = log_budget_new();
+  let emitter = RewriteEmitter(key: move copied, output: move buffer, remaining: 0_u64, batch: 0_u64, budget: budget);
+  if replacement {
+    log_removal(log: &emitter.output, key: key, budget: &emitter.budget);
+  }
+  rewrite_entry(slot: slot, emitter: &emitter);
+  let RewriteEmitter(key: released_key, output: result_bytes, remaining: unused_remaining, batch: unused_batch, budget: unused_budget) = move emitter;
+  return move result_bytes;
+}

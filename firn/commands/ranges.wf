@@ -1010,18 +1010,18 @@ fn zremrange_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::st
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
   }
   if client^.number > 0_u64 {
-    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return lapsed;
 }
 
-fn zremrange_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log) {
+fn zremrange_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";
   let changed = client^.number > 0_u64;
-  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key);
+  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key, budget: budget);
   return appended;
 }
 
@@ -1051,9 +1051,10 @@ fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let lapsed = zremrange_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, walk: &walk);
-    let appended = zremrange_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence);
+    let appended = zremrange_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   zremrange_finish(client: client);
   return unit;

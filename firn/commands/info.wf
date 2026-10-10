@@ -311,6 +311,24 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         text_number(text: &text, value: persistence^.aof_rewrites);
         text_word(text: &text, word: &info_rw_sequence[0_u64..25_u64]);
         text_number(text: &text, value: persistence^.commit_seq);
+        text_word(text: &text, word: &info_rw_cut[0_u64..23_u64]);
+        let cut = persistence^.aof_rewrite_cut;
+        if persistence^.aof_rewrite_in_progress {
+          set cut = persistence^.rewrite.cut;
+        }
+        let cut_number = 0_u64;
+        if cut {
+          set cut_number = 1_u64;
+        }
+        text_number(text: &text, value: cut_number);
+        text_word(text: &text, word: &info_rw_reserve[0_u64..27_u64]);
+        text_number(text: &text, value: persistence^.aof_rewrite_reserve);
+        text_word(text: &text, word: &info_rw_scan_peak[0_u64..29_u64]);
+        let scan_peak = persistence^.aof_rewrite_scan_peak;
+        if persistence^.aof_rewrite_in_progress {
+          set scan_peak = persistence^.rewrite.scan_peak;
+        }
+        text_number(text: &text, value: scan_peak);
         if logged {
           text_word(text: &text, word: &info_rw_current[0_u64..19_u64]);
           text_number(text: &text, value: persistence^.aof_current_size);
@@ -519,3 +537,9 @@ const info_memory_excluded: Array<u8, 28> = "\r\nmem_not_counted_for_evict:";
 const info_evicted_keys: Array<u8, 15> = "\r\nevicted_keys:";
 
 const info_rw_sequence: Array<u8, 25> = "\r\naof_rewrite_commit_seq:";
+
+const info_rw_reserve: Array<u8, 27> = "\r\nfirn_aof_rewrite_reserve:";
+
+const info_rw_scan_peak: Array<u8, 29> = "\r\nfirn_aof_rewrite_scan_peak:";
+
+const info_rw_cut: Array<u8, 23> = "\r\nfirn_aof_rewrite_cut:";

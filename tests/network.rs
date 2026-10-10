@@ -5,6 +5,7 @@
 mod support;
 mod memory_limit;
 mod rewrite_sequence;
+mod rewrite_scan;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -9046,10 +9047,10 @@ fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
 
 /// The partial-command-in-block fixture retains MULTI at startup. Redis's
 /// loader reverts the unfinished block, including later appended commands;
-/// the rewrite must close that file outside the block before publishing it
-/// as an earlier incremental file that startup will no longer truncate.
+/// the live scan must refuse before S0 rather than install those normally
+/// reverted writes into an authoritative base.
 #[test]
-fn firn_rewrite_cuts_a_retained_unfinished_block_before_switching() {
+fn firn_rewrite_refuses_a_retained_unfinished_startup_block() {
     let program = CompiledProgram::from_environment();
     let name = "appendonly.aof";
     let path = aof_incremental_fixture(program.working_directory(), name);
@@ -9068,15 +9069,14 @@ fn firn_rewrite_cuts_a_retained_unfinished_block_before_switching() {
     assert_eq!(std::fs::read(&path).unwrap(), retained);
     client.write_all(&resp(&["SET", "after", "1"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "append inside retained block");
-    rewrite_start(&mut client);
-    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+    rewrite_refused(&mut client);
     multipart_values(&mut client, &[("after", Some("1"))]);
     client.write_all(&resp(&["SET", "new", "2"])).unwrap();
-    expect_replies(&mut client, b"+OK\r\n", "append after switch");
+    expect_replies(&mut client, b"+OK\r\n", "append after refused capture");
     rewrite_stop(&mut client, child);
     multipart_load(&program, name, &[
         ("a", Some("1")), ("b", None), ("c", None),
-        ("after", None), ("new", Some("2")),
+        ("after", None), ("new", None),
     ]);
 }
 
@@ -9084,7 +9084,7 @@ fn firn_rewrite_cuts_a_retained_unfinished_block_before_switching() {
 /// until EXEC, then applies all the queued writes. Both restart paths must
 /// satisfy these Redis expectations; the no-rewrite run is not the oracle.
 #[test]
-fn firn_rewrite_keeps_a_retained_block_closed_by_an_appended_transaction() {
+fn firn_rewrite_refuses_startup_divergence_after_appended_exec() {
     for rewrite in [false, true] {
         let program = CompiledProgram::from_environment();
         let name = "appendonly.aof";
@@ -9114,8 +9114,7 @@ fn firn_rewrite_keeps_a_retained_block_closed_by_an_appended_transaction() {
             "transaction closes the retained block in the file",
         );
         if rewrite {
-            rewrite_start(&mut client);
-            assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+            rewrite_refused(&mut client);
         }
         multipart_values(&mut client, &[("b", None), ("x", Some("1")), ("y", Some("2"))]);
         rewrite_stop(&mut client, child);
@@ -9130,7 +9129,7 @@ fn firn_rewrite_keeps_a_retained_block_closed_by_an_appended_transaction() {
 /// Startup's partial-command cut retains both MULTIs; closing this file
 /// before only the latest one would leave an incomplete earlier file.
 #[test]
-fn firn_rewrite_cuts_before_both_retained_unmatched_multis() {
+fn firn_rewrite_refuses_nested_retained_startup_blocks() {
     for rewrite in [false, true] {
         let program = CompiledProgram::from_environment();
         let name = "appendonly.aof";
@@ -9157,8 +9156,7 @@ fn firn_rewrite_cuts_before_both_retained_unmatched_multis() {
         client.write_all(&resp(&["SET", "after", "1"])).unwrap();
         expect_replies(&mut client, b"+OK\r\n", "append inside nested unfinished blocks");
         if rewrite {
-            rewrite_start(&mut client);
-            assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+            rewrite_refused(&mut client);
         }
         multipart_values(&mut client, &[("after", Some("1"))]);
         rewrite_stop(&mut client, child);
@@ -9225,14 +9223,12 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     let text = port.to_string();
     let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
     let mut control = connect_when_ready(port);
-    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let mut workers = Vec::new();
     for operation in ["INCR", "APPEND", "LPUSH"] {
-        let running = running.clone();
         workers.push(std::thread::spawn(move || {
             let mut client = connect_when_ready(port);
             let mut count = 0;
-            while running.load(std::sync::atomic::Ordering::Acquire) || count < 100 {
+            while count < 100 {
                 let mut request = vec![operation, operation];
                 if operation != "INCR" {
                     request.push("x");
@@ -9249,7 +9245,6 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     control.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
     expect_replies(&mut control, b"-ERR Background append only file rewriting already in progress\r\n", "one rewrite at a time");
     assert_eq!(rewrite_wait(&mut control)["aof_last_bgrewrite_status"], "ok");
-    running.store(false, std::sync::atomic::Ordering::Release);
     let expected: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
     rewrite_stop(&mut control, child);
     let port = free_port();
@@ -9283,7 +9278,7 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
 }
 
 #[test]
-fn firn_shutdown_cancels_rewrite_and_replays_switch_manifest() {
+fn firn_shutdown_cancels_scan_before_rotation() {
     let program = CompiledProgram::from_environment();
     rewrite_large_fixture(&program);
     let port = free_port();
@@ -9296,7 +9291,7 @@ fn firn_shutdown_cancels_rewrite_and_replays_switch_manifest() {
     assert_eq!(integer_reply(&mut client, "write after switch"), 1);
     rewrite_stop(&mut client, child);
     let directory = program.working_directory().join("appendonlydir");
-    assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), "file appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\nfile appendonly.aof.2.incr.aof seq 2 type i\n");
+    assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), rewrite_manifest(1, 1));
     assert!(!directory.join("temp-appendonly.aof.base").exists());
     assert!(!directory.join("appendonly.aof.2.base.aof").exists());
     multipart_load(&program, "appendonly.aof", &[("after-switch", Some("1")), ("seed:15999", Some(&"x".repeat(512)))]);
@@ -9366,15 +9361,10 @@ fn firn_rewrite_host_failures_keep_a_replayable_manifest() {
         assert_eq!(integer_reply(&mut client, "before failed rewrite"), 1);
         client.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
         let response = reply_line(&mut client, "rewrite failure response");
-        if failure == "base-rename" || failure == "temporary-base" {
-            assert_eq!(response, "+Background append only file rewriting started\r\n");
-        } else {
-            assert_eq!(response, "-ERR Can't execute an AOF background rewriting. Please check the server logs for more information.\r\n");
-        }
+        assert_eq!(response, "+Background append only file rewriting started\r\n");
         let info = rewrite_wait(&mut client);
         assert_eq!(info["aof_last_bgrewrite_status"], "err");
-        let attempts = if failure == "base-rename" || failure == "temporary-base" { "1" } else { "0" };
-        assert_eq!(info["aof_rewrites"], attempts);
+        assert_eq!(info["aof_rewrites"], "1");
         client.write_all(&resp(&["INCR", "n"])).unwrap();
         assert_eq!(integer_reply(&mut client, "after failed rewrite"), 2);
         std::fs::remove_dir(&obstacle).unwrap();
@@ -9802,4 +9792,12 @@ fn firn_restores_access_stamps_when_a_read_only_script_is_killed() {
     drop(looping);
     drop(other);
     assert_eq!(finished(child).0, 0);
+}
+
+fn rewrite_refused(client: &mut TcpStream) {
+    client.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
+    expect_replies(client, b"-ERR Can't execute an AOF background rewriting. Please check the server logs for more information.\r\n", "refuse a live/reloadable startup divergence before S0");
+    let info = rewrite_info(client);
+    assert_eq!(info["aof_rewrite_in_progress"], "0");
+    assert_eq!(info["aof_rewrites"], "0");
 }

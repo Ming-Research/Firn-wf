@@ -533,3 +533,345 @@ not applicable. Requested stage-2 completeness (DC4), compiler acceptance
 and executable witness evidence remain unverified. The review used only
 Git/source inspection, did not independently verify remote PR or board
 state, and establishes no gate, memory measurement or implementation result.
+
+## Stage 2 implementation
+
+The owner's addendum supersedes the stage-2 prerequisite stop above: implement
+the end-cut protocol now and let `firn-gap-scan-bound` gate the strict reserve
+guarantee alone. The worktree implements that direction without changing the
+pin, submodules, manifest syntax or normal command framing. It has not been
+compiled or executed; the gate must run in CI after the owner commits/pushes.
+
+### Reserve and the scan exception
+
+R is `floor(maxmemory / 20)`, or **16,777,216 bytes (16 MiB)** when maxmemory
+is zero. Admission requires counted heap plus R plus `max(R, 1 MiB)` service
+headroom to fit maxmemory. Counted heap still includes rewrite storage and
+excludes only the ordinary collecting and private pending AOF capacities.
+The writer reuses those two buffers at S1; it creates no third sealed buffer.
+During sealing and rotation each statement takes a separate LogBudget from
+remaining R under the same Meta hold as its sequence. Every allocating AOF
+encoder carries it to log_reserve, which charges the entire new backing
+capacity before grow (old capacity remains conservatively charged until the
+attempt ends). Overflow marks the local abort before allocation, permits the
+ordinary command/AOF bytes, and publishes the abort when that same atomic
+statement commits. This covers rotation-induced backlog even though normal
+maxmemory accounting excludes AOF buffers. Private effects builders stay
+unmetered here; their final append to Meta.log is charged. The boundary reader
+notices abort between chunks and returns to ordinary draining of the old
+file; an already published rotation remains authoritative with all old files.
+Filename/manifest copies, growth overlap and serialization are conservatively
+precharged at admission from their lengths. The journal has a fixed directory
+of at most 8188 pointers, itself at most 64 KiB, and allocated byte chunks of
+at most 64 KiB plus their Slots headers. No directory growth overlaps an old
+one. Each execution unit retains bounded coalesced key/image scratch and
+precharges journal growth while that scratch is still alive.
+
+The provisional work ceilings remain **1024 payload visits and 64 KiB of
+measured serialized work per scan statement or mutating execution unit**.
+Measurement and serialization visits both count. Measurement is an upper
+bound including command lookahead, repeated collection-command key names and
+RESP framing; it is not a payload-size promise. Crossing either ceiling
+aborts capture without changing command semantics. Repeated writes to one key
+replace its scratch image; their aggregate work still counts. Every journal
+unit has an internal sequence/length frame, stripped before writing the base.
+
+The scan uses **count hint 1**, as authorized. A fresh KeySet's known pinned
+baseline, including the runtime's reusable small arena, is precharged. The
+returned key lengths and any additional step storage are charged immediately
+after `map_scan`, before copying a key for lookup or any payload. The exact
+long-key test is ignored with the owner's specified reason and no other new
+test is ignored.
+
+**Known limitation, not the approved strict bound:** for a step returning one
+key, R can be exceeded by at most that key's newly allocated bytes before the
+post-step charge. The intended claim in the addendum was one key per step.
+However, the pinned implementation does not establish that premise:
+`compiler/src/backend/concurrent_map.c:2622` stops the *home range* after its
+hint, then `:2643-2671` collects every live key belonging to those homes,
+including collisions. Thus count 1 can return several keys, with KeySet arena
+and scan scratch growth. The general exception is **one step's returned
+storage**, not provably one key. The implementation accounts conservatively
+for that returned storage and aborts immediately on overflow, but cannot
+undo the allocation. This remains the same
+[firn-gap-scan-bound board item](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip),
+owned by the runtime session. Clarification of the narrower addendum claim
+was requested; no hard one-key bound or new workaround is claimed. Upstream
+acceptance still needs long/binary keys, collisions, capacity overlap and
+visited-work bounds, rather than only a count hint.
+
+`firn_aof_rewrite_reserve` reports the most recently admitted allowance.
+`firn_aof_rewrite_scan_peak` reports the largest observed PRE-2 heap increase
+between immediately before KeySet creation/map_scan and immediately after it.
+It uses the runtime meter independently of all reserve charges. The ignored
+long-key case loads a single non-expiring key from an AOF and makes no
+concurrent writes; even this one step must fit R under a strict guarantee.
+Removing post-scan accounting therefore still leaves an observed allocation
+larger than R and fails the assertion. This necessary check is not a proof
+of the whole rewrite's exact peak: unrelated allocations or frees in other
+contexts can affect the process-wide difference. The additional
+`firn_aof_rewrite_cut` flag identifies whether the latest
+admitted attempt has crossed the atomic S1 cut, including sequence zero.
+The rotation-backlog regression waits for it before writing, excluding
+scan-journal exhaustion as an alternative cause of err. These fields exist
+for those regressions under the reported-facts rule; none measures RSS or
+allocator usable size. No timing, peak RSS or overhead result is claimed.
+The existing PRE-2 stalled-I/O cleanup limitation remains
+unverified: bounded chunk ownership and logical abort do not supply a host
+I/O cancellation deadline.
+
+### Protocol and failure handling
+
+S0 checks exhaustion, inherited startup divergence, shutdown, reserve and
+headroom under Meta and ServerState, then enables capture with the same
+statement's `commit_seq`. Manual callers receive started at that admission.
+Every keyed mutation shares the stage-1 token, now retaining complete owned
+replacement bytes. Repeated keys in EXEC/scripts coalesce under their one
+outer hold; ordinary AOF effects retain their existing framing. FLUSH marks
+the token failed in that same statement, so no reset-aware journal or millions
+of tombstones are needed.
+
+Each scan observation holds the whole map and Meta together, reads membership,
+last_write, complete payload and absolute expiry, and emits owned bytes only
+after releasing the hold. It retains physical expired entries. Every step,
+including an empty step, executes a nonzero sleep outside all holds.
+
+The worker hands scan completion to the sole writer. After draining any prior
+private partial append, the writer atomically reads S1, disables capture,
+freezes the journal and swaps the collecting bytes through S1 into its empty
+private buffer. A drain that does not swap buffers sends only this sealed
+prefix to the old increment. The syntax-only boundary reader shares request
+header/inline parsing and MULTI/EXEC classification with loading, and
+executes no commands. RESP bulk bodies stream across a 64-KiB window without
+retention, so a large overwritten historical value does not become current
+image work. Incomplete headers or inline lines use the ordinary parser rules;
+any required input/span growth is charged, including overlapping old/new
+capacity, before allocation. Partial request and first/latest-MULTI state
+survive read boundaries. The old file is synced before the new increment's
+manifest is published with every old file still named. Post-S1 bytes then go
+to the adopted new handle; before publication failure they drain behind any
+remaining sealed suffix to the old handle.
+
+The worker strips internal frames and emits chronological DEL/reconstruction/
+PEXPIREAT units. After sync/close, the existing rename and manifest publication
+path installs base(S1) plus increment(>S1). Published-versus-durable handling,
+history retention, shutdown exclusion and normal MULTI/EXEC bytes are retained.
+
+Reserve or work overflow, flush, sequence exhaustion, shutdown and host I/O
+failure all prevent installation. A failed published rotation keeps its new
+handle and all old files; a failure before publication keeps the old handle.
+A journal is detached in one Meta statement and released at most one chunk
+per waiting turn. In-progress is cleared only after the worker joins and its
+chunks are gone. The reserve cannot be reused early. Eviction aborts capture
+when service headroom is consumed throughout the in-progress lifetime,
+including frozen post-S1 reconciliation, and, when already over maxmemory,
+waits for cleanup before evicting to sustain retained images. The worker
+observes logical abort between chunks and switches to release-only cleanup;
+the installer also refuses an aborted attempt. Setting aof_installing under
+Meta is the existing installation commitment: pressure that wins that hold
+aborts first, while pressure arriving afterward waits for publication and
+cleanup without recording a cancellation that can no longer be honored.
+Stalled host calls can delay this wait, as the unresolved cleanup contract
+already warns.
+
+Startup records whether truncation left a first unfinished MULTI region
+containing unapplied commands. Capture remains refused even if a subsequently
+appended EXEC closes that region: those earlier commands still were never
+applied to the live dataset. A restart that replays the now-complete file
+clears the discrepancy. This is a conservative refusal, not a recovery-policy
+change. Existing nested/partial startup cases now require refusal rather than
+private-replay reconstruction.
+
+### Network evidence to run in CI
+
+`tests/rewrite_scan.rs` uses ordinary binary-safe Redis reads as a quiescent
+dump oracle. It observes complete records appearing in the temporary base and
+requires the old manifest still to be selected before starting its concurrent
+writer, so the selected keys have already been observed before their writes.
+The fixture has 6000 keys across all five types; clients continuously write
+bounded values while the scan continues. No server test hook is added.
+
+- `reconciled_scan_restores_live_dump_and_non_idempotent_units`: compares a
+  restarted server with a quiescent dump of all keys, complete values and
+  absolute expiries. It also requires each counted INCR exactly once,
+  including paired keys in EXEC and a script, and separately loads the base
+  alone to require equal paired counters at S1. Removal of capture loses
+  changes behind the observed cursor; omission of DEL duplicates the scanned
+  list or retains cleared TTL/content; loss of a tombstone retains a deleted
+  scanned key or RENAME source; pairing base(S1) with the S0 suffix double
+  applies counted increments; a split execution-unit cut can separate its
+  paired counters. The existing witness remains the failing command-replay
+  control. These are intended distinguishing failures, not mutation-run
+  results.
+- `reconciled_scan_reserve_abort_keeps_writes_and_old_files`: CONFIG maxmemory
+  chooses the real five-percent R. Repeated 32-KiB hot-key images fit each
+  unit but exhaust retained journal reserve while scanning continues. It
+  requires err, the old manifest, accepted subsequent writes, no automatic
+  retry despite crossing its startup threshold, and restored hot-key bytes,
+  an acknowledged counter and full cardinality. Removing reserve abort makes
+  the required err fail; discarding ordinary bytes breaks the restore oracle.
+- `reconciled_scan_flush_aborts_even_in_exec_and_script`: FLUSHALL, FLUSHDB,
+  EXEC-with-flush and script-with-flush each require err, unchanged manifest
+  and only the post-flush key after restart. Removing the shared abort permits
+  stale scan images to survive and fails the status/restore requirements.
+- `reconciled_scan_crash_uses_old_authoritative_files`: after scan progress,
+  it observes the acknowledged INCR in the original increment, requires the
+  original manifest and active rewrite, kills the process, and checks every
+  fixture key remains plus that counter after restart. It rejects rotation
+  at S0 and any premature selection of the temporary fuzzy base. This is a
+  process crash, not a power-loss or fsync guarantee.
+- `reconciled_scan_exact_reserve_includes_one_long_key_step`: a 17-MiB key
+  exceeds the explicit 16-MiB unlimited-memory reserve. The test requires err,
+  preserved service value and an independently sampled allocation increase
+  no greater than R for even this single step; the
+  current post-allocation scan step violates the last assertion. It is the
+  only new ignored test, pending `firn-gap-scan-bound`, with the exact reason
+  requested in the addendum.
+
+Existing rewrite cases remain wired. Startup-tail cases now require the
+approved pre-S0 refusal; failure cases now require started followed by err
+because rotation moved after admission; shutdown during a scan keeps the
+original manifest. The older concurrent growing-list case retains 100 strict
+non-idempotent writes instead of growing without limit past the explicit
+capture work budget; the new continuous bounded-value case supplies observed
+scan-window interleaving. No ratchet row or existing command expectation is
+removed. No new test, compiler, lint, gate or mutation-control run occurred
+locally, as requested. CI evidence for this uncommitted tree is unavailable.
+Removing the inherited-startup-MULTI refusal makes the three retained-tail
+cases fail their immediate-refusal and zero-admitted-attempt assertions;
+closing such a block later does not make its unapplied prefix part of live
+state, so those cases continue to require refusal until restart.
+
+The repair cases additionally require a 128-KiB overwritten historical SET
+and a mixed inline MULTI/EXEC block to rewrite successfully with a small
+current dataset, catching a parser that retains whole RESP commands in a
+fixed window. A post-S1 pressure case builds retained replacements, observes
+the rotation manifest while the old base is still authoritative, lowers the
+ordinary Redis maxmemory setting, and requires an err result with both old
+and new increments retained and a correct restart. Removing post-S1 pressure
+abort makes this strict case complete successfully and fail its err assertion.
+Its scheduling window, like every new case, remains to be exercised in CI.
+
+`reconciled_scan_post_cut_backlog_charges_rotation_reserve` builds a long
+old increment from overwritten 32-KiB values, then waits until INFO confirms the
+atomic S1 cut while the old manifest is still selected. Repeated 16-KiB writes keep live
+memory bounded while the streaming boundary reader still visits history.
+With maxmemory at 64 MiB, the rotation budget must abort before publication;
+subsequent commands and a restart must retain the acknowledged value and
+counter. Removing LogBudget charging leaves the excluded backlog unbounded
+by R and allows a successful rewrite, failing the required err outcome.
+This strict case has not run; CI must establish its timing window and cost.
+
+### Stage 2 source map and handoff
+
+This is an uncommitted implementation on `claude/rewrite-scanlog`, over
+`e9e0f043b67be4fd1eaee837b97349304246284a`, for
+[draft PR #42, reconciled-scan AOF rewrite](https://github.com/Ming-Research/Firn-wf/pull/42).
+No commit, push, local build, execution, test, lint or measurement was made.
+The gate result reported for stage 1 does not validate these edits. CI must
+compile the canonical Whitefoot, run the network cases and Redis ratchet,
+and check the design before this branch can be ready.
+
+| Protocol step | Source anchor |
+| --- | --- |
+| Reserve/headroom, startup/exhaustion checks and atomic S0 admission | `firn/persistence/rewrite.wf:274` |
+| Per-statement token, key stamps and same-hold publication | `firn/store/sequence.wf:1`, `:60`, `:86` |
+| Complete after-images/tombstones, coalescing, precharged journal chunks | `firn/store/rewrite-capture.wf:41`, `:164`, `:228` |
+| Shared five-type reconstruction and 64-element collection commands | `firn/store/rewrite-image.wf:28`, `:64`, `:189` |
+| Whole-map-plus-Meta count-1 observation, returned KeySet charge, owned output | `firn/persistence/rewrite-dataset.wf:9` |
+| Genuine wait after each step and each released chunk | `firn/persistence/rewrite.wf:252`, `:332`, `:571` |
+| Atomic S1 counter/capture/journal/collecting-buffer cut | `firn/persistence/rewrite.wf:436` |
+| Drain sealed bytes without swapping, then sync/rotate with old files named | `firn/persistence/rewrite.wf:594`, `:51`, `:456` |
+| Streaming syntax-only validation and shared block classification | `firn/persistence/rewrite-boundary.wf:6`, `:27`; `firn/protocol/stream.wf:7` |
+| Charge rotation backlog before grow, commit overflow without failing clients | `firn/store/store.wf:241`, `:523`; `firn/store/sequence.wf:60` |
+| Ordered reconciliation; sync, rename and manifest publication | `firn/persistence/rewrite-dataset.wf:181`; `firn/persistence/rewrite.wf:332`, `:171` |
+| Reserve/flush/exhaustion abort and bounded release | `firn/store/rewrite-capture.wf:9`, `:228`; `firn/commands/server.wf:167`; `firn/persistence/rewrite.wf:332`, `:571` |
+| Pressure cancellation before installation; eviction waits after commitment | `firn/commands/eviction.wf:50`, `:310`; `firn/persistence/rewrite.wf:456` |
+| Startup retained-MULTI refusal | `firn/persistence/startup.wf:153`; `tests/network.rs:9797` |
+| Final status and automatic-retry suppression | `firn/persistence/rewrite.wf:107`; `firn/persistence/persistence.wf:51` |
+
+Changed files, grouped by responsibility:
+
+- Design and maintained explanation: `design/firn/aof-rewrite.md`, new
+  `design/firn/aof-rewrite/capture.md`, `firn/README.md`, and this record.
+- Capture and shared encoding: `firn/store/module.wfm`, `store.wf`,
+  `sequence.wf`, new `rewrite-capture.wf` and `rewrite-image.wf` in that
+  directory.
+- Writer and startup: `firn/persistence/module.wfm`, `persistence.wf`,
+  `rewrite.wf`, `rewrite-dataset.wf`, `startup.wf`, `manifest.wf`, and new
+  `rewrite-boundary.wf` in that directory. `manifest.wf` only selects the
+  unmetered private-byte builder; manifest bytes are unchanged.
+- Shared streaming parser: `firn/protocol/module.wfm` and new `stream.wf`.
+- Mutation and encoder wiring: `firn/commands/aof-rewrite.wf`, `eviction.wf`,
+  `hashes.wf`, `info.wf`, `keys.wf`, `lists.wf`, `object.wf`, `ranges.wf`,
+  `scan.wf`, `script.wf`, `server.wf`, `sets.wf`, `sorted.wf`, `strings.wf`,
+  `transaction.wf`, plus `firn/scripting/entry.wf`. Final EXEC/script framing
+  is unchanged; its collecting-buffer append carries the rotation allowance.
+- Module graph and writer meter ownership: `firn/modules.wfg` and
+  `firn/server/server.wf`.
+- Network evidence: `tests/network.rs` and new `tests/rewrite_scan.rs`.
+
+No pin, submodule, `docs/todo.md`, ratchet list or `design/log.md` changed.
+The live design replaces private worker replay and switch-time replay, with
+explicit Rejected entries citing the owner's firn-maxmem-scope B ruling.
+These source changes have no new compiler diagnostic because compilation was
+explicitly prohibited. The only known unexpressible guarantee is the recorded
+strict map_scan preallocation bound; its minimal semantic witness and pinned
+interface evidence remain above. The count-1/one-key discrepancy is stated
+rather than asserting an unsupported upper bound.
+
+The shared status board was readable through the browser, including
+`firn-wf-snap-log` and `firn-gap-scan-bound`. Its template requires ArtifactData
+for row/log updates; that write capability is not available in this session.
+No board update is claimed. The source implementation and independent-review
+results are recorded here for the owning session to publish with CI evidence.
+
+### Independent review and stopping point (2026-10-10 13:18 UTC)
+
+An independent, read-only GPT-6 agent reviewed
+`e9e0f043b67be4fd1eaee837b97349304246284a..working tree`, including every
+untracked source and test, the design record, changed sections in context,
+affected interfaces and consumers, and the subsequent repairs. It read the
+pinned Whitefoot and Whitefoot-kit from existing clones. Its checks were
+source reads, searches and read-only Git inspection; it ran no compiler,
+test, lint, performance measurement or other executable validation.
+
+All reported source findings were repaired and their repairs inspected:
+
+- F1: canonical declaration spacing/indentation and removal of COPY's
+  unchanged-source capture.
+- F2: pressure cancellation throughout retained-work lifetime, with the
+  installation commitment serialized under Meta before an abort can no
+  longer be honored.
+- F3: streaming historical bulk bodies during boundary validation, so
+  obsolete large values do not acquire the current-image work ceiling.
+- F4: an independent heap sample for the ignored exact-reserve regression,
+  replacing a circular comparison with the reservation ledger.
+- F5: charging rotation-induced collecting-buffer growth before allocation
+  and committing its failure without rejecting the ordinary client command.
+- R1-R3: raw binary AOF fixture construction, the input-grow precondition,
+  and fresh cleanup binders.
+- R4-R5: budget effects in argument order and observation of the actual S1
+  cut before the backlog regression starts writing.
+- R6-R7: FUNCTION FLUSH creates and commits its own log budget under Meta
+  without advancing commit_seq; sequence_commit's contract describes budget
+  publication independently of a dataset mutation.
+
+No additional actionable source finding remained within that scope. A1,
+T1, D1, DC1 and DC3 passed; C1, T2, G1 and G2 passed by inspection only.
+C2 and T3 remain unverified without compiler and gate evidence. G3, DC2 and
+DC4 remain unverified for design soundness, resource guarantees and runtime
+behavior. R1 is not applicable because this change claims no performance
+attribution. No existing review rule or expected Redis result was weakened;
+the changed startup/failure expectations follow the approved admission and
+rotation protocol, as described above.
+
+Work stops with the implementation and tests uncommitted, as requested.
+There is no local or CI pass for this tree, no executed mutation control,
+and no new compiler diagnostic. CI must establish compiler acceptance,
+concurrency behavior, test timing and the full gate after a commit/push is
+authorized. The strict reserve guarantee still awaits firn-gap-scan-bound;
+count hint 1's collision behavior means the requested one-key overshoot
+description also needs the owner's clarification. Bounded chunk release
+does not establish a stalled-host-I/O cleanup deadline. No pin or submodule
+moved, and no additional Whitefoot gap was filed.

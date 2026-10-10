@@ -147,6 +147,11 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
           let cut = aof_cut(factory: factory, writable: writable, name: name, kept: loaded.kept);
           if cut {
             set size = loaded.kept;
+            let retained = loaded.kept > loaded.reverted;
+            let unfinished = band(loaded.unfinished, retained);
+            atomic retained_meta = &store^.meta {
+              set retained_meta^.aof_rewrite_startup_unfinished = unfinished;
+            }
           } else {
             return False();
           }

@@ -1036,7 +1036,8 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
         let writer_store = keyspace_logging(store: &root, logging: logging);
         let writer_factory = factory_share(factory: &handles);
         let writer_clock = clock_share(clock: &clock);
-        spawn write_log(store: move writer_store, factory: move writer_factory, log: move started_log, clock: move writer_clock, time: time);
+        let writer_meter = std::process::meter_share(meter: &memory_meter);
+        spawn write_log(store: move writer_store, factory: move writer_factory, log: move started_log, clock: move writer_clock, time: time, meter: move writer_meter);
       }
       Err(error: problem) => {
         set failed = True();
