@@ -34,6 +34,7 @@ struct Options {
     warmup: Duration,
     sample_interval: Duration,
     maxmemory: Option<u64>,
+    rewrite_during_measure: bool,
 }
 
 impl Options {
@@ -45,10 +46,15 @@ impl Options {
             value: vec![b'x'; 200], workload: String::new(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::from_secs(5),
             sample_interval: Duration::from_millis(10), maxmemory: None,
+            rewrite_during_measure: false,
         };
         let (mut keys_given, mut value_given) = (false, false);
         let mut args = env::args().skip(1);
         while let Some(flag) = args.next() {
+            if flag == "--rewrite-during-measure" {
+                opts.rewrite_during_measure = true;
+                continue;
+            }
             let value = args.next().ok_or("each option needs a value")?;
             match flag.as_str() {
                 "--port" => opts.port = value.parse()?,
@@ -473,6 +479,7 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
     barrier.wait();
     let mut failure = None;
     if let Some(m) = monitor.as_deref_mut() {
+        m.request_rewrite();
         while handles.iter().any(|h| !h.is_finished()) {
             thread::sleep(opts.sample_interval);
             if let Err(e) = m.sample() {
@@ -500,7 +507,7 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
         }
     }
     if let Some(e) = failure { return Err(e); }
-    if let Some(m) = monitor { m.sample()?; }
+    if let Some(m) = monitor { m.sample()?; m.finish(end)?; }
     let count: u64 = histogram.values().sum();
     if count == 0 { return Err("no requests completed".into()); }
     if opts.requests.is_some_and(|n| count != n) { return Err("request count mismatch".into()); }
@@ -534,7 +541,8 @@ mod tests {
         Options { port, connections: 2, threads: 2, seconds: None, requests: Some(3),
             keys: 1, value: vec![b'x'], workload: workload.into(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::ZERO,
-            sample_interval: Duration::from_millis(10), maxmemory: None }
+            sample_interval: Duration::from_millis(10), maxmemory: None,
+            rewrite_during_measure: false }
     }
 
     pub(super) fn expect_command(socket: &mut TcpStream, args: &[&[u8]]) {

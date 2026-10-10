@@ -413,6 +413,42 @@ adjusted overshoot. No-rewrite controls separate ordinary eviction variation
 from rewrite effects. The cross-release comparison does not alone attribute
 compiler cost or satisfy the investigation's same-build exclusion control.
 
+**Dispatch inputs.** Use `redis-bench.yml` on the experiment branch with
+`runner=14900k`, `mode=workloads`, `tests=evict-zipf` (sets
+`WORKLOADS=evict-zipf`), `cpus=1 2`, `passes=3`, `seconds=10`,
+`connections=50`, and
+`workload_options=--keys 1000000 --value-size 64 --zipf-s 0.99 --warmup-seconds 5 --sample-ms 10 --rewrite-during-measure`
+(sets `WORKLOAD_OPTIONS`). Matched no-rewrite controls omit only
+`--rewrite-during-measure`; it is off by default. These are planned inputs,
+not an executed measurement or a result. The workloads mode measures the
+checkout and Redis; the unscoped build and its twin need matched separate
+dispatches, with repetitions interleaved with the scoped build.
+
+After RESETSTAT and the baseline INFO, the measured workers start and a
+separate control connection requests BGREWRITEAOF while INFO continues to
+sample memory and persistence together. Only AOF-enabled lines request it;
+other lines report `rewrite_requested=0`. `rewrite_overlap_ms` holds each
+sampled `aof_rewrite_in_progress` flag until the next sample, capped at the
+last measured worker's end, so it is an estimate at the recorded sample
+cadence. `rewrite_completed=1` requires an idle, unscheduled, successful
+status sampled by that end after observed activity or the successful start
+reply; a later completion is not counted. A rewrite missed between samples
+can report completion but supplies no overlap evidence. A requested run
+with no sampled overlap is **inconclusive, not a pass**, even if its other
+metrics satisfy the criterion. A run that begins with a rewrite already
+active or whose BGREWRITEAOF does not start fails and must be retried.
+
+The CSV retains `refused_sets`, `keys_at_start`, `keys_at_end`, raw
+`used_memory` and `sampled_max_memory`. `sampled_max_adjusted_memory` is the
+maximum of each sample's `max(used_memory - mem_not_counted_for_evict, 0)`
+for both Redis and firn; `sampled_excess_bytes` and
+`sampled_excess_fraction` now use that adjusted maximum, so the acceptance
+threshold is `sampled_excess_fraction <= 0.002`. The lifetime peak columns
+remain raw and include prefill; they do not establish adjusted overshoot.
+Finite sampling can miss peaks. Parsing and sampling-accounting unit cases
+accompany this instrument change but have not been run; compilation and
+runtime overlap remain unverified.
+
 **Storage boundary.** One scope spans the close-tail replay and the worker,
 with two let-bound `scope_run` calls. Its view is published before replay
 and retained until busy-close polling succeeds. Both private keyspaces,
