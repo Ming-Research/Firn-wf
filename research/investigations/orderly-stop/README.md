@@ -287,8 +287,32 @@ adding a test-only server path.
 
 ### Results
 
-Pending. This edit-only implementation has not been compiled, tested or
-measured. The existing network assertions and bounds, including the repeated
-timeout changes and the 500 ms shutdown bound, remain unchanged. CI must establish
-correctness on both host I/O routes before the stated performance comparison;
-no throughput improvement is claimed.
+**Correctness.** CI `check` on 43b58dd passed all 113 network cases on both
+host I/O routes, including the repeated timeout changes and the 500 ms
+shutdown bound, and the Redis 7.0.15 suite ratchet (591/591).
+
+**Probe.** [Run 38019220128](https://github.com/Ming-Research/Firn-wf/actions/runs/38019220128)
+(i9-14900K, 2026-10-10 03:03-03:13 UTC). Revisions:
+- `base`: main's source on the same release (`exp/stop-base`, 21c2595,
+  `wf-f3d081b90a8d`);
+- `head`: 43b58dd.
+
+Each was paired with a `-twin` measuring its image again. The run used two
+interleaved passes of 5 seconds. Median throughput relative to `base`, with
+the twin's ratio in parentheses:
+
+| CPUs | test | depth 1: head (head-twin) | base-twin | depth 16: head (head-twin) |
+|---|---|---|---|---|
+| 1 | get | 1.008 (1.018) | 1.016 | 1.037 (1.022) |
+| 1 | set | 1.010 (1.030) | 0.999 | 1.046 (1.073) |
+| 2 | get | 0.985 (1.009) | 0.996 | 0.992 (1.006) |
+| 2 | set | 1.032 (1.005) | 1.012 | 1.001 (0.976) |
+
+By the rule stated before measuring, the prediction is not rejected. The only
+depth-1 cell below base, `get` on two CPUs, is 1.5% below it. That is under the
+2.4% between head and head-twin there.
+
+The prediction's stronger half, that head is at least base, is not resolved:
+the twins differ by up to 3%, so a gain from dropping the per-receive timer
+(at most 1.25% at depth 1 in the polling measurement above) is below this
+probe's noise. The result is reported as no measured loss, not as a gain.
