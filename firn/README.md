@@ -123,10 +123,13 @@ or none. `requirepass` changes the password for every connection that has
 not authenticated, as in Redis: a connection authenticates by giving the
 password, or by being accepted while none is set, and stays authenticated;
 removing the password lets the others in until one is set again. `timeout`
-changes the idle limit for new connections and, within a second, for every
-connection waiting for a request, one that waited with no limit included. A
-client's silence is counted from its last request or the replies to it, as
-Redis counts it from its last read or write. `appendfilename` and `databases` are refused as Redis
+changes the idle limit for new connections and wakes every connection waiting
+for a request to apply it, one that waited with no limit included. A receive
+with no idle limit has no deadline; otherwise its deadline is the remaining
+idle interval. Each client retains a watch of the current receive wake
+generation; a changed limit replaces the generation and fires the old one.
+A client's silence is counted from its last request or the replies to it,
+as Redis counts it from its last read or write. `appendfilename` and `databases` are refused as Redis
 refuses them. An `appendonly`, `port` or `bind` other than the one firn
 started with, and a `save` schedule other than the empty one, are refused in
 Redis's form for a refused value with firn's own reason, since firn cannot
@@ -137,9 +140,10 @@ has accepted.
 `SHUTDOWN` sends no reply, nor the replies its connection holds unsent
 from the commands before it, which Redis 7.0.15 does not send either; its
 connection closes, and firn stops accepting clients. The request cancels
-the accept wait, each client's receive, the expiry sleep and the signal
-wait through one shared cancellation state. A command or batch already
-running still finishes before its client closes; cancellation does not
+each client's receive through its wake generation, and the accept wait,
+expiry sleep and signal wait through a separate shared shutdown state.
+A command or batch already running still finishes before its client closes;
+cancellation does not
 interrupt scripts or the replies being sent. A send blocked on a client that does not read is abandoned
 at its next one-second deadline. Once every client has left, the append-only file's writer appends
 its last bytes, syncs and closes, and firn exits with status 0, as Redis

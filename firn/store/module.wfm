@@ -1,5 +1,6 @@
 alias HashMap = std::collections::hash_map::HashMap;
 alias Bytes = pkg::bytes::Bytes;
+alias CancelSource = std::time::CancelSource;
 alias Key = pkg::bytes::Key;
 alias KeyEnv = pkg::bytes::KeyEnv;
 alias OrderedKey = std::collections::ordered_map::OrderedKey;
@@ -63,9 +64,10 @@ public struct Meta {
 }
 
 public struct ServerState {
-  doc "What the server keeps beside the keyspace that every connection reaches: the password clients must give, empty for none, and how many seconds a silent client is kept, zero for no limit, which CONFIG SET changes; the values of the parameters whose only effect in Redis is on its internal encodings, which CONFIG SET sets and CONFIG GET reports and firn does not use, in the order of their names: hash-max-listpack-entries, hash-max-listpack-value, list-compress-depth, list-max-listpack-size, set-max-intset-entries, stream-node-max-bytes, stream-node-max-entries, zset-max-listpack-entries and zset-max-listpack-value; how many connections the server has accepted since it started or CONFIG RESETSTAT last ran; the shutdown request, which SHUTDOWN and a stop signal set and main sets again with Meta.stopping, separate from it until every client has left; and the calendar time in milliseconds at which it started, which INFO's uptime counts from.";
+  doc "What the server keeps beside the keyspace that every connection reaches: the password clients must give, empty for none, and how many seconds a silent client is kept, zero for no limit, which CONFIG SET changes; the current receive wake source, replaced with each idle-limit change and fired after replacement or a shutdown request, outside the atomic statement; the values of the parameters whose only effect in Redis is on its internal encodings, which CONFIG SET sets and CONFIG GET reports and firn does not use, in the order of their names: hash-max-listpack-entries, hash-max-listpack-value, list-compress-depth, list-max-listpack-size, set-max-intset-entries, stream-node-max-bytes, stream-node-max-entries, zset-max-listpack-entries and zset-max-listpack-value; how many connections the server has accepted since it started or CONFIG RESETSTAT last ran; the shutdown request, which SHUTDOWN and a stop signal set and main sets again with Meta.stopping, separate from it until every client has left; and the calendar time in milliseconds at which it started, which INFO's uptime counts from.";
   public password: Bytes;
   public timeout: u64;
+  public wake: CancelSource;
   public shutdown: Bool;
   public encodings: Array<i64, 9>;
   public connections: u64;
@@ -102,11 +104,11 @@ public binding DueOrder : PriorityOrder<Due, KeyEnv> {
 
 public const keyspace_capacity: u64 = 262144_u64;
 
-public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
+public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
 
 public fn shutdown_requested(store: &Keyspace) -> requested: Bool reads(store) waits doc "Whether SHUTDOWN or a stop signal requested that contexts drain and close, before the last client lets main stop the writer, or main has stopped it.";
 
-public fn request_shutdown(store: &Keyspace) -> result: unit reads(store) waits doc "Requests that contexts drain and close, as SHUTDOWN and a stop signal do, recording the request in the server's state once no rewrite is installing its manifest, so that a request waits for an installation that has begun.";
+public fn request_shutdown(store: &Keyspace) -> result: unit reads(store) waits doc "Requests that contexts drain and close, as SHUTDOWN and a stop signal do, recording the request and retaining the current receive wake source in one atomic statement once no rewrite is installing its manifest, then firing that source outside the statement. The caller still fires the separate shutdown source for accept, signal and expiry.";
 
 public fn keyspace_share(store: &Keyspace) -> made: Keyspace reads(store) doc "Another context's handle to the same keyspace.";
 

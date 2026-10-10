@@ -1307,14 +1307,14 @@ fn firn_stops_on_an_append_only_file_that_does_not_parse() {
 /// firn's idle limit: with a limit of one second, the connection ends after
 /// at least 0.9 and at most two seconds of silence. A limit CONFIG SET
 /// removes reaches a client already waiting under the old one, which reads the
-/// limit again when its deadline passes, and a client that connects after it:
-/// both stay open through 1.5 seconds of silence. INFO then reports an uptime
+/// limit again when the configuration change wakes it, and a client that
+/// connects after it: both stay open through 1.5 seconds of silence. INFO then reports an uptime
 /// of at least the whole seconds since firn listened. On the first route the
 /// client that removed the limit sets one of five seconds, under which another
 /// client waits, then one of a second, and keeps sending: it reads the limit
 /// within a second, as every sending client does, and is closed once it falls
 /// silent, after at least 0.9 and at most two seconds, while the waiting
-/// client, whose waits under a limit last a second at most, is closed within
+/// client, whose receive the changed limit wakes, is closed within
 /// 2.5 seconds of its last request rather than five. A third client there
 /// leaves the replies to its requests unread for 1.5 seconds, more than the
 /// limit, and sends again half a second after reading them: its silence counts
@@ -8056,8 +8056,8 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
     }
 }
 
-/// CONFIG SET must reach a receive that began with timeout zero, while a
-/// deadline alone must leave that connection usable before the limit is set.
+/// CONFIG SET must reach a receive that began with timeout zero, which must
+/// remain usable through an idle interval before the limit is set.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_applies_an_idle_limit_to_a_previously_unlimited_receive() {
@@ -8071,7 +8071,7 @@ fn firn_applies_an_idle_limit_to_a_previously_unlimited_receive() {
     expect_replies(&mut idle, b"+PONG\r\n", "unlimited client");
     std::thread::sleep(Duration::from_millis(1200));
     idle.write_all(&resp(&["PING"]))
-        .expect("still usable after receive deadline");
+        .expect("still usable after unlimited idle interval");
     expect_replies(&mut idle, b"+PONG\r\n", "timeout zero remains unlimited");
     caller
         .write_all(&resp(&["CONFIG", "SET", "timeout", "1"]))

@@ -91,7 +91,7 @@ depth 16, where a batch parks once.
 
 ### Question and comparison, stated before measuring
 
-Does Whitefoot v0.110's shared cancellation state end firn's shutdown waits
+Do Whitefoot v0.119's shared cancellation states end firn's shutdown waits
 promptly and recover the cost of arming a timer for each parked receive,
 while preserving replies, live idle limits and the final append-only drain?
 This is the work of [board item `firn-cancel-adopt`](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip).
@@ -116,9 +116,9 @@ either command on either CPU count is below base by more than 1% and by
 more than the absolute relative difference between head and head-twin in
 that cell. Report depth 16 as well. The comparison requires head to drop the
 per-receive timer when timeout is zero; it must first support the wake
-generation described below. The pinned language currently prevents storing
-that generation in shared state, so the partial adoption still cannot test
-this prediction. No measurement has been made for this comparison.
+generation described below. That implementation is now written against the
+pinned v0.119 interface; validation and measurement remain pending. No
+measurement has been made for this comparison.
 
 The network cases can observe shutdown latency with an established client
 left connected and idle, timeout zero, and no append-only writer: start the
@@ -155,19 +155,35 @@ including earlier commands from the same read, and sends no success reply.
 
 ### Ownership and drain
 
-Main creates one cancellation source before spawning. It shares sources
-with clients and the signal context, gives expiry a watch, and owns the
-accept watch. A successful SHUTDOWN records the request and closes its
-client in command dispatch, which returns true only for that accepted
-request. The client's context then fires its source without another wait
-or shared-state read. Authentication and option refusals return false;
-standalone dispatch used by replay keeps its existing state-only behavior.
-The source remains owned by the network context instead of adding it to
-every keyspace handle and replay invocation. The signal context closes the listener before recording and firing,
-preserving the second-signal escape. Main retains the existing client-limit
-meaning: stop accepting after the limit, let those clients finish, then
-record shutdown with Meta.stopping and fire. Closing a source releases only
-that handle, so other contexts' watches remain valid until their cleanup.
+Main creates the shared keyspace, whose server state owns an initially
+unfired receive wake source, and a separate shutdown source before spawning.
+It shares shutdown sources with clients and the signal context, gives expiry
+a shutdown watch, and owns the accept watch. Keeping that source separate
+means a CONFIG update cannot end accept, signal or expiry waits; those
+contexts need no generation refresh.
+
+A successful SHUTDOWN records the request and retains the current receive
+source in the same atomic statement, guarded against manifest installation,
+then fires that source outside the statement. Command dispatch closes its
+client and returns true only for that accepted request. The client's context
+then fires its separate shutdown source without another shared-state read.
+Authentication and option refusals return false. Standalone dispatch used by
+replay also records and fires the receive generation; no network contexts
+are serving during replay, and it needs no separate shutdown source.
+
+The signal context closes the listener before recording and firing the
+request, preserving the second-signal escape. Main retains the existing
+client-limit meaning: stop accepting after the limit, let those clients
+finish, then record shutdown with Meta.stopping, retain and fire the current
+receive source, and fire the separate shutdown source. All fires occur
+outside atomic statements: v0.119 declares cancel_fire as waiting.
+
+Sources and watches now drop their shared handles. Replaced sources drop
+after firing, stale watches drop on replacement, and the final receive source
+drops with shared server state, including startup failures. Explicit watch
+closure remains at connection and signal-listener cleanup to mark that
+release point. Other contexts' watches retain the cancellation state
+independently.
 
 The AOF writer and rewrite cycle retain their never-firing watches, periodic
 drains, installation exclusion and structured joins. They must keep appending
@@ -184,8 +200,9 @@ and another client's EOF after the first signal proves the request was
 recorded after the listener closed. It no longer relies on staggered receive timers
 to prolong the drain. Script waits, including the guarded atomic statement
 that takes the engine and the retry sleep, remain unchanged: guard
-observation of cancellation belongs to
-[Whitefoot PR #304](https://github.com/Ming-Research/Whitefoot/pull/304).
+observation of cancellation was added by
+[Whitefoot PR #304](https://github.com/Ming-Research/Whitefoot/pull/304), but
+adopting it for script waits is outside this receive-generation change.
 
 ### Live idle-limit updates
 
@@ -209,86 +226,69 @@ server's other waits, even though no shutdown was requested. A limit reduced
 from five seconds to one also has to reach an already parked receive; the
 existing idle-limit case covers that boundary.
 
-The selected direction, pending option A of
-[owner card `firn-adopt-timeout-wake`](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip),
-is a wake generation. The proposed lifecycle is:
+The owner selected option A, wake generations, on
+[card `firn-adopt-timeout-wake`](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip).
+Whitefoot v0.119's droppable CancelSource and CancelWatch structs, adopted
+through release `wf-f3d081b90a8d`, permit the source in shared server state
+([Whitefoot PR #319](https://github.com/Ming-Research/Whitefoot/pull/319)).
+The implementation has this lifecycle:
 
-1. Shared server state owns an initially unfired generation source. A client
-   reads the timeout, shutdown request and a watch of that generation
-   together, retaining the watch across receives until the generation changes.
-2. Each change of the idle limit installs a fresh source and fires the old
-   generation, then closes the replaced source. Old watches independently
-   retain the fired state until their clients close them. The timeout and
-   source replacement must be in the same atomic statement, so a client
-   cannot pair the new generation with the old limit.
-3. A receive has no deadline at timeout zero and otherwise the deadline
-   computed from its last activity. Cancellation or expiry re-reads shutdown
-   and timeout; a continuing client closes a stale watch and takes the current
-   generation's watch. Shutdown records its request and fires that generation
-   too. A CONFIG update racing shutdown must not leave a client parked on a
-   new unfired generation after missing the request.
-4. Every client closes its final watch, and server teardown closes the last
-   generation source on every exit path, including startup failures. Keep
-   the separate shutdown source for accept, signal and expiry: CONFIG changes
-   should not terminate those waits, and they do not need replaceable watches.
+1. Shared server state owns an initially unfired source. A client reads the
+   timeout, shutdown request and a watch of that source together before its
+   first receive, then retains the watch across receives.
+2. Each actual idle-limit change creates a fresh source, swaps it for the
+   current source in the same atomic statement that changes the limit, and
+   takes the old source out. The caller fires the old source outside the
+   statement before replying OK, then lets it drop. Refused CONFIG changes
+   and setting the same value neither replace nor fire a generation.
+3. A receive has no deadline at timeout zero and otherwise has the remaining
+   idle interval, counted from the existing last-activity time. A deadline
+   or cancellation re-reads shutdown and timeout together with the cached
+   watch's fired state. If shutdown is false, a fired watch must belong to a
+   replaced generation: only a replacement or shutdown fires a source.
+   Only then does the client take the current source's watch, dropping the
+   old one. It closes if stopping or expired under the new limit; otherwise
+   it waits again without resetting last activity. Active clients retain
+   their existing at-most-once-a-second state reads between request batches.
+4. If a client reads the new limit before CONFIG fires the old source, it
+   temporarily retains its old unfired watch. That source remains owned by
+   the CONFIG caller, whose ensuing fire causes another state read. Reading
+   the fired bit and server state in one atomic statement makes shutdown
+   and refresh coherent, without a numeric generation counter or wraparound.
+5. Shutdown records its request and retains the current source together,
+   then fires it outside the statement. If a concurrent CONFIG replaces it
+   first, shutdown captures the replacement; if CONFIG replaces it later,
+   every client reading that replacement also sees shutdown and exits.
+   Watches of older generations still receive their CONFIG callers' fires.
+   The same reasoning covers several overlapping CONFIG changes and a
+   client changing its own limit several times in one command batch.
+6. Every client releases its final watch before closing the connection.
+   Shared server teardown drops the final source; outstanding watches and
+   temporary source handles retain each state until their last release.
+   Accept, signal and expiry retain their separate shutdown cancellation.
 
-This is a proposal, not implemented behavior. The receive polling deadline
-remains until the language gap below is resolved; it still protects live
-timeout changes. The existing timeout cases retain their expectations.
-`firn_reapplies_an_idle_limit_after_disabling_it_on_both_routes` adds a
-sequence of timeout changes by the client that will become idle: enable one
-second, disable it and PING in the same command batch, then observe 1.2
-seconds of silence without EOF. Another client enables one second again;
-the idle client must reach EOF within three seconds without sending another
-byte. It runs on both host I/O routes and exposes a receive that never
-re-reads the limit, including
-after earlier wake generations. Its bound allows two seconds beyond the
-new limit for loaded CI; it does not measure immediate wake latency or prove
-timer removal. The case has not been run, including against a deliberately
-broken receive that ignores configuration changes.
+The existing timeout cases retain their expectations.
+`firn_reapplies_an_idle_limit_after_disabling_it_on_both_routes` changes
+timeout on the client that will become idle: enable one second, disable it
+and PING in the same command batch, then observe 1.2 seconds of silence
+without EOF. Another client enables one second again; the idle client must
+reach EOF within three seconds without sending another byte. It runs on
+both host I/O routes and covers refreshing after earlier generations. The
+bound allows two seconds beyond the new limit for loaded CI; it does not
+measure immediate wake latency or prove timer removal.
 
-### Language gap: cancellation handles in shared state
-
-At pinned Whitefoot `5268f516c3f8a57b34263fe1bba65831dd6aea2d`,
-[kernel specification v0.110](https://github.com/Ming-Research/Whitefoot/blob/5268f516c3f8a57b34263fe1bba65831dd6aea2d/spec/kernel-spec.md)
-PRE-1 declares `Shared<T: drop>`, `shared_new<T: drop>` and
-`shared_share<T: drop>`. PRE-2 declares both `CancelSource` and `CancelWatch`
-as `nodrop`. PROV-6 makes a struct, enum or box owning either handle linear,
-so adding a source to `ServerState` makes `Shared<ServerState>` inadmissible.
-Putting the handle in an `Option` or `Box` preserves that obstruction.
-
-Minimal module fragment, expected to be rejected by the specified capability
-bound, not compiled in this read-and-edit-only step:
-
-```whitefoot
-alias CancelSource = std::time::CancelSource;
-
-fn generation_state() -> state: Shared<CancelSource> pure {
-  let source = std::time::cancel_source();
-  return shared_new::<CancelSource>(value: move source);
-}
-```
-
-The atomic block itself is not the obstacle. SHARE-2 excludes waiting calls
-and nested atomic statements from its block, but not non-waiting host calls.
-`cancel_fire` is non-waiting and `writes(source)`; `cancel_watch` is
-non-waiting and `reads(source)`. Both are permitted in such a block if the
-source can legally be held there. Its guard cannot fire, since a guard must
-write no path. By SHARE-2's footprint rule, accesses rooted in the atomic
-target are removed from the enclosing function's footprint, leaving the
-read of the shared handle; a watch written to caller-owned storage would
-still contribute its write. Source creation and explicit handle closure are
-also non-waiting. Swapping out a source under the atomic statement and
-firing it afterwards would therefore not resolve this storage restriction.
-
-The required Whitefoot capability is safe shared storage for a replaceable
-cancellation source, with a defined way to close every generation and the
-last source. `cancel_share` only returns another linear handle to the same
-one-shot state; it cannot publish a fresh generation to existing client
-contexts. Removing `nodrop`, adding a general shared linear lifecycle, or
-adding a different notification capability is a Whitefoot design decision,
-not a Firn spelling change. This blocks the implementation under the owner
-card above. No workaround, pin change, generation implementation or claimed
-performance result is introduced here.
+No additional network case asserts the absence of unlimited receive wakes.
+A polling receive and a parked receive emit the same bytes and remain
+connected, so socket observations cannot distinguish them. Process CPU or
+scheduling counts also include expiry and other contexts and are not a
+cheap deterministic oracle. The receive's None deadline is inspectable in
+the implementation; the comparison above will measure its cost without
+adding a test-only server path.
 
 ### Results
+
+Pending. This edit-only implementation has not been compiled, tested or
+measured. The existing network assertions and bounds, including the repeated
+timeout changes and the 500 ms shutdown bound, remain unchanged. CI must establish
+correctness on both host I/O routes before the stated performance comparison;
+no throughput improvement is claimed.
