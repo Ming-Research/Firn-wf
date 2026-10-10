@@ -11,7 +11,7 @@ fn map_empty() -> result: Frozen<Node> pure {
   return frozen_new::<Node>(value: move vacant);
 }
 
-fn map_is_empty(root: &Frozen<Node>) -> result: Bool reads(root) {
+fn map_is_empty(root: &Frozen<Node>) -> result: Bool pure {
   match &root^.inner {
     Empty() => {
       return True();
@@ -35,7 +35,7 @@ fn map_branch(zero: Frozen<Node>, one: Frozen<Node>) -> result: Frozen<Node> pur
   return frozen_new::<Node>(value: move branch);
 }
 
-fn map_path(empty: &Frozen<Node>, key: u64, byte: u8, mask: u64) -> result: Frozen<Node> reads(empty) {
+fn map_path(empty: &Frozen<Node>, key: u64, byte: u8, mask: u64) -> result: Frozen<Node> pure {
   if mask == 0_u64 {
     let leaf = Node::Leaf(key: key, byte: byte);
     return frozen_new::<Node>(value: move leaf);
@@ -50,7 +50,7 @@ fn map_path(empty: &Frozen<Node>, key: u64, byte: u8, mask: u64) -> result: Froz
   return map_branch(zero: move sibling, one: move child);
 }
 
-fn map_edit_at(root: &Frozen<Node>, key: u64, value: Option<u8>, mask: u64) -> result: Frozen<Node> reads(root) {
+fn map_edit_at(root: &Frozen<Node>, key: u64, value: Option<u8>, mask: u64) -> result: Frozen<Node> pure {
   match &root^.inner {
     Empty() => {
       match value {
@@ -88,11 +88,11 @@ fn map_edit_at(root: &Frozen<Node>, key: u64, value: Option<u8>, mask: u64) -> r
   }
 }
 
-fn map_edit(root: &Frozen<Node>, key: u64, value: Option<u8>) -> result: Frozen<Node> reads(root) {
+fn map_edit(root: &Frozen<Node>, key: u64, value: Option<u8>) -> result: Frozen<Node> pure {
   return map_edit_at(root: root, key: key, value: value, mask: first_bit);
 }
 
-fn map_lookup_at(root: &Frozen<Node>, key: u64, mask: u64) -> result: Option<u8> reads(root) {
+fn map_lookup_at(root: &Frozen<Node>, key: u64, mask: u64) -> result: Option<u8> pure {
   match &root^.inner {
     Empty() => {
       return None<u8>();
@@ -114,6 +114,6 @@ fn map_lookup_at(root: &Frozen<Node>, key: u64, mask: u64) -> result: Option<u8>
   }
 }
 
-fn map_lookup(root: &Frozen<Node>, key: u64) -> result: Option<u8> reads(root) {
+fn map_lookup(root: &Frozen<Node>, key: u64) -> result: Option<u8> pure {
   return map_lookup_at(root: root, key: key, mask: first_bit);
 }
