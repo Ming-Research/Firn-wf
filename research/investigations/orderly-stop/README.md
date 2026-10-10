@@ -294,6 +294,12 @@ which run on both host I/O routes, and the Redis 7.0.15 suite ratchet
 follows from the code (the receive's deadline is `None` at a zero limit), not
 from these throughput numbers.
 
+**Failing control.** The same 500 ms shutdown-bound case on main's polling
+shutdown, built with the same release (branch `exp/stop-control`,
+[run 38020404152](https://github.com/Ming-Research/Firn-wf/actions/runs/38020404152)),
+fails: stopping took 1.103 s, the one-second receive poll, while every other
+test passed. The bound therefore separates cancellation from polling.
+
 **Probe.** [Run 38019220128](https://github.com/Ming-Research/Firn-wf/actions/runs/38019220128)
 (i9-14900K, 2026-10-10 03:03-03:13 UTC). Revisions:
 - `base`: main's source on the same release (`exp/stop-base`, 21c2595,
