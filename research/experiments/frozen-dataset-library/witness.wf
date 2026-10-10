@@ -39,7 +39,7 @@ fn capture(dataset: &Shared<Registry>) -> result: Capture reads(dataset) waits {
   }
 }
 
-fn publish(dataset: &Shared<Registry>, root: &Frozen<Node>, generation: u64) -> result: unit reads(dataset) waits {
+fn publish(dataset: &Shared<Registry>, root: &Frozen<Node>, generation: u64) -> result: unit reads(dataset), reads(root) waits {
   let retained = frozen_share::<Node>(frozen: root);
   atomic state = &dataset^ {
     set state^.root = move retained;

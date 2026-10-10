@@ -35,7 +35,7 @@ fn map_branch(zero: Frozen<Node>, one: Frozen<Node>) -> result: Frozen<Node> pur
   return frozen_new::<Node>(value: move branch);
 }
 
-fn map_path(empty: &Frozen<Node>, key: u64, byte: u8, mask: u64) -> result: Frozen<Node> pure {
+fn map_path(empty: &Frozen<Node>, key: u64, byte: u8, mask: u64) -> result: Frozen<Node> reads(empty) {
   if mask == 0_u64 {
     let leaf = Node::Leaf(key: key, byte: byte);
     return frozen_new::<Node>(value: move leaf);
@@ -50,7 +50,7 @@ fn map_path(empty: &Frozen<Node>, key: u64, byte: u8, mask: u64) -> result: Froz
   return map_branch(zero: move sibling, one: move child);
 }
 
-fn map_edit_at(root: &Frozen<Node>, key: u64, value: Option<u8>, mask: u64) -> result: Frozen<Node> pure {
+fn map_edit_at(root: &Frozen<Node>, key: u64, value: Option<u8>, mask: u64) -> result: Frozen<Node> reads(root) {
   match &root^.inner {
     Empty() => {
       match value {
@@ -88,7 +88,7 @@ fn map_edit_at(root: &Frozen<Node>, key: u64, value: Option<u8>, mask: u64) -> r
   }
 }
 
-fn map_edit(root: &Frozen<Node>, key: u64, value: Option<u8>) -> result: Frozen<Node> pure {
+fn map_edit(root: &Frozen<Node>, key: u64, value: Option<u8>) -> result: Frozen<Node> reads(root) {
   return map_edit_at(root: root, key: key, value: value, mask: first_bit);
 }
 
