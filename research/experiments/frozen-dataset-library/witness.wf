@@ -98,7 +98,7 @@ fn same_byte(left: Option<u8>, right: Option<u8>) -> result: Bool pure {
   }
 }
 
-fn enumerate(root: &Frozen<Node>, observed: &[Option<u8>], digest: &Digest) -> result: unit writes(observed), writes(digest) {
+fn enumerate(root: &Frozen<Node>, observed: &[Option<u8>], digest: &Digest) -> result: unit reads(root.inner), writes(observed), writes(digest) {
   match &root^.inner {
     Empty() => {
     }
@@ -153,7 +153,7 @@ fn model_digest(model: &[Option<u8>]) -> result: Digest reads(model) {
   return Digest(count: count, checksum: checksum, invalid: valid);
 }
 
-fn verify(root: &Frozen<Node>, model: &[Option<u8>], observed: &[Option<u8>]) -> result: Bool reads(model), writes(observed) {
+fn verify(root: &Frozen<Node>, model: &[Option<u8>], observed: &[Option<u8>]) -> result: Bool reads(root.inner), reads(model), writes(observed) {
   for (index in 0_u64..observed^.len) {
     set observed^[index] = None<u8>();
   }
@@ -189,7 +189,7 @@ fn verify(root: &Frozen<Node>, model: &[Option<u8>], observed: &[Option<u8>]) ->
   return True();
 }
 
-fn deep_duplicate(root: &Frozen<Node>) -> result: Frozen<Node> pure {
+fn deep_duplicate(root: &Frozen<Node>) -> result: Frozen<Node> reads(root.inner) {
   match &root^.inner {
     Empty() => {
       return map_empty();
