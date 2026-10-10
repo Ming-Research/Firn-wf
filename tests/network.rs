@@ -9081,6 +9081,50 @@ fn firn_rewrite_cuts_a_retained_unfinished_block_before_switching() {
     ]);
 }
 
+/// A rewrite that cuts the sealed file before a startup-retained MULTI and
+/// then fails to install its base leaves that file as an earlier increment.
+/// Without the cut it would end inside a block, and startup refuses an
+/// earlier file it cannot load whole; with it, the writes appended inside the
+/// block are lost, where Redis would refuse to start.
+#[test]
+fn firn_rewrite_failed_after_cutting_a_retained_block_stays_loadable() {
+    let program = CompiledProgram::from_environment();
+    let name = "appendonly.aof";
+    let path = aof_incremental_fixture(program.working_directory(), name);
+    let partial = resp(&["SET", "c", "3"]);
+    let retained = [
+        resp(&["SET", "a", "1"]),
+        resp(&["MULTI"]),
+        resp(&["SET", "b", "2"]),
+    ].concat();
+    std::fs::write(&path, [retained.clone(), partial[..9].to_vec()].concat()).unwrap();
+    let directory = program.working_directory().join("appendonlydir");
+    let obstacles = [directory.join("appendonly.aof.1.base.aof"), directory.join("appendonly.aof.2.base.aof")];
+    for obstacle in &obstacles {
+        std::fs::create_dir(obstacle).unwrap();
+    }
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]);
+    let mut client = connect_when_ready(port);
+    client.write_all(&resp(&["SET", "after", "1"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "append inside retained block");
+    rewrite_start(&mut client);
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "err", "the base cannot be renamed into place");
+    let manifest = std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap();
+    assert!(manifest.contains("appendonly.aof.2.incr.aof"), "the switch must have published the new increment: {manifest}");
+    client.write_all(&resp(&["SET", "new", "2"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "append after the failed rewrite");
+    for obstacle in &obstacles {
+        std::fs::remove_dir(obstacle).unwrap();
+    }
+    rewrite_stop(&mut client, child);
+    multipart_load(&program, name, &[
+        ("a", Some("1")), ("b", None), ("c", None),
+        ("after", None), ("new", Some("2")),
+    ]);
+}
+
 /// loadSingleAppendOnlyFile queues the retained SET and the appended MULTI
 /// until EXEC, then applies all the queued writes, so a restart without a
 /// rewrite gains `b`. Redis's BGREWRITEAOF writes the live dataset, where the

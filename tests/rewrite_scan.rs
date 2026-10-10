@@ -221,7 +221,7 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
     let keys = scanned_keys(&program, &mut control);
     // Counters the scan has not observed yet: a write journaled as a bare
     // effect before the scan observes its key would be counted twice.
-    let observed: Vec<Vec<Vec<u8>>> = prefix_records(&std::fs::read(program.working_directory().join("appendonlydir/temp-appendonly.aof.base")).unwrap_or_default());
+    let observed: Vec<Vec<Vec<u8>>> = prefix_records(&std::fs::read(program.working_directory().join("appendonlydir/temp-appendonly.aof.base")).expect("the scan's temporary base"));
     let unobserved: Vec<Vec<u8>> = (0..6000).step_by(5).rev()
         .map(|index| format!("kind:0:{index}").into_bytes())
         .filter(|key| !observed.iter().any(|words| words.get(1) == Some(key)))
@@ -269,6 +269,15 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
             // has a journal record in this rewrite.
             request(&mut client, &[b"INCR", b"single:count"]);
             request(&mut client, &[b"APPEND", b"single:text", b"x"]);
+            // Their AOF forms differ from the commands sent: PXAT,
+            // PEXPIREAT, SET KEEPTTL, SREM and HSET.
+            request(&mut client, &[b"SET", b"single:ex", value.as_bytes(), b"EX", b"100000"]);
+            request(&mut client, &[b"EXPIRE", b"single:count", b"100000"]);
+            request(&mut client, &[b"GETEX", b"single:text", b"PX", b"100000000"]);
+            request(&mut client, &[b"INCRBYFLOAT", b"single:float", b"1.5"]);
+            request(&mut client, &[b"HINCRBYFLOAT", b"single:hash", b"field", b"0.5"]);
+            request(&mut client, &[b"SADD", b"single:set", b"a", b"b", b"c"]);
+            request(&mut client, &[b"SPOP", b"single:set"]);
             for key in &worker_unobserved {
                 request(&mut client, &[b"INCR", key]);
             }

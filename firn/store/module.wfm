@@ -218,7 +218,7 @@ public fn sequence_entry(sequence: &WriteSequence, value: &Entry) -> result: uni
 
 public fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit writes(sequence), writes(slot) doc "Removes a present entry and takes the statement's sequence; an absent entry changes nothing. Expiry, eviction and command deletion share this contract.";
 
-public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), reads(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) doc "Publishes a taken sequence, after-images and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
+public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), reads(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) doc "Publishes a taken sequence, its journal unit (after-images, or a one-key statement's own append-only bytes) and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
 
 public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
 
@@ -264,7 +264,7 @@ public fn record_access(journal: &Option<AccessJournal>, key: &[u8], stamp: u32)
 
 public fn restore_access(journal: &Option<AccessJournal>, keys: &ConcurrentHashMap<Entry>) -> result: unit reads(journal), writes(keys) doc "Restores every journaled stamp before an abandoned, unwritten script attempt releases its atomic keyspace hold. Completed attempts and attempts that wrote never call this.";
 
-public fn sequence_stamp_key(sequence: &WriteSequence, slot: &Option<Entry>, key: &[u8]) -> result: unit reads(slot), reads(key), writes(sequence), writes(slot.Some.value.last_write) doc "Takes the shared statement sequence, stamps a changed surviving entry and coalesces its complete replacement image when capturing. A missing changed slot records a tombstone.";
+public fn sequence_stamp_key(sequence: &WriteSequence, slot: &Option<Entry>, key: &[u8]) -> result: unit reads(slot), reads(key), writes(sequence), writes(slot.Some.value.last_write) doc "Takes the shared statement sequence, stamps a changed surviving entry and captures it: a complete replacement image, or effect mode for an anchored one-key statement. A missing changed slot records a tombstone.";
 
 public fn sequence_delete_key(sequence: &WriteSequence, slot: &Option<Entry>, key: &[u8]) -> result: unit reads(key), writes(sequence), writes(slot) doc "Removes a present key and records its tombstone through the same sequence token. An absent key changes neither sequence nor capture.";
 
@@ -278,7 +278,7 @@ public fn rewrite_abort(capture: &RewriteCapture) -> result: unit writes(capture
 
 public fn rewrite_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes(capture) doc "Reserves bytes before allocation, or logically aborts this attempt without allocating when they exceed the remaining allowance. Includes peak reservation accounting.";
 
-public fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) doc "Coalesces an actual changed key into the already-taken outer sequence. Owns complete replacement bytes and bounds aggregate image work, scratch and allocation overlap; failure aborts capture at commit, never the client command.";
+public fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) doc "Coalesces an actual changed key into the already-taken outer sequence: in an anchored one-key statement it only selects effect mode; otherwise it owns complete replacement bytes, charging scratch and allocation overlap; failure aborts capture at commit, never the client command.";
 
 public fn sequence_capture_at(sequence: &WriteSequence, keys: &KeySet, index: u64, slot: &Option<Entry>) -> result: unit reads(keys), reads(slot), writes(sequence) doc "Captures the changed slot under its key-set index after charging the temporary key copy. Used when mutation helpers already stamped an entry through a matched payload.";
 

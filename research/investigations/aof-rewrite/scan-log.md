@@ -879,11 +879,40 @@ writers running for the whole rewrite; the restore case adds single-key
 INCR and APPEND writers and INCRs on string keys the scan had not yet
 observed when the writes began. Journaling bytes for a key not yet anchored
 would count such an INCR both in its later scanned image and in the journal,
-failing the independent dump comparison.
+failing the independent dump comparison. A falsifier run with the anchor
+check removed (temporary branch, CI run
+[38062777688](https://github.com/Ming-Research/Firn-wf/actions/runs/38062777688))
+failed both that comparison and the concurrent growing-writes case, whose
+INCR counter restored as 125372 against 115389 acknowledged.
+
+EXEC and scripts hold the whole map and keep journaling images, so a key
+they grow during a rewrite still costs a copy per write; journaling their
+bytes needs every key they read to be anchored, and firn does not track
+reads (status board item `firn-bl-rw-exec-effect`). A scan step holds a
+key's image and its copy in the step buffer, and a capture its scratch
+image and journal copy, so the largest key a rewrite carries is about R/2.
 
 Unverified: restoring the new base into Redis 7.0.15 itself (the registered
 oracle uses firn's restart and an independent dump); crashes after S1
 (during the sealed drain, mid-reconciliation, between base rename and
 manifest publication); whether the post-S1 pressure case can race
 installation; capture across all mutating commands rather than the covered
-set; and cleanup time under stalled host I/O.
+set, which effect mode makes load-bearing because a missed capture is no
+longer repaired by a later image of the same key; whether appends through
+the old handle after a switch-time cut that then fails to open the new
+increment land at the cut end (append mode), and that those appends then
+replay at restart where Redis's reload would revert them as part of its
+unfinished block; and cleanup time under stalled host I/O.
+
+A scoped read-only review (Claude Opus 5.5) of `302ce4b..b91ecf2` found the
+anchor argument sound within the reviewed code and raised: no case
+exercising the switch-time cut (added:
+`firn_rewrite_failed_after_cutting_a_retained_block_stays_loadable` fails
+its restart without the cut); EXEC and scripts still copying growing keys
+(recorded above and on the board); the effective R/2 key limit (stated);
+unread `Loaded.reverted`/`unfinished` fields (removed); doc strings that
+assumed every unit is an image (corrected); the dropped objection to
+split observations (answered in the capture node); and narrow effect-mode
+coverage (the restore case now also requires its scan output to be read,
+and adds SET EX, EXPIRE, GETEX, INCRBYFLOAT, HINCRBYFLOAT and SPOP, whose
+AOF forms differ from the commands sent).

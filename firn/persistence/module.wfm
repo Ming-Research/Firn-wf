@@ -8,14 +8,12 @@ alias WriteFile = std::fs::WriteFile;
 public fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time, meter: std::process::MemoryMeter) -> result: unit pure waits doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Preserve a partial append for the next drain. Main sets stopping only after clients have left.";
 
 public struct Loaded {
-  doc "What replaying an append-only file found: applied, how many commands it applied, size, how many bytes were read, and, when cut, kept, the length the file is to be cut to before anything is appended to it, as Redis 7.0.15 truncates a file whose end it could not load, and stopped, that the replay ended at a record it could not load and the server must not start, as Redis 7.0.15 exits. At EOF inside a block, unfinished is true and reverted is the first MULTI offset after the last closing EXEC, before every command the incomplete block leaves unapplied; kept still follows Redis's partial-command or latest-MULTI truncation rule.";
+  doc "What replaying an append-only file found: applied, how many commands it applied, size, how many bytes were read, and, when cut, kept, the length the file is to be cut to before anything is appended to it, as Redis 7.0.15 truncates a file whose end it could not load, and stopped, that the replay ended at a record it could not load and the server must not start, as Redis 7.0.15 exits. At EOF inside a block, kept follows Redis's partial-command or latest-MULTI truncation rule.";
   public applied: u64;
   public kept: u64;
   public size: u64;
   public cut: Bool;
   public stopped: Bool;
-  public reverted: u64;
-  public unfinished: Bool;
 }
 
 public fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name: &[u8], name_length: u64, time: &Time, clock: &Clock) -> loaded: Loaded reads(store), reads(root), reads(name), reads(time), writes(factory), writes(clock) waits contract {

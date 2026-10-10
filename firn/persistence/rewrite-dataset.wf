@@ -181,7 +181,7 @@ fn aof_rw_select_empty(factory: &HandleFactory, file: &WriteFile) -> result: Res
 }
 
 fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots<u8>>, decoder: &AofReconcile) -> result: Result<u64, unit> reads(block), writes(factory), writes(file), writes(decoder) waits {
-  doc "Strip the internal sequence/length frames while streaming chronological complete replacement units. A frame may cross a chunk; no output allocation is needed and each append borrows only this one at-most-64-KiB chunk.";
+  doc "Strip the internal sequence/length frames while streaming chronological units, each complete replacement images or a one-key statement's own append-only bytes. A frame may cross a chunk; no output allocation is needed and each append borrows only this one at-most-64-KiB chunk.";
   let size = 0_u64;
   let offset = 0_u64;
   let length = block^.inner.len;

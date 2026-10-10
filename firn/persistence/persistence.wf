@@ -135,8 +135,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
   let size = 0_u64;
   let cut = False();
   let stopped = False();
-  let reverted = 0_u64;
-  let unfinished = False();
   match open_file(factory: factory, root: root, name: name, start: 0_u64, end: name_length) {
     Ok(value: file) => {
       let env = KeyEnv();
@@ -153,7 +151,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
       let block_start = 0_u64;
       let block_body = 0_u64;
       let latest_multi = 0_u64;
-      let first_multi = 0_u64;
       loop @chunks {
         if held >= input.inner.len {
           input_grow(input: &input);
@@ -198,10 +195,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
             set kept = latest_multi;
             set cut = True();
           }
-          set unfinished = scanning;
-          if scanning {
-            set reverted = first_multi;
-          }
           break @chunks;
         }
         let consumed = resume;
@@ -240,7 +233,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
             } else if multi {
               set scanning = True();
               set latest_multi = window_base +wrap consumed;
-              set first_multi = latest_multi;
               set block_start = consumed;
               set block_body = parsed.next;
             } else if exec {
@@ -274,5 +266,5 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
       set stopped = True();
     }
   }
-  return Loaded(applied: applied, kept: kept, size: size, cut: cut, stopped: stopped, reverted: reverted, unfinished: unfinished);
+  return Loaded(applied: applied, kept: kept, size: size, cut: cut, stopped: stopped);
 }

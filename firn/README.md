@@ -370,7 +370,9 @@ unsuccessful attempt, including a refused start, stops automatic rewrites
 until a manual `BGREWRITEAOF` succeeds; Redis instead keeps retrying them with
 a delay of up to an hour. A key is copied whole in one hold when the scan
 reaches it or a write changes it during a rewrite, so a large key pauses
-other clients for the copy; only the reserve limits its size. The fixed journal
+other clients for the copy. The rewrite holds about two copies of a key, so a
+key above about half the reserve (8 MiB without maxmemory) aborts every
+rewrite. EXEC and scripts still copy every key they change. The fixed journal
 directory permits at most 8188 chunks. If startup left the file inside an
 unfinished MULTI, the rewrite cuts the sealed file before that MULTI; the new
 base holds the live writes appended after it, as Redis's rewrite does.
