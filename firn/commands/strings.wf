@@ -463,7 +463,7 @@ fn set_key(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let none = False();
   let work = SetWork(outcome: state_absent, answered: none, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set work = set_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, value: move value, flags: flags, at: at);
     let stored = work.outcome == state_done;
@@ -698,7 +698,7 @@ fn run_getdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.now = time^.check;
   let kind = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set kind = getdel_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let removed = client^.state == state_expired;
@@ -725,7 +725,7 @@ fn run_getex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let none = False();
   let work = GetexWork(kind: 0_u64, removed: none, change: 0_u64);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set work = getex_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
     let appended = getex_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, work: &work, input: input, key_span: key_span, key: key, env: env, budget: &log_budget);
@@ -897,7 +897,7 @@ fn run_incr(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let counted = Counted(value: 0_i64, delta: delta, now: time^.check, state: state_absent);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = incr_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, counted: &counted);
     if store^.logging {
@@ -1270,7 +1270,7 @@ fn run_append(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let none = False();
   let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set work = append_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span);
     let changed = work.outcome == state_done;
@@ -1298,7 +1298,7 @@ fn run_setrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
   let none = False();
   let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set work = setrange_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span, offset: offset);
     let changed = work.outcome == state_done;
@@ -1319,7 +1319,7 @@ fn run_strlen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let none = False();
   let work = StringWork(outcome: 0_u64, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set work = strlen_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: work.removed, key: key, budget: &log_budget);
@@ -1343,7 +1343,7 @@ fn run_getrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
   set client^.now = time^.check;
   let kind = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set kind = getrange_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, start: plan.start, end: plan.end);
     let removed = client^.state == state_expired;
@@ -1571,7 +1571,7 @@ fn run_incrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
   let empty = Bytes::Short(bytes: move nothing);
   let summed = FloatSum(increment: increment, text: move empty, now: time^.check, state: state_absent);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = incrbyfloat_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, summed: &summed);
     let appended = incrbyfloat_meta(log: &m^.log, logged: logged, removed: removed, summed: &summed, input: input, key_span: key_span, key: key, budget: &log_budget);

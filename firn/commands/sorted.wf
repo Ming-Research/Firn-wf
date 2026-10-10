@@ -502,7 +502,7 @@ fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let lapsed = zadd_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
     let appended = zadd_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, plan: &plan, input: input, args: args, key: key, budget: &log_budget);
@@ -628,7 +628,7 @@ fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let lapsed = zrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let appended = zrem_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
@@ -873,7 +873,7 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let lapsed = zpop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let appended = zpop_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);

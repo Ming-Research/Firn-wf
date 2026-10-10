@@ -47,6 +47,21 @@ fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
   } else {
     return unit;
   }
+  if sequence^.effect {
+    return unit;
+  }
+  let anchored = band(sequence^.anchor_seen, sequence^.anchored);
+  let replayable = band(sequence^.single, anchored);
+  if replayable {
+    match sequence^.images {
+      None() => {
+        set sequence^.effect = True();
+        return unit;
+      }
+      Some(value: earlier) => {
+      }
+    }
+  }
   let length = key^.len;
   let measure = rewrite_measure(slot: slot, key_length: length);
   match sequence^.images {
@@ -216,11 +231,15 @@ fn rewrite_journal_number(chunks: &Box<Ring<Box<Slots<u8>>>>, value: u64) -> res
   return unit;
 }
 
-fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), writes(meta.rewrite) {
+fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), reads(meta.log), writes(meta.rewrite) {
   if meta^.rewrite.active {
     let failed = bor(sequence^.failed, sequence^.exhausted);
     if failed {
       rewrite_abort(capture: &meta^.rewrite);
+      return unit;
+    }
+    if sequence^.effect {
+      sequence_publish_effect(meta: meta, sequence: sequence);
       return unit;
     }
     match sequence^.images {
@@ -253,6 +272,33 @@ fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads
             }
           }
           set meta^.rewrite.used = meta^.rewrite.used -sat overlap;
+        }
+      }
+      None() => {
+      }
+    }
+  }
+  return unit;
+}
+
+fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), reads(meta.log), writes(meta.rewrite) {
+  doc "Journals the statement's own append-only bytes as one framed unit. Its single key's previous write is already in the journal, so replaying these bytes in sequence order reproduces the key exactly, at the cost of the bytes rather than the key's size.";
+  let end = meta^.log.inner.len;
+  if sequence^.log_start > end {
+    rewrite_abort(capture: &meta^.rewrite);
+    return unit;
+  }
+  let length = end - sequence^.log_start;
+  let framed = length +sat 16_u64;
+  let room = rewrite_journal_room(capture: &meta^.rewrite, length: framed);
+  if room {
+    match meta^.rewrite.journal {
+      Some(value: chunks) => {
+        rewrite_journal_number(chunks: chunks, value: sequence^.value);
+        rewrite_journal_number(chunks: chunks, value: length);
+        for (offset in sequence^.log_start..end) {
+          let byte = meta^.log.inner[offset];
+          rewrite_journal_put(chunks: chunks, value: byte);
         }
       }
       None() => {

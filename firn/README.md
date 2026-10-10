@@ -355,7 +355,9 @@ The rewrite below is the reconciled-scan route under comparison ([investigation]
 
 With append-only persistence enabled, `BGREWRITEAOF` answers started after
 S0 admission. The worker scans the live map in separate statements while
-mutations retain complete after-images. The writer seals the old increment
+mutations journal a changed key's complete image at its first write in the
+rewrite and, for a command on that one key afterwards, the command's AOF
+bytes. The writer seals the old increment
 and rotates once at S1, then the worker reconciles the scan with ordered
 DEL-plus-reconstruction images. Installation selects base(S1) and only the
 increment containing later writes, before removing old files.

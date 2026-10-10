@@ -203,7 +203,7 @@ fn run_hset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   set client^.number = 0_u64;
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = hset_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let changed = client^.state == state_done;
@@ -278,7 +278,7 @@ fn run_hsetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.number = 0_u64;
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = hsetnx_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let stored = client^.state == state_done;
@@ -482,7 +482,7 @@ fn run_hdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   set client^.number = 0_u64;
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = hdel_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let changed = client^.number > 0_u64;
@@ -769,7 +769,7 @@ fn run_hincrby(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   set client^.high = 0_i64;
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = hincrby_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let changed = client^.state == state_done;
@@ -885,7 +885,7 @@ fn run_hincrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
   let floating = Floating(increment: read, text: move empty, state: state_absent);
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = hincrbyfloat_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, floating: &floating);
     let appended = hincrbyfloat_meta(log: &m^.log, logged: logged, removed: removed, client: client, floating: &floating, input: input, key_span: key_span, field_span: field_span, key: key, budget: &log_budget);

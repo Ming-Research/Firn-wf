@@ -830,8 +830,12 @@ findings and their dispositions:
   pause proportional to their size; bounding that pause by splitting a key
   needs resumable HashMap iteration (board item `coord-wfbl-02-01`). The new
   case `reconciled_scan_rewrites_large_keys_scanned_and_written` fails under
-  the old ceiling, and the concurrent growing-writes case again overlaps
-  the whole rewrite as on main.
+  the old ceiling. Restoring main's concurrent growing-writes case then
+  failed ([run 38060500294](https://github.com/Ming-Research/Firn-wf/actions/runs/38060500294)):
+  every APPEND or LPUSH journaled the whole growing key, so the journal
+  grew roughly with the square of the writes and exhausted R. Card
+  `firn-q-rw-bigkey` was revised to option C, implemented as described in
+  [Effect journal for anchored one-key statements](#effect-journal-for-anchored-one-key-statements).
 - A startup-retained unfinished `MULTI` refused the rewrite, so writes
   appended after it were lost at restart, where Redis's live rewrite keeps
   them. On status board card `firn-q-rw-startup-multi` the recommended
@@ -849,6 +853,33 @@ findings and their dispositions:
 - The boundary reader charged its window once even when no increment
   matched, and a growth charge could skip its refund on one break; it now
   charges per selected part and counts growth before that break.
+
+### Effect journal for anchored one-key statements
+
+Every write to a key during a rewrite used to journal the key's complete
+image. A statement holding exactly one key now journals its own append-only
+bytes instead when that key's previous write lies inside the current window
+(its stamp exceeds S0). Correctness argument: capture covers every write in
+(S0, S1]; a key's first write in the window has a previous stamp at or below
+S0 and still journals a complete image, which replaces whatever the scan
+emitted for the key; every later write to the key is journaled in sequence
+order, either as an image or as bytes of a statement that changed that key
+alone. Replaying the journal after the base therefore reaches each such
+key's state at S1 by the same commands the increment would replay. A
+one-key statement's bytes depend only on that key, because the statement
+holds no other key. Statements holding several keys or the whole map keep
+images: their bytes can read keys whose replayed state at that point is not
+exact, as SUNIONSTORE and COPY read sources whose scanned images may include
+later writes. The anchor is taken at the statement's first stamp or removal,
+from the entry's previous stamp, so a deleted and recreated key counts as
+anchored when its removed entry was written in the window.
+
+Expected evidence: main's concurrent growing-writes case passes with its
+writers running for the whole rewrite; the restore case adds single-key
+INCR and APPEND writers and INCRs on string keys the scan had not yet
+observed when the writes began. Journaling bytes for a key not yet anchored
+would count such an INCR both in its later scanned image and in the journal,
+failing the independent dump comparison.
 
 Unverified: restoring the new base into Redis 7.0.15 itself (the registered
 oracle uses firn's restart and an independent dump); crashes after S1

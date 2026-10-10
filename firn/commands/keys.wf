@@ -458,7 +458,7 @@ fn run_type(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let kind = 0_u64;
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set kind = entry_kind(sequence: &sequence, capture_key: key, slot: slot, client: client);
     let removed = client^.state == state_expired;
@@ -788,7 +788,7 @@ fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.now = time^.check;
   let outcome = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set outcome = expire_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
     let lapsed = client^.state == state_expired;
@@ -856,7 +856,7 @@ fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = ttl_body(sequence: &sequence, capture_key: key, slot: slot, remaining: &remaining);
     let appended = ttl_meta(log: &m^.log, logged: logged, removed: removed, key: key, budget: &log_budget);
@@ -874,7 +874,7 @@ fn run_persist(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     persist_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, expiry: &expiry);
     let appended = persist_meta(log: &m^.log, logged: store^.logging, expiry: &expiry, input: input, key_span: key_span, key: key, budget: &log_budget);

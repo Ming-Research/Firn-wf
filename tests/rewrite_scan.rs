@@ -219,9 +219,18 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
     request(&mut control, &[b"SET", binary, b"before"]);
     rewrite_start(&mut control);
     let keys = scanned_keys(&program, &mut control);
+    // Counters the scan has not observed yet: a write journaled as a bare
+    // effect before the scan observes its key would be counted twice.
+    let observed: Vec<Vec<Vec<u8>>> = prefix_records(&std::fs::read(program.working_directory().join("appendonlydir/temp-appendonly.aof.base")).unwrap_or_default());
+    let unobserved: Vec<Vec<u8>> = (0..6000).step_by(5).rev()
+        .map(|index| format!("kind:0:{index}").into_bytes())
+        .filter(|key| !observed.iter().any(|words| words.get(1) == Some(key)))
+        .take(20).collect();
+    assert!(!unobserved.is_empty(), "the scan must still have string keys ahead of it");
     let running = Arc::new(AtomicBool::new(true));
     let worker_running = running.clone();
     let worker_keys = keys.clone();
+    let worker_unobserved = unobserved.clone();
     let worker = std::thread::spawn(move || {
         let mut client = connect_when_ready(port);
         request(&mut client, &[b"DEL", &worker_keys[5]]);
@@ -256,6 +265,13 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
             request(&mut client, &[b"LTRIM", b"moved:list", b"-2", b"-1"]);
             request(&mut client, &[b"SMOVE", &worker_keys[2], b"moved:set", b"replacement"]);
             request(&mut client, &[b"SUNIONSTORE", b"stored:set", &worker_keys[2], b"moved:set"]);
+            // Plain single-key writes journal their own bytes once the key
+            // has a journal record in this rewrite.
+            request(&mut client, &[b"INCR", b"single:count"]);
+            request(&mut client, &[b"APPEND", b"single:text", b"x"]);
+            for key in &worker_unobserved {
+                request(&mut client, &[b"INCR", key]);
+            }
             // Pace the writer so its journal stays well inside the reserve.
             std::thread::sleep(Duration::from_millis(5));
         }
