@@ -249,6 +249,11 @@ fn aof_rw_growth(current_size: u64, base_size: u64, percentage: u64, minimum: u6
   return remainder >= threshold;
 }
 
+fn aof_rw_release<T: drop>(value: T) -> result: unit pure {
+  doc "Consumes an owned value so its compiler-derived release runs here, before a following refund or pause; Whitefoot has no block statement and no release operation, and moving into a consuming function is its early release.";
+  return unit;
+}
+
 fn aof_rw_pause(clock: &Clock) -> result: unit writes(clock) waits {
   doc "A nonempty sleep is also used for empty scan steps and chunk cleanup; a zero-byte append would not yield.";
   let now = std::time::now(clock: clock);
@@ -364,36 +369,35 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, clock
         if chunks.inner.len == 0_u64 {
           break @releasing;
         }
-        {
-          let block = take_front(window: &chunks.inner);
-          if accepted {
-            let stopped = aof_rw_cancelled(store: &store);
-            if stopped {
-              set accepted = False();
-            } else {
-              if size == 0_u64 {
-                match aof_rw_select_empty(factory: &factory, file: &file) {
-                  Ok(value: selected) => {
-                    set size = selected;
-                  }
-                  Err(error: problem) => {
-                    set accepted = False();
-                  }
+        let block = take_front(window: &chunks.inner);
+        if accepted {
+          let stopped = aof_rw_cancelled(store: &store);
+          if stopped {
+            set accepted = False();
+          } else {
+            if size == 0_u64 {
+              match aof_rw_select_empty(factory: &factory, file: &file) {
+                Ok(value: selected) => {
+                  set size = selected;
+                }
+                Err(error: problem) => {
+                  set accepted = False();
                 }
               }
-              if accepted {
-                match aof_rw_reconcile(factory: &factory, file: &file, block: &block, decoder: &decoder) {
-                  Ok(value: appended) => {
-                    set size = size +sat appended;
-                  }
-                  Err(error: problem) => {
-                    set accepted = False();
-                  }
+            }
+            if accepted {
+              match aof_rw_reconcile(factory: &factory, file: &file, block: &block, decoder: &decoder) {
+                Ok(value: appended) => {
+                  set size = size +sat appended;
+                }
+                Err(error: problem) => {
+                  set accepted = False();
                 }
               }
             }
           }
         }
+        aof_rw_release::<Box<Slots<u8>>>(value: move block);
         aof_rw_pause(clock: &clock);
       }
     }
@@ -579,9 +583,8 @@ fn aof_rw_discard(store: &Keyspace, clock: &Clock) -> result: unit reads(store),
         if chunks.inner.len == 0_u64 {
           break @cleanup;
         }
-        {
-          let released = take_front(window: &chunks.inner);
-        }
+        let released = take_front(window: &chunks.inner);
+        aof_rw_release::<Box<Slots<u8>>>(value: move released);
         aof_rw_pause(clock: clock);
       }
     }

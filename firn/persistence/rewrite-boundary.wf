@@ -46,128 +46,128 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
       match std::fs::open_file(factory: factory, root: &log^.directory, name: name, start: 0_u64, end: length) {
         Ok(value: file) => {
           let allocated = 589872_u64;
-          {
-            let input = pkg::protocol::input_new(capacity: 65536_u64);
-            let args = box_slots_new::<Span>(capacity: 32768_u64);
-            let stream = pkg::protocol::request_stream_new();
-            let held = 0_u64;
-            let offset = 0_u64;
-            let scanning = False();
-            let first_multi = 0_u64;
-            let latest_multi = 0_u64;
-            let command_start = 0_u64;
-            loop @chunks {
-              let cancelled = aof_rw_cancelled(store: store);
-              if cancelled {
+          let input = pkg::protocol::input_new(capacity: 65536_u64);
+          let args = box_slots_new::<Span>(capacity: 32768_u64);
+          let stream = pkg::protocol::request_stream_new();
+          let held = 0_u64;
+          let offset = 0_u64;
+          let scanning = False();
+          let first_multi = 0_u64;
+          let latest_multi = 0_u64;
+          let command_start = 0_u64;
+          loop @chunks {
+            let cancelled = aof_rw_cancelled(store: store);
+            if cancelled {
+              break @chunks;
+            }
+            if held >= input.inner.len {
+              let old_input = input.inner.cap;
+              let old_args = args.inner.cap;
+              let capacity = old_input *sat 2_u64;
+              if capacity > 1073741824_u64 {
                 break @chunks;
               }
-              if held >= input.inner.len {
-                let old_input = input.inner.cap;
-                let old_args = args.inner.cap;
-                let capacity = old_input *sat 2_u64;
-                if capacity > 1073741824_u64 {
-                  break @chunks;
-                }
-                let span_capacity = capacity / 2_u64;
-                let span_bytes = span_capacity *sat 16_u64;
-                let new_bytes = capacity +sat span_bytes;
-                let charge = new_bytes +sat 48_u64;
-                let room = False();
-                atomic expanded = &store^.meta {
-                  set room = pkg::store::rewrite_charge(capture: &expanded^.rewrite, bytes: charge);
-                }
-                if room {
-                  if span_capacity >= args.inner.cap {
-                    grow(cell: &args, capacity: span_capacity);
-                  } else {
-                    break @chunks;
-                  }
-                  pkg::protocol::input_grow(input: &input);
-                  let old_span_bytes = old_args *sat 16_u64;
-                  let old_bytes = old_input +sat old_span_bytes;
-                  let released = old_bytes +sat 48_u64;
-                  atomic grown = &store^.meta {
-                    set grown^.rewrite.used = grown^.rewrite.used -sat released;
-                  }
-                  set allocated = allocated +sat charge;
-                  set allocated = allocated -sat released;
+              let span_capacity = capacity / 2_u64;
+              let span_bytes = span_capacity *sat 16_u64;
+              let new_bytes = capacity +sat span_bytes;
+              let charge = new_bytes +sat 48_u64;
+              let room = False();
+              atomic expanded = &store^.meta {
+                set room = pkg::store::rewrite_charge(capture: &expanded^.rewrite, bytes: charge);
+              }
+              if room {
+                if span_capacity >= args.inner.cap {
+                  grow(cell: &args, capacity: span_capacity);
                 } else {
                   break @chunks;
                 }
-              }
-              let capacity = input.inner.len;
-              let ended = False();
-              let failed = False();
-              let window = &input.inner[0_u64..capacity];
-              match std::fs::read_at(factory: factory, file: &file, destination: window, file_offset: offset, start: held, end: capacity) {
-                Ok(value: next) => {
-                  let got = next -sat held;
-                  set offset = offset +sat got;
-                  set held = next;
-                  set ended = got == 0_u64;
+                pkg::protocol::input_grow(input: &input);
+                let old_span_bytes = old_args *sat 16_u64;
+                let old_bytes = old_input +sat old_span_bytes;
+                let released = old_bytes +sat 48_u64;
+                atomic grown = &store^.meta {
+                  set grown^.rewrite.used = grown^.rewrite.used -sat released;
                 }
-                Err(error: problem) => {
-                  set ended = True();
-                  match problem {
-                    ReadEnd() => {
-                    }
-                    ReadFailed(error: why) => {
-                      set failed = True();
-                    }
-                  }
-                }
-              }
-              if ended {
-                let empty = held == 0_u64;
-                let at_boundary = stream.phase == 0_u64;
-                let whole = band(empty, at_boundary);
-                let closed = bnot(scanning);
-                let complete = band(whole, closed);
-                let readable = bnot(failed);
-                set accepted = band(complete, readable);
+                set allocated = allocated +sat charge;
+                set allocated = allocated -sat released;
+              } else {
                 break @chunks;
               }
-              let consumed = 0_u64;
-              let base = offset -sat held;
-              loop @commands {
-                let parsed = pkg::protocol::parse_request_stream(input: window, start: consumed, held: held, args: &args, stream: &stream);
-                if parsed.state == 0_u64 {
-                  set consumed = parsed.next;
-                  break @commands;
-                } else if parsed.state == 1_u64 {
-                  let kind = 0_u64;
-                  if stream.resp {
-                    set kind = aof_block_word(input: &stream.word[0_u64..5_u64], start: 0_u64, length: stream.length, count: stream.count);
-                  } else {
-                    set kind = aof_block_command(input: window, args: &args);
-                  }
-                  if kind == 1_u64 {
-                    set latest_multi = command_start;
-                    if scanning {
-                    } else {
-                      set first_multi = latest_multi;
-                    }
-                    set scanning = True();
-                  } else if kind == 2_u64 {
-                    set scanning = False();
-                  }
-                } else if parsed.state != 6_u64 {
-                  set failed = True();
-                  break @commands;
-                }
-                set consumed = parsed.next;
-                set command_start = base +sat consumed;
-                if consumed >= held {
-                  break @commands;
-                }
-              }
-              if failed {
-                break @chunks;
-              }
-              set held = pkg::protocol::keep_rest(input: &input, from: consumed, held: held);
-              aof_rw_pause(clock: clock);
             }
+            let capacity = input.inner.len;
+            let ended = False();
+            let failed = False();
+            let window = &input.inner[0_u64..capacity];
+            match std::fs::read_at(factory: factory, file: &file, destination: window, file_offset: offset, start: held, end: capacity) {
+              Ok(value: next) => {
+                let got = next -sat held;
+                set offset = offset +sat got;
+                set held = next;
+                set ended = got == 0_u64;
+              }
+              Err(error: problem) => {
+                set ended = True();
+                match problem {
+                  ReadEnd() => {
+                  }
+                  ReadFailed(error: why) => {
+                    set failed = True();
+                  }
+                }
+              }
+            }
+            if ended {
+              let empty = held == 0_u64;
+              let at_boundary = stream.phase == 0_u64;
+              let whole = band(empty, at_boundary);
+              let closed = bnot(scanning);
+              let complete = band(whole, closed);
+              let readable = bnot(failed);
+              set accepted = band(complete, readable);
+              break @chunks;
+            }
+            let consumed = 0_u64;
+            let base = offset -sat held;
+            loop @commands {
+              let parsed = pkg::protocol::parse_request_stream(input: window, start: consumed, held: held, args: &args, stream: &stream);
+              if parsed.state == 0_u64 {
+                set consumed = parsed.next;
+                break @commands;
+              } else if parsed.state == 1_u64 {
+                let kind = 0_u64;
+                if stream.resp {
+                  set kind = aof_block_word(input: &stream.word[0_u64..5_u64], start: 0_u64, length: stream.length, count: stream.count);
+                } else {
+                  set kind = aof_block_command(input: window, args: &args);
+                }
+                if kind == 1_u64 {
+                  set latest_multi = command_start;
+                  if scanning {
+                  } else {
+                    set first_multi = latest_multi;
+                  }
+                  set scanning = True();
+                } else if kind == 2_u64 {
+                  set scanning = False();
+                }
+              } else if parsed.state != 6_u64 {
+                set failed = True();
+                break @commands;
+              }
+              set consumed = parsed.next;
+              set command_start = base +sat consumed;
+              if consumed >= held {
+                break @commands;
+              }
+            }
+            if failed {
+              break @chunks;
+            }
+            set held = pkg::protocol::keep_rest(input: &input, from: consumed, held: held);
+            aof_rw_pause(clock: clock);
           }
+          aof_rw_release::<Box<Slots<u8>>>(value: move input);
+          aof_rw_release::<Box<Slots<Span>>>(value: move args);
           atomic released = &store^.meta {
             set released^.rewrite.used = released^.rewrite.used -sat allocated;
           }

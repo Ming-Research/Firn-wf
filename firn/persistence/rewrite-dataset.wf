@@ -19,113 +19,111 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
     if cancelled {
       return Err<u64, unit>(error: unit);
     }
-    {
-      atomic table = &store^.keys, m = &store^.meta {
-        if m^.rewrite.active {
-          let baseline = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 99328_u64);
-          if baseline {
-            set step_charge = 99328_u64;
-            let heap_before = std::process::heap_in_use(meter: meter);
-            let keys = key_set_new(capacity: 1_u64);
-            set cursor = map_scan::<Entry>(map: table, cursor: cursor, count: 1_u64, keys: &keys);
-            let heap_after = std::process::heap_in_use(meter: meter);
-            let observed_heap = heap_after -sat heap_before;
-            set m^.rewrite.scan_peak = imax(m^.rewrite.scan_peak, observed_heap);
-            let key_bytes = 0_u64;
-            let probe = array_filled::<u8, 0>(value: 0_u8);
-            for (index in 0_u64..keys.len) {
-              let length = key_set_read_key(keys: &keys, index: index, out: &probe[0_u64..0_u64]);
-              set key_bytes = key_bytes +sat length;
-            }
-            let key_charge = key_bytes;
-            if keys.len > 1_u64 {
-              let arena = key_bytes *sat 3_u64;
-              let entries = keys.len *sat 128_u64;
-              set key_charge = arena +sat entries;
-            }
-            let observed = m^.rewrite.used +sat key_charge;
-            set m^.rewrite.peak = imax(m^.rewrite.peak, observed);
-            let charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: key_charge);
-            if charged {
-              set step_charge = step_charge +sat key_charge;
-              let scratch = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 65560_u64);
-              if scratch {
-                set step_charge = step_charge +sat 65560_u64;
-                let buffer = box_slots_new::<u8>(capacity: 65536_u64);
-                let work = 0_u64;
-                let total = 0_u64;
-                if selected {
-                } else if keys.len > 0_u64 {
-                  pkg::store::log_append_plain(log: &buffer, bytes: &aof_rw_select[0_u64..23_u64]);
-                  set selected = True();
-                  set total = 23_u64;
-                }
-                for (index in 0_u64..keys.len) {
-                  if m^.rewrite.active {
-                    let length = key_set_read_key(keys: &keys, index: index, out: &probe[0_u64..0_u64]);
-                    let key_allocation = length +sat 16_u64;
-                    let key_room = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: key_allocation);
-                    if key_room {
-                      set step_charge = step_charge +sat key_allocation;
-                      let copied = box_array_filled::<u8>(count: length, value: 0_u8);
-                      let copied_length = copied.inner.len;
-                      let key = &copied.inner[0_u64..copied_length];
-                      key_set_read_key(keys: &keys, index: index, out: key);
-                      let slot = &table^[key];
-                      let stamp = 0_u64;
-                      match slot^ {
-                        Some(value: held) => {
-                          set stamp = held^.last_write;
-                        }
-                        None() => {
-                        }
+    atomic table = &store^.keys, m = &store^.meta {
+      if m^.rewrite.active {
+        let baseline = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 99328_u64);
+        if baseline {
+          set step_charge = 99328_u64;
+          let heap_before = std::process::heap_in_use(meter: meter);
+          let keys = key_set_new(capacity: 1_u64);
+          set cursor = map_scan::<Entry>(map: table, cursor: cursor, count: 1_u64, keys: &keys);
+          let heap_after = std::process::heap_in_use(meter: meter);
+          let observed_heap = heap_after -sat heap_before;
+          set m^.rewrite.scan_peak = imax(m^.rewrite.scan_peak, observed_heap);
+          let key_bytes = 0_u64;
+          let probe = array_filled::<u8, 0>(value: 0_u8);
+          for (index in 0_u64..keys.len) {
+            let length = key_set_read_key(keys: &keys, index: index, out: &probe[0_u64..0_u64]);
+            set key_bytes = key_bytes +sat length;
+          }
+          let key_charge = key_bytes;
+          if keys.len > 1_u64 {
+            let arena = key_bytes *sat 3_u64;
+            let entries = keys.len *sat 128_u64;
+            set key_charge = arena +sat entries;
+          }
+          let observed = m^.rewrite.used +sat key_charge;
+          set m^.rewrite.peak = imax(m^.rewrite.peak, observed);
+          let charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: key_charge);
+          if charged {
+            set step_charge = step_charge +sat key_charge;
+            let scratch = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 65560_u64);
+            if scratch {
+              set step_charge = step_charge +sat 65560_u64;
+              let buffer = box_slots_new::<u8>(capacity: 65536_u64);
+              let work = 0_u64;
+              let total = 0_u64;
+              if selected {
+              } else if keys.len > 0_u64 {
+                pkg::store::log_append_plain(log: &buffer, bytes: &aof_rw_select[0_u64..23_u64]);
+                set selected = True();
+                set total = 23_u64;
+              }
+              for (index in 0_u64..keys.len) {
+                if m^.rewrite.active {
+                  let length = key_set_read_key(keys: &keys, index: index, out: &probe[0_u64..0_u64]);
+                  let key_allocation = length +sat 16_u64;
+                  let key_room = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: key_allocation);
+                  if key_room {
+                    set step_charge = step_charge +sat key_allocation;
+                    let copied = box_array_filled::<u8>(count: length, value: 0_u8);
+                    let copied_length = copied.inner.len;
+                    let key = &copied.inner[0_u64..copied_length];
+                    key_set_read_key(keys: &keys, index: index, out: key);
+                    let slot = &table^[key];
+                    let stamp = 0_u64;
+                    match slot^ {
+                      Some(value: held) => {
+                        set stamp = held^.last_write;
                       }
-                      let work_left = 1024_u64 -sat work;
-                      let measure = pkg::store::rewrite_measure(slot: slot, key_length: length, work_left: work_left);
-                      set work = work +sat measure.elements;
-                      set total = total +sat measure.bytes;
-                      let too_much = work > 1024_u64;
-                      let too_large = total > 65536_u64;
-                      let over = bor(too_much, too_large);
-                      let future = stamp > m^.commit_seq;
-                      let invalid = bor(over, future);
-                      if invalid {
-                        pkg::store::rewrite_abort(capture: &m^.rewrite);
-                      } else {
-                        let with_key = measure.bytes +sat length;
-                        let bytes = with_key +sat 256_u64;
-                        let room = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: bytes);
-                        if room {
-                          set step_charge = step_charge +sat bytes;
-                          let no = False();
-                          let image = pkg::store::rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: no);
-                          let written = image.inner.len;
-                          pkg::store::log_append_plain(log: &buffer, bytes: &image.inner[0_u64..written]);
-                        }
+                      None() => {
+                      }
+                    }
+                    let work_left = 1024_u64 -sat work;
+                    let measure = pkg::store::rewrite_measure(slot: slot, key_length: length, work_left: work_left);
+                    set work = work +sat measure.elements;
+                    set total = total +sat measure.bytes;
+                    let too_much = work > 1024_u64;
+                    let too_large = total > 65536_u64;
+                    let over = bor(too_much, too_large);
+                    let future = stamp > m^.commit_seq;
+                    let invalid = bor(over, future);
+                    if invalid {
+                      pkg::store::rewrite_abort(capture: &m^.rewrite);
+                    } else {
+                      let with_key = measure.bytes +sat length;
+                      let bytes = with_key +sat 256_u64;
+                      let room = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: bytes);
+                      if room {
+                        set step_charge = step_charge +sat bytes;
+                        let no = False();
+                        let image = pkg::store::rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: no);
+                        let written = image.inner.len;
+                        pkg::store::log_append_plain(log: &buffer, bytes: &image.inner[0_u64..written]);
                       }
                     }
                   }
                 }
-                set okay = m^.rewrite.active;
-                set output = Some<Box<Slots<u8>>>(value: move buffer);
               }
+              set okay = m^.rewrite.active;
+              set output = Some<Box<Slots<u8>>>(value: move buffer);
             }
           }
         }
       }
-      match move output {
-        Some(value: bytes) => {
-          if okay {
-            let appended = append_all(factory: factory, file: file, source: &bytes);
-            if appended == bytes.inner.len {
-              set size = size +sat appended;
-            } else {
-              set okay = False();
-            }
+    }
+    match move output {
+      Some(value: bytes) => {
+        if okay {
+          let appended = append_all(factory: factory, file: file, source: &bytes);
+          if appended == bytes.inner.len {
+            set size = size +sat appended;
+          } else {
+            set okay = False();
           }
         }
-        None() => {
-        }
+      }
+      None() => {
       }
     }
     atomic released = &store^.meta {
