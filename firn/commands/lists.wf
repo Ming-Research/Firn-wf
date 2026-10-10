@@ -219,8 +219,11 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = push_body(journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   push_finish(client: client);
   return unit;
@@ -301,8 +304,11 @@ fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = pop_body(journal: &journal, access_key: key, slot: slot, client: client);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let work = pop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   pop_finish(client: client);
   return unit;
@@ -602,8 +608,11 @@ fn run_lset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = lset_body(journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let work = lset_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   lset_finish(client: client);
   return unit;
@@ -711,8 +720,11 @@ fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = lrem_body(journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let work = lrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   lrem_finish(client: client);
   return unit;
@@ -808,8 +820,11 @@ fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = ltrim_body(journal: &journal, access_key: key, slot: slot, client: client);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let work = ltrim_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   ltrim_finish(client: client);
   return unit;
@@ -902,8 +917,11 @@ fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let work = linsert_body(journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let work = linsert_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
+    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   linsert_finish(client: client);
   return unit;
@@ -1082,13 +1100,14 @@ fn take_element(slot: &Option<Entry>, from_head: Bool, client: &Client) -> poppe
   }
 }
 
-fn place_element(client: &Client, slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -> result: unit reads(client), writes(slot) {
+fn place_element(sequence: &pkg::store::WriteSequence, client: &Client, slot: &Option<Entry>, element: Box<Slots<u8>>, to_head: Bool) -> result: unit reads(client), writes(sequence), writes(slot) {
   doc "Pushes an element onto the head (to_head) or tail of the list an entry holds, creating the list, without an expiry, for an entry holding none; an entry holding another kind, which the caller has refused, drops it.";
   match slot^ {
     Some(value: held) => {
       match held^.value {
         Items(items: list) => {
           push_element(list: list, element: move element, front: to_head);
+          pkg::store::sequence_entry(sequence: sequence, value: held);
           return unit;
         }
         Text(bytes: stored) => {
@@ -1116,8 +1135,9 @@ fn place_element(client: &Client, slot: &Option<Entry>, element: Box<Slots<u8>>,
   push_element(list: &list, element: move element, front: to_head);
   let made = Value::Items(items: move list);
   let stamp = new_access(client: client);
-  let fresh = Entry(value: move made, expires: 0_u64, access: stamp);
+  let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
   set slot^ = Some<Entry>(value: move fresh);
+  pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   return unit;
 }
 
@@ -1154,8 +1174,11 @@ fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   set client^.now = time^.check;
   let logged = store^.logging;
   atomic slots = &store^.keys[ks], m = &store^.meta {
-    let work = lmove_body(journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
-    let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
+    let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   lmove_finish(client: client);
   return unit;
@@ -1178,7 +1201,7 @@ fn push_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return unit;
 }
 
-fn push_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, front: Bool, existing: Bool) -> work: ListWork reads(access_key), writes(journal), writes(slot), writes(client) {
+fn push_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, front: Bool, existing: Bool) -> work: ListWork reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "PUSH over its held entry; reports expired removal and whether the original command must be recorded.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
@@ -1191,7 +1214,7 @@ fn push_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
     }
   }
   if client^.state == state_expired {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set client^.state = state_absent;
     set removed = True();
   }
@@ -1208,13 +1231,17 @@ fn push_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
       set client^.number = list.inner.len;
       let made = Value::Items(items: move list);
       let stamp = new_access(client: client);
-      let fresh = Entry(value: move made, expires: 0_u64, access: stamp);
+      let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
       set slot^ = Some<Entry>(value: move fresh);
+      pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
       set client^.state = state_done;
     }
   }
   if client^.state == state_done {
     set changed = True();
+  }
+  if changed {
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1270,7 +1297,7 @@ fn pop_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time
   return True();
 }
 
-fn pop_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> work: ListWork reads(access_key), writes(journal), writes(slot), writes(client) {
+fn pop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> work: ListWork reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "POP over its held entry; reports expired removal and whether the original command must be recorded.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
@@ -1286,7 +1313,7 @@ fn pop_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
   }
   if lapsed {
     set removed = True();
@@ -1297,6 +1324,9 @@ fn pop_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot
   let recorded = band(completed, popped);
   if recorded {
     set changed = True();
+  }
+  if changed {
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1451,7 +1481,7 @@ fn lset_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return unit;
 }
 
-fn lset_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(access_key), reads(input), reads(args), writes(journal), writes(slot), writes(client) {
+fn lset_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(access_key), reads(input), reads(args), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "LSET over its held entry; reports expired removal and whether the original command must be recorded.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
@@ -1467,11 +1497,14 @@ fn lset_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
     }
   }
   if client^.state == state_expired {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set removed = True();
   }
   if client^.state == state_done {
     set changed = True();
+  }
+  if changed {
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1513,7 +1546,7 @@ fn lrem_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
   return True();
 }
 
-fn lrem_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(access_key), reads(input), reads(args), writes(journal), writes(slot), writes(client) {
+fn lrem_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(access_key), reads(input), reads(args), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "LREM over its held entry; reports expired removal and whether the original command must be recorded.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
@@ -1530,7 +1563,7 @@ fn lrem_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
   }
   if lapsed {
     set client^.number = 0_u64;
@@ -1542,6 +1575,9 @@ fn lrem_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   let recorded = band(completed, any_removed);
   if recorded {
     set changed = True();
+  }
+  if changed {
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1578,7 +1614,7 @@ fn ltrim_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Ti
   return True();
 }
 
-fn ltrim_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> work: ListWork reads(access_key), writes(journal), writes(slot), writes(client) {
+fn ltrim_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> work: ListWork reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "LTRIM over its held entry; reports expired removal and whether the original command must be recorded.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
@@ -1594,7 +1630,7 @@ fn ltrim_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
   }
   if lapsed {
     set client^.number = 0_u64;
@@ -1602,6 +1638,9 @@ fn ltrim_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
   }
   if client^.number > 0_u64 {
     set changed = True();
+  }
+  if changed {
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1637,7 +1676,7 @@ fn linsert_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &
   return True();
 }
 
-fn linsert_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(access_key), reads(input), reads(args), writes(journal), writes(slot), writes(client) {
+fn linsert_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(access_key), reads(input), reads(args), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "LINSERT over its held entry; reports expired removal and whether the original command must be recorded.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
@@ -1655,11 +1694,14 @@ fn linsert_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], 
     }
   }
   if client^.state == state_expired {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set removed = True();
   }
   if client^.state == state_done {
     set changed = True();
+  }
+  if changed {
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return ListWork(removed: removed, changed: changed);
 }
@@ -1821,7 +1863,7 @@ struct ListMoveWork {
   changed: Bool;
 }
 
-fn lmove_body(journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet, slots: &Entries<Entry>, source: u64, destination: u64, client: &Client, from_head: Bool, to_head: Bool) -> work: ListMoveWork reads(access_keys), writes(journal), writes(slots), writes(client) contract {
+fn lmove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet, slots: &Entries<Entry>, source: u64, destination: u64, client: &Client, from_head: Bool, to_head: Bool) -> work: ListMoveWork reads(access_keys), writes(sequence), writes(journal), writes(slots), writes(client) contract {
   requires slots^.len == access_keys^.len;
   ensures slots^.len == entry(slots)^.len;
 } {
@@ -1836,7 +1878,7 @@ fn lmove_body(journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet,
   }
   if found == entry_lapsed {
     if source < slots^.len {
-      set slots^[source] = None<Entry>();
+      pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[source], keys: access_keys, index: source);
     }
     set work.source_expired = True();
   }
@@ -1851,7 +1893,7 @@ fn lmove_body(journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet,
     }
     if target == entry_lapsed {
       if destination < slots^.len {
-        set slots^[destination] = None<Entry>();
+        pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[destination], keys: access_keys, index: destination);
       }
       set work.target_expired = True();
     }
@@ -1864,13 +1906,14 @@ fn lmove_body(journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet,
         Some(value: element) => {
           reply_bulk(client: client, stored: &element);
           if destination < slots^.len {
-            place_element(client: client, slot: &slots^[destination], element: move element, to_head: to_head);
+            place_element(sequence: sequence, client: client, slot: &slots^[destination], element: move element, to_head: to_head);
+            pkg::store::sequence_capture_at(sequence: sequence, keys: access_keys, index: destination, slot: &slots^[destination]);
           } else {
             let dropped = move element;
           }
           if left == 0_u64 {
             if source != destination {
-              set slots^[source] = None<Entry>();
+              pkg::store::sequence_delete_at(sequence: sequence, slot: &slots^[source], keys: access_keys, index: source);
             }
           }
           set client^.state = state_done;
@@ -1881,17 +1924,22 @@ fn lmove_body(journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet,
       }
     }
   }
+  if work.changed {
+    if source < slots^.len {
+      pkg::store::sequence_stamp_at(sequence: sequence, slot: &slots^[source], keys: access_keys, index: source);
+    }
+  }
   return work;
 }
 
-fn lmove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ListMoveWork, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(work), reads(input), reads(args), writes(log) {
+fn lmove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ListMoveWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget) {
   doc "Records source then destination expiry removals followed by the move exactly as sent; returns the effects record count.";
   let source_place = key_bounds(input: input, args: args, index: 1_u64);
   let source_key = &input^[source_place.start..source_place.end];
   let target_place = key_bounds(input: input, args: args, index: 2_u64);
   let target_key = &input^[target_place.start..target_place.end];
-  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: work^.source_expired, key: source_key);
-  let remaining = changed_meta(log: log, logged: logged, removed: work^.target_expired, changed: work^.changed, input: input, args: args, key: target_key);
+  let appended = mset_lapse_meta(log: log, logged: logged, lapsed: work^.source_expired, key: source_key, budget: budget);
+  let remaining = changed_meta(log: log, logged: logged, removed: work^.target_expired, changed: work^.changed, input: input, args: args, key: target_key, budget: budget);
   set appended = appended +wrap remaining;
   return appended;
 }

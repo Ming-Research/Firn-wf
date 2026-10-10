@@ -48,11 +48,20 @@ fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(s
 }
 
 fn memory_over(meta: &Meta, client: &Client, logged: Bool) -> over: Bool writes(meta), writes(client) {
-  doc "Redis 7.0.15 getMaxmemoryState: raw used_memory minus excluded AOF capacity, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed.";
+  doc "Redis 7.0.15 getMaxmemoryState: raw used_memory minus excluded AOF capacity, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed. Pressure aborts retained rewrite work before the Meta-serialized installation commitment; after commitment eviction waits for publication and cleanup, as shutdown already does.";
   let used = heap_read(client: client);
   set meta^.memory_peak = imax(meta^.memory_peak, used);
   let excluded = memory_excluded(meta: meta, logged: logged);
   let counted = used -sat excluded;
+  if meta^.aof_rewrite_in_progress {
+    let headroom = imax(meta^.rewrite.limit, 1048576_u64);
+    let needed = counted +sat headroom;
+    if needed > client^.maxmemory {
+      if meta^.aof_installing == 0_u64 {
+        pkg::store::rewrite_abort(capture: &meta^.rewrite);
+      }
+    }
+  }
   return counted > client^.maxmemory;
 }
 
@@ -311,6 +320,16 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
   if bnot(over) {
     return False();
   }
+  let initial_cleanup = False();
+  atomic cleanup_meta = &store^.meta {
+    let committed = cleanup_meta^.aof_installing != 0_u64;
+    let retained = bor(cleanup_meta^.rewrite.aborted, committed);
+    set initial_cleanup = band(cleanup_meta^.aof_rewrite_in_progress, retained);
+  }
+  if initial_cleanup {
+    atomic cleaned = &store^.meta when bnot(cleaned^.aof_rewrite_in_progress) {
+    }
+  }
   release_reserve(store: store, client: client);
   atomic released_meta = &store^.meta {
     set over = memory_over(meta: released_meta, client: client, logged: logged);
@@ -326,8 +345,19 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
   let deleted = 0_u64;
   let attempts = 0_u64;
   loop {
+    let loop_cleanup = False();
     atomic check_meta = &store^.meta {
       set over = memory_over(meta: check_meta, client: client, logged: logged);
+      let committed = check_meta^.aof_installing != 0_u64;
+      let retained = bor(check_meta^.rewrite.aborted, committed);
+      set loop_cleanup = band(check_meta^.aof_rewrite_in_progress, retained);
+    }
+    if loop_cleanup {
+      atomic cleaned = &store^.meta when bnot(cleaned^.aof_rewrite_in_progress) {
+      }
+      atomic after_cleanup = &store^.meta {
+        set over = memory_over(meta: after_cleanup, client: client, logged: logged);
+      }
     }
     if bnot(over) {
       return False();
@@ -348,8 +378,16 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
         let name = &owned.inner[0_u64..length];
         let volatile = eviction_volatile(policy: client^.memory_policy);
         atomic slot = &store^.keys[name], meta = &store^.meta {
+          let loading = False();
+          let sequence = pkg::store::sequence_new(meta: meta, loading: loading);
+          let log_budget = pkg::store::log_budget_begin(meta: meta, loading: loading);
           set over = memory_over(meta: meta, client: client, logged: logged);
-          if over {
+          let committed = meta^.aof_installing != 0_u64;
+          let retained = bor(meta^.rewrite.aborted, committed);
+          let victim_cleanup = band(meta^.aof_rewrite_in_progress, retained);
+          let service = bnot(victim_cleanup);
+          let can_evict = band(over, service);
+          if can_evict {
             let lapsed = False();
             let eligible = False();
             match slot^ {
@@ -363,9 +401,9 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
               }
             }
             if eligible {
-              set slot^ = None<Entry>();
+              pkg::store::sequence_delete_key(sequence: &sequence, slot: slot, key: name);
               if logged {
-                pkg::store::log_removal(log: &meta^.log, key: name);
+                pkg::store::log_removal(log: &meta^.log, key: name, budget: &log_budget);
               }
               if lapsed {
                 set meta^.expired_keys = meta^.expired_keys +wrap 1_u64;
@@ -375,6 +413,7 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
               set removed = True();
             }
           }
+          pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &log_budget);
         }
         if bnot(over) {
           return False();

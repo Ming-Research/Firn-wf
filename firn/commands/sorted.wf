@@ -412,7 +412,7 @@ fn zadd_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, increment:
   return True();
 }
 
-fn zadd_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, plan: &ZaddPlan) -> lapsed: Bool reads(access_key), writes(journal), writes(slot), writes(client), writes(plan) {
+fn zadd_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, plan: &ZaddPlan) -> lapsed: Bool reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client), writes(plan) {
   doc "Runs ZADD over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
@@ -425,7 +425,7 @@ fn zadd_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   let create = client^.state == state_absent;
   let lapsed = client^.state == state_expired;
   if lapsed {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
     set create = True();
   }
   if create {
@@ -440,20 +440,25 @@ fn zadd_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
         add_ranked(sorted: &sorted, client: client, adding: &plan^.adding);
         let made = Value::Ranked(ranked: move sorted);
         let stamp = new_access(client: client);
-        let fresh = Entry(value: move made, expires: 0_u64, access: stamp);
+        let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
         set slot^ = Some<Entry>(value: move fresh);
+        pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
         set client^.state = state_done;
       }
     }
   }
+  let changes = plan^.adding.added +wrap plan^.adding.updated;
+  if changes > 0_u64 {
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
+  }
   return lapsed;
 }
 
-fn zadd_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, plan: &ZaddPlan, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(log) {
+fn zadd_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, plan: &ZaddPlan, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(log), writes(budget) {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";
   let changes = plan^.adding.added +wrap plan^.adding.updated;
   let changed = changes > 0_u64;
-  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key);
+  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key, budget: budget);
   return appended;
 }
 
@@ -497,8 +502,11 @@ fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let lapsed = zadd_body(journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
-    let appended = zadd_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, plan: &plan, input: input, args: args, key: key);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let lapsed = zadd_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
+    let appended = zadd_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, plan: &plan, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   zadd_finish(client: client, plan: &plan);
   return unit;
@@ -568,7 +576,7 @@ fn zrem_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> valid: 
   return True();
 }
 
-fn zrem_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(access_key), writes(journal), writes(slot), writes(client) {
+fn zrem_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "Runs ZREM over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
@@ -582,15 +590,18 @@ fn zrem_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
+  }
+  if client^.number > 0_u64 {
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return lapsed;
 }
 
-fn zrem_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log) {
+fn zrem_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";
   let changed = client^.number > 0_u64;
-  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key);
+  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key, budget: budget);
   return appended;
 }
 
@@ -617,8 +628,11 @@ fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let lapsed = zrem_body(journal: &journal, access_key: key, slot: slot, client: client);
-    let appended = zrem_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let lapsed = zrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
+    let appended = zrem_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   zrem_finish(client: client);
   return unit;
@@ -795,7 +809,7 @@ fn zpop_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, from_top: 
   return True();
 }
 
-fn zpop_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(access_key), writes(journal), writes(slot), writes(client) {
+fn zpop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> lapsed: Bool reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "Runs ZPOP over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
@@ -809,19 +823,26 @@ fn zpop_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slo
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
+  }
+  let done = client^.state == state_done;
+  let completed = bor(emptied, done);
+  let popped = client^.number > 0_u64;
+  let changed = band(completed, popped);
+  if changed {
+    pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
   }
   return lapsed;
 }
 
-fn zpop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8]) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log) {
+fn zpop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";
   let done = client^.state == state_done;
   let emptied = client^.state == state_emptied;
   let changed_state = bor(done, emptied);
   let popped = client^.number > 0_u64;
   let changed = band(changed_state, popped);
-  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key);
+  let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key, budget: budget);
   return appended;
 }
 
@@ -852,8 +873,11 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let lapsed = zpop_body(journal: &journal, access_key: key, slot: slot, client: client);
-    let appended = zpop_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let lapsed = zpop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
+    let appended = zpop_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   zpop_finish(client: client);
   return unit;

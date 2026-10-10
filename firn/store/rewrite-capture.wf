@@ -1,0 +1,310 @@
+alias Bytes = pkg::bytes::Bytes;
+
+fn rewrite_capture_new() -> capture: RewriteCapture pure {
+  let no = False();
+  let journal = None<Box<Ring<Box<Slots<u8>>>>>();
+  return RewriteCapture(active: no, aborted: no, scan_done: no, cut: no, cut_done: no, rotated: no, rotating: no, start: 0_u64, end: 0_u64, limit: 0_u64, used: 0_u64, peak: 0_u64, scan_peak: 0_u64, journal: move journal);
+}
+
+fn rewrite_abort(capture: &RewriteCapture) -> result: unit writes(capture.active), writes(capture.aborted), writes(capture.rotating) {
+  doc "Logical abort only: retained chunks stay charged until the worker detaches and releases them outside holds, one chunk per waiting turn.";
+  set capture^.active = False();
+  set capture^.aborted = True();
+  set capture^.rotating = False();
+  return unit;
+}
+
+fn rewrite_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes(capture) {
+  if capture^.aborted {
+    return False();
+  }
+  let available = capture^.limit -sat capture^.used;
+  if bytes > available {
+    rewrite_abort(capture: capture);
+    return False();
+  }
+  set capture^.used = capture^.used +sat bytes;
+  set capture^.peak = imax(capture^.peak, capture^.used);
+  return True();
+}
+
+fn sequence_room(sequence: &WriteSequence, bytes: u64) -> accepted: Bool writes(sequence) {
+  let available = sequence^.allowance -sat sequence^.retained;
+  if bytes > available {
+    set sequence^.failed = True();
+    return False();
+  }
+  set sequence^.retained = sequence^.retained +sat bytes;
+  return True();
+}
+
+fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) {
+  doc "Coalesces a changed key's complete final image in bounded execution-unit scratch. Every reservation precedes allocation, including capacity growth overlap and replacement of an earlier image. Failure affects capture alone; normal mutation and AOF publication still complete.";
+  let recording = band(sequence^.capturing, sequence^.taken);
+  let viable = bnot(sequence^.failed);
+  let enabled = band(recording, viable);
+  if enabled {
+  } else {
+    return unit;
+  }
+  if sequence^.effect {
+    return unit;
+  }
+  let anchored = band(sequence^.anchor_seen, sequence^.anchored);
+  let replayable = band(sequence^.single, anchored);
+  if replayable {
+    match sequence^.images {
+      None() => {
+        set sequence^.effect = True();
+        return unit;
+      }
+      Some(value: earlier) => {
+      }
+    }
+  }
+  let length = key^.len;
+  let measure = rewrite_measure(slot: slot, key_length: length);
+  match sequence^.images {
+    None() => {
+      let charged = sequence_room(sequence: sequence, bytes: 280_u64);
+      if charged {
+        let records = box_slots_new::<RewriteImage>(capacity: 16_u64);
+        set sequence^.images = Some<Box<Slots<RewriteImage>>>(value: move records);
+      } else {
+        return unit;
+      }
+    }
+    Some(value: existing) => {
+    }
+  }
+  let copied_keys = length *sat 2_u64;
+  let payload = measure.bytes +sat copied_keys;
+  let allocation = payload +sat 256_u64;
+  let charged = sequence_room(sequence: sequence, bytes: allocation);
+  if charged {
+  } else {
+    return unit;
+  }
+  let key_copy = pkg::bytes::copy_bytes(input: key, start: 0_u64, length: length);
+  let yes = True();
+  let output = rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: yes);
+  let image = RewriteImage(key: move key_copy, output: move output);
+  match sequence^.images {
+    Some(value: records) => {
+      for (index in 0_u64..records^.inner.len) {
+        let previous = &records^.inner[index];
+        let old_length = previous^.key.inner.len;
+        let old_key = &previous^.key.inner[0_u64..old_length];
+        let order = pkg::bytes::windows_order(left: key, right: old_key);
+        if order == 0_i32 {
+          set previous^ = move image;
+          return unit;
+        }
+      }
+      let capacity = records^.inner.cap;
+      if records^.inner.len == capacity {
+        let target = capacity *sat 2_u64;
+        let backing = target *sat 16_u64;
+        let growth = backing +sat 24_u64;
+        let available = sequence^.allowance -sat sequence^.retained;
+        if growth > available {
+          set sequence^.failed = True();
+          return unit;
+        }
+        set sequence^.retained = sequence^.retained +sat growth;
+        if target >= records^.inner.cap {
+          grow(cell: records, capacity: target);
+        }
+      }
+      if records^.inner.len < records^.inner.cap {
+        place_back(window: &records^.inner, value: move image);
+      } else {
+        let discarded = move image;
+        set sequence^.failed = True();
+      }
+    }
+    None() => {
+      let discarded = move image;
+      set sequence^.failed = True();
+    }
+  }
+  return unit;
+}
+
+fn sequence_capture_at(sequence: &WriteSequence, keys: &KeySet, index: u64, slot: &Option<Entry>) -> result: unit reads(keys), reads(slot), writes(sequence) {
+  if sequence^.capturing {
+    if sequence^.failed {
+      return unit;
+    }
+    if index < keys^.len {
+      let probe = array_filled::<u8, 0>(value: 0_u8);
+      let length = key_set_read_key(keys: keys, index: index, out: &probe[0_u64..0_u64]);
+      let allocation = length +sat 16_u64;
+      let charged = sequence_room(sequence: sequence, bytes: allocation);
+      if charged {
+        let key_buffer = box_array_filled::<u8>(count: length, value: 0_u8);
+        let count = key_buffer.inner.len;
+        let bytes = &key_buffer.inner[0_u64..count];
+        key_set_read_key(keys: keys, index: index, out: bytes);
+        sequence_capture(sequence: sequence, key: bytes, slot: slot);
+      }
+    }
+  }
+  return unit;
+}
+
+fn rewrite_journal_byte(chunks: &Box<Ring<Box<Slots<u8>>>>, value: u8) -> result: unit writes(chunks) {
+  let count = chunks^.inner.len;
+  if count > 0_u64 {
+    let last = count - 1_u64;
+    if last < chunks^.inner.len {
+      let output = &chunks^.inner[last];
+      if output^.inner.len < output^.inner.cap {
+        place_back(window: &output^.inner, value: value);
+      }
+    }
+  }
+  return unit;
+}
+
+fn rewrite_journal_room(capture: &RewriteCapture, length: u64) -> accepted: Bool writes(capture) {
+  doc "Reserve all new 64 KiB chunks for an entire unit before appending its first byte. The fixed pointer directory never grows and is at most one cleanup chunk itself.";
+  let free = 0_u64;
+  let count = 0_u64;
+  let capacity = 0_u64;
+  match capture^.journal {
+    Some(value: chunks) => {
+      set count = chunks^.inner.len;
+      set capacity = chunks^.inner.cap;
+      if count > 0_u64 {
+        let last = count - 1_u64;
+        if last < chunks^.inner.len {
+          let output = &chunks^.inner[last];
+          set free = output^.inner.cap -sat output^.inner.len;
+        }
+      }
+    }
+    None() => {
+      rewrite_abort(capture: capture);
+      return False();
+    }
+  }
+  let excess = length -sat free;
+  let rounded = excess +sat 65535_u64;
+  let needed = rounded / 65536_u64;
+  let slots = capacity -sat count;
+  if needed > slots {
+    rewrite_abort(capture: capture);
+    return False();
+  }
+  let bytes = needed *sat 65560_u64;
+  return rewrite_charge(capture: capture, bytes: bytes);
+}
+
+fn rewrite_journal_put(chunks: &Box<Ring<Box<Slots<u8>>>>, value: u8) -> result: unit writes(chunks) {
+  let fresh = chunks^.inner.len == 0_u64;
+  let count = chunks^.inner.len;
+  if count > 0_u64 {
+    let last = count - 1_u64;
+    if last < chunks^.inner.len {
+      set fresh = chunks^.inner[last].inner.len == chunks^.inner[last].inner.cap;
+    }
+  }
+  if fresh {
+    if chunks^.inner.len < chunks^.inner.cap {
+      let block = box_slots_new::<u8>(capacity: 65536_u64);
+      place_back(window: &chunks^.inner, value: move block);
+    }
+  }
+  rewrite_journal_byte(chunks: chunks, value: value);
+  return unit;
+}
+
+fn rewrite_journal_number(chunks: &Box<Ring<Box<Slots<u8>>>>, value: u64) -> result: unit writes(chunks) {
+  let rest = value;
+  for (index in 0_u64..8_u64) {
+    let low = iand(rest, 255_u64);
+    let byte = cvt.wrap::<u64, u8>(low);
+    rewrite_journal_put(chunks: chunks, value: byte);
+    set rest = rest / 256_u64;
+  }
+  return unit;
+}
+
+fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), reads(meta.log), writes(meta.rewrite) {
+  if meta^.rewrite.active {
+    let failed = bor(sequence^.failed, sequence^.exhausted);
+    if failed {
+      rewrite_abort(capture: &meta^.rewrite);
+      return unit;
+    }
+    if sequence^.effect {
+      sequence_publish_effect(meta: meta, sequence: sequence);
+      return unit;
+    }
+    match sequence^.images {
+      Some(value: records) => {
+        let length = 0_u64;
+        for (index in 0_u64..records^.inner.len) {
+          let bytes = records^.inner[index].output.inner.len;
+          set length = length +sat bytes;
+        }
+        let framed = length +sat 16_u64;
+        let overlap = sequence^.retained;
+        let charged = rewrite_charge(capture: &meta^.rewrite, bytes: overlap);
+        if charged {
+          let room = rewrite_journal_room(capture: &meta^.rewrite, length: framed);
+          if room {
+            match meta^.rewrite.journal {
+              Some(value: chunks) => {
+                rewrite_journal_number(chunks: chunks, value: sequence^.value);
+                rewrite_journal_number(chunks: chunks, value: length);
+                for (index in 0_u64..records^.inner.len) {
+                  let output = &records^.inner[index].output;
+                  for (offset in 0_u64..output^.inner.len) {
+                    let byte = output^.inner[offset];
+                    rewrite_journal_put(chunks: chunks, value: byte);
+                  }
+                }
+              }
+              None() => {
+              }
+            }
+          }
+          set meta^.rewrite.used = meta^.rewrite.used -sat overlap;
+        }
+      }
+      None() => {
+      }
+    }
+  }
+  return unit;
+}
+
+fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), reads(meta.log), writes(meta.rewrite) {
+  doc "Journals the statement's own append-only bytes as one framed unit. Its single key's previous write is already in the journal, so replaying these bytes in sequence order reproduces the key exactly, at the cost of the bytes rather than the key's size.";
+  let end = meta^.log.inner.len;
+  let start = sequence^.log_start;
+  if start > end {
+    rewrite_abort(capture: &meta^.rewrite);
+    return unit;
+  }
+  let length = end - start;
+  let framed = length +sat 16_u64;
+  let room = rewrite_journal_room(capture: &meta^.rewrite, length: framed);
+  if room {
+    match meta^.rewrite.journal {
+      Some(value: chunks) => {
+        rewrite_journal_number(chunks: chunks, value: sequence^.value);
+        rewrite_journal_number(chunks: chunks, value: length);
+        for (offset in start..end) {
+          let byte = meta^.log.inner[offset];
+          rewrite_journal_put(chunks: chunks, value: byte);
+        }
+      }
+      None() => {
+      }
+    }
+  }
+  return unit;
+}

@@ -5,6 +5,7 @@ alias ExpiryQueue = pkg::store::ExpiryQueue;
 alias Entry = pkg::store::Entry;
 alias ServerState = pkg::store::ServerState;
 alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
 alias Keyspace = pkg::store::Keyspace;
 alias arg = pkg::protocol::arg;
 alias bytes_new = pkg::bytes::bytes_new;
@@ -156,35 +157,40 @@ fn flush_refused(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> refu
   return True();
 }
 
-fn flush_meta(due: &ExpiryQueue, none_due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>) -> appended: u64 reads(input), reads(args), writes(due), writes(none_due), writes(log) {
+fn flush_meta(due: &ExpiryQueue, none_due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), writes(due), writes(none_due), writes(log), writes(budget) {
   doc "FLUSHALL and FLUSHDB's metadata clears the expiry queue and appends the command exactly as sent, even for an empty database, returning its record count. Earlier records in the caller's log and the expiry-eligibility invalidation flag are preserved; clearing keys cannot add eligibility.";
   swap(first: &due^.queue, second: none_due);
-  let appended = mset_meta(log: log, logged: logged, input: input, args: args);
+  let appended = mset_meta(log: log, logged: logged, input: input, args: args, budget: budget);
   return appended;
 }
 
-fn flush_body(keys: &ConcurrentHashMap<Entry>) -> result: unit writes(keys) {
+fn flush_body(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>) -> result: unit writes(sequence), writes(keys) {
   doc "Empties the held keyspace. Entry references for later commands must be formed after this call.";
+  pkg::store::sequence_change(sequence: sequence);
+  set sequence^.failed = True();
   map_clear::<Entry>(map: keys);
   return unit;
 }
 
-fn held_flush(keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> appended: u64 reads(input), reads(args), writes(keys), writes(due), writes(log), writes(client) {
+fn held_flush(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(due), writes(log), writes(client), writes(budget) {
   let refused = flush_refused(input: input, args: args, client: client);
   if refused {
     return 0_u64;
   }
-  flush_body(keys: keys);
+  flush_body(sequence: sequence, keys: keys);
   let none_due = priority_queue_new::<Due, ceiling>();
-  let appended = flush_meta(due: due, none_due: &none_due, log: log, logged: logged, input: input, args: args);
+  let appended = flush_meta(due: due, none_due: &none_due, log: log, logged: logged, input: input, args: args, budget: budget);
   reply_ok(client: client);
   return appended;
 }
 
-fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
+fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "FLUSHALL and FLUSHDB use the same parsing, map_clear body, expiry and file metadata, and reply as EXEC and scripts. Both modes release old values when the hold ends.";
   atomic t = &store^.keys, m = &store^.meta {
-    let appended = held_flush(keys: t, due: &m^.due, log: &m^.log, logged: store^.logging, input: input, args: args, client: client);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let appended = held_flush(sequence: &sequence, keys: t, due: &m^.due, log: &m^.log, logged: store^.logging, input: input, args: args, client: client, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   return unit;
 }
@@ -228,7 +234,11 @@ fn run_function(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
   }
   if store^.logging {
     atomic m = &store^.meta {
-      log_command(log: &m^.log, input: input, args: args);
+      let loading = False();
+      let sequence = pkg::store::sequence_new(meta: m, loading: loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: loading);
+      log_command(log: &m^.log, input: input, args: args, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   reply_ok(client: client);
