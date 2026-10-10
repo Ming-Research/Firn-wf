@@ -1,5 +1,11 @@
 # Rewriting the append-only file
 
+The record below preserves the original closed-log replay investigation and
+its implementation history. The owner's subsequent service-first memory
+ruling reopens that mechanism: [Reconciled live scan and after-image log](scan-log.md)
+develops the end-cut alternative and registers its validation and comparison
+criteria. It is a proposal, not an implemented replacement.
+
 ## The question
 
 firn appends every change to its append-only file and never shortens it. A
