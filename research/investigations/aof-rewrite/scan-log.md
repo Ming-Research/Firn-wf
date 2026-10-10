@@ -567,14 +567,15 @@ at most 64 KiB plus their Slots headers. No directory growth overlaps an old
 one. Each execution unit retains bounded coalesced key/image scratch and
 precharges journal growth while that scratch is still alive.
 
-The provisional work ceilings remain **1024 payload visits and 64 KiB of
-measured serialized work per scan statement or mutating execution unit**.
-Measurement and serialization visits both count. Measurement is an upper
-bound including command lookahead, repeated collection-command key names and
-RESP framing; it is not a payload-size promise. Crossing either ceiling
-aborts capture without changing command semantics. Repeated writes to one key
-replace its scratch image; their aggregate work still counts. Every journal
-unit has an internal sequence/length frame, stripped before writing the base.
+The stage was first delivered with provisional work ceilings of 1024
+payload visits and 64 KiB of measured serialized work per scan statement or
+mutating execution unit; they were removed after the completion review (see
+[Stage 2 validation and review](#stage-2-validation-and-review-2026-10-10)),
+so only R bounds an image. Measurement is an upper bound including command
+lookahead, repeated collection-command key names and RESP framing; it is not
+a payload-size promise, and it is charged before copying. Repeated writes to
+one key replace its scratch image. Every journal unit has an internal
+sequence/length frame, bounded by R and stripped before writing the base.
 
 The scan uses **count hint 1**, as authorized. A fresh KeySet's known pinned
 baseline, including the runtime's reusable small arena, is precharged. The
@@ -821,11 +822,16 @@ findings and their dispositions:
   the capture node described only budget exhaustion. The owner's ruling A on
   `firn-q-rw-limits` excludes automatic retry, so the node now states the
   broader rule and its difference from Redis's `aofRewriteLimited` backoff.
-- The per-statement and per-step limits (1024 visits, 64 KiB) make any key
+- The per-statement and per-step limits (1024 visits, 64 KiB) made any key
   above 512 elements or about 64 KiB serialized abort every rewrite, where
-  main's replay and Redis rewrite such keys. This is a decision for the
-  owner on the status board; the node and README now state the effective
-  limit.
+  main's replay and Redis rewrite such keys. On status board card
+  `firn-q-rw-bigkey` the recommended option A is implemented pending the
+  owner's ruling: keys are copied whole, limited only by R, at the cost of a
+  pause proportional to their size; bounding that pause by splitting a key
+  needs resumable HashMap iteration (board item `coord-wfbl-02-01`). The new
+  case `reconciled_scan_rewrites_large_keys_scanned_and_written` fails under
+  the old ceiling, and the concurrent growing-writes case again overlaps
+  the whole rewrite as on main.
 - A startup-retained unfinished `MULTI` refused the rewrite, so writes
   appended after it were lost at restart, where Redis's live rewrite keeps
   them. On status board card `firn-q-rw-startup-multi` the recommended

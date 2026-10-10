@@ -51,13 +51,10 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
             if scratch {
               set step_charge = step_charge +sat 65560_u64;
               let buffer = box_slots_new::<u8>(capacity: 65536_u64);
-              let work = 0_u64;
-              let total = 0_u64;
               if selected {
               } else if keys.len > 0_u64 {
                 pkg::store::log_append_plain(log: &buffer, bytes: &aof_rw_select[0_u64..23_u64]);
                 set selected = True();
-                set total = 23_u64;
               }
               for (index in 0_u64..keys.len) {
                 if m^.rewrite.active {
@@ -79,16 +76,9 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
                       None() => {
                       }
                     }
-                    let work_left = 1024_u64 -sat work;
-                    let measure = pkg::store::rewrite_measure(slot: slot, key_length: length, work_left: work_left);
-                    set work = work +sat measure.elements;
-                    set total = total +sat measure.bytes;
-                    let too_much = work > 1024_u64;
-                    let too_large = total > 65536_u64;
-                    let over = bor(too_much, too_large);
+                    let measure = pkg::store::rewrite_measure(slot: slot, key_length: length);
                     let future = stamp > m^.commit_seq;
-                    let invalid = bor(over, future);
-                    if invalid {
+                    if future {
                       pkg::store::rewrite_abort(capture: &m^.rewrite);
                     } else {
                       let with_key = measure.bytes +sat length;
@@ -99,7 +89,20 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
                         let no = False();
                         let image = pkg::store::rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: no);
                         let written = image.inner.len;
-                        pkg::store::log_append_plain(log: &buffer, bytes: &image.inner[0_u64..written]);
+                        let wanted = buffer.inner.len +sat written;
+                        let fits = True();
+                        if wanted > buffer.inner.cap {
+                          let doubled = buffer.inner.cap *sat 2_u64;
+                          let target = imax(doubled, wanted);
+                          let growth = target +sat 24_u64;
+                          set fits = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: growth);
+                          if fits {
+                            set step_charge = step_charge +sat growth;
+                          }
+                        }
+                        if fits {
+                          pkg::store::log_append_plain(log: &buffer, bytes: &image.inner[0_u64..written]);
+                        }
                       }
                     }
                   }
@@ -146,6 +149,7 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
 }
 
 struct AofReconcile {
+  limit: u64;
   sequence: u64;
   length: u64;
   header: u64;
@@ -231,7 +235,7 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
         if decoder^.sequence > decoder^.end {
           return Err<u64, unit>(error: unit);
         }
-        if decoder^.length > 65536_u64 {
+        if decoder^.length > decoder^.limit {
           return Err<u64, unit>(error: unit);
         }
         set decoder^.remaining = decoder^.length;

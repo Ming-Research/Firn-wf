@@ -9230,12 +9230,14 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     let text = port.to_string();
     let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
     let mut control = connect_when_ready(port);
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let mut workers = Vec::new();
     for operation in ["INCR", "APPEND", "LPUSH"] {
+        let running = running.clone();
         workers.push(std::thread::spawn(move || {
             let mut client = connect_when_ready(port);
             let mut count = 0;
-            while count < 100 {
+            while running.load(std::sync::atomic::Ordering::Acquire) || count < 100 {
                 let mut request = vec![operation, operation];
                 if operation != "INCR" {
                     request.push("x");
@@ -9252,6 +9254,7 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     control.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
     expect_replies(&mut control, b"-ERR Background append only file rewriting already in progress\r\n", "one rewrite at a time");
     assert_eq!(rewrite_wait(&mut control)["aof_last_bgrewrite_status"], "ok");
+    running.store(false, std::sync::atomic::Ordering::Release);
     let expected: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
     rewrite_stop(&mut control, child);
     let port = free_port();

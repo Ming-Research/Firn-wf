@@ -5,7 +5,7 @@ fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(met
   let capturing = band(meta^.rewrite.active, serving);
   let allowance = meta^.rewrite.limit -sat meta^.rewrite.used;
   let images = None<Box<Slots<RewriteImage>>>();
-  return WriteSequence(value: meta^.commit_seq, taken: taken, loading: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, allowance: allowance, retained: 0_u64, work: 0_u64, encoded: 0_u64, images: move images);
+  return WriteSequence(value: meta^.commit_seq, taken: taken, loading: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, allowance: allowance, retained: 0_u64, images: move images);
 }
 
 fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) {

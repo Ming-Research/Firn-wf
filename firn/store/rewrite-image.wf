@@ -130,10 +130,9 @@ fn rewrite_measure_score(env: &RewriteMeasure, key: &Key, value: &f64) -> result
   return unit;
 }
 
-fn rewrite_measure(slot: &Option<Entry>, key_length: u64, work_left: u64) -> measured: RewriteMeasure reads(slot) {
-  doc "Allocation-free upper bound before copying a complete image. Refuse before visiting more than the unit's remaining 1024 payload elements. RESP bulk overhead, 64-element command headers, DEL, expiry and the encoder's reserve lookahead are included; saturating arithmetic cannot admit an oversized image.";
+fn rewrite_measure(slot: &Option<Entry>, key_length: u64) -> measured: RewriteMeasure reads(slot) {
+  doc "Allocation-free upper bound before copying a complete image, visiting every payload element; the caller charges it against the rewrite reserve. RESP bulk overhead, 64-element command headers, DEL, expiry and the encoder's reserve lookahead are included; saturating arithmetic cannot admit an oversized image.";
   let measured = RewriteMeasure(bytes: 512_u64, elements: 1_u64);
-  let visiting = work_left / 2_u64;
   let commands = 3_u64;
   match slot^ {
     Some(value: held) => {
@@ -144,31 +143,23 @@ fn rewrite_measure(slot: &Option<Entry>, key_length: u64, work_left: u64) -> mea
         }
         Items(items: listed) => {
           set measured.elements = listed^.inner.len;
-          if measured.elements <= visiting {
-            for (index in 0_u64..listed^.inner.len) {
-              let length = listed^.inner[index].inner.len;
-              let framed = length +sat 32_u64;
-              set measured.bytes = measured.bytes +sat framed;
-            }
+          for (index in 0_u64..listed^.inner.len) {
+            let length = listed^.inner[index].inner.len;
+            let framed = length +sat 32_u64;
+            set measured.bytes = measured.bytes +sat framed;
           }
         }
         Members(members: stored_members) => {
           set measured.elements = aof_map_len::<Key, unit, ceiling>(map: stored_members);
-          if measured.elements <= visiting {
-            aof_map_each::<Key, unit, RewriteMeasure, fn rewrite_measure_member, ceiling>(map: stored_members, env: &measured);
-          }
+          aof_map_each::<Key, unit, RewriteMeasure, fn rewrite_measure_member, ceiling>(map: stored_members, env: &measured);
         }
         Fields(fields: stored_fields) => {
           set measured.elements = aof_map_len::<Key, Bytes, ceiling>(map: stored_fields);
-          if measured.elements <= visiting {
-            aof_map_each::<Key, Bytes, RewriteMeasure, fn rewrite_measure_field, ceiling>(map: stored_fields, env: &measured);
-          }
+          aof_map_each::<Key, Bytes, RewriteMeasure, fn rewrite_measure_field, ceiling>(map: stored_fields, env: &measured);
         }
         Ranked(ranked: stored_ranked) => {
           set measured.elements = aof_map_len::<Key, f64, ceiling>(map: &stored_ranked^.scores);
-          if measured.elements <= visiting {
-            aof_map_each::<Key, f64, RewriteMeasure, fn rewrite_measure_score, ceiling>(map: &stored_ranked^.scores, env: &measured);
-          }
+          aof_map_each::<Key, f64, RewriteMeasure, fn rewrite_measure_score, ceiling>(map: &stored_ranked^.scores, env: &measured);
         }
       }
     }

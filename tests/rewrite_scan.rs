@@ -256,8 +256,7 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
             request(&mut client, &[b"LTRIM", b"moved:list", b"-2", b"-1"]);
             request(&mut client, &[b"SMOVE", &worker_keys[2], b"moved:set", b"replacement"]);
             request(&mut client, &[b"SUNIONSTORE", b"stored:set", &worker_keys[2], b"moved:set"]);
-            // Keep the capture within its declared byte/work limits while
-            // continuously writing; large-value abort has its own strict case.
+            // Pace the writer so its journal stays well inside the reserve.
             std::thread::sleep(Duration::from_millis(5));
         }
         count
@@ -500,6 +499,33 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     assert_eq!(bulk(request(&mut restored, &[b"GET", b"hot"])), value);
     assert_eq!(bulk(request(&mut restored, &[b"GET", b"after-backlog"])), b"1");
     assert_eq!(request(&mut restored, &[b"DBSIZE"]), Reply::Line(b":6002".to_vec()));
+    rewrite_stop(&mut restored, child);
+}
+
+/// Keys above 512 elements or 64 KiB serialized, scanned and written during
+/// the rewrite, rewrite and restore as main's replay and Redis rewrite them.
+#[test]
+fn reconciled_scan_rewrites_large_keys_scanned_and_written() {
+    let program = CompiledProgram::from_environment();
+    fixture(&program);
+    let (child, mut client, _) = start(&program);
+    let members: Vec<Vec<u8>> = (0..2000).map(|index| format!("member:{index}").into_bytes()).collect();
+    for chunk in members.chunks(500) {
+        let mut args: Vec<&[u8]> = vec![b"SADD", b"large:set"];
+        args.extend(chunk.iter().map(|member| member.as_slice()));
+        assert_eq!(request(&mut client, &args), Reply::Line(b":500".to_vec()));
+    }
+    let text = vec![b't'; 200 * 1024];
+    request(&mut client, &[b"SET", b"large:text", &text]);
+    rewrite_start(&mut client);
+    scanned_keys(&program, &mut client);
+    request(&mut client, &[b"SADD", b"large:set", b"added"]);
+    request(&mut client, &[b"APPEND", b"large:text", b"!"]);
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok", "large keys must not abort the rewrite");
+    let live = snapshot(&mut client);
+    rewrite_stop(&mut client, child);
+    let (child, mut restored, _) = start(&program);
+    assert_eq!(snapshot(&mut restored), live, "large images restore whole");
     rewrite_stop(&mut restored, child);
 }
 

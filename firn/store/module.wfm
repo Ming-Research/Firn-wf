@@ -49,8 +49,6 @@ public struct WriteSequence {
   public failed: Bool;
   public allowance: u64;
   public retained: u64;
-  public work: u64;
-  public encoded: u64;
   public images: Option<Box<Slots<RewriteImage>>>;
 }
 
@@ -276,7 +274,7 @@ public fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<E
 
 public fn sequence_capture_at(sequence: &WriteSequence, keys: &KeySet, index: u64, slot: &Option<Entry>) -> result: unit reads(keys), reads(slot), writes(sequence) doc "Captures the changed slot under its key-set index after charging the temporary key copy. Used when mutation helpers already stamped an entry through a matched payload.";
 
-public fn rewrite_measure(slot: &Option<Entry>, key_length: u64, work_left: u64) -> measured: RewriteMeasure reads(slot) doc "Allocation-free upper bound for complete replacement bytes including RESP framing and encoder lookahead. Reports total measurement and serialization payload visits; no payload traversal exceeds the supplied remaining work.";
+public fn rewrite_measure(slot: &Option<Entry>, key_length: u64) -> measured: RewriteMeasure reads(slot) doc "Allocation-free upper bound for complete replacement bytes including RESP framing and encoder lookahead, visiting every payload element; the caller charges the bound against the rewrite reserve before copying.";
 
 public fn rewrite_image(slot: &Option<Entry>, key: &[u8], capacity: u64, replacement: Bool) -> output: Box<Slots<u8>> reads(slot), reads(key) doc "Serializes the complete held image using Redis command-format reconstruction and absolute expiry. The caller must first charge rewrite_measure bytes plus temporary key and formatting storage; replacement prepends DEL.";
 

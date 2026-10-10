@@ -366,10 +366,9 @@ images, flush, exhaustion, shutdown and I/O failure abort the attempt; client
 commands and ordinary AOF appends continue. Aborts report `err`. Any
 unsuccessful attempt, including a refused start, stops automatic rewrites
 until a manual `BGREWRITEAOF` succeeds; Redis instead keeps retrying them with
-a delay of up to an hour. Each observation or mutating statement permits at
-most 1024 payload visits and 64 KiB of measured serialized work. A collection
-element counts as two visits, so a key above 512 elements or about 64 KiB
-serialized makes every rewrite abort while it exists. The fixed journal
+a delay of up to an hour. A key is copied whole in one hold when the scan
+reaches it or a write changes it during a rewrite, so a large key pauses
+other clients for the copy; only the reserve limits its size. The fixed journal
 directory permits at most 8188 chunks. If startup left the file inside an
 unfinished MULTI, the rewrite cuts the sealed file before that MULTI; the new
 base holds the live writes appended after it, as Redis's rewrite does.

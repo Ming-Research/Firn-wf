@@ -47,20 +47,8 @@ fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
   } else {
     return unit;
   }
-  let work_left = 1024_u64 -sat sequence^.work;
   let length = key^.len;
-  let measure = rewrite_measure(slot: slot, key_length: length, work_left: work_left);
-  if measure.elements > work_left {
-    set sequence^.failed = True();
-    return unit;
-  }
-  set sequence^.work = sequence^.work +sat measure.elements;
-  let byte_left = 65536_u64 -sat sequence^.encoded;
-  if measure.bytes > byte_left {
-    set sequence^.failed = True();
-    return unit;
-  }
-  set sequence^.encoded = sequence^.encoded +sat measure.bytes;
+  let measure = rewrite_measure(slot: slot, key_length: length);
   match sequence^.images {
     None() => {
       let charged = sequence_room(sequence: sequence, bytes: 280_u64);

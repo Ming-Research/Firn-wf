@@ -367,13 +367,15 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, clock
   let journal = None<Box<Ring<Box<Slots<u8>>>>>();
   let first = 0_u64;
   let last = 0_u64;
+  let limit = 0_u64;
   atomic frozen = &store.meta {
     set frozen^.rewrite.active = False();
     swap(first: &journal, second: &frozen^.rewrite.journal);
     set first = frozen^.rewrite.start;
     set last = frozen^.rewrite.end;
+    set limit = frozen^.rewrite.limit;
   }
-  let decoder = AofReconcile(sequence: 0_u64, length: 0_u64, header: 0_u64, factor: 1_u64, remaining: 0_u64, previous: first, end: last);
+  let decoder = AofReconcile(limit: limit, sequence: 0_u64, length: 0_u64, header: 0_u64, factor: 1_u64, remaining: 0_u64, previous: first, end: last);
   match move journal {
     Some(value: chunks) => {
       loop @releasing {
