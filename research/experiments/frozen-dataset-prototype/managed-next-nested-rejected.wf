@@ -1,0 +1,21 @@
+struct Registry {
+  root: SharedRead<u8>;
+  position: u64;
+}
+
+fn freeze(value: u8) -> result: SharedRead<u8> pure {
+  let writer = shared_new::<u8>(value: value);
+  return shared_read::<u8>(shared: &writer);
+}
+
+fn main() -> status: std::process::ExitStatus pure waits {
+  let root = freeze(value: 7_u8);
+  let state = Registry(root: move root, position: 0_u64);
+  let dataset = shared_new::<Registry>(value: move state);
+  atomic registry = &dataset {
+    atomic byte = &registry^.root {
+      set registry^.position = 1_u64;
+      return std::process::exit_status(code: byte^);
+    }
+  }
+}

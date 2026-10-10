@@ -1,0 +1,44 @@
+# Temporary: runs the consistent-snapshot witnesses and prototype under
+# research/experiments/ with firn's pinned Whitefoot release. Removed before
+# any pull request.
+name: snapshot-witnesses
+
+on:
+  push:
+    branches: [claude/snapshot-witnesses]
+
+jobs:
+  witnesses:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install the host toolchain and the pinned compiler
+        run: |
+          make toolchain
+          make compiler
+          cat whitefoot.pin
+          uname -srvmo
+          nproc
+
+      - name: Run each witness
+        run: |
+          status=0
+          for name in frozen-dataset-witness frozen-dataset-prototype snapshot-log-witness; do
+            echo "== $name"
+            code=0
+            OUT="$RUNNER_TEMP/$name" sh "research/experiments/$name/run.sh" || code=$?
+            echo "== $name exit=$code"
+            [ "$code" -eq 0 ] || status=1
+          done
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snapshot-witnesses-${{ github.sha }}
+          path: ${{ runner.temp }}/*/
+          if-no-files-found: warn
