@@ -454,7 +454,7 @@ off:
 | limiter-tx | 2 | 8 | 676 / 356 (1.90) | 0.01 / 0.04 |
 | limiter-tx | 2 | 50 | 767 / 375 (2.05) | 0.08-0.09 / 0.25 |
 
-With the append-only file on, the ratios are within 0.1 of these. On one CPU
+With the append-only file on, the ratios are within 0.15 of these. On one CPU
 the script path is within 11% of Redis with an equal or lower tail, the
 collection pause of the previous section being gone at Halo's 64 KiB
 collection floor. On two CPUs transactions scale (1.9 to 2.05 times
