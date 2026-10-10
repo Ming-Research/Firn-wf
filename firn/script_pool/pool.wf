@@ -1,5 +1,37 @@
 fn new_pool() -> pool: EnginePool pure {
   let idle = box_slots_new::<PooledEngine>(capacity: 0_u64);
   let registry = box_slots_new::<Registered>(capacity: 0_u64);
-  return EnginePool(idle: move idle, out: 0_u64, registry: move registry, source_bytes: 0_u64, generation: 0_u64, running: 0_u64, kills: 0_u64);
+  let probe = new_probe();
+  return EnginePool(idle: move idle, out: 0_u64, registry: move registry, source_bytes: 0_u64, generation: 0_u64, running: 0_u64, kills: 0_u64, probe: probe, probe_epoch: 0_u64);
+}
+
+fn new_probe() -> probe: EngineProbe pure {
+  let buckets = array_filled::<u64, 5>(value: 0_u64);
+  return EngineProbe(checkouts: 0_u64, wait_ns_total: 0_u64, wait_ns_max: 0_u64, wait_buckets: buckets, hold_ns_total: 0_u64, hold_ns_max: 0_u64);
+}
+
+fn probe_checkout(probe: &EngineProbe, wait_ns: u64) -> r: unit writes(probe) {
+  set probe^.checkouts = probe^.checkouts +sat 1_u64;
+  set probe^.wait_ns_total = probe^.wait_ns_total +sat wait_ns;
+  set probe^.wait_ns_max = imax(probe^.wait_ns_max, wait_ns);
+  let bucket = 4_u64;
+  if wait_ns < 10000_u64 {
+    set bucket = 0_u64;
+  } else if wait_ns < 100000_u64 {
+    set bucket = 1_u64;
+  } else if wait_ns < 1000000_u64 {
+    set bucket = 2_u64;
+  } else if wait_ns < 10000000_u64 {
+    set bucket = 3_u64;
+  }
+  if bucket < 5_u64 {
+    set probe^.wait_buckets[bucket] = probe^.wait_buckets[bucket] +sat 1_u64;
+  }
+  return unit;
+}
+
+fn probe_hold(probe: &EngineProbe, hold_ns: u64) -> r: unit writes(probe) {
+  set probe^.hold_ns_total = probe^.hold_ns_total +sat hold_ns;
+  set probe^.hold_ns_max = imax(probe^.hold_ns_max, hold_ns);
+  return unit;
 }

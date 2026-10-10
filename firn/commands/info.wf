@@ -15,9 +15,9 @@ const section_everything: Array<u8, 10> = "EVERYTHING";
 
 const section_module_list: Array<u8, 11> = "MODULE_LIST";
 
-const section_names: Array<u8, 105> = "SERVERCLIENTSMEMORYPERSISTENCESTATSREPLICATIONCPUMODULESCOMMANDSTATSERRORSTATSLATENCYSTATSCLUSTERKEYSPACE";
+const section_names: Array<u8, 116> = "SERVERCLIENTSMEMORYPERSISTENCESTATSREPLICATIONCPUMODULESCOMMANDSTATSERRORSTATSLATENCYSTATSCLUSTERKEYSPACESCRIPTPROBE";
 
-const section_ends: Array<u64, 13> =[6_u64, 13_u64, 19_u64, 30_u64, 35_u64, 46_u64, 49_u64, 56_u64, 68_u64, 78_u64, 90_u64, 97_u64, 105_u64];
+const section_ends: Array<u64, 14> =[6_u64, 13_u64, 19_u64, 30_u64, 35_u64, 46_u64, 49_u64, 56_u64, 68_u64, 78_u64, 90_u64, 97_u64, 105_u64, 116_u64];
 
 const info_server_head: Array<u8, 103> = "# Server\r\nredis_version:7.0.15\r\nredis_git_sha1:00000000\r\nredis_mode:standalone\r\narch_bits:64\r\ntcp_port:";
 
@@ -90,19 +90,19 @@ const info_db0_tail: Array<u8, 2> = "\r\n";
 const info_gap: Array<u8, 2> = "\r\n";
 
 fn section_matches(input: &[u8], start: u64, length: u64, which: u64) -> matched: Bool reads(input) {
-  doc "Whether length bytes of the input from start name section which of INFO's thirteen, in either case.";
+  doc "Whether length bytes of the input from start name section which of INFO's fourteen, in either case.";
   let first = 0_u64;
   if which > 0_u64 {
     let before = which -wrap 1_u64;
-    if before < 13_u64 {
+    if before < 14_u64 {
       set first = section_ends[before];
     }
   }
-  let last = 105_u64;
-  if which < 13_u64 {
+  let last = 116_u64;
+  if which < 14_u64 {
     set last = section_ends[which];
   }
-  if last <= 105_u64 {
+  if last <= 116_u64 {
     if first <= last {
       let matched = name_is(input: input, start: start, length: length, word: &section_names[first..last]);
       return matched;
@@ -187,16 +187,17 @@ fn text_number(text: &Box<Slots<u8>>, value: u64) -> result: unit writes(text) {
   return unit;
 }
 
-fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> reads(input), reads(args) {
+fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 14> reads(input), reads(args) {
   doc "INFO's section parsing, shared independently of how the caller obtains the server counters. Unknown sections add no output; there are no option refusals.";
   let count = args^.inner.len;
-  let chosen = array_filled::<u64, 13>(value: 0_u64);
+  let chosen = array_filled::<u64, 14>(value: 0_u64);
   if count == 1_u64 {
-    for @defaults (which in 0_u64..13_u64) {
+    for @defaults (which in 0_u64..14_u64) {
       set chosen[which] = 1_u64;
     }
     set chosen[8_u64] = 0_u64;
     set chosen[10_u64] = 0_u64;
+    set chosen[13_u64] = 0_u64;
   }
   for @arguments (index in 1_u64..count) {
     let section = arg(args: args, index: index);
@@ -207,14 +208,16 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
     let module_list = name_is(input: input, start: section.start, length: spelled, word: &section_module_list[0_u64..11_u64]);
     let whole = bor(all, everything);
     if whole {
-      for @every (which in 0_u64..13_u64) {
+      for @every (which in 0_u64..14_u64) {
         set chosen[which] = 1_u64;
       }
     } else if defaults {
-      for @usual (which in 0_u64..13_u64) {
+      for @usual (which in 0_u64..14_u64) {
         let extra = which == 8_u64;
         let latency = which == 10_u64;
-        let left_out = bor(extra, latency);
+        let standard_extra = bor(extra, latency);
+        let experimental = which == 13_u64;
+        let left_out = bor(standard_extra, experimental);
         if left_out {
         } else {
           set chosen[which] = 1_u64;
@@ -223,7 +226,7 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
     } else if module_list {
       set chosen[7_u64] = 1_u64;
     } else {
-      for @named (which in 0_u64..13_u64) {
+      for @named (which in 0_u64..14_u64) {
         let matched = section_matches(input: input, start: section.start, length: spelled, which: which);
         if matched {
           set chosen[which] = 1_u64;
@@ -234,11 +237,11 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
   return chosen;
 }
 
-fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
+fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 14>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, probe: &pkg::script_pool::EngineProbe, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(probe), reads(client), reads(time) {
   doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
-  for @sections (which in 0_u64..13_u64) {
+  for @sections (which in 0_u64..14_u64) {
     if chosen^[which] == 1_u64 {
       if written > 0_u64 {
         text_word(text: &text, word: &info_gap[0_u64..2_u64]);
@@ -336,13 +339,15 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         text_word(text: &text, word: &info_latencystats[0_u64..16_u64]);
       } else if which == 11_u64 {
         text_word(text: &text, word: &info_cluster[0_u64..30_u64]);
-      } else {
+      } else if which == 12_u64 {
         text_word(text: &text, word: &info_keyspace[0_u64..12_u64]);
         if keys > 0_u64 {
           text_word(text: &text, word: &info_db0[0_u64..9_u64]);
           text_number(text: &text, value: keys);
           text_word(text: &text, word: &info_db0_tail[0_u64..2_u64]);
         }
+      } else {
+        info_scriptprobe(text: &text, probe: probe);
       }
     }
   }
@@ -358,8 +363,14 @@ fn info_finish(client: &Client, text: &Box<Slots<u8>>) -> result: unit reads(tex
 }
 
 fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; Redis 7.0.15 genRedisInfoString reports raw heap, its observed peak, and AOF exclusion separately. RSS is read on demand through resident_bytes and omitted if the host supplies None. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. The cached-script count reads the registry in a separate short statement. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
+  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats, latencystats and the experiment section scriptprobe; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; Redis 7.0.15 genRedisInfoString reports raw heap, its observed peak, and AOF exclusion separately. RSS is read on demand through resident_bytes and omitted if the host supplies None. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. The cached-script count reads the registry in a separate short statement. INFO scriptprobe snapshots the engine checkout counters in one pool statement; guard retries are not reported: the pinned language exposes no count of false guard evaluations, and a field firn cannot measure is left out. The probe is excluded from default INFO. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
   let chosen = info_plan(input: input, args: args);
+  let probe = pkg::script_pool::new_probe();
+  if chosen[13_u64] == 1_u64 {
+    atomic probe_pool = &store^.scripts {
+      set probe = probe_pool^.probe;
+    }
+  }
   let cached_scripts = 0_u64;
   let used = 0_u64;
   let rss = None<u64>();
@@ -411,7 +422,7 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let text = box_slots_new::<u8>(capacity: 0_u64);
   atomic m = &store^.meta {
     set m^.memory_peak = imax(m^.memory_peak, used);
-    set text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
+    set text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, probe: &probe, client: client, time: time);
   }
   info_finish(client: client, text: &text);
   return unit;
@@ -515,3 +526,60 @@ const info_used_memory_peak: Array<u8, 19> = "\r\nused_memory_peak:";
 const info_memory_excluded: Array<u8, 28> = "\r\nmem_not_counted_for_evict:";
 
 const info_evicted_keys: Array<u8, 15> = "\r\nevicted_keys:";
+
+const info_probe_head: Array<u8, 15> = "# Scriptprobe\r\n";
+
+const info_probe_engine_checkouts: Array<u8, 17> = "engine_checkouts:";
+
+const info_probe_engine_wait_ns_total: Array<u8, 21> = "engine_wait_ns_total:";
+
+const info_probe_engine_wait_ns_max: Array<u8, 19> = "engine_wait_ns_max:";
+
+const info_probe_engine_wait_lt10us: Array<u8, 19> = "engine_wait_lt10us:";
+
+const info_probe_engine_wait_lt100us: Array<u8, 20> = "engine_wait_lt100us:";
+
+const info_probe_engine_wait_lt1ms: Array<u8, 18> = "engine_wait_lt1ms:";
+
+const info_probe_engine_wait_lt10ms: Array<u8, 19> = "engine_wait_lt10ms:";
+
+const info_probe_engine_wait_ge10ms: Array<u8, 19> = "engine_wait_ge10ms:";
+
+const info_probe_engine_hold_ns_total: Array<u8, 21> = "engine_hold_ns_total:";
+
+const info_probe_engine_hold_ns_max: Array<u8, 19> = "engine_hold_ns_max:";
+
+fn info_scriptprobe(text: &Box<Slots<u8>>, probe: &pkg::script_pool::EngineProbe) -> r: unit reads(probe), writes(text) {
+  text_word(text: text, word: &info_probe_head[0_u64..15_u64]);
+  text_word(text: text, word: &info_probe_engine_checkouts[0_u64..17_u64]);
+  text_number(text: text, value: probe^.checkouts);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  text_word(text: text, word: &info_probe_engine_wait_ns_total[0_u64..21_u64]);
+  text_number(text: text, value: probe^.wait_ns_total);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  text_word(text: text, word: &info_probe_engine_wait_ns_max[0_u64..19_u64]);
+  text_number(text: text, value: probe^.wait_ns_max);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  text_word(text: text, word: &info_probe_engine_wait_lt10us[0_u64..19_u64]);
+  text_number(text: text, value: probe^.wait_buckets[0_u64]);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  text_word(text: text, word: &info_probe_engine_wait_lt100us[0_u64..20_u64]);
+  text_number(text: text, value: probe^.wait_buckets[1_u64]);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  text_word(text: text, word: &info_probe_engine_wait_lt1ms[0_u64..18_u64]);
+  text_number(text: text, value: probe^.wait_buckets[2_u64]);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  text_word(text: text, word: &info_probe_engine_wait_lt10ms[0_u64..19_u64]);
+  text_number(text: text, value: probe^.wait_buckets[3_u64]);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  text_word(text: text, word: &info_probe_engine_wait_ge10ms[0_u64..19_u64]);
+  text_number(text: text, value: probe^.wait_buckets[4_u64]);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  text_word(text: text, word: &info_probe_engine_hold_ns_total[0_u64..21_u64]);
+  text_number(text: text, value: probe^.hold_ns_total);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  text_word(text: text, word: &info_probe_engine_hold_ns_max[0_u64..19_u64]);
+  text_number(text: text, value: probe^.hold_ns_max);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  return unit;
+}

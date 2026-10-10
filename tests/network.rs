@@ -3783,6 +3783,7 @@ fn firn_answers_connection_commands_as_redis_does() {
         "Cluster",
         "Keyspace",
     ];
+    // The experiment adds its explicit probe section to ALL/EVERYTHING.
     let everything = [
         "Server",
         "Clients",
@@ -3797,6 +3798,7 @@ fn firn_answers_connection_commands_as_redis_does() {
         "Latencystats",
         "Cluster",
         "Keyspace",
+        "Scriptprobe",
     ];
     for (request, sections) in [
         (vec!["INFO", "cpu", "DEFAULT", "cpu"], &defaults[..]),
@@ -9800,5 +9802,62 @@ fn firn_restores_access_stamps_when_a_read_only_script_is_killed() {
     assert_eq!(memory_object(&mut other, "FREQ", "kill-access"), 6);
     drop(looping);
     drop(other);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Probe expectations come from the experiment's counter contract; ordinary
+/// script replies still follow Redis. No timing threshold depends on the host.
+#[test]
+fn firn_scriptprobe_counts_checkouts_and_reset() {
+    let port = free_port();
+    let text = port.to_string();
+    let child = firn().spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let measured_fields = [
+        "engine_checkouts", "engine_wait_ns_total", "engine_wait_ns_max",
+        "engine_wait_lt10us", "engine_wait_lt100us", "engine_wait_lt1ms",
+        "engine_wait_lt10ms", "engine_wait_ge10ms", "engine_hold_ns_total",
+        "engine_hold_ns_max",
+    ];
+    let snapshot = |client: &mut TcpStream| {
+        client.write_all(&resp(&["INFO", "ScRiPtPrObE"])).unwrap();
+        bulk_reply(client, "scriptprobe")
+    };
+    let number = |info: &str, field: &str| -> u64 {
+        info_field(info, field).unwrap_or_else(|| panic!("missing {field}: {info}"))
+            .parse().unwrap()
+    };
+    let initial = snapshot(&mut client);
+    assert_eq!(info_sections(&initial, "scriptprobe"), ["Scriptprobe"]);
+    assert_eq!(initial.lines().filter(|line| line.contains(':')).count(), 10);
+    for field in measured_fields { assert_eq!(number(&initial, field), 0, "{field}"); }
+    for field in ["engine_retries_total", "engine_retries_max"] {
+        assert_eq!(info_field(&initial, field), None, "{field}");
+    }
+    client.write_all(&resp(&["SCRIPT", "LOAD", "return 17"])).unwrap();
+    let sha = bulk_reply(&mut client, "loaded SHA1");
+    assert_eq!(memory_request(&mut client, &["EVALSHA", &sha, "0"]), ":17\r\n");
+    let measured = snapshot(&mut client);
+    assert_eq!(number(&measured, "engine_checkouts"), 2);
+    let buckets: u64 = measured_fields[3..8].iter().map(|field| number(&measured, field)).sum();
+    assert_eq!(buckets, 2);
+    for (total, maximum) in [
+        ("engine_wait_ns_total", "engine_wait_ns_max"),
+        ("engine_hold_ns_total", "engine_hold_ns_max"),
+    ] {
+        assert!(number(&measured, total) >= number(&measured, maximum));
+    }
+    assert!(number(&measured, "engine_hold_ns_total") > 0);
+    assert_eq!(memory_request(&mut client, &["SCRIPT", "FLUSH"]), "+OK\r\n");
+    assert_eq!(snapshot(&mut client), measured);
+    let missing = memory_request(&mut client, &["EVALSHA", &sha, "0"]);
+    assert!(missing.starts_with("-NOSCRIPT "));
+    assert_eq!(snapshot(&mut client), measured);
+    assert_eq!(memory_request(&mut client, &["CONFIG", "RESETSTAT"]), "+OK\r\n");
+    let reset = snapshot(&mut client);
+    assert_eq!(reset, initial);
+    assert_eq!(memory_request(&mut client, &["EVAL", "return 18", "0"]), ":18\r\n");
+    assert_eq!(number(&snapshot(&mut client), "engine_checkouts"), 1);
+    drop(client);
     assert_eq!(finished(child).0, 0);
 }

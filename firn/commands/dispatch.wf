@@ -244,7 +244,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       reply_arity(client: client, input: input, name: name);
       return unit;
     }
-    run_script(store: store, input: input, args: args, client: client);
+    run_script(store: store, input: input, args: args, client: client, clock: clock);
     return unit;
   }
   if code == code_ping {

@@ -58,6 +58,10 @@ struct Control {
     socket: TcpStream,
 }
 
+pub(super) fn resetstat(port: u16) -> Result<()> {
+    Control::new(port)?.ok(&[b"CONFIG", b"RESETSTAT"])
+}
+
 impl Control {
     fn new(port: u16) -> Result<Self> { Ok(Self { socket: connect(port)? }) }
 
@@ -239,6 +243,7 @@ fn warmup(opts: &Options, zipf: Option<Arc<Zipf>>) -> Result<()> {
         // Separate streams: a faster warm-up must not advance the measured
         // sequence. Each server starts the same per-connection measured prefix.
         warm.seed ^= 0xd1b54a32d192ed03;
+        warm.probe_info = false;
         measure(&warm, zipf, None)?;
     }
     Ok(())

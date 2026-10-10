@@ -34,6 +34,7 @@ struct Options {
     warmup: Duration,
     sample_interval: Duration,
     maxmemory: Option<u64>,
+    probe_info: bool,
 }
 
 impl Options {
@@ -44,7 +45,7 @@ impl Options {
             seconds: None, requests: None, keys: 100_000,
             value: vec![b'x'; 200], workload: String::new(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::from_secs(5),
-            sample_interval: Duration::from_millis(10), maxmemory: None,
+            sample_interval: Duration::from_millis(10), maxmemory: None, probe_info: false,
         };
         let (mut keys_given, mut value_given) = (false, false);
         let mut args = env::args().skip(1);
@@ -73,6 +74,11 @@ impl Options {
                 "--warmup-seconds" => opts.warmup = Duration::try_from_secs_f64(value.parse()?)?,
                 "--sample-ms" => opts.sample_interval = Duration::from_millis(value.parse()?),
                 "--maxmemory" => opts.maxmemory = Some(value.parse()?),
+                "--probe-info" => opts.probe_info = match value.as_str() {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err("--probe-info must be 0 or 1".into()),
+                },
                 _ => return Err(format!("unknown option: {flag}").into()),
             }
         }
@@ -452,6 +458,7 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
     // RESETSTAT and the initial INFO happen with all measured connections open,
     // before releasing any worker. A failed setup cannot strand a barrier waiter.
     if let Some(m) = monitor.as_deref_mut() { m.start()?; }
+    if opts.probe_info && monitor.is_none() { eviction::resetstat(opts.port)?; }
     let opts = Arc::new(opts.clone());
     let barrier = Arc::new(Barrier::new(opts.threads + 1));
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -534,7 +541,7 @@ mod tests {
         Options { port, connections: 2, threads: 2, seconds: None, requests: Some(3),
             keys: 1, value: vec![b'x'], workload: workload.into(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::ZERO,
-            sample_interval: Duration::from_millis(10), maxmemory: None }
+            sample_interval: Duration::from_millis(10), maxmemory: None, probe_info: false }
     }
 
     pub(super) fn expect_command(socket: &mut TcpStream, args: &[&[u8]]) {
@@ -543,6 +550,62 @@ mod tests {
         let mut actual = vec![0; expected.len()];
         socket.read_exact(&mut actual).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn probe_reset_follows_load_and_precedes_timed_workers() {
+        use std::net::TcpListener;
+        for accepted in [true, false] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let mut opts = options(listener.local_addr().unwrap().port(), "limiter-script");
+            opts.connections = 1;
+            opts.threads = 1;
+            opts.requests = Some(1);
+            opts.probe_info = true;
+            let server = thread::spawn(move || {
+                let accept = || {
+                    let deadline = Instant::now() + TIMEOUT;
+                    loop {
+                        match listener.accept() {
+                            Ok((socket, _)) => {
+                                socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+                                return socket;
+                            }
+                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline, "missing connection");
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                            Err(e) => panic!("accept: {e}"),
+                        }
+                    }
+                };
+                let mut measured = accept();
+                expect_command(&mut measured, &[b"SCRIPT", b"LOAD", limiter::SCRIPT.as_bytes()]);
+                measured.write_all(b"$40\r\n0123456789012345678901234567890123456789\r\n").unwrap();
+                let mut control = accept();
+                expect_command(&mut control, &[b"CONFIG", b"RESETSTAT"]);
+                measured.set_nonblocking(true).unwrap();
+                assert_eq!(measured.peek(&mut [0]).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+                measured.set_nonblocking(false).unwrap();
+                if accepted {
+                    control.write_all(b"+OK\r\n").unwrap();
+                    expect_command(&mut measured, &[b"EVALSHA", b"0123456789012345678901234567890123456789",
+                        b"1", b"key:0", b"1", b"60", b"1", b"60"]);
+                    measured.write_all(b"*2\r\n:1\r\n:60000\r\n").unwrap();
+                } else {
+                    control.write_all(b"-ERR reset refused\r\n").unwrap();
+                    assert_eq!(measured.read(&mut [0]).unwrap(), 0);
+                }
+            });
+            let result = measure(&opts, None, None);
+            server.join().unwrap();
+            if accepted {
+                assert_eq!(result.unwrap().count, 1);
+            } else {
+                assert!(result.err().expect("reset must fail").to_string().contains("reset refused"));
+            }
+        }
     }
 
     #[test]

@@ -717,7 +717,7 @@ fn reply_bounds(client: &Client, which: u64, least: i64, most: i64) -> result: u
 }
 
 fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "CONFIG GET parameter [parameter ...]: answers the parameters firn reports that the arguments reach, as Redis 7.0 answers: appendfilename, the append-only file's name; appendonly, yes while firn keeps the file; bind, the address firn listens on; databases, 1; port; requirepass, the password clients must give; save, empty, since firn never saves a snapshot; timeout, the idle limit; and the parameters whose only effect in Redis is on its internal encodings, with their aliases, each with the value CONFIG SET last gave it or Redis's default. An argument holding [, * or ? before any zero byte is a glob pattern, its bytes from a zero byte on ignored as Redis's C string ignores them, matched as glob_match matches one; any other argument names a parameter in either case. A parameter several arguments reach is answered once, spelled as the first argument reaching it spells it, a pattern spelling it in lower case, an alias counting as a parameter of its own, as in Redis; the parameters come in parameter_names order, one of the orders Redis answers in, since Redis orders them by a hash seeded anew at each start; and an argument reaching none of them, a parameter firn does not report included, matches nothing, as one Redis does not know does. CONFIG SET is answered as run_config_set answers it, after too few arguments are answered as Redis answers them; CONFIG RESETSTAT answers OK and zeroes connections, eviction and active-expiry counts while preserving the observed heap peak, as Redis 7.0.15 configResetStatCommand/resetServerStats does; and any other subcommand is answered as Redis answers an unknown one, its name echoed to 128 bytes. A connection that must authenticate first is answered NOAUTH once the subcommand and its arguments are counted.";
+  doc "CONFIG GET parameter [parameter ...]: answers the parameters firn reports that the arguments reach, as Redis 7.0 answers: appendfilename, the append-only file's name; appendonly, yes while firn keeps the file; bind, the address firn listens on; databases, 1; port; requirepass, the password clients must give; save, empty, since firn never saves a snapshot; timeout, the idle limit; and the parameters whose only effect in Redis is on its internal encodings, with their aliases, each with the value CONFIG SET last gave it or Redis's default. An argument holding [, * or ? before any zero byte is a glob pattern, its bytes from a zero byte on ignored as Redis's C string ignores them, matched as glob_match matches one; any other argument names a parameter in either case. A parameter several arguments reach is answered once, spelled as the first argument reaching it spells it, a pattern spelling it in lower case, an alias counting as a parameter of its own, as in Redis; the parameters come in parameter_names order, one of the orders Redis answers in, since Redis orders them by a hash seeded anew at each start; and an argument reaching none of them, a parameter firn does not report included, matches nothing, as one Redis does not know does. CONFIG SET is answered as run_config_set answers it, after too few arguments are answered as Redis answers them; CONFIG RESETSTAT answers OK and zeroes connections, eviction, active-expiry and experiment engine-probe counters while preserving the observed heap peak, as Redis 7.0.15 configResetStatCommand/resetServerStats does; and any other subcommand is answered as Redis answers an unknown one, its name echoed to 128 bytes. A connection that must authenticate first is answered NOAUTH once the subcommand and its arguments are counted.";
   let sub = arg(args: args, index: 1_u64);
   let getting = name_is(input: input, start: sub.start, length: sub.length, word: &word_get[0_u64..3_u64]);
   let setting = name_is(input: input, start: sub.start, length: sub.length, word: &word_set[0_u64..3_u64]);
@@ -806,10 +806,13 @@ fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     if stopped {
       return unit;
     }
-    atomic v = &store^.server, reset_meta = &store^.meta {
+    atomic v = &store^.server, reset_meta = &store^.meta, reset_pool = &store^.scripts {
       set v^.connections = 0_u64;
       set reset_meta^.evicted_keys = 0_u64;
       set reset_meta^.expired_keys = 0_u64;
+      let cleared_probe = pkg::script_pool::new_probe();
+      set reset_pool^.probe = cleared_probe;
+      set reset_pool^.probe_epoch = reset_pool^.probe_epoch +wrap 1_u64;
     }
     reply_ok(client: client);
     return unit;

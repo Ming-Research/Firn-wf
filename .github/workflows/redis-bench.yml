@@ -78,6 +78,10 @@ on:
         description: "Record a perf profile of each image (compare), or rerun each firn line's first pass under perf (original consumer workloads only; memory workloads have no perf pass)"
         type: boolean
         default: true
+      probe_info:
+        description: Reset firn statistics after warm-up and print INFO scriptprobe after each workloads measurement
+        type: boolean
+        default: false
       profile_test:
         description: The test and depth each image is profiled under
         type: string
@@ -307,6 +311,7 @@ jobs:
           WORKLOAD_CONNECTIONS: ${{ inputs.connections }}
           WORKLOADS: ${{ inputs.tests }}
           WORKLOAD_OPTIONS: ${{ inputs.workload_options }}
+          FIRN_PROBE_INFO: ${{ inputs.probe_info && '1' || '0' }}
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"

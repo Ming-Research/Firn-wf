@@ -77,6 +77,15 @@
 #                                 --sample-ms 10 for both. Seed is the pass.
 #                                 evict-zipf.csv keeps memory/hit observations;
 #                                 all rates and latencies enter workloads.csv.
+#                                 FIRN_PROBE_INFO=1 warms the original consumers
+#                                 on both servers for WORKLOAD_WARMUP_SECONDS
+#                                 (default 5), resets firn after warm-up and
+#                                 measured connection setup, then prints INFO
+#                                 scriptprobe after each measured firn run as
+#                                 line,cpus,workload,connections,pass,INFO-line.
+#                                 Memory workloads retain their own warm-up
+#                                 and RESETSTAT. Probe text is kept separately
+#                                 in scriptprobe.txt; timed workers are unchanged.
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
 # the records before the quick mode built it with none. The redis-bench
@@ -734,11 +743,28 @@ if [ "$MODE" = workloads ]; then
         done
     }
     memory_options
+    probe_options() {
+        probe_args=
+        if [ "${FIRN_PROBE_INFO:-0}" = 1 ]; then
+            case $line in firn-*) probe_args='--probe-info 1' ;; esac
+        fi
+    }
+    probe_print() {
+        if [ -n "$probe_args" ]; then
+            redis-cli -e --raw -p "$PORT" INFO scriptprobe >"$OUT/scriptprobe-current.txt"
+            grep -q '^engine_checkouts:' "$OUT/scriptprobe-current.txt" || {
+                echo "missing INFO scriptprobe: $1 cpus=$n workload=$workload connections=$conns pass=$pass" >&2
+                return 1
+            }
+            sed "s/^/$1,$n,$workload,$conns,$pass,/" "$OUT/scriptprobe-current.txt" \
+                | tee -a "$OUT/scriptprobe.txt"
+        fi
+    }
     memory_run() {
         taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
             --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
             --workload "$memory_workload" --seconds "${WORKLOAD_SECONDS:-10}" \
-            --seed "$pass" "$@" || {
+            --seed "$pass" $probe_args "$@" || {
                 memory_status=$?
                 echo "memory workload failed: line=$line pass=$pass cpus=$n workload=$workload variant=$variant connections=$conns (exit $memory_status)" >&2
                 return "$memory_status"
@@ -780,6 +806,7 @@ if [ "$MODE" = workloads ]; then
                             for line in $order; do
                                 for variant in $variants; do
                                     start "$line"
+                                    probe_options
                                     if [ "$variant" = eviction ]; then
                                         result=$(memory_run)
                                         echo "$line,$pass,$n,$result" | tee -a "$OUT/evict-zipf.csv"
@@ -798,6 +825,11 @@ if [ "$MODE" = workloads ]; then
                                         echo "$line-$variant,$pass,$n,$rates" | tee -a "$OUT/workloads.csv"
                                         echo "$line-$variant,$pass,$n,$memory_workload,$conns,$settings" | tee -a "$OUT/session-limits-settings.csv"
                                     fi
+                                    if [ "$variant" = eviction ]; then
+                                        probe_print "$line"
+                                    else
+                                        probe_print "$line-$variant"
+                                    fi
                                     stop
                                     server=
                                 done
@@ -808,16 +840,23 @@ if [ "$MODE" = workloads ]; then
                 esac
                 for line in $order; do
                     start "$line"
+                    probe_options
                     if [ "$workload" = session-get ]; then
                         taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" --fill 1000000
                         rss=$(awk '/^VmRSS:/ { print $2; found=1 } END { if (!found) exit 1 }' "/proc/$server/status")
                         echo "$line,$pass,$n,$workload,1000000,$rss" | tee -a "$OUT/workloads-memory.csv"
                     fi
                     for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                        if [ "${FIRN_PROBE_INFO:-0}" = 1 ]; then
+                            taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
+                                --threads "$CLIENT_THREADS" --connections "$conns" \
+                                --workload "$workload" --seconds "${WORKLOAD_WARMUP_SECONDS:-5}" >/dev/null
+                        fi
                         result=$(taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
                             --threads "$CLIENT_THREADS" --connections "$conns" \
-                            --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
+                            --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}" $probe_args)
                         echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
+                        probe_print "$line"
                     done
                     # Profile only after every measured run on this server, so
                     # no measured run follows an unmeasured one here.

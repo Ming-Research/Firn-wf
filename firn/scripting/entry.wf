@@ -51,12 +51,19 @@ fn copy_source(input: &[u8], span: Span) -> bytes: Box<Slots<u8>> reads(input) {
   return move bytes;
 }
 
-fn take_engine(store: &Keyspace, first: Bool, mark: &u64) -> pooled: PooledEngine reads(store), writes(mark) waits {
+fn take_engine(store: &Keyspace, first: Bool, mark: &u64, clock: &std::time::Clock) -> (pooled: PooledEngine, acquired: std::time::Instant, epoch: u64) reads(store), writes(mark), writes(clock) waits {
   doc "Takes the one engine, waiting while another script has it, or makes it if none was made since the last SCRIPT FLUSH. A script's first take counts it in running and records the kills count in mark in the same atomic statement that reads the generation and takes the cached engine, so FLUSH cannot intervene and a kill before this take is not that script's. Later takes and SCRIPT LOAD leave running and mark unchanged.";
   let held = None<PooledEngine>();
   let generation = 0_u64;
+  let started = std::time::now(clock: clock);
+  let acquired = started;
+  let epoch = 0_u64;
   atomic p = &store^.scripts when p^.out == 0_u64 {
+    set acquired = std::time::now(clock: clock);
     set p^.out = 1_u64;
+    set epoch = p^.probe_epoch;
+    let wait_ns = std::time::nanoseconds_from(earlier: started, later: acquired);
+    pkg::script_pool::probe_checkout(probe: &p^.probe, wait_ns: wait_ns);
     set generation = p^.generation;
     if first {
       set p^.running = p^.running +sat 1_u64;
@@ -71,12 +78,14 @@ fn take_engine(store: &Keyspace, first: Bool, mark: &u64) -> pooled: PooledEngin
     Some(value: engine) => {
       if engine.generation != generation {
         let stale = move engine;
-        return new_pooled(generation: generation);
+        let fresh = new_pooled(generation: generation);
+        return move fresh, acquired, epoch;
       }
-      return move engine;
+      return move engine, acquired, epoch;
     }
     None() => {
-      return new_pooled(generation: generation);
+      let created = new_pooled(generation: generation);
+      return move created, acquired, epoch;
     }
   }
 }
@@ -90,11 +99,10 @@ fn new_pooled(generation: u64) -> pooled: PooledEngine pure {
   return PooledEngine(engine: move engine, generation: generation, cache: move cache);
 }
 
-fn return_engine(store: &Keyspace, pooled: PooledEngine) -> r: unit reads(store) waits {
-  doc "Puts the engine back for the next script, which then may take it.";
+fn return_engine(store: &Keyspace, pooled: PooledEngine, clock: &std::time::Clock, acquired: std::time::Instant, epoch: u64) -> r: unit reads(store), writes(clock) waits {
+  doc "Resets and returns the engine, counting the hold through reset and the return statement's lock acquisition, before releasing out. A checkout predating CONFIG RESETSTAT adds no hold to the new epoch.";
   halo::embed::reset(engine: &pooled.engine);
   atomic p = &store^.scripts {
-    set p^.out = 0_u64;
     if p^.idle.inner.len == p^.idle.inner.cap {
       let room = p^.idle.inner.cap +sat 1_u64;
       let twice = p^.idle.inner.cap +sat p^.idle.inner.cap;
@@ -106,6 +114,12 @@ fn return_engine(store: &Keyspace, pooled: PooledEngine) -> r: unit reads(store)
     } else {
       let exhausted = move pooled;
     }
+    let returned = std::time::now(clock: clock);
+    let hold_ns = std::time::nanoseconds_from(earlier: acquired, later: returned);
+    if p^.probe_epoch == epoch {
+      pkg::script_pool::probe_hold(probe: &p^.probe, hold_ns: hold_ns);
+    }
+    set p^.out = 0_u64;
   }
   return unit;
 }
@@ -375,7 +389,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
   let never = std::time::cancel_never();
   loop {
     let first = bnot(begun);
-    let pooled = take_engine(store: store, first: first, mark: &mark);
+    let (pooled, acquired, epoch) = take_engine(store: store, first: first, mark: &mark, clock: clock);
     let killed = False();
     if begun {
       set killed = kill_requested(store: store, mark: mark);
@@ -492,7 +506,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
         }
       }
     }
-    return_engine(store: store, pooled: move pooled);
+    return_engine(store: store, pooled: move pooled, clock: clock, acquired: acquired, epoch: epoch);
     if killed {
       reply_killed(client: client, sha: &sha, line: stopped_at);
       break;
@@ -519,7 +533,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
   return unit;
 }
 
-fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> r: unit reads(store), reads(input), reads(args), writes(client) waits {
+fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, clock: &std::time::Clock) -> r: unit reads(store), reads(input), reads(args), writes(client), writes(clock) waits {
   doc "SCRIPT LOAD, EXISTS and FLUSH as Redis 7.0.15 answers them: an unknown subcommand is answered as Redis answers one, its name echoed to 128 bytes, and a subcommand outside its arity with Redis's arity error, both before a connection that must authenticate is answered NOAUTH. SYNC and ASYNC both wait until no script is in progress, then invalidate the visible registry before replying OK, as Redis does below its busy threshold; firn frees the registry's sources at once for either, and the engine discards its stale environment before its next use. LOAD takes the engine without counting a running script or recording a kill mark.";
   let count = args^.inner.len;
   let sub = pkg::protocol::arg(args: args, index: 1_u64);
@@ -625,7 +639,7 @@ fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Clie
     let sha = halo::embed::sha1hex(bytes: &source.inner[0_u64..n]);
     let no_begin = False();
     let unused_mark = 0_u64;
-    let pooled = take_engine(store: store, first: no_begin, mark: &unused_mark);
+    let (pooled, acquired, epoch) = take_engine(store: store, first: no_begin, mark: &unused_mark, clock: clock);
     let compiled = cached(pooled: &pooled, sha: &sha, source: &source.inner[0_u64..n]);
     match move compiled {
       Err(error: e) => {
@@ -636,7 +650,7 @@ fn script(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Clie
         reply_bulk_input(client: client, input: &sha[0_u64..40_u64], start: 0_u64, length: 40_u64);
       }
     }
-    return_engine(store: store, pooled: move pooled);
+    return_engine(store: store, pooled: move pooled, clock: clock, acquired: acquired, epoch: epoch);
     return unit;
   }
   return unit;
