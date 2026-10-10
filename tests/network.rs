@@ -7743,8 +7743,12 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
     }
 }
 
-/// The idle peer has completed a PING, remains open, and has no idle limit,
-/// so firn exits only if its receive's deadline lets it see the request.
+/// The idle peer has completed a PING, remains open, and has no idle limit.
+/// A fresh PONG places shutdown near the start of its next receive: the
+/// process must exit within 500 ms, well below the old one-second poll.
+/// The bound starts before PING so scheduling delays cannot make polling
+/// appear prompt. Both peers stay open until exit, excluding peer EOF as
+/// the reason the receive ended.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_shutdown_closes_an_idle_client_without_an_idle_limit_on_both_routes() {
@@ -7753,14 +7757,20 @@ fn firn_shutdown_closes_an_idle_client_without_an_idle_limit_on_both_routes() {
         let text = port.to_string();
         let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
         let mut idle = connect_when_ready(port);
+        let mut caller = connect_when_ready(port);
+        let started = Instant::now();
         idle.write_all(&resp(&["PING"]))
             .expect("establish idle peer");
         expect_replies(&mut idle, b"+PONG\r\n", "idle peer ready");
-        let mut caller = connect_when_ready(port);
         caller
             .write_all(&resp(&["sHuTdOwN", "nOw\0ignored", "nOsAvE", "NOSAVE"]))
             .expect("shutdown with case folding, C strings and duplicate flags");
         shutdown_finished(child);
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "route {native_ring}: cancellation took {:?}",
+            started.elapsed()
+        );
         assert_eq!(caller.read(&mut [0]).expect("shutdown EOF"), 0);
         assert_eq!(idle.read(&mut [0]).expect("idle EOF"), 0);
     }
