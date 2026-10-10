@@ -439,9 +439,11 @@ client on the remaining performance cores' threads (4-15 or 6-15).
 
 Run [38052762047](https://github.com/Ming-Research/Firn-wf/actions/runs/38052762047),
 Firn-wf 0cfcf57 (whitefoot.pin `wf-78223721f77d`), 2026-10-10
-12:39-12:56 UTC, Redis 7.0.15, 2 passes of 10 seconds. Rate in thousands a
-second as firn / Redis (ratio), p99 in ms as firn / Redis, append-only file
-off:
+12:39-12:56 UTC, 2 passes of 10 seconds. Rate in thousands a second as
+firn / Redis (ratio), p99 in ms as firn / Redis, append-only file off. The
+Redis measured is the reinstalled host's packaged Redis 8.0.5, not firn's
+reference 7.0.15 (the run's host log; status board item
+`firn-ops-redis-ref`), so its column compares firn with 8.0.5:
 
 | workload | CPUs | connections | rate | p99 |
 |---|---|---|---|---|
@@ -486,3 +488,47 @@ recorded on the status board as `firn-gap-guard-fairness` with a standalone
 reproducer. The first is firn's design; the direction (an engine per driver
 with scripts holding only their declared keys) awaits the owner on card
 `firn-q-script-engine`.
+
+### A fair guard, measured on the script engine
+
+The Whitefoot session that owns the runtime built one remedy for the racing
+waiters: a guard release gives each woken waiter one turn before a newcomer
+may take the object ("turns", experiment release `wf-exp-5f6dca744b8f`,
+Whitefoot commit 5f6dca744 on branch `claude/guard-fairness`, based on main
+fe5589ec5). On its own probe this cut the longest wait from 510 ms to 9-17
+ms while lengthening the run 2.5-2.9 times, and it asked for firn's real
+engine before the owner decides between fairness and throughput (status
+board card `gran-guard-fairness`).
+
+Run [38065358945](https://github.com/Ming-Research/Firn-wf/actions/runs/38065358945),
+2026-10-10 15:52-15:57 UTC, workloads mode with `workload_images`, an
+exploratory comparison with no criterion registered beforehand: the same
+firn tree (main 8744d72) built with the matching control release
+`wf-fe5589ec5f45` (branch `exp/guard-control`, 22283eb) and with the turns
+release (branch `exp/guard-turns`, 4b35075), plus a twin of the control as a
+noise control, interleaved with the host's Redis 8.0.5 (not the reference
+7.0.15), the order reversed on the second pass. limiter-script at depth 1, server on CPUs 2 and 4 (two
+drivers), client on CPUs 6-15 (10 threads), append-only file off, 2 passes
+of 5 seconds. Rate in requests a second and p50/p99 in ms, pass 1 / pass 2:
+
+| line | connections | rate | p50 | p99 |
+|---|---|---|---|---|
+| Redis 8.0.5 | 8 | 228770 / 228835 | 0.029 / 0.029 | 0.059 / 0.058 |
+| Redis 8.0.5 | 50 | 231140 / 231900 | 0.202 / 0.201 | 0.410 / 0.408 |
+| control | 8 | 159068 / 159481 | 0.018 / 0.018 | 0.793 / 0.742 |
+| control | 50 | 211012 / 209346 | 0.087 / 0.071 | 1.500 / 1.628 |
+| control twin | 8 | 159278 / 159617 | 0.018 / 0.018 | 0.724 / 0.699 |
+| control twin | 50 | 208578 / 205304 | 0.062 / 0.086 | 1.679 / 1.587 |
+| turns | 8 | 21281 / 21292 | 0.346 / 0.346 | 0.873 / 0.874 |
+| turns | 50 | 4411 / 4394 | 7.959 / 7.879 | 51.211 / 52.503 |
+
+The control and its twin agree within about 2% on rate; their p50 and p99
+differ by up to about 40% and 12%. Turns cuts the scripted rate 7.5 times at
+8 connections and 48 times at 50, and its p99 at 50 connections is 32-34
+times the control's. The likely cause, not yet
+profiled: every script checks out the one engine under a guard, so each
+acquisition now pays a context switch, and more connections queue more
+turns. This tested one workload
+on one machine; the workload client reports p50 and p99, not the longest
+wait. It is evidence against turns as built for this engine, and the
+reason firn asks that any bounded-overtaking build be measured the same way.

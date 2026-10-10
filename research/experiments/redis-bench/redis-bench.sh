@@ -67,6 +67,12 @@
 #                                 <connections>.txt; Redis lines are not
 #                                 profiled. Probe with
 #                                 WORKLOAD_PASSES=2 WORKLOAD_SECONDS=5 first.
+#                                 With WORKLOAD_IMAGES set, the lines are
+#                                 Redis and each image IMAGES names, both
+#                                 without AOF, instead of this checkout's
+#                                 firn: a comparison of builds on the
+#                                 consumer workloads, whose twins are noise
+#                                 controls.
 #                                 Opt-in evict-zipf measures cache-aside hits
 #                                 under allkeys-lru at half the filled heap;
 #                                 session-set-limits/session-get-limits compare
@@ -974,6 +980,10 @@ if [ "$MODE" = workloads ]; then
     client="$target/release/firn-workload"
     total=$(nproc)
     workloads=${WORKLOADS:-limiter-script limiter-tx setmany-tx session-set session-get}
+    if [ -n "${WORKLOAD_IMAGES:-}" ] && [ -z "${IMAGES:-}" ]; then
+        echo "WORKLOAD_IMAGES needs IMAGES, the name=path pairs of the images to measure" >&2
+        exit 1
+    fi
     memory_workloads=
     for workload in $workloads; do
         case $workload in
@@ -1029,8 +1039,18 @@ if [ "$MODE" = workloads ]; then
         pass=1
         while [ "$pass" -le "${WORKLOAD_PASSES:-3}" ]; do
             order="reference reference-aof firn-$n firn-aof-$n"
+            if [ -n "${WORKLOAD_IMAGES:-}" ]; then
+                order=reference
+                for pair in $IMAGES; do
+                    order="$order image-${pair%%=*}"
+                done
+            fi
             if [ $((pass % 2)) -eq 0 ]; then
-                order="firn-aof-$n firn-$n reference-aof reference"
+                reversed=
+                for line in $order; do
+                    reversed="$line $reversed"
+                done
+                order=$reversed
             fi
             for workload in $workloads; do
                 case $workload in
@@ -1090,7 +1110,7 @@ if [ "$MODE" = workloads ]; then
                     done
                     # Profile only after every measured run on this server, so
                     # no measured run follows an unmeasured one here.
-                    case $line in firn-*) profiled=1 ;; *) profiled= ;; esac
+                    case $line in firn-*|image-*) profiled=1 ;; *) profiled= ;; esac
                     if [ -n "$PERF" ] && [ -n "$profiled" ] && [ "$pass" -eq 1 ]; then
                         for conns in ${WORKLOAD_CONNECTIONS:-50}; do
                             name="$line-$n-$workload-$conns"

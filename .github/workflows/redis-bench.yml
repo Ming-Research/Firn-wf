@@ -11,7 +11,9 @@
 #                 them, on each server CPU count in `cpus`
 #                 (redis-bench.sh scale)
 #   mode workloads  this checkout's firn and Redis, without and with AOF,
-#                   on consumer command forms or opt-in memory-limit workloads
+#                   on consumer command forms or opt-in memory-limit workloads;
+#                   with workload_images, instead the image each revision
+#                   builds and Redis, interleaved, without AOF
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
 #
@@ -74,6 +76,10 @@ on:
         description: "Memory workloads only: space-separated --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Empty keeps workload defaults; seed is the pass."
         type: string
         default: ""
+      workload_images:
+        description: "Workloads only: measure the images `revisions` names (a -twin as a noise control) against Redis, instead of this checkout's firn"
+        type: boolean
+        default: false
       profile:
         description: "Record a perf profile of each image (compare), or rerun each firn line's first pass under perf (original consumer workloads only; memory workloads have no perf pass)"
         type: boolean
@@ -247,7 +253,7 @@ jobs:
       # Each tree's own pin names the LLVM major its compiler needs, which
       # the host's /usr/bin/clang must be (make toolchain-check).
       - name: Build each revision's firn with its pinned compiler
-        if: ${{ inputs.mode != 'workloads' }}
+        if: ${{ inputs.mode != 'workloads' || inputs.workload_images }}
         run: |
           images=
           kept="$RUNNER_TEMP/images-run"
@@ -334,6 +340,7 @@ jobs:
           WORKLOAD_CONNECTIONS: ${{ inputs.connections }}
           WORKLOADS: ${{ inputs.tests }}
           WORKLOAD_OPTIONS: ${{ inputs.workload_options }}
+          WORKLOAD_IMAGES: ${{ inputs.workload_images && '1' || '' }}
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"
@@ -363,7 +370,7 @@ jobs:
             make compiler
             export FIRN_BASELINE="$OUT/base"
             echo "firn: $(git rev-parse HEAD)" | tee -a "$OUT/host.txt"
-            if [ "$MODE" = workloads ]; then
+            if [ "$MODE" = workloads ] && [ -z "$WORKLOAD_IMAGES" ]; then
               echo "revision,firn,$(git rev-parse HEAD),$(cat whitefoot.pin)" | tee "$OUT/revisions.csv"
             fi
             run_session "$MODE" 2>&1 | tee "$OUT/$MODE.txt"
