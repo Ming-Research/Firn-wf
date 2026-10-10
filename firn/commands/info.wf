@@ -234,8 +234,8 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
   return chosen;
 }
 
-fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
-  doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed.";
+fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(client), reads(time), writes(persistence) {
+  doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. Reading the rewrite exclusion writes its scope view in persistence; keys and counters are unchanged.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
   for @sections (which in 0_u64..13_u64) {

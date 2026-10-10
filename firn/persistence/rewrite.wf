@@ -2,6 +2,8 @@ alias Clock = std::time::Clock;
 alias DirectoryRead = std::fs::DirectoryRead;
 alias HandleFactory = std::io::HandleFactory;
 alias Keyspace = pkg::store::Keyspace;
+alias MeterScope = std::process::MeterScope;
+alias ScopeBody = std::process::ScopeBody;
 alias Time = pkg::store::Time;
 alias WriteFile = std::fs::WriteFile;
 
@@ -15,6 +17,49 @@ struct AofRebuilt {
   directory: DirectoryRead;
   size: u64;
   accepted: Bool;
+}
+
+struct AofTailWork {
+  store: Keyspace;
+  factory: HandleFactory;
+  log: AofLog;
+  clock: Clock;
+  time: Time;
+}
+
+struct AofTailChecked {
+  log: AofLog;
+  accepted: Bool;
+}
+
+struct AofRewriteWork {
+  store: Keyspace;
+  factory: HandleFactory;
+  directory: DirectoryRead;
+  file: WriteFile;
+  manifest: AofManifest;
+  clock: Clock;
+  time: Time;
+}
+
+struct AofScopedRebuilt {
+  scope: MeterScope;
+  rebuilt: AofRebuilt;
+}
+
+struct AofRewriteCycle {
+  scope: MeterScope;
+  log: AofLog;
+  accepted: Bool;
+  started: Bool;
+}
+
+binding AofTailBody : ScopeBody<AofTailWork, AofTailChecked> {
+  run = aof_rw_tail_body;
+}
+
+binding AofRewriteBody : ScopeBody<AofRewriteWork, AofRebuilt> {
+  run = aof_rw_worker;
 }
 
 fn aof_rw_cancelled(store: &Keyspace) -> cancelled: Bool reads(store) waits {
@@ -92,13 +137,15 @@ fn aof_rw_close_tail(store: &Keyspace, factory: &HandleFactory, log: &AofLog, ti
   return False();
 }
 
-fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(time), writes(factory), writes(log), writes(clock) waits {
-  doc "Flush is complete before entry. Find the unfinished region in the current file, cut it and sync the file before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts.";
-  let whole = aof_rw_close_tail(store: store, factory: factory, log: log, time: time, clock: clock);
-  if whole {
-  } else {
-    return False();
-  }
+fn aof_rw_tail_body(argument: AofTailWork) -> result: AofTailChecked pure waits {
+  doc "Only close-tail replay runs in the scope. Return the preexisting log and a scalar: no private key, replay buffer or manifest allocation enters live state. Truncation changes the file and the live byte count, not the log's owned storage.";
+  let AofTailWork(store: store, factory: factory, log: log, clock: clock, time: time) = move argument;
+  let accepted = aof_rw_close_tail(store: &store, factory: &factory, log: &log, time: &time, clock: &clock);
+  return AofTailChecked(log: move log, accepted: accepted);
+}
+
+fn aof_rw_switch(factory: &HandleFactory, log: &AofLog) -> accepted: Bool writes(factory), writes(log) waits {
+  doc "Flush and scoped close-tail replay are complete before entry. Sync the cut file before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. Allocate the live manifest and new handle outside the rewrite scope. After publication only the new handle receives writes; close the old one before the rebuild starts.";
   match std::fs::sync_file(factory: factory, file: &log^.file) {
     Ok(value: synced) => {
     }
@@ -177,8 +224,9 @@ fn aof_rw_replay(private_store: &Keyspace, live_store: &Keyspace, factory: &Hand
   return True();
 }
 
-fn aof_rw_worker(store: Keyspace, factory: HandleFactory, directory: DirectoryRead, file: WriteFile, manifest: AofManifest, clock: Clock, time: Time) -> rebuilt: AofRebuilt pure waits {
-  doc "Own the directory read half until completion, returning it through the structured spawn result. Completion is published only after the temporary base is synced and closed; the parent joins before installing or removing it.";
+fn aof_rw_worker(argument: AofRewriteWork) -> rebuilt: AofRebuilt pure waits {
+  doc "Replay and emit wholly inside the rewrite scope. Return only the preexisting directory read half and scalar size and status; the private keyspace, manifest snapshot, scan keys and emitter storage are released before scope_run leaves. The caller publishes completion after the scoped result joins.";
+  let AofRewriteWork(store: store, factory: factory, directory: directory, file: file, manifest: manifest, clock: clock, time: time) = move argument;
   let empty = array_filled::<u8, 0>(value: 0_u8);
   let password = pkg::bytes::bytes_new(input: &empty[0_u64..0_u64], start: 0_u64, length: 0_u64);
   let quiet = False();
@@ -209,10 +257,31 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, directory: DirectoryRe
       set accepted = False();
     }
   }
-  atomic m = &store.meta {
-    set m^.aof_worker_done = True();
-  }
   return AofRebuilt(directory: move directory, size: size, accepted: accepted);
+}
+
+fn aof_rw_scoped_worker(scope: MeterScope, argument: AofRewriteWork) -> result: AofScopedRebuilt pure waits {
+  doc "Publish completion on both entry outcomes so the writer's polling always reaches its join. Refused returns every owner; close the unused temporary file and report failure without running unscoped replay.";
+  let store = pkg::store::keyspace_share(store: &argument.store);
+  let outcome = spawn std::process::scope_run::<AofRewriteBody>(scope: move scope, argument: move argument);
+  match move outcome {
+    Ran(scope: returned_scope, result: rebuilt) => {
+      atomic m = &store.meta {
+        set m^.aof_worker_done = True();
+      }
+      return AofScopedRebuilt(scope: move returned_scope, rebuilt: move rebuilt);
+    }
+    Refused(scope: returned_scope, argument: original) => {
+      let AofRewriteWork(factory: factory, directory: directory, file: file, ..) = move original;
+      std::fs::close_write(factory: &factory, file: move file);
+      atomic m = &store.meta {
+        set m^.aof_worker_done = True();
+      }
+      let accepted = False();
+      let rebuilt = AofRebuilt(directory: move directory, size: 0_u64, accepted: accepted);
+      return AofScopedRebuilt(scope: move returned_scope, rebuilt: move rebuilt);
+    }
+  }
 }
 
 fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool) -> result: unit reads(store) waits {
@@ -335,7 +404,53 @@ fn aof_rw_install(store: &Keyspace, factory: &HandleFactory, writable: &std::fs:
   return False();
 }
 
-fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, time: &Time, manual: Bool) -> continued: AofLog reads(store), reads(time), writes(factory), writes(pending), writes(clock), writes(last_sync) waits {
+fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, time: &Time, manual: Bool, meter: &std::process::MemoryMeter) -> continued: AofLog reads(store), reads(time), writes(factory), writes(pending), writes(clock), writes(last_sync), writes(meter) waits {
+  doc "Open one top-level scope per rewrite and publish its view before either replay. Every path returns its owner here. Close only after both scoped calls have joined; busy close retries at the writer's ten-millisecond cadence while continuing live appends. Keep the view and progress flag until close succeeds.";
+  let opened = std::process::scope_open(meter: meter);
+  match move opened {
+    Err(error: exhausted) => {
+      let no = False();
+      aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
+      return move log;
+    }
+    Ok(value: scope) => {
+      let view = std::process::scope_view(scope: &scope);
+      atomic m = &store^.meta {
+        set m^.aof_rewrite_scope = Some<std::process::ScopeView>(value: move view);
+      }
+      let cycled = aof_rw_scoped_cycle(store: store, factory: factory, log: move log, pending: pending, clock: clock, last_sync: last_sync, time: time, manual: manual, scope: move scope);
+      let AofRewriteCycle(scope: owner, log: continued, accepted: accepted, started: started) = move cycled;
+      let never = std::time::cancel_never();
+      loop @closing {
+        let closed = std::process::scope_close(meter: meter, scope: move owner);
+        match move closed {
+          Ok(value: finished) => {
+            break @closing;
+          }
+          Err(error: busy) => {
+            set owner = move busy;
+          }
+        }
+        let reading = std::time::now(clock: clock);
+        let wake = std::time::instant_after(instant: reading, nanoseconds: 10000000_u64);
+        std::time::sleep_until(deadline: wake, cancel: &never);
+        let stopping = False();
+        atomic m = &store^.meta {
+          set stopping = m^.stopping;
+        }
+        aof_rw_flush(store: store, factory: factory, file: &continued.file, pending: pending, clock: clock, last_sync: last_sync, force: stopping);
+      }
+      std::time::close_cancel_watch(watch: move never);
+      atomic m = &store^.meta {
+        set m^.aof_rewrite_scope = None<std::process::ScopeView>();
+      }
+      aof_rw_complete(store: store, accepted: accepted, manual: manual, started: started);
+      return move continued;
+    }
+  }
+}
+
+fn aof_rw_scoped_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, time: &Time, manual: Bool, scope: MeterScope) -> result: AofRewriteCycle reads(store), reads(time), writes(factory), writes(pending), writes(clock), writes(last_sync) waits {
   doc "One structured rebuild, with the writer continuing to drain the live log until its child finishes. The install manifest commits the rewrite; history deletion follows only after that commit.";
   let yes = True();
   let no = False();
@@ -344,18 +459,38 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
   let failed = bnot(flushed);
   let abandon = bor(cancelled, failed);
   if abandon {
-    aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
-    return move log;
+    return AofRewriteCycle(scope: move scope, log: move log, accepted: no, started: no);
   }
   if log.manifest.base_sequence == 9223372036854775807_i64 {
-    aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
-    return move log;
+    return AofRewriteCycle(scope: move scope, log: move log, accepted: no, started: no);
   }
-  let switched = aof_rw_switch(store: store, factory: factory, log: &log, time: time, clock: clock);
+  let tail_store = pkg::store::keyspace_share(store: store);
+  let tail_factory = std::io::factory_share(factory: factory);
+  let tail_clock = std::time::clock_share(clock: clock);
+  let argument = AofTailWork(store: move tail_store, factory: move tail_factory, log: move log, clock: move tail_clock, time: time^);
+  let tail = spawn std::process::scope_run::<AofTailBody>(scope: move scope, argument: move argument);
+  let whole = False();
+  match move tail {
+    Ran(scope: returned_scope, result: checked) => {
+      set scope = move returned_scope;
+      let AofTailChecked(log: returned_log, accepted: accepted) = move checked;
+      set log = move returned_log;
+      set whole = accepted;
+    }
+    Refused(scope: returned_scope, argument: original) => {
+      set scope = move returned_scope;
+      let AofTailWork(log: returned_log, ..) = move original;
+      set log = move returned_log;
+    }
+  }
+  if whole {
+  } else {
+    return AofRewriteCycle(scope: move scope, log: move log, accepted: no, started: no);
+  }
+  let switched = aof_rw_switch(factory: factory, log: &log);
   if switched {
   } else {
-    aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
-    return move log;
+    return AofRewriteCycle(scope: move scope, log: move log, accepted: no, started: no);
   }
   atomic m = &store^.meta {
     set m^.aof_rewrites = m^.aof_rewrites +wrap 1_u64;
@@ -379,7 +514,8 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
       let worker_factory = std::io::factory_share(factory: factory);
       let worker_clock = std::time::clock_share(clock: clock);
       let snapshot = aof_rw_manifest(original: &manifest);
-      let rebuilt = spawn aof_rw_worker(store: move worker_store, factory: move worker_factory, directory: move directory, file: move opened, manifest: move snapshot, clock: move worker_clock, time: time^);
+      let work = AofRewriteWork(store: move worker_store, factory: move worker_factory, directory: move directory, file: move opened, manifest: move snapshot, clock: move worker_clock, time: time^);
+      let scoped = spawn aof_rw_scoped_worker(scope: move scope, argument: move work);
       let never = std::time::cancel_never();
       loop @rebuilding {
         let reading = std::time::now(clock: clock);
@@ -402,6 +538,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
         }
       }
       std::time::close_cancel_watch(watch: move never);
+      let AofScopedRebuilt(scope: returned_scope, rebuilt: rebuilt) = move scoped;
       let AofRebuilt(directory: returned, size: size, accepted: built) = move rebuilt;
       let accepted = False();
       let prefix_length = prefix.inner.len;
@@ -424,13 +561,12 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
         }
       }
       std::fs::remove_file(factory: factory, root: &writable, name: temp_name, start: 0_u64, end: temp_length);
-      aof_rw_complete(store: store, accepted: accepted, manual: manual, started: yes);
-      return AofLog(directory: move returned, writable: move writable, prefix: move prefix, manifest: move manifest, file: move file);
+      let continued = AofLog(directory: move returned, writable: move writable, prefix: move prefix, manifest: move manifest, file: move file);
+      return AofRewriteCycle(scope: move returned_scope, log: move continued, accepted: accepted, started: yes);
     }
     Err(error: problem) => {
       std::fs::remove_file(factory: factory, root: &log.writable, name: temp_name, start: 0_u64, end: temp_length);
-      aof_rw_complete(store: store, accepted: no, manual: manual, started: yes);
-      return move log;
+      return AofRewriteCycle(scope: move scope, log: move log, accepted: no, started: yes);
     }
   }
 }

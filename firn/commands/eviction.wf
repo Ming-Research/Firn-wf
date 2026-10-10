@@ -30,12 +30,27 @@ fn release_reserve(store: &Keyspace, client: &Client) -> freed: u64 reads(store)
   }
 }
 
-fn memory_excluded(meta: &Meta, logged: Bool) -> bytes: u64 reads(meta) {
-  doc "Redis 7.0.15 freeMemoryGetNotCountedMemory excludes allocated AOF storage. Both the collecting capacity and the writer's published private capacity remain excluded across swaps and partial writes; with AOF disabled neither is an AOF buffer.";
+fn memory_excluded(meta: &Meta, logged: Bool) -> bytes: u64 writes(meta) {
+  doc "Redis 7.0.15 freeMemoryGetNotCountedMemory excludes allocated AOF storage. Add the in-process rewrite's origin-attributed scope bytes, which Redis's fork child keeps outside its parent's heap. Both collecting and pending capacities remain excluded across swaps and partial writes. An absent or closed scope contributes zero.";
+  let excluded = 0_u64;
   if logged {
-    return meta^.log.inner.cap +sat meta^.aof_pending_capacity;
+    set excluded = meta^.log.inner.cap +sat meta^.aof_pending_capacity;
   }
-  return 0_u64;
+  match meta^.aof_rewrite_scope {
+    Some(value: view) => {
+      let reading = std::process::scope_bytes(view: view);
+      match reading {
+        Some(value: scoped) => {
+          set excluded = excluded +sat scoped;
+        }
+        None() => {
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  return excluded;
 }
 
 fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(store), writes(client) waits {
@@ -48,7 +63,7 @@ fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(s
 }
 
 fn memory_over(meta: &Meta, client: &Client, logged: Bool) -> over: Bool writes(meta), writes(client) {
-  doc "Redis 7.0.15 getMaxmemoryState: raw used_memory minus excluded AOF capacity, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed.";
+  doc "Redis 7.0.15 getMaxmemoryState: raw used_memory minus excluded AOF capacity and private rewrite scope bytes, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed.";
   let used = heap_read(client: client);
   set meta^.memory_peak = imax(meta^.memory_peak, used);
   let excluded = memory_excluded(meta: meta, logged: logged);

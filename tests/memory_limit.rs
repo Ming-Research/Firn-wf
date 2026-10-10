@@ -508,6 +508,100 @@ fn aof_capacity_is_excluded_and_eviction_survives_replay() {
     assert_eq!(finished(child).0, 0);
 }
 
+/// Redis's forked rewrite does not charge its private dataset to admission.
+/// Overwrite a fixed live dataset so any collapse is caused by accounting,
+/// not new keys. A separate requester lets writes overlap close-tail replay
+/// as well as the worker: firn acknowledges BGREWRITEAOF only after the cut.
+#[test]
+fn aof_rewrite_private_memory_does_not_evict_the_live_dataset() {
+    const KEYS: usize = 32768;
+    const BYTES: usize = 512;
+    let program = CompiledProgram::from_environment();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2", b"scoped-memory.aof"]);
+    let mut client = connect_when_ready(port);
+    let mut requester = connect_when_ready(port);
+    configure(&mut client, &[
+        "auto-aof-rewrite-percentage", "0", "maxmemory-policy", "allkeys-lru",
+        "maxmemory-eviction-tenacity", "100",
+    ]);
+    let value = "r".repeat(BYTES);
+    let mut written = 0_u64;
+    // Sixteen MiB of values and 32768 replayed commands give both phases
+    // useful overlap without a timing-only sleep or a server test hook.
+    for first in (0..KEYS).step_by(64) {
+        let mut batch = Vec::new();
+        for index in first..first + 64 {
+            batch.extend(resp(&["SET", &format!("rewrite:{index}"), &value]));
+        }
+        written += batch.len() as u64;
+        client.write_all(&batch).unwrap();
+        expect_replies(&mut client, "+OK\r\n".repeat(64).as_bytes(), "fill rewrite memory dataset");
+    }
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let persisted = info(&mut client, "persistence");
+        assert_eq!(number(&persisted, "aof_rewrite_in_progress"), 0);
+        if number(&persisted, "aof_current_size") >= written { break; }
+        assert!(Instant::now() < deadline, "AOF fill did not drain: {persisted}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(memory_request(&mut client, &["DBSIZE"]), format!(":{KEYS}\r\n"));
+    let measured = info(&mut client, "memory");
+    let excluded_before = number(&measured, "mem_not_counted_for_evict");
+    let counted = number(&measured, "used_memory").saturating_sub(excluded_before);
+    // One MiB covers command/IO transients, far less than the replay copy.
+    let limit = counted + 1024 * 1024;
+    configure(&mut client, &["maxmemory", &limit.to_string()]);
+    let rewrites_before = number(&info(&mut client, "persistence"), "aof_rewrites");
+    requester.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut writes = 0_usize;
+    let mut overlapping = 0_usize;
+    let mut minimum_keys = KEYS as i64;
+    let mut maximum_excluded = excluded_before;
+    let completed;
+    loop {
+        let persisted = info(&mut client, "persistence");
+        assert!(Instant::now() < deadline, "scoped rewrite did not finish: {persisted}");
+        if number(&persisted, "aof_rewrite_in_progress") == 0 {
+            assert_eq!(info_field(&persisted, "aof_last_bgrewrite_status").as_deref(), Some("ok"),
+                "rewrite failed before completing the overlap fixture: {persisted}");
+            if number(&persisted, "aof_rewrites") > rewrites_before {
+                completed = persisted;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        let key = format!("rewrite:{}", writes % KEYS);
+        assert_eq!(memory_request(&mut client, &["SET", &key, &value]), "+OK\r\n",
+            "rewrite refused overwrite {writes} at maxmemory {limit}");
+        writes += 1;
+        let after_write = info(&mut client, "persistence");
+        if number(&after_write, "aof_rewrite_in_progress") == 1 {
+            overlapping += 1;
+        }
+        client.write_all(&resp(&["DBSIZE"])).unwrap();
+        minimum_keys = minimum_keys.min(integer_reply(&mut client, "live keys during rewrite"));
+        let memory = info(&mut client, "memory");
+        maximum_excluded = maximum_excluded.max(number(&memory, "mem_not_counted_for_evict"));
+    }
+    assert!(overlapping > 0,
+        "rewrite finished before the first confirmed overlapping write; enlarge the fixture; no admission assertion can pass vacuously (writes={writes})");
+    assert_eq!(whole_reply(&mut requester, "scoped BGREWRITEAOF"),
+        "+Background append only file rewriting started\r\n");
+    assert_eq!(info_field(&completed, "aof_last_bgrewrite_status").as_deref(), Some("ok"));
+    assert!(minimum_keys >= (KEYS * 9 / 10) as i64,
+        "rewrite collapsed the live dataset: minimum {minimum_keys}/{KEYS}, overlapping writes {overlapping}");
+    assert!(maximum_excluded > excluded_before + 1024 * 1024,
+        "INFO never reported the private rewrite in its exclusion: before {excluded_before}, maximum {maximum_excluded}");
+    drop(requester);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
 /// Correct the existing constant cached-script count while changing INFO.
 #[test]
 fn info_counts_registered_scripts_and_flush() {

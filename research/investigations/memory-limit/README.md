@@ -377,16 +377,67 @@ So while a rewrite runs, firn evicts live keys to make room for the rewrite's
 copy, and once the keyspace is empty it refuses writes: in the probe, with
 the limit read during a rewrite, firn with AOF refused 35,244 and 38,549
 writes in a measured phase and its hit rate fell to 0.76, where Redis
-refused none. Whitefoot offers one process-wide meter and no way to count a
-context's allocations apart, so firn cannot exclude the rewrite; the
-remedy is the owner's decision on board card `firn-aofrw-meter-card`, item
-`firn-aofrw-meter`.
+refused none. At that measured release Whitefoot offered one process-wide
+meter and no way to count a context's allocations apart. The owner selected
+scoped metering on board card `firn-aofrw-meter-card`, item
+`firn-aofrw-meter`; the experiment below exercises its proposed interface.
 
 **Cost of the admission check** (`session-set` and `session-get`, maxmemory
 0 against 64 GiB, each with a same-image twin): firn's nonbinding-limit
 throughput is 0.960–1.012 of unlimited, against twin spreads of 0.968–1.027;
 Redis's is 0.956–1.039 against 0.973–1.024. No cost is resolved at this
 noise, about 3%.
+
+## Scoped rewrite experiment
+
+**Question.** Does origin-attributed scoped metering exclude firn's private
+AOF replay without excluding live-server storage, so a rewrite no longer
+evicts the live dataset or refuses writes? This is an unmerged acceptance
+experiment on `exp/scoped-rewrite`, using Whitefoot
+`wf-exp-7f2743c3914a` (spec v0.120,
+[PR #322, scoped metering](https://github.com/Ming-Research/Whitefoot/pull/322)).
+
+**Comparison and rejection criterion.** Run `evict-zipf` with AOF and a
+deliberately triggered rewrite overlapping the measured phase: the scoped
+LTO build against [PR #35's unscoped maxmemory build](https://github.com/Ming-Research/Firn-wf/pull/35)
+and Redis 7.0.15, on the i9-14900K through CI, with matched workload,
+settings and CPU allocation and interleaved repetitions and a base twin.
+Record overlap, accepted/refused writes, live key count, hit rate, latency,
+throughput and 10-ms memory samples. Following Whitefoot's
+[scoped-metering investigation](https://github.com/Ming-Research/Whitefoot/blob/7f2743c3914a/research/investigations/scoped-metering/README.md),
+reject the exclusion if there is any refused write, rewrite-correlated key
+collapse beyond matched no-rewrite variation, or maximum sampled adjusted
+overshoot above **0.2% of maxmemory**. Adjusted usage is
+`max(used_memory - mem_not_counted_for_evict, 0)`; raw rewrite heap is not
+adjusted overshoot. No-rewrite controls separate ordinary eviction variation
+from rewrite effects. The cross-release comparison does not alone attribute
+compiler cost or satisfy the investigation's same-build exclusion control.
+
+**Storage boundary.** One scope spans the close-tail replay and the worker,
+with two let-bound `scope_run` calls. Its view is published before replay
+and retained until busy-close polling succeeds. Both private keyspaces,
+replay buffers, scan keys and emitter storage are released in the scope.
+Close-tail returns the already-owned `AofLog` and a Boolean; its only live
+mutation is the scalar byte count after truncation. The worker returns the
+already-owned directory handle, byte count and status; completion publishes
+only a Boolean after joining. No newly allocated storage is transferred to
+the live server. Manifest replacement, file opening, live pending-buffer
+allocation and installation stay outside the scope, preserving their
+default origin and avoiding double exclusion with the AOF capacities.
+Capacity or entry refusal fails the rewrite without unscoped replay, and
+every owner returns to the close loop, including cancellation/error paths.
+
+**Evidence pending.** The network case fills 32768 keys with 512-byte values,
+sets a limit from pre-rewrite adjusted usage plus 1 MiB for transients, and
+overwrites keys through both phases using a separate BGREWRITEAOF requester.
+It requires a confirmed overlapping write, successful rewrite, no refused
+write, at least 90% of the live keys and an INFO exclusion increase. An
+insufficient overlap is a fixture failure, never a pass. This edit has not
+been compiled or run; CI duration, source acceptance, lifecycle completion
+and measurement results remain unverified. A separate read-only GPT-6 review
+of the complete experiment diff, affected consumers and design nodes found
+no source-level findings; it ran no validation and did not independently
+establish overlap in each replay phase or the overshoot criterion.
 
 ## Results: cost of the access stamp
 

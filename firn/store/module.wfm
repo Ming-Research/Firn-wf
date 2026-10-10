@@ -68,10 +68,11 @@ public struct EvictionCandidate {
 }
 
 public struct Meta {
-  doc "What the keyspace keeps beside its keys: the queued expiries, the append-only file's collecting buffer and published writer capacity, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the active-file byte count and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion and automatic thresholds, the clients connected, whether the server is stopping, and the state SPOP draws from.";
+  doc "What the keyspace keeps beside its keys: the queued expiries, the append-only file's collecting buffer, published writer capacity and private rewrite scope view, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the active-file byte count and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion and automatic thresholds, the clients connected, whether the server is stopping, and the state SPOP draws from. The writer retains the rewrite scope owner until close succeeds; the view grants only observation.";
   public due: ExpiryQueue;
   public log: Box<Slots<u8>>;
   public aof_pending_capacity: u64;
+  public aof_rewrite_scope: Option<std::process::ScopeView>;
   public memory_peak: u64;
   public evicted_keys: u64;
   public expired_keys: u64;
