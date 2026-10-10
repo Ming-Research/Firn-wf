@@ -189,6 +189,7 @@ jobs:
             echo "missing:$missing"
             exit 1
           fi
+          sh research/experiments/redis-bench/redis-bench.sh placement-selftest
           mkdir -p "$OUT"
           {
             echo "kernel: $(uname -srvmo)"

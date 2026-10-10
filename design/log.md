@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-10 Benchmark servers run on distinct physical performance cores
+
+Nodes: firn/measurement-sessions
+
+Owner-approved: On the shared status board on 2026-10-10, written in Chinese, the owner approved the item request on "the measurement script binds servers and clients to different physical performance cores" that asked to approve PR #43's placement rule in design node measurement-sessions (servers on distinct physical performance cores skipping core 0, clients on both threads of the remaining performance cores and never on a server's core, overridable lists), with "agree" (translated).
+
+Summary: On the native i9-14900K adjacent logical CPUs are hyperthread siblings and CPUs 16-31 are efficiency cores, so the old placement ran a two-CPU server on one physical core and put client threads on efficiency cores. Placement now reads the Linux topology and the hybrid core lists, puts each server CPU on its own performance core, keeps core 0 for the OS and the runner, gives clients the remaining performance cores' threads, and records the chosen lists with every run.
+
 ## 2026-10-10 firn bounds memory as Redis's maxmemory does
 
 Nodes: firn/memory-limit, firn/command-parts, firn/scripts, firn/transactions
