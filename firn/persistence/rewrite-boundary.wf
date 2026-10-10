@@ -26,14 +26,6 @@ fn aof_block_word(input: &[u8], start: u64, length: u64, count: u64) -> kind: u6
 
 fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> accepted: Bool reads(store), reads(log), writes(factory), writes(clock) waits {
   doc "Validate only syntax and block boundaries, never reconstruct a keyspace. The initial 64-KiB input and 32768 inline argument slots are charged before allocation. RESP bulk bodies stream through that window regardless of historical command size; incomplete headers or inline lines can grow only after charging the full new backing storage, using the ordinary parser rules. A sealed file must end outside every MULTI, so an unexpected unfinished region is refused without truncating acknowledged live writes.";
-  let charged = False();
-  atomic m = &store^.meta {
-    set charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 589872_u64);
-  }
-  if charged {
-  } else {
-    return False();
-  }
   let accepted = False();
   for (index in 0_u64..log^.manifest.parts.inner.len) {
     let part = &log^.manifest.parts.inner[index];
@@ -41,6 +33,14 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
     let current = part^.sequence == log^.manifest.incr_sequence;
     let selected = band(incremental, current);
     if selected {
+      let charged = False();
+      atomic m = &store^.meta {
+        set charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 589872_u64);
+      }
+      if charged {
+      } else {
+        return False();
+      }
       let length = part^.name.inner.len;
       let name = &part^.name.inner[0_u64..length];
       match std::fs::open_file(factory: factory, root: &log^.directory, name: name, start: 0_u64, end: length) {
@@ -76,6 +76,7 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
                 set room = pkg::store::rewrite_charge(capture: &expanded^.rewrite, bytes: charge);
               }
               if room {
+                set allocated = allocated +sat charge;
                 if span_capacity >= args.inner.cap {
                   grow(cell: &args, capacity: span_capacity);
                 } else {
@@ -88,7 +89,6 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
                 atomic grown = &store^.meta {
                   set grown^.rewrite.used = grown^.rewrite.used -sat released;
                 }
-                set allocated = allocated +sat charge;
                 set allocated = allocated -sat released;
               } else {
                 break @chunks;

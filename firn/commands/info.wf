@@ -309,7 +309,7 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         }
         text_word(text: &text, word: &info_rw_count[0_u64..15_u64]);
         text_number(text: &text, value: persistence^.aof_rewrites);
-        text_word(text: &text, word: &info_rw_sequence[0_u64..25_u64]);
+        text_word(text: &text, word: &info_rw_sequence[0_u64..30_u64]);
         text_number(text: &text, value: persistence^.commit_seq);
         text_word(text: &text, word: &info_rw_cut[0_u64..23_u64]);
         let cut = persistence^.aof_rewrite_cut;
@@ -536,7 +536,7 @@ const info_memory_excluded: Array<u8, 28> = "\r\nmem_not_counted_for_evict:";
 
 const info_evicted_keys: Array<u8, 15> = "\r\nevicted_keys:";
 
-const info_rw_sequence: Array<u8, 25> = "\r\naof_rewrite_commit_seq:";
+const info_rw_sequence: Array<u8, 30> = "\r\nfirn_aof_rewrite_commit_seq:";
 
 const info_rw_reserve: Array<u8, 27> = "\r\nfirn_aof_rewrite_reserve:";
 

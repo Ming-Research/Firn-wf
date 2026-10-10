@@ -8,7 +8,7 @@ use super::*;
 fn sequence(client: &mut TcpStream) -> u64 {
     client.write_all(&resp(&["INFO", "persistence"])).unwrap();
     let info = bulk_reply(client, "rewrite sequence");
-    info_field(&info, "aof_rewrite_commit_seq")
+    info_field(&info, "firn_aof_rewrite_commit_seq")
         .expect("firn reports its actual commit sequence even with AOF off")
         .parse().expect("u64 sequence")
 }

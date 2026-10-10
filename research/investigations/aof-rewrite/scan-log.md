@@ -5,12 +5,12 @@
 Can firn replace its full private replay keyspace with a bounded live scan,
 produce a Redis-compatible base at one end cut, and continue service within
 the owner's memory and latency budgets? **Proposal, registered 2026-10-10**
-on `claude/rewrite-scanlog`, based on Firn-wf `c1144b6`. Nothing here changes
-source, the design tree, a pin or a submodule; no build, execution or
-measurement was performed. The [original investigation](README.md) remains
-the history and current implementation record.
+on `claude/rewrite-scanlog`, based on Firn-wf `c1144b6`; the registration
+changed no source. Stages 1 and 2 are now implemented on that branch (see
+[Stage 2 validation and review](#stage-2-validation-and-review-2026-10-10)).
+The [original investigation](README.md) records the replay that main runs.
 
-**Current implementation.** `firn/persistence/rewrite.wf:185` creates the
+**Implementation at registration.** `firn/persistence/rewrite.wf:185` creates the
 worker's private keyspace, `:186` replays the old base and closed increments,
 and `:189` emits it. Even switching first replays the current increment into
 another private keyspace (`:56–70`). Both copies must disappear, rather than
@@ -388,22 +388,23 @@ replaced only if this route is selected and the affected
    that guarantee, **3/5** in the required runtime remedy; do not call B8 met
    before it is demonstrated. Service-headroom recovery is part of this test.
 
-Bounded scan and stalled-file cleanup are proposed Whitefoot contract requests,
-not filed or resolved gaps; neither changes the witness's recorded pass.
+Bounded scan and stalled-file cleanup are Whitefoot contract requests, now
+board items `firn-gap-scan-bound` and `firn-gap-file-cancel`; neither changes
+the witness's recorded pass.
 
 Read-only review: a separate GPT-6 agent inspected the complete documentation
 change against `c1144b6`, affected source/design context and checklist A/D/R
 and applicable G/DC checks; no findings within scope after clarification of
 stamp necessity, aggregate capture work and rotation-buffer pressure. No
 suite ran; implementation, design soundness and resource guarantees remain
-unverified. Work stops at this uncommitted investigation as requested.
+unverified.
 
 
 ## Stage 1 implementation record (2026-10-10)
 
 The owner has selected option A on `firn-q-rw-cut`, `firn-q-rw-stamp` and
 `firn-q-rw-limits` and requested sequencing alone as stage 1. The
-[implementation record](sequence-stage-1.md) describes the uncommitted
+[implementation record](sequence-stage-1.md) describes the
 stamp/counter support, every shared-helper call site, network cases,
 independent review and unverified compiler/layout/behavioral evidence.
 This supersedes the investigation-only stopping point above. Scanning,
@@ -539,8 +540,7 @@ state, and establishes no gate, memory measurement or implementation result.
 The owner's addendum supersedes the stage-2 prerequisite stop above: implement
 the end-cut protocol now and let `firn-gap-scan-bound` gate the strict reserve
 guarantee alone. The worktree implements that direction without changing the
-pin, submodules, manifest syntax or normal command framing. It has not been
-compiled or executed; the gate must run in CI after the owner commits/pushes.
+pin, submodules, manifest syntax or normal command framing.
 
 ### Reserve and the scan exception
 
@@ -729,28 +729,26 @@ bounded values while the scan continues. No server test hook is added.
   requested in the addendum.
 
 Existing rewrite cases remain wired. Startup-tail cases now require the
-approved pre-S0 refusal; failure cases now require started followed by err
+proposed pre-S0 refusal; failure cases now require started followed by err
 because rotation moved after admission; shutdown during a scan keeps the
 original manifest. The older concurrent growing-list case retains 100 strict
 non-idempotent writes instead of growing without limit past the explicit
 capture work budget; the new continuous bounded-value case supplies observed
 scan-window interleaving. No ratchet row or existing command expectation is
-removed. No new test, compiler, lint, gate or mutation-control run occurred
-locally, as requested. CI evidence for this uncommitted tree is unavailable.
+removed.
 Removing the inherited-startup-MULTI refusal makes the three retained-tail
 cases fail their immediate-refusal and zero-admitted-attempt assertions;
 closing such a block later does not make its unapplied prefix part of live
 state, so those cases continue to require refusal until restart.
 
 The repair cases additionally require a 128-KiB overwritten historical SET
-and a mixed inline MULTI/EXEC block to rewrite successfully with a small
+and a mixed-case RESP MULTI/EXEC block to rewrite successfully with a small
 current dataset, catching a parser that retains whole RESP commands in a
 fixed window. A post-S1 pressure case builds retained replacements, observes
 the rotation manifest while the old base is still authoritative, lowers the
 ordinary Redis maxmemory setting, and requires an err result with both old
 and new increments retained and a correct restart. Removing post-S1 pressure
 abort makes this strict case complete successfully and fail its err assertion.
-Its scheduling window, like every new case, remains to be exercised in CI.
 
 `reconciled_scan_post_cut_backlog_charges_rotation_reserve` builds a long
 old increment from overwritten 32-KiB values, then waits until INFO confirms the
@@ -760,118 +758,89 @@ With maxmemory at 64 MiB, the rotation budget must abort before publication;
 subsequent commands and a restart must retain the acknowledged value and
 counter. Removing LogBudget charging leaves the excluded backlog unbounded
 by R and allows a successful rewrite, failing the required err outcome.
-This strict case has not run; CI must establish its timing window and cost.
 
-### Stage 2 source map and handoff
-
-This is an uncommitted implementation on `claude/rewrite-scanlog`, over
-`e9e0f043b67be4fd1eaee837b97349304246284a`, for
-[draft PR #42, reconciled-scan AOF rewrite](https://github.com/Ming-Research/Firn-wf/pull/42).
-No commit, push, local build, execution, test, lint or measurement was made.
-The gate result reported for stage 1 does not validate these edits. CI must
-compile the canonical Whitefoot, run the network cases and Redis ratchet,
-and check the design before this branch can be ready.
+### Stage 2 source map
 
 | Protocol step | Source anchor |
 | --- | --- |
-| Reserve/headroom, startup/exhaustion checks and atomic S0 admission | `firn/persistence/rewrite.wf:274` |
-| Per-statement token, key stamps and same-hold publication | `firn/store/sequence.wf:1`, `:60`, `:86` |
-| Complete after-images/tombstones, coalescing, precharged journal chunks | `firn/store/rewrite-capture.wf:41`, `:164`, `:228` |
-| Shared five-type reconstruction and 64-element collection commands | `firn/store/rewrite-image.wf:28`, `:64`, `:189` |
-| Whole-map-plus-Meta count-1 observation, returned KeySet charge, owned output | `firn/persistence/rewrite-dataset.wf:9` |
-| Genuine wait after each step and each released chunk | `firn/persistence/rewrite.wf:252`, `:332`, `:571` |
-| Atomic S1 counter/capture/journal/collecting-buffer cut | `firn/persistence/rewrite.wf:436` |
-| Drain sealed bytes without swapping, then sync/rotate with old files named | `firn/persistence/rewrite.wf:594`, `:51`, `:456` |
-| Streaming syntax-only validation and shared block classification | `firn/persistence/rewrite-boundary.wf:6`, `:27`; `firn/protocol/stream.wf:7` |
-| Charge rotation backlog before grow, commit overflow without failing clients | `firn/store/store.wf:241`, `:523`; `firn/store/sequence.wf:60` |
-| Ordered reconciliation; sync, rename and manifest publication | `firn/persistence/rewrite-dataset.wf:181`; `firn/persistence/rewrite.wf:332`, `:171` |
-| Reserve/flush/exhaustion abort and bounded release | `firn/store/rewrite-capture.wf:9`, `:228`; `firn/commands/server.wf:167`; `firn/persistence/rewrite.wf:332`, `:571` |
-| Pressure cancellation before installation; eviction waits after commitment | `firn/commands/eviction.wf:50`, `:310`; `firn/persistence/rewrite.wf:456` |
-| Startup retained-MULTI refusal | `firn/persistence/startup.wf:153`; `tests/network.rs:9797` |
-| Final status and automatic-retry suppression | `firn/persistence/rewrite.wf:107`; `firn/persistence/persistence.wf:51` |
+| Reserve/headroom, startup/exhaustion checks and atomic S0 admission | `aof_rw_admit` in `firn/persistence/rewrite.wf` |
+| Per-statement token, key stamps and same-hold publication | `sequence_new`, `sequence_commit`, `sequence_stamp_key` in `firn/store/sequence.wf` |
+| Complete after-images/tombstones, coalescing, precharged journal chunks | `sequence_capture`, `rewrite_journal_room`, `sequence_publish` in `firn/store/rewrite-capture.wf` |
+| Shared five-type reconstruction and 64-element collection commands | `rewrite_header`, `rewrite_entry`, `rewrite_image` in `firn/store/rewrite-image.wf` |
+| Whole-map-plus-Meta count-1 observation, returned KeySet charge, owned output | `aof_rw_dataset` in `firn/persistence/rewrite-dataset.wf` |
+| Genuine wait after each step and each released chunk | `aof_rw_pause`, `aof_rw_worker`, `aof_rw_discard` in `firn/persistence/rewrite.wf` |
+| Atomic S1 counter/capture/journal/collecting-buffer cut | `aof_rw_cut` in `firn/persistence/rewrite.wf` |
+| Drain sealed bytes without swapping, then sync/rotate with old files named | `aof_rw_drain`, `aof_rw_switch`, `aof_rw_cycle` in `firn/persistence/rewrite.wf` |
+| Streaming syntax-only validation and shared block classification | `aof_rw_boundary`, `aof_block_command` in `firn/persistence/rewrite-boundary.wf`; `parse_request_stream` in `firn/protocol/stream.wf` |
+| Charge rotation backlog before grow, commit overflow without failing clients | `log_reserve`, `log_budget_begin` in `firn/store/store.wf`; `sequence_commit` |
+| Ordered reconciliation; sync, rename and manifest publication | `aof_rw_reconcile` in `firn/persistence/rewrite-dataset.wf`; `aof_rw_worker`, `aof_rw_install` |
+| Reserve/flush/exhaustion abort and bounded release | `rewrite_abort`, `sequence_publish`; `flush_body` in `firn/commands/server.wf`; `aof_rw_worker`, `aof_rw_discard` |
+| Pressure cancellation before installation; eviction waits after commitment | `memory_over`, `evict_before` in `firn/commands/eviction.wf`; `aof_rw_cycle` |
+| Startup retained-MULTI refusal | `aof_load_parts` in `firn/persistence/startup.wf`; `firn_rewrite_refuses_a_retained_unfinished_startup_block` in `tests/network.rs` |
+| Final status and automatic-retry suppression | `aof_rw_complete` in `firn/persistence/rewrite.wf`; `write_log` in `firn/persistence/persistence.wf` |
 
-Changed files, grouped by responsibility:
+### Stage 2 validation and review (2026-10-10)
 
-- Design and maintained explanation: `design/firn/aof-rewrite.md`, new
-  `design/firn/aof-rewrite/capture.md`, `firn/README.md`, and this record.
-- Capture and shared encoding: `firn/store/module.wfm`, `store.wf`,
-  `sequence.wf`, new `rewrite-capture.wf` and `rewrite-image.wf` in that
-  directory.
-- Writer and startup: `firn/persistence/module.wfm`, `persistence.wf`,
-  `rewrite.wf`, `rewrite-dataset.wf`, `startup.wf`, `manifest.wf`, and new
-  `rewrite-boundary.wf` in that directory. `manifest.wf` only selects the
-  unmetered private-byte builder; manifest bytes are unchanged.
-- Shared streaming parser: `firn/protocol/module.wfm` and new `stream.wf`.
-- Mutation and encoder wiring: `firn/commands/aof-rewrite.wf`, `eviction.wf`,
-  `hashes.wf`, `info.wf`, `keys.wf`, `lists.wf`, `object.wf`, `ranges.wf`,
-  `scan.wf`, `script.wf`, `server.wf`, `sets.wf`, `sorted.wf`, `strings.wf`,
-  `transaction.wf`, plus `firn/scripting/entry.wf`. Final EXEC/script framing
-  is unchanged; its collecting-buffer append carries the rotation allowance.
-- Module graph and writer meter ownership: `firn/modules.wfg` and
-  `firn/server/server.wf`.
-- Network evidence: `tests/network.rs` and new `tests/rewrite_scan.rs`.
+The gate passes on the stage-2 commits: CI run
+[38057920387](https://github.com/Ming-Research/Firn-wf/actions/runs/38057920387)
+at `302ce4b` builds firn with the pinned compiler, passes 150 network cases
+with one ignored (the exact-reserve long-key case above), keeps the Redis
+7.0.15 suite ratchet at 603/603 required tests and passes design lint. The
+mutation controls described above are reasoned, not executed.
 
-No pin, submodule, `docs/todo.md`, ratchet list or `design/log.md` changed.
-The live design replaces private worker replay and switch-time replay, with
-explicit Rejected entries citing the owner's firn-maxmem-scope B ruling.
-These source changes have no new compiler diagnostic because compilation was
-explicitly prohibited. The only known unexpressible guarantee is the recorded
-strict map_scan preallocation bound; its minimal semantic witness and pinned
-interface evidence remain above. The count-1/one-key discrepancy is stated
-rather than asserting an unsupported upper bound.
+Reaching that run took compiler-driven repairs, none of which changes the
+protocol: a binding renamed from the reserved word `copy` (FORM-3); an image
+consumed on every path when the journal has no room (LIV-1); bare blocks,
+which the grammar lacks, replaced by moving buffers into a consuming function
+before each pause or refund (GRAM-5); a copy result read through its fields
+because destructuring requires `move`, which a copy value refuses (OWN-1,
+GRAM-4); the boundary reader stopping when growth leaves no room to read,
+as the loader does; append loops testing their exit before each append; and
+the reconcile append's end written as a clamp the prover can use (FN-8). The
+second and fifth expose Whitefoot questions now on the status board
+(`proof-bl-scoped-release`, `proof-bl-copy-destructure`, and a witness on
+`coord-wfbl-08-10` for the two-premise limit of automatic affine derivation).
 
-The shared status board was readable through the browser, including
-`firn-wf-snap-log` and `firn-gap-scan-bound`. Its template requires ArtifactData
-for row/log updates; that write capability is not available in this session.
-No board update is claimed. The source implementation and independent-review
-results are recorded here for the owning session to publish with CI evidence.
+Two scan cases were corrected to stay within the reference. The large-history
+case wrote inline `MULTI`/`EXEC` lines into the AOF, which Redis 7.0.15's
+loader refuses (`src/aof.c` accepts only RESP arrays and `#` lines); it now
+writes mixed-case RESP commands. The post-cut backlog case's 128-MiB history
+crossed the automatic-rewrite threshold, which Redis also applies, so an
+automatic rewrite could race its BGREWRITEAOF; it raises the minimum.
 
-### Independent review and stopping point (2026-10-10 13:18 UTC)
+A read-only completion review (Claude Opus 5.5) covered `15293c5..302ce4b`
+against the project checklist and the design and correspondence checks. Its
+findings and their dispositions:
 
-An independent, read-only GPT-6 agent reviewed
-`e9e0f043b67be4fd1eaee837b97349304246284a..working tree`, including every
-untracked source and test, the design record, changed sections in context,
-affected interfaces and consumers, and the subsequent repairs. It read the
-pinned Whitefoot and Whitefoot-kit from existing clones. Its checks were
-source reads, searches and read-only Git inspection; it ran no compiler,
-test, lint, performance measurement or other executable validation.
+- Automatic-retry suppression applies to every unsuccessful attempt, while
+  the capture node described only budget exhaustion. The owner's ruling A on
+  `firn-q-rw-limits` excludes automatic retry, so the node now states the
+  broader rule and its difference from Redis's `aofRewriteLimited` backoff.
+- The per-statement and per-step limits (1024 visits, 64 KiB) make any key
+  above 512 elements or about 64 KiB serialized abort every rewrite, where
+  main's replay and Redis rewrite such keys. This is a decision for the
+  owner on the status board; the node and README now state the effective
+  limit.
+- A startup-retained unfinished `MULTI` refuses the rewrite, so writes
+  appended after it are lost at restart, where Redis's live rewrite keeps
+  them and main's switch-time cut keeps the later ones. This is a decision
+  for the owner on the status board.
+- Stale status text in this record, the investigation index, the stage-1
+  record and the firn README is corrected.
+- Transfer and store commands (LMOVE, SMOVE, SUNIONSTORE) now run in the
+  restore case's concurrent writer, so a dropped capture at a helper call
+  site fails the independent dump comparison.
+- `aof_rewrite_commit_seq` is renamed `firn_aof_rewrite_commit_seq`, as
+  firn-only fields are.
+- Design wording that needed the board to understand, and progress text in
+  a node, are rewritten.
+- The boundary reader charged its window once even when no increment
+  matched, and a growth charge could skip its refund on one break; it now
+  charges per selected part and counts growth before that break.
 
-All reported source findings were repaired and their repairs inspected:
-
-- F1: canonical declaration spacing/indentation and removal of COPY's
-  unchanged-source capture.
-- F2: pressure cancellation throughout retained-work lifetime, with the
-  installation commitment serialized under Meta before an abort can no
-  longer be honored.
-- F3: streaming historical bulk bodies during boundary validation, so
-  obsolete large values do not acquire the current-image work ceiling.
-- F4: an independent heap sample for the ignored exact-reserve regression,
-  replacing a circular comparison with the reservation ledger.
-- F5: charging rotation-induced collecting-buffer growth before allocation
-  and committing its failure without rejecting the ordinary client command.
-- R1-R3: raw binary AOF fixture construction, the input-grow precondition,
-  and fresh cleanup binders.
-- R4-R5: budget effects in argument order and observation of the actual S1
-  cut before the backlog regression starts writing.
-- R6-R7: FUNCTION FLUSH creates and commits its own log budget under Meta
-  without advancing commit_seq; sequence_commit's contract describes budget
-  publication independently of a dataset mutation.
-
-No additional actionable source finding remained within that scope. A1,
-T1, D1, DC1 and DC3 passed; C1, T2, G1 and G2 passed by inspection only.
-C2 and T3 remain unverified without compiler and gate evidence. G3, DC2 and
-DC4 remain unverified for design soundness, resource guarantees and runtime
-behavior. R1 is not applicable because this change claims no performance
-attribution. No existing review rule or expected Redis result was weakened;
-the changed startup/failure expectations follow the approved admission and
-rotation protocol, as described above.
-
-Work stops with the implementation and tests uncommitted, as requested.
-There is no local or CI pass for this tree, no executed mutation control,
-and no new compiler diagnostic. CI must establish compiler acceptance,
-concurrency behavior, test timing and the full gate after a commit/push is
-authorized. The strict reserve guarantee still awaits firn-gap-scan-bound;
-count hint 1's collision behavior means the requested one-key overshoot
-description also needs the owner's clarification. Bounded chunk release
-does not establish a stalled-host-I/O cleanup deadline. No pin or submodule
-moved, and no additional Whitefoot gap was filed.
+Unverified: restoring the new base into Redis 7.0.15 itself (the registered
+oracle uses firn's restart and an independent dump); crashes after S1
+(during the sealed drain, mid-reconciliation, between base rename and
+manifest publication); whether the post-S1 pressure case can race
+installation; capture across all mutating commands rather than the covered
+set; and cleanup time under stalled host I/O.

@@ -351,7 +351,7 @@ An old single file `F` in the working directory is upgraded by persisting a
 manifest and moving `F` into `appendonlydir`. Interrupted upgrades resume;
 when both copies exist and the manifest names `F`, the directory copy wins.
 
-The following rewrite behavior is an **unvalidated draft** awaiting CI.
+The rewrite below is the reconciled-scan route under comparison ([investigation](../research/investigations/aof-rewrite/scan-log.md)); its design decisions await the owner's approval.
 
 With append-only persistence enabled, `BGREWRITEAOF` answers started after
 S0 admission. The worker scans the live map in separate statements while
@@ -363,9 +363,13 @@ increment containing later writes, before removing old files.
 R is five percent of maxmemory, or 16 MiB when maxmemory is zero. Admission
 also requires max(R, 1 MiB) of service headroom. Capture overflow, oversized
 images, flush, exhaustion, shutdown and I/O failure abort the attempt; client
-commands and ordinary AOF appends continue. Aborts report `err` and do not
-automatically retry. Each observation or mutating statement permits at most
-1024 payload visits and 64 KiB of measured serialized work. The fixed journal
+commands and ordinary AOF appends continue. Aborts report `err`. Any
+unsuccessful attempt, including a refused start, stops automatic rewrites
+until a manual `BGREWRITEAOF` succeeds; Redis instead keeps retrying them with
+a delay of up to an hour. Each observation or mutating statement permits at
+most 1024 payload visits and 64 KiB of measured serialized work. A collection
+element counts as two visits, so a key above 512 elements or about 64 KiB
+serialized makes every rewrite abort while it exists. The fixed journal
 directory permits at most 8188 chunks. A startup-retained unfinished MULTI
 refuses capture until a restart resolves the live/reloadable divergence.
 
@@ -404,7 +408,7 @@ These are startup options; `CONFIG SET` does not change them.
 
 `INFO persistence` reports rewrite progress, attempts, last status, current
 active-file bytes and the rewrite baseline. The firn-only field
-`aof_rewrite_commit_seq` is the actual dataset statement sequence, also when
+`firn_aof_rewrite_commit_seq` is the actual dataset statement sequence, also when
 AOF is disabled, following the [reported-facts rule](../design/firn/reported-facts.md).
 It starts at zero after loading, advances once for an atomic statement that
 changes the dataset, and is shared by every write in an `EXEC` or script

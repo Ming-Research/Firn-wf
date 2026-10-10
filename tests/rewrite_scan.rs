@@ -249,6 +249,13 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
             let replies = array(request(&mut client, &[b"EXEC"]));
             assert_eq!(&replies[8..], &[Reply::Line(format!(":{count}").into_bytes()), Reply::Line(format!(":{count}").into_bytes())]);
             assert_eq!(request(&mut client, &[b"EVAL", b"redis.call('INCR','script:a'); return redis.call('INCR','script:b')", b"0"]), Reply::Line(format!(":{count}").into_bytes()));
+            // Transfer and store commands change their keys through helpers
+            // that do not capture by themselves; their new destinations reach
+            // base(S1) only through the journal.
+            request(&mut client, &[b"LMOVE", &worker_keys[1], b"moved:list", b"LEFT", b"RIGHT"]);
+            request(&mut client, &[b"LTRIM", b"moved:list", b"-2", b"-1"]);
+            request(&mut client, &[b"SMOVE", &worker_keys[2], b"moved:set", b"replacement"]);
+            request(&mut client, &[b"SUNIONSTORE", b"stored:set", &worker_keys[2], b"moved:set"]);
             // Keep the capture within its declared byte/work limits while
             // continuously writing; large-value abort has its own strict case.
             std::thread::sleep(Duration::from_millis(5));

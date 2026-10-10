@@ -1,7 +1,7 @@
 # Stage 1: dataset mutation sequencing
 
-Implementation record, 2026-10-10. The work is uncommitted on
-`claude/rewrite-scanlog`, above `13bc4939012e0d3065b7cf1d0ef7634395a0e92c`, for
+Implementation record, 2026-10-10. The work is committed on
+`claude/rewrite-scanlog` as `29baf26` and `a50f1ce`, above `13bc4939012e0d3065b7cf1d0ef7634395a0e92c`, for
 [draft PR #42, reconciled-scan AOF rewrite](https://github.com/Ming-Research/Firn-wf/pull/42).
 The owner's implementation request approves option A on `firn-q-rw-stamp`
 (and the separate cut and limits cards); the [sequence node](../../../design/firn/aof-rewrite/sequence.md)
@@ -107,13 +107,12 @@ memory must be measured in CI with the pinned compiler before any footprint
 claim. The local token and Meta fields are not a second per-key allocation.
 No runtime, throughput or latency result is claimed.
 
-No build, execution, test, lint, measurement, commit, push or CI dispatch was
-performed, as requested. Compiler acceptance, effect-row exactness, the new
-network cases, Redis ratchet, design lint/readiness and performance remain
-unverified. The gate is still `make check` in CI on a subsequent push; there
-is no CI result for these uncommitted edits. The first CI sample should be
-the focused sequence cases before choosing any larger new experiment.
-No existing suite was removed or weakened.
+The gate passed on `a50f1ce` in CI run
+[38050921751](https://github.com/Ming-Research/Firn-wf/actions/runs/38050921751):
+143 network cases, including the eight above, and the Redis 7.0.15 suite
+ratchet at 603/603 required tests. Effect-row exactness is checked by the
+compiler; performance remains unmeasured. No existing suite was removed or
+weakened.
 
 ## Independent review
 
@@ -158,18 +157,13 @@ access implementation by inspection; no execution result is claimed.
   and its documented meaning.
 - `tests/network.rs`, `tests/rewrite_sequence.rs`: existing target wiring
   and the eight network cases above.
-- `design/firn/aof-rewrite/sequence.md`, `design/log.md`: approved stamp
-  decision and the owner's approval record.
+- `design/firn/aof-rewrite/sequence.md`: the stamp decision, proposed for
+  the owner's approval with the rest of PR #42.
 - `research/investigations/aof-rewrite/{scan-log,sequence-stage-1}.md`:
   dated implementation link and this evidence/call-site record.
 
 `whitefoot.pin`, all submodule pins, `docs/todo.md` and `firn/modules.wfg`
-are unchanged. No unrelated defect was deferred or declined. Work stops
-at the requested uncommitted worktree delivery, pending CI validation.
-The status board could be read, but this session exposes no ArtifactData
-row-writing capability, so no board item or log was updated. This record
-keeps the delivery and verification limits available without claiming a
-published board report or a pushed implementation.
+are unchanged. No unrelated defect was deferred or declined.
 
 ## Direct shared-helper call sites
 

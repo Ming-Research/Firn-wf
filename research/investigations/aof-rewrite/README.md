@@ -4,7 +4,9 @@ The record below preserves the original closed-log replay investigation and
 its implementation history. The owner's subsequent service-first memory
 ruling reopens that mechanism: [Reconciled live scan and after-image log](scan-log.md)
 develops the end-cut alternative and registers its validation and comparison
-criteria. It is a proposal, not an implemented replacement.
+criteria. Its stages 1 and 2 are implemented on draft
+[PR #42](https://github.com/Ming-Research/Firn-wf/pull/42), whose design decisions await the
+owner's approval; main still runs the replay below.
 
 ## The question
 
