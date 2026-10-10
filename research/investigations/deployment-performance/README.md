@@ -520,9 +520,10 @@ of 5 seconds. Rate in requests a second and p50/p99 in ms, pass 1 / pass 2:
 
 The control and its twin agree within about 2%. Turns cuts the scripted
 rate 7.5 times at 8 connections and 47 times at 50, and its p99 at 50
-connections is about 30 times the control's: with every script checking out
-the one engine under a guard, each acquisition now pays a context switch,
-and the queue of turns grows with the connections. This tested one workload
+connections is about 30 times the control's. The likely cause, not yet
+profiled: every script checks out the one engine under a guard, so each
+acquisition now pays a context switch, and more connections queue more
+turns. This tested one workload
 on one machine; the workload client reports p50 and p99, not the longest
 wait. It is evidence against turns as built for this engine, and the
 reason firn asks that any bounded-overtaking build be measured the same way.
