@@ -16,11 +16,18 @@ jobs:
         with:
           submodules: true
 
-      - name: Install the host toolchain and the pinned compiler
+      # The witnesses are standalone programs that do not build firn or Halo,
+      # so they use the release named here rather than whitefoot.pin; firn's
+      # own pin waits on Halo (status board firn-pin-v0121).
+      - name: Install the host toolchain and the witness compiler
+        env:
+          WITNESS_RELEASE: wf-fe5589ec5f45
         run: |
-          make toolchain
-          make compiler
-          cat whitefoot.pin
+          echo "release = $WITNESS_RELEASE" > "$RUNNER_TEMP/witness.pin"
+          make toolchain PIN="$RUNNER_TEMP/witness.pin"
+          make compiler PIN="$RUNNER_TEMP/witness.pin"
+          echo "WFC=$PWD/build/whitefoot/$WITNESS_RELEASE/whitefootc" >> "$GITHUB_ENV"
+          cat "$RUNNER_TEMP/witness.pin"
           uname -srvmo
           nproc
 
