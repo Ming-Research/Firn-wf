@@ -243,12 +243,13 @@ fn get_finish(client: &Client) -> result: unit writes(client) {
   return unit;
 }
 
-fn put_text(client: &Client, slot: &Option<Entry>, value: Bytes, expires: u64) -> result: unit reads(client), writes(slot) {
+fn put_text(sequence: &pkg::store::WriteSequence, client: &Client, slot: &Option<Entry>, value: Bytes, expires: u64) -> result: unit reads(client), writes(sequence), writes(slot) {
   doc "Stores a string in an entry, replacing any value it held.";
   let text = Value::Text(bytes: move value);
   let stamp = replacement_access(slot: slot, client: client);
-  let held_entry = Entry(value: move text, expires: expires, access: stamp);
+  let held_entry = Entry(value: move text, expires: expires, access: stamp, last_write: 0_u64);
   set slot^ = Some<Entry>(value: move held_entry);
+  pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   return unit;
 }
 
@@ -365,7 +366,7 @@ fn held_expiry(slot: &Option<Entry>) -> expires: u64 reads(slot) {
   }
 }
 
-fn hold_expiry(slot: &Option<Entry>, expires: u64) -> result: unit writes(slot) {
+fn hold_expiry(sequence: &pkg::store::WriteSequence, slot: &Option<Entry>, expires: u64) -> result: unit writes(sequence), writes(slot) {
   doc "Gives an entry's value the expiry, zero for none; an absent entry stays absent.";
   match slot^ {
     Some(value: held) => {
@@ -374,6 +375,7 @@ fn hold_expiry(slot: &Option<Entry>, expires: u64) -> result: unit writes(slot) 
     None() => {
     }
   }
+  pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   return unit;
 }
 
@@ -461,7 +463,8 @@ fn set_key(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let none = False();
   let work = SetWork(outcome: state_absent, answered: none, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set work = set_body(journal: &journal, access_key: key, slot: slot, client: client, value: move value, flags: flags, at: at);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    set work = set_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, value: move value, flags: flags, at: at);
     let stored = work.outcome == state_done;
     let queued = band(stored, timed);
     let changed = bor(stored, work.removed);
@@ -470,6 +473,7 @@ fn set_key(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     if touches {
       let appended = set_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, work: &work, input: input, args: args, key: key, env: env);
     }
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   set_finish(client: client, plan: &plan, work: &work);
   return unit;
@@ -491,7 +495,7 @@ struct SetWork {
   removed: Bool;
 }
 
-fn set_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, value: Bytes, flags: u64, at: u64) -> work: SetWork reads(access_key), writes(journal), writes(slot), writes(client) {
+fn set_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, value: Bytes, flags: u64, at: u64) -> work: SetWork reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "A SET-like command's work on its key's entry, held by the caller, against the client's now, under SET's option flags, returning what it did, as Redis 7.0.15's setGenericCommand does: an expired value is removed first; with GET the string the key held is written as the reply and a key of another kind is refused, nothing stored; with NX nothing is stored over a live key, with XX nothing in place of an absent one. The value keeps the key's expiry with KEEPTTL, takes at with an expiry option, and has none otherwise.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let getting_flag = iand(flags, option_get);
@@ -504,7 +508,7 @@ fn set_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot
   let keep = keep_flag != 0_u64;
   let timed_flag = iand(flags, options_expiry);
   let timed = timed_flag != 0_u64;
-  let kind = entry_kind(slot: slot, client: client);
+  let kind = entry_kind(sequence: sequence, slot: slot, client: client);
   let removed = client^.state == state_expired;
   let none = False();
   let found = kind != 0_u64;
@@ -537,7 +541,7 @@ fn set_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot
   if timed {
     set expires = at;
   }
-  put_text(client: client, slot: slot, value: move value, expires: expires);
+  put_text(sequence: sequence, client: client, slot: slot, value: move value, expires: expires);
   return SetWork(outcome: state_done, answered: answered, removed: removed);
 }
 
@@ -693,9 +697,11 @@ fn run_getdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.now = time^.check;
   let kind = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set kind = getdel_body(journal: &journal, access_key: key, slot: slot, client: client);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    set kind = getdel_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let removed = client^.state == state_expired;
     let appended = getdel_meta(log: &m^.log, logged: logged, removed: removed, kind: kind, input: input, key_span: key_span, key: key);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   getdel_finish(client: client, kind: kind);
   return unit;
@@ -717,8 +723,10 @@ fn run_getex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let none = False();
   let work = GetexWork(kind: 0_u64, removed: none, change: 0_u64);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set work = getex_body(journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    set work = getex_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
     let appended = getex_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, work: &work, input: input, key_span: key_span, key: key, env: env);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   getex_finish(client: client, plan: &plan, work: &work);
   return unit;
@@ -773,13 +781,14 @@ fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   }
   let logged = store^.logging;
   atomic slots = &store^.keys[keys], m = &store^.meta {
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     for @stored (pair in 0_u64..pairs) {
       if pair < client^.key_lookups.inner.len {
         let at = client^.key_lookups.inner[pair];
         if at < slots^.len {
           let doubled = pair *wrap 2_u64;
           let position = doubled +wrap 2_u64;
-          let lapsed = mset_body(journal: &journal, client: client, slot: &slots^[at], input: input, args: args, value_index: position, now: time^.check);
+          let lapsed = mset_body(sequence: &sequence, journal: &journal, client: client, slot: &slots^[at], input: input, args: args, value_index: position, now: time^.check);
           if lapsed {
             let index = position -wrap 1_u64;
             let place = key_bounds(input: input, args: args, index: index);
@@ -790,6 +799,7 @@ fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       }
     }
     let recorded = mset_meta(log: &m^.log, logged: logged, input: input, args: args);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   reply_ok(client: client);
   return unit;
@@ -815,7 +825,7 @@ fn mset_meta(log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<
   return 0_u64;
 }
 
-fn mset_body(journal: &Option<pkg::store::AccessJournal>, client: &Client, slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, value_index: u64, now: u64) -> lapsed: Bool reads(input), reads(args), writes(journal), writes(client), writes(slot) {
+fn mset_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, client: &Client, slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, value_index: u64, now: u64) -> lapsed: Bool reads(input), reads(args), writes(sequence), writes(journal), writes(client), writes(slot) {
   doc "MSET's work on one key's entry, held by the caller: stores the value the argument at value_index holds, without an expiry, and answers whether the entry it replaced had expired, whose removal the file records first.";
   set client^.now = now;
   let key_index = value_index -sat 1_u64;
@@ -825,7 +835,7 @@ fn mset_body(journal: &Option<pkg::store::AccessJournal>, client: &Client, slot:
   let lapsed = held_lapsed(slot: slot, now: now);
   let value_span = arg(args: args, index: value_index);
   let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
-  put_text(client: client, slot: slot, value: move value, expires: 0_u64);
+  put_text(sequence: sequence, client: client, slot: slot, value: move value, expires: 0_u64);
   return lapsed;
 }
 
@@ -883,16 +893,18 @@ fn run_incr(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let counted = Counted(value: 0_i64, delta: delta, now: time^.check, state: state_absent);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let removed = incr_body(journal: &journal, access_key: key, client: client, slot: slot, counted: &counted);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let removed = incr_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, counted: &counted);
     if store^.logging {
       let appended = incr_log(log: &m^.log, removed: removed, counted: &counted, input: input, args: args, key: key);
     }
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   incr_finish(client: client, counted: &counted);
   return unit;
 }
 
-fn incr_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], client: &Client, slot: &Option<Entry>, counted: &Counted) -> removed: Bool reads(access_key), writes(journal), writes(client), writes(slot), writes(counted) {
+fn incr_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], client: &Client, slot: &Option<Entry>, counted: &Counted) -> removed: Bool reads(access_key), writes(sequence), writes(journal), writes(client), writes(slot), writes(counted) {
   doc "INCR's work on its key's entry, held by the caller: adds counted's delta to a live stored decimal in place, keeping its expiry, or stores the delta without one for an absent or expired entry, recording done; another kind and a string that is not an integer or whose sum leaves the range of i64 record their refusal and change nothing. Returns whether an expired entry was replaced, whose removal the file records first.";
   set client^.now = counted^.now;
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
@@ -911,9 +923,12 @@ fn incr_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], cli
   }
   if fresh_needed {
     let fresh = decimal_text(value: counted^.delta);
-    put_text(client: client, slot: slot, value: move fresh, expires: 0_u64);
+    put_text(sequence: sequence, client: client, slot: slot, value: move fresh, expires: 0_u64);
     set counted^.value = counted^.delta;
     set counted^.state = state_done;
+  }
+  if counted^.state == state_done {
+    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   }
   return removed;
 }
@@ -1250,9 +1265,11 @@ fn run_append(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let none = False();
   let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set work = append_body(journal: &journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    set work = append_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span);
     let changed = work.outcome == state_done;
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   string_write_finish(client: client, work: &work);
   return unit;
@@ -1275,9 +1292,11 @@ fn run_setrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
   let none = False();
   let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set work = setrange_body(journal: &journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span, offset: offset);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    set work = setrange_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span, offset: offset);
     let changed = work.outcome == state_done;
     let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   string_write_finish(client: client, work: &work);
   return unit;
@@ -1293,8 +1312,10 @@ fn run_strlen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let none = False();
   let work = StringWork(outcome: 0_u64, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set work = strlen_body(journal: &journal, access_key: key, slot: slot, client: client);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    set work = strlen_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: work.removed, key: key);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   strlen_finish(client: client, work: &work);
   return unit;
@@ -1314,9 +1335,11 @@ fn run_getrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
   set client^.now = time^.check;
   let kind = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    set kind = getrange_body(journal: &journal, access_key: key, slot: slot, client: client, start: plan.start, end: plan.end);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    set kind = getrange_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, start: plan.start, end: plan.end);
     let removed = client^.state == state_expired;
     let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: removed, key: key);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   getrange_finish(client: client, kind: kind);
   return unit;
@@ -1342,6 +1365,7 @@ fn run_mget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   set client^.now = time^.check;
   let logged = store^.logging;
   atomic slots = &store^.keys[keys], m = &store^.meta {
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     for @answers (step in 0_u64..client^.key_metadata.inner.len) {
       if step < client^.key_metadata.inner.len {
         let rank = client^.key_metadata.inner[step];
@@ -1349,7 +1373,7 @@ fn run_mget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
           let index = step +wrap 1_u64;
           let place = key_bounds(input: input, args: args, index: index);
           let key = &input^[place.start..place.end];
-          let kind = mget_body(journal: &journal, access_key: key, slot: &slots^[rank], client: client);
+          let kind = mget_body(sequence: &sequence, journal: &journal, access_key: key, slot: &slots^[rank], client: client);
           if client^.state == state_expired {
             if logged {
               let lapsed = True();
@@ -1362,6 +1386,7 @@ fn run_mget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
         }
       }
     }
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   return unit;
 }
@@ -1392,6 +1417,7 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let logged = store^.logging;
   let stored = False();
   atomic slots = &store^.keys[keys], m = &store^.meta {
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let blocked = False();
     for @checked (
       rank in 0_u64..keys.len,
@@ -1399,7 +1425,7 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     ) {
       if rank < slots^.len {
         refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
-        let kind = entry_kind(slot: &slots^[rank], client: client);
+        let kind = entry_kind(sequence: &sequence, slot: &slots^[rank], client: client);
         if client^.state == state_expired {
           if logged {
             let position = key_position(positions: &client^.key_metadata, index: rank);
@@ -1424,7 +1450,7 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
           if at < slots^.len {
             let doubled = pair *wrap 2_u64;
             let position = doubled +wrap 2_u64;
-            let replaced = mset_body(journal: &journal, client: client, slot: &slots^[at], input: input, args: args, value_index: position, now: time^.check);
+            let replaced = mset_body(sequence: &sequence, journal: &journal, client: client, slot: &slots^[at], input: input, args: args, value_index: position, now: time^.check);
           }
         }
       }
@@ -1433,6 +1459,7 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       }
       set stored = True();
     }
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   msetnx_finish(client: client, stored: stored);
   return unit;
@@ -1533,8 +1560,10 @@ fn run_incrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
   let empty = Bytes::Short(bytes: move nothing);
   let summed = FloatSum(increment: increment, text: move empty, now: time^.check, state: state_absent);
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let removed = incrbyfloat_body(journal: &journal, access_key: key, client: client, slot: slot, summed: &summed);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let removed = incrbyfloat_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, summed: &summed);
     let appended = incrbyfloat_meta(log: &m^.log, logged: logged, removed: removed, summed: &summed, input: input, key_span: key_span, key: key);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   incrbyfloat_finish(client: client, summed: &summed);
   return unit;
@@ -1546,16 +1575,16 @@ struct StringWork {
   removed: Bool;
 }
 
-fn append_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, input: &[u8], client: &Client, value_span: Span) -> work: StringWork reads(access_key), reads(input), writes(journal), writes(slot), writes(client) {
+fn append_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, input: &[u8], client: &Client, value_span: Span) -> work: StringWork reads(access_key), reads(input), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "APPEND's work on a held entry, preserving its expiry and returning its outcome, length and expired removal.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let outcome = state_absent;
   let length = 0_u64;
-  let kind = entry_kind(slot: slot, client: client);
+  let kind = entry_kind(sequence: sequence, slot: slot, client: client);
   let removed = client^.state == state_expired;
   if kind == 0_u64 {
     let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
-    put_text(client: client, slot: slot, value: move value, expires: 0_u64);
+    put_text(sequence: sequence, client: client, slot: slot, value: move value, expires: 0_u64);
     set length = value_span.length;
     set outcome = state_done;
   } else if kind == 1_u64 {
@@ -1569,6 +1598,9 @@ fn append_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], s
     }
   } else {
     set outcome = state_wrong;
+  }
+  if outcome == state_done {
+    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   }
   return StringWork(outcome: outcome, length: length, removed: removed);
 }
@@ -1588,7 +1620,7 @@ fn string_write_finish(client: &Client, work: &StringWork) -> result: unit reads
   return unit;
 }
 
-fn setrange_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, input: &[u8], client: &Client, value_span: Span, offset: u64) -> work: StringWork reads(access_key), reads(input), writes(journal), writes(slot), writes(client) {
+fn setrange_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, input: &[u8], client: &Client, value_span: Span, offset: u64) -> work: StringWork reads(access_key), reads(input), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "SETRANGE's work on a held entry, preserving its expiry and returning its outcome, length and expired removal.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let outcome = state_absent;
@@ -1596,7 +1628,7 @@ fn setrange_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8],
   let empty = value_span.length == 0_u64;
   let total = offset +wrap value_span.length;
   let beyond = total > string_limit;
-  let kind = entry_kind(slot: slot, client: client);
+  let kind = entry_kind(sequence: sequence, slot: slot, client: client);
   let removed = client^.state == state_expired;
   if kind > 1_u64 {
     set outcome = state_wrong;
@@ -1608,23 +1640,26 @@ fn setrange_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8],
     let nothing = slots_new::<u8, 24>();
     let prefix = &nothing[0_u64..0_u64];
     let value = text_with(input: input, span: value_span, offset: offset, prefix: prefix);
-    put_text(client: client, slot: slot, value: move value, expires: 0_u64);
+    put_text(sequence: sequence, client: client, slot: slot, value: move value, expires: 0_u64);
     set length = total;
     set outcome = state_done;
   } else {
     set length = held_text_write(slot: slot, input: input, span: value_span, offset: offset);
     set outcome = state_done;
   }
+  if outcome == state_done {
+    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
+  }
   return StringWork(outcome: outcome, length: length, removed: removed);
 }
 
-fn getdel_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> kind: u64 reads(access_key), writes(journal), writes(slot), writes(client) {
+fn getdel_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> kind: u64 reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "GETDEL reads a live string into the reply and removes it; entry_kind records expired removal.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
-  let kind = entry_kind(slot: slot, client: client);
+  let kind = entry_kind(sequence: sequence, slot: slot, client: client);
   if kind == 1_u64 {
     reply_held_text(slot: slot, client: client);
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete(sequence: sequence, slot: slot);
   }
   return kind;
 }
@@ -1653,10 +1688,10 @@ fn getdel_finish(client: &Client, kind: u64) -> result: unit writes(client) {
   return unit;
 }
 
-fn strlen_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> work: StringWork reads(access_key), writes(journal), writes(slot), writes(client) {
+fn strlen_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> work: StringWork reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "STRLEN reads the kind and length, removing expired entries.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
-  let kind = entry_kind(slot: slot, client: client);
+  let kind = entry_kind(sequence: sequence, slot: slot, client: client);
   let removed = client^.state == state_expired;
   let length = held_text_length(slot: slot);
   return StringWork(outcome: kind, length: length, removed: removed);
@@ -1673,10 +1708,10 @@ fn strlen_finish(client: &Client, work: &StringWork) -> result: unit reads(work)
   return unit;
 }
 
-fn getrange_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, start: i64, end: i64) -> kind: u64 reads(access_key), writes(journal), writes(slot), writes(client) {
+fn getrange_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, start: i64, end: i64) -> kind: u64 reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "GETRANGE reads a live string's requested range into the reply, removing expired entries.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
-  let kind = entry_kind(slot: slot, client: client);
+  let kind = entry_kind(sequence: sequence, slot: slot, client: client);
   reply_held_range(slot: slot, client: client, start: start, end: end);
   return kind;
 }
@@ -1693,7 +1728,7 @@ fn getrange_finish(client: &Client, kind: u64) -> result: unit writes(client) {
   return unit;
 }
 
-fn incrbyfloat_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], client: &Client, slot: &Option<Entry>, summed: &FloatSum) -> removed: Bool reads(access_key), writes(journal), writes(client), writes(slot), writes(summed) {
+fn incrbyfloat_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], client: &Client, slot: &Option<Entry>, summed: &FloatSum) -> removed: Bool reads(access_key), writes(sequence), writes(journal), writes(client), writes(slot), writes(summed) {
   doc "INCRBYFLOAT's work on a held entry, returning whether its previous value expired. An expired entry is removed before the increment is judged, as Redis 7.0.15's lookupKeyWrite removes it, so that a refused increment leaves no entry the file's DEL says is gone.";
   set client^.now = summed^.now;
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
@@ -1708,7 +1743,7 @@ fn incrbyfloat_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u
   }
   let removed = summed^.state == state_expired;
   if removed {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete(sequence: sequence, slot: slot);
     set fresh_needed = True();
   }
   if fresh_needed {
@@ -1717,7 +1752,7 @@ fn incrbyfloat_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u
     let Sum(text: made, state: outcome) = move sum;
     if outcome == 1_u64 {
       let kept = bytes_copy(bytes: &made);
-      put_text(client: client, slot: slot, value: move kept, expires: 0_u64);
+      put_text(sequence: sequence, client: client, slot: slot, value: move kept, expires: 0_u64);
       set summed^.text = move made;
       set summed^.state = state_done;
     } else {
@@ -1728,6 +1763,9 @@ fn incrbyfloat_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u
         set summed^.state = 5_u64;
       }
     }
+  }
+  if summed^.state == state_done {
+    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   }
   return removed;
 }
@@ -1804,10 +1842,10 @@ fn getex_plan(input: &[u8], args: &Box<Slots<Span>>, options: &StringOptions, ti
   return GetexPlan(timed: timed, persisting: persisting, lapsed: lapsed, deadline: deadline);
 }
 
-fn getex_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, plan: &GetexPlan) -> work: GetexWork reads(access_key), reads(plan), writes(journal), writes(slot), writes(client) {
+fn getex_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, plan: &GetexPlan) -> work: GetexWork reads(access_key), reads(plan), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "GETEX reads a live string and applies its expiry change; change 1 deletes, 2 sets expiry, and 3 removes expiry.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
-  let kind = entry_kind(slot: slot, client: client);
+  let kind = entry_kind(sequence: sequence, slot: slot, client: client);
   let removed = client^.state == state_expired;
   let change = 0_u64;
   let text = kind == 1_u64;
@@ -1817,16 +1855,16 @@ fn getex_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
     reply_held_text(slot: slot, client: client);
     if plan^.timed {
       if plan^.lapsed {
-        set slot^ = None<Entry>();
+        pkg::store::sequence_delete(sequence: sequence, slot: slot);
         set change = 1_u64;
       } else {
-        hold_expiry(slot: slot, expires: plan^.deadline.at);
+        hold_expiry(sequence: sequence, slot: slot, expires: plan^.deadline.at);
         set change = 2_u64;
       }
     } else if plan^.persisting {
       let had = held_expiry(slot: slot);
       if had != 0_u64 {
-        hold_expiry(slot: slot, expires: 0_u64);
+        hold_expiry(sequence: sequence, slot: slot, expires: 0_u64);
         set change = 3_u64;
       }
     }
@@ -1928,10 +1966,10 @@ fn getrange_refused(client: &Client, plan: &GetrangePlan) -> rejected: Bool read
   return True();
 }
 
-fn mget_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> kind: u64 reads(access_key), writes(journal), writes(slot), writes(client) {
+fn mget_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client) -> kind: u64 reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "Reads one MGET entry; strings write their bulk reply, other kinds and absence leave the nil reply to mget_finish.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
-  let kind = entry_kind(slot: slot, client: client);
+  let kind = entry_kind(sequence: sequence, slot: slot, client: client);
   if kind == 1_u64 {
     reply_held_text(slot: slot, client: client);
   }

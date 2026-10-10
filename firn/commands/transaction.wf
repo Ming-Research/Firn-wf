@@ -253,6 +253,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
   let queued = &transaction^.bytes.inner[0_u64..total];
   set client^.now = time^.check;
   atomic t = &store^.keys, m = &store^.meta {
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let appended = 0_u64;
     let first = 0_u64;
     for @commands (index in 0_u64..commands) {
@@ -269,7 +270,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
       let name = arg(args: &args, index: 0_u64);
       let kind = held_kind(input: queued, name: name);
       if kind != 0_u64 {
-        let ran = held_run(journal: &journal, kind: kind, keys: t, meta: m, effects: &effects, logged: logged, input: queued, args: &args, client: client, env: env, time: time);
+        let ran = held_run(sequence: &sequence, journal: &journal, kind: kind, keys: t, meta: m, effects: &effects, logged: logged, input: queued, args: &args, client: client, env: env, time: time);
         set appended = appended +wrap ran;
       } else {
         reply_error(client: client, word: &text_foreign_abort[0_u64..92_u64]);
@@ -285,6 +286,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
       log_count(log: &m^.log, count: 1_u64, room: 16_u64);
       log_word(log: &m^.log, word: &word_exec_log[0_u64..4_u64]);
     }
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   transaction_reset(transaction: transaction);
   return unit;

@@ -1,0 +1,74 @@
+fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted) {
+  doc "Starts a local token while the outer statement holds Meta; no sequence is taken until a dataset change.";
+  let taken = False();
+  return WriteSequence(value: meta^.commit_seq, taken: taken, loading: loading, exhausted: meta^.aof_rewrite_seq_exhausted);
+}
+
+fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) {
+  doc "Takes the statement's sequence once, saturating at u64's maximum and refusing captures without refusing service writes. Loading has no surviving capture.";
+  if sequence^.loading {
+    return unit;
+  }
+  if sequence^.taken {
+    return unit;
+  }
+  let before = sequence^.value;
+  if before < 18446744073709551615_u64 {
+    set sequence^.value = before + 1_u64;
+  }
+  if sequence^.value == 18446744073709551615_u64 {
+    set sequence^.exhausted = True();
+  }
+  set sequence^.taken = True();
+  return unit;
+}
+
+fn sequence_stamp(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit reads(slot), writes(sequence), writes(slot.Some.value.last_write) {
+  doc "One publication path for a changed surviving entry and the statement counter, independent of access refreshes and AOF configuration.";
+  sequence_change(sequence: sequence);
+  match slot^ {
+    Some(value: changed_entry) => {
+      sequence_entry(sequence: sequence, value: changed_entry);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit writes(sequence), writes(slot) {
+  doc "Actual removal takes a sequence even with AOF disabled; an absent key takes none.";
+  let present = False();
+  match slot^ {
+    Some(value: removed_entry) => {
+      set present = True();
+    }
+    None() => {
+    }
+  }
+  if present {
+    sequence_change(sequence: sequence);
+    set slot^ = None<Entry>();
+  }
+  return unit;
+}
+
+fn sequence_commit(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted) {
+  doc "Commits the token under the same outer keys-and-Meta hold that changed the dataset, including effects before an EXEC or script error.";
+  if sequence^.taken {
+    set meta^.commit_seq = sequence^.value;
+    set meta^.aof_rewrite_seq_exhausted = sequence^.exhausted;
+  }
+  return unit;
+}
+
+fn sequence_entry(sequence: &WriteSequence, value: &Entry) -> result: unit writes(sequence), writes(value.last_write) {
+  doc "Stamps an entry whose payload is already held through a match, using the same lazy sequence as sequence_stamp.";
+  sequence_change(sequence: sequence);
+  let stamp = sequence^.value;
+  if sequence^.loading {
+    set stamp = 0_u64;
+  }
+  set value^.last_write = stamp;
+  return unit;
+}

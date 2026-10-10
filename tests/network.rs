@@ -4,6 +4,7 @@
 
 mod support;
 mod memory_limit;
+mod rewrite_sequence;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};

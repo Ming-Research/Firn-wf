@@ -397,3 +397,15 @@ and applicable G/DC checks; no findings within scope after clarification of
 stamp necessity, aggregate capture work and rotation-buffer pressure. No
 suite ran; implementation, design soundness and resource guarantees remain
 unverified. Work stops at this uncommitted investigation as requested.
+
+
+## Stage 1 implementation record (2026-10-10)
+
+The owner has selected option A on `firn-q-rw-cut`, `firn-q-rw-stamp` and
+`firn-q-rw-limits` and requested sequencing alone as stage 1. The
+[implementation record](sequence-stage-1.md) describes the uncommitted
+stamp/counter support, every shared-helper call site, network cases,
+independent review and unverified compiler/layout/behavioral evidence.
+This supersedes the investigation-only stopping point above. Scanning,
+capture, rotation, emission and resource-limit implementation are later
+stages; the other unresolved protocol questions above remain unresolved.

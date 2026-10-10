@@ -348,6 +348,8 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
         let name = &owned.inner[0_u64..length];
         let volatile = eviction_volatile(policy: client^.memory_policy);
         atomic slot = &store^.keys[name], meta = &store^.meta {
+          let loading = False();
+          let sequence = pkg::store::sequence_new(meta: meta, loading: loading);
           set over = memory_over(meta: meta, client: client, logged: logged);
           if over {
             let lapsed = False();
@@ -363,7 +365,7 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
               }
             }
             if eligible {
-              set slot^ = None<Entry>();
+              pkg::store::sequence_delete(sequence: &sequence, slot: slot);
               if logged {
                 pkg::store::log_removal(log: &meta^.log, key: name);
               }
@@ -375,6 +377,7 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
               set removed = True();
             }
           }
+          pkg::store::sequence_commit(meta: meta, sequence: &sequence);
         }
         if bnot(over) {
           return False();

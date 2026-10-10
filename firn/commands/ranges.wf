@@ -996,7 +996,7 @@ fn zremrange_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind:
   return True();
 }
 
-fn zremrange_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, walk: &Walk) -> lapsed: Bool reads(access_key), writes(journal), writes(slot), writes(client), writes(walk) {
+fn zremrange_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, walk: &Walk) -> lapsed: Bool reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client), writes(walk) {
   doc "Runs ZREMRANGE over its key's entry; the caller owns the statement.";
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   match slot^ {
@@ -1010,7 +1010,10 @@ fn zremrange_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8]
   let lapsed = client^.state == state_expired;
   let removing = bor(emptied, lapsed);
   if removing {
-    set slot^ = None<Entry>();
+    pkg::store::sequence_delete(sequence: sequence, slot: slot);
+  }
+  if client^.number > 0_u64 {
+    pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   }
   return lapsed;
 }
@@ -1047,8 +1050,10 @@ fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let lapsed = zremrange_body(journal: &journal, access_key: key, slot: slot, client: client, walk: &walk);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let lapsed = zremrange_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, walk: &walk);
     let appended = zremrange_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence);
   }
   zremrange_finish(client: client);
   return unit;

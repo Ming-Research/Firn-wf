@@ -384,7 +384,20 @@ baseline is the loaded base file's size, as Redis 7.0.15 initializes it.
 These are startup options; `CONFIG SET` does not change them.
 
 `INFO persistence` reports rewrite progress, attempts, last status, current
-active-file bytes and the rewrite baseline. Failure before manifest publication
+active-file bytes and the rewrite baseline. The firn-only field
+`aof_rewrite_commit_seq` is the actual dataset statement sequence, also when
+AOF is disabled, following the [reported-facts rule](../design/firn/reported-facts.md).
+It starts at zero after loading, advances once for an atomic statement that
+changes the dataset, and is shared by every write in an `EXEC` or script
+attempt. Expiry and eviction removals count; reads and access refreshes do
+not. Failed or no-effect commands take no sequence unless their lookup
+removes expired data. Both flush commands advance it even on
+an empty database. Accepted overwrites remain writes, even when their value
+is equal. The counter saturates at u64's maximum and records that later
+reconciled-scan captures must be refused; it never wraps. This sequencing
+support does not yet change the rewrite worker's replay implementation.
+
+Failure before manifest publication
 leaves the switch manifest replayable. If manifest rename succeeds but
 directory sync fails, the new manifest stays in force, all files and history
 entries are retained, and `aof_last_bgrewrite_status` reports `err`.
