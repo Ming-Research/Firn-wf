@@ -78,6 +78,76 @@ fn noeviction_refuses_denyoom_but_allows_reads_and_deletes() {
     assert_eq!(finished(child).0, 0);
 }
 
+/// Redis 7.0.15 performEvictions refuses DENYOOM writes under noeviction
+/// when counted memory stays over maxmemory. Redis has no spare map table:
+/// firn's admission first reclaims storage holding no key before refusing.
+///
+/// At Whitefoot aea396836, FLUSHDB's map_clear starts with 4096 cells.
+/// MSET of 2049 keys grows it to 8192 cells and leaves no reserve (#303).
+/// EXEC holds the whole map while another 2048 keys are inserted and deleted:
+/// all 4097 cells were claimed before any deletion, but only 2049 stay live.
+/// At hold release, used > capacity/2 triggers a move, sized to keep live
+/// keys within 3/8 occupancy: 8192 cells again. The following GET lets the
+/// sole driver reclaim the old table as a reserve of at least 8192 * 16
+/// bytes. This needs neither particular hashes nor expiry or timing waits.
+/// The limit splits that reserve, leaving room for the small SET; without
+/// release_reserve in admission, the unused cells stay counted and SET
+/// returns OOM instead of OK.
+#[test]
+fn noeviction_reclaims_map_reserve_before_refusing_a_write() {
+    let port = free_port();
+    let text = port.to_string();
+    let child = firn().spawn_on_route_with(
+        true, &[("WF_DRIVERS", "1"), ("WF_WORKERS", "1")], &[text.as_bytes(), b"1"],
+    );
+    let mut client = connect_when_ready(port);
+    assert_eq!(memory_request(&mut client, &["FLUSHDB"]), "+OK\r\n");
+
+    let keys: Vec<String> = (0..4097).map(|index| format!("reserve:{index}")).collect();
+    let mut initial = vec!["MSET"];
+    for key in &keys[..2049] {
+        initial.extend_from_slice(&[key.as_str(), ""]);
+    }
+    assert_eq!(memory_request(&mut client, &initial), "+OK\r\n");
+
+    let mut temporary = vec!["MSET"];
+    let mut remove = vec!["DEL"];
+    for key in &keys[2049..] {
+        temporary.extend_from_slice(&[key.as_str(), ""]);
+        remove.push(key.as_str());
+    }
+    assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &temporary), "+QUEUED\r\n");
+    assert_eq!(memory_request(&mut client, &remove), "+QUEUED\r\n");
+    assert_eq!(memory_request(&mut client, &["EXEC"]), "*2\r\n+OK\r\n:2048\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", &keys[0]]), "$0\r\n\r\n");
+    assert_eq!(memory_request(&mut client, &["DBSIZE"]), ":2049\r\n");
+
+    // Warm the measured command paths and INFO reply storage with no limit.
+    assert_eq!(memory_request(&mut client, &["SET", &keys[0], ""]), "+OK\r\n");
+    configure(&mut client, &["maxmemory", "0", "maxmemory-policy", "noeviction"]);
+    let evicted_before = number(&info(&mut client, "stats"), "evicted_keys");
+    info(&mut client, "memory");
+    let before = info(&mut client, "memory");
+    assert_eq!(number(&before, "mem_not_counted_for_evict"), 0);
+    let used_before = number(&before, "used_memory");
+    const RESERVE_MIN: u64 = 8192 * 16;
+    assert!(used_before > RESERVE_MIN, "{before}");
+    let limit = used_before - RESERVE_MIN / 2;
+    configure(&mut client, &["maxmemory", &limit.to_string()]);
+    // No intervening command may reclaim the reserve before this admission.
+    assert_eq!(memory_request(&mut client, &["SET", "admitted", "v"]), "+OK\r\n");
+    let after = info(&mut client, "memory");
+    let used_after = number(&after, "used_memory");
+    assert!(used_after < used_before, "before={used_before}: {after}");
+    assert!(used_after <= limit, "limit={limit}: {after}");
+    assert_eq!(number(&info(&mut client, "stats"), "evicted_keys"), evicted_before);
+    assert_eq!(memory_request(&mut client, &["DBSIZE"]), ":2050\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "admitted"]), "$1\r\nv\r\n");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
 /// performEvictions frees value storage before later writes. This is a
 /// bound on observed heap, not an eviction-quality or throughput claim.
 #[test]

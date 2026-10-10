@@ -18,6 +18,18 @@ fn heap_read(client: &Client) -> bytes: u64 writes(client) {
   }
 }
 
+fn release_reserve(store: &Keyspace, client: &Client) -> freed: u64 reads(store), writes(client) {
+  doc "Gives back the keyspace map's reserve, the cells it keeps for its next move, and answers the bytes that lowered the heap reading; zero when the map holds none or a move or reclaim holds it. AOF replay has no meter and never enters admission.";
+  match client^.meter {
+    Some(value: meter) => {
+      return std::process::release_map_reserve::<Entry>(map: &store^.keys, meter: meter);
+    }
+    None() => {
+      return 0_u64;
+    }
+  }
+}
+
 fn memory_excluded(meta: &Meta, logged: Bool) -> bytes: u64 reads(meta) {
   doc "Redis 7.0.15 freeMemoryGetNotCountedMemory excludes allocated AOF storage. Both the collecting capacity and the writer's published private capacity remain excluded across swaps and partial writes; with AOF disabled neither is an AOF buffer.";
   if logged {
@@ -287,7 +299,7 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
 }
 
 fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool reads(store), writes(client), writes(clock) waits {
-  doc "Redis 7.0.15 performEvictions: only EVICT_FAIL sets OOM. Each command's context re-reads the heap before every victim; no global command turn is held. EVICT_RUNNING permits the command and the next command resumes, replacing Redis's evictionTimeProc continuation as the owner ruled. Check monotonic tenacity every 16 deletions, and every 16 unsuccessful batches to bound sparse/ghost searches. An exhaustion decision reads the heap in the same whole-map and Meta statement as its final sample, which is its admission point even if a writer starts afterward. Each deletion, DEL propagation and statistic update holds the chosen entry plus Meta together; an entry now expired follows active expiry instead of eviction. A single map_scan and a single deletion remain indivisible, as Redis's sampling and deletion do.";
+  doc "Redis 7.0.15 performEvictions: only EVICT_FAIL sets OOM. Over the limit, the keyspace map's reserve is given back first and the limit read again, since that storage holds no key. Each command's context re-reads the heap before every victim; no global command turn is held. EVICT_RUNNING permits the command and the next command resumes, replacing Redis's evictionTimeProc continuation as the owner ruled. Check monotonic tenacity every 16 deletions, and every 16 unsuccessful batches to bound sparse/ghost searches. An exhaustion decision reads the heap in the same whole-map and Meta statement as its final sample, which is its admission point even if a writer starts afterward. Each deletion, DEL propagation and statistic update holds the chosen entry plus Meta together; an entry now expired follows active expiry instead of eviction. A single map_scan and a single deletion remain indivisible, as Redis's sampling and deletion do.";
   if client^.maxmemory == 0_u64 {
     return False();
   }
@@ -298,6 +310,15 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
   }
   if bnot(over) {
     return False();
+  }
+  let freed = release_reserve(store: store, client: client);
+  if freed > 0_u64 {
+    atomic released_meta = &store^.meta {
+      set over = memory_over(meta: released_meta, client: client, logged: logged);
+    }
+    if bnot(over) {
+      return False();
+    }
   }
   if client^.memory_policy == 7_u64 {
     return True();
