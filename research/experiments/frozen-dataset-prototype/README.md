@@ -470,3 +470,28 @@ The report is retained here because this session has no ArtifactData
 row-write tool for the shared status board; its browser view exposes owner
 notes/actions, not item/log editing. No board row was updated, no owner note
 was impersonated, and no new language or representation decision was selected.
+
+## Results, 2026-10-10
+
+[Firn-wf CI 38047195263](https://github.com/Ming-Research/Firn-wf/actions/runs/38047195263),
+revision abf063d, compiler release `wf-fe5589ec5f45`:
+
+| Program | Outcome | Diagnostic |
+| --- | --- | --- |
+| control.wf | compiled, exit 0 | none |
+| revoke-rejected.wf | rejected | `error[SHARE-2]: ReadonlyWriteTarget` at `set bytes^ = move empty;` (4:9) |
+| managed-atomic-control.wf | compiled, exit 0 | none |
+| managed-next-nested-rejected.wf | rejected | `error[SHARE-2]: WaitInsideAtomic` at the inner `atomic byte = &registry^.root` (16:5) |
+| managed-next-target-rejected.wf | rejected | `error[SHARE-2]: AtomicKeyReadsTheState` at the dependent target `byte = &registry^.root` (15:39) |
+
+Each negative is refused by the rule and at the source extent predicted
+above, and both controls compile and pass, so the stops are attributed:
+under current rules a reader-retained root cannot be revoked, and a
+registry-held node cannot be read within the registry's statement. The
+owner chose to close this with a new language type, `Frozen<T>` (born frozen
+from an owned value, deeply immutable, reference-counted, read without an
+atomic statement; status board card `firn-q-frozen-type`, option A,
+implemented by the specification owner as item `proof-frozen`). The managed
+cursor library resumes on a release that carries it, with these two
+negatives rewritten to `Frozen<T>` as its acceptance tests. `run.sh` exits 80
+by design while the stop is open.

@@ -414,3 +414,28 @@ and DC4 remain unverified; no build, compilation, test, shell syntax check
 or program ran locally, and no new CI ran. Live status-board recording was
 unavailable because this session has no ArtifactData tool; the report is
 retained here for the owning session.
+
+### Run on the held-entry read fix, 2026-10-10
+
+[Firn-wf CI 38047195263](https://github.com/Ming-Research/Firn-wf/actions/runs/38047195263),
+revision abf063d, GitHub-hosted ubuntu-24.04, compiler release
+`wf-fe5589ec5f45` (Whitefoot main fe5589ec5, which carries #334, the fix for
+the leaked cell lock of a read-only whole-map statement that reads a value),
+WF_DRIVERS=2 unless noted, WF_WORKERS=1, no `--par`:
+
+- Every reproducer finished with exit 0: `repro-single` 5/5, `repro-map-only`
+  3/3 with one driver and 5/5 with two, `repro` 5/5. On the earlier releases
+  `repro` and `repro-map-only` timed out in every run, so the fix is what
+  separates the two outcomes.
+- Correct reconciliation: **0 mismatches** in 20 runs; 1 run observed a
+  commit between scan batches (exit 0), 19 completed without that
+  observation (exit 10).
+- Wrong control (scan plus command replay): **mismatched in 20 of 20** runs.
+- No unexpected outcome; the harness exited 0.
+
+Against the pre-registered criteria the protocol **passes**: zero
+mismatches, a control that separates the routes, and at least one correct
+run with interleaved traversal. The interleaving coverage is thin (1 of 20):
+the result shows the reconciliation is expressible under current rules and
+correct in these runs, not that it has been exercised under heavy
+concurrent writes; the comparison's write-heavy workloads must supply that.
