@@ -159,6 +159,9 @@ fn aof_rw_select_empty(factory: &HandleFactory, file: &WriteFile) -> result: Res
   doc "Select database zero before journal output when the scan emitted no image; no scratch owner is needed.";
   let offset = 0_u64;
   loop {
+    if offset >= 23_u64 {
+      return Ok<u64, unit>(value: offset);
+    }
     match std::fs::append_once(factory: factory, file: file, source: &aof_rw_select[0_u64..23_u64], start: offset, end: 23_u64) {
       Ok(value: next) => {
         if next <= offset {
@@ -169,9 +172,6 @@ fn aof_rw_select_empty(factory: &HandleFactory, file: &WriteFile) -> result: Res
       Err(error: problem) => {
         return Err<u64, unit>(error: unit);
       }
-    }
-    if offset >= 23_u64 {
-      return Ok<u64, unit>(value: offset);
     }
   }
 }
@@ -191,6 +191,9 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
       let end = offset +sat count;
       let bytes = &block^.inner[0_u64..length];
       loop @append {
+        if offset >= end {
+          break @append;
+        }
         match std::fs::append_once(factory: factory, file: file, source: bytes, start: offset, end: end) {
           Ok(value: next) => {
             if next <= offset {
@@ -204,9 +207,6 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
           Err(error: problem) => {
             return Err<u64, unit>(error: unit);
           }
-        }
-        if offset >= end {
-          break @append;
         }
       }
     } else if offset < block^.inner.len {
