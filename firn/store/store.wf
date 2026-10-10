@@ -1,4 +1,5 @@
 alias Bytes = pkg::bytes::Bytes;
+alias CancelSource = std::time::CancelSource;
 alias Key = pkg::bytes::Key;
 alias KeyEnv = pkg::bytes::KeyEnv;
 alias Span = pkg::protocol::Span;
