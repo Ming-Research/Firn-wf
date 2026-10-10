@@ -486,3 +486,43 @@ recorded on the status board as `firn-gap-guard-fairness` with a standalone
 reproducer. The first is firn's design; the direction (an engine per driver
 with scripts holding only their declared keys) awaits the owner on card
 `firn-q-script-engine`.
+
+### A fair guard, measured on the script engine
+
+The Whitefoot session that owns the runtime built one remedy for the racing
+waiters: a guard release gives each woken waiter one turn before a newcomer
+may take the object ("turns", experiment release `wf-exp-5f6dca744b8f`,
+Whitefoot commit 5f6dca744 on branch `claude/guard-fairness`, based on main
+fe5589ec5). On its own probe this cut the longest wait from 510 ms to 9-17
+ms while lengthening the run 2.5-2.9 times, and it asked for firn's real
+engine before the owner decides between fairness and throughput (status
+board card `gran-guard-fairness`).
+
+Run [38065358945](https://github.com/Ming-Research/Firn-wf/actions/runs/38065358945),
+2026-10-10 15:52-15:57 UTC, workloads mode with `workload_images`: the same
+firn tree (main 15293c5) built with the matching control release
+`wf-fe5589ec5f45` and with the turns release, plus a twin of the control as
+a noise control, interleaved with Redis 7.0.15, the order reversed on the
+second pass. limiter-script at depth 1, server on CPUs 2 and 4 (two
+drivers), client on CPUs 6-15 (10 threads), append-only file off, 2 passes
+of 5 seconds. Rate in requests a second and p50/p99 in ms, pass 1 / pass 2:
+
+| line | connections | rate | p50 | p99 |
+|---|---|---|---|---|
+| Redis 7.0.15 | 8 | 228770 / 228835 | 0.029 / 0.029 | 0.059 / 0.058 |
+| Redis 7.0.15 | 50 | 231140 / 231900 | 0.202 / 0.201 | 0.410 / 0.408 |
+| control | 8 | 159068 / 159481 | 0.018 / 0.018 | 0.793 / 0.742 |
+| control | 50 | 211012 / 209346 | 0.087 / 0.071 | 1.500 / 1.628 |
+| control twin | 8 | 159278 / 159617 | 0.018 / 0.018 | 0.724 / 0.699 |
+| control twin | 50 | 208578 / 205304 | 0.062 / 0.086 | 1.679 / 1.587 |
+| turns | 8 | 21281 / 21292 | 0.346 / 0.346 | 0.873 / 0.874 |
+| turns | 50 | 4411 / 4394 | 7.959 / 7.879 | 51.211 / 52.503 |
+
+The control and its twin agree within about 2%. Turns cuts the scripted
+rate 7.5 times at 8 connections and 47 times at 50, and its p99 at 50
+connections is about 30 times the control's: with every script checking out
+the one engine under a guard, each acquisition now pays a context switch,
+and the queue of turns grows with the connections. This tested one workload
+on one machine; the workload client reports p50 and p99, not the longest
+wait. It is evidence against turns as built for this engine, and the
+reason firn asks that any bounded-overtaking build be measured the same way.
