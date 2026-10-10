@@ -136,9 +136,9 @@ fn sequence_capture_at(sequence: &WriteSequence, keys: &KeySet, index: u64, slot
       let allocation = length +sat 16_u64;
       let charged = sequence_room(sequence: sequence, bytes: allocation);
       if charged {
-        let copy = box_array_filled::<u8>(count: length, value: 0_u8);
-        let count = copy.inner.len;
-        let bytes = &copy.inner[0_u64..count];
+        let key_buffer = box_array_filled::<u8>(count: length, value: 0_u8);
+        let count = key_buffer.inner.len;
+        let bytes = &key_buffer.inner[0_u64..count];
         key_set_read_key(keys: keys, index: index, out: bytes);
         sequence_capture(sequence: sequence, key: bytes, slot: slot);
       }
