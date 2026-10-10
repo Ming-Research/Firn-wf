@@ -287,9 +287,12 @@ adding a test-only server path.
 
 ### Results
 
-**Correctness.** CI `check` on 43b58dd passed all 113 network cases on both
-host I/O routes, including the repeated timeout changes and the 500 ms
-shutdown bound, and the Redis 7.0.15 suite ratchet (591/591).
+**Correctness.** CI `check` on 43b58dd passed all 113 network tests,
+including the repeated timeout changes and the 500 ms shutdown bound, both of
+which run on both host I/O routes, and the Redis 7.0.15 suite ratchet
+(591/591). That idle clients with no limit no longer arm a receive timer
+follows from the code (the receive's deadline is `None` at a zero limit), not
+from these throughput numbers.
 
 **Probe.** [Run 38019220128](https://github.com/Ming-Research/Firn-wf/actions/runs/38019220128)
 (i9-14900K, 2026-10-10 03:03-03:13 UTC). Revisions:
