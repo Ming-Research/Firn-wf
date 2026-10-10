@@ -140,7 +140,7 @@ fn model_digest(model: &[Option<u8>]) -> result: Digest reads(model) {
       None() => {
       }
       Some(value: expected_byte) => {
-        let number = cvt::<u8, u64>(expected_byte);
+        let number = cvt::<u8, u64>(expected_byte^);
         let coefficient = key +wrap 1_u64;
         let magnitude = number +wrap 1_u64;
         let term = coefficient *wrap magnitude;
