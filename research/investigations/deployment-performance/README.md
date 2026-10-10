@@ -424,3 +424,143 @@ The profile of the same run no longer lists `text_bytes`, the per-call copy
 this branch removed. The collector belongs to Halo, whose design records a
 whole-heap collection as an owner decision; these figures go to Halo's
 session as the evidence for its card.
+
+## Scripts on two cores, on the native host
+
+The i9-14900K runner was reinstalled as native Ubuntu (kernel 7.0) on
+2026-10-10, replacing the Hyper-V guest of every earlier section; numbers
+from before and after are not compared. The benchmark placement was also
+corrected (PR #43): until then a "two-CPU" server ran on one physical
+core's two hyperthreads. The runs below place the server on CPU 2 (one CPU)
+or CPUs 2 and 4 (two CPUs), each on its own performance core, and the
+client on the remaining performance cores' threads (4-15 or 6-15).
+
+### Baseline
+
+Run [38052762047](https://github.com/Ming-Research/Firn-wf/actions/runs/38052762047),
+Firn-wf 0cfcf57 (whitefoot.pin `wf-78223721f77d`), 2026-10-10
+12:39-12:56 UTC, 2 passes of 10 seconds. Rate in thousands a second as
+firn / Redis (ratio), p99 in ms as firn / Redis, append-only file off. The
+Redis measured is the reinstalled host's packaged Redis 8.0.5, not firn's
+reference 7.0.15 (the run's host log; status board item
+`firn-ops-redis-ref`), so its column compares firn with 8.0.5:
+
+| workload | CPUs | connections | rate | p99 |
+|---|---|---|---|---|
+| limiter-script | 1 | 1 | 121 / 136 (0.89) | 0.01 / 0.02 |
+| limiter-script | 1 | 8 | 216 / 231 (0.94) | 0.08 / 0.06 |
+| limiter-script | 1 | 50 | 219 / 231 (0.95) | 0.27 / 0.41 |
+| limiter-script | 2 | 8 | 159 / 233 (0.68) | 0.73-0.84 / 0.06 |
+| limiter-script | 2 | 50 | 211 / 231 (0.91) | 1.45-1.46 / 0.41 |
+| limiter-tx | 1 | 50 | 435 / 371 (1.17) | 0.12 / 0.25-0.26 |
+| limiter-tx | 2 | 8 | 676 / 356 (1.90) | 0.01 / 0.04 |
+| limiter-tx | 2 | 50 | 767 / 375 (2.05) | 0.08-0.09 / 0.25 |
+
+With the append-only file on, the ratios are within 0.15 of these. On one CPU
+the script path is within 11% of Redis with an equal or lower tail, the
+collection pause of the previous section being gone at Halo's 64 KiB
+collection floor. On two CPUs transactions scale (1.9 to 2.05 times
+Redis) and scripts do not: their rate falls below the one-CPU rate at 8
+connections and their p99 is several times Redis's.
+
+### Against the reference Redis 7.0.15
+
+Run [38066137541](https://github.com/Ming-Research/Firn-wf/actions/runs/38066137541),
+Firn-wf 541349d (main 8744d72 with PR #46's workflow step, which builds
+Redis 7.0.15 from its release tarball; whitefoot.pin `wf-78223721f77d`);
+the host log shows `Redis server v=7.0.15` and `redis-benchmark 7.0.15`.
+2026-10-10 16:04-16:11 UTC, the placement of the section's introduction, 2
+passes of 5 seconds. Rate in thousands a second as firn / Redis (ratio),
+each the mean of the two passes, p99 in ms as firn / Redis with both passes
+where they differ, append-only file off:
+
+| workload | CPUs | connections | rate | p99 |
+|---|---|---|---|---|
+| limiter-script | 1 | 8 | 213 / 210 (1.01) | 0.079-0.080 / 0.066 |
+| limiter-script | 1 | 50 | 219 / 210 (1.05) | 0.26 / 0.45 |
+| limiter-script | 2 | 8 | 158 / 208 (0.76) | 0.71-0.73 / 0.064-0.065 |
+| limiter-script | 2 | 50 | 209 / 210 (1.00) | 1.51-1.57 / 0.45 |
+| limiter-tx | 1 | 8 | 409 / 347 (1.18) | 0.021 / 0.036-0.037 |
+| limiter-tx | 1 | 50 | 432 / 364 (1.19) | 0.12 / 0.26 |
+| limiter-tx | 2 | 8 | 672 / 352 (1.91) | 0.014-0.015 / 0.035 |
+| limiter-tx | 2 | 50 | 769 / 366 (2.10) | 0.069-0.093 / 0.26 |
+
+With the append-only file on, firn / Redis is 0.96-1.10 for the scripted
+limiter and 1.11-1.16 for transactions on one CPU, and 0.81-1.03 and
+1.85-1.95 on two. Across runs, Redis 7.0.15 ran the scripted limiter about
+9% slower than the host's 8.0.5 did above (210 against 231 thousand a
+second, 5- against 10-second passes), so on one CPU firn's scripts match or
+exceed the reference's rate, with a lower p99 at 50 connections and a
+higher one at 8.
+The two-CPU picture is unchanged: transactions scale to about twice Redis,
+scripts do not, and their p99 is several times Redis's.
+
+### Where scripts wait
+
+Run [38050875132](https://github.com/Ming-Research/Firn-wf/actions/runs/38050875132),
+experiment branch `exp/engine-probe` (not merged), which counts in the
+engine pool every checkout's wait (from the first attempt to taking the
+engine) and the engine's hold, reset before each measured run and read
+after it, same placement, 2 passes of 10 seconds:
+
+| CPUs | connections | waits under 10 us | 10-100 us | 0.1-1 ms | 1-10 ms | longest wait | longest hold |
+|---|---|---|---|---|---|---|---|
+| 1 | 50 | 100% | 0 | 0 | 0 | 1.9 us | 0.16 ms |
+| 2 | 8 | 82.5% | 7.5% | 9.9% | 0.09% | 3.4 ms | 0.07 ms |
+| 2 | 50 | 54.0% | 7.7% | 31.9% | 6.5% | 8.8 ms | 0.08 ms |
+
+On two CPUs with 50 connections the waits sum to 446 seconds over a
+10-second run, 89% of the 50 connections' time, while the engine is held for
+8.1 seconds in total and never longer than 75 us at a time. Two causes
+compound: one engine serves every script, and each script holds the whole
+keyspace while it runs, so two scripts never run at once; and the waiters on
+the engine's guard are all woken at each release and race, in no order, so
+some lose many times in a row. The second is a Whitefoot runtime question,
+recorded on the status board as `firn-gap-guard-fairness` with a standalone
+reproducer. The first is firn's design; the direction (an engine per driver
+with scripts holding only their declared keys) awaits the owner on card
+`firn-q-script-engine`.
+
+### A fair guard, measured on the script engine
+
+The Whitefoot session that owns the runtime built one remedy for the racing
+waiters: a guard release gives each woken waiter one turn before a newcomer
+may take the object ("turns", experiment release `wf-exp-5f6dca744b8f`,
+Whitefoot commit 5f6dca744 on branch `claude/guard-fairness`, based on main
+fe5589ec5). On its own probe this cut the longest wait from 510 ms to 9-17
+ms while lengthening the run 2.5-2.9 times, and it asked for firn's real
+engine before the owner decides between fairness and throughput (status
+board card `gran-guard-fairness`).
+
+Run [38065358945](https://github.com/Ming-Research/Firn-wf/actions/runs/38065358945),
+2026-10-10 15:52-15:57 UTC, workloads mode with `workload_images`, an
+exploratory comparison with no criterion registered beforehand: the same
+firn tree (main 8744d72) built with the matching control release
+`wf-fe5589ec5f45` (branch `exp/guard-control`, 22283eb) and with the turns
+release (branch `exp/guard-turns`, 4b35075), plus a twin of the control as a
+noise control, interleaved with the host's Redis 8.0.5 (not the reference
+7.0.15), the order reversed on the second pass. limiter-script at depth 1, server on CPUs 2 and 4 (two
+drivers), client on CPUs 6-15 (10 threads), append-only file off, 2 passes
+of 5 seconds. Rate in requests a second and p50/p99 in ms, pass 1 / pass 2:
+
+| line | connections | rate | p50 | p99 |
+|---|---|---|---|---|
+| Redis 8.0.5 | 8 | 228770 / 228835 | 0.029 / 0.029 | 0.059 / 0.058 |
+| Redis 8.0.5 | 50 | 231140 / 231900 | 0.202 / 0.201 | 0.410 / 0.408 |
+| control | 8 | 159068 / 159481 | 0.018 / 0.018 | 0.793 / 0.742 |
+| control | 50 | 211012 / 209346 | 0.087 / 0.071 | 1.500 / 1.628 |
+| control twin | 8 | 159278 / 159617 | 0.018 / 0.018 | 0.724 / 0.699 |
+| control twin | 50 | 208578 / 205304 | 0.062 / 0.086 | 1.679 / 1.587 |
+| turns | 8 | 21281 / 21292 | 0.346 / 0.346 | 0.873 / 0.874 |
+| turns | 50 | 4411 / 4394 | 7.959 / 7.879 | 51.211 / 52.503 |
+
+The control and its twin agree within about 2% on rate; their p50 and p99
+differ by up to about 40% and 12%. Turns cuts the scripted rate 7.5 times at
+8 connections and 48 times at 50, and its p99 at 50 connections is 32-34
+times the control's. The likely cause, not yet
+profiled: every script checks out the one engine under a guard, so each
+acquisition now pays a context switch, and more connections queue more
+turns. This tested one workload
+on one machine; the workload client reports p50 and p99, not the longest
+wait. It is evidence against turns as built for this engine, and the
+reason firn asks that any bounded-overtaking build be measured the same way.
