@@ -102,8 +102,13 @@ impl Control {
     }
 
     fn info(&mut self) -> Result<Memory> {
+        Ok(self.observation(false)?.0)
+    }
+
+    fn observation(&mut self, persistence: bool) -> Result<(Memory, Option<Persistence>)> {
         let wire = self.call(&[b"INFO"])?;
-        Memory::parse(info_body(&wire)?)
+        let body = info_body(&wire)?;
+        Ok((Memory::parse(body)?, if persistence { Some(Persistence::parse(body)?) } else { None }))
     }
 
     fn dbsize(&mut self) -> Result<u64> {
@@ -138,18 +143,72 @@ fn info_body(wire: &[u8]) -> Result<&str> {
 
 fn rewrite_idle(info: &str) -> Result<bool> {
     let fields: HashMap<&str, &str> = info.lines().filter_map(|line| line.split_once(':')).collect();
-    let flag = |name, optional| -> Result<bool> {
-        match fields.get(name).copied() {
-            Some("0") => Ok(false),
-            Some("1") => Ok(true),
-            None if optional => Ok(false),
-            None => Err(format!("INFO persistence missing {name}").into()),
-            Some(value) => Err(format!("INFO persistence invalid {name}: {value}").into()),
-        }
-    };
-    let in_progress = flag("aof_rewrite_in_progress", false)?;
-    let scheduled = flag("aof_rewrite_scheduled", true)?;
+    let in_progress = persistence_flag(&fields, "aof_rewrite_in_progress", false)?;
+    let scheduled = persistence_flag(&fields, "aof_rewrite_scheduled", true)?;
     Ok(!in_progress && !scheduled)
+}
+
+fn persistence_flag(fields: &HashMap<&str, &str>, name: &str, optional: bool) -> Result<bool> {
+    match fields.get(name).copied() {
+        Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        None if optional => Ok(false),
+        None => Err(format!("INFO persistence missing {name}").into()),
+        Some(value) => Err(format!("INFO persistence invalid {name}: {value}").into()),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Persistence {
+    enabled: bool,
+    in_progress: bool,
+    scheduled: bool,
+    last_ok: bool,
+}
+
+impl Persistence {
+    fn parse(info: &str) -> Result<Self> {
+        let fields: HashMap<&str, &str> = info.lines().filter_map(|line| line.split_once(':')).collect();
+        let enabled = persistence_flag(&fields, "aof_enabled", false)?;
+        let last_ok = match fields.get("aof_last_bgrewrite_status").copied() {
+            Some("ok") => true,
+            Some("err") => false,
+            None if !enabled => false,
+            _ => return Err("INFO persistence missing or invalid aof_last_bgrewrite_status".into()),
+        };
+        Ok(Self { enabled, last_ok,
+            in_progress: persistence_flag(&fields, "aof_rewrite_in_progress", false)?,
+            scheduled: persistence_flag(&fields, "aof_rewrite_scheduled", true)? })
+    }
+}
+
+fn rewrite_started(wire: &[u8]) -> Result<()> {
+    if wire != b"+Background append only file rewriting started\r\n" {
+        return Err(format!("BGREWRITEAOF did not start: {}", String::from_utf8_lossy(wire)).into());
+    }
+    Ok(())
+}
+
+fn rewrite_summary(samples: &[(Instant, Persistence)], end: Instant, acknowledged: Instant)
+    -> (Duration, bool) {
+    let mut overlap = Duration::ZERO;
+    let mut seen_active = false;
+    let mut completed = false;
+    // Hold each sampled flag until the next observation, clipped to the last
+    // worker's end. This is a sampled estimate, not exact rewrite timing.
+    for (i, &(at, p)) in samples.iter().enumerate() {
+        if at > end { break; }
+        if p.in_progress {
+            seen_active = true;
+            let next = samples.get(i + 1).map_or(end, |s| s.0.min(end));
+            overlap += next.duration_since(at);
+        }
+        // A fast rewrite can finish before the first poll. Idle before either
+        // observed activity or the successful start reply proves nothing.
+        completed = (seen_active || at >= acknowledged)
+            && !p.in_progress && !p.scheduled && p.last_ok;
+    }
+    (overlap, completed)
 }
 
 fn parse_dbsize(wire: &[u8]) -> Result<u64> {
@@ -169,6 +228,8 @@ struct Memory {
 }
 
 impl Memory {
+    fn adjusted(&self) -> u64 { self.used.saturating_sub(self.excluded) }
+
     fn parse(info: &str) -> Result<Self> {
         let fields: HashMap<&str, &str> = info.lines().filter_map(|line| line.split_once(':')).collect();
         let read = |name| -> Result<u64> {
@@ -185,25 +246,46 @@ pub(super) struct Monitor {
     first: Memory,
     last: Memory,
     sampled_max: u64,
+    sampled_max_adjusted: u64,
     samples: u64,
     last_sample: Instant,
     max_gap: Duration,
     keys_at_start: u64,
+    keys_at_end: u64,
+    rewrite_control: Option<Control>,
+    rewrite_handle: Option<thread::JoinHandle<Result<Instant>>>,
+    rewrite_samples: Vec<(Instant, Persistence)>,
+    rewrite_requested: bool,
+    rewrite_overlap: Duration,
+    rewrite_completed: bool,
 }
 
 impl Monitor {
     fn new(control: Control) -> Self {
         Self { control, first: Memory::default(), last: Memory::default(),
-            sampled_max: 0, samples: 0, last_sample: Instant::now(), max_gap: Duration::ZERO,
-            keys_at_start: 0 }
+            sampled_max: 0, sampled_max_adjusted: 0, samples: 0,
+            last_sample: Instant::now(), max_gap: Duration::ZERO,
+            keys_at_start: 0, keys_at_end: 0, rewrite_control: None, rewrite_handle: None,
+            rewrite_samples: Vec::new(), rewrite_requested: false,
+            rewrite_overlap: Duration::ZERO, rewrite_completed: false }
     }
 
     pub(super) fn start(&mut self) -> Result<()> {
         self.control.ok(&[b"CONFIG", b"RESETSTAT"])?;
-        self.first = self.control.info()?;
+        let (memory, persistence) = self.control.observation(self.rewrite_control.is_some())?;
+        self.first = memory;
+        if let Some(p) = persistence {
+            if !p.enabled {
+                // Redis can rewrite even with appendonly off; this experiment must not.
+                self.rewrite_control = None;
+            } else if p.in_progress || p.scheduled {
+                return Err("rewrite already active at measurement baseline; retry the run".into());
+            }
+        }
         self.keys_at_start = self.control.dbsize()?;
         self.last = self.first;
         self.sampled_max = self.first.used;
+        self.sampled_max_adjusted = self.first.adjusted();
         self.samples = 1;
         self.last_sample = Instant::now();
         self.max_gap = Duration::ZERO;
@@ -211,12 +293,39 @@ impl Monitor {
     }
 
     pub(super) fn sample(&mut self) -> Result<()> {
-        self.last = self.control.info()?;
+        let (memory, persistence) = self.control.observation(self.rewrite_requested)?;
+        self.last = memory;
         let now = Instant::now();
+        if let Some(p) = persistence { self.rewrite_samples.push((now, p)); }
         self.max_gap = self.max_gap.max(now.duration_since(self.last_sample));
         self.last_sample = now;
         self.sampled_max = self.sampled_max.max(self.last.used);
+        self.sampled_max_adjusted = self.sampled_max_adjusted.max(self.last.adjusted());
         self.samples += 1;
+        Ok(())
+    }
+
+    // Called after the workers' barrier opens. Firn may await close-tail replay
+    // before replying, so the requester must not block the INFO sampler.
+    pub(super) fn request_rewrite(&mut self) {
+        if let Some(mut control) = self.rewrite_control.take() {
+            self.rewrite_requested = true;
+            self.rewrite_handle = Some(thread::spawn(move || {
+                rewrite_started(&control.call(&[b"BGREWRITEAOF"])?)?;
+                Ok(Instant::now())
+            }));
+        }
+    }
+
+    pub(super) fn finish(&mut self, end: Instant) -> Result<()> {
+        // Capture ending keys before a slow rewrite acknowledgement can delay
+        // reporting beyond the final memory observation.
+        self.keys_at_end = self.control.dbsize()?;
+        if let Some(handle) = self.rewrite_handle.take() {
+            let acknowledged = handle.join().map_err(|_| "rewrite requester panicked")??;
+            (self.rewrite_overlap, self.rewrite_completed) =
+                rewrite_summary(&self.rewrite_samples, end, acknowledged);
+        }
         Ok(())
     }
 
@@ -259,19 +368,19 @@ pub(super) fn run(opts: &Options) -> Result<()> {
     control.config(b"maxmemory", limit.to_string().as_bytes())?;
     warmup(opts, Some(zipf.clone()))?;
     let mut monitor = Monitor::new(control);
+    if opts.rewrite_during_measure { monitor.rewrite_control = Some(Control::new(opts.port)?); }
     let measured = measure(opts, Some(zipf), Some(&mut monitor))?;
-    let keys_at_end = monitor.control.dbsize()?;
     if measured.writers != opts.connections {
         return Err("not every connection completed a miss SET attempt; increase the run duration or dataset".into());
     }
     if monitor.first.limit != limit || monitor.last.limit != limit {
         return Err("INFO maxmemory differs from the configured limit".into());
     }
-    let sampled_excess = monitor.sampled_max.saturating_sub(limit);
+    let sampled_excess = monitor.sampled_max_adjusted.saturating_sub(limit);
     let lifetime_excess = monitor.last.peak.saturating_sub(limit);
     // The shell copies the leading seven columns to workloads.csv; the full
     // row goes to evict-zipf.csv under its own explicit header.
-    println!("{},{},{},{},{},{},{:.3},{},{},{},{},{:.9},{},{},{},{},{},{},{},{},{:.9},{},{},{:.9},{},{:.3},{},{},{},{}",
+    println!("{},{},{},{},{},{},{:.3},{},{},{},{},{:.9},{},{},{},{},{},{},{},{},{:.9},{},{},{:.9},{},{:.3},{},{},{},{},{},{},{:.3},{}",
         measured.csv(opts), opts.keys, opts.zipf_s, opts.value.len(), opts.seed,
         opts.warmup.as_secs_f64(), opts.sample_interval.as_secs_f64() * 1000.0,
         measured.count, measured.hits, measured.count - measured.hits, measured.refused_sets,
@@ -280,7 +389,9 @@ pub(super) fn run(opts: &Options) -> Result<()> {
         lifetime_excess, lifetime_excess as f64 / limit as f64,
         monitor.sampled_max, sampled_excess, sampled_excess as f64 / limit as f64,
         monitor.samples, monitor.max_gap.as_secs_f64() * 1000.0, monitor.last.excluded, measured.writers,
-        monitor.keys_at_start, keys_at_end);
+        monitor.keys_at_start, monitor.keys_at_end, monitor.sampled_max_adjusted,
+        u8::from(monitor.rewrite_requested), monitor.rewrite_overlap.as_secs_f64() * 1000.0,
+        u8::from(monitor.rewrite_completed));
     Ok(())
 }
 
@@ -343,6 +454,11 @@ mod tests {
         let info = "used_memory:200\r\nused_memory_peak:400\r\nevicted_keys:7\r\nmaxmemory:150\r\nmem_not_counted_for_evict:10\r\n";
         let memory = Memory::parse(info).unwrap();
         assert_eq!((memory.used, memory.peak, memory.evicted), (200, 400, 7));
+        assert_eq!(memory.adjusted(), 190);
+        assert_eq!(Memory::parse(&info.replace("evict:10", "evict:250")).unwrap().adjusted(), 0);
+        for value in ["-1", "garbage", "18446744073709551616"] {
+            assert!(Memory::parse(&info.replace("evict:10", &format!("evict:{value}"))).is_err());
+        }
         for line in info.lines() {
             assert!(Memory::parse(&info.replace(&format!("{line}\r\n"), "")).is_err());
         }
@@ -374,6 +490,52 @@ mod tests {
     }
 
     #[test]
+    fn rewrite_observations_require_valid_flags_and_status() {
+        let info = "# Persistence\r\naof_enabled:1\r\naof_rewrite_in_progress:1\r\naof_rewrite_scheduled:0\r\naof_last_bgrewrite_status:ok\r\n";
+        let p = Persistence::parse(info).unwrap();
+        assert!(p.enabled && p.in_progress && !p.scheduled && p.last_ok);
+        assert!(!Persistence::parse(&info.replace("status:ok", "status:err")).unwrap().last_ok);
+        assert!(Persistence::parse(&info.replace("scheduled:0", "scheduled:1")).unwrap().scheduled);
+        let disabled = Persistence::parse("aof_enabled:0\r\naof_rewrite_in_progress:0\r\n").unwrap();
+        assert!(!disabled.enabled && !disabled.in_progress && !disabled.last_ok);
+        for field in ["aof_enabled:1", "aof_rewrite_in_progress:1", "aof_last_bgrewrite_status:ok"] {
+            assert!(Persistence::parse(&info.replace(&format!("{field}\r\n"), "")).is_err());
+        }
+        for field in ["aof_enabled:1", "aof_rewrite_in_progress:1", "aof_rewrite_scheduled:0",
+                      "aof_last_bgrewrite_status:ok"] {
+            let name = field.split_once(':').unwrap().0;
+            for invalid in ["", "2", "-1", "garbage"] {
+                assert!(Persistence::parse(&info.replace(field, &format!("{name}:{invalid}"))).is_err());
+            }
+        }
+        assert!(rewrite_started(b"+Background append only file rewriting started\r\n").is_ok());
+        for wire in [b"+OK\r\n".as_slice(), b"-ERR already in progress\r\n",
+                     b"+Background append only file rewriting scheduled\r\n", b":1\r\n"] {
+            assert!(rewrite_started(wire).is_err());
+        }
+    }
+
+    #[test]
+    fn rewrite_overlap_and_completion_stop_at_measured_end() {
+        let begin = Instant::now();
+        let at = |ms| begin + Duration::from_millis(ms);
+        let active = Persistence { enabled: true, in_progress: true, scheduled: false, last_ok: true };
+        let idle = Persistence { in_progress: false, ..active };
+        // Two active intervals, 10..20 and 20..35, not baseline..10.
+        let samples = [(at(10), active), (at(20), active), (at(35), idle)];
+        assert_eq!(rewrite_summary(&samples, at(40), at(5)), (Duration::from_millis(25), true));
+        // Completion after the measured end cannot turn an unfinished run into a pass.
+        assert_eq!(rewrite_summary(&samples, at(30), at(5)), (Duration::from_millis(20), false));
+        assert_eq!(rewrite_summary(&[(at(10), idle)], at(40), at(5)), (Duration::ZERO, true));
+        assert_eq!(rewrite_summary(&[(at(10), idle)], at(40), at(15)), (Duration::ZERO, false));
+        assert_eq!(rewrite_summary(&[], at(40), at(5)), (Duration::ZERO, false));
+        for incomplete in [Persistence { last_ok: false, ..idle }, Persistence { scheduled: true, ..idle }] {
+            assert_eq!(rewrite_summary(&[(at(10), active), (at(20), incomplete)], at(40), at(5)),
+                (Duration::from_millis(10), false));
+        }
+    }
+
+    #[test]
     fn dbsize_requires_a_nonnegative_integer_reply() {
         for (wire, count) in [(b":0\r\n".as_slice(), 0), (b":42\r\n", 42),
                               (b":9223372036854775807\r\n", i64::MAX as u64)] {
@@ -395,27 +557,36 @@ mod tests {
             socket.set_read_timeout(Some(TIMEOUT)).unwrap();
             super::super::tests::expect_command(&mut socket, &[b"CONFIG", b"RESETSTAT"]);
             socket.write_all(b"+OK\r\n").unwrap();
-            for (used, evicted) in [(120, 2), (180, 5), (130, 7)] {
+            for (used, excluded, evicted) in [(120, 0, 2), (180, 80, 5), (170, 10, 7)] {
                 super::super::tests::expect_command(&mut socket, &[b"INFO"]);
-                let info = format!("used_memory:{used}\r\nused_memory_peak:400\r\nevicted_keys:{evicted}\r\nmaxmemory:150\r\nmem_not_counted_for_evict:0\r\n");
+                let info = format!("used_memory:{used}\r\nused_memory_peak:400\r\nevicted_keys:{evicted}\r\nmaxmemory:150\r\nmem_not_counted_for_evict:{excluded}\r\n");
                 write!(socket, "${}\r\n{info}\r\n", info.len()).unwrap();
                 if evicted == 2 {
                     super::super::tests::expect_command(&mut socket, &[b"DBSIZE"]);
                     socket.write_all(b":17\r\n").unwrap();
                 }
             }
+            super::super::tests::expect_command(&mut socket, &[b"DBSIZE"]);
+            socket.write_all(b":13\r\n").unwrap();
         });
         let mut monitor = Monitor::new(Control::new(port).unwrap());
         monitor.start().unwrap();
         monitor.sample().unwrap();
         monitor.sample().unwrap();
+        monitor.finish(Instant::now()).unwrap();
         server.join().unwrap();
         assert_eq!(monitor.evicted_delta().unwrap(), 5);
         assert_eq!(monitor.first.peak, 400);
         assert_eq!(monitor.last.peak.saturating_sub(monitor.last.limit), 250);
         assert_eq!(monitor.sampled_max.saturating_sub(monitor.last.limit), 30);
+        // The largest raw sample is not the largest admission sample. Nor can
+        // the last exclusion be subtracted from the raw maximum after sampling.
+        assert_eq!(monitor.sampled_max_adjusted, 160);
+        assert_eq!(monitor.sampled_max_adjusted.saturating_sub(monitor.last.limit), 10);
+        assert!(!monitor.rewrite_requested);
         assert_eq!(monitor.samples, 3);
         assert_eq!(monitor.keys_at_start, 17);
+        assert_eq!(monitor.keys_at_end, 13);
         monitor.last.evicted = 1;
         assert!(monitor.evicted_delta().is_err());
     }

@@ -388,6 +388,93 @@ throughput is 0.960–1.012 of unlimited, against twin spreads of 0.968–1.027;
 Redis's is 0.956–1.039 against 0.973–1.024. No cost is resolved at this
 noise, about 3%.
 
+## Scoped rewrite experiment
+
+**Question.** Does origin-attributed scoped metering exclude firn's private
+AOF replay without excluding live-server storage, so a rewrite no longer
+evicts the live dataset or refuses writes? This is an unmerged acceptance
+experiment on `exp/scoped-rewrite`, using Whitefoot
+`wf-exp-7f2743c3914a` (spec v0.120,
+[PR #322, scoped metering](https://github.com/Ming-Research/Whitefoot/pull/322)).
+
+**Comparison and rejection criterion.** Run `evict-zipf` with AOF and a
+deliberately triggered rewrite overlapping the measured phase: the scoped
+LTO build against [PR #35's unscoped maxmemory build](https://github.com/Ming-Research/Firn-wf/pull/35)
+and Redis 7.0.15, on the i9-14900K through CI, with matched workload,
+settings and CPU allocation and interleaved repetitions and a base twin.
+Record overlap, accepted/refused writes, live key count, hit rate, latency,
+throughput and 10-ms memory samples. Following Whitefoot's
+[scoped-metering investigation](https://github.com/Ming-Research/Whitefoot/blob/7f2743c3914a/research/investigations/scoped-metering/README.md),
+reject the exclusion if there is any refused write, rewrite-correlated key
+collapse beyond matched no-rewrite variation, or maximum sampled adjusted
+overshoot above **0.2% of maxmemory**. Adjusted usage is
+`max(used_memory - mem_not_counted_for_evict, 0)`; raw rewrite heap is not
+adjusted overshoot. No-rewrite controls separate ordinary eviction variation
+from rewrite effects. The cross-release comparison does not alone attribute
+compiler cost or satisfy the investigation's same-build exclusion control.
+
+**Dispatch inputs.** Use `redis-bench.yml` on the experiment branch with
+`runner=14900k`, `mode=workloads`, `tests=evict-zipf` (sets
+`WORKLOADS=evict-zipf`), `cpus=1 2`, `passes=3`, `seconds=10`,
+`connections=50`, and
+`workload_options=--keys 1000000 --value-size 64 --zipf-s 0.99 --warmup-seconds 5 --sample-ms 10 --rewrite-during-measure`
+(sets `WORKLOAD_OPTIONS`). Matched no-rewrite controls omit only
+`--rewrite-during-measure`; it is off by default. These are planned inputs,
+not an executed measurement or a result. The workloads mode measures the
+checkout and Redis; the unscoped build and its twin need matched separate
+dispatches, with repetitions interleaved with the scoped build.
+
+After RESETSTAT and the baseline INFO, the measured workers start and a
+separate control connection requests BGREWRITEAOF while INFO continues to
+sample memory and persistence together. Only AOF-enabled lines request it;
+other lines report `rewrite_requested=0`. `rewrite_overlap_ms` holds each
+sampled `aof_rewrite_in_progress` flag until the next sample, capped at the
+last measured worker's end, so it is an estimate at the recorded sample
+cadence. `rewrite_completed=1` requires an idle, unscheduled, successful
+status sampled by that end after observed activity or the successful start
+reply; a later completion is not counted. A rewrite missed between samples
+can report completion but supplies no overlap evidence. A requested run
+with no sampled overlap is **inconclusive, not a pass**, even if its other
+metrics satisfy the criterion. A run that begins with a rewrite already
+active or whose BGREWRITEAOF does not start fails and must be retried.
+
+The CSV retains `refused_sets`, `keys_at_start`, `keys_at_end`, raw
+`used_memory` and `sampled_max_memory`. `sampled_max_adjusted_memory` is the
+maximum of each sample's `max(used_memory - mem_not_counted_for_evict, 0)`
+for both Redis and firn; `sampled_excess_bytes` and
+`sampled_excess_fraction` now use that adjusted maximum, so the acceptance
+threshold is `sampled_excess_fraction <= 0.002`. The lifetime peak columns
+remain raw and include prefill; they do not establish adjusted overshoot.
+Finite sampling can miss peaks. Parsing and sampling-accounting unit cases
+accompany this instrument change but have not been run; compilation and
+runtime overlap remain unverified.
+
+**Storage boundary.** One scope spans the close-tail replay and the worker,
+with two let-bound `scope_run` calls. Its view is published before replay
+and retained until busy-close polling succeeds. Both private keyspaces,
+replay buffers, scan keys and emitter storage are released in the scope.
+Close-tail returns the already-owned `AofLog` and a Boolean; its only live
+mutation is the scalar byte count after truncation. The worker returns the
+already-owned directory handle, byte count and status; completion publishes
+only a Boolean after joining. No newly allocated storage is transferred to
+the live server. Manifest replacement, file opening, live pending-buffer
+allocation and installation stay outside the scope, preserving their
+default origin and avoiding double exclusion with the AOF capacities.
+Capacity or entry refusal fails the rewrite without unscoped replay, and
+every owner returns to the close loop, including cancellation/error paths.
+
+**Evidence pending.** The network case fills 32768 keys with 512-byte values,
+sets a limit from pre-rewrite adjusted usage plus 1 MiB for transients, and
+overwrites keys through both phases using a separate BGREWRITEAOF requester.
+It requires a confirmed overlapping write, successful rewrite, no refused
+write, at least 90% of the live keys and an INFO exclusion increase. An
+insufficient overlap is a fixture failure, never a pass. This edit has not
+been compiled or run; CI duration, source acceptance, lifecycle completion
+and measurement results remain unverified. A separate read-only GPT-6 review
+of the complete experiment diff, affected consumers and design nodes found
+no source-level findings; it ran no validation and did not independently
+establish overlap in each replay phase or the overshoot criterion.
+
 ## Results: cost of the access stamp
 
 Measured on the i9-14900K through the `redis-bench.yml` workflow, mode
