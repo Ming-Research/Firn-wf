@@ -466,12 +466,13 @@ connections and their p99 is several times Redis's.
 ### Against the reference Redis 7.0.15
 
 Run [38066137541](https://github.com/Ming-Research/Firn-wf/actions/runs/38066137541),
-Firn-wf main 8744d72 (whitefoot.pin `wf-78223721f77d`) on the workflow of
-PR #46, which builds Redis 7.0.15 from its release tarball; the host log
-shows `Redis server v=7.0.15` and `redis-benchmark 7.0.15`. 2026-10-10
-16:04-16:11 UTC, same placement, 2 passes of 5 seconds, both passes shown
-where they differ. Rate in thousands a second as firn / Redis (ratio), p99
-in ms as firn / Redis, append-only file off:
+Firn-wf 541349d (main 8744d72 with PR #46's workflow step, which builds
+Redis 7.0.15 from its release tarball; whitefoot.pin `wf-78223721f77d`);
+the host log shows `Redis server v=7.0.15` and `redis-benchmark 7.0.15`.
+2026-10-10 16:04-16:11 UTC, the placement of the section's introduction, 2
+passes of 5 seconds. Rate in thousands a second as firn / Redis (ratio),
+each the mean of the two passes, p99 in ms as firn / Redis with both passes
+where they differ, append-only file off:
 
 | workload | CPUs | connections | rate | p99 |
 |---|---|---|---|---|
@@ -486,9 +487,11 @@ in ms as firn / Redis, append-only file off:
 
 With the append-only file on, firn / Redis is 0.96-1.10 for the scripted
 limiter and 1.11-1.16 for transactions on one CPU, and 0.81-1.03 and
-1.85-1.95 on two. Redis 7.0.15 runs the scripted limiter about 9% slower
-than the host's 8.0.5 did above (210 against 231 thousand a second), so on
-one CPU firn's scripts now match or exceed the reference with a lower tail.
+1.85-1.95 on two. Across runs, Redis 7.0.15 ran the scripted limiter about
+9% slower than the host's 8.0.5 did above (210 against 231 thousand a
+second, 5- against 10-second passes), so on one CPU firn's scripts match or
+exceed the reference's rate, with a lower p99 at 50 connections and a
+higher one at 8.
 The two-CPU picture is unchanged: transactions scale to about twice Redis,
 scripts do not, and their p99 is several times Redis's.
 

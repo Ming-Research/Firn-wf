@@ -150,9 +150,17 @@ jobs:
             exit 0
           fi
           prefix="$HOME/.cache/firn-redis-7.0.15"
-          if ! "$prefix/bin/redis-server" --version 2>/dev/null | grep -q ' v=7\.0\.15 '; then
+          # The cache is complete only when every tool the measurement runs is
+          # there and is 7.0.15; an interrupted install never reaches prefix,
+          # because it is installed beside it and moved into place whole.
+          complete() {
+            "$1/bin/redis-server" --version 2>/dev/null | grep -q ' v=7\.0\.15 ' &&
+              "$1/bin/redis-benchmark" --version 2>/dev/null | grep -q '^redis-benchmark 7\.0\.15' &&
+              "$1/bin/redis-cli" --version 2>/dev/null | grep -q '^redis-cli 7\.0\.15'
+          }
+          if ! complete "$prefix"; then
             work="$RUNNER_TEMP/redis-7.0.15-build"
-            rm -rf "$work" "$prefix"
+            rm -rf "$work" "$prefix.new"
             mkdir -p "$work"
             curl -fsSL -o "$work/redis-7.0.15.tar.gz" https://download.redis.io/releases/redis-7.0.15.tar.gz
             echo "98066f5363504b26c34dd20fbcc3c957990d764cdf42576c836fc021073f4341  $work/redis-7.0.15.tar.gz" | sha256sum -c -
@@ -160,9 +168,13 @@ jobs:
             compiler=cc
             command -v cc >/dev/null || compiler=clang
             make -C "$work/redis-7.0.15" -j"$(nproc)" CC="$compiler"
-            make -C "$work/redis-7.0.15" PREFIX="$prefix" install
+            make -C "$work/redis-7.0.15" PREFIX="$prefix.new" install
+            complete "$prefix.new"
+            rm -rf "$prefix"
+            mv "$prefix.new" "$prefix"
           fi
-          "$prefix/bin/redis-server" --version | grep ' v=7\.0\.15 '
+          complete "$prefix"
+          "$prefix/bin/redis-server" --version
           echo "$prefix/bin" >> "$GITHUB_PATH"
 
       - name: Check the host's tools
