@@ -92,7 +92,7 @@ fn map_edit(root: &Frozen<Node>, key: u64, value: Option<u8>) -> result: Frozen<
   return map_edit_at(root: root, key: key, value: value, mask: first_bit);
 }
 
-fn map_lookup_at(root: &Frozen<Node>, key: u64, mask: u64) -> result: Option<u8> pure {
+fn map_lookup_at(root: &Frozen<Node>, key: u64, mask: u64) -> result: Option<u8> reads(root.inner.Leaf.key), reads(root.inner.Leaf.byte) {
   match &root^.inner {
     Empty() => {
       return None<u8>();
@@ -114,6 +114,6 @@ fn map_lookup_at(root: &Frozen<Node>, key: u64, mask: u64) -> result: Option<u8>
   }
 }
 
-fn map_lookup(root: &Frozen<Node>, key: u64) -> result: Option<u8> pure {
+fn map_lookup(root: &Frozen<Node>, key: u64) -> result: Option<u8> reads(root.inner.Leaf.key), reads(root.inner.Leaf.byte) {
   return map_lookup_at(root: root, key: key, mask: first_bit);
 }
