@@ -290,8 +290,8 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
   return unit;
 }
 
-fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock, transaction: &Transaction) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock), writes(transaction) waits {
-  doc "Redis 7.0.15 processCommand admission resolves command and arity, authentication and NO_MULTI before performEvictions, except that inside a transaction a name command_kind does not identify is admitted and queued for EXEC to refuse, as a Redis command firn does not run must be, since Redis would queue it and a client stopping at an immediate error would stay inside the transaction; EXEC uses queued DENYOOM flags, while all other MULTI queueing is denied under OOM except DISCARD, QUIT and RESET. Answers one command a connection sent, keeping its transaction as Redis 7.0.15's MULTI, EXEC and DISCARD do: MULTI opens one and answers OK, or is refused inside one; inside one, EXEC runs it as run_exec does, DISCARD drops it and answers OK, WATCH is refused, QUIT is answered as outside, and every other command is queued or refused as queue_or_refuse decides; outside one, EXEC and DISCARD are refused and every other command is answered as execute answers it. MULTI, EXEC and DISCARD take no argument. As Redis rejects a command before running it, an EXEC with arguments, or from a connection that must authenticate first, discards any transaction and answers EXECABORT with the reason, inside a transaction or not; MULTI and DISCARD so are answered Redis's arity error or NOAUTH, marking an open transaction, and so is WATCH inside one before it is refused.";
+fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock, transaction: &Transaction) -> result: Bool reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock), writes(transaction) waits {
+  doc "Returns true only for a successful SHUTDOWN, after recording the request and firing its receive wake generation, so the caller fires the separate shutdown source before doing anything else. Returns false for other commands and refusals. Redis 7.0.15 processCommand admission resolves command and arity, authentication and NO_MULTI before performEvictions, except that inside a transaction a name command_kind does not identify is admitted and queued for EXEC to refuse, as a Redis command firn does not run must be, since Redis would queue it and a client stopping at an immediate error would stay inside the transaction; EXEC uses queued DENYOOM flags, while all other MULTI queueing is denied under OOM except DISCARD, QUIT and RESET. Answers one command a connection sent, keeping its transaction as Redis 7.0.15's MULTI, EXEC and DISCARD do: MULTI opens one and answers OK, or is refused inside one; inside one, EXEC runs it as run_exec does, DISCARD drops it and answers OK, WATCH is refused, QUIT is answered as outside, and every other command is queued or refused as queue_or_refuse decides; outside one, EXEC and DISCARD are refused and every other command is answered as execute answers it. MULTI, EXEC and DISCARD take no argument. As Redis rejects a command before running it, an EXEC with arguments, or from a connection that must authenticate first, discards any transaction and answers EXECABORT with the reason, inside a transaction or not; MULTI and DISCARD so are answered Redis's arity error or NOAUTH, marking an open transaction, and so is WATCH inside one before it is refused.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let code = name_code(input: input, start: name.start, length: name.length);
@@ -305,25 +305,25 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       if exec {
         reply_error(client: client, word: &text_exec_arity_abort[0_u64..88_u64]);
         transaction_reset(transaction: transaction);
-        return unit;
+        return False();
       }
       reply_arity(client: client, input: input, name: name);
       if transaction^.open {
         set transaction^.dirty = True();
       }
-      return unit;
+      return False();
     }
     if client^.locked {
       if exec {
         reply_error(client: client, word: &text_exec_noauth_abort[0_u64..75_u64]);
         transaction_reset(transaction: transaction);
-        return unit;
+        return False();
       }
       let stopped = denied(client: client);
       if transaction^.open {
         set transaction^.dirty = True();
       }
-      return unit;
+      return False();
     }
   }
   let kind = command_kind(input: input, name: name);
@@ -332,7 +332,7 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   let outside = bnot(transaction^.open);
   if band(watching, outside) {
     pkg::protocol::reply_unknown(client: client, input: input, args: args);
-    return unit;
+    return False();
   }
   if bnot(control) {
     let arity = admission_arity(kind: kind, input: input, args: args);
@@ -358,7 +358,7 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       if transaction^.open {
         set transaction^.dirty = True();
       }
-      return unit;
+      return False();
     }
     let noauth = admission_noauth(kind: kind);
     let requires_auth = bnot(noauth);
@@ -367,13 +367,13 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       if transaction^.open {
         set transaction^.dirty = True();
       }
-      return unit;
+      return False();
     }
     if transaction^.open {
       if code == code_shutdown {
         reply_error(client: client, word: &text_no_multi[0_u64..44_u64]);
         set transaction^.dirty = True();
-        return unit;
+        return False();
       }
     }
   }
@@ -403,7 +403,7 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
         set transaction^.dirty = True();
       }
     }
-    return unit;
+    return False();
   }
   if resetting {
     transaction_reset(transaction: transaction);
@@ -416,58 +416,61 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       set client^.locked = password_length != 0_u64;
     }
     reply_word(client: client, word: &reset_reply[0_u64..8_u64]);
-    return unit;
+    return False();
   }
   if multi {
     if transaction^.open {
       reply_error(client: client, word: &text_nested[0_u64..33_u64]);
-      return unit;
+      return False();
     }
     set transaction^.open = True();
     reply_ok(client: client);
-    return unit;
+    return False();
   }
   if transaction^.open {
     if exec {
       run_exec(store: store, client: client, env: env, time: time, transaction: transaction);
-      return unit;
+      return False();
     }
     if discard {
       transaction_reset(transaction: transaction);
       reply_ok(client: client);
-      return unit;
+      return False();
     }
     if code == code_watch {
       if count < 2_u64 {
         reply_arity(client: client, input: input, name: name);
         set transaction^.dirty = True();
-        return unit;
+        return False();
       }
       if client^.locked {
         let stopped = denied(client: client);
         set transaction^.dirty = True();
-        return unit;
+        return False();
       }
       reply_error(client: client, word: &text_watch_inside[0_u64..37_u64]);
-      return unit;
+      return False();
     }
     if code == code_quit {
       execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
-      return unit;
+      return False();
     }
     queue_or_refuse(transaction: transaction, input: input, args: args, client: client);
-    return unit;
+    return False();
   }
   if exec {
     reply_error(client: client, word: &text_exec_without[0_u64..22_u64]);
-    return unit;
+    return False();
   }
   if discard {
     reply_error(client: client, word: &text_discard_without[0_u64..25_u64]);
-    return unit;
+    return False();
+  }
+  if code == code_shutdown {
+    return run_shutdown(store: store, input: input, args: args, client: client);
   }
   execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
-  return unit;
+  return False();
 }
 
 const text_no_multi: Array<u8, 44> = "ERR Command not allowed inside a transaction";

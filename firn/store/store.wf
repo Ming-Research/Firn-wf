@@ -1,4 +1,5 @@
 alias Bytes = pkg::bytes::Bytes;
+alias CancelSource = std::time::CancelSource;
 alias Key = pkg::bytes::Key;
 alias KeyEnv = pkg::bytes::KeyEnv;
 alias Span = pkg::protocol::Span;
@@ -47,7 +48,7 @@ fn due_order(env: &KeyEnv, left: &Due, right: &Due) -> order: i32 reads(left), r
 const encoding_defaults: Array<i64, 9> =[512_i64, 64_i64, 0_i64, -2_i64, 512_i64, 4096_i64, 100_i64, 128_i64, 64_i64];
 
 fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure {
-  doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, and holds Redis 7.0.15's defaults for the encoding parameters: hash-max-listpack-entries 512, hash-max-listpack-value 64, list-compress-depth 0, list-max-listpack-size -2, set-max-intset-entries 512, stream-node-max-bytes 4096, stream-node-max-entries 100, zset-max-listpack-entries 128 and zset-max-listpack-value 64, in that order, the order of their names; and records started, the calendar time in milliseconds at which the server started.";
+  doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, and holds Redis 7.0.15's defaults for the encoding parameters: hash-max-listpack-entries 512, hash-max-listpack-value 64, list-compress-depth 0, list-max-listpack-size -2, set-max-intset-entries 512, stream-node-max-bytes 4096, stream-node-max-entries 100, zset-max-listpack-entries 128 and zset-max-listpack-value 64, in that order, the order of their names; and records started, the calendar time in milliseconds at which the server started.";
   let keys = shared_map_new::<Entry>(capacity: keyspace_capacity);
   let due_queue = priority_queue_new::<Due, ceiling>();
   let changed = False();
@@ -63,7 +64,8 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
     set encodings[slot] = encoding_defaults[slot];
   }
   let memory = MemoryConfig(maxmemory: 0_u64, maxmemory_policy: 7_u64, maxmemory_samples: 5_u64, lfu_log_factor: 10_u64, lfu_decay_time: 1_u64, maxmemory_eviction_tenacity: 10_u64);
-  let server = ServerState(password: move password, timeout: timeout, shutdown: running, encodings: encodings, connections: 0_u64, started: started, memory: memory);
+  let wake = std::time::cancel_source();
+  let server = ServerState(password: move password, timeout: timeout, wake: move wake, shutdown: running, encodings: encodings, connections: 0_u64, started: started, memory: memory);
   let beside = shared_new::<ServerState>(value: move server);
   let pool = pkg::script_pool::new_pool();
   let scripts = shared_new::<pkg::script_pool::EnginePool>(value: move pool);
@@ -402,8 +404,18 @@ fn shutdown_requested(store: &Keyspace) -> requested: Bool reads(store) waits {
 }
 
 fn request_shutdown(store: &Keyspace) -> result: unit reads(store) waits {
+  let wake = None<CancelSource>();
   atomic v = &store^.server, m = &store^.meta when m^.aof_installing == 0_u64 {
     set v^.shutdown = True();
+    let source = std::time::cancel_share(source: &v^.wake);
+    set wake = Some<CancelSource>(value: move source);
+  }
+  match move wake {
+    Some(value: source) => {
+      std::time::cancel_fire(source: &source);
+    }
+    None() => {
+    }
   }
   return unit;
 }

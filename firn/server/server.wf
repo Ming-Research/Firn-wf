@@ -1,4 +1,6 @@
 alias AcceptedConnection = std::net::AcceptedConnection;
+alias CancelSource = std::time::CancelSource;
+alias CancelWatch = std::time::CancelWatch;
 alias Client = pkg::protocol::Client;
 alias Clock = std::time::Clock;
 alias ExitStatus = std::process::ExitStatus;
@@ -66,7 +68,7 @@ fn send_all(send: &TcpSend, source: &[u8], length: u64, store: &Keyspace, clock:
   define source_length = source^.len;
   requires length <= source_length;
 } {
-  doc "Sends one prefix of the source range until every byte is accepted or the connection fails, each wait bounded a second past base, the instant the caller last read the clock, or past the clock read when a wait ended; a wait that ends at its deadline while a shutdown is requested abandons the remaining bytes.";
+  doc "Sends one prefix of the source range until every byte is accepted or the connection fails, each wait bounded a second past base, the instant the caller last read the clock, or past the clock read when a wait ended; a wait that ends at its deadline while a shutdown is requested abandons the remaining bytes. Its never-firing watch preserves this bounded drain when the shutdown watch fires, rather than truncating a reply that can still be sent.";
   let sent = 0_u64;
   let from = base;
   let never = std::time::cancel_never();
@@ -83,20 +85,18 @@ fn send_all(send: &TcpSend, source: &[u8], length: u64, store: &Keyspace, clock:
         set sent = next;
       }
       Err(error: problem) => {
-        if deadline_error(error: &problem) {
+        let deadline_only = False();
+        if wait_ended(error: &problem, cancellation: deadline_only) {
           if shutdown_requested(store: store) {
-            std::time::close_cancel_watch(watch: move never);
             return Err<unit, IoError>(error: problem);
           }
           set from = std::time::now(clock: clock);
         } else {
-          std::time::close_cancel_watch(watch: move never);
           return Err<unit, IoError>(error: problem);
         }
       }
     }
   }
-  std::time::close_cancel_watch(watch: move never);
   return Ok<unit, IoError>(value: unit);
 }
 
@@ -124,8 +124,8 @@ struct Reading {
   unix_us: u64;
 }
 
-fn deadline_error(error: &IoError) -> passed: Bool reads(error) {
-  doc "Whether a host error is DeadlinePassed, a wait that ended at its deadline with nothing transferred.";
+fn wait_ended(error: &IoError, cancellation: Bool) -> ended: Bool reads(error) {
+  doc "Whether a host wait ended without transferring anything at its deadline, or on cancellation when cancellation is true; sends retry deadlines alone, while receives re-read their limits on either outcome.";
   match error^ {
     NotFound(code: native_code, origin: native_origin) => {
       return False();
@@ -167,7 +167,7 @@ fn deadline_error(error: &IoError) -> passed: Bool reads(error) {
       return True();
     }
     Cancelled() => {
-      return False();
+      return cancellation;
     }
     BrokenPipe(code: native_code, origin: native_origin) => {
       return False();
@@ -220,15 +220,15 @@ fn deadline_error(error: &IoError) -> passed: Bool reads(error) {
   }
 }
 
-fn passed_deadline(stop: &ReadStop) -> passed: Bool reads(stop) {
-  doc "Whether a receive stopped at its deadline with no byte received, which leaves the connection as it was, rather than because the peer finished sending or the connection failed.";
+fn receive_woken(stop: &ReadStop) -> woken: Bool reads(stop) {
+  doc "Whether a receive stopped at its deadline or on cancellation with no byte received, leaving the connection usable after its shutdown request, idle limit and wake generation are read again.";
   match stop^ {
     ReadEnd() => {
       return False();
     }
     ReadFailed(error: failure) => {
-      let passed = deadline_error(error: failure);
-      return passed;
+      let cancellation = True();
+      return wait_ended(error: failure, cancellation: cancellation);
     }
   }
 }
@@ -236,17 +236,29 @@ fn passed_deadline(stop: &ReadStop) -> passed: Bool reads(stop) {
 struct ClientLimits {
   idle: u64;
   shutdown: Bool;
+  cancel: CancelWatch;
 }
 
 fn idle_limit(store: &Keyspace) -> limits: ClientLimits reads(store) waits {
-  doc "How many seconds a silent client is kept, zero for no limit, and whether shutdown was requested, read together from the server's state.";
-  let seconds = 0_u64;
-  let shutdown = False();
+  doc "The idle limit, shutdown request and a watch of the current receive wake generation, read together before the client's first receive.";
   atomic v = &store^.server {
-    set seconds = v^.timeout;
-    set shutdown = v^.shutdown;
+    let cancel = std::time::cancel_watch(source: &v^.wake);
+    return ClientLimits(idle: v^.timeout, shutdown: v^.shutdown, cancel: move cancel);
   }
-  return ClientLimits(idle: seconds, shutdown: shutdown);
+}
+
+fn refresh_idle_limit(store: &Keyspace, limits: &ClientLimits) -> result: unit reads(store), writes(limits) waits {
+  doc "Reads the current limit and shutdown request together with the cached watch's state. While running, a fired watch belongs to a replaced generation, so replace only that watch, dropping the old one. A replaced source not yet fired still wakes the cached watch when its CONFIG caller fires it outside the server statement.";
+  let state = std::time::cancel_state(watch: &limits^.cancel);
+  atomic v = &store^.server, previous = &state {
+    set limits^.idle = v^.timeout;
+    set limits^.shutdown = v^.shutdown;
+    if v^.shutdown {
+    } else if previous^.fired {
+      set limits^.cancel = std::time::cancel_watch(source: &v^.wake);
+    }
+  }
+  return unit;
 }
 
 fn password_required(store: &Keyspace) -> required: Bool reads(store) waits {
@@ -274,8 +286,8 @@ fn read_time(wall: &WallClock) -> result: Reading reads(wall) {
   return Reading(time: time, unix_us: unix_us);
 }
 
-fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter) -> result: unit pure waits {
-  doc "Serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: each read waits no longer than a second, or than a nonzero idle limit leaves, and the client reads the limit again when that wait ends and at most once a second while it sends, so that a limit CONFIG SET changes reaches it within a second; the same reads observe shutdown and close after held replies are sent. Sends retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
+fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter, shutdown: CancelSource) -> result: unit pure waits {
+  doc "Serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: a receive has no deadline at zero and otherwise waits for the remaining idle interval. It keeps a watch of a receive wake generation across requests. A changed limit installs a fresh generation and fires the old one; shutdown fires the current generation. After cancellation or a deadline the client reads shutdown and the limit again, replacing a fired watch only while still running, and waits again unless stopping or expired. Active clients also re-read the state at most once a second while processing requests; these reads observe shutdown and close after held replies are sent. When command dispatch reports an accepted shutdown request, the receive generation has already been fired and the client context fires its separate shutdown source before another wait, without reading server state again. Sends keep their never-firing watch and retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
   let env = KeyEnv();
   let client = client_new(capacity: 16384_u64);
   set client.meter = Some<std::process::MemoryMeter>(value: move meter);
@@ -301,7 +313,6 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let last = nanoseconds_from(earlier: origin, later: started);
   let polled = last;
   let held = 0_u64;
-  let never = std::time::cancel_never();
   loop @requests {
     if client.closing {
       break @requests;
@@ -321,25 +332,24 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       if fresh {
         set last = current;
       }
-      let wait = 1000000000_u64;
+      let limit = None<Instant>();
       if idle != 0_u64 {
         let quiet = current -sat last;
         let idle_ns = idle *wrap 1000000000_u64;
         let left = idle_ns -sat quiet;
-        set wait = imin(left, 1000000000_u64);
+        let bound = instant_after(instant: before, nanoseconds: left);
+        set limit = Some<Instant>(value: bound);
       }
-      let bound = instant_after(instant: before, nanoseconds: wait);
-      let limit = Some<Instant>(value: bound);
       set fresh = False();
       let length = input.inner.len;
       let window = &input.inner[0_u64..length];
       let waited = False();
-      match receive_next(receive: &connection.receive, destination: window, start: held, end: length, deadline: limit, cancel: &never) {
+      match receive_next(receive: &connection.receive, destination: window, start: held, end: length, deadline: limit, cancel: &limits.cancel) {
         Ok(value: next) => {
           set received = next;
         }
         Err(error: stop) => {
-          set waited = passed_deadline(stop: &stop);
+          set waited = receive_woken(stop: &stop);
           if waited {
           } else {
             set ended = True();
@@ -350,7 +360,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       } else {
         break @receiving;
       }
-      set limits = idle_limit(store: &store);
+      refresh_idle_limit(store: &store, limits: &limits);
       set idle = limits.idle;
       set client.closing = limits.shutdown;
       let after = std::time::now(clock: &clock);
@@ -381,7 +391,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     set last = arrived;
     let since = arrived -sat polled;
     if since >= 1000000000_u64 {
-      set limits = idle_limit(store: &store);
+      refresh_idle_limit(store: &store, limits: &limits);
       set idle = limits.idle;
       set client.closing = limits.shutdown;
       set polled = arrived;
@@ -406,7 +416,10 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
         break @commands;
       }
       if parsed.state == 1_u64 {
-        execute_client(store: &store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: &clock, transaction: &transaction);
+        let requested = execute_client(store: &store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: &clock, transaction: &transaction);
+        if requested {
+          std::time::cancel_fire(source: &shutdown);
+        }
         pkg::commands::record_memory_peak(store: &store, client: &client);
         if client.closing {
           set closing = True();
@@ -440,7 +453,8 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     }
     set held = keep_rest(input: &input, from: consumed, held: held);
   }
-  std::time::close_cancel_watch(watch: move never);
+  std::time::close_cancel_watch(watch: move limits.cancel);
+  std::time::close_cancel_source(source: move shutdown);
   let TcpConnection(receive: closing_receive, send: closing_send) = move connection;
   close_receive(factory: &factory, receive: move closing_receive);
   close_send(factory: &factory, send: move closing_send);
@@ -450,27 +464,25 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   return unit;
 }
 
-fn expire_keys(store: Keyspace, clock: Clock, wall: WallClock) -> result: unit pure waits {
-  doc "Wakes ten times a second and removes the keys whose expiry has passed on the calendar clock, in batches of atomic statements so that clients proceed between them, until the server stops. A key whose expiry did not fit the queue is removed only when a command finds it expired.";
+fn expire_keys(store: Keyspace, clock: Clock, wall: WallClock, cancel: CancelWatch) -> result: unit pure waits {
+  doc "Wakes ten times a second and removes the keys whose expiry has passed on the calendar clock, in batches of atomic statements so that clients proceed between them, until shutdown cancels its sleep or a batch observes the request. A key whose expiry did not fit the queue is removed only when a command finds it expired.";
   let env = KeyEnv();
   let batch = box_slots_new::<Due>(capacity: 256_u64);
-  let never = std::time::cancel_never();
   loop @ticks {
     let started = std::time::now(clock: &clock);
     let wake = instant_after(instant: started, nanoseconds: 100000000_u64);
-    match sleep_until(deadline: wake, cancel: &never) {
+    match sleep_until(deadline: wake, cancel: &cancel) {
       Ok(..) => {
       }
       Err(..) => {
+        break @ticks;
       }
     }
     let reading = read_time(wall: &wall);
     let current = reading.time.unix_ms;
     let stop = False();
     loop @batches {
-      atomic m = &store.meta {
-        set stop = m^.stopping;
-      }
+      set stop = shutdown_requested(store: &store);
       if stop {
         break @batches;
       }
@@ -484,40 +496,28 @@ fn expire_keys(store: Keyspace, clock: Clock, wall: WallClock) -> result: unit p
       break @ticks;
     }
   }
-  std::time::close_cancel_watch(watch: move never);
   return unit;
 }
 
-fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspace, clock: Clock) -> result: unit pure waits {
-  doc "Waits in a context of its own for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either. The listener is closed before the request is recorded, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops. Each wait lasts at most a tenth of a second, as the expiry context's cycle does, so that firn's exit after it stops for another reason waits no longer than that, after which the context reads the shutdown request, in the server's state alone so that a script holding the keyspace's metadata cannot keep it from its next wait, and ends without a request once it is set: by SHUTDOWN, or by main once it stops for another reason, such as the limit on clients. A wait that fails otherwise closes the listener, leaving the host default.";
+fn stop_on_signal(listener: StopListener, factory: HandleFactory, store: Keyspace, shutdown: CancelSource) -> result: unit pure waits {
+  doc "Waits in a context of its own for a stop signal, SIGTERM or SIGINT, and on either requests the orderly stop SHUTDOWN requests, as Redis 7.0.15 shuts down gracefully on either. The listener is closed before the request is recorded, the receive generation fired and the separate shutdown source fired, restoring the host default, so a later signal ends firn at once, as a second SIGINT ends Redis while it stops. The wait has no deadline: shutdown by another context cancels it, including main stopping after the client limit. Cancellation or another wait failure closes the listener without making a new request.";
   let heard = False();
-  let never = std::time::cancel_never();
-  loop @waiting {
-    if shutdown_requested(store: &store) {
-      break @waiting;
+  let cancel = std::time::cancel_watch(source: &shutdown);
+  let limit = None<Instant>();
+  match stop_next(factory: &factory, listener: &listener, deadline: limit, cancel: &cancel) {
+    Ok(value: kind) => {
+      set heard = True();
     }
-    let before = std::time::now(clock: &clock);
-    let bound = instant_after(instant: before, nanoseconds: 100000000_u64);
-    let limit = Some<Instant>(value: bound);
-    match stop_next(factory: &factory, listener: &listener, deadline: limit, cancel: &never) {
-      Ok(value: kind) => {
-        set heard = True();
-        break @waiting;
-      }
-      Err(error: problem) => {
-        let waited = deadline_error(error: &problem);
-        if waited {
-        } else {
-          break @waiting;
-        }
-      }
+    Err(error: problem) => {
     }
   }
   close_stop_listener(factory: &factory, listener: move listener);
-  std::time::close_cancel_watch(watch: move never);
+  std::time::close_cancel_watch(watch: move cancel);
   if heard {
     request_shutdown(store: &store);
+    std::time::cancel_fire(source: &shutdown);
   }
+  std::time::close_cancel_source(source: move shutdown);
   return unit;
 }
 
@@ -1025,6 +1025,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   }
   let logging = False();
   let failed = False();
+  let shutdown = std::time::cancel_source();
   if options.logging {
     let read = read_time(wall: &wall_clock);
     let replaying = True();
@@ -1051,15 +1052,16 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   let expiring_store = keyspace_share(store: &keyspace);
   let expiring_clock = clock_share(clock: &clock);
   let expiring_wall = wall_clock_share(clock: &wall_clock);
-  spawn expire_keys(store: move expiring_store, clock: move expiring_clock, wall: move expiring_wall);
+  let expiring_cancel = std::time::cancel_watch(source: &shutdown);
+  spawn expire_keys(store: move expiring_store, clock: move expiring_clock, wall: move expiring_wall, cancel: move expiring_cancel);
   let address = socket_address_v4(a: listen_at.a, b: listen_at.b, c: listen_at.c, d: listen_at.d, port: port);
   let listened = True();
   match stop_listen(factory: &handles, stops: &stops) {
     Ok(value: stop_listener) => {
       let stop_factory = factory_share(factory: &handles);
       let stop_store = keyspace_share(store: &keyspace);
-      let stop_clock = clock_share(clock: &clock);
-      spawn stop_on_signal(listener: move stop_listener, factory: move stop_factory, store: move stop_store, clock: move stop_clock);
+      let stop_shutdown = std::time::cancel_share(source: &shutdown);
+      spawn stop_on_signal(listener: move stop_listener, factory: move stop_factory, store: move stop_store, shutdown: move stop_shutdown);
     }
     Err(error: stop_problem) => {
       set listened = False();
@@ -1069,7 +1071,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
     match tcp_listen(factory: &handles, address: &address) {
       Ok(value: listener) => {
         let accepted = 0_u64;
-        let never = std::time::cancel_never();
+        let cancel = std::time::cancel_watch(source: &shutdown);
         loop @accepting {
           if count != 0_u64 {
             if accepted >= count {
@@ -1079,10 +1081,8 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
           if shutdown_requested(store: &keyspace) {
             break @accepting;
           }
-          let before = std::time::now(clock: &clock);
-          let bound = instant_after(instant: before, nanoseconds: 1000000000_u64);
-          let limit = Some<Instant>(value: bound);
-          match tcp_accept(factory: &handles, listener: &listener, deadline: limit, cancel: &never) {
+          let limit = None<Instant>();
+          match tcp_accept(factory: &handles, listener: &listener, deadline: limit, cancel: &cancel) {
             Ok(value: next) => {
               let AcceptedConnection(connection: connection, peer: unused_peer) = move next;
               if shutdown_requested(store: &keyspace) {
@@ -1108,17 +1108,15 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
                 set required = length > 0_u64;
               }
               set accepted = accepted +wrap 1_u64;
-              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter);
+              let serving_shutdown = std::time::cancel_share(source: &shutdown);
+              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown);
             }
             Err(error: problem) => {
-              let timed_out = deadline_error(error: &problem);
-              if bnot(timed_out) {
-                break @accepting;
-              }
+              break @accepting;
             }
           }
         }
-        std::time::close_cancel_watch(watch: move never);
+        std::time::close_cancel_watch(watch: move cancel);
         close_listener(factory: &handles, listener: move listener);
       }
       Err(error: problem) => {
@@ -1128,10 +1126,22 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   }
   atomic m = &keyspace.meta when m^.clients == 0_u64 {
   }
+  let wake = None<CancelSource>();
   atomic m = &keyspace.meta, v = &keyspace.server when m^.aof_installing == 0_u64 {
     set m^.stopping = True();
     set v^.shutdown = True();
+    let source = std::time::cancel_share(source: &v^.wake);
+    set wake = Some<CancelSource>(value: move source);
   }
+  match move wake {
+    Some(value: source) => {
+      std::time::cancel_fire(source: &source);
+    }
+    None() => {
+    }
+  }
+  std::time::cancel_fire(source: &shutdown);
+  std::time::close_cancel_source(source: move shutdown);
   if listened {
     return exit_status(code: 0_u8);
   }
