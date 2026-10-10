@@ -9,11 +9,15 @@
 #
 #   sh redis-bench.sh             the correctness pass and Experiments 7 and 8
 #   sh redis-bench.sh verify      only the correctness pass
+#   sh redis-bench.sh placement-selftest
+#                                 check placement against fake Linux topology,
+#                                 without building or starting any server
 #   sh redis-bench.sh suite       the correctness pass and the firn criteria:
 #                                 redis-benchmark's default suite on every line
 #   sh redis-bench.sh scale       the suite's lines on each server CPU count in
 #                                 SCALE (default 2 4 8 16), the client on the
-#                                 host's other CPUs, for SCALE_TESTS at each
+#                                 remaining physical performance cores, for
+#                                 SCALE_TESTS at each
 #                                 depth in SCALE_PIPELINES (default 16)
 #   sh redis-bench.sh quick       firn (or firn-base with QUICK_LINE=firn-base)
 #                                 on QUICK_CPUS server CPUs (default 4) against
@@ -23,7 +27,8 @@
 #                                 printing a table and marking each test below
 #                                 QUICK_TARGET times the best other server;
 #                                 QUICK_CLIENTS client processes (default one
-#                                 per client CPU up to 16), each count with
+#                                 per available client core up to 16), each
+#                                 count with
 #                                 its own kept reference
 #   sh redis-bench.sh compare     prebuilt firn images against each other:
 #                                 IMAGES lists name=path pairs, one image may
@@ -90,11 +95,272 @@
 # another firn executable, such as one built from an earlier revision, which
 # the suite measures as the firn-base lines beside firn.
 #
-# The servers run pinned to SERVER_CPUS and the client to CLIENT_CPUS, so the
-# two never share a core; nothing else should run on the host meanwhile. The
-# suite runs each line both on two server CPUs (0 and 1, the client on 2 and 3)
-# and on one (0, the client on 1 to 3).
+# Placement reads Linux topology under SYSFS_ROOT (default /sys), preferring
+# performance cores from Intel hybrid CPU lists or the highest cpu_capacity.
+# Without hybrid information it uses all cores. In CPU-number order it takes
+# one thread per physical core, leaving core_id 0 for the OS and runner.
+# Servers take the first n cores and clients the next cores, capped to those
+# remaining; neither side shares a physical core with the other. On the
+# native 14900K this gives server 2,4 and client 6,8,10,12,14 for n=2 with
+# up to 16 client threads requested. SERVER_CPU_LIST and CLIENT_CPU_LIST
+# override the respective lists (CPU numbers or ranges, comma-separated);
+# the server list must contain exactly n CPUs and both lists must still use
+# distinct physical cores. Each selected placement is recorded once per mode,
+# also in host.txt when present. Nothing else should run on the host meanwhile.
 set -e
+
+# Python already serves the workload checks and measurement session helpers;
+# use it here to parse sysfs CPU ranges and sibling sets without shell eval.
+# Exit 2 means this CPU count leaves too few physical cores; callers that
+# sweep counts skip it. Invalid topology or overrides fail with exit 1.
+placement() {
+    python3 - "${SYSFS_ROOT:-/sys}" "$1" "$2" <<'PY'
+import os
+from pathlib import Path
+import re
+import sys
+
+def cpu_list(text):
+    result = []
+    for part in text.strip().split(","):
+        if not re.fullmatch(r"[0-9]+(?:-[0-9]+)?", part):
+            raise ValueError(f"invalid CPU list: {text!r}")
+        bounds = [int(x) for x in part.split("-")]
+        first, last = bounds[0], bounds[-1]
+        if last < first:
+            raise ValueError(f"invalid CPU range: {part}")
+        result.extend(range(first, last + 1))
+    if len(set(result)) != len(result):
+        raise ValueError(f"duplicate CPU in list: {text!r}")
+    return result
+
+def choose():
+    root = Path(sys.argv[1])
+    n, requested = map(int, sys.argv[2:])
+    if n < 1 or requested < 1:
+        raise ValueError("server and client CPU counts must be positive")
+    overrides = {key: cpu_list(os.environ[key]) for key in
+                 ("SERVER_CPU_LIST", "CLIENT_CPU_LIST") if key in os.environ}
+    if "SERVER_CPU_LIST" in overrides and len(overrides["SERVER_CPU_LIST"]) != n:
+        raise ValueError(f"SERVER_CPU_LIST must contain exactly {n} CPUs")
+
+    base = root / "devices/system/cpu"
+    online_path = base / "online"
+    online = set(cpu_list(online_path.read_text())) if online_path.exists() else None
+    cores, core_ids, capacities = {}, {}, {}
+    for path in base.glob("cpu[0-9]*"):
+        if not re.fullmatch(r"cpu[0-9]+", path.name):
+            continue
+        cpu = int(path.name[3:])
+        if online is not None and cpu not in online:
+            continue
+        if (path / "online").exists() and (path / "online").read_text().strip() == "0":
+            continue
+        topology = path / "topology"
+        core_ids[cpu] = int((topology / "core_id").read_text())
+        siblings = topology / "thread_siblings_list"
+        if not siblings.exists():
+            siblings = topology / "core_cpus_list"
+        if siblings.exists():
+            cores[cpu] = ("siblings", tuple(sorted(cpu_list(siblings.read_text()))))
+        else:
+            # core_id is scoped to a package on multi-socket hosts.
+            cores[cpu] = ("core", int((topology / "physical_package_id").read_text()), core_ids[cpu])
+        capacity = path / "cpu_capacity"
+        if capacity.exists():
+            capacities[cpu] = int(capacity.read_text())
+    if not cores:
+        raise ValueError(f"no online CPU topology under {base}")
+
+    source = "fallback"
+    candidates = set(cores)
+    performance = root / "devices/cpu_core/cpus"
+    efficiency = root / "devices/cpu_atom/cpus"
+    if performance.exists():
+        candidates &= set(cpu_list(performance.read_text()))
+        source = "hybrid"
+    elif efficiency.exists():
+        candidates -= set(cpu_list(efficiency.read_text()))
+        source = "hybrid"
+    elif len(capacities) == len(cores) and len(set(capacities.values())) > 1:
+        candidates = {cpu for cpu in cores if capacities[cpu] == max(capacities.values())}
+        source = "hybrid"
+    # Representatives are ordered by logical CPU number, one per physical
+    # core. Do not fill a large request with second threads or efficiency cores.
+    representatives, seen = [], set()
+    for cpu in sorted(candidates):
+        if core_ids[cpu] != 0 and cores[cpu] not in seen:
+            representatives.append(cpu)
+            seen.add(cores[cpu])
+
+    def validate(cpus, name):
+        if any(cpu not in cores for cpu in cpus):
+            raise ValueError(f"{name} names a CPU without online topology")
+        if len({cores[cpu] for cpu in cpus}) != len(cpus):
+            raise ValueError(f"{name} must use distinct physical cores")
+
+    servers = overrides.get("SERVER_CPU_LIST", representatives[:n])
+    validate(servers, "SERVER_CPU_LIST")
+    if len(servers) < n:
+        print(f"skip,{n} server CPUs,only {len(representatives)} eligible physical cores", file=sys.stderr)
+        return 2
+    occupied = {cores[cpu] for cpu in servers}
+    # Clients may use both threads of every eligible core the servers do not
+    # occupy: a client thread never shares a physical core with a server.
+    remaining = [cpu for cpu in sorted(candidates)
+                 if core_ids[cpu] != 0 and cores[cpu] not in occupied]
+    clients = overrides.get("CLIENT_CPU_LIST", remaining[:requested])
+    if any(cpu not in cores for cpu in clients):
+        raise ValueError("CLIENT_CPU_LIST names a CPU without online topology")
+    if any(cores[cpu] in occupied for cpu in clients):
+        raise ValueError("CLIENT_CPU_LIST overlaps a server physical core (including siblings)")
+    if not clients:
+        print(f"skip,{n} server CPUs,no distinct client core remains", file=sys.stderr)
+        return 2
+    if "CLIENT_CPU_LIST" not in overrides and len(clients) < requested:
+        print(f"warning,placement,requested {requested} client threads,only {len(clients)} client CPUs remain; using {len(clients)}", file=sys.stderr)
+    if overrides:
+        source = "override"
+    print(",".join(map(str, servers)), ",".join(map(str, clients)), len(clients), source)
+    return 0
+
+try:
+    sys.exit(choose())
+except (OSError, ValueError) as error:
+    print(f"placement: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+# Assign lists in the calling shell; print each configuration once, even when
+# suite switches between the same counts on successive passes.
+placements_seen=
+select_placement() {
+    if placement_result=$(placement "$1" "$2"); then
+        set -- $placement_result
+        SERVER_CPUS=$1
+        CLIENT_CPUS=$2
+        CLIENT_THREADS=$3
+        placement_record="placement,server=$1,client=$2,threads=$3,source=$4"
+        case "|$placements_seen|" in
+            *"|$placement_record|"*) ;;
+            *)
+                echo "$placement_record"
+                if [ -f "$OUT/host.txt" ]; then
+                    echo "$placement_record" >>"$OUT/host.txt"
+                fi
+                placements_seen="${placements_seen:+$placements_seen|}$placement_record"
+                ;;
+        esac
+    else
+        return "$?"
+    fi
+}
+
+# A sweep skips unsupported counts, but must never hide a bad override.
+placement_for_count() {
+    placement_status=0
+    select_placement "$1" "$2" || placement_status=$?
+    case $placement_status in
+        0) return 0 ;;
+        2) return 1 ;;
+        *) exit "$placement_status" ;;
+    esac
+}
+
+placement_selftest() (
+    fixture=$(mktemp -d)
+    trap 'rm -rf "$fixture"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    export SYSFS_ROOT="$fixture/sys"
+    unset SERVER_CPU_LIST CLIENT_CPU_LIST
+    fixture_cpu() {
+        topology="$SYSFS_ROOT/devices/system/cpu/cpu$1/topology"
+        mkdir -p "$topology"
+        echo "$2" >"$topology/core_id"
+        echo "$3" >"$topology/thread_siblings_list"
+    }
+    expect_placement() {
+        actual=$(placement "$1" "$2" 2>"$fixture/stderr")
+        [ "$actual" = "$3" ] || {
+            echo "placement-selftest: expected '$3', got '$actual'" >&2
+            exit 1
+        }
+    }
+    expect_failure() {
+        status=0
+        placement "$1" "$2" >"$fixture/stdout" 2>"$fixture/stderr" || status=$?
+        [ "$status" = "$3" ] && grep -q "$4" "$fixture/stderr" || {
+            echo "placement-selftest: expected exit $3 and '$4'" >&2
+            exit 1
+        }
+    }
+    # Native 14900K: adjacent SMT pairs on eight P-cores, then 16 E-cores.
+    cpu=0
+    while [ "$cpu" -lt 32 ]; do
+        if [ "$cpu" -lt 16 ]; then
+            first=$((cpu / 2 * 2))
+            fixture_cpu "$cpu" "$((cpu / 2))" "$first,$((first + 1))"
+        else
+            fixture_cpu "$cpu" "$((cpu - 8))" "$cpu"
+        fi
+        cpu=$((cpu + 1))
+    done
+    mkdir -p "$SYSFS_ROOT/devices/cpu_core" "$SYSFS_ROOT/devices/cpu_atom"
+    echo 0-15 >"$SYSFS_ROOT/devices/cpu_core/cpus"
+    echo 16-31 >"$SYSFS_ROOT/devices/cpu_atom/cpus"
+    expect_placement 1 16 '2 4,5,6,7,8,9,10,11,12,13,14,15 12 hybrid'
+    grep -q 'requested 16 client threads,only 12' "$fixture/stderr"
+    expect_placement 2 16 '2,4 6,7,8,9,10,11,12,13,14,15 10 hybrid'
+    expect_placement 4 16 '2,4,6,8 10,11,12,13,14,15 6 hybrid'
+    expect_failure 7 16 2 'no distinct client core'
+    expect_failure 8 16 2 'only 7 eligible physical cores'
+    SERVER_CPU_LIST=2,4 CLIENT_CPU_LIST=10,12 expect_placement 2 16 '2,4 10,12 2 override'
+    SERVER_CPU_LIST=2 expect_failure 2 16 1 'exactly 2 CPUs'
+    SERVER_CPU_LIST=2,3 expect_failure 2 16 1 'distinct physical cores'
+    SERVER_CPU_LIST=2 CLIENT_CPU_LIST=3 expect_failure 1 16 1 'including siblings'
+    SERVER_CPU_LIST=2 expect_placement 1 2 '2 4,5 2 override'
+    CLIENT_CPU_LIST=10,12 expect_placement 2 16 '2,4 10,12 2 override'
+    # cpu_capacity supplies the same hybrid classification without PMU lists.
+    rm -rf "$SYSFS_ROOT/devices/cpu_core" "$SYSFS_ROOT/devices/cpu_atom"
+    cpu=0
+    while [ "$cpu" -lt 32 ]; do
+        capacity=512
+        [ "$cpu" -ge 16 ] || capacity=1024
+        echo "$capacity" >"$SYSFS_ROOT/devices/system/cpu/cpu$cpu/cpu_capacity"
+        cpu=$((cpu + 1))
+    done
+    expect_placement 2 16 '2,4 6,7,8,9,10,11,12,13,14,15 10 hybrid'
+    # Non-hybrid four-core SMT host: second threads are numbered after firsts.
+    rm -rf "$SYSFS_ROOT"
+    cpu=0
+    while [ "$cpu" -lt 8 ]; do
+        core=$((cpu % 4))
+        fixture_cpu "$cpu" "$core" "$core,$((core + 4))"
+        cpu=$((cpu + 1))
+    done
+    expect_placement 1 16 '1 2,3,6,7 4 fallback'
+    expect_placement 2 16 '1,2 3,7 2 fallback'
+    expect_failure 3 16 2 'no distinct client core'
+    # Equal capacities are not hybrid information; core_cpus_list is accepted.
+    cpu=0
+    while [ "$cpu" -lt 8 ]; do
+        path="$SYSFS_ROOT/devices/system/cpu/cpu$cpu"
+        mv "$path/topology/thread_siblings_list" "$path/topology/core_cpus_list"
+        echo 1024 >"$path/cpu_capacity"
+        cpu=$((cpu + 1))
+    done
+    expect_placement 2 16 '1,2 3,7 2 fallback'
+    echo 0-2,4-6 >"$SYSFS_ROOT/devices/system/cpu/online"
+    expect_placement 1 16 '1 2,6 2 fallback'
+    echo 'placement-selftest: passed'
+)
+
+if [ "${1:-}" = placement-selftest ]; then
+    placement_selftest
+    exit 0
+fi
 
 ROOT=${ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}
 RELEASE=${RELEASE:-$(sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$/\1/p' "$ROOT/whitefoot.pin")}
@@ -104,9 +370,7 @@ BASELINE_ROOT=${BASELINE_ROOT:-}
 DRAGONFLY=${DRAGONFLY:-dragonfly}
 GARNET=${GARNET:-garnet-server}
 FIRN_BASELINE=${FIRN_BASELINE:-}
-SERVER_CPUS=${SERVER_CPUS:-0,1}
-CLIENT_CPUS=${CLIENT_CPUS:-2,3}
-CLIENT_THREADS=${CLIENT_THREADS:-2}
+DEFAULT_CLIENT_THREADS=${CLIENT_THREADS:-2}
 REQUESTS=${REQUESTS:-1000000}
 ROUNDS=${ROUNDS:-2}
 PASSES=${PASSES:-3}
@@ -117,6 +381,11 @@ SECONDS_PER_RUN=${SECONDS_PER_RUN:-12}
 # than from one fixed port a run a minute earlier may still hold.
 PORT=${PORT:-$((10000 + $$ % 400 * 50))}
 MODE=${1:-bench}
+
+case $MODE in
+    compare|scale|workloads|quick) ;;
+    *) select_placement 2 "$DEFAULT_CLIENT_THREADS" ;;
+esac
 
 mkdir -p "$OUT"
 # firn is linked as a server would be, its module and the runtime's units
@@ -163,6 +432,18 @@ registered() {
 }
 
 start() {
+    # The original correctness/measurement modes include both one- and
+    # two-driver lines. Give each its own server count, as suite already does.
+    case $MODE in
+        compare|scale|workloads|quick|suite) ;;
+        *)
+            case $1 in
+                firn-*|baseline-*) default_server_count=${1##*-} ;;
+                *) default_server_count=2 ;;
+            esac
+            select_placement "$default_server_count" "$DEFAULT_CLIENT_THREADS"
+            ;;
+    esac
     PORT=$((PORT + 1))
     cpus=$(cpu_count "$SERVER_CPUS")
     if [ -z "$KEEP" ]; then
@@ -607,13 +888,7 @@ if [ "$MODE" = compare ]; then
     reversed=$(echo $names | tr ' ' '\n' | awk '{ a[NR] = $0 } END { for (i = NR; i > 0; i--) printf "%s ", a[i] }')
     echo 'line,pass,cpus,test,depth,requests,rps,server_cpu_us_per_request,p50_ms,p99_ms' >"$OUT/compare.csv"
     for n in ${COMPARE_CPUS:-1 2}; do
-        if [ "$n" -ge "$total" ]; then
-            echo "skip,$n server CPUs,only $total on this host"
-            continue
-        fi
-        SERVER_CPUS=$(seq -s, 0 $((n - 1)))
-        CLIENT_THREADS=$((total - n < 16 ? total - n : 16))
-        CLIENT_CPUS=$(seq -s, "$n" $((n + CLIENT_THREADS - 1)))
+        placement_for_count "$n" "$((total - n < 1 ? 1 : total - n < 16 ? total - n : 16))" || continue
         for name in $names; do
             verify "image-$name"
         done
@@ -750,13 +1025,7 @@ if [ "$MODE" = workloads ]; then
     trap 'exit 130' INT
     trap 'exit 143' TERM
     for n in ${WORKLOAD_CPUS:-1 2}; do
-        if [ "$n" -ge "$total" ]; then
-            echo "skip,workloads $n,the host has $total CPUs"
-            continue
-        fi
-        SERVER_CPUS=$(seq -s, 0 $((n - 1)))
-        CLIENT_THREADS=$((total - n < 16 ? total - n : 16))
-        CLIENT_CPUS=$(seq -s, "$n" $((n + CLIENT_THREADS - 1)))
+        placement_for_count "$n" "$((total - n < 1 ? 1 : total - n < 16 ? total - n : 16))" || continue
         pass=1
         while [ "$pass" -le "${WORKLOAD_PASSES:-3}" ]; do
             order="reference reference-aof firn-$n firn-aof-$n"
@@ -854,18 +1123,19 @@ fi
 # The quick comparison, for the loop of changing firn and measuring again:
 # firn on QUICK_CPUS server CPUs against the fastest of Garnet and Dragonfly,
 # which led every test of the scaling run. Those two are measured once per
-# CPU count and client count and kept in quick-ref-<n>-<clients>.csv until
-# QUICK_REFRESH is set; nothing
+# CPU count and client count and kept in quick-ref-<n>-<clients>.csv, with
+# its CPU lists in the adjacent .placement file, until QUICK_REFRESH is set
+# or the placement changes; nothing
 # is verified. Its rates are its own: its client is not the suite's.
 if [ "$MODE" = quick ]; then
     n=${QUICK_CPUS:-4}
     total=$(nproc)
     all="set get incr lpush rpop sadd hset zadd lrange_100 mset"
-    CLIENT_THREADS=${QUICK_CLIENTS:-$((total - n < 16 ? total - n : 16))}
-    SERVER_CPUS=$(seq -s, 0 $((n - 1)))
-    CLIENT_CPUS=$(seq -s, "$n" $((n + CLIENT_THREADS - 1)))
+    select_placement "$n" "${QUICK_CLIENTS:-$((total - n < 1 ? 1 : total - n < 16 ? total - n : 16))}"
     reference="$OUT/quick-ref-$n-$CLIENT_THREADS.csv"
-    if [ -n "$QUICK_REFRESH" ] || [ ! -s "$reference" ]; then
+    reference_placement="$SERVER_CPUS/$CLIENT_CPUS"
+    if [ -n "$QUICK_REFRESH" ] || [ ! -s "$reference" ] ||
+        [ "$(cat "$reference.placement" 2>/dev/null || true)" != "$reference_placement" ]; then
         : >"$reference.new"
         for line in "garnet-$n" "dragonfly-$n"; do
             if available "$line"; then
@@ -875,6 +1145,7 @@ if [ "$MODE" = quick ]; then
             fi
         done
         mv "$reference.new" "$reference"
+        echo "$reference_placement" >"$reference.placement"
     fi
     line=${QUICK_LINE:-firn}-$n
     : >"$OUT/quick-$n.csv"
@@ -896,24 +1167,18 @@ if [ "$MODE" = quick ]; then
     exit 0
 fi
 
-# The scaling run: on each server CPU count n in SCALE, the servers on CPUs 0
-# to n - 1 and the client on the rest, with one client thread per client CPU
-# up to 16; every line is checked on n CPUs, a pilot sizes the runs for n,
-# and then PASSES passes measure the lines interleaved.
+# The scaling run: on each server CPU count n in SCALE, servers and clients
+# occupy distinct physical cores selected by placement, with one client
+# thread per client CPU up to 16; every line is checked on n CPUs, a pilot
+# sizes the runs for n, and then PASSES passes measure the lines interleaved.
 if [ "$MODE" = scale ]; then
     total=$(nproc)
     SUITE_TESTS=${SCALE_TESTS:-"set get incr lpush rpop sadd hset zadd lrange_100 mset"}
     PIPELINES=${SCALE_PIPELINES:-16}
     for n in ${SCALE:-2 4 8 16}; do
-        if [ "$n" -ge "$total" ]; then
-            echo "skip,scale $n,the host has $total CPUs"
-            continue
-        fi
-        SERVER_CPUS=$(seq -s, 0 $((n - 1)))
-        CLIENT_THREADS=$((total - n < 16 ? total - n : 16))
         # quick_client starts one process per client CPU and counts
         # CLIENT_THREADS of them, so the two must name the same CPUs.
-        CLIENT_CPUS=$(seq -s, "$n" $((n + CLIENT_THREADS - 1)))
+        placement_for_count "$n" "$((total - n < 1 ? 1 : total - n < 16 ? total - n : 16))" || continue
         lines="reference valkey-io dragonfly-$n garnet-$n firn-$n firn-base-$n"
         for line in $lines; do
             if available "$line"; then
@@ -946,23 +1211,17 @@ if [ "$MODE" = suite ]; then
             echo "skip,$line,no executable"
         fi
     done
-    SERVER_CPUS=0,1
-    CLIENT_CPUS=2,3
-    CLIENT_THREADS=2
+    select_placement 2 2
     pilot
     pass=1
     while [ "$pass" -le "$PASSES" ]; do
-        SERVER_CPUS=0,1
-        CLIENT_CPUS=2,3
-        CLIENT_THREADS=2
+        select_placement 2 2
         for line in $two; do
             if available "$line"; then
                 suite_run "$line" "pass $pass" "2 server CPUs"
             fi
         done
-        SERVER_CPUS=0
-        CLIENT_CPUS=1,2,3
-        CLIENT_THREADS=3
+        select_placement 1 3
         for line in $one; do
             if available "$line"; then
                 suite_run "$line" "pass $pass" "1 server CPU"

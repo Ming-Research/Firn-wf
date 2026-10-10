@@ -2,6 +2,8 @@ Decision: A measurement on the shared self-hosted machine runs in a session of i
 
 Decision: A process of a measurement's session that is not a server and outlives its leader, such as a client or a profiler, is left to the runner, which stops a job's processes by the tracking variable in their environment, because a session's number can name another session once the leader has ended and only a registered process is known to be the measurement's, while clients and profilers keep the environment the runner reads, instead of stopping every process that still carries the session's number.
 
+Decision: Redis benchmark servers and clients take one logical CPU per distinct physical performance core in Linux topology order, reserving core_id 0 for the OS and runner, with servers first and clients on both threads of the remaining eligible cores, never on a server's core, capping the client count with a warning and recording both lists; without hybrid information the same rule uses all physical cores, and explicit list overrides must preserve physical-core separation and the requested server count, because adjacent logical CPU numbers on the native i9-14900K are hyperthread siblings and later numbers include efficiency cores, instead of assuming consecutive logical CPUs represent independent cores of equal performance.
+
 Rejected:
 - Matching leftovers by command name: rejected because other projects run the same servers on the machine.
 - A token in each process's environment: rejected because Redis 7.0.15 and Valkey overwrite the environment the kernel shows when they set their process titles ([setproctitle.c](https://github.com/redis/redis/blob/7.0.15/src/setproctitle.c)), so the servers a cancelled run leaves escape the match.
