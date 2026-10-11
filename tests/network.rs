@@ -3179,6 +3179,8 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
 /// reply holds what redis-server 7.0.15 answers for these parameters with the
 /// same settings, in firn's stable parameter order, one of Redis's possible
 /// orders. Memory settings and automatic rewrite thresholds join glob results.
+/// Redis's *o*t matches only port and timeout among these parameters: the
+/// final t must end the name, so neither automatic rewrite threshold matches.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_matches_config_get_patterns_as_redis_does() {
@@ -3231,7 +3233,7 @@ fn firn_matches_config_get_patterns_as_redis_does() {
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n{rewrite_fields}\
          *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\
          *2\r\n{port_field}\
-         *8\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n{rewrite_fields}\
+         *4\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n\
          *18\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
          *0\r\n\
          *0\r\n\
