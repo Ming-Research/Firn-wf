@@ -21,7 +21,7 @@ jobs:
       # own pin waits on Halo (status board firn-pin-v0121).
       - name: Install the host toolchain and the witness compiler
         env:
-          WITNESS_RELEASE: wf-a3205af0bbea
+          WITNESS_RELEASE: wf-bae97fdcf890
         run: |
           echo "release = $WITNESS_RELEASE" > "$RUNNER_TEMP/witness.pin"
           make toolchain PIN="$RUNNER_TEMP/witness.pin"
