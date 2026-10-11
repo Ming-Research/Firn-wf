@@ -111,7 +111,7 @@ fn return_engine(store: &Keyspace, pooled: PooledEngine) -> r: unit reads(store)
 }
 
 fn register(store: &Keyspace, sha: &Array<u8, 40>, source: &[u8]) -> r: unit reads(store), reads(sha), reads(source) waits {
-  doc "Redis 7.0.15 luaCreateFunction retains every successfully compiled EVAL/LOAD source until scriptingReset; duplicate SHA1 does not grow the registry. No script-count cap or LRU eviction. Source/hash payload accounting is separate from allocator overhead and the engine heap.";
+  doc "Redis 7.0.15 luaCreateFunction retains every successfully compiled EVAL/LOAD source until scriptingReset; duplicate SHA1 does not grow the registry. No script-count cap or LRU eviction. Source/hash payload accounting is separate from allocator overhead and the engine heap. Allocation is total [STOR-8], so the branch that drops the copy is reachable only when the registry capacity saturates at 2^64; it remains because the checker needs len < cap before place_back.";
   let span = Span(start: 0_u64, length: source^.len);
   let copied = copy_source(input: source, span: span);
   atomic p = &store^.scripts {
