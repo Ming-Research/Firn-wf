@@ -20,6 +20,7 @@ alias reply_arity = pkg::protocol::reply_arity;
 alias reply_ok = pkg::protocol::reply_ok;
 alias reply_error = pkg::protocol::reply_error;
 alias bytes_new = pkg::bytes::bytes_new;
+alias read_integer = pkg::bytes::read_integer;
 
 const arity_get: i64 = 2_i64;
 

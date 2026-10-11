@@ -330,7 +330,7 @@ fn answer_call_entries<interface ScriptCommands>(sequence: &pkg::store::WriteSeq
   let result = ScriptCommands::call_entries(sequence: sequence, memory: &env^.memory, journal: &env^.access, slots: slots, declared: declared, undo: undo, due: due, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
   set client^.resp = protocol;
   let appended = 0_u64;
-  match move result {
+  match result {
     Completed(appended: count) => {
       set appended = count;
     }
@@ -570,7 +570,9 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
               let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
               let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
               let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
-              loop {
+              loop (
+                invariant aligned: t^.len == declared.len
+              ) {
                 match outcome {
                   Budget() => {
                     if env.held.wrote {
