@@ -1,5 +1,9 @@
 # Rewriting the append-only file
 
+[Streaming the rewrite journal to disk](journal-disk.md) records the owner's
+disk-journal direction, its bounded staging and S1 protocol, and validation
+criteria before implementation; time-sliced scanning remains separate work.
+
 The record below preserves the original closed-log replay investigation and
 its implementation history. The owner's subsequent service-first memory
 ruling reopens that mechanism: [Reconciled live scan and after-image log](scan-log.md)

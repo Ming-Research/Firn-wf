@@ -1,0 +1,316 @@
+alias Clock = std::time::Clock;
+alias HandleFactory = std::io::HandleFactory;
+alias Keyspace = pkg::store::Keyspace;
+alias ReadFile = std::fs::ReadFile;
+alias WriteFile = std::fs::WriteFile;
+
+const aof_rw_journal_suffix: Array<u8, 8> = ".journal";
+
+struct AofJournalFiles {
+  read: ReadFile;
+  write: WriteFile;
+}
+
+struct AofJournalCount {
+  header: u64;
+  length: u64;
+  kind: u64;
+  factor: u64;
+  remaining: u64;
+  images: u64;
+  effects: u64;
+}
+
+fn aof_rw_journal_name(prefix: &[u8]) -> made: Box<Slots<u8>> reads(prefix) {
+  let made = aof_named(prefix: &aof_temp_prefix[0_u64..5_u64], suffix: prefix);
+  pkg::store::log_append_plain(log: &made, bytes: &aof_rw_journal_suffix[0_u64..8_u64]);
+  return move made;
+}
+
+fn aof_rw_journal_listed(manifest: &AofManifest, name: &[u8]) -> listed: Bool reads(manifest), reads(name) {
+  for (index in 0_u64..manifest^.parts.inner.len) {
+    let part = &manifest^.parts.inner[index];
+    let length = part^.name.inner.len;
+    let same = aof_same(first: name, second: &part^.name.inner[0_u64..length]);
+    if same {
+      return True();
+    }
+  }
+  return False();
+}
+
+fn aof_rw_journal_remove(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name: &[u8]) -> removed: Bool reads(name), writes(factory), writes(writable) waits {
+  let length = name^.len;
+  match std::fs::remove_file(factory: factory, root: writable, name: name, start: 0_u64, end: length) {
+    Ok(value: removed) => {
+      return True();
+    }
+    Err(error: problem) => {
+      let no = False();
+      return aof_missing(error: &problem, directories: no);
+    }
+  }
+}
+
+fn aof_rw_journal_cleanup(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> removed: Bool reads(prefix), reads(manifest), writes(factory), writes(writable) waits {
+  doc "Remove only this appendfilename's unlisted temporary journal after authoritative replay; a manifest-named file is never temporary garbage.";
+  let name = aof_rw_journal_name(prefix: prefix);
+  let length = name.inner.len;
+  let bytes = &name.inner[0_u64..length];
+  let listed = aof_rw_journal_listed(manifest: manifest, name: bytes);
+  if listed {
+    return True();
+  }
+  return aof_rw_journal_remove(factory: factory, writable: writable, name: bytes);
+}
+
+fn aof_rw_journal_open(store: &Keyspace, factory: &HandleFactory, log: &AofLog, name: &[u8]) -> result: Result<AofJournalFiles, unit> reads(store), reads(log), reads(name), writes(factory) waits {
+  let listed = aof_rw_journal_listed(manifest: &log^.manifest, name: name);
+  if listed {
+    let reason = pkg::store::RewriteAbortReason::JournalIo();
+    aof_rw_abort(store: store, reason: reason);
+    return Err<AofJournalFiles, unit>(error: unit);
+  }
+  let open_reason = pkg::store::RewriteAbortReason::JournalIo();
+  match aof_rw_open(store: store, factory: factory, writable: &log^.writable, name: name, reason: open_reason) {
+    Ok(value: opened) => {
+      let length = name^.len;
+      match std::fs::open_file(factory: factory, root: &log^.directory, name: name, start: 0_u64, end: length) {
+        Ok(value: read) => {
+          let files = AofJournalFiles(read: move read, write: move opened);
+          return Ok<AofJournalFiles, unit>(value: move files);
+        }
+        Err(error: problem) => {
+          std::fs::close_write(factory: factory, file: move opened);
+          let reason = pkg::store::RewriteAbortReason::JournalIo();
+          aof_rw_abort(store: store, reason: reason);
+        }
+      }
+    }
+    Err(error: problem) => {
+    }
+  }
+  return Err<AofJournalFiles, unit>(error: unit);
+}
+
+fn aof_rw_journal_count(bytes: &[u8], decoder: &AofJournalCount) -> result: unit reads(bytes), writes(decoder) {
+  doc "Count complete 24-byte-header records in the successfully appended prefix, preserving header and payload state across chunks and partial host writes.";
+  let offset = 0_u64;
+  let length = bytes^.len;
+  loop {
+    if offset >= length {
+      return unit;
+    }
+    if decoder^.remaining > 0_u64 {
+      let available = length -sat offset;
+      let consumed = imin(available, decoder^.remaining);
+      set offset = offset +sat consumed;
+      set decoder^.remaining = decoder^.remaining -sat consumed;
+      if decoder^.remaining == 0_u64 {
+        if decoder^.kind == 0_u64 {
+          set decoder^.images = decoder^.images +sat 1_u64;
+        } else {
+          set decoder^.effects = decoder^.effects +sat 1_u64;
+        }
+        set decoder^.kind = 0_u64;
+      }
+    } else if offset < length {
+      let byte = bytes^[offset];
+      let wide = cvt.wrap::<u8, u64>(byte);
+      let part = wide *wrap decoder^.factor;
+      if decoder^.header < 8_u64 {
+      } else if decoder^.header < 16_u64 {
+        set decoder^.length = decoder^.length +wrap part;
+      } else {
+        set decoder^.kind = decoder^.kind +wrap part;
+      }
+      set offset = offset +sat 1_u64;
+      set decoder^.header = decoder^.header +sat 1_u64;
+      set decoder^.factor = decoder^.factor *wrap 256_u64;
+      if decoder^.header == 8_u64 {
+        set decoder^.factor = 1_u64;
+      } else if decoder^.header == 16_u64 {
+        set decoder^.factor = 1_u64;
+      } else if decoder^.header == 24_u64 {
+        set decoder^.remaining = decoder^.length;
+        set decoder^.length = 0_u64;
+        set decoder^.header = 0_u64;
+        set decoder^.factor = 1_u64;
+        if decoder^.remaining == 0_u64 {
+          if decoder^.kind == 0_u64 {
+            set decoder^.images = decoder^.images +sat 1_u64;
+          } else {
+            set decoder^.effects = decoder^.effects +sat 1_u64;
+          }
+          set decoder^.kind = 0_u64;
+        }
+      }
+    }
+  }
+}
+
+fn aof_rw_journal_drain(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, decoder: &AofJournalCount, maximum: u64) -> drained: Bool reads(store), writes(factory), writes(file), writes(decoder) waits {
+  doc "Drain at most a snapshot of staging length. The writer alone owns dequeue and cleanup; an in-flight chunk stays charged until its append and release complete. Ordinary AOF draining runs between bounded batches.";
+  let count = 0_u64;
+  atomic snapshot = &store^.meta {
+    match snapshot^.rewrite.journal {
+      Some(value: chunks) => {
+        set count = imin(chunks^.inner.len, maximum);
+      }
+      None() => {
+      }
+    }
+  }
+  for (index in 0_u64..count) {
+    let cancelled = aof_rw_cancelled(store: store);
+    if cancelled {
+      return False();
+    }
+    let block = None<Box<Slots<u8>>>();
+    atomic m = &store^.meta {
+      match m^.rewrite.journal {
+        Some(value: chunks) => {
+          if chunks^.inner.len > 0_u64 {
+            let taken = take_front(window: &chunks^.inner);
+            set block = Some<Box<Slots<u8>>>(value: move taken);
+          }
+        }
+        None() => {
+        }
+      }
+    }
+    match move block {
+      Some(value: bytes) => {
+        let length = bytes.inner.len;
+        let appended = append_all(factory: factory, file: file, source: &bytes);
+        if appended <= length {
+          aof_rw_journal_count(bytes: &bytes.inner[0_u64..appended], decoder: decoder);
+        }
+        let complete = appended == length;
+        atomic counted = &store^.meta {
+          set counted^.rewrite.journal_bytes = counted^.rewrite.journal_bytes +sat appended;
+          set counted^.rewrite.journal_images = decoder^.images;
+          set counted^.rewrite.journal_effects = decoder^.effects;
+          if complete {
+          } else {
+            let reason = pkg::store::RewriteAbortReason::JournalIo();
+            pkg::store::rewrite_abort(capture: &counted^.rewrite, reason: reason);
+          }
+        }
+        aof_rw_release::<Box<Slots<u8>>>(value: move bytes);
+        atomic released = &store^.meta {
+          set released^.rewrite.used = released^.rewrite.used -sat 65560_u64;
+        }
+        if complete {
+        } else {
+          return False();
+        }
+      }
+      None() => {
+      }
+    }
+  }
+  return True();
+}
+
+fn aof_rw_journal_read(store: &Keyspace, factory: &HandleFactory, journal: &ReadFile, file: &WriteFile, clock: &Clock, initial_size: u64) -> result: Result<u64, unit> reads(store), writes(factory), writes(journal), writes(file), writes(clock) waits {
+  doc "After cut_done, stream the finite journal through one charged 64-KiB owner. Exact file length detects a lost whole-record suffix; frame state detects partial records and sequence violations.";
+  let first = 0_u64;
+  let last = 0_u64;
+  let limit = 0_u64;
+  let expected = 0_u64;
+  let charged = False();
+  atomic frozen = &store^.meta {
+    set first = frozen^.rewrite.start;
+    set last = frozen^.rewrite.end;
+    set limit = frozen^.rewrite.limit;
+    set expected = frozen^.rewrite.journal_bytes;
+    set charged = pkg::store::rewrite_charge(capture: &frozen^.rewrite, bytes: 65560_u64);
+  }
+  if charged {
+  } else {
+    return Err<u64, unit>(error: unit);
+  }
+  let buffer = pkg::protocol::input_new(capacity: 65536_u64);
+  let decoder = AofReconcile(limit: limit, sequence: 0_u64, length: 0_u64, kind: 0_u64, header: 0_u64, factor: 1_u64, remaining: 0_u64, previous: first, end: last);
+  let offset = 0_u64;
+  let size = initial_size;
+  let accepted = False();
+  loop @reading {
+    let cancelled = aof_rw_cancelled(store: store);
+    if cancelled {
+      break @reading;
+    }
+    let got = 0_u64;
+    let failed = False();
+    match std::fs::read_at(factory: factory, file: journal, destination: &buffer.inner[0_u64..65536_u64], file_offset: offset, start: 0_u64, end: 65536_u64) {
+      Ok(value: next) => {
+        set got = next;
+      }
+      Err(error: problem) => {
+        match problem {
+          ReadEnd() => {
+          }
+          ReadFailed(error: why) => {
+            set failed = True();
+          }
+        }
+      }
+    }
+    if failed {
+      let reason = pkg::store::RewriteAbortReason::JournalIo();
+      aof_rw_abort(store: store, reason: reason);
+      break @reading;
+    }
+    if got == 0_u64 {
+      let exact = offset == expected;
+      let payload_done = decoder.remaining == 0_u64;
+      let header_done = decoder.header == 0_u64;
+      let whole = band(payload_done, header_done);
+      set accepted = band(exact, whole);
+      if accepted {
+      } else {
+        let reason = pkg::store::RewriteAbortReason::JournalInvalid();
+        aof_rw_abort(store: store, reason: reason);
+      }
+      break @reading;
+    }
+    let remaining = expected -sat offset;
+    if got > remaining {
+      let reason = pkg::store::RewriteAbortReason::JournalInvalid();
+      aof_rw_abort(store: store, reason: reason);
+      break @reading;
+    }
+    set offset = offset +sat got;
+    if size == 0_u64 {
+      match aof_rw_select_empty(factory: factory, file: file) {
+        Ok(value: selected) => {
+          set size = selected;
+        }
+        Err(error: problem) => {
+          let reason = pkg::store::RewriteAbortReason::BaseIo();
+          aof_rw_abort(store: store, reason: reason);
+          break @reading;
+        }
+      }
+    }
+    match aof_rw_reconcile(factory: factory, file: file, block: &buffer.inner[0_u64..got], decoder: &decoder) {
+      Ok(value: appended) => {
+        set size = size +sat appended;
+      }
+      Err(error: reason) => {
+        aof_rw_abort(store: store, reason: reason);
+        break @reading;
+      }
+    }
+    aof_rw_pause(clock: clock);
+  }
+  aof_rw_release::<Box<Slots<u8>>>(value: move buffer);
+  atomic released = &store^.meta {
+    set released^.rewrite.used = released^.rewrite.used -sat 65560_u64;
+  }
+  if accepted {
+    return Ok<u64, unit>(value: size);
+  }
+  return Err<u64, unit>(error: unit);
+}

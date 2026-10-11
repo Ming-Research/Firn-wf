@@ -157,6 +157,7 @@ struct AofReconcile {
   limit: u64;
   sequence: u64;
   length: u64;
+  kind: u64;
   header: u64;
   factor: u64;
   remaining: u64;
@@ -185,11 +186,11 @@ fn aof_rw_select_empty(factory: &HandleFactory, file: &WriteFile) -> result: Res
   }
 }
 
-fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots<u8>>, decoder: &AofReconcile) -> result: Result<u64, pkg::store::RewriteAbortReason> reads(block), writes(factory), writes(file), writes(decoder) waits {
-  doc "Strip the internal sequence/length frames while streaming chronological units, each complete replacement images or a one-key statement's own append-only bytes. A frame may cross a chunk; no output allocation is needed and each append borrows only this one at-most-64-KiB chunk.";
+fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &[u8], decoder: &AofReconcile) -> result: Result<u64, pkg::store::RewriteAbortReason> reads(block), writes(factory), writes(file), writes(decoder) waits {
+  doc "Strip the internal sequence/length/kind frames while streaming chronological units, each complete replacement images or a one-key statement's own append-only bytes. A frame may cross a chunk; no output allocation is needed and each append borrows only this one at-most-64-KiB chunk.";
   let size = 0_u64;
   let offset = 0_u64;
-  let length = block^.inner.len;
+  let length = block^.len;
   loop @records {
     if offset >= length {
       break @records;
@@ -199,7 +200,7 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
       if end > length {
         set end = length;
       }
-      let bytes = &block^.inner[0_u64..length];
+      let bytes = &block^[0_u64..length];
       loop @append {
         if offset >= end {
           break @append;
@@ -221,14 +222,16 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
           }
         }
       }
-    } else if offset < block^.inner.len {
-      let byte = block^.inner[offset];
+    } else if offset < block^.len {
+      let byte = block^[offset];
       let wide = cvt.wrap::<u8, u64>(byte);
       let part = wide *wrap decoder^.factor;
       if decoder^.header < 8_u64 {
         set decoder^.sequence = decoder^.sequence +wrap part;
-      } else {
+      } else if decoder^.header < 16_u64 {
         set decoder^.length = decoder^.length +wrap part;
+      } else {
+        set decoder^.kind = decoder^.kind +wrap part;
       }
       set offset = offset +sat 1_u64;
       set decoder^.header = decoder^.header +sat 1_u64;
@@ -236,6 +239,12 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
       if decoder^.header == 8_u64 {
         set decoder^.factor = 1_u64;
       } else if decoder^.header == 16_u64 {
+        set decoder^.factor = 1_u64;
+      } else if decoder^.header == 24_u64 {
+        if decoder^.kind > 1_u64 {
+          let reason = pkg::store::RewriteAbortReason::JournalInvalid();
+          return Err<u64, pkg::store::RewriteAbortReason>(error: reason);
+        }
         if decoder^.sequence <= decoder^.previous {
           let reason_journal_invalid_6 = pkg::store::RewriteAbortReason::JournalInvalid();
           return Err<u64, pkg::store::RewriteAbortReason>(error: reason_journal_invalid_6);
@@ -252,6 +261,7 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
         set decoder^.previous = decoder^.sequence;
         set decoder^.sequence = 0_u64;
         set decoder^.length = 0_u64;
+        set decoder^.kind = 0_u64;
         set decoder^.header = 0_u64;
         set decoder^.factor = 1_u64;
       }
