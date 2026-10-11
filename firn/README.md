@@ -106,7 +106,8 @@ network, in `EXEC` and through `redis.call` or `redis.pcall`.
 
 `CONFIG GET` takes Redis's glob patterns over firn's parameters:
 `appendfilename`, `appendonly`, `bind`, `databases`, `port`, `requirepass`,
-`save` and `timeout`, and the parameters whose only effect in Redis is on its
+`save`, `timeout`, `auto-aof-rewrite-percentage` and `auto-aof-rewrite-min-size`,
+and the parameters whose only effect in Redis is on its
 internal encodings, leaving every value as commands read it,
 `hash-max-listpack-entries`, `hash-max-listpack-value`,
 `list-compress-depth`, `list-max-listpack-size`, `set-max-intset-entries`,
@@ -408,7 +409,15 @@ and accepts Redis's `b`, `k`, `m`, `g`, `kb`, `mb`, and `gb` suffixes. A rewrite
 starts when the active files exceed that minimum and have grown by at least
 the percentage over the size at the last successful rewrite. At startup the
 baseline is the loaded base file's size, as Redis 7.0.15 initializes it.
-These are startup options; `CONFIG SET` does not change them.
+`CONFIG SET` also changes both thresholds, atomically with any other parameters
+in the call, for the next automatic-rewrite decision. The percentage accepts
+integers from `0` through `2147483647`; min-size accepts Redis memory units and
+byte counts from `0` through `9223372036854775807`; as in Redis, a unit's
+product wraps modulo 2^64 and an empty value or a bare unit reads as `0`.
+`CONFIG GET` reports the
+current percentage and min-size in decimal, min-size in bytes, and includes
+both in glob matches. Setting the percentage to `0` disables automatic rewrites
+without cancelling a rewrite already in progress.
 
 `INFO persistence` reports rewrite progress, attempts, last status, current
 active-file bytes and the rewrite baseline. The firn-only field
