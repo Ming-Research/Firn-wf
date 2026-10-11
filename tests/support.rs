@@ -102,7 +102,48 @@ impl CompiledProgram {
         settings: &[(&str, &str)],
         arguments: &[&[u8]],
     ) -> ProgramChild {
+        self.spawn_on_route_options(native_ring, settings, arguments, false)
+    }
+
+    /// Linux append-failure cases inherit ignored SIGXFSZ so RLIMIT_FSIZE
+    /// makes write return EFBIG instead of terminating the owned child.
+    #[cfg(target_os = "linux")]
+    pub fn spawn_on_route_ignoring_xfsz(
+        &self,
+        native_ring: bool,
+        arguments: &[&[u8]],
+    ) -> ProgramChild {
+        self.spawn_on_route_options(native_ring, &[], arguments, true)
+    }
+
+    fn spawn_on_route_options(
+        &self,
+        native_ring: bool,
+        settings: &[(&str, &str)],
+        arguments: &[&[u8]],
+        ignore_xfsz: bool,
+    ) -> ProgramChild {
         let mut command = Command::new(&self.executable);
+        #[cfg(target_os = "linux")]
+        if ignore_xfsz {
+            use std::os::unix::process::CommandExt;
+            // signal is async-signal-safe. SIG_IGN survives exec; no parent
+            // disposition changes, so parallel tests remain independent.
+            unsafe extern "C" {
+                fn signal(signal: i32, handler: usize) -> usize;
+            }
+            unsafe {
+                command.pre_exec(|| {
+                    if signal(25, 1) == usize::MAX {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = ignore_xfsz;
         command
             .current_dir(&self.directory)
             .args(arguments.iter().map(|bytes| invocation_argument(bytes)))

@@ -1159,6 +1159,21 @@ fn reply_error(client: &Client, word: &[u8]) -> result: unit reads(word), writes
   return unit;
 }
 
+const text_aof_error: Array<u8, 40> = "MISCONF Errors writing to the AOF file: ";
+
+const text_aof_execabort: Array<u8, 44> = "EXECABORT Transaction discarded because of: ";
+
+fn reply_aof_error(client: &Client, execabort: Bool) -> result: unit writes(client) {
+  doc "One reply writer for all active-AOF refusals, following Redis 7.0.15 server.c:4350-4353 and multi.c:136-140. The native saved-IoError description suffix remains pending board item firn-req-io-error-text; do not substitute a local errno-to-text mapping.";
+  reply_byte(client: client, value: 45_u8);
+  if execabort {
+    reply_word(client: client, word: &text_aof_execabort[0_u64..44_u64]);
+  }
+  reply_word(client: client, word: &text_aof_error[0_u64..40_u64]);
+  reply_word(client: client, word: &reply_crlf[0_u64..2_u64]);
+  return unit;
+}
+
 fn reply_wrong_type(client: &Client) -> result: unit writes(client) {
   doc "Writes the error Redis replies to a command on a key holding another kind of value.";
   reply_error(client: client, word: &text_wrong_type[0_u64..65_u64]);

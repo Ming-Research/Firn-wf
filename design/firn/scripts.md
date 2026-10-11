@@ -22,6 +22,8 @@ Decision: legacy scripts capture their pre-command OOM state and keep an attempt
 
 Decision: EVAL and SCRIPT LOAD explicitly refuse every source starting with a shebang, including plain #!lua and allow-oom or no-writes flags, because the owner permits precisely documented unsupported flags and firn currently has no script-flag admission contract, instead of running a flagged script with legacy OOM semantics ([step-2 scope](../../research/investigations/memory-limit/README.md#step-2-implementation-record)).
 
+Decision: A legacy EVAL or EVALSHA can read during an AOF error but checks held Meta before its first accepted WRITE command, using the shared MISCONF reply so redis.call raises and redis.pcall returns an error table, and skips later persistence checks after WRITE_DIRTY, because Redis 7.0.15 script.c:349-386,547-557 and script_lua.c:988-994,1711-1722 give accepted writes this boundary even when they have no dataset effect, instead of refusing legacy scripts at entry or allowing their first write through; the script holds Meta for the entire attempt and the writer needs that same hold to publish, so its first-write observation equals a live check of published status and needs no separate changing-status channel ([investigation](../../research/investigations/aof-write-errors/README.md#proposed-design-and-alternatives)).
+
 Rejected:
 - Freezing expiry checks alone, as Redis 7.0.15 does: rejected because Redis moved to one time for the whole execution unit in 7.2, and following 7.0.15 would carry a live clock into every command part for a difference seen only while a script runs long.
 - Releasing the statement around each of a script's commands: rejected because another client's command could then come between them, which Redis does not allow.

@@ -219,6 +219,9 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
@@ -304,6 +307,9 @@ fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = pop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
@@ -608,6 +614,9 @@ fn run_lset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = lset_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
@@ -720,6 +729,9 @@ fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = lrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
@@ -820,6 +832,9 @@ fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = ltrim_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
@@ -917,6 +932,9 @@ fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = linsert_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
@@ -1174,6 +1192,9 @@ fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   set client^.now = time^.check;
   let logged = store^.logging;
   atomic slots = &store^.keys[ks], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);

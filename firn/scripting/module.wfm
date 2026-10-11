@@ -1,5 +1,5 @@
 public struct ScriptMemory {
-  doc "Redis 7.0.15 scriptVerifyOOM/scriptCall state: OOM captured before EVAL, and whether an accepted WRITE-flagged command ran in this attempt, even when it changed no value. Separate from the effects flag used for retry safety.";
+  doc "Redis 7.0.15 scriptVerifyWriteCommandAllow/scriptVerifyOOM/scriptCall state: OOM captured before EVAL, and whether an accepted WRITE-flagged command ran in this attempt, even when it changed no value. write_dirty also suppresses later active-AOF health checks after the first accepted write (script.c:349-386,547-557); separate from the effects flag used for retry safety.";
   public pre_command_oom: Bool;
   public write_dirty: Bool;
 }

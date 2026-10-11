@@ -144,6 +144,8 @@ public fn reply_verbatim(client: &Client, input: &[u8], start: u64, length: u64)
 
 public fn reply_error(client: &Client, word: &[u8]) -> result: unit reads(word), writes(client) doc "Writes a RESP error: a minus sign, the word, which carries its own ERR or WRONGTYPE prefix, and CR LF.";
 
+public fn reply_aof_error(client: &Client, execabort: Bool) -> result: unit writes(client) doc "Writes Redis 7.0.15 server.c:4350-4353's AOF MISCONF reply, optionally wrapped by EXECABORT as server.c:3568-3576 and multi.c:136-140 do. The native IoError description suffix is pending Whitefoot board item firn-req-io-error-text; retain the exact prefix and an empty suffix until that API exists.";
+
 public fn reply_wrong_type(client: &Client) -> result: unit writes(client) doc "Writes the error Redis replies to a command on a key holding another kind of value.";
 
 public fn reply_arity(client: &Client, input: &[u8], name: Span) -> result: unit reads(input), writes(client) doc "Writes the error Redis replies to a known command given the wrong number of arguments, naming the command in lower case.";

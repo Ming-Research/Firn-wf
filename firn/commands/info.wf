@@ -53,6 +53,12 @@ const info_rw_status: Array<u8, 53> = "\r\naof_rewrite_scheduled:0\r\naof_last_b
 
 const info_rw_count: Array<u8, 15> = "\r\naof_rewrites:";
 
+const info_aof_write_status: Array<u8, 24> = "\r\naof_last_write_status:";
+
+const info_aof_buffer_length: Array<u8, 20> = "\r\naof_buffer_length:";
+
+const info_aof_sync_counts: Array<u8, 46> = "\r\naof_pending_bio_fsync:0\r\naof_delayed_fsync:0";
+
 const info_rw_current: Array<u8, 19> = "\r\naof_current_size:";
 
 const info_rw_base: Array<u8, 16> = "\r\naof_base_size:";
@@ -235,7 +241,7 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
 }
 
 fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
-  doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed.";
+  doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed. Redis 7.0.15 server.c:5628-5650 defines combined append/sync health, active sizes and buffer length; the buffer length includes collecting and retained bytes. Synchronous syncing has no BIO jobs or postponed syncs, so those counts are zero.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
   for @sections (which in 0_u64..13_u64) {
@@ -309,6 +315,13 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         }
         text_word(text: &text, word: &info_rw_count[0_u64..15_u64]);
         text_number(text: &text, value: persistence^.aof_rewrites);
+        text_word(text: &text, word: &info_aof_write_status[0_u64..24_u64]);
+        let failed = pkg::store::aof_failed(meta: persistence);
+        if failed {
+          text_word(text: &text, word: &info_rw_error[0_u64..3_u64]);
+        } else {
+          text_word(text: &text, word: &info_rw_ok[0_u64..2_u64]);
+        }
         text_word(text: &text, word: &info_rw_sequence[0_u64..30_u64]);
         text_number(text: &text, value: persistence^.commit_seq);
         text_word(text: &text, word: &info_rw_cut[0_u64..23_u64]);
@@ -334,6 +347,10 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
           text_number(text: &text, value: persistence^.aof_current_size);
           text_word(text: &text, word: &info_rw_base[0_u64..16_u64]);
           text_number(text: &text, value: persistence^.aof_base_size);
+          text_word(text: &text, word: &info_aof_buffer_length[0_u64..20_u64]);
+          let buffered = persistence^.log.inner.len +sat persistence^.aof_pending_length;
+          text_number(text: &text, value: buffered);
+          text_word(text: &text, word: &info_aof_sync_counts[0_u64..46_u64]);
         }
         text_word(text: &text, word: &info_rw_tail[0_u64..29_u64]);
       } else if which == 4_u64 {

@@ -118,7 +118,7 @@ public struct EvictionCandidate {
 }
 
 public struct Meta {
-  doc "What the keyspace keeps beside its keys: the queued expiries, the dataset statement sequence and capture-exhaustion state, the append-only file's collecting buffer and published writer capacity, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the active-file byte count and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion and automatic thresholds, the clients connected, whether the server is stopping, and the state SPOP draws from.";
+  doc "What the keyspace keeps beside its keys: the queued expiries, the dataset statement sequence and capture-exhaustion state, the append-only file's collecting buffer, published retained length/capacity, saved append/sync IoErrors and partial-append marker, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the total active-file and current incremental byte counts and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion and automatic thresholds, the clients connected, whether the server is stopping, and the state SPOP draws from.";
   public due: ExpiryQueue;
   public commit_seq: u64;
   public aof_rewrite_seq_exhausted: Bool;
@@ -129,6 +129,10 @@ public struct Meta {
   public aof_rewrite_cut: Bool;
   public log: Box<Slots<u8>>;
   public aof_pending_capacity: u64;
+  public aof_pending_length: u64;
+  public aof_append_error: Option<std::io::IoError>;
+  public aof_sync_error: Option<std::io::IoError>;
+  public aof_append_partial: Bool;
   public memory_peak: u64;
   public evicted_keys: u64;
   public expired_keys: u64;
@@ -139,6 +143,7 @@ public struct Meta {
   public eviction_searching: Bool;
   public eviction_wrapped: Bool;
   public aof_current_size: u64;
+  public aof_incr_size: u64;
   public aof_base_size: u64;
   public aof_rewrite_in_progress: Bool;
   public aof_rewrite_requested: Bool;
@@ -153,6 +158,8 @@ public struct Meta {
   public stopping: Bool;
   public random: u64;
 }
+
+public fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. The saved append IoError retains its host kind/code, while aof_append_partial records Redis 7.0.15 aof.c:1157-1184's ENOSPC suffix selection for a partial append; native descriptions await firn-req-io-error-text.";
 
 public struct MemoryConfig {
   doc "Redis 7.0.15 config.c memory settings; policies use maxmemory_policy_enum order, with noeviction at 7. Access tracking and command admission share each connection read's snapshot, refreshed after its own CONFIG SET.";
