@@ -1,0 +1,61 @@
+alias SweepKind = pkg::script_pool::SweepKind;
+alias SweepRow = pkg::script_pool::SweepRow;
+
+fn sweep_observe(pooled: &PooledEngine) -> r: unit writes(pooled) {
+  doc "Experiment for halo-req-sweep-count: retain the latest collection at each existing interpreter outcome, without changing execution or collection settings. A count jump means older snapshots were overwritten; record the loss so the driver refuses an incomplete distribution.";
+  let count = halo::embed::collection_count(engine: &pooled^.engine);
+  if count > pooled^.sweep_seen {
+    let completed = count -sat pooled^.sweep_seen;
+    set pooled^.sweep_seen = count;
+    set pooled^.sweep_collections = pooled^.sweep_collections +sat completed;
+    let missed = completed -sat 1_u64;
+    set pooled^.sweep_missed = pooled^.sweep_missed +sat missed;
+    let stats = halo::embed::last_collection(engine: &pooled^.engine);
+    let strings = SweepKind(slots_visited: stats.strings.slots_visited, freed_objects: stats.strings.freed_objects, live_objects: stats.strings.live_objects);
+    let tables = SweepKind(slots_visited: stats.tables.slots_visited, freed_objects: stats.tables.freed_objects, live_objects: stats.tables.live_objects);
+    let closures = SweepKind(slots_visited: stats.closures.slots_visited, freed_objects: stats.closures.freed_objects, live_objects: stats.closures.live_objects);
+    let upvalues = SweepKind(slots_visited: stats.upvalues.slots_visited, freed_objects: stats.upvalues.freed_objects, live_objects: stats.upvalues.live_objects);
+    let row = SweepRow(collection: count, generation: pooled^.generation, strings: strings, tables: tables, closures: closures, upvalues: upvalues);
+    if pooled^.sweep_pending.inner.len == pooled^.sweep_pending.inner.cap {
+      let room = pooled^.sweep_pending.inner.cap +sat 1_u64;
+      let twice = pooled^.sweep_pending.inner.cap +sat pooled^.sweep_pending.inner.cap;
+      let target = imax(room, twice);
+      grow(cell: &pooled^.sweep_pending, capacity: target);
+    }
+    if pooled^.sweep_pending.inner.len < pooled^.sweep_pending.inner.cap {
+      place_back(window: &pooled^.sweep_pending.inner, value: row);
+    } else {
+      set pooled^.sweep_dropped = pooled^.sweep_dropped +sat 1_u64;
+    }
+  }
+  return unit;
+}
+
+fn sweep_publish(pool: &EnginePool, pooled: &PooledEngine) -> r: unit writes(pool), writes(pooled) {
+  doc "Publish completed snapshots only when the engine returns, so INFO's pool statement never nests inside the script's keyspace statement. Preserve collection order and count any storage loss.";
+  set pool^.sweep_collections = pool^.sweep_collections +sat pooled^.sweep_collections;
+  set pool^.sweep_missed = pool^.sweep_missed +sat pooled^.sweep_missed;
+  set pool^.sweep_dropped = pool^.sweep_dropped +sat pooled^.sweep_dropped;
+  let count = pooled^.sweep_pending.inner.len;
+  for (i in 0_u64..count) {
+    if i < pooled^.sweep_pending.inner.len {
+      let row = pooled^.sweep_pending.inner[i];
+      if pool^.sweep_rows.inner.len == pool^.sweep_rows.inner.cap {
+        let room = pool^.sweep_rows.inner.cap +sat 1_u64;
+        let twice = pool^.sweep_rows.inner.cap +sat pool^.sweep_rows.inner.cap;
+        let target = imax(room, twice);
+        grow(cell: &pool^.sweep_rows, capacity: target);
+      }
+      if pool^.sweep_rows.inner.len < pool^.sweep_rows.inner.cap {
+        place_back(window: &pool^.sweep_rows.inner, value: row);
+      } else {
+        set pool^.sweep_dropped = pool^.sweep_dropped +sat 1_u64;
+      }
+    }
+  }
+  set pooled^.sweep_pending = box_slots_new::<SweepRow>(capacity: 0_u64);
+  set pooled^.sweep_collections = 0_u64;
+  set pooled^.sweep_missed = 0_u64;
+  set pooled^.sweep_dropped = 0_u64;
+  return unit;
+}

@@ -1,0 +1,76 @@
+# Temporary counts-only experiment for halo-req-sweep-count. This branch will
+# never merge; retire this workflow and its driver with the experiment branch.
+# Reuses redis-bench's std-only client/script without timing or CPU-placement
+# machinery, performance comparisons, or a reference-server build.
+name: halo-sweep-count
+
+on:
+  push:
+    branches: [exp/halo-sweep-count]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: halo-sweep-count-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  counts:
+    if: ${{ github.ref == 'refs/heads/exp/halo-sweep-count' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Verify the requested Halo revision
+        run: |
+          test "$(git -C deps/halo-wf rev-parse HEAD)" = 15709ec77a382ba26b7d6f43ef88256ba2f7b109
+          echo "firn_revision,$(git rev-parse HEAD)"
+          echo "halo_revision,$(git -C deps/halo-wf rev-parse HEAD)"
+          cat whitefoot.pin
+      - name: Install the pinned toolchain and Redis CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends redis-tools
+          make toolchain
+          rustup default stable
+      - name: Validate the INFO parser and acceptance boundary
+        run: python3 -B research/experiments/redis-bench/halo-sweep-count.py --self-test
+      - name: Build firn and the unchanged limiter workload client
+        run: |
+          make firn-lto
+          cargo test --offline --locked --release --manifest-path research/experiments/redis-bench/workload/Cargo.toml --target-dir "$RUNNER_TEMP/workload-target"
+          cargo build --offline --locked --release --manifest-path research/experiments/redis-bench/workload/Cargo.toml --target-dir "$RUNNER_TEMP/workload-target"
+      - name: Probe 1000 requests, then collect 10000 on a fresh server
+        run: |
+          python3 -B research/experiments/redis-bench/halo-sweep-count.py \
+            --firn build/firn-lto --client "$RUNNER_TEMP/workload-target/release/firn-workload" \
+            --out "$RUNNER_TEMP/halo-sweep-count/probe" --requests 1000
+          python3 -B research/experiments/redis-bench/halo-sweep-count.py \
+            --firn build/firn-lto --client "$RUNNER_TEMP/workload-target/release/firn-workload" \
+            --out "$RUNNER_TEMP/halo-sweep-count/counts" --requests 10000
+      - name: Publish the collection counts
+        if: always()
+        run: |
+          {
+            echo '## Halo sweep counts (50 connections, DEFAULT GC, no timing)'
+            for phase in probe counts; do
+              echo
+              echo "### $phase"
+              echo '```text'
+              cat "$RUNNER_TEMP/halo-sweep-count/$phase/metadata.csv" "$RUNNER_TEMP/halo-sweep-count/$phase/summary.csv" 2>/dev/null || true
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: halo-sweep-count-${{ github.run_id }}
+          path: ${{ runner.temp }}/halo-sweep-count/

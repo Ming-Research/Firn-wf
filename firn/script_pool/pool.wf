@@ -1,5 +1,6 @@
 fn new_pool() -> pool: EnginePool pure {
   let idle = box_slots_new::<PooledEngine>(capacity: 0_u64);
   let registry = box_slots_new::<Registered>(capacity: 0_u64);
-  return EnginePool(idle: move idle, out: 0_u64, registry: move registry, source_bytes: 0_u64, generation: 0_u64, running: 0_u64, kills: 0_u64);
+  let sweep_rows = box_slots_new::<SweepRow>(capacity: 0_u64);
+  return EnginePool(idle: move idle, out: 0_u64, registry: move registry, source_bytes: 0_u64, generation: 0_u64, running: 0_u64, kills: 0_u64, sweep_rows: move sweep_rows, sweep_collections: 0_u64, sweep_missed: 0_u64, sweep_dropped: 0_u64);
 }

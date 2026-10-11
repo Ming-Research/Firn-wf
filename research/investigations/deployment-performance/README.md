@@ -564,3 +564,49 @@ turns. This tested one workload
 on one machine; the workload client reports p50 and p99, not the longest
 wait. It is evidence against turns as built for this engine, and the
 reason firn asks that any bounded-overtaking build be measured the same way.
+
+## Default Halo sweep counts (unmerged experiment)
+
+Question, requested by Halo-wf in `halo-req-sweep-count`: with Halo's default
+collection settings, does rate-limiter-flexible's script visit at most 1.5
+times the number of live plus freed objects in **each** collection? A single
+collection above that bound rejects Halo's sweep-item acceptance criterion
+for this workload; an aggregate ratio alone cannot establish it.
+
+The experiment branch `exp/halo-sweep-count` adopts Halo
+`15709ec77a382ba26b7d6f43ef88256ba2f7b109`, whose library is unchanged from
+firn's main-line pin `e8f3f9b68294411574e74a6713ea1c1feeafbb63`. Heap
+construction sets both the initial threshold and collection floor to 65,536
+bytes, pause to 200, and stress to false. Firn leaves these settings untouched:
+no floor setter, pause setter, stress mode or forced collection is used.
+
+The planned observation is a fresh firn process on a hosted Ubuntu 24.04
+runner, no append-only file, two drivers, and the existing `limiter-script`
+client with 50 connections and a fixed request count. A 1,000-request probe
+precedes a separate fresh-process 10,000-request run. Both retain all natural
+collections from engine construction, including setup; the processes do not
+share cumulative counters. No collector, latency or throughput timing is
+reported, and this is no performance comparison.
+
+Firn observes Halo's collection count and last snapshot at existing engine
+execution boundaries without adding interpreter stops. It retains each
+snapshot in the script pool for explicit `INFO halo_sweep`. Snapshots contain
+slots visited, objects freed and objects live for strings, tables, closures
+and upvalues; the totals sum all four kinds. Slots visited include free slab
+slots. A count jump larger than one means overwritten snapshots, not repeated
+copies of the last snapshot. Missing snapshots, dropped rows, inconsistent
+counts or zero collections invalidate the run.
+
+The output will retain every collection row, collection count, and the
+mean, median, nearest-rank p90 and maximum of the three counters and
+`slots_visited / (live_objects + freed_objects)`, for totals and each kind.
+Zero-denominator kind ratios are undefined and excluded with their number
+reported; a zero-denominator total invalidates the observation. Acceptance
+uses the exact integer inequality `2 * slots_visited <= 3 * (live + freed)`
+for every total row. The workflow also exercises parser fixtures, including
+missing and inconsistent observations, before accepting real output.
+
+No run has been made for this branch. Compilation, runtime snapshot coverage
+and Halo's acceptance result remain unverified until CI runs the committed
+experiment. This instrumentation is temporary evidence gathering, not a
+proposal to change firn's scripting or permanent INFO interface.

@@ -433,6 +433,15 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     set m^.memory_peak = imax(m^.memory_peak, used);
     set text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
   }
+  let sweep = info_sweep_requested(input: input, args: args);
+  if sweep {
+    if text.inner.len > 0_u64 {
+      text_word(text: &text, word: &info_gap[0_u64..2_u64]);
+    }
+    atomic p = &store^.scripts {
+      info_sweep_body(text: &text, pool: p);
+    }
+  }
   info_finish(client: client, text: &text);
   return unit;
 }
@@ -543,3 +552,113 @@ const info_rw_reserve: Array<u8, 27> = "\r\nfirn_aof_rewrite_reserve:";
 const info_rw_scan_peak: Array<u8, 29> = "\r\nfirn_aof_rewrite_scan_peak:";
 
 const info_rw_cut: Array<u8, 23> = "\r\nfirn_aof_rewrite_cut:";
+
+const sweep_section: Array<u8, 10> = "HALO_SWEEP";
+
+const sweep_head: Array<u8, 37> = "# Halo_sweep\r\nhalo_sweep_collections:";
+
+const sweep_samples: Array<u8, 21> = "\r\nhalo_sweep_samples:";
+
+const sweep_missed: Array<u8, 32> = "\r\nhalo_sweep_missed_collections:";
+
+const sweep_dropped: Array<u8, 29> = "\r\nhalo_sweep_dropped_samples:";
+
+const sweep_sample: Array<u8, 18> = "halo_sweep_sample_";
+
+const sweep_collection: Array<u8, 12> = ":collection=";
+
+const sweep_generation: Array<u8, 12> = ",generation=";
+
+const sweep_slots: Array<u8, 15> = ",slots_visited=";
+
+const sweep_freed: Array<u8, 15> = ",freed_objects=";
+
+const sweep_live: Array<u8, 14> = ",live_objects=";
+
+const sweep_comma: Array<u8, 1> = ",";
+
+const sweep_kind_slots: Array<u8, 15> = "_slots_visited=";
+
+const sweep_kind_freed: Array<u8, 15> = "_freed_objects=";
+
+const sweep_kind_live: Array<u8, 14> = "_live_objects=";
+
+const sweep_strings: Array<u8, 7> = "strings";
+
+const sweep_tables: Array<u8, 6> = "tables";
+
+const sweep_closures: Array<u8, 8> = "closures";
+
+const sweep_upvalues: Array<u8, 8> = "upvalues";
+
+fn info_sweep_requested(input: &[u8], args: &Box<Slots<Span>>) -> yes: Bool reads(input), reads(args) {
+  doc "The experiment section is included only when explicitly requested, keeping default/all INFO unchanged.";
+  for (i in 1_u64..args^.inner.len) {
+    let section = arg(args: args, index: i);
+    let length = before_zero(input: input, span: section);
+    if name_is(input: input, start: section.start, length: length, word: &sweep_section[0_u64..10_u64]) {
+      return True();
+    }
+  }
+  return False();
+}
+
+fn info_sweep_kind(text: &Box<Slots<u8>>, prefix: &[u8], kind: &pkg::script_pool::SweepKind) -> r: unit reads(prefix), reads(kind), writes(text) {
+  text_word(text: text, word: &sweep_comma[0_u64..1_u64]);
+  text_word(text: text, word: prefix);
+  text_word(text: text, word: &sweep_kind_slots[0_u64..15_u64]);
+  text_number(text: text, value: kind^.slots_visited);
+  text_word(text: text, word: &sweep_comma[0_u64..1_u64]);
+  text_word(text: text, word: prefix);
+  text_word(text: text, word: &sweep_kind_freed[0_u64..15_u64]);
+  text_number(text: text, value: kind^.freed_objects);
+  text_word(text: text, word: &sweep_comma[0_u64..1_u64]);
+  text_word(text: text, word: prefix);
+  text_word(text: text, word: &sweep_kind_live[0_u64..14_u64]);
+  text_number(text: text, value: kind^.live_objects);
+  return unit;
+}
+
+fn info_sweep_body(text: &Box<Slots<u8>>, pool: &pkg::script_pool::EnginePool) -> r: unit reads(pool), writes(text) {
+  doc "All retained per-collection counters for halo-req-sweep-count, including every object kind. Collections counts actual completed count deltas; missed and dropped make incomplete data visible.";
+  text_word(text: text, word: &sweep_head[0_u64..37_u64]);
+  text_number(text: text, value: pool^.sweep_collections);
+  text_word(text: text, word: &sweep_samples[0_u64..21_u64]);
+  text_number(text: text, value: pool^.sweep_rows.inner.len);
+  text_word(text: text, word: &sweep_missed[0_u64..32_u64]);
+  text_number(text: text, value: pool^.sweep_missed);
+  text_word(text: text, word: &sweep_dropped[0_u64..29_u64]);
+  text_number(text: text, value: pool^.sweep_dropped);
+  text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  for (i in 0_u64..pool^.sweep_rows.inner.len) {
+    let row = pool^.sweep_rows.inner[i];
+    let slots_containers = row.strings.slots_visited +sat row.tables.slots_visited;
+    let slots_functions = row.closures.slots_visited +sat row.upvalues.slots_visited;
+    let slots = slots_containers +sat slots_functions;
+    let freed_containers = row.strings.freed_objects +sat row.tables.freed_objects;
+    let freed_functions = row.closures.freed_objects +sat row.upvalues.freed_objects;
+    let freed = freed_containers +sat freed_functions;
+    let live_containers = row.strings.live_objects +sat row.tables.live_objects;
+    let live_functions = row.closures.live_objects +sat row.upvalues.live_objects;
+    let live = live_containers +sat live_functions;
+    text_word(text: text, word: &sweep_sample[0_u64..18_u64]);
+    let ordinal = i +sat 1_u64;
+    text_number(text: text, value: ordinal);
+    text_word(text: text, word: &sweep_collection[0_u64..12_u64]);
+    text_number(text: text, value: row.collection);
+    text_word(text: text, word: &sweep_generation[0_u64..12_u64]);
+    text_number(text: text, value: row.generation);
+    text_word(text: text, word: &sweep_slots[0_u64..15_u64]);
+    text_number(text: text, value: slots);
+    text_word(text: text, word: &sweep_freed[0_u64..15_u64]);
+    text_number(text: text, value: freed);
+    text_word(text: text, word: &sweep_live[0_u64..14_u64]);
+    text_number(text: text, value: live);
+    info_sweep_kind(text: text, prefix: &sweep_strings[0_u64..7_u64], kind: &row.strings);
+    info_sweep_kind(text: text, prefix: &sweep_tables[0_u64..6_u64], kind: &row.tables);
+    info_sweep_kind(text: text, prefix: &sweep_closures[0_u64..8_u64], kind: &row.closures);
+    info_sweep_kind(text: text, prefix: &sweep_upvalues[0_u64..8_u64], kind: &row.upvalues);
+    text_word(text: text, word: &info_gap[0_u64..2_u64]);
+  }
+  return unit;
+}

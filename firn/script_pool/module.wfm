@@ -7,6 +7,26 @@ public struct PooledEngine {
   public engine: halo::embed::Engine;
   public generation: u64;
   public cache: Box<Slots<Cached>>;
+  public sweep_seen: u64;
+  public sweep_pending: Box<Slots<SweepRow>>;
+  public sweep_collections: u64;
+  public sweep_missed: u64;
+  public sweep_dropped: u64;
+}
+
+public struct SweepKind {
+  public slots_visited: u64;
+  public freed_objects: u64;
+  public live_objects: u64;
+}
+
+public struct SweepRow {
+  public collection: u64;
+  public generation: u64;
+  public strings: SweepKind;
+  public tables: SweepKind;
+  public closures: SweepKind;
+  public upvalues: SweepKind;
 }
 
 public struct Registered {
@@ -23,6 +43,10 @@ public struct EnginePool {
   public generation: u64;
   public running: u64;
   public kills: u64;
+  public sweep_rows: Box<Slots<SweepRow>>;
+  public sweep_collections: u64;
+  public sweep_missed: u64;
+  public sweep_dropped: u64;
 }
 
 public fn new_pool() -> pool: EnginePool pure doc "A pool with no engine yet, the engine made when first taken.";

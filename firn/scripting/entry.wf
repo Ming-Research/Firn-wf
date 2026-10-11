@@ -87,14 +87,19 @@ fn new_pooled(generation: u64) -> pooled: PooledEngine pure {
   halo::embed::set_pcall_error_field(engine: &engine, field: &s_30[0_u64..3_u64]);
   install_host(engine: &engine);
   let cache = box_slots_new::<Cached>(capacity: 0_u64);
-  return PooledEngine(engine: move engine, generation: generation, cache: move cache);
+  let sweep_pending = box_slots_new::<pkg::script_pool::SweepRow>(capacity: 0_u64);
+  let pooled = PooledEngine(engine: move engine, generation: generation, cache: move cache, sweep_seen: 0_u64, sweep_pending: move sweep_pending, sweep_collections: 0_u64, sweep_missed: 0_u64, sweep_dropped: 0_u64);
+  sweep_observe(pooled: &pooled);
+  return move pooled;
 }
 
 fn return_engine(store: &Keyspace, pooled: PooledEngine) -> r: unit reads(store) waits {
   doc "Puts the engine back for the next script, which then may take it.";
   halo::embed::reset(engine: &pooled.engine);
+  sweep_observe(pooled: &pooled);
   atomic p = &store^.scripts {
     set p^.out = 0_u64;
+    sweep_publish(pool: p, pooled: &pooled);
     if p^.idle.inner.len == p^.idle.inner.cap {
       let room = p^.idle.inner.cap +sat 1_u64;
       let twice = p^.idle.inner.cap +sat p^.idle.inner.cap;
@@ -410,6 +415,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     if bnot(stopped) {
       let n = source.inner.len;
       let compiled = compiled_at(pooled: &pooled, index: slot, sha: &sha, source: &source.inner[0_u64..n]);
+      sweep_observe(pooled: &pooled);
       match move compiled {
         Err(error: e) => {
           compile_error(client: client, error: &e);
@@ -419,6 +425,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
             register(store: store, sha: &sha, source: &source.inner[0_u64..n]);
           }
           prepare(engine: &pooled.engine, input: input, args: args, keys: keys);
+          sweep_observe(pooled: &pooled);
           let reply = box_slots_new::<u8>(capacity: 0_u64);
           let no = False();
           let held = HeldState(start_ms: time^.check, start_us: client^.unix_us, wrote: no, command_ran: no);
@@ -438,6 +445,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
             let held_clients = m^.clients;
             let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
             loop {
+              sweep_observe(pooled: &pooled);
               match outcome {
                 Budget() => {
                   if env.held.wrote {
