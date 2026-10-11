@@ -74,7 +74,7 @@ on:
         type: string
         default: "50"
       workload_options:
-        description: "Memory/rewrite workloads only: space-separated --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Empty keeps workload defaults; seed is the pass (zipf-s applies only to evict-zipf)."
+        description: "Memory/rewrite workloads only: space-separated --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Rewrite-during alone also accepts --maxmemory BYTES (default 0, noeviction). Empty keeps defaults; seed is the pass (zipf-s only for evict-zipf)."
         type: string
         default: ""
       workload_images:

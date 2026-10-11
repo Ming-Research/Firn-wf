@@ -265,7 +265,8 @@ each connection count, and no perf pass. Equivalently, set
 `WORKLOADS=rewrite-during` for the script's `workloads` mode.
 
 The Rust client fills exactly 1,000,000 nonexpiring keys with 64-byte values,
-disables automatic AOF rewrites and memory limits, warms up for 5 seconds,
+disables automatic AOF rewrites, sets `maxmemory` before loading (default 0,
+unlimited) and `maxmemory-policy noeviction`, warms up for 5 seconds,
 then sends continuous uniform depth-one SETs to the same keys. It samples
 completed requests at the three phase boundaries: a before phase of
 `seconds`, a during phase from issuing BGREWRITEAOF until INFO persistence
@@ -279,7 +280,27 @@ interval includes request/polling overhead and can overestimate a very
 short rewrite. Boundary counters count completed SETs, including requests
 issued in the previous phase; they do not provide phase-specific latency.
 `workload_options` can override `--keys`, `--value-size`,
-`--warmup-seconds`, and `--sample-ms`; the pass is the random seed.
+`--warmup-seconds`, `--sample-ms`, and `--maxmemory BYTES`; the pass is the
+random seed. For example, `workload_options='--maxmemory 1073741824'` sets
+a 1 GiB limit on both Redis and firn before loading. The limit must leave
+room for the dataset and rewrite: no keys are evicted, and an OOM reply
+fails the run. `--maxmemory` in `WORKLOAD_OPTIONS` requires that every
+selected workload is `rewrite-during`; memory workloads retain their
+harness-selected limits. The configured limit and noeviction policy are
+printed to stderr.
+
+On success or failure, the client also prints an INFO snapshot to stderr:
+all reported `aof_*` and `firn_aof_rewrite_*` fields, including
+`aof_last_bgrewrite_status`, `aof_rewrite_in_progress`, `aof_rewrites`,
+`firn_aof_rewrite_reserve`, `firn_aof_rewrite_scan_peak`,
+`firn_aof_rewrite_cut`, and `firn_aof_rewrite_commit_seq`, plus
+`used_memory`, `maxmemory` and `maxmemory_policy`. Firn-only fields are
+absent on Redis. This records the latest attempt's reserve and whether it
+crossed S1; scan peak is only the observed heap increase during KeySet
+creation and a map scan, not the journal or total rewrite peak
+([field definitions](../../../firn/README.md)). A failed
+status alone does not prove reserve exhaustion. If INFO cannot be read,
+the diagnostic error is printed and the original workload result is kept.
 
 `rewrite-during.csv` holds
 `line,pass,cpus,workload,connections,keys,value_size,seed,before_rate,during_rate,after_rate,during_seconds,aof_last_rewrite_time_sec,aof_last_bgrewrite_status,rewrite_completed`.

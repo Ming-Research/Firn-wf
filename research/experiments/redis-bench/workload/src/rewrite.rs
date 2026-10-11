@@ -180,11 +180,49 @@ fn phases(opts: &Options, control: &mut Control, requester: Control,
         persistence })
 }
 
-pub(super) fn run(opts: &Options) -> Result<()> {
-    let mut control = Control::new(opts.port)?;
+fn configure(control: &mut Control, opts: &Options) -> Result<()> {
     // The explicit rewrite must be the only one, including during the prefill.
     control.config(b"auto-aof-rewrite-percentage", b"0")?;
-    control.config(b"maxmemory", b"0")?;
+    control.config(b"maxmemory-policy", b"noeviction")?;
+    let maxmemory = opts.maxmemory.unwrap_or(0).to_string();
+    control.config(b"maxmemory", maxmemory.as_bytes())?;
+    eprintln!("rewrite-during settings: maxmemory={maxmemory} bytes, maxmemory-policy=noeviction (no keys evicted)");
+    Ok(())
+}
+
+fn write_diagnostics(info: &str, out: &mut impl Write) -> Result<()> {
+    for line in info.lines() {
+        let Some((name, _)) = line.split_once(':') else { continue; };
+        if name.starts_with("aof_") || name.starts_with("firn_aof_rewrite_")
+            || matches!(name, "used_memory" | "maxmemory" | "maxmemory_policy") {
+            writeln!(out, "{line}")?;
+        }
+    }
+    Ok(())
+}
+
+fn diagnostics(port: u16, out: &mut impl Write) -> Result<()> {
+    // A timeout may leave the polling connection with an unread reply. Use a
+    // fresh connection and deadline, and one INFO for persistence and memory.
+    let mut control = Control::new(port)?;
+    let wire = control.call_before(&[b"INFO"], Some(Instant::now() + TIMEOUT))?;
+    write_diagnostics(info_body(&wire)?, out)
+}
+
+pub(super) fn run(opts: &Options) -> Result<()> {
+    let result = run_inner(opts);
+    let outcome = if result.is_ok() { "success" } else { "failure" };
+    eprintln!("rewrite-during INFO after {outcome}:");
+    if let Err(e) = diagnostics(opts.port, &mut io::stderr().lock()) {
+        // Diagnostics must not replace the workload's original failure.
+        eprintln!("rewrite-during INFO unavailable: {e}");
+    }
+    result
+}
+
+fn run_inner(opts: &Options) -> Result<()> {
+    let mut control = Control::new(opts.port)?;
+    configure(&mut control, opts)?;
     let initial = observation(&mut control, Instant::now() + REWRITE_BOUND)?;
     if !initial.enabled || !initial.idle() { return Err("rewrite-during needs AOF on and an idle rewrite".into()); }
     fill(opts, opts.keys)?;
@@ -249,6 +287,63 @@ mod tests {
 
     fn info() -> &'static str {
         "aof_enabled:1\r\naof_rewrite_in_progress:1\r\naof_rewrite_scheduled:0\r\naof_last_bgrewrite_status:ok\r\naof_rewrites:1\r\naof_last_rewrite_time_sec:2\r\n"
+    }
+
+    #[test]
+    fn rewrite_configuration_sets_noeviction_and_optional_limit() {
+        use std::net::TcpListener;
+        for limit in [None, Some(0), Some(1_073_741_824)] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let mut opts = super::super::tests::options(listener.local_addr().unwrap().port(), "rewrite-during");
+            opts.maxmemory = limit;
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+                for (key, value) in [("auto-aof-rewrite-percentage", "0".to_string()),
+                                     ("maxmemory-policy", "noeviction".to_string()),
+                                     ("maxmemory", limit.unwrap_or(0).to_string())] {
+                    super::super::tests::expect_command(&mut socket,
+                        &[b"CONFIG", b"SET", key.as_bytes(), value.as_bytes()]);
+                    socket.write_all(b"+OK\r\n").unwrap();
+                }
+            });
+            configure(&mut Control::new(opts.port).unwrap(), &opts).unwrap();
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn diagnostics_record_success_failure_and_active_rewrite_fields() {
+        use std::net::TcpListener;
+        for (status, active) in [("ok", "0"), ("err", "0"), ("ok", "1")] {
+            let persistence = info().replace("status:ok", &format!("status:{status}"))
+                .replace("in_progress:1", &format!("in_progress:{active}"));
+            // Optional and future rewrite fields are printed verbatim, without
+            // claiming that scan_peak measures the journal or total footprint.
+            let fields = concat!("firn_aof_rewrite_reserve:53687091\r\n",
+                "firn_aof_rewrite_scan_peak:1024\r\nfirn_aof_rewrite_cut:0\r\n",
+                "firn_aof_rewrite_commit_seq:1000001\r\nfirn_aof_rewrite_future:7\r\n",
+                "aof_current_size:90000000\r\naof_base_size:0\r\n",
+                "used_memory:226000000\r\nmaxmemory:1073741824\r\nmaxmemory_policy:noeviction\r\n");
+            let body = format!("# Persistence\r\n{persistence}{fields}total_commands_processed:42\r\n");
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+                super::super::tests::expect_command(&mut socket, &[b"INFO"]);
+                write!(socket, "${}\r\n{body}\r\n", body.len()).unwrap();
+            });
+            let mut out = Vec::new();
+            diagnostics(port, &mut out).unwrap();
+            server.join().unwrap();
+            let expected = format!("{persistence}{fields}").replace("\r\n", "\n");
+            assert_eq!(String::from_utf8(out).unwrap(), expected);
+        }
+        // Redis/older images need no firn-only fields or fabricated defaults.
+        let mut out = Vec::new();
+        write_diagnostics(info(), &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), info().replace("\r\n", "\n"));
     }
 
     #[test]

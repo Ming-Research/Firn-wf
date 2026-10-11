@@ -97,7 +97,10 @@
 #                                 each before/after phase; the rewrite must finish
 #                                 successfully within 120 seconds. No perf pass.
 #                                 WORKLOAD_OPTIONS can change --keys, --value-size,
-#                                 --warmup-seconds and --sample-ms. Example CI:
+#                                 --warmup-seconds, --sample-ms and --maxmemory
+#                                 (bytes, default 0). Policy is noeviction. INFO
+#                                 AOF fields and used_memory go to stderr on both
+#                                 success and failure. Example CI:
 #                                 mode=workloads tests=rewrite-during seconds=5
 #                                 workload_images=true revisions='base=origin/main
 #                                 head=HEAD head-twin=HEAD'. rewrite-during.csv
@@ -1032,7 +1035,8 @@ if [ "$MODE" = workloads ]; then
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,refused_sets,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections,keys_at_start,keys_at_end' >"$OUT/evict-zipf.csv"
     echo 'line,pass,cpus,workload,connections,keys,value_size,seed,warmup_seconds,sample_ms,maxmemory' >"$OUT/session-limits-settings.csv"
     # Accept only the measurement parameters shared by these opt-in workloads;
-    # the harness owns port, workload, duration, seed and maxmemory. Disable glob
+    # the harness owns port, workload, duration and seed, and maxmemory except
+    # for rewrite-during. Disable glob
     # expansion and never eval workflow input. The client checks numeric values.
     memory_options() {
         set -f
@@ -1040,6 +1044,14 @@ if [ "$MODE" = workloads ]; then
         while [ "$#" -gt 0 ]; do
             case $1 in
                 --keys|--value-size|--zipf-s|--warmup-seconds|--sample-ms) ;;
+                --maxmemory)
+                    for selected_workload in $workloads; do
+                        [ "$selected_workload" = rewrite-during ] || {
+                            echo "WORKLOAD_OPTIONS --maxmemory requires only rewrite-during workloads" >&2
+                            exit 1
+                        }
+                    done
+                    ;;
                 *) echo "unsupported WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
             esac
             [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }

@@ -39,16 +39,19 @@ struct Options {
 
 impl Options {
     fn parse() -> Result<Self> {
+        Self::parse_args(env::args().skip(1), thread::available_parallelism()?.get())
+    }
+
+    fn parse_args(mut args: impl Iterator<Item = String>, threads: usize) -> Result<Self> {
         let mut opts = Self {
             port: 0, connections: 50,
-            threads: thread::available_parallelism()?.get(),
+            threads,
             seconds: None, requests: None, keys: 100_000,
             value: vec![b'x'; 200], workload: String::new(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::from_secs(5),
             sample_interval: Duration::from_millis(10), maxmemory: None,
         };
         let (mut keys_given, mut value_given) = (false, false);
-        let mut args = env::args().skip(1);
         while let Some(flag) = args.next() {
             let value = args.next().ok_or("each option needs a value")?;
             match flag.as_str() {
@@ -87,9 +90,9 @@ impl Options {
         if !opts.zipf_s.is_finite() || opts.zipf_s < 0.0 || opts.sample_interval.is_zero() {
             return Err("--zipf-s must be finite and nonnegative; --sample-ms must be positive".into());
         }
-        if opts.maxmemory.is_some() && (!matches!(opts.workload.as_str(), "session-set" | "session-get")
+        if opts.maxmemory.is_some() && (!matches!(opts.workload.as_str(), "session-set" | "session-get" | "rewrite-during")
             || opts.fill.is_some()) {
-            return Err("--maxmemory only applies to measured session-set/session-get".into());
+            return Err("--maxmemory only applies to measured session-set/session-get or rewrite-during".into());
         }
         if opts.port == 0 || opts.connections == 0 || opts.threads == 0 || opts.keys == 0 {
             return Err("--port, --connections, --threads and --keys must be positive".into());
@@ -556,6 +559,29 @@ mod tests {
         let mut actual = vec![0; expected.len()];
         socket.read_exact(&mut actual).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn maxmemory_options_accept_rewrite_and_sessions_only() {
+        let parse = |workload: &str, extra: &[&str]| {
+            let mut args = vec!["--port", "6379", "--workload", workload, "--seconds", "1"];
+            args.extend_from_slice(extra);
+            Options::parse_args(args.into_iter().map(str::to_string), 2)
+        };
+        assert_eq!(parse("rewrite-during", &[]).unwrap().maxmemory, None);
+        for workload in ["rewrite-during", "session-set", "session-get"] {
+            for (value, expected) in [("0", 0), ("1073741824", 1_073_741_824)] {
+                assert_eq!(parse(workload, &["--maxmemory", value]).unwrap().maxmemory, Some(expected));
+            }
+        }
+        for workload in ["evict-zipf", "limiter-tx", "setmany-tx"] {
+            assert!(parse(workload, &["--maxmemory", "1"]).err().unwrap()
+                .to_string().contains("--maxmemory only applies"));
+        }
+        for value in ["-1", "garbage", "18446744073709551616"] {
+            assert!(parse("rewrite-during", &["--maxmemory", value]).is_err());
+        }
+        assert!(parse("rewrite-during", &["--maxmemory"]).is_err());
     }
 
     #[test]
