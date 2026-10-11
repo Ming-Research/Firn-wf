@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-11 Report why an AOF rewrite stopped
+
+Nodes: firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-11, the owner chose option A (approve) on card firn-q-approve-51-tree, which asked to approve PR #51's design-tree change at head 7bd7c92: the new decision in design/firn/aof-rewrite/capture.md on rewrite diagnostics.
+
+Summary: INFO reports the first cause that stopped a rewrite, latched under Meta before cleanup, with the reserve's use and peak, the journal's image and effect counts and the scan's progress, because an undifferentiated error cannot tell which resource or I/O condition stopped an attempt; these facts showed on the 14900K that rewrites aborted because the scan was slow and the journal grew in memory ([investigation](../research/investigations/aof-rewrite/README.md)).
+
 ## 2026-10-10 AOF rewrite from a reconciled live scan and an effect journal
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/aof-rewrite/sequence
