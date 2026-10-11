@@ -203,7 +203,7 @@ fn scan_matches(input: &[u8], pattern: Span, key: &[u8]) -> matched: Bool reads(
   return glob_match(input: input, start: pattern.start, length: pattern.length, name: key, nocase: nocase);
 }
 
-fn scan_body(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], plan: &ScanPlan, client: &Client, now: u64, found: &KeySet) -> work: ScanWork reads(input), reads(plan), writes(keys), writes(log), writes(client), writes(found) {
+fn scan_body(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], plan: &ScanPlan, client: &Client, now: u64, found: &KeySet, budget: &pkg::store::LogBudget) -> work: ScanWork reads(input), reads(plan), writes(sequence), writes(keys), writes(log), writes(client), writes(found), writes(budget) {
   doc "One map_scan into a fresh key set. MATCH precedes lookup; a matched expired entry is removed and logged even when TYPE excludes it, and TYPE none returns its name. No reference into the map survives a whole-map mutation.";
   let step = key_set_new(capacity: 16_u64);
   let next = map_scan::<Entry>(map: keys, cursor: plan^.cursor, count: plan^.count, keys: &step);
@@ -220,9 +220,9 @@ fn scan_body(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool
     }
     if wanted {
       if index < entries^.len {
-        let kind = entry_kind(slot: &entries^[index], client: client);
+        let kind = entry_kind(sequence: sequence, capture_key: key, slot: &entries^[index], client: client);
         let removed = client^.state == state_expired;
-        let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+        let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
         set appended = appended +wrap recorded;
         if kind != 0_u64 {
           let any = plan^.kind == 0_u64;
@@ -284,14 +284,14 @@ fn scan_finish(client: &Client, found: &KeySet, next: u64) -> result: unit reads
   return unit;
 }
 
-fn held_scan(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64) -> appended: u64 reads(input), reads(args), writes(keys), writes(log), writes(client) {
+fn held_scan(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64, budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(log), writes(client), writes(budget) {
   let plan = scan_plan(input: input, args: args);
   let refused = scan_refused(client: client, plan: &plan);
   if refused {
     return 0_u64;
   }
   let found = key_set_new(capacity: 16_u64);
-  let work = scan_body(keys: keys, log: log, logged: logged, input: input, plan: &plan, client: client, now: now, found: &found);
+  let work = scan_body(sequence: sequence, keys: keys, log: log, logged: logged, input: input, plan: &plan, client: client, now: now, found: &found, budget: budget);
   scan_finish(client: client, found: &found, next: work.next);
   return work.appended;
 }
@@ -335,7 +335,7 @@ fn held_keys(keys: &ConcurrentHashMap<Entry>, input: &[u8], args: &Box<Slots<Spa
   return unit;
 }
 
-fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &Client, now: u64) -> appended: u64 writes(keys), writes(random), writes(log), writes(client) {
+fn held_randomkey(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &Client, now: u64, budget: &pkg::store::LogBudget) -> appended: u64 writes(sequence), writes(keys), writes(random), writes(log), writes(client), writes(budget) {
   doc "RANDOMKEY as Redis 7.0.15's dbRandomKey draws through dictGetFairRandomKey and dictGetRandomKey: one map_scan step of count 15 from a position drawn from firn's xorshift64 state, also used by SPOP, continued from position zero when it reaches the table's end short of fifteen keys, as dictGetSomeKeys wraps, and a key picked uniformly among those gathered, with a fresh position whenever none is. A picked key found expired is removed, recorded as DEL, and the draw starts over; nil once the map holds no key.";
   let appended = 0_u64;
   set client^.now = now;
@@ -363,9 +363,9 @@ fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots
         let size = bytes.inner.len;
         let key = &bytes.inner[0_u64..size];
         if pick < entries^.len {
-          let kind = entry_kind(slot: &entries^[pick], client: client);
+          let kind = entry_kind(sequence: sequence, capture_key: key, slot: &entries^[pick], client: client);
           let removed = client^.state == state_expired;
-          let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key);
+          let recorded = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
           set appended = appended +wrap recorded;
           if kind != 0_u64 {
             reply_bulk_input(client: client, input: key, start: 0_u64, length: size);
@@ -382,7 +382,10 @@ fn held_randomkey(keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots
 fn run_scan(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   let logged = store^.logging;
   atomic t = &store^.keys, m = &store^.meta {
-    let appended = held_scan(keys: t, log: &m^.log, logged: logged, input: input, args: args, client: client, now: time^.check);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let appended = held_scan(sequence: &sequence, keys: t, log: &m^.log, logged: logged, input: input, args: args, client: client, now: time^.check, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   return unit;
 }
@@ -397,7 +400,10 @@ fn run_keys(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
 fn run_randomkey(store: &Keyspace, client: &Client, time: &Time) -> result: unit reads(store), reads(time), writes(client) waits {
   let logged = store^.logging;
   atomic t = &store^.keys, m = &store^.meta {
-    let appended = held_randomkey(keys: t, random: &m^.random, log: &m^.log, logged: logged, client: client, now: time^.check);
+    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let appended = held_randomkey(sequence: &sequence, keys: t, random: &m^.random, log: &m^.log, logged: logged, client: client, now: time^.check, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   return unit;
 }

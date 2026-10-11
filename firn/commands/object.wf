@@ -86,9 +86,9 @@ fn object_plan(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: 
   return 0_u64;
 }
 
-fn object_body(slot: &Option<Entry>, client: &Client, kind: u64) -> lapsed: Bool writes(slot), writes(client) {
+fn object_body(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &Option<Entry>, client: &Client, kind: u64) -> lapsed: Bool reads(capture_key), writes(sequence), writes(slot), writes(client) {
   doc "Redis 7.0.15 object.c objectCommandLookupOrReply and objectCommand: NOTOUCH, missing keys return null before policy checks, IDLETIME uses estimateObjectIdleTime/1000 and FREQ uses LFUDecrAndReturn without storing decay.";
-  let present = entry_kind(slot: slot, client: client);
+  let present = entry_kind(sequence: sequence, capture_key: capture_key, slot: slot, client: client);
   let removed = client^.state == state_expired;
   if present == 0_u64 {
     reply_nil(client: client);
@@ -130,13 +130,16 @@ fn run_object(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
-    let lapsed = object_body(slot: slot, client: client, kind: kind);
-    let appended = mset_lapse_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, key: key);
+    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+    let lapsed = object_body(sequence: &sequence, capture_key: key, slot: slot, client: client, kind: kind);
+    let appended = mset_lapse_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, key: key, budget: &log_budget);
+    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   return unit;
 }
 
-fn held_object(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(keys), writes(log), writes(client) {
+fn held_object(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(keys), writes(log), writes(client), writes(budget) {
   doc "Redis 7.0.15 object.c objectCommand with the same NOTOUCH body in scripts and EXEC.";
   let kind = object_plan(input: input, args: args, client: client);
   if kind == 0_u64 {
@@ -145,6 +148,6 @@ fn held_object(keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bo
   let place = key_bounds(input: input, args: args, index: 2_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  let lapsed = object_body(slot: &keys^[key], client: client, kind: kind);
-  return mset_lapse_meta(log: log, logged: logged, lapsed: lapsed, key: key);
+  let lapsed = object_body(sequence: sequence, capture_key: key, slot: &keys^[key], client: client, kind: kind);
+  return mset_lapse_meta(log: log, logged: logged, lapsed: lapsed, key: key, budget: budget);
 }

@@ -14,6 +14,19 @@ public struct Parsed {
   public next: u64;
 }
 
+public struct RequestStream {
+  doc "Incremental syntax-only RESP traversal. phase is zero between requests, one before a bulk header and two within its data or unchecked two-byte terminator. A completed RESP request reports count, the first argument's full length and its first five bytes in word; inline requests use ordinary argument spans. No key or payload owner is retained.";
+  public phase: u64;
+  public resp: Bool;
+  public count: u64;
+  public remaining: u64;
+  public body: u64;
+  public tail: u64;
+  public length: u64;
+  public copied: u64;
+  public word: Array<u8, 5>;
+}
+
 public struct Settings {
   doc "The server's configuration that does not change while it runs, as a connection reports it: the port it listens on, and the address it listens on and the append-only file's name as given. What CONFIG SET changes is in the server's state beside the keyspace.";
   public port: u64;
@@ -57,6 +70,10 @@ public struct Client {
 }
 
 public fn parse_request(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>, locked: Bool) -> parsed: Parsed writes(input), writes(args) doc "Reads one request from a position of the input, of which held bytes are filled: a RESP array of bulk strings, or an inline command split as Redis splits one, quotes and escapes included. A command's arguments replace what args held, one span each; an inline command's decoded arguments are written back into the input over its line. locked is true for a client that must authenticate first, whose arrays Redis limits.";
+
+public fn request_stream_new() -> made: RequestStream pure doc "An empty syntax-only request stream, ready at a command boundary.";
+
+public fn parse_request_stream(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>, stream: &RequestStream) -> parsed: Parsed writes(input), writes(args), writes(stream) doc "Traverses RESP payloads without storing them, sharing the ordinary header and inline parser rules. State 0 returns the consumed prefix in next and retains partial RESP state; state 1 identifies a complete request, state 6 a skipped empty request. Completed inline requests use args; completed RESP requests use stream's count, first-argument length and five-byte prefix.";
 
 public fn settings_copy(settings: &Settings) -> made: Settings reads(settings) doc "A copy of the settings, for another connection.";
 

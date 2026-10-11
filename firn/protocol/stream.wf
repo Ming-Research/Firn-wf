@@ -1,0 +1,106 @@
+fn request_stream_new() -> made: RequestStream pure {
+  let resp = False();
+  let word = array_filled::<u8, 5>(value: 0_u8);
+  return RequestStream(phase: 0_u64, resp: resp, count: 0_u64, remaining: 0_u64, body: 0_u64, tail: 0_u64, length: 0_u64, copied: 0_u64, word: word);
+}
+
+fn parse_request_stream(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>, stream: &RequestStream) -> parsed: Parsed writes(input), writes(args), writes(stream) {
+  doc "Syntax-only request traversal shares read_line and parse_inline with parse_request. RESP payloads and their two unchecked trailing bytes are consumed across windows without retaining them. A completed RESP request records its argument count and the first five bytes of its first argument, plus its full length, sufficient for exact short command classification. Inline requests retain the ordinary decoded spans. State 0 returns the consumed prefix in next and preserves the partial RESP state; callers retain only the incomplete header or inline line, growing under their own resource policy.";
+  let position = start;
+  if stream^.phase == 0_u64 {
+    if position >= held {
+      return Parsed(state: 0_u64, next: position);
+    }
+    let marker = pkg::bytes::byte_at(input: input, index: position);
+    set stream^.resp = marker == 42_u8;
+    if stream^.resp {
+      let header = read_line(input: input, marker: position, held: held);
+      if header.state == 0_u64 {
+        return Parsed(state: 0_u64, next: position);
+      }
+      if header.state == 3_u64 {
+        return Parsed(state: 8_u64, next: position);
+      }
+      if header.state == 2_u64 {
+        return Parsed(state: 2_u64, next: position);
+      }
+      if header.value > 2147483647_i64 {
+        return Parsed(state: 2_u64, next: position);
+      }
+      set position = header.end +wrap 2_u64;
+      if header.value <= 0_i64 {
+        return Parsed(state: 6_u64, next: position);
+      }
+      set stream^.count = cvt.wrap::<i64, u64>(header.value);
+      set stream^.remaining = stream^.count;
+      set stream^.length = 0_u64;
+      set stream^.copied = 0_u64;
+      set stream^.phase = 1_u64;
+    } else {
+      return parse_inline(input: input, start: position, held: held, args: args);
+    }
+  }
+  loop {
+    if stream^.phase == 1_u64 {
+      let line = read_line(input: input, marker: position, held: held);
+      if line.state == 0_u64 {
+        return Parsed(state: 0_u64, next: position);
+      }
+      if line.state == 3_u64 {
+        return Parsed(state: 9_u64, next: position);
+      }
+      let dollar = pkg::bytes::byte_at(input: input, index: position);
+      if dollar != 36_u8 {
+        return Parsed(state: 3_u64, next: position);
+      }
+      if line.state == 2_u64 {
+        return Parsed(state: 4_u64, next: position);
+      }
+      let negative = line.value < 0_i64;
+      let excessive = line.value > 536870912_i64;
+      if bor(negative, excessive) {
+        return Parsed(state: 4_u64, next: position);
+      }
+      set stream^.body = cvt.wrap::<i64, u64>(line.value);
+      if stream^.remaining == stream^.count {
+        set stream^.length = stream^.body;
+      }
+      set stream^.tail = 2_u64;
+      set stream^.phase = 2_u64;
+      set position = line.end +wrap 2_u64;
+    }
+    let available = held -sat position;
+    let taken = imin(available, stream^.body);
+    if stream^.remaining == stream^.count {
+      let room = 5_u64 -sat stream^.copied;
+      let saved = imin(taken, room);
+      for (index in 0_u64..saved) {
+        let source = position +wrap index;
+        let target = stream^.copied +wrap index;
+        let value = pkg::bytes::byte_at(input: input, index: source);
+        if target < 5_u64 {
+          set stream^.word[target] = value;
+        }
+      }
+      set stream^.copied = stream^.copied +wrap saved;
+    }
+    set position = position +wrap taken;
+    set stream^.body = stream^.body -wrap taken;
+    if stream^.body > 0_u64 {
+      return Parsed(state: 0_u64, next: position);
+    }
+    let tail_room = held -sat position;
+    let skipped = imin(tail_room, stream^.tail);
+    set position = position +wrap skipped;
+    set stream^.tail = stream^.tail -wrap skipped;
+    if stream^.tail > 0_u64 {
+      return Parsed(state: 0_u64, next: position);
+    }
+    set stream^.remaining = stream^.remaining -sat 1_u64;
+    if stream^.remaining == 0_u64 {
+      set stream^.phase = 0_u64;
+      return Parsed(state: 1_u64, next: position);
+    }
+    set stream^.phase = 1_u64;
+  }
+}

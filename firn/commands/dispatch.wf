@@ -800,7 +800,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_flush(store: store, input: input, args: args, client: client);
+      run_flush(store: store, input: input, args: args, client: client, time: time);
     }
     return unit;
   }

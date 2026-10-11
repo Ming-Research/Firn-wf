@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-10 AOF rewrite from a reconciled live scan and an effect journal
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/aof-rewrite/sequence
+
+Owner-approved: On the shared status board on 2026-10-10, written in Chinese, the owner approved, with the board's approve answer ("agree"), the request on the item for the reconciled chunked export, which asked to approve PR #42's design nodes: the changes to design/firn/aof-rewrite.md and the new aof-rewrite/capture.md and aof-rewrite/sequence.md; on the same board the owner chose option A on cards firn-q-rw-cut, firn-q-rw-stamp, firn-q-rw-limits and firn-q-rw-startup-multi, and option C on card firn-q-rw-bigkey.
+
+Summary: The rewrite no longer replays the closed log into a private keyspace, a second copy of the dataset. It scans the live map in bounded steps after S0 while every mutating statement takes a sequence number and stamps the entries it changes; a key's first write in the window journals its complete after-image and, for a statement holding only that key, later writes journal the statement's own append-only bytes; the sole writer rotates once at S1, cutting the sealed file before a startup-retained unfinished MULTI, and the base is the scan followed by the journal in sequence order. The rewrite's memory is a reserve of 5% of maxmemory (16 MiB without one) counted in process memory; exhausting it aborts the attempt with the old files authoritative and stops automatic rewrites until a manual one succeeds; FLUSHALL and FLUSHDB abort a scan. Evidence and reviews are in research/investigations/aof-rewrite/scan-log.md.
+
 ## 2026-10-10 Benchmark servers run on distinct physical performance cores
 
 Nodes: firn/measurement-sessions

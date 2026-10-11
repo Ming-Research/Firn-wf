@@ -1,0 +1,152 @@
+fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) {
+  doc "Starts a local token while the outer statement holds Meta; no sequence is taken until a dataset change.";
+  let taken = False();
+  let serving = bnot(loading);
+  let capturing = band(meta^.rewrite.active, serving);
+  let allowance = meta^.rewrite.limit -sat meta^.rewrite.used;
+  let images = None<Box<Slots<RewriteImage>>>();
+  return WriteSequence(value: meta^.commit_seq, taken: taken, loading: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, allowance: allowance, retained: 0_u64, single: taken, start: meta^.rewrite.start, log_start: meta^.log.inner.len, anchor_seen: taken, anchored: taken, effect: taken, images: move images);
+}
+
+fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) {
+  doc "The statement holds one key, so its append-only bytes change that key alone.";
+  let sequence = sequence_new(meta: meta, loading: loading);
+  set sequence.single = True();
+  return move sequence;
+}
+
+fn sequence_anchor(sequence: &WriteSequence, previous: u64) -> result: unit writes(sequence) {
+  doc "Records, at the statement's first stamp or removal, whether the key's previous write lies inside the current rewrite window and so already has a journal record. A previous stamp equal to this statement's own value comes from an earlier change in the same statement.";
+  if sequence^.anchor_seen {
+    return unit;
+  }
+  if sequence^.taken {
+    if previous == sequence^.value {
+      return unit;
+    }
+  }
+  set sequence^.anchor_seen = True();
+  set sequence^.anchored = previous > sequence^.start;
+  return unit;
+}
+
+fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) {
+  doc "Takes the statement's sequence once, saturating at u64's maximum and refusing captures without refusing service writes. Loading has no surviving capture.";
+  if sequence^.loading {
+    return unit;
+  }
+  if sequence^.taken {
+    return unit;
+  }
+  let before = sequence^.value;
+  if before < 18446744073709551615_u64 {
+    set sequence^.value = before + 1_u64;
+  }
+  if sequence^.value == 18446744073709551615_u64 {
+    set sequence^.exhausted = True();
+  }
+  set sequence^.taken = True();
+  return unit;
+}
+
+fn sequence_stamp(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit reads(slot), writes(sequence), writes(slot.Some.value.last_write) {
+  doc "One publication path for a changed surviving entry and the statement counter, independent of access refreshes and AOF configuration.";
+  sequence_change(sequence: sequence);
+  match slot^ {
+    Some(value: changed_entry) => {
+      sequence_entry(sequence: sequence, value: changed_entry);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit writes(sequence), writes(slot) {
+  doc "Actual removal takes a sequence even with AOF disabled; an absent key takes none.";
+  let present = False();
+  match slot^ {
+    Some(value: removed_entry) => {
+      set present = True();
+      sequence_anchor(sequence: sequence, previous: removed_entry^.last_write);
+    }
+    None() => {
+    }
+  }
+  if present {
+    sequence_change(sequence: sequence);
+    set slot^ = None<Entry>();
+  }
+  return unit;
+}
+
+fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), reads(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) {
+  doc "Commits sequence, after-images and any rotation-buffer allocation or overflow under the same outer keys-and-Meta hold, including effects before an EXEC or script error. The separate log budget permits held command parts to borrow their sequence and encoder allowance without overlapping owners.";
+  if budget^.failed {
+    rewrite_abort(capture: &meta^.rewrite);
+  }
+  set meta^.rewrite.used = meta^.rewrite.used +sat budget^.charged;
+  set meta^.rewrite.peak = imax(meta^.rewrite.peak, meta^.rewrite.used);
+  if sequence^.taken {
+    set meta^.commit_seq = sequence^.value;
+    set meta^.aof_rewrite_seq_exhausted = sequence^.exhausted;
+    sequence_publish(meta: meta, sequence: sequence);
+  }
+  return unit;
+}
+
+fn sequence_entry(sequence: &WriteSequence, value: &Entry) -> result: unit writes(sequence), writes(value.last_write) {
+  doc "Stamps an entry whose payload is already held through a match, using the same lazy sequence as sequence_stamp.";
+  sequence_anchor(sequence: sequence, previous: value^.last_write);
+  sequence_change(sequence: sequence);
+  let stamp = sequence^.value;
+  if sequence^.loading {
+    set stamp = 0_u64;
+  }
+  set value^.last_write = stamp;
+  return unit;
+}
+
+fn sequence_stamp_key(sequence: &WriteSequence, slot: &Option<Entry>, key: &[u8]) -> result: unit reads(slot), reads(key), writes(sequence), writes(slot.Some.value.last_write) {
+  sequence_stamp(sequence: sequence, slot: slot);
+  sequence_capture(sequence: sequence, key: key, slot: slot);
+  return unit;
+}
+
+fn sequence_delete_key(sequence: &WriteSequence, slot: &Option<Entry>, key: &[u8]) -> result: unit reads(key), writes(sequence), writes(slot) {
+  let present = False();
+  match slot^ {
+    Some(value: previous) => {
+      set present = True();
+    }
+    None() => {
+    }
+  }
+  sequence_delete(sequence: sequence, slot: slot);
+  if present {
+    sequence_capture(sequence: sequence, key: key, slot: slot);
+  }
+  return unit;
+}
+
+fn sequence_stamp_at(sequence: &WriteSequence, slot: &Option<Entry>, keys: &KeySet, index: u64) -> result: unit reads(slot), reads(keys), writes(sequence), writes(slot.Some.value.last_write) {
+  sequence_stamp(sequence: sequence, slot: slot);
+  sequence_capture_at(sequence: sequence, keys: keys, index: index, slot: slot);
+  return unit;
+}
+
+fn sequence_delete_at(sequence: &WriteSequence, slot: &Option<Entry>, keys: &KeySet, index: u64) -> result: unit reads(keys), writes(sequence), writes(slot) {
+  let present = False();
+  match slot^ {
+    Some(value: previous) => {
+      set present = True();
+    }
+    None() => {
+    }
+  }
+  sequence_delete(sequence: sequence, slot: slot);
+  if present {
+    sequence_capture_at(sequence: sequence, keys: keys, index: index, slot: slot);
+  }
+  return unit;
+}

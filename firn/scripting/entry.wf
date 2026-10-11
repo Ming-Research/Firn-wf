@@ -242,22 +242,22 @@ fn reply_killed(client: &Client, sha: &Array<u8, 40>, line: u64) -> r: unit read
   return unit;
 }
 
-fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64) -> r: unit reads(effects), writes(log) {
+fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64, budget: &pkg::store::LogBudget) -> r: unit reads(effects), writes(log), writes(budget) {
   doc "Appends the records a script's commands made to the append-only file's pending bytes, wrapped in MULTI and EXEC when they are more than one, as Redis 7.0.15 propagates a script's effects.";
   if appended > 1_u64 {
-    log_count(log: log, count: 1_u64, room: 16_u64);
-    log_word(log: log, word: &effects_multi[0_u64..5_u64]);
+    log_count(log: log, count: 1_u64, room: 16_u64, budget: budget);
+    log_word(log: log, word: &effects_multi[0_u64..5_u64], budget: budget);
   }
   let length = effects^.inner.len;
-  log_append(log: log, bytes: &effects^.inner[0_u64..length]);
+  log_append(log: log, bytes: &effects^.inner[0_u64..length], budget: budget);
   if appended > 1_u64 {
-    log_count(log: log, count: 1_u64, room: 16_u64);
-    log_word(log: log, word: &effects_exec[0_u64..4_u64]);
+    log_count(log: log, count: 1_u64, room: 16_u64, budget: budget);
+    log_word(log: log, word: &effects_exec[0_u64..4_u64], budget: budget);
   }
   return unit;
 }
 
-fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(engine), writes(env), writes(keys), writes(meta), writes(effects), writes(client) {
+fn answer_call<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(sequence), writes(engine), writes(env), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "Runs the command a script's redis.call or redis.pcall left pending, inside the script's statement, and continues the script with its reply: the arguments, numbers formatted as Redis formats them, are laid out as the network's input; the command runs through ScriptCommands with the client answering in the script's protocol, which redis.setresp selects, its records counted in the script's effects; its reply is converted to a Lua value from the bytes it wrote, which are then taken back; and an error reply is raised at redis.call, while redis.pcall returns it as its error table, as Redis 7.0.15's luaRedisGenericCommand does. budget is what the script's attempt has left.";
   let id = 0_u32;
   let argc = 0_u64;
@@ -288,8 +288,11 @@ fn answer_call<interface ScriptCommands>(engine: &Engine, env: &Env, keys: &Conc
   set client^.resp = scripted;
   set client^.now = time^.check;
   let logged = True();
-  let appended = ScriptCommands::call(memory: &env^.memory, journal: &env^.access, keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
+  let appended = ScriptCommands::call(sequence: sequence, memory: &env^.memory, journal: &env^.access, keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
   set client^.resp = protocol;
+  if sequence^.taken {
+    set env^.held.wrote = True();
+  }
   if appended > 0_u64 {
     set env^.held.wrote = True();
     set env^.appended = env^.appended +sat appended;
@@ -429,6 +432,8 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
           let configs = config_snapshot(vm: &pooled.engine.vm);
           let config_active = pooled.engine.vm.cjson_active_config;
           atomic t = &store^.keys, m = &store^.meta {
+            let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+            let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
             let held_keys = map_count::<pkg::store::Entry>(map: t);
             let held_clients = m^.clients;
             let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
@@ -453,7 +458,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   if env.held.wrote {
                     set more = 18446744073709551615_u64;
                   }
-                  set outcome = answer_call::<ScriptCommands>(engine: &pooled.engine, env: &env, keys: t, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                  set outcome = answer_call::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, keys: t, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
                 }
                 Done(..) => {
                   let v = Value::Nil();
@@ -466,7 +471,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   }
                   lua_to_protocol(vm: &pooled.engine.vm, value: v, client: client, resp: env.resp);
                   if logged {
-                    record_effects(log: &m^.log, effects: &effects, appended: env.appended);
+                    record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
                   }
                   break;
                 }
@@ -478,7 +483,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   let length = formatted.inner.len;
                   reply_error(client: client, word: &formatted.inner[0_u64..length]);
                   if logged {
-                    record_effects(log: &m^.log, effects: &effects, appended: env.appended);
+                    record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
                   }
                   break;
                 }
@@ -488,6 +493,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                 }
               }
             }
+            pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
           }
         }
       }

@@ -15,7 +15,7 @@ alias parse_request = pkg::protocol::parse_request;
 alias read_at = std::fs::read_at;
 alias sync_file = std::fs::sync_file;
 alias aof_byte_at = pkg::bytes::byte_at;
-alias aof_word = pkg::store::log_append;
+alias aof_word = pkg::store::log_append_plain;
 
 const aof_directory_name: Array<u8, 13> = "appendonlydir";
 

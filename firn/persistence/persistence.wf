@@ -48,7 +48,7 @@ fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>
   return written;
 }
 
-fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time) -> result: unit pure waits {
+fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time, meter: std::process::MemoryMeter) -> result: unit pure waits {
   doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Preserve a partial append for the next drain. Main sets stopping only after clients have left.";
   let pending = box_slots_new::<u8>(capacity: 0_u64);
   atomic pending_meta = &store.meta {
@@ -99,6 +99,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
           set m^.aof_rewrite_requested = False();
           set rewrite = manual;
           if m^.aof_rewrite_in_progress {
+          } else if m^.aof_rewrite_retry_blocked {
           } else if m^.aof_rewrite_reply == 0_u64 {
             set rewrite = aof_rw_growth(current_size: m^.aof_current_size, base_size: m^.aof_base_size, percentage: m^.aof_rewrite_percentage, minimum: m^.aof_rewrite_min_size);
           }
@@ -107,7 +108,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
           }
         }
         if rewrite {
-          let aof_cycled = aof_rw_cycle(store: &store, factory: &factory, log: move log, pending: &pending, clock: &clock, last_sync: &last_sync, time: &time, manual: manual);
+          let aof_cycled = aof_rw_cycle(store: &store, factory: &factory, log: move log, pending: &pending, clock: &clock, last_sync: &last_sync, manual: manual, meter: &meter);
           set log = move aof_cycled;
         }
       }
@@ -134,8 +135,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
   let size = 0_u64;
   let cut = False();
   let stopped = False();
-  let reverted = 0_u64;
-  let unfinished = False();
   match open_file(factory: factory, root: root, name: name, start: 0_u64, end: name_length) {
     Ok(value: file) => {
       let env = KeyEnv();
@@ -152,7 +151,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
       let block_start = 0_u64;
       let block_body = 0_u64;
       let latest_multi = 0_u64;
-      let first_multi = 0_u64;
       loop @chunks {
         if held >= input.inner.len {
           input_grow(input: &input);
@@ -197,10 +195,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
             set kept = latest_multi;
             set cut = True();
           }
-          set unfinished = scanning;
-          if scanning {
-            set reverted = first_multi;
-          }
           break @chunks;
         }
         let consumed = resume;
@@ -217,12 +211,9 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
           }
           let next = parsed.next;
           if parsed.state == 1_u64 {
-            let command = arg(args: &args, index: 0_u64);
-            let only = args.inner.len == 1_u64;
-            let multi_word = name_is(input: bytes, start: command.start, length: command.length, word: &word_multi[0_u64..5_u64]);
-            let exec_word = name_is(input: bytes, start: command.start, length: command.length, word: &word_exec[0_u64..4_u64]);
-            let multi = band(only, multi_word);
-            let exec = band(only, exec_word);
+            let block_kind = aof_block_command(input: bytes, args: &args);
+            let multi = block_kind == 1_u64;
+            let exec = block_kind == 2_u64;
             if scanning {
               if exec {
                 set scanning = False();
@@ -242,7 +233,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
             } else if multi {
               set scanning = True();
               set latest_multi = window_base +wrap consumed;
-              set first_multi = latest_multi;
               set block_start = consumed;
               set block_body = parsed.next;
             } else if exec {
@@ -276,5 +266,5 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
       set stopped = True();
     }
   }
-  return Loaded(applied: applied, kept: kept, size: size, cut: cut, stopped: stopped, reverted: reverted, unfinished: unfinished);
+  return Loaded(applied: applied, kept: kept, size: size, cut: cut, stopped: stopped);
 }
