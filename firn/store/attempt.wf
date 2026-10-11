@@ -1,4 +1,12 @@
+alias Bytes = pkg::bytes::Bytes;
+alias Key = pkg::bytes::Key;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias KeyHash = pkg::bytes::KeyHash;
+alias HashMap = std::collections::hash_map::HashMap;
+alias OrderedMap = std::collections::ordered_map::OrderedMap;
 alias DequeVisit = std::collections::deque::DequeVisit;
+alias bytes_new = pkg::bytes::bytes_new;
+alias priority_queue_new = std::collections::priority_queue::priority_queue_new;
 alias bytes_boxed = pkg::bytes::bytes_boxed;
 alias bytes_copy = pkg::bytes::bytes_copy;
 alias copy_key = pkg::bytes::copy_key;
@@ -167,7 +175,8 @@ fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result:
   if undo^.entries.inner.len == capacity {
     let needed = undo^.entries.inner.len +sat 1_u64;
     let doubled = capacity +sat capacity;
-    grow(cell: &undo^.entries, capacity: imax(needed, doubled));
+    let target = imax(needed, doubled);
+    grow(cell: &undo^.entries, capacity: target);
   }
   if undo^.entries.inner.len < undo^.entries.inner.cap {
     let original = None<Entry>();
@@ -251,7 +260,8 @@ fn attempt_due_new() -> due: ExpiryQueue pure {
   let queue = priority_queue_new::<Due, ceiling>();
   let entries = box_slots_new::<Due>(capacity: 0_u64);
   let staged = Some<Box<Slots<Due>>>(value: move entries);
-  return ExpiryQueue(queue: move queue, eligibility_changed: False(), staged: move staged);
+  let unchanged = False();
+  return ExpiryQueue(queue: move queue, eligibility_changed: unchanged, staged: move staged);
 }
 
 fn attempt_due_commit(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(staged), writes(target) {
@@ -260,10 +270,11 @@ fn attempt_due_commit(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) 
   }
   let pending = None<Box<Slots<Due>>>();
   swap(first: &staged^.staged, second: &pending);
-  match pending {
+  match move pending {
     Some(value: records) => {
-      for (index in 0_u64..records^.inner.len) {
-        let due = &records^.inner[index];
+      let held_records = &records;
+      for (index in 0_u64..held_records^.inner.len) {
+        let due = &held_records^.inner[index];
         match due^.key {
           Short(bytes: short) => {
             let length = short^.len;

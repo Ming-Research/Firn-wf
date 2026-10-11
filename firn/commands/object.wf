@@ -138,4 +138,3 @@ fn run_object(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   }
   return unit;
 }
-

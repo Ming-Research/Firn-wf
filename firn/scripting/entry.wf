@@ -335,7 +335,6 @@ fn answer_call_entries<interface ScriptCommands>(sequence: &pkg::store::WriteSeq
       set appended = count;
     }
     NeedWholeMap() => {
-      // No Lua continuation receives fallback, so neither pcall can catch it.
       set env^.need_whole = True();
       set client^.at = reply_start;
       return Outcome::HostStopped();
@@ -577,7 +576,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     if env.held.wrote {
                       set outcome = halo::embed::resume::<ScriptHost>(engine: &pooled.engine, env: &env, budget: 18446744073709551615_u64);
                     } else {
-                      match undo {
+                      match &undo {
                         Some(value: saved_entries) => {
                           pkg::store::attempt_restore(undo: saved_entries, slots: t);
                         }
@@ -631,7 +630,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   }
                   HostStopped() => {
                     if env.need_whole {
-                      match undo {
+                      match &undo {
                         Some(value: saved_entries) => {
                           pkg::store::attempt_restore(undo: saved_entries, slots: t);
                         }

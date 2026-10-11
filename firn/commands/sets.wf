@@ -997,7 +997,7 @@ fn survey(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::Acc
   return found;
 }
 
-fn held_by_others(slots: &Entries<Entry>, keys: &KeySet, access_keys: &KeySet, ranks: &Box<Slots<u64>>, positions: &Box<Slots<u64>>, skip: u64, member: &Key, env: &KeyEnv, now: u64, every: Bool) -> held: Bool reads(slots), reads(keys), reads(access_keys), reads(ranks), reads(positions), reads(member), reads(env) {
+fn held_by_others(slots: &Entries<Entry>, keys: &KeySet, ranks: &Box<Slots<u64>>, positions: &Box<Slots<u64>>, skip: u64, member: &Key, env: &KeyEnv, now: u64, every: Bool) -> held: Bool reads(slots), reads(keys), reads(ranks), reads(positions), reads(member), reads(env) {
   doc "Whether every set the operation names but the one at skip holds the member (every), or else whether any of them does; a key holding no live set holds nothing.";
   for @others (at in 0_u64..keys^.len) {
     if at != skip {
@@ -1022,7 +1022,7 @@ fn held_by_others(slots: &Entries<Entry>, keys: &KeySet, access_keys: &KeySet, r
   return every;
 }
 
-fn combine(slots: &Entries<Entry>, keys: &KeySet, access_keys: &KeySet, ranks: &Box<Slots<u64>>, positions: &Box<Slots<u64>>, from: u64, env: &KeyEnv, now: u64, every: Bool, wanted: Bool, limit: u64, keep: Bool, result: &HashMap<Key, unit, ceiling>) -> count: u64 reads(slots), reads(keys), reads(access_keys), reads(ranks), reads(positions), reads(env), writes(result) {
+fn combine(slots: &Entries<Entry>, keys: &KeySet, ranks: &Box<Slots<u64>>, positions: &Box<Slots<u64>>, from: u64, env: &KeyEnv, now: u64, every: Bool, wanted: Bool, limit: u64, keep: Bool, result: &HashMap<Key, unit, ceiling>) -> count: u64 reads(slots), reads(keys), reads(ranks), reads(positions), reads(env), writes(result) {
   doc "Visits the members of the set at from that the other sets the operation names all hold (every) or none holds, when wanted is true, or else the members no set already in result holds, and returns how many it found, stopping at limit when it is not 0; with keep, a copy of each joins result.";
   let count = 0_u64;
   let rank = key_position(positions: ranks, index: from);
@@ -1040,7 +1040,7 @@ fn combine(slots: &Entries<Entry>, keys: &KeySet, access_keys: &KeySet, ranks: &
                   HashMapFilled(key: member, value: nothing) => {
                     let taken = False();
                     if wanted {
-                      let others = held_by_others(slots: slots, keys: keys, access_keys: access_keys, ranks: ranks, positions: positions, skip: from, member: member, env: env, now: now, every: every);
+                      let others = held_by_others(slots: slots, keys: keys, ranks: ranks, positions: positions, skip: from, member: member, env: env, now: now, every: every);
                       if every {
                         set taken = others;
                       } else {
@@ -1088,7 +1088,7 @@ fn combine(slots: &Entries<Entry>, keys: &KeySet, access_keys: &KeySet, ranks: &
   return count;
 }
 
-fn gather(slots: &Entries<Entry>, keys: &KeySet, access_keys: &KeySet, ranks: &Box<Slots<u64>>, positions: &Box<Slots<u64>>, found: Operands, operation: u64, env: &KeyEnv, now: u64, result: &HashMap<Key, unit, ceiling>) -> result_size: u64 reads(slots), reads(keys), reads(access_keys), reads(ranks), reads(positions), reads(env), writes(result) {
+fn gather(slots: &Entries<Entry>, keys: &KeySet, ranks: &Box<Slots<u64>>, positions: &Box<Slots<u64>>, found: Operands, operation: u64, env: &KeyEnv, now: u64, result: &HashMap<Key, unit, ceiling>) -> result_size: u64 reads(slots), reads(keys), reads(ranks), reads(positions), reads(env), writes(result) {
   doc "Adds to result a copy of each member of the operation's result: for operation_inter the members of the smallest set every other set holds, empty when a set is missing; for operation_union every member of every live set visited in first operand occurrence order; for operation_diff the members of the first set no other set holds, empty when the first set is missing or named again. Returns the result's size.";
   let no_limit = 0_u64;
   let keeping = True();
@@ -1098,7 +1098,7 @@ fn gather(slots: &Entries<Entry>, keys: &KeySet, access_keys: &KeySet, ranks: &B
     }
     let every = True();
     let filtered = True();
-    let count = combine(slots: slots, keys: keys, access_keys: access_keys, ranks: ranks, positions: positions, from: found.smallest, env: env, now: now, every: every, wanted: filtered, limit: no_limit, keep: keeping, result: result);
+    let count = combine(slots: slots, keys: keys, ranks: ranks, positions: positions, from: found.smallest, env: env, now: now, every: every, wanted: filtered, limit: no_limit, keep: keeping, result: result);
     return count;
   }
   if operation == operation_union {
@@ -1109,7 +1109,7 @@ fn gather(slots: &Entries<Entry>, keys: &KeySet, access_keys: &KeySet, ranks: &B
       let payload = key_position(positions: positions, index: at);
       let named = iand(payload, operand_named);
       if named != 0_u64 {
-        let added = combine(slots: slots, keys: keys, access_keys: access_keys, ranks: ranks, positions: positions, from: at, env: env, now: now, every: every, wanted: filtered, limit: no_limit, keep: keeping, result: result);
+        let added = combine(slots: slots, keys: keys, ranks: ranks, positions: positions, from: at, env: env, now: now, every: every, wanted: filtered, limit: no_limit, keep: keeping, result: result);
         set total = total +wrap added;
       }
     }
@@ -1120,7 +1120,7 @@ fn gather(slots: &Entries<Entry>, keys: &KeySet, access_keys: &KeySet, ranks: &B
   }
   let none_other = False();
   let filtered = True();
-  let count = combine(slots: slots, keys: keys, access_keys: access_keys, ranks: ranks, positions: positions, from: found.first, env: env, now: now, every: none_other, wanted: filtered, limit: no_limit, keep: keeping, result: result);
+  let count = combine(slots: slots, keys: keys, ranks: ranks, positions: positions, from: found.first, env: env, now: now, every: none_other, wanted: filtered, limit: no_limit, keep: keeping, result: result);
   return count;
 }
 
@@ -1780,7 +1780,7 @@ fn set_combine_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
     set client^.state = state_wrong;
   } else {
     set client^.state = state_done;
-    let size = gather(slots: slots, keys: keys, access_keys: access_keys, ranks: ranks, positions: &client^.key_metadata, found: found, operation: operation, env: env, now: client^.now, result: members);
+    let size = gather(slots: slots, keys: keys, ranks: ranks, positions: &client^.key_metadata, found: found, operation: operation, env: env, now: client^.now, result: members);
     set client^.number = size;
     if storing {
       let target = key_position(positions: ranks, index: found.destination);
@@ -1914,7 +1914,7 @@ fn sintercard_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::s
     let every = True();
     let filtered = True();
     let counting = False();
-    set client^.number = combine(slots: slots, keys: keys, access_keys: access_keys, ranks: ranks, positions: &client^.key_metadata, from: found.smallest, env: env, now: client^.now, every: every, wanted: filtered, limit: limit, keep: counting, result: &unused);
+    set client^.number = combine(slots: slots, keys: keys, ranks: ranks, positions: &client^.key_metadata, from: found.smallest, env: env, now: client^.now, every: every, wanted: filtered, limit: limit, keep: counting, result: &unused);
   }
   return move removed;
 }

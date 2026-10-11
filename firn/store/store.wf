@@ -240,7 +240,9 @@ fn queue_due(due: &ExpiryQueue, key: &[u8], at: u64, env: &KeyEnv) -> result: un
       let capacity = records^.inner.cap;
       if records^.inner.len == capacity {
         let needed = records^.inner.len +sat 1_u64;
-        grow(cell: records, capacity: imax(needed, capacity +sat capacity));
+        let doubled = capacity +sat capacity;
+        let target = imax(needed, doubled);
+        grow(cell: records, capacity: target);
       }
       if records^.inner.len < records^.inner.cap {
         place_back(window: &records^.inner, value: move queued_due);

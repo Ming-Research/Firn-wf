@@ -253,9 +253,17 @@ fn arity_holds(arity: i64, count: u64) -> fits: Bool pure {
 
 fn script_whole_kind(kind: u64) -> whole: Bool pure {
   doc "The admitted commands whose footprint is the whole keyspace, independently of its present contents.";
-  let flush = bor(kind == 164_u64, kind == 165_u64);
-  let enumeration = bor(kind == 168_u64, kind == 169_u64);
-  return bor(bor(flush, enumeration), bor(kind == 21_u64, kind == 170_u64));
+  let flushall = kind == 164_u64;
+  let flushdb = kind == 165_u64;
+  let flush = bor(flushall, flushdb);
+  let scan = kind == 168_u64;
+  let keys = kind == 169_u64;
+  let enumeration = bor(scan, keys);
+  let size = kind == 21_u64;
+  let random = kind == 170_u64;
+  let global = bor(size, random);
+  let changing_or_enumerating = bor(flush, enumeration);
+  return bor(changing_or_enumerating, global);
 }
 
 fn script_key_plan(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> plan: ScriptKeyPlan reads(input), reads(args) {
@@ -263,7 +271,15 @@ fn script_key_plan(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> plan: Sc
   if script_whole_kind(kind: kind) {
     return ScriptKeyPlan::WholeMap();
   }
-  let no_keys = bor(bor(kind == 22_u64, kind == 23_u64), bor(kind == 162_u64, bor(kind == 163_u64, kind == 166_u64)));
+  let ping = kind == 22_u64;
+  let echo = kind == 23_u64;
+  let time = kind == 162_u64;
+  let select = kind == 163_u64;
+  let command = kind == 166_u64;
+  let local_replies = bor(ping, echo);
+  let session_commands = bor(select, command);
+  let local_commands = bor(time, session_commands);
+  let no_keys = bor(local_replies, local_commands);
   if no_keys {
     return ScriptKeyPlan::NoKeys();
   }
@@ -278,16 +294,36 @@ fn script_key_plan(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> plan: Sc
     set first = 2_u64;
     set end = 3_u64;
   }
-  let named = bor(bor(kind == 16_u64, kind == 17_u64), bor(kind == 18_u64, bor(kind == 34_u64, kind == 160_u64)));
-  let algebra = band(kind >= 99_u64, kind <= 105_u64);
+  let del = kind == 16_u64;
+  let unlink = kind == 17_u64;
+  let exists = kind == 18_u64;
+  let mget = kind == 34_u64;
+  let touch = kind == 160_u64;
+  let removals = bor(del, unlink);
+  let named_reads = bor(mget, touch);
+  let probes = bor(exists, named_reads);
+  let named = bor(removals, probes);
+  let algebra_first = kind >= 99_u64;
+  let algebra_last = kind <= 105_u64;
+  let algebra = band(algebra_first, algebra_last);
   if bor(named, algebra) {
     set end = args^.inner.len;
   }
-  if bor(kind == 15_u64, kind == 35_u64) {
+  let mset = kind == 15_u64;
+  let msetnx = kind == 35_u64;
+  if bor(mset, msetnx) {
     set end = args^.inner.len;
     set step = 2_u64;
   }
-  let transfers = bor(band(kind >= 37_u64, kind <= 39_u64), bor(kind == 74_u64, bor(kind == 75_u64, kind == 98_u64)));
+  let transfer_first = kind >= 37_u64;
+  let transfer_last = kind <= 39_u64;
+  let key_transfers = band(transfer_first, transfer_last);
+  let lmove = kind == 74_u64;
+  let rpoplpush = kind == 75_u64;
+  let smove = kind == 98_u64;
+  let legacy_moves = bor(rpoplpush, smove);
+  let moves = bor(lmove, legacy_moves);
+  let transfers = bor(key_transfers, moves);
   if transfers {
     set end = 3_u64;
   }
@@ -296,7 +332,9 @@ fn script_key_plan(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> plan: Sc
     set end = first;
     let span = arg(args: args, index: 1_u64);
     let count = read_integer(input: input, start: span.start, length: span.length);
-    if band(count.state == 1_u64, count.value > 0_i64) {
+    let numeric = count.state == 1_u64;
+    let positive = count.value > 0_i64;
+    if band(numeric, positive) {
       let amount = cvt.wrap::<i64, u64>(count.value);
       let available = args^.inner.len -sat 2_u64;
       if amount <= available {
@@ -304,10 +342,13 @@ fn script_key_plan(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> plan: Sc
       }
     }
   }
-  let keys = key_set_new(capacity: end -sat first);
+  let capacity = end -sat first;
+  let keys = key_set_new(capacity: capacity);
   let index = first;
   loop @keys {
-    if index >= end { break @keys; }
+    if index >= end {
+      break @keys;
+    }
     let bounds = key_bounds(input: input, args: args, index: index);
     let key = &input^[bounds.start..bounds.end];
     key_set_insert(keys: &keys, key: key);
@@ -340,18 +381,25 @@ fn script_entries_ready(kind: u64, keys: &Entries<Entry>, declared: &KeySet, und
   doc "Check every operand before touching an entry, then save a declared WRITE operand once, or an expired read operand before lazy removal. Returning false is attempt control, never a Lua command error.";
   let plan = script_key_plan(kind: kind, input: input, args: args);
   match move plan {
-    NoKeys() => { return True(); }
-    WholeMap() => { return False(); }
+    NoKeys() => {
+      return True();
+    }
+    WholeMap() => {
+      return False();
+    }
     Finite(keys: planned) => {
       let ranks = script_key_ranks(keys: &planned, declared: declared);
       for @check (index in 0_u64..ranks.inner.len) {
         if index < ranks.inner.len {
           let rank = ranks.inner[index];
-          if rank >= keys^.len { return False(); }
+          if rank >= keys^.len {
+            return False();
+          }
         }
       }
       match undo^ {
-        None() => { }
+        None() => {
+        }
         Some(value: journal) => {
           let writing = command_writes(kind: kind);
           for @save (index in 0_u64..ranks.inner.len) {
@@ -361,9 +409,10 @@ fn script_entries_ready(kind: u64, keys: &Entries<Entry>, declared: &KeySet, und
                 let slot = &keys^[rank];
                 let save = writing;
                 match slot^ {
-                  None() => { }
-                  Some(value: entry) => {
-                    if pkg::store::expired(expires: entry^.expires, now: time^.check) {
+                  None() => {
+                  }
+                  Some(value: held_entry) => {
+                    if pkg::store::expired(expires: held_entry^.expires, now: time^.check) {
                       set save = True();
                     }
                   }
@@ -386,22 +435,28 @@ fn script_object(sequence: &pkg::store::WriteSequence, keys: &Entries<Entry>, de
   ensures keys^.len == entry(keys)^.len;
 } {
   let kind = object_plan(input: input, args: args, client: client);
-  if kind == 0_u64 { return 0_u64; }
-  if bnot(script_entries_ready(kind: operation_kind, keys: keys, declared: declared, undo: undo, input: input, args: args, time: time)) {
+  if kind == 0_u64 {
+    return 0_u64;
+  }
+  let footprint_ready = script_entries_ready(kind: operation_kind, keys: keys, declared: declared, undo: undo, input: input, args: args, time: time);
+  if bnot(footprint_ready) {
     set fallback^ = True();
     return 0_u64;
   }
   let bounds = key_bounds(input: input, args: args, index: 2_u64);
   let key = &input^[bounds.start..bounds.end];
   let rank = script_key_rank(keys: declared, key: key);
-  if rank >= keys^.len { set fallback^ = True(); return 0_u64; }
+  if rank >= keys^.len {
+    set fallback^ = True();
+    return 0_u64;
+  }
   set client^.now = time^.check;
   let lapsed = object_body(sequence: sequence, capture_key: key, slot: &keys^[rank], client: client, kind: kind);
   let budget = pkg::store::log_budget_new();
   return mset_lapse_meta(log: effects, logged: logged, lapsed: lapsed, key: key, budget: &budget);
 }
 
-fn script_get(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_get(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -435,7 +490,7 @@ fn script_get(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   return appended;
 }
 
-fn script_incr(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, delta: i64) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_incr(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, delta: i64) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -464,7 +519,7 @@ fn script_incr(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_set(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(due), writes(effects), writes(client) contract {
+fn script_set(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -515,7 +570,7 @@ fn script_set(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   return appended;
 }
 
-fn script_incrby(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, negate: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_incrby(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, negate: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -525,11 +580,11 @@ fn script_incrby(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   if refused {
     return 0_u64;
   }
-  let appended = script_incr(declared: declared, undo: undo, fallback: fallback, operation_kind: operation_kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: delta.value);
+  let appended = script_incr(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: operation_kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: delta.value);
   return appended;
 }
 
-fn script_expire(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, scale: u64, absolute: Bool, invalid: &[u8]) -> appended: u64 reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(due), writes(effects), writes(client) contract {
+fn script_expire(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, scale: u64, absolute: Bool, invalid: &[u8]) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -562,7 +617,7 @@ fn script_expire(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return appended;
 }
 
-fn script_ttl(sequence: &pkg::store::WriteSequence, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, in_seconds: Bool, absolute: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_ttl(sequence: &pkg::store::WriteSequence, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, in_seconds: Bool, absolute: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -588,7 +643,7 @@ fn script_ttl(sequence: &pkg::store::WriteSequence, keys: &Entries<Entry>, decla
   return appended;
 }
 
-fn script_mset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_mset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -1490,9 +1545,14 @@ fn held_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::A
   let plan = script_key_plan(kind: kind, input: input, args: args);
   let command_keys = key_set_new(capacity: 0_u64);
   match move plan {
-    NoKeys() => { }
-    Finite(keys: planned) => { set command_keys = move planned; }
-    WholeMap() => { return 0_u64; }
+    NoKeys() => {
+    }
+    Finite(keys: planned) => {
+      set command_keys = move planned;
+    }
+    WholeMap() => {
+      return 0_u64;
+    }
   }
   let slots = &keys^[command_keys];
   let undo = None<pkg::store::AttemptUndo>();
@@ -1500,7 +1560,7 @@ fn held_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::A
   return held_entries_run(sequence: sequence, journal: journal, kind: kind, keys: slots, declared: &command_keys, undo: &undo, fallback: &fallback, due: &meta^.due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
 }
 
-fn held_entries_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(due), writes(effects), writes(client) contract {
+fn held_entries_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -1511,87 +1571,87 @@ fn held_entries_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
   let relative = False();
   let calendar = True();
   if kind == 1_u64 {
-    let got = script_get(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let got = script_get(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return got;
   }
   if kind == 2_u64 {
-    let stored = script_set(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let stored = script_set(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     return stored;
   }
   if kind == 3_u64 {
-    let bumped = script_incr(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: 1_i64);
+    let bumped = script_incr(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: 1_i64);
     return bumped;
   }
   if kind == 4_u64 {
-    let lowered = script_incr(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: -1_i64);
+    let lowered = script_incr(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, delta: -1_i64);
     return lowered;
   }
   if kind == 5_u64 {
-    let added = script_incrby(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: relative);
+    let added = script_incrby(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: relative);
     return added;
   }
   if kind == 6_u64 {
-    let taken = script_incrby(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: calendar);
+    let taken = script_incrby(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, negate: calendar);
     return taken;
   }
   if kind == 7_u64 {
-    let expiring = script_expire(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: relative, invalid: &text_expire_expire[0_u64..43_u64]);
+    let expiring = script_expire(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: relative, invalid: &text_expire_expire[0_u64..43_u64]);
     return expiring;
   }
   if kind == 8_u64 {
-    let expiring = script_expire(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: relative, invalid: &text_expire_pexpire[0_u64..44_u64]);
+    let expiring = script_expire(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: relative, invalid: &text_expire_pexpire[0_u64..44_u64]);
     return expiring;
   }
   if kind == 9_u64 {
-    let expiring = script_expire(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: calendar, invalid: &text_expire_expireat[0_u64..45_u64]);
+    let expiring = script_expire(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1000_u64, absolute: calendar, invalid: &text_expire_expireat[0_u64..45_u64]);
     return expiring;
   }
   if kind == 10_u64 {
-    let expiring = script_expire(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: calendar, invalid: &text_expire_pexpireat[0_u64..46_u64]);
+    let expiring = script_expire(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, scale: 1_u64, absolute: calendar, invalid: &text_expire_pexpireat[0_u64..46_u64]);
     return expiring;
   }
   if kind == 11_u64 {
     let whole_seconds = True();
-    let read = script_ttl(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: whole_seconds, absolute: relative);
+    let read = script_ttl(sequence: sequence, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: whole_seconds, absolute: relative);
     return read;
   }
   if kind == 12_u64 {
     let milliseconds = False();
-    let read = script_ttl(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: milliseconds, absolute: relative);
+    let read = script_ttl(sequence: sequence, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: milliseconds, absolute: relative);
     return read;
   }
   if kind == 13_u64 {
     let whole_seconds = True();
-    let read = script_ttl(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: whole_seconds, absolute: calendar);
+    let read = script_ttl(sequence: sequence, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: whole_seconds, absolute: calendar);
     return read;
   }
   if kind == 14_u64 {
     let milliseconds = False();
-    let read = script_ttl(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: milliseconds, absolute: calendar);
+    let read = script_ttl(sequence: sequence, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, in_seconds: milliseconds, absolute: calendar);
     return read;
   }
   if kind == 15_u64 {
-    let stored = script_mset(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let stored = script_mset(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return stored;
   }
   if kind == 16_u64 {
-    let appended = script_named(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_named(sequence: sequence, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 17_u64 {
-    let appended = script_named(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_named(sequence: sequence, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 18_u64 {
-    let appended = script_named(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_named(sequence: sequence, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 19_u64 {
-    let appended = script_type(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_type(sequence: sequence, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 20_u64 {
-    let appended = script_persist(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_persist(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 22_u64 {
@@ -1603,355 +1663,355 @@ fn held_entries_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
     return 0_u64;
   }
   if kind == 24_u64 {
-    let appended = script_set_key(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 2_u64, flags: option_nx, at: 0_u64, mode: mode_setnx);
+    let appended = script_set_key(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 2_u64, flags: option_nx, at: 0_u64, mode: mode_setnx);
     return appended;
   }
   if kind == 25_u64 {
-    let appended = script_setex(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, in_seconds: calendar, invalid: &text_expire_setex[0_u64..42_u64]);
+    let appended = script_setex(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, in_seconds: calendar, invalid: &text_expire_setex[0_u64..42_u64]);
     return appended;
   }
   if kind == 26_u64 {
-    let appended = script_setex(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, in_seconds: relative, invalid: &text_expire_psetex[0_u64..43_u64]);
+    let appended = script_setex(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, in_seconds: relative, invalid: &text_expire_psetex[0_u64..43_u64]);
     return appended;
   }
   if kind == 27_u64 {
-    let appended = script_set_key(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 2_u64, flags: option_get, at: 0_u64, mode: mode_getset);
+    let appended = script_set_key(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: 1_u64, value_index: 2_u64, flags: option_get, at: 0_u64, mode: mode_getset);
     return appended;
   }
   if kind == 28_u64 {
-    let appended = script_getdel(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_getdel(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 29_u64 {
-    let appended = script_getex(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let appended = script_getex(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     return appended;
   }
   if kind == 30_u64 {
-    let appended = script_append(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_append(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 31_u64 {
-    let appended = script_setrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_setrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 32_u64 {
-    let appended = script_strlen(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_strlen(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 33_u64 {
-    let appended = script_getrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_getrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 34_u64 {
-    let appended = script_named(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_named(sequence: sequence, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 35_u64 {
-    let appended = script_msetnx(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_msetnx(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 36_u64 {
-    let appended = script_incrbyfloat(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_incrbyfloat(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 37_u64 {
-    let appended = script_rename(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, fresh: relative);
+    let appended = script_rename(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, fresh: relative);
     return appended;
   }
   if kind == 38_u64 {
-    let appended = script_rename(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, fresh: calendar);
+    let appended = script_rename(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, fresh: calendar);
     return appended;
   }
   if kind == 39_u64 {
-    let appended = script_copy(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let appended = script_copy(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     return appended;
   }
   if kind == 40_u64 {
-    let appended = script_hset(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, counted: calendar);
+    let appended = script_hset(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, counted: calendar);
     return appended;
   }
   if kind == 41_u64 {
-    let appended = script_hset(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, counted: relative);
+    let appended = script_hset(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, counted: relative);
     return appended;
   }
   if kind == 42_u64 {
-    let appended = script_hsetnx(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hsetnx(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 43_u64 {
-    let appended = script_hget(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hget(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 44_u64 {
-    let appended = script_hmget(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hmget(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 45_u64 {
-    let appended = script_hdel(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hdel(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 46_u64 {
-    let appended = script_hfield(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, length: relative);
+    let appended = script_hfield(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, length: relative);
     return appended;
   }
   if kind == 47_u64 {
-    let appended = script_hfield(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, length: calendar);
+    let appended = script_hfield(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, length: calendar);
     return appended;
   }
   if kind == 48_u64 {
-    let appended = script_hlen(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hlen(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 49_u64 {
-    let appended = script_hall(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 2_i64);
+    let appended = script_hall(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 2_i64);
     return appended;
   }
   if kind == 50_u64 {
-    let appended = script_hall(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 0_i64);
+    let appended = script_hall(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 0_i64);
     return appended;
   }
   if kind == 51_u64 {
-    let appended = script_hall(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 1_i64);
+    let appended = script_hall(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, shown: 1_i64);
     return appended;
   }
   if kind == 52_u64 {
-    let appended = script_hincrby(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hincrby(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 53_u64 {
-    let appended = script_hincrbyfloat(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hincrbyfloat(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 54_u64 {
-    let appended = script_hrandfield(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_hrandfield(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 60_u64 {
-    let appended = script_push(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar, existing: relative);
+    let appended = script_push(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar, existing: relative);
     return appended;
   }
   if kind == 61_u64 {
-    let appended = script_push(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative, existing: relative);
+    let appended = script_push(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative, existing: relative);
     return appended;
   }
   if kind == 62_u64 {
-    let appended = script_push(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar, existing: calendar);
+    let appended = script_push(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar, existing: calendar);
     return appended;
   }
   if kind == 63_u64 {
-    let appended = script_push(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative, existing: calendar);
+    let appended = script_push(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative, existing: calendar);
     return appended;
   }
   if kind == 64_u64 {
-    let appended = script_pop(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar);
+    let appended = script_pop(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: calendar);
     return appended;
   }
   if kind == 65_u64 {
-    let appended = script_pop(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative);
+    let appended = script_pop(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, front: relative);
     return appended;
   }
   if kind == 66_u64 {
-    let appended = script_lrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_lrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 67_u64 {
-    let appended = script_llen(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_llen(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 68_u64 {
-    let appended = script_lindex(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_lindex(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 69_u64 {
-    let appended = script_lset(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_lset(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 70_u64 {
-    let appended = script_lrem(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_lrem(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 71_u64 {
-    let appended = script_ltrim(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_ltrim(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 72_u64 {
-    let appended = script_linsert(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_linsert(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 73_u64 {
-    let appended = script_lpos(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_lpos(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 74_u64 {
-    let appended = script_lmove(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, named: calendar);
+    let appended = script_lmove(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, named: calendar);
     return appended;
   }
   if kind == 75_u64 {
-    let appended = script_lmove(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, named: relative);
+    let appended = script_lmove(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, named: relative);
     return appended;
   }
   if kind == 90_u64 {
-    let appended = script_sadd(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_sadd(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 91_u64 {
-    let appended = script_srem(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_srem(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 92_u64 {
-    let appended = script_spop(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_spop(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 93_u64 {
-    let appended = script_scard(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_scard(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 94_u64 {
-    let appended = script_smembers(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_smembers(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 95_u64 {
     let many = False();
-    let appended = script_sismember(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, many: many);
+    let appended = script_sismember(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, many: many);
     return appended;
   }
   if kind == 96_u64 {
     let many = True();
-    let appended = script_sismember(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, many: many);
+    let appended = script_sismember(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, many: many);
     return appended;
   }
   if kind == 97_u64 {
-    let appended = script_srandmember(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_srandmember(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 98_u64 {
-    let appended = script_smove(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_smove(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 99_u64 {
     let storing = False();
-    let appended = script_set_combine(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_inter, storing: storing);
+    let appended = script_set_combine(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_inter, storing: storing);
     return appended;
   }
   if kind == 100_u64 {
     let storing = False();
-    let appended = script_set_combine(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_union, storing: storing);
+    let appended = script_set_combine(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_union, storing: storing);
     return appended;
   }
   if kind == 101_u64 {
     let storing = False();
-    let appended = script_set_combine(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
+    let appended = script_set_combine(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
     return appended;
   }
   if kind == 102_u64 {
-    let appended = script_sintercard(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let appended = script_sintercard(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     return appended;
   }
   if kind == 103_u64 {
     let storing = True();
-    let appended = script_set_combine(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_inter, storing: storing);
+    let appended = script_set_combine(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_inter, storing: storing);
     return appended;
   }
   if kind == 104_u64 {
     let storing = True();
-    let appended = script_set_combine(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_union, storing: storing);
+    let appended = script_set_combine(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_union, storing: storing);
     return appended;
   }
   if kind == 105_u64 {
     let storing = True();
-    let appended = script_set_combine(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
+    let appended = script_set_combine(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, operation: operation_diff, storing: storing);
     return appended;
   }
   if kind == 120_u64 {
-    let appended = script_zadd(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, increment: relative);
+    let appended = script_zadd(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, increment: relative);
     return appended;
   }
   if kind == 121_u64 {
-    let appended = script_zadd(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, increment: calendar);
+    let appended = script_zadd(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, increment: calendar);
     return appended;
   }
   if kind == 122_u64 {
-    let appended = script_zrem(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_zrem(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 123_u64 {
-    let appended = script_zpop(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, from_top: relative);
+    let appended = script_zpop(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, from_top: relative);
     return appended;
   }
   if kind == 124_u64 {
-    let appended = script_zpop(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, from_top: calendar);
+    let appended = script_zpop(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, from_top: calendar);
     return appended;
   }
   if kind == 125_u64 {
-    let appended = script_zcard(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_zcard(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 126_u64 {
-    let appended = script_zscore(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_zscore(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 127_u64 {
-    let appended = script_zmscore(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_zmscore(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 128_u64 {
-    let appended = script_zrank(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, reverse: relative);
+    let appended = script_zrank(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, reverse: relative);
     return appended;
   }
   if kind == 129_u64 {
-    let appended = script_zrank(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, reverse: calendar);
+    let appended = script_zrank(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, reverse: calendar);
     return appended;
   }
   if kind == 130_u64 {
-    let appended = script_zrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 0_u64, direction: 0_u64);
+    let appended = script_zrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 0_u64, direction: 0_u64);
     return appended;
   }
   if kind == 131_u64 {
-    let appended = script_zrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64, direction: 2_u64);
+    let appended = script_zrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64, direction: 2_u64);
     return appended;
   }
   if kind == 132_u64 {
-    let appended = script_zrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64, direction: 1_u64);
+    let appended = script_zrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64, direction: 1_u64);
     return appended;
   }
   if kind == 133_u64 {
-    let appended = script_zrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64, direction: 2_u64);
+    let appended = script_zrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64, direction: 2_u64);
     return appended;
   }
   if kind == 134_u64 {
-    let appended = script_zrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 3_u64, direction: 1_u64);
+    let appended = script_zrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 3_u64, direction: 1_u64);
     return appended;
   }
   if kind == 135_u64 {
-    let appended = script_zrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 3_u64, direction: 2_u64);
+    let appended = script_zrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 3_u64, direction: 2_u64);
     return appended;
   }
   if kind == 136_u64 {
-    let appended = script_zcount(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64);
+    let appended = script_zcount(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64);
     return appended;
   }
   if kind == 137_u64 {
-    let appended = script_zcount(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64);
+    let appended = script_zcount(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64);
     return appended;
   }
   if kind == 138_u64 {
-    let appended = script_zremrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 0_u64);
+    let appended = script_zremrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 0_u64);
     return appended;
   }
   if kind == 139_u64 {
-    let appended = script_zremrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64);
+    let appended = script_zremrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 1_u64);
     return appended;
   }
   if kind == 140_u64 {
-    let appended = script_zremrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64);
+    let appended = script_zremrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time, kind: 2_u64);
     return appended;
   }
   if kind == 160_u64 {
-    let appended = script_named(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_named(sequence: sequence, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 161_u64 {
-    let appended = script_getrange(declared: declared, undo: undo, fallback: fallback, operation_kind: kind, sequence: sequence, journal: journal, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+    let appended = script_getrange(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: kind, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
     return appended;
   }
   if kind == 162_u64 {
@@ -2063,11 +2123,13 @@ fn script_admit(memory: &pkg::scripting::ScriptMemory, input: &[u8], args: &Box<
 fn script_command(sequence: &pkg::store::WriteSequence, memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(memory), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "Runs an admitted script command under the existing whole keyspace hold; EXEC shares held_run directly.";
   let kind = script_admit(memory: memory, input: input, args: args, client: client);
-  if kind == 0_u64 { return 0_u64; }
+  if kind == 0_u64 {
+    return 0_u64;
+  }
   return held_run(sequence: sequence, journal: journal, kind: kind, keys: keys, meta: meta, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
 }
 
-fn script_command_entries(sequence: &pkg::store::WriteSequence, memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: pkg::scripting::ScriptCommandResult reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(memory), writes(journal), reads(declared), writes(undo), writes(slots), writes(due), writes(effects), writes(client) contract {
+fn script_command_entries(sequence: &pkg::store::WriteSequence, memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: pkg::scripting::ScriptCommandResult reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(memory), writes(journal), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
   requires slots^.len == declared^.len;
   ensures slots^.len == entry(slots)^.len;
 } {
@@ -2083,7 +2145,9 @@ fn script_command_entries(sequence: &pkg::store::WriteSequence, memory: &pkg::sc
         return pkg::scripting::ScriptCommandResult::Completed(appended: 0_u64);
       }
     }
-    if bor(kind == 164_u64, kind == 165_u64) {
+    let flushall = kind == 164_u64;
+    let flushdb = kind == 165_u64;
+    if bor(flushall, flushdb) {
       if flush_refused(input: input, args: args, client: client) {
         return pkg::scripting::ScriptCommandResult::Completed(appended: 0_u64);
       }
@@ -2104,7 +2168,7 @@ binding FirnCommands : ScriptCommands {
   call_entries = script_command_entries;
 }
 
-fn script_type(sequence: &pkg::store::WriteSequence, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_type(sequence: &pkg::store::WriteSequence, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2134,7 +2198,7 @@ fn script_type(sequence: &pkg::store::WriteSequence, keys: &Entries<Entry>, decl
   return records;
 }
 
-fn script_persist(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_persist(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2163,7 +2227,7 @@ fn script_persist(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::st
   return records;
 }
 
-fn script_getdel(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_getdel(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2194,7 +2258,7 @@ fn script_getdel(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return records;
 }
 
-fn script_getex(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(due), writes(effects), writes(client) contract {
+fn script_getex(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2230,7 +2294,7 @@ fn script_getex(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   return records;
 }
 
-fn script_append(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_append(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2262,7 +2326,7 @@ fn script_append(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return records;
 }
 
-fn script_setrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_setrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2300,7 +2364,7 @@ fn script_setrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::s
   return records;
 }
 
-fn script_strlen(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_strlen(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2330,7 +2394,7 @@ fn script_strlen(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return records;
 }
 
-fn script_getrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_getrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2365,7 +2429,7 @@ fn script_getrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::s
   return records;
 }
 
-fn script_incrbyfloat(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_incrbyfloat(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2397,7 +2461,7 @@ fn script_incrbyfloat(sequence: &pkg::store::WriteSequence, journal: &Option<pkg
   return records;
 }
 
-fn script_set_key(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, key_index: u64, value_index: u64, flags: u64, at: u64, mode: u64) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(due), writes(effects), writes(client) contract {
+fn script_set_key(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, key_index: u64, value_index: u64, flags: u64, at: u64, mode: u64) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2439,7 +2503,7 @@ fn script_set_key(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::st
   return records;
 }
 
-fn script_setex(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, invalid: &[u8]) -> appended: u64 reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(due), writes(effects), writes(client) contract {
+fn script_setex(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, in_seconds: Bool, invalid: &[u8]) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), reads(invalid), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2453,11 +2517,11 @@ fn script_setex(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
       return 0_u64;
     }
   }
-  let appended = script_set_key(declared: declared, undo: undo, fallback: fallback, operation_kind: operation_kind, sequence: sequence, journal: journal, keys: keys, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: plan.key_index, value_index: plan.value_index, flags: plan.flags, at: plan.at, mode: plan.mode);
+  let appended = script_set_key(sequence: sequence, journal: journal, keys: keys, declared: declared, undo: undo, fallback: fallback, operation_kind: operation_kind, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time, key_index: plan.key_index, value_index: plan.value_index, flags: plan.flags, at: plan.at, mode: plan.mode);
   return appended;
 }
 
-fn script_named(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_named(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2522,7 +2586,7 @@ fn script_named(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   return appended;
 }
 
-fn script_msetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_msetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2584,7 +2648,7 @@ fn script_msetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return appended;
 }
 
-fn script_rename(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, fresh: Bool) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(due), writes(effects), writes(client) contract {
+fn script_rename(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, fresh: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2607,7 +2671,7 @@ fn script_rename(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return appended;
 }
 
-fn script_copy(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(due), writes(effects), writes(client) contract {
+fn script_copy(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2635,7 +2699,7 @@ fn script_copy(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_hset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, counted: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, counted: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2669,7 +2733,7 @@ fn script_hset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_hsetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hsetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2701,7 +2765,7 @@ fn script_hsetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return appended;
 }
 
-fn script_hget(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hget(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2733,7 +2797,7 @@ fn script_hget(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_hmget(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hmget(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2766,7 +2830,7 @@ fn script_hmget(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   return appended;
 }
 
-fn script_hdel(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hdel(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2796,7 +2860,7 @@ fn script_hdel(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_hfield(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, length: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hfield(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, length: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2829,7 +2893,7 @@ fn script_hfield(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return appended;
 }
 
-fn script_hlen(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hlen(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2861,7 +2925,7 @@ fn script_hlen(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_hall(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, shown: i64) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hall(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, shown: i64) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2893,7 +2957,7 @@ fn script_hall(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_hincrby(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hincrby(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2927,7 +2991,7 @@ fn script_hincrby(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::st
   return appended;
 }
 
-fn script_hincrbyfloat(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hincrbyfloat(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -2964,7 +3028,7 @@ fn script_hincrbyfloat(sequence: &pkg::store::WriteSequence, journal: &Option<pk
   return appended;
 }
 
-fn script_hrandfield(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_hrandfield(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3003,7 +3067,7 @@ fn script_hrandfield(sequence: &pkg::store::WriteSequence, journal: &Option<pkg:
   return appended;
 }
 
-fn script_push(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool, existing: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_push(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool, existing: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3029,7 +3093,7 @@ fn script_push(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_pop(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_pop(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, front: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3058,7 +3122,7 @@ fn script_pop(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   return appended;
 }
 
-fn script_lrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_lrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3091,7 +3155,7 @@ fn script_lrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return appended;
 }
 
-fn script_llen(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_llen(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3121,7 +3185,7 @@ fn script_llen(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_lindex(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_lindex(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3151,7 +3215,7 @@ fn script_lindex(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return appended;
 }
 
-fn script_lset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_lset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3177,7 +3241,7 @@ fn script_lset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_lrem(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_lrem(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3206,7 +3270,7 @@ fn script_lrem(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_ltrim(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_ltrim(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3235,7 +3299,7 @@ fn script_ltrim(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   return appended;
 }
 
-fn script_linsert(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_linsert(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3264,7 +3328,7 @@ fn script_linsert(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::st
   return appended;
 }
 
-fn script_lpos(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_lpos(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3300,7 +3364,7 @@ fn script_lpos(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_lmove(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, named: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_lmove(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, named: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3333,7 +3397,7 @@ fn script_lmove(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   return appended;
 }
 
-fn script_sadd(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_sadd(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3359,7 +3423,7 @@ fn script_sadd(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_srem(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_srem(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3385,7 +3449,7 @@ fn script_srem(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_spop(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_spop(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3414,7 +3478,7 @@ fn script_spop(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_scard(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_scard(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3443,7 +3507,7 @@ fn script_scard(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   return appended;
 }
 
-fn script_smembers(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_smembers(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3472,7 +3536,7 @@ fn script_smembers(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::s
   return appended;
 }
 
-fn script_sismember(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, many: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_sismember(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, many: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3502,7 +3566,7 @@ fn script_sismember(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
   return appended;
 }
 
-fn script_srandmember(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_srandmember(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3534,7 +3598,7 @@ fn script_srandmember(sequence: &pkg::store::WriteSequence, journal: &Option<pkg
   return appended;
 }
 
-fn script_smove(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_smove(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3556,7 +3620,7 @@ fn script_smove(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   return appended;
 }
 
-fn script_set_combine(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, operation: u64, storing: Bool) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_set_combine(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, operation: u64, storing: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3576,7 +3640,7 @@ fn script_set_combine(sequence: &pkg::store::WriteSequence, journal: &Option<pkg
   return appended;
 }
 
-fn script_sintercard(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_sintercard(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3600,7 +3664,7 @@ fn script_sintercard(sequence: &pkg::store::WriteSequence, journal: &Option<pkg:
   return appended;
 }
 
-fn script_zadd(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, increment: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_zadd(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, increment: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3631,7 +3695,7 @@ fn script_zadd(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_zrem(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_zrem(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3661,7 +3725,7 @@ fn script_zrem(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_zpop(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, from_top: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_zpop(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, from_top: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3691,7 +3755,7 @@ fn script_zpop(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return appended;
 }
 
-fn script_zcard(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_zcard(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3728,7 +3792,7 @@ fn script_zcard(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   return appended;
 }
 
-fn script_zscore(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_zscore(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3762,7 +3826,7 @@ fn script_zscore(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return appended;
 }
 
-fn script_zmscore(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_zmscore(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3797,7 +3861,7 @@ fn script_zmscore(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::st
   return appended;
 }
 
-fn script_zrank(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, reverse: Bool) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_zrank(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, reverse: Bool) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3831,7 +3895,7 @@ fn script_zrank(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   return appended;
 }
 
-fn script_zrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64, direction: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_zrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64, direction: u64) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3867,7 +3931,7 @@ fn script_zrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return appended;
 }
 
-fn script_zcount(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_zcount(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
@@ -3906,7 +3970,7 @@ fn script_zcount(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   return appended;
 }
 
-fn script_zremrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), reads(declared), writes(undo), writes(fallback), writes(keys), writes(effects), writes(client) contract {
+fn script_zremrange(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, kind: u64) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
