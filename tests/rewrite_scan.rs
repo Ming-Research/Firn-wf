@@ -570,6 +570,138 @@ fn reconciled_scan_flush_aborts_even_in_exec_and_script() {
 }
 
 #[test]
+fn reconciled_scan_cleanup_failure_preserves_flush_and_serves_after_restart() {
+    let program = CompiledProgram::from_environment();
+    fixture(&program);
+    let (child, mut client, _) = start(&program);
+    let initial = rewrite_info(&mut client);
+    assert_eq!(initial["firn_aof_rewrite_cleanup_failed"], "0");
+    assert_eq!(initial["firn_aof_rewrite_journal_leftover"], "0");
+    rewrite_start(&mut client);
+    scanned_keys(&program, &mut client);
+    request(&mut client, &[b"SET", b"cleanup:anchor", b"before"]);
+    journal_drained(&mut client, 1, 0);
+    let journal = journal_path(&program);
+    assert!(std::fs::metadata(&journal).unwrap().len() > 0);
+    // Renaming leaves both open journal handles valid. A nonempty directory
+    // at the old name makes unlink fail without permissions or root assumptions.
+    let detached = journal.with_extension("detached-for-test");
+    std::fs::rename(&journal, &detached).unwrap();
+    std::fs::create_dir(&journal).unwrap();
+    let sentinel = journal.join("keep");
+    std::fs::write(&sentinel, b"cleanup obstruction").unwrap();
+    let scanning = rewrite_info(&mut client);
+    assert_eq!(scanning["aof_rewrite_in_progress"], "1");
+    assert_eq!(scanning["firn_aof_rewrite_scan_done"], "0");
+    assert_eq!(request(&mut client, &[b"FLUSHALL"]), Reply::Line(b"+OK".to_vec()));
+    assert_eq!(request(&mut client, &[b"SET", b"after-flush", b"retained"]), Reply::Line(b"+OK".to_vec()));
+    let failed = rewrite_wait(&mut client);
+    assert_eq!(failed["aof_last_bgrewrite_status"], "err");
+    assert_eq!(failed["firn_aof_rewrite_abort_reason"], "flush", "a later unlink failure must not replace the initiating cause");
+    assert_eq!(failed["firn_aof_rewrite_scan_done"], "0");
+    assert!(failed["firn_aof_rewrite_cleanup_failed"].parse::<u64>().unwrap() > 0, "failed cleanup must remain separately observable");
+    assert_eq!(failed["firn_aof_rewrite_journal_leftover"], "1");
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"cleanup obstruction");
+    assert_old_manifest(&program);
+    assert_eq!(request(&mut client, &[b"INCR", b"after-cleanup"]), Reply::Line(b":1".to_vec()));
+    let retained = rewrite_info(&mut client);
+    for field in ["firn_aof_rewrite_abort_reason", "firn_aof_rewrite_used", "firn_aof_rewrite_peak", "firn_aof_rewrite_cleanup_failed", "firn_aof_rewrite_journal_leftover"] {
+        assert_eq!(retained[field], failed[field], "ordinary service must retain {field}");
+    }
+    // A refused admission starts new attempt diagnostics, but it cannot claim
+    // that an obstruction it never removed has disappeared.
+    assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"1"]), Reply::Line(b"+OK".to_vec()));
+    assert_eq!(memory_request(&mut client, &["BGREWRITEAOF"]), "-ERR Can't execute an AOF background rewriting. Please check the server logs for more information.\r\n");
+    let refused = rewrite_info(&mut client);
+    assert_eq!(refused["firn_aof_rewrite_abort_reason"], "admission");
+    assert_eq!(refused["firn_aof_rewrite_cleanup_failed"], "0");
+    assert_eq!(refused["firn_aof_rewrite_journal_leftover"], "1");
+    assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"0"]), Reply::Line(b"+OK".to_vec()));
+    let expected = snapshot(&mut client);
+    assert_eq!(expected.len(), 2);
+    rewrite_stop(&mut client, child);
+    std::fs::remove_file(&detached).unwrap();
+    let (child, mut restored, _) = start(&program);
+    assert_eq!(snapshot(&mut restored), expected, "an unremovable unlisted journal must not prevent authoritative recovery");
+    let startup = rewrite_info(&mut restored);
+    assert_eq!(startup["firn_aof_rewrite_cleanup_failed"], "0", "startup is not a rewrite attempt");
+    assert_eq!(startup["firn_aof_rewrite_journal_leftover"], "1");
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"cleanup obstruction");
+    assert_eq!(request(&mut restored, &[b"INCR", b"after-cleanup"]), Reply::Line(b":2".to_vec()));
+    rewrite_stop(&mut restored, child);
+}
+
+#[test]
+fn reconciled_scan_startup_cleanup_failure_serves_and_retry_removes_leftover() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(&program, &[("appendonly.aof.1.base.aof", &[&["SET", "authoritative", "retained"]]), ("appendonly.aof.1.incr.aof", &[])], &rewrite_manifest(1, 1));
+    let journal = journal_path(&program);
+    std::fs::create_dir(&journal).unwrap();
+    let sentinel = journal.join("keep");
+    std::fs::write(&sentinel, b"startup obstruction").unwrap();
+    let (child, mut client, _) = start(&program);
+    assert_eq!(bulk(request(&mut client, &[b"GET", b"authoritative"])), b"retained");
+    let startup = rewrite_info(&mut client);
+    assert_eq!(startup["firn_aof_rewrite_cleanup_failed"], "0");
+    assert_eq!(startup["firn_aof_rewrite_journal_leftover"], "1", "startup must report its failed unlink while continuing service");
+    assert_eq!(startup["aof_rewrites"], "0");
+    rewrite_start(&mut client);
+    let failed = rewrite_wait(&mut client);
+    assert_eq!(failed["aof_last_bgrewrite_status"], "err");
+    assert_eq!(failed["firn_aof_rewrite_abort_reason"], "journal_io");
+    assert!(failed["firn_aof_rewrite_cleanup_failed"].parse::<u64>().unwrap() > 0);
+    assert_eq!(failed["firn_aof_rewrite_journal_leftover"], "1");
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"startup obstruction", "failed pre-open cleanup must not reuse or truncate the path");
+    assert_old_manifest(&program);
+    assert_eq!(request(&mut client, &[b"INCR", b"after-obstruction"]), Reply::Line(b":1".to_vec()));
+    std::fs::remove_file(&sentinel).unwrap();
+    std::fs::remove_dir(&journal).unwrap();
+    rewrite_start(&mut client);
+    let recovered = rewrite_wait(&mut client);
+    assert_eq!(recovered["aof_last_bgrewrite_status"], "ok");
+    assert_eq!(recovered["firn_aof_rewrite_abort_reason"], "");
+    assert_eq!(recovered["firn_aof_rewrite_cleanup_failed"], "0", "accepted admission must clear the preceding cleanup count");
+    assert_eq!(recovered["firn_aof_rewrite_journal_leftover"], "0", "successful absence/unlink must clear the persistent flag");
+    assert_journal_removed(&program);
+    rewrite_stop(&mut client, child);
+    let (child, mut restored, _) = start(&program);
+    assert_eq!(bulk(request(&mut restored, &[b"GET", b"authoritative"])), b"retained");
+    assert_eq!(bulk(request(&mut restored, &[b"GET", b"after-obstruction"])), b"1");
+    let clean_startup = rewrite_info(&mut restored);
+    assert_eq!(clean_startup["firn_aof_rewrite_cleanup_failed"], "0");
+    assert_eq!(clean_startup["firn_aof_rewrite_journal_leftover"], "0");
+    rewrite_stop(&mut restored, child);
+}
+
+#[test]
+fn reconciled_scan_base_open_failure_removes_journal() {
+    let program = CompiledProgram::from_environment();
+    multipart_files(&program, &[("appendonly.aof.1.base.aof", &[&["SET", "authoritative", "retained"]]), ("appendonly.aof.1.incr.aof", &[])], &rewrite_manifest(1, 1));
+    let base = program.working_directory().join("appendonlydir/temp-appendonly.aof.base");
+    std::fs::create_dir(&base).unwrap();
+    let sentinel = base.join("keep");
+    std::fs::write(&sentinel, b"base obstruction").unwrap();
+    let (child, mut client, _) = start(&program);
+    rewrite_start(&mut client);
+    let failed = rewrite_wait(&mut client);
+    assert_eq!(failed["aof_last_bgrewrite_status"], "err");
+    assert_eq!(failed["firn_aof_rewrite_abort_reason"], "base_io");
+    assert_eq!(failed["firn_aof_rewrite_scan_steps"], "0", "the base must fail before a scan worker starts");
+    assert_eq!(failed["firn_aof_rewrite_cleanup_failed"], "0", "closing/removing the journal succeeds on this early-exit branch");
+    assert_eq!(failed["firn_aof_rewrite_journal_leftover"], "0");
+    assert_journal_removed(&program);
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"base obstruction");
+    assert_old_manifest(&program);
+    assert_eq!(request(&mut client, &[b"INCR", b"after-base-refusal"]), Reply::Line(b":1".to_vec()));
+    rewrite_stop(&mut client, child);
+    let (child, mut restored, _) = start(&program);
+    assert_eq!(bulk(request(&mut restored, &[b"GET", b"authoritative"])), b"retained");
+    assert_eq!(bulk(request(&mut restored, &[b"GET", b"after-base-refusal"])), b"1");
+    assert_journal_removed(&program);
+    rewrite_stop(&mut restored, child);
+}
+
+#[test]
 fn reconciled_scan_retry_clears_abort_diagnostics() {
     for refused in [true, false] {
         let program = CompiledProgram::from_environment();

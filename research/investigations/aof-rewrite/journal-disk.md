@@ -1,8 +1,12 @@
 # Streaming the rewrite journal to disk
 
-Status: implementation draft accepted by the check-only compiler; runtime
-verification is pending. The investigation was written before source changes.
-No runtime result is claimed and the detailed design edits remain unapproved.
+Status: the [gate at b259344](https://github.com/Ming-Research/Firn-wf/actions/runs/38143996812)
+passed 159 network cases, including the three new disk-journal cases, the
+603/603 Redis ratchet and design lint. The cleanup-diagnostic and startup
+cleanup follow-up tests have not run and await CI; that earlier gate does
+not validate these follow-ups. Detailed design approval and the 14900K
+comparison remain pending. The investigation was written before source
+changes; no performance result is claimed.
 
 ## Question and prior evidence
 
@@ -78,15 +82,37 @@ sync rules remain authoritative. A crash before installation recovers the old
 base and all named increments; after publication it uses the installed base
 and suffix. Neither outcome needs the temporary journal to survive.
 
-Close both journal handles before removing its name after success or abort,
-including FLUSHALL, FLUSHDB, shutdown and open/append/read failures. FLUSH
+Attempt to close both journal handles before removing its name after success
+or abort, including FLUSHALL, FLUSHDB, shutdown and open/append/read failures. FLUSH
 still aborts under its statement's Meta hold; the drainer cannot turn that
 abort into an install. Cleanup is bounded by chunks and completion waits for
-all owners. A crash can leave the file, so startup removes this dataset's
-unlisted `temp-F.journal` after loading the authoritative manifest; never
-remove a file actually named by that manifest. Removal failure must be
-reported rather than claimed as cleanup. Use the existing Redis `temp-`
-naming convention, with the same unsupported cross-dataset name collision
+all owners. A crash can leave the file, so startup attempts to remove this
+dataset's unlisted `temp-F.journal` after loading the authoritative manifest;
+never remove a file actually named by that manifest. A cleanup failure does
+not prevent serving the recovered dataset. Before a later rewrite opens or
+truncates a journal, it must remove the unlisted old name; failure refuses
+that rewrite with `journal_io` and leaves the old file unchanged.
+
+`firn_aof_rewrite_cleanup_failed` counts each journal close or removal step
+that returns failure in the current or latest attempt, including early-error
+cleanup. It resets on admission and preserves the separately latched first
+abort cause. Startup has no attempt and leaves this counter at zero.
+`firn_aof_rewrite_journal_leftover` independently preserves the latest
+unlisted-journal removal observation across admissions: 1 after failed
+removal, 0 after observing absence or successful removal. This is a recorded
+cleanup observation, not a continuous check of current filesystem state. The
+separate flag keeps startup evidence without changing the counter's meaning.
+
+Continuing startup follows Redis 7.0.15's separation of authoritative recovery
+from disposable cleanup: [loadAppendOnlyFiles](https://github.com/redis/redis/blob/7.0.15/src/aof.c#L1634-L1715)
+loads selected base and incremental files, while
+[aofRemoveTempFile](https://github.com/redis/redis/blob/7.0.15/src/aof.c#L2502-L2510)
+and [aofDelTempIncrAofFile](https://github.com/redis/redis/blob/7.0.15/src/aof.c#L695-L702)
+do not propagate unlink failures. Firn additionally reports its cleanup
+failures and refuses reuse until the old journal name can be removed.
+
+Use the existing Redis `temp-` naming convention, with the same unsupported
+cross-dataset name collision
 as `temp-F.base` pending exclusive creation (`firn-wf-excl-create`). Stalled
 host I/O still lacks a cancellation deadline; moving storage does not resolve
 that previously recorded Whitefoot limitation.

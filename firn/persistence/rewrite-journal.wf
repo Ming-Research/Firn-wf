@@ -39,20 +39,67 @@ fn aof_rw_journal_listed(manifest: &AofManifest, name: &[u8]) -> listed: Bool re
   return False();
 }
 
-fn aof_rw_journal_remove(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name: &[u8]) -> removed: Bool reads(name), writes(factory), writes(writable) waits {
-  let length = name^.len;
-  match std::fs::remove_file(factory: factory, root: writable, name: name, start: 0_u64, end: length) {
-    Ok(value: removed) => {
+fn aof_rw_journal_close_failed(store: &Keyspace) -> result: unit reads(store) waits {
+  atomic m = &store^.meta {
+    if m^.rewrite.running {
+      set m^.rewrite.cleanup_failed = m^.rewrite.cleanup_failed +sat 1_u64;
+      let reason = pkg::store::RewriteAbortReason::JournalIo();
+      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason);
+    }
+  }
+  return unit;
+}
+
+fn aof_rw_journal_close_read(store: &Keyspace, factory: &HandleFactory, file: ReadFile) -> closed: Bool reads(store), writes(factory) waits {
+  match std::fs::close_read(factory: factory, file: move file) {
+    Ok(value: closed) => {
       return True();
     }
     Err(error: problem) => {
-      let no = False();
-      return aof_missing(error: &problem, directories: no);
+      aof_rw_journal_close_failed(store: store);
+      return False();
     }
   }
 }
 
-fn aof_rw_journal_cleanup(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> removed: Bool reads(prefix), reads(manifest), writes(factory), writes(writable) waits {
+fn aof_rw_journal_close_write(store: &Keyspace, factory: &HandleFactory, file: WriteFile) -> closed: Bool reads(store), writes(factory) waits {
+  match std::fs::close_write(factory: factory, file: move file) {
+    Ok(value: closed) => {
+      return True();
+    }
+    Err(error: problem) => {
+      aof_rw_journal_close_failed(store: store);
+      return False();
+    }
+  }
+}
+
+fn aof_rw_journal_remove(store: &Keyspace, factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name: &[u8]) -> removed: Bool reads(store), reads(name), writes(factory), writes(writable) waits {
+  doc "Record the latest cleanup outcome, not the current external filesystem state. Missing is successful cleanup. Startup has no running attempt and therefore changes neither the per-attempt error count nor abort cause.";
+  let length = name^.len;
+  let removed = False();
+  match std::fs::remove_file(factory: factory, root: writable, name: name, start: 0_u64, end: length) {
+    Ok(value: done) => {
+      set removed = True();
+    }
+    Err(error: problem) => {
+      let no = False();
+      set removed = aof_missing(error: &problem, directories: no);
+    }
+  }
+  atomic m = &store^.meta {
+    set m^.aof_rewrite_journal_leftover = bnot(removed);
+    if removed {
+    } else if m^.rewrite.running {
+      set m^.rewrite.cleanup_failed = m^.rewrite.cleanup_failed +sat 1_u64;
+      let reason = pkg::store::RewriteAbortReason::JournalIo();
+      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason);
+    }
+  }
+  return removed;
+}
+
+fn aof_rw_journal_cleanup(store: &Keyspace, factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> removed: Bool reads(store), reads(prefix), reads(manifest), writes(factory), writes(writable) waits {
   doc "Remove only this appendfilename's unlisted temporary journal after authoritative replay; a manifest-named file is never temporary garbage.";
   let name = aof_rw_journal_name(prefix: prefix);
   let length = name.inner.len;
@@ -61,14 +108,19 @@ fn aof_rw_journal_cleanup(factory: &HandleFactory, writable: &std::fs::Directory
   if listed {
     return True();
   }
-  return aof_rw_journal_remove(factory: factory, writable: writable, name: bytes);
+  return aof_rw_journal_remove(store: store, factory: factory, writable: writable, name: bytes);
 }
 
-fn aof_rw_journal_open(store: &Keyspace, factory: &HandleFactory, log: &AofLog, name: &[u8]) -> result: Result<AofJournalFiles, unit> reads(store), reads(log), reads(name), writes(factory) waits {
+fn aof_rw_journal_open(store: &Keyspace, factory: &HandleFactory, log: &AofLog, name: &[u8]) -> result: Result<AofJournalFiles, unit> reads(store), reads(name), writes(factory), writes(log) waits {
   let listed = aof_rw_journal_listed(manifest: &log^.manifest, name: name);
   if listed {
     let reason = pkg::store::RewriteAbortReason::JournalIo();
     aof_rw_abort(store: store, reason: reason);
+    return Err<AofJournalFiles, unit>(error: unit);
+  }
+  let removed = aof_rw_journal_remove(store: store, factory: factory, writable: &log^.writable, name: name);
+  if removed {
+  } else {
     return Err<AofJournalFiles, unit>(error: unit);
   }
   let open_reason = pkg::store::RewriteAbortReason::JournalIo();
@@ -81,15 +133,16 @@ fn aof_rw_journal_open(store: &Keyspace, factory: &HandleFactory, log: &AofLog, 
           return Ok<AofJournalFiles, unit>(value: move files);
         }
         Err(error: problem) => {
-          std::fs::close_write(factory: factory, file: move opened);
           let reason = pkg::store::RewriteAbortReason::JournalIo();
           aof_rw_abort(store: store, reason: reason);
+          aof_rw_journal_close_write(store: store, factory: factory, file: move opened);
         }
       }
     }
     Err(error: problem) => {
     }
   }
+  let cleaned = aof_rw_journal_remove(store: store, factory: factory, writable: &log^.writable, name: name);
   return Err<AofJournalFiles, unit>(error: unit);
 }
 

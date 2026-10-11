@@ -4,7 +4,7 @@ fn rewrite_capture_new() -> capture: RewriteCapture pure {
   let no = False();
   let journal = None<Box<Ring<Box<Slots<u8>>>>>();
   let no_reason = RewriteAbortReason::None();
-  return RewriteCapture(running: no, active: no, aborted: no, scan_done: no, cut: no, cut_done: no, rotated: no, rotating: no, start: 0_u64, end: 0_u64, limit: 0_u64, used: 0_u64, peak: 0_u64, scan_peak: 0_u64, abort_reason: no_reason, abort_used: 0_u64, abort_peak: 0_u64, journal_images: 0_u64, journal_effects: 0_u64, journal_bytes: 0_u64, scan_steps: 0_u64, journal: move journal);
+  return RewriteCapture(running: no, active: no, aborted: no, scan_done: no, cut: no, cut_done: no, rotated: no, rotating: no, start: 0_u64, end: 0_u64, limit: 0_u64, used: 0_u64, peak: 0_u64, scan_peak: 0_u64, abort_reason: no_reason, abort_used: 0_u64, abort_peak: 0_u64, journal_images: 0_u64, journal_effects: 0_u64, journal_bytes: 0_u64, cleanup_failed: 0_u64, scan_steps: 0_u64, journal: move journal);
 }
 
 fn rewrite_abort(capture: &RewriteCapture, reason: RewriteAbortReason) -> result: unit writes(capture) {

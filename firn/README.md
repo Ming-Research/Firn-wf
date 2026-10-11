@@ -348,7 +348,8 @@ directory. A listed file that is missing or malformed stops firn with status
 as with `aof-load-truncated yes`; an incomplete earlier file stops startup.
 Listed history files are removed after loading only after syncing appendonlydir;
 a failed sync leaves them listed and on disk. Unlisted files are kept except
-this dataset's temporary journal `temp-F.journal`, removed as described below.
+this dataset's temporary journal `temp-F.journal`, whose cleanup is attempted
+as described below.
 An old single file `F` in the working directory is upgraded by persisting a
 manifest and moving `F` into `appendonlydir`. Interrupted upgrades resume;
 when both copies exist and the manifest names `F`, the directory copy wins.
@@ -399,9 +400,13 @@ The temporary base `temp-F.base` and journal `temp-F.journal` sit beside
 `temp-F.manifest`, so servers sharing `appendonlydir` with distinct
 appendfilenames use distinct temporary names. The journal is never named by
 a rewrite manifest and needs no fsync: the completed base is synced before
-publication. Its handles close and its name is removed after success or
-abort, including flush and shutdown. Startup removes an unlisted leftover
-journal after loading the authoritative manifest; a listed file is preserved.
+publication. Journal handles are closed and removal is attempted after
+success or abort, including flush, shutdown and early I/O failures. Startup
+attempts removal of an unlisted leftover after loading the authoritative
+manifest and serves even if that cleanup fails; INFO reports the failure.
+Before opening or truncating the next journal, a rewrite must remove any
+unlisted old name. A failed removal refuses that rewrite with `journal_io`
+and leaves the old file unchanged. A manifest-listed name is protected.
 Those names can still collide with another dataset's upgraded base: an
 appendfilename literally `temp-F.base` or `temp-F.journal` in another dataset
 can overlap a temporary name used while rewriting `F`. Do not share a
@@ -458,6 +463,12 @@ latest admitted attempt has crossed S1 (also retained after completion),
 and 0 otherwise; it lets the backlog regression begin writes after capture
 has stopped.
 
+`firn_aof_rewrite_journal_leftover` reports the last cleanup observation of
+the unlisted temporary journal: 1 after removal failed, and 0 after absence
+or successful removal was observed. It survives rewrite admissions, including
+a startup observation made before any rewrite attempt. It is not a continuous
+check of the current filesystem.
+
 The following additional `INFO persistence` fields describe the current or
 most recently completed attempt. They reset when admission is attempted,
 including a refused admission; counters start at zero before the first attempt.
@@ -487,6 +498,11 @@ including a refused admission; counters start at zero before the first attempt.
   their records remain staged. A multi-key statement's image unit counts
   once, regardless of how many keys it holds; scan output does not count.
   Counts survive cleanup on failure and success.
+- `firn_aof_rewrite_cleanup_failed` counts each journal close or removal
+  step that returned failure during this attempt, including cleanup after
+  an early error. It preserves the first abort cause and resets on admission.
+  Startup cleanup leaves this count at zero and reports failed removal
+  through `firn_aof_rewrite_journal_leftover` instead.
 - `firn_aof_rewrite_scan_steps` counts completed map_scan calls, including
   empty steps and steps whose subsequent copying fails.
   `firn_aof_rewrite_scan_done` is 1 after the scan finishes writing its base,

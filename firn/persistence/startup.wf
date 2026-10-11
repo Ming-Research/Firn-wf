@@ -225,11 +225,7 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
   } else {
     return Err<WriteFile, unit>(error: unit);
   }
-  let cleaned = aof_rw_journal_cleanup(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
-  if cleaned {
-  } else {
-    return Err<WriteFile, unit>(error: unit);
-  }
+  let cleaned = aof_rw_journal_cleanup(store: store, factory: factory, writable: writable, prefix: prefix, manifest: manifest);
   let no_base = manifest^.base_sequence == 0_i64;
   let no_incr = manifest^.incr_sequence == 0_i64;
   let empty = band(no_base, no_incr);

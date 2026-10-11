@@ -199,7 +199,12 @@ fn aof_rw_open(store: &Keyspace, factory: &HandleFactory, writable: &std::fs::Di
         }
         Err(error: problem) => {
           aof_rw_abort(store: store, reason: reason);
-          std::fs::close_write(factory: factory, file: move opened);
+          let journal_reason = pkg::store::RewriteAbortReason::JournalIo();
+          if reason == journal_reason {
+            aof_rw_journal_close_write(store: store, factory: factory, file: move opened);
+          } else {
+            std::fs::close_write(factory: factory, file: move opened);
+          }
           return Err<WriteFile, unit>(error: unit);
         }
       }
@@ -420,14 +425,10 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, journ
       }
     }
   }
-  match std::fs::close_read(factory: &factory, file: move journal) {
-    Ok(value: closed) => {
-    }
-    Err(error: problem) => {
-      let reason = pkg::store::RewriteAbortReason::JournalIo();
-      aof_rw_abort(store: &store, reason: reason);
-      set accepted = False();
-    }
+  let journal_closed = aof_rw_journal_close_read(store: &store, factory: &factory, file: move journal);
+  if journal_closed {
+  } else {
+    set accepted = False();
   }
   if accepted {
     match std::fs::sync_file(factory: &factory, file: &file) {
@@ -584,17 +585,13 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
           }
           let size = rebuilt.size;
           let built = rebuilt.accepted;
-          match std::fs::close_write(factory: factory, file: move journal_write) {
-            Ok(value: closed) => {
-            }
-            Err(error: problem) => {
-              let reason = pkg::store::RewriteAbortReason::JournalIo();
-              aof_rw_abort(store: store, reason: reason);
-              set built = False();
-            }
+          let journal_closed = aof_rw_journal_close_write(store: store, factory: factory, file: move journal_write);
+          if journal_closed {
+          } else {
+            set built = False();
           }
           aof_rw_discard(store: store, clock: clock);
-          let removed = aof_rw_journal_remove(factory: factory, writable: &log.writable, name: journal_bytes);
+          let removed = aof_rw_journal_remove(store: store, factory: factory, writable: &log.writable, name: journal_bytes);
           if removed {
           } else {
             let reason = pkg::store::RewriteAbortReason::JournalIo();
@@ -628,9 +625,9 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
           aof_rw_complete(store: store, accepted: accepted, manual: manual, started: yes);
         }
         Err(error: problem) => {
-          std::fs::close_read(factory: factory, file: move journal_read);
-          std::fs::close_write(factory: factory, file: move journal_write);
-          let removed = aof_rw_journal_remove(factory: factory, writable: &log.writable, name: journal_bytes);
+          aof_rw_journal_close_read(store: store, factory: factory, file: move journal_read);
+          aof_rw_journal_close_write(store: store, factory: factory, file: move journal_write);
+          let removed = aof_rw_journal_remove(store: store, factory: factory, writable: &log.writable, name: journal_bytes);
           let reason_base_io_24 = pkg::store::RewriteAbortReason::BaseIo();
           aof_rw_abort(store: store, reason: reason_base_io_24);
           aof_rw_discard(store: store, clock: clock);
@@ -639,7 +636,6 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
       }
     }
     Err(error: problem) => {
-      let removed = aof_rw_journal_cleanup(factory: factory, writable: &log.writable, prefix: &log.prefix.inner[0_u64..filename_length], manifest: &log.manifest);
       aof_rw_discard(store: store, clock: clock);
       aof_rw_complete(store: store, accepted: no, manual: manual, started: yes);
     }
