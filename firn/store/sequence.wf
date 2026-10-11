@@ -5,7 +5,8 @@ fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(met
   let capturing = band(meta^.rewrite.active, serving);
   let allowance = meta^.rewrite.limit -sat meta^.rewrite.used;
   let images = None<Box<Slots<RewriteImage>>>();
-  return WriteSequence(value: meta^.commit_seq, taken: taken, loading: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, failure: rewrite_reason_none, allowance: allowance, retained: 0_u64, single: taken, start: meta^.rewrite.start, log_start: meta^.log.inner.len, anchor_seen: taken, anchored: taken, effect: taken, images: move images);
+  let no_reason = RewriteAbortReason::None();
+  return WriteSequence(value: meta^.commit_seq, taken: taken, loading: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, failure: no_reason, allowance: allowance, retained: 0_u64, single: taken, start: meta^.rewrite.start, log_start: meta^.log.inner.len, anchor_seen: taken, anchored: taken, effect: taken, images: move images);
 }
 
 fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) {
@@ -44,7 +45,8 @@ fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) {
   }
   if sequence^.value == 18446744073709551615_u64 {
     set sequence^.exhausted = True();
-    sequence_fail(sequence: sequence, reason: rewrite_reason_sequence_exhausted);
+    let sequence_exhausted_reason = RewriteAbortReason::SequenceExhausted();
+    sequence_fail(sequence: sequence, reason: sequence_exhausted_reason);
   }
   set sequence^.taken = True();
   return unit;
@@ -109,7 +111,8 @@ fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) ->
     }
   }
   if budget^.failed {
-    rewrite_abort(capture: &meta^.rewrite, reason: rewrite_reason_rotation_reserve);
+    let rotation_reserve_reason = RewriteAbortReason::RotationReserve();
+    rewrite_abort(capture: &meta^.rewrite, reason: rotation_reserve_reason);
   }
   if sequence^.taken {
     set meta^.commit_seq = sequence^.value;

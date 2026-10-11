@@ -333,7 +333,8 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         info_rewrite_reason(text: &text, reason: persistence^.rewrite.abort_reason);
         let rewrite_used = persistence^.rewrite.used;
         let rewrite_peak = persistence^.rewrite.peak;
-        if persistence^.rewrite.abort_reason != pkg::store::rewrite_reason_none {
+        let no_reason = pkg::store::RewriteAbortReason::None();
+        if persistence^.rewrite.abort_reason != no_reason {
           set rewrite_used = persistence^.rewrite.abort_used;
           set rewrite_peak = persistence^.rewrite.abort_peak;
         }
@@ -614,39 +615,58 @@ const info_rw_reason_journal_invalid: Array<u8, 15> = "journal_invalid";
 
 const info_rw_reason_admission: Array<u8, 9> = "admission";
 
-fn info_rewrite_reason(text: &Box<Slots<u8>>, reason: u64) -> result: unit writes(text) {
-  if reason == pkg::store::rewrite_reason_reserve {
-    text_word(text: text, word: &info_rw_reason_reserve[0_u64..7_u64]);
-  } else if reason == pkg::store::rewrite_reason_capture {
-    text_word(text: text, word: &info_rw_reason_capture[0_u64..7_u64]);
-  } else if reason == pkg::store::rewrite_reason_journal_slots {
-    text_word(text: text, word: &info_rw_reason_journal_slots[0_u64..13_u64]);
-  } else if reason == pkg::store::rewrite_reason_flush {
-    text_word(text: text, word: &info_rw_reason_flush[0_u64..5_u64]);
-  } else if reason == pkg::store::rewrite_reason_sequence_exhausted {
-    text_word(text: text, word: &info_rw_reason_sequence_exhausted[0_u64..18_u64]);
-  } else if reason == pkg::store::rewrite_reason_memory_pressure {
-    text_word(text: text, word: &info_rw_reason_memory_pressure[0_u64..15_u64]);
-  } else if reason == pkg::store::rewrite_reason_cancelled {
-    text_word(text: text, word: &info_rw_reason_cancelled[0_u64..9_u64]);
-  } else if reason == pkg::store::rewrite_reason_base_io {
-    text_word(text: text, word: &info_rw_reason_base_io[0_u64..7_u64]);
-  } else if reason == pkg::store::rewrite_reason_writer_io {
-    text_word(text: text, word: &info_rw_reason_writer_io[0_u64..9_u64]);
-  } else if reason == pkg::store::rewrite_reason_drain {
-    text_word(text: text, word: &info_rw_reason_drain[0_u64..5_u64]);
-  } else if reason == pkg::store::rewrite_reason_boundary {
-    text_word(text: text, word: &info_rw_reason_boundary[0_u64..8_u64]);
-  } else if reason == pkg::store::rewrite_reason_install_io {
-    text_word(text: text, word: &info_rw_reason_install_io[0_u64..10_u64]);
-  } else if reason == pkg::store::rewrite_reason_rotation_reserve {
-    text_word(text: text, word: &info_rw_reason_rotation_reserve[0_u64..16_u64]);
-  } else if reason == pkg::store::rewrite_reason_sequence_invalid {
-    text_word(text: text, word: &info_rw_reason_sequence_invalid[0_u64..16_u64]);
-  } else if reason == pkg::store::rewrite_reason_journal_invalid {
-    text_word(text: text, word: &info_rw_reason_journal_invalid[0_u64..15_u64]);
-  } else if reason == pkg::store::rewrite_reason_admission {
-    text_word(text: text, word: &info_rw_reason_admission[0_u64..9_u64]);
+fn info_rewrite_reason(text: &Box<Slots<u8>>, reason: pkg::store::RewriteAbortReason) -> result: unit writes(text) {
+  match reason {
+    None() => {
+    }
+    Reserve() => {
+      text_word(text: text, word: &info_rw_reason_reserve[0_u64..7_u64]);
+    }
+    Capture() => {
+      text_word(text: text, word: &info_rw_reason_capture[0_u64..7_u64]);
+    }
+    JournalSlots() => {
+      text_word(text: text, word: &info_rw_reason_journal_slots[0_u64..13_u64]);
+    }
+    Flush() => {
+      text_word(text: text, word: &info_rw_reason_flush[0_u64..5_u64]);
+    }
+    SequenceExhausted() => {
+      text_word(text: text, word: &info_rw_reason_sequence_exhausted[0_u64..18_u64]);
+    }
+    MemoryPressure() => {
+      text_word(text: text, word: &info_rw_reason_memory_pressure[0_u64..15_u64]);
+    }
+    Cancelled() => {
+      text_word(text: text, word: &info_rw_reason_cancelled[0_u64..9_u64]);
+    }
+    BaseIo() => {
+      text_word(text: text, word: &info_rw_reason_base_io[0_u64..7_u64]);
+    }
+    WriterIo() => {
+      text_word(text: text, word: &info_rw_reason_writer_io[0_u64..9_u64]);
+    }
+    Drain() => {
+      text_word(text: text, word: &info_rw_reason_drain[0_u64..5_u64]);
+    }
+    Boundary() => {
+      text_word(text: text, word: &info_rw_reason_boundary[0_u64..8_u64]);
+    }
+    InstallIo() => {
+      text_word(text: text, word: &info_rw_reason_install_io[0_u64..10_u64]);
+    }
+    RotationReserve() => {
+      text_word(text: text, word: &info_rw_reason_rotation_reserve[0_u64..16_u64]);
+    }
+    SequenceInvalid() => {
+      text_word(text: text, word: &info_rw_reason_sequence_invalid[0_u64..16_u64]);
+    }
+    JournalInvalid() => {
+      text_word(text: text, word: &info_rw_reason_journal_invalid[0_u64..15_u64]);
+    }
+    Admission() => {
+      text_word(text: text, word: &info_rw_reason_admission[0_u64..9_u64]);
+    }
   }
   return unit;
 }

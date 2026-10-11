@@ -404,8 +404,8 @@ fn aof_rw_persist(store: &Keyspace, factory: &HandleFactory, writable: &std::fs:
 fn aof_publication_failed(reporting: &Option<Keyspace>) -> result: unit reads(reporting) waits {
   match reporting^ {
     Some(value: rewrite_store) => {
-      let abort_reason_1 = pkg::store::rewrite_reason_install_io;
-      aof_rw_abort(store: rewrite_store, reason: abort_reason_1);
+      let reason_install_io_1 = pkg::store::RewriteAbortReason::InstallIo();
+      aof_rw_abort(store: rewrite_store, reason: reason_install_io_1);
     }
     None() => {
     }

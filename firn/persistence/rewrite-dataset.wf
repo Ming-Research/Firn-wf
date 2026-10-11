@@ -80,8 +80,8 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
                     let measure = pkg::store::rewrite_measure(slot: slot, key_length: length);
                     let future = stamp > m^.commit_seq;
                     if future {
-                      let abort_reason_1 = pkg::store::rewrite_reason_sequence_invalid;
-                      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: abort_reason_1);
+                      let reason_sequence_invalid_1 = pkg::store::RewriteAbortReason::SequenceInvalid();
+                      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_sequence_invalid_1);
                     } else {
                       let with_key = measure.bytes +sat length;
                       let bytes = with_key +sat 256_u64;
@@ -124,8 +124,8 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
           if appended == bytes.inner.len {
             set size = size +sat appended;
           } else {
-            let abort_reason_2 = pkg::store::rewrite_reason_base_io;
-            aof_rw_abort(store: store, reason: abort_reason_2);
+            let reason_base_io_2 = pkg::store::RewriteAbortReason::BaseIo();
+            aof_rw_abort(store: store, reason: reason_base_io_2);
             set okay = False();
           }
         }
@@ -136,8 +136,8 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
     atomic released = &store^.meta {
       if okay {
       } else {
-        let abort_reason_3 = pkg::store::rewrite_reason_cancelled;
-        pkg::store::rewrite_abort(capture: &released^.rewrite, reason: abort_reason_3);
+        let reason_cancelled_3 = pkg::store::RewriteAbortReason::Cancelled();
+        pkg::store::rewrite_abort(capture: &released^.rewrite, reason: reason_cancelled_3);
       }
       set released^.rewrite.used = released^.rewrite.used -sat step_charge;
     }
@@ -185,7 +185,7 @@ fn aof_rw_select_empty(factory: &HandleFactory, file: &WriteFile) -> result: Res
   }
 }
 
-fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots<u8>>, decoder: &AofReconcile) -> result: Result<u64, u64> reads(block), writes(factory), writes(file), writes(decoder) waits {
+fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots<u8>>, decoder: &AofReconcile) -> result: Result<u64, pkg::store::RewriteAbortReason> reads(block), writes(factory), writes(file), writes(decoder) waits {
   doc "Strip the internal sequence/length frames while streaming chronological units, each complete replacement images or a one-key statement's own append-only bytes. A frame may cross a chunk; no output allocation is needed and each append borrows only this one at-most-64-KiB chunk.";
   let size = 0_u64;
   let offset = 0_u64;
@@ -207,8 +207,8 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
         match std::fs::append_once(factory: factory, file: file, source: bytes, start: offset, end: end) {
           Ok(value: next) => {
             if next <= offset {
-              let abort_reason_4 = pkg::store::rewrite_reason_base_io;
-              return Err<u64, u64>(error: abort_reason_4);
+              let reason_base_io_4 = pkg::store::RewriteAbortReason::BaseIo();
+              return Err<u64, pkg::store::RewriteAbortReason>(error: reason_base_io_4);
             }
             let written = next -sat offset;
             set decoder^.remaining = decoder^.remaining -sat written;
@@ -216,8 +216,8 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
             set offset = next;
           }
           Err(error: problem) => {
-            let abort_reason_5 = pkg::store::rewrite_reason_base_io;
-            return Err<u64, u64>(error: abort_reason_5);
+            let reason_base_io_5 = pkg::store::RewriteAbortReason::BaseIo();
+            return Err<u64, pkg::store::RewriteAbortReason>(error: reason_base_io_5);
           }
         }
       }
@@ -237,16 +237,16 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
         set decoder^.factor = 1_u64;
       } else if decoder^.header == 16_u64 {
         if decoder^.sequence <= decoder^.previous {
-          let abort_reason_6 = pkg::store::rewrite_reason_journal_invalid;
-          return Err<u64, u64>(error: abort_reason_6);
+          let reason_journal_invalid_6 = pkg::store::RewriteAbortReason::JournalInvalid();
+          return Err<u64, pkg::store::RewriteAbortReason>(error: reason_journal_invalid_6);
         }
         if decoder^.sequence > decoder^.end {
-          let abort_reason_7 = pkg::store::rewrite_reason_journal_invalid;
-          return Err<u64, u64>(error: abort_reason_7);
+          let reason_journal_invalid_7 = pkg::store::RewriteAbortReason::JournalInvalid();
+          return Err<u64, pkg::store::RewriteAbortReason>(error: reason_journal_invalid_7);
         }
         if decoder^.length > decoder^.limit {
-          let abort_reason_8 = pkg::store::rewrite_reason_journal_invalid;
-          return Err<u64, u64>(error: abort_reason_8);
+          let reason_journal_invalid_8 = pkg::store::RewriteAbortReason::JournalInvalid();
+          return Err<u64, pkg::store::RewriteAbortReason>(error: reason_journal_invalid_8);
         }
         set decoder^.remaining = decoder^.length;
         set decoder^.previous = decoder^.sequence;
@@ -257,5 +257,5 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
       }
     }
   }
-  return Ok<u64, u64>(value: size);
+  return Ok<u64, pkg::store::RewriteAbortReason>(value: size);
 }
