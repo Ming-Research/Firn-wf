@@ -6,11 +6,23 @@ Can firn remove the single-engine queue and whole-keyspace script hold while pre
 effects and script atomicity, and make the scripted rate limiter scale from one to two physical cores?
 
 The owner selected A on [board card
-`firn-q-script-engine`](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip): each driver gets its own script
-engine; an attempt holds only the entries named by its declared KEYS; accessing an undeclared key abandons
-that attempt and retries under a whole-map hold. FLUSH and KILL cover every engine, and each engine compiles a
-registered script on its first use. Standalone Redis permits undeclared keys: fallback is internal control
-flow, never a Lua error.
+`firn-q-script-engine`](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip): an attempt holds only the entries
+named by its original declared KEYS; accessing an undeclared key abandons that attempt and retries under a
+whole-map hold. Standalone Redis permits undeclared keys: fallback is internal control flow, never a Lua error.
+The later ruling on `firn-q-script-pool` selects any-idle-engine checkout from N slots, where N is the configured
+WF_DRIVERS count with the runtime's allowed-CPU default, rather than driver-local ownership. That pool waits
+for Whitefoot request `firn-req-driver-count`; the declared-key implementation keeps the single engine.
+
+The owner selected first-write Option<Entry> undo (`firn-q-script-undo`) and holding Meta throughout each
+attempt for this correctness step (`firn-q-script-meta`). The accepted-WRITE publication needed for correct
+KILL is filed as Whitefoot request `firn-req-attempt-publish`, under firn's busy-script backlog; this work keeps
+KILL's existing behavior. The separate string type-metatable protection backlog is outside this work.
+
+The declared-key draft adds ordered command planning, narrow entry adapters, logical entry copies, staged
+expiry insertions and sticky whole-map fallback against the merged sequence/capture implementation. The owner
+ruled that [logical collection restore](#logical-collection-restore) meets the current compatibility contract;
+collection backing reconstruction is not a gap. These source changes await CI and are not validated capability
+or performance results. The pool and concurrency remain pending; the shared Meta hold still serializes attempts.
 
 This is an investigation and preregistered validation plan, not an implemented capability. Source inspection
 uses Firn-wf `e5c9565bf0544dc23ef2b482109221c4ba7945c7` (the worktree's base and observed origin/main),
@@ -25,14 +37,13 @@ rates below their one-CPU rates; the separate checkout probe attributed 89% of 5
 waiting. Earlier packaged-Redis 8.0.5 columns are not reference results. These observations motivate A; they
 do not establish that A alone scales.
 
-## Current execution and its owners
+## Inspected baseline execution and its owners
 
 Anchors below mean `file:function` or `file:type`; links open the owning file. The governing nodes are
 [scripts](../../../design/firn/scripts.md), [command parts](../../../design/firn/command-parts.md),
 [transactions](../../../design/firn/transactions.md), [memory limit](../../../design/firn/memory-limit.md) and
-[rewrite](../../../design/firn/aof-rewrite.md), under [firn](../../../design/firn.md). The implementation
-branch must revise the single-engine and whole-map decisions together with code; this research does not edit
-approved nodes.
+[rewrite](../../../design/firn/aof-rewrite.md), under [firn](../../../design/firn.md). The baseline descriptions below record the original investigation revision. The declared-key draft revises
+the script and command-parts nodes; single-engine operation remains until the configured-count gap is closed.
 
 ### Engine, admission, callbacks and retries
 
@@ -145,21 +156,21 @@ driver share its slot; two drivers have distinct slots; wait/migration cannot us
 FLUSH/KILL can enumerate all registered slots safely. This is a Whitefoot gap to file with its runtime
 session, linked to firn-q-script-engine; no Whitefoot repository edits here.
 
-A different design needs no driver identity: a pool of engines, one per configured driver, from which
+The selected pool design needs no driver identity: a pool of engines, one per configured driver, from which
 a script checks out any idle engine. At most as many scripts run at once as there are drivers, so such a
 pool removes the single-engine wait without affinity. It is not "one engine per driver" in the ruling's
 wording, but it meets the ruling's aim, and it hides no gap: it never claims driver locality. The driver
-count is configuration (WF_DRIVERS), which firn would read as an option rather than observe. The owner
-decides between this pool and waiting for a Whitefoot driver lease (status board card
-`firn-q-script-pool`).
+count is configuration (WF_DRIVERS), which firn would read as an option rather than observe. The owner selected this pool on `firn-q-script-pool`. It waits for public access to the configured count and
+allowed-CPU default, filed as `firn-req-driver-count`; firn's current argv configuration interface cannot read
+the runtime's environment setting or its default.
 
 ## Proposed option-A structures and attempt protocol
 
 Separate the global ScriptRegistry/control from DriverEngineSlot records. The registry retains SHA/source,
 source_bytes and generation. Each slot owns idle Option<PooledEngine>, checked-out state, engine generation,
 active invocation identity and published memory counters. Global control retains running across retries and a
-kill epoch; keep its holds outside key holds. Register lazily created driver slots through the future driver
-capability. Take/return touches the selected slot rather than holding one global pool through execution.
+kill epoch; keep its holds outside key holds. Create configured-count slots without claiming driver affinity; creation waits for
+`firn-req-driver-count`. Take/return touches the selected slot rather than holding one global pool through execution.
 Source registration and engine-local compilation stay distinct: an EVALSHA local miss is not NOSCRIPT if the
 registry knows its SHA.
 
@@ -202,9 +213,10 @@ access or global enumeration triggers Whole. Do not treat numkeys == 0 as read-o
 `EVAL "redis.call('INCR',KEYS[1]);return redis.call('GET','other')" 1 counter` must increment counter once,
 even though fallback follows a write. Today's access journal and wrote guard cannot do that. Proposed
 AttemptUndo saves each declared entry's Option<Entry> before its first dataset mutation, including value,
-expiry and future last_write. AccessJournal still saves the stamp before its first refresh; abort restores
+expiry, access and last_write stamps. AccessJournal still saves the stamp before its first refresh; abort restores
 payloads first, then those original stamps. Use owned deep copies and ordinary slot-based command parts,
-preserving absence and all five Value variants; repeated dataset mutations save only one original. Snapshot
+preserving absence and the logical contents of all five Value variants; collection backing may be rebuilt
+under the [logical restore](#logical-collection-restore) proposed below, and repeated mutations save only one copy. Snapshot
 client reply position/settings/random and engine-visible state; stage expiry queue insertions, counters and
 random draws in attempt-local metadata deltas. Publish those deltas only on an accepted Done or Lua Error.
 Abort restores slots before release and drops every delta, AOF byte and capture.
@@ -226,22 +238,20 @@ commit holds plus entry isolation, and a language-expressible way to combine the
 nested atomic statements or waits inside an attempt. This investigation cannot claim that the literal
 keys-plus-Meta form scales.
 
-The requested sequence_new/sequence_new_key are **absent from this base**. They belong to [PR #42,
-scan-and-log rewrite](https://github.com/Ming-Research/Firn-wf/pull/42), inspected at
-`1f0efa5737bbb62be0944832914ec748d7976071` (open, not merged). Its
-[store/sequence.wf](https://github.com/Ming-Research/Firn-wf/blob/1f0efa5737bbb62be0944832914ec748d7976071/firn/store/sequence.wf):sequence_new
-creates one lazy WriteSequence under Meta; sequence_change allocates its number on the first dataset mutation;
-sequence_commit publishes commit_seq, capture and exhaustion. sequence_new_key opts into anchored one-key
-AOF-effect capture. Its scripting entry uses sequence_new once per attempt and commits at exit.
-
+The sequence/capture rewrite is now merged into this worktree. Its
+[store/sequence.wf](../../../firn/store/sequence.wf):sequence_new creates an attempt-local lazy token;
+sequence_change changes that token and entry stamps, while sequence_commit alone publishes Meta.commit_seq,
+capture, exhaustion and rotation reserve charges. The declared-key path therefore restores entry stamps and
+drops the token, effects and LogBudget on abandonment without calling sequence_commit. Accepted Done and Lua
+Error publish once before releasing their hold. sequence_new_key is not used merely because one key was
+declared: whole fallback may access or change additional keys.
 Integration must keep one token for an accepted script (or enclosing EXEC), stamp all changed entries with it,
 and capture final replacements/tombstones before releasing the hold. Discard an abandoned token and restore
 last_write; publish neither capture failures nor reserve charges from abandoned scratch. Account temporary
 allocations while owned and return their charge on drop. Do not choose sequence_new_key merely because numkeys
 == 1: an accepted whole fallback can modify several keys, and script effects may read other keys. Initially
 use sequence_new for all scripts/EXEC, including Lua errors after effects. Capturing read-only access stamps
-takes no dataset sequence. After PR #42 lands, re-read its actual contract and base the integration on that
-revision; do not import or duplicate an unmerged rewrite here.
+takes no dataset sequence. The draft uses the merged contract directly and imports no historical rewrite implementation.
 
 Keep Time and the per-read memory settings across retries. Lazy expiry is an entry mutation and must enter
 undo before deletion; its DEL belongs only to accepted effects. Apply queued expiry deltas/eligibility_changed
@@ -264,8 +274,8 @@ KILL reaches every active engine through control independent of keys/Meta. Track
 accepted WRITE_DIRTY, not engine count alone. An all-read-only set can be marked killed; with no active
 invocation return NOTBUSY. If any active invocation has accepted a WRITE, recommend global UNKILLABLE with no partial
 kill. Publishing that flag only after the attempt exits is too late, including DEL of an absent key. The
-needed in-attempt publication must have a safe Whitefoot contract; nesting a scripts atomic under Meta is
-forbidden. Do not substitute effects != 0 for Redis's WRITE_DIRTY.
+needed in-attempt publication lacks a pinned Whitefoot contract; `firn-req-attempt-publish` records the gap,
+since nesting a scripts atomic under Meta is forbidden. This work keeps the existing KILL behavior until that interface exists. Do not substitute effects != 0 for Redis's WRITE_DIRTY.
 
 Per-slot memory records should distinguish logical Halo heap (`embed:heap_bytes`), compiled-cache payload and
 measured process heap; the logical API excludes slab/intern reserve. Aggregate owned engine memory once,
@@ -283,35 +293,26 @@ EXEC or release EXEC between commands. Internal budget retries of EXEC would hav
 transaction, including preceding writes; this and KILL/busy behavior need a dedicated contract before claiming
 full EXEC scripting support.
 
-## Real choices within A (proposals needing owner decisions)
+## Rulings and remaining contracts
 
-1. **Driver capability:** recommend a runtime-owned driver lease/local slot API with migration semantics over
-   a numeric current-driver query alone. The former adds runtime/language surface but expresses actual
-   ownership; the latter is smaller but stale across waits. Confidence 4/5 on the gap, 2/5 on API shape; the
-   Whitefoot runtime session must settle its contract.
+1. **Engine ownership:** `firn-q-script-pool` selects any-idle-slot pooling with the configured driver count,
+   not driver affinity. The pool is blocked on `firn-req-driver-count` and is not part of the declared-key round.
 
-2. **Written fallback:** recommend full first-mutation entry undo plus staged metadata over a private cloned
-   working dataset for every declared key. Undo copies only dataset changes but requires auditing every
-   mutation; cloning simplifies abandonment but copies unused large keys. Both need canonical command parts
-   and cost measurements. Confidence 3/5; no option may simply reject undeclared access after a write or retry
-   it twice visibly.
+2. **Written fallback:** `firn-q-script-undo` selects an owned logical Option<Entry> copy saved before first
+   mutation, with exact contents and stamps but rebuilt collection backing under the
+   [logical restore](#logical-collection-restore) proposed below, rather than a cloned working dataset. The draft conservatively saves an operand before a WRITE
+   command that may mutate it, or before a read that can delete its expired entry; no-effect commands may
+   allocate an undo copy. Dataset and access restoration precede hold release.
 
-3. **Meta lifetime:** recommend a separate design with the runtime session for entry isolation and short
-   ordered metadata publication, before the performance implementation. Literal keys-plus-Meta is a valid
-   correctness stage but retains serialization; merely splitting fields does not solve the common log/sequence
-   hold. Confidence 5/5 on shared exclusion, 2/5 on the replacement. Owner decision required on expanding this
-   mechanism.
+3. **Meta lifetime:** `firn-q-script-meta` selects full-attempt Meta holds for this step. Narrow key holds
+   improve the authority boundary but establish no parallel execution or performance result.
 
-4. **Shared Lua state:** recommend canonical portable library settings and random state synchronized between
-   engines over driver-local settings. `tests/network.rs:firn_scripts_share_one_lua_state_as_redis_does`
-   requires one connection's cjson precision to reach another. Canonical synchronization preserves replies but
-   needs ordering (and may serialize affected scripts); driver-local state changes replies and is incompatible
-   with this task. Confidence 4/5 on the obligation, 2/5 on covering every library state.
+4. **Shared Lua state:** Redis-compatible library settings and random state remain required. The single
+   engine keeps today's behavior; cross-engine synchronization belongs to the pending pool round.
 
-5. **Control policy:** recommend lazy generation reset over eager idle-engine destruction (shorter FLUSH holds
-   versus delayed memory reclamation), and all-or-none KILL over killing only unwritten engines (one atomic
-   response versus partial results). Confidence 3/5; the latter extends Redis's single running-script rule to
-   concurrent scripts and needs an owner ruling.
+5. **Controls:** correct accepted-WRITE KILL arbitration waits for `firn-req-attempt-publish`. The recommendation
+   for several active engines remains all-or-none: any accepted WRITE makes KILL UNKILLABLE and stops none;
+   otherwise kill all, or return NOTBUSY when none run. This round changes no KILL or FLUSH behavior.
 
 ## Validation registered before measurements
 
@@ -377,7 +378,7 @@ inconclusive cells after examining the probe. Keep CSV/settings/revisions and ac
    affected command/transaction/rewrite nodes.
 
 2. Refactor firn/script_pool/{module.wfm,pool.wf}, firn/store/{module.wfm,store.wf} and
-   firn/scripting/entry.wf into global registry/control and per-driver slots, preserving whole holds first.
+   firn/scripting/entry.wf into global registry/control and any-idle-engine slots sized by the configured driver count, preserving whole holds first.
    Update scripting/module.wfm contracts, server/server.wf capability threading and commands/info.wf
    accounting.
 
@@ -391,7 +392,7 @@ inconclusive cells after examining the probe. Keep CSV/settings/revisions and ac
    claims.
 
 5. Integrate all-engine controls, canonical Lua state, EXEC's nonwaiting scripting path in
-   commands/transaction.wf, and PR #42's actual sequence/capture helpers after adoption. Persistence/rewrite
+   commands/transaction.wf, and the merged firn/store/sequence.wf sequence/capture helpers. Persistence/rewrite
    files change only where their publication interfaces require it; memory eviction keeps its contract unless
    the owner approves a change. Do not edit Halo locally; any required portable-state/embed API belongs to the
    Halo session.
@@ -401,8 +402,36 @@ inconclusive cells after examining the probe. Keep CSV/settings/revisions and ac
    evidence here and update the deployment-performance conclusion at its source. Review the complete
    implementation and tree correspondence before readiness.
 
-This investigation changes no pin/submodule and files no external gap itself. Open owner questions are the
-five proposals above; the blocking discoveries are missing driver authority, written fallback undo, shared
-Meta serialization and cross-engine Lua-state/control ordering. Research can finish now; implementation cannot
-honestly claim scalability or full compatibility until those contracts and their independent validation are
-settled.
+This draft changes no pin/submodule. Firn filed `firn-req-driver-count` and
+`firn-req-attempt-publish`; this round files no additional external gap. Declared-key implementation and its
+network regressions await CI. Engine pooling, corrected busy-script KILL and metadata concurrency remain
+outside this round, and no scaling claim follows from holding Meta throughout attempts.
+
+## Logical collection restore
+
+This work proposes that undo retain COPY's logical deep copy, pending the owner's approval of the design tree. Restore preserves absence, set members, hash
+fields and values, sorted-set members and scores, list order, absolute expiry, access and last-write stamps
+exactly; collection backing may be rebuilt. This satisfies the current compatibility contract and is not a
+Whitefoot gap. The declared-entry hold remains `atomic t = &store^.keys[declared], m = &store^.meta`.
+
+Source inspection found no SSCAN, HSCAN or ZSCAN command in `firn/commands` (case-insensitive whole-name
+search). The supported [SCAN](../../../firn/commands/scan.wf#L206) calls `map_scan` on the keyspace map,
+which entry restoration does not rebuild. Thus no client collection cursor depends on restored collection
+bucket positions. Unordered collection replies do not promise backing order.
+
+Random choices can depend on backing, as [set member selection](../../../firn/commands/sets.wf#L250) and
+[hash field selection](../../../firn/commands/hashes.wf#L898) show. Their particular choice cannot be compared
+with Redis 7.0.15's different dictionary layout, and firn promises no layout-dependent random result. The
+pinned [hash-map interface](https://github.com/Ming-Research/Whitefoot/blob/a3205af0bbea6e8356279f160f3fcd523f085ed1/lib/std/collections/hash_map/module.wfm#L64)
+already permits ordinary `hash_map_put` to rebuild at the same capacity when vacated buckets accumulate;
+`hash_map_rehash` likewise rebuilds at current capacity. Backing changes therefore occur without scripts.
+An abandoned attempt's random picks are never returned to the client and its effects are unpublished;
+restoring random state does not promise reproducing picks from that abandoned execution.
+
+Rebuilt capacity can change heap charge, just as rehash can. Maxmemory continues to use process live heap
+through [heap_read](../../../firn/commands/eviction.wf#L9), with the existing AOF exclusion and admission
+rules; undo introduces no alternative accounting model or fixed-capacity charge.
+
+Reopen if firn adds SSCAN, HSCAN or ZSCAN, or promises a layout-dependent result. Restore must then preserve
+what the new command guarantees. An exact layout snapshot is rejected for the present command surface,
+not claimed to be expressible by the pinned library. No Halo/Whitefoot edit or pin change is required.
