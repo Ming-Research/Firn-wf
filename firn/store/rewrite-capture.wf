@@ -3,11 +3,23 @@ alias Bytes = pkg::bytes::Bytes;
 fn rewrite_capture_new() -> capture: RewriteCapture pure {
   let no = False();
   let journal = None<Box<Ring<Box<Slots<u8>>>>>();
-  return RewriteCapture(active: no, aborted: no, scan_done: no, cut: no, cut_done: no, rotated: no, rotating: no, start: 0_u64, end: 0_u64, limit: 0_u64, used: 0_u64, peak: 0_u64, scan_peak: 0_u64, journal: move journal);
+  let no_reason = RewriteAbortReason::None();
+  return RewriteCapture(running: no, active: no, aborted: no, scan_done: no, cut: no, cut_done: no, rotated: no, rotating: no, start: 0_u64, end: 0_u64, limit: 0_u64, used: 0_u64, peak: 0_u64, scan_peak: 0_u64, abort_reason: no_reason, abort_used: 0_u64, abort_peak: 0_u64, journal_images: 0_u64, journal_effects: 0_u64, scan_steps: 0_u64, journal: move journal);
 }
 
-fn rewrite_abort(capture: &RewriteCapture) -> result: unit writes(capture.active), writes(capture.aborted), writes(capture.rotating) {
+fn rewrite_abort(capture: &RewriteCapture, reason: RewriteAbortReason) -> result: unit writes(capture) {
   doc "Logical abort only: retained chunks stay charged until the worker detaches and releases them outside holds, one chunk per waiting turn.";
+  if capture^.running {
+  } else {
+    return unit;
+  }
+  let no_reason = RewriteAbortReason::None();
+  if capture^.abort_reason != no_reason {
+    return unit;
+  }
+  set capture^.abort_reason = reason;
+  set capture^.abort_used = capture^.used;
+  set capture^.abort_peak = capture^.peak;
   set capture^.active = False();
   set capture^.aborted = True();
   set capture^.rotating = False();
@@ -20,7 +32,8 @@ fn rewrite_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes
   }
   let available = capture^.limit -sat capture^.used;
   if bytes > available {
-    rewrite_abort(capture: capture);
+    let reserve_reason = RewriteAbortReason::Reserve();
+    rewrite_abort(capture: capture, reason: reserve_reason);
     return False();
   }
   set capture^.used = capture^.used +sat bytes;
@@ -31,11 +44,21 @@ fn rewrite_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes
 fn sequence_room(sequence: &WriteSequence, bytes: u64) -> accepted: Bool writes(sequence) {
   let available = sequence^.allowance -sat sequence^.retained;
   if bytes > available {
-    set sequence^.failed = True();
+    let capture_reason = RewriteAbortReason::Capture();
+    sequence_fail(sequence: sequence, reason: capture_reason);
     return False();
   }
   set sequence^.retained = sequence^.retained +sat bytes;
   return True();
+}
+
+fn sequence_fail(sequence: &WriteSequence, reason: RewriteAbortReason) -> result: unit writes(sequence.failed), writes(sequence.failure) {
+  if sequence^.failed {
+    return unit;
+  }
+  set sequence^.failure = reason;
+  set sequence^.failed = True();
+  return unit;
 }
 
 fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) {
@@ -108,7 +131,8 @@ fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
         let growth = backing +sat 24_u64;
         let available = sequence^.allowance -sat sequence^.retained;
         if growth > available {
-          set sequence^.failed = True();
+          let capture_reason = RewriteAbortReason::Capture();
+          sequence_fail(sequence: sequence, reason: capture_reason);
           return unit;
         }
         set sequence^.retained = sequence^.retained +sat growth;
@@ -120,12 +144,14 @@ fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
         place_back(window: &records^.inner, value: move image);
       } else {
         let discarded = move image;
-        set sequence^.failed = True();
+        let capture_reason = RewriteAbortReason::Capture();
+        sequence_fail(sequence: sequence, reason: capture_reason);
       }
     }
     None() => {
       let discarded = move image;
-      set sequence^.failed = True();
+      let capture_reason = RewriteAbortReason::Capture();
+      sequence_fail(sequence: sequence, reason: capture_reason);
     }
   }
   return unit;
@@ -185,7 +211,8 @@ fn rewrite_journal_room(capture: &RewriteCapture, length: u64) -> accepted: Bool
       }
     }
     None() => {
-      rewrite_abort(capture: capture);
+      let journal_slots_reason = RewriteAbortReason::JournalSlots();
+      rewrite_abort(capture: capture, reason: journal_slots_reason);
       return False();
     }
   }
@@ -194,7 +221,8 @@ fn rewrite_journal_room(capture: &RewriteCapture, length: u64) -> accepted: Bool
   let needed = rounded / 65536_u64;
   let slots = capacity -sat count;
   if needed > slots {
-    rewrite_abort(capture: capture);
+    let journal_slots_reason = RewriteAbortReason::JournalSlots();
+    rewrite_abort(capture: capture, reason: journal_slots_reason);
     return False();
   }
   let bytes = needed *sat 65560_u64;
@@ -233,9 +261,13 @@ fn rewrite_journal_number(chunks: &Box<Ring<Box<Slots<u8>>>>, value: u64) -> res
 
 fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), reads(meta.log), writes(meta.rewrite) {
   if meta^.rewrite.active {
-    let failed = bor(sequence^.failed, sequence^.exhausted);
-    if failed {
-      rewrite_abort(capture: &meta^.rewrite);
+    if sequence^.failed {
+      rewrite_abort(capture: &meta^.rewrite, reason: sequence^.failure);
+      return unit;
+    }
+    if sequence^.exhausted {
+      let sequence_exhausted_reason = RewriteAbortReason::SequenceExhausted();
+      rewrite_abort(capture: &meta^.rewrite, reason: sequence_exhausted_reason);
       return unit;
     }
     if sequence^.effect {
@@ -266,6 +298,7 @@ fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads
                     rewrite_journal_put(chunks: chunks, value: byte);
                   }
                 }
+                set meta^.rewrite.journal_images = meta^.rewrite.journal_images +sat 1_u64;
               }
               None() => {
               }
@@ -286,7 +319,8 @@ fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: uni
   let end = meta^.log.inner.len;
   let start = sequence^.log_start;
   if start > end {
-    rewrite_abort(capture: &meta^.rewrite);
+    let journal_invalid_reason = RewriteAbortReason::JournalInvalid();
+    rewrite_abort(capture: &meta^.rewrite, reason: journal_invalid_reason);
     return unit;
   }
   let length = end - start;
@@ -301,6 +335,7 @@ fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: uni
           let byte = meta^.log.inner[offset];
           rewrite_journal_put(chunks: chunks, value: byte);
         }
+        set meta^.rewrite.journal_effects = meta^.rewrite.journal_effects +sat 1_u64;
       }
       None() => {
       }

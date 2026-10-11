@@ -181,7 +181,8 @@ fn fresh_hash(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &O
     let made = Value::Fields(fields: move fields);
     let stamp = new_access(client: client);
     let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
-    set slot^ = Some<Entry>(value: move fresh);
+    let replacement = Some<Entry>(value: move fresh);
+    pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
     pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: capture_key);
     set client^.state = state_done;
   }
@@ -1647,7 +1648,8 @@ fn hincrby_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
     let made = Value::Fields(fields: move fields);
     let stamp = new_access(client: client);
     let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
-    set slot^ = Some<Entry>(value: move fresh);
+    let replacement = Some<Entry>(value: move fresh);
+    pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
     pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
     set client^.high = client^.low;
     set client^.state = state_done;
@@ -1706,7 +1708,8 @@ fn hincrbyfloat_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg:
       let made = Value::Fields(fields: move fields);
       let stamp = new_access(client: client);
       let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
-      set slot^ = Some<Entry>(value: move fresh);
+      let replacement = Some<Entry>(value: move fresh);
+      pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
       pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
       set client^.state = state_done;
     }

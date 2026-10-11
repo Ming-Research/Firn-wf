@@ -868,7 +868,8 @@ fn place_member(sequence: &pkg::store::WriteSequence, client: &Client, slot: &Op
   let made = Value::Members(members: move members);
   let stamp = new_access(client: client);
   let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
-  set slot^ = Some<Entry>(value: move fresh);
+  let replacement = Some<Entry>(value: move fresh);
+  pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
   pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   return unit;
 }
@@ -1127,7 +1128,8 @@ fn store_members(sequence: &pkg::store::WriteSequence, client: &Client, slot: &O
   let made = Value::Members(members: move empty);
   let stamp = replacement_access(slot: slot, client: client);
   let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
-  set slot^ = Some<Entry>(value: move fresh);
+  let replacement = Some<Entry>(value: move fresh);
+  pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
   pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   match slot^ {
     Some(value: held) => {
@@ -1221,7 +1223,8 @@ fn sadd_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
       let made = Value::Members(members: move members);
       let stamp = new_access(client: client);
       let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
-      set slot^ = Some<Entry>(value: move fresh);
+      let replacement = Some<Entry>(value: move fresh);
+      pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
       pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
       set client^.state = state_done;
     }

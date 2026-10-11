@@ -317,6 +317,46 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
 }
 
 #[test]
+fn reconciled_scan_repeated_sets_journal_one_image_then_effects() {
+    let program = CompiledProgram::from_environment();
+    fixture(&program);
+    let (child, mut client, _) = start(&program);
+    rewrite_start(&mut client);
+    let keys = scanned_keys(&program, &mut client);
+    let before = rewrite_info(&mut client);
+    assert_eq!(before["firn_aof_rewrite_abort_reason"], "");
+    assert_eq!(before["firn_aof_rewrite_journal_images"], "0");
+    assert_eq!(before["firn_aof_rewrite_journal_effects"], "0");
+    // Cover replacement of an existing list as well as a newly created key.
+    // With the old SET path each write loses last_write and emits an image.
+    for key in [keys[1].as_slice(), b"set:journal:new".as_slice()] {
+        for index in 0..8 {
+            let value = index.to_string();
+            assert_eq!(request(&mut client, &[b"SET", key, value.as_bytes()]), Reply::Line(b"+OK".to_vec()));
+        }
+    }
+    let captured = rewrite_info(&mut client);
+    assert_eq!(captured["firn_aof_rewrite_scan_done"], "0", "all writes must precede the cut");
+    assert_eq!(captured["firn_aof_rewrite_journal_images"], "2", "only each key's first write needs an image");
+    assert_eq!(captured["firn_aof_rewrite_journal_effects"], "14", "later SETs must use statement bytes");
+    let complete = rewrite_wait(&mut client);
+    assert_eq!(complete["aof_last_bgrewrite_status"], "ok");
+    assert_eq!(complete["firn_aof_rewrite_abort_reason"], "");
+    assert_eq!(complete["firn_aof_rewrite_journal_images"], "2");
+    assert_eq!(complete["firn_aof_rewrite_journal_effects"], "14");
+    assert_eq!(complete["firn_aof_rewrite_scan_done"], "1");
+    assert!(complete["firn_aof_rewrite_scan_steps"].parse::<u64>().unwrap() > 0);
+    assert_eq!(complete["firn_aof_rewrite_used"], "0");
+    assert!(complete["firn_aof_rewrite_peak"].parse::<u64>().unwrap() > 0);
+    rewrite_stop(&mut client, child);
+    let (child, mut restored, _) = start(&program);
+    for key in [keys[1].as_slice(), b"set:journal:new".as_slice()] {
+        assert_eq!(bulk(request(&mut restored, &[b"GET", key])), b"7");
+    }
+    rewrite_stop(&mut restored, child);
+}
+
+#[test]
 fn reconciled_scan_reserve_abort_keeps_writes_and_old_files() {
     let program = CompiledProgram::from_environment();
     fixture(&program);
@@ -328,21 +368,28 @@ fn reconciled_scan_reserve_abort_keeps_writes_and_old_files() {
     assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory", &limit.to_string()]), "+OK\r\n");
     rewrite_start(&mut client);
     scanned_keys(&program, &mut client);
-    let payload = vec![b'x'; 32 * 1024];
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut writes = 0;
-    loop {
+    let admitted = rewrite_info(&mut client);
+    let reserve = admitted["firn_aof_rewrite_reserve"].parse::<u64>().unwrap();
+    assert_eq!(reserve, limit / 20);
+    // Keep the admitted R but remove service pressure as a competing cause.
+    // Repeated small effects can exhaust scratch, chunks or journal slots;
+    // a fresh image larger than R must fail sequence_room first, as Capture.
+    assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"0"]), Reply::Line(b"+OK".to_vec()));
+    let capturing = rewrite_info(&mut client);
+    assert_eq!(capturing["aof_rewrite_in_progress"], "1");
+    assert_eq!(capturing["firn_aof_rewrite_scan_done"], "0", "the oversized replacement must still reach image capture");
+    assert_eq!(capturing["firn_aof_rewrite_reserve"].parse::<u64>().unwrap(), reserve, "CONFIG must not change the admitted allowance");
+    // Also exceed the automatic-retry threshold with ordinary accepted bytes.
+    let payload = vec![b'x'; (reserve + 1).max(1048577) as usize];
+    assert_eq!(request(&mut client, &[b"SET", b"hot", &payload]), Reply::Line(b"+OK".to_vec()));
+    let info = rewrite_wait(&mut client);
+    assert_eq!(info["aof_last_bgrewrite_status"], "err");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "capture", "oversized first-image scratch must be the initiating failure");
+    assert_eq!(info["firn_aof_rewrite_reserve"].parse::<u64>().unwrap(), reserve);
+    // Repeated ordinary writes remain accepted after the capture failure.
+    for _ in 0..2 {
         assert_eq!(request(&mut client, &[b"SET", b"hot", &payload]), Reply::Line(b"+OK".to_vec()));
-        writes += 1;
-        let info = rewrite_info(&mut client);
-        if info["aof_rewrite_in_progress"] == "0" {
-            assert_eq!(info["aof_last_bgrewrite_status"], "err");
-            assert_eq!(info["firn_aof_rewrite_reserve"].parse::<u64>().unwrap(), limit / 20);
-            break;
-        }
-        assert!(Instant::now() < deadline, "retained images never exhausted R");
     }
-    assert!(writes > 1);
     assert_old_manifest(&program);
     assert_eq!(request(&mut client, &[b"INCR", b"after-abort"]), Reply::Line(b":1".to_vec()));
     assert!(std::fs::metadata(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof")).unwrap().len() > 1048576, "automatic retry threshold must actually be exceeded");
@@ -374,14 +421,98 @@ fn reconciled_scan_flush_aborts_even_in_exec_and_script() {
             "EVAL" => { request(&mut client, &[b"EVAL", b"redis.call('FLUSHDB'); return redis.call('SET','after','value')", b"0"]); }
             other => { request(&mut client, &[other.as_bytes()]); request(&mut client, &[b"SET", b"after", b"value"]); }
         }
-        assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "err");
+        let failed = rewrite_wait(&mut client);
+        assert_eq!(failed["aof_last_bgrewrite_status"], "err");
+        assert_eq!(failed["firn_aof_rewrite_abort_reason"], "flush");
+        assert_eq!(failed["firn_aof_rewrite_scan_done"], "0");
+        let used = failed["firn_aof_rewrite_used"].parse::<u64>().unwrap();
+        let peak = failed["firn_aof_rewrite_peak"].parse::<u64>().unwrap();
+        assert!(used > 0 && peak >= used, "failure must retain its reserve snapshot after cleanup");
         assert_old_manifest(&program);
         let expected = snapshot(&mut client);
         assert_eq!(expected.len(), 1);
+        let retained = rewrite_info(&mut client);
+        for field in ["firn_aof_rewrite_abort_reason", "firn_aof_rewrite_used", "firn_aof_rewrite_peak"] {
+            assert_eq!(retained[field], failed[field], "service and cleanup must preserve the first failure");
+        }
         rewrite_stop(&mut client, child);
         let (child, mut restored, _) = start(&program);
         assert_eq!(snapshot(&mut restored), expected, "flush must never install scanned stale keys");
         rewrite_stop(&mut restored, child);
+    }
+}
+
+#[test]
+fn reconciled_scan_retry_clears_abort_diagnostics() {
+    for refused in [true, false] {
+        let program = CompiledProgram::from_environment();
+        fixture(&program);
+        let obstacle = program.working_directory().join("appendonlydir/appendonly.aof.2.base.aof");
+        // Ordinary host refusal at installation seeds scan_done=1 as well as
+        // the retained journal, without racing pressure against publication.
+        std::fs::create_dir(&obstacle).unwrap();
+        let (child, mut client, _) = start(&program);
+        rewrite_start(&mut client);
+        scanned_keys(&program, &mut client);
+        let payload = vec![b'p'; 32 * 1024];
+        for _ in 0..200 {
+            assert_eq!(request(&mut client, &[b"SET", b"hot", &payload]), Reply::Line(b"+OK".to_vec()));
+        }
+        let captured = rewrite_info(&mut client);
+        assert_eq!(captured["firn_aof_rewrite_scan_done"], "0", "seed every image/effect before S1");
+        assert_eq!(captured["firn_aof_rewrite_journal_images"], "1");
+        assert_eq!(captured["firn_aof_rewrite_journal_effects"], "199");
+        let failed = rewrite_wait(&mut client);
+        assert_eq!(failed["aof_last_bgrewrite_status"], "err");
+        assert_eq!(failed["firn_aof_rewrite_abort_reason"], "install_io");
+        assert_eq!(failed["firn_aof_rewrite_journal_images"], "1");
+        assert_eq!(failed["firn_aof_rewrite_journal_effects"], "199");
+        assert_eq!(failed["firn_aof_rewrite_scan_done"], "1");
+        let previous_steps = failed["firn_aof_rewrite_scan_steps"].parse::<u64>().unwrap();
+        let previous_used = failed["firn_aof_rewrite_used"].parse::<u64>().unwrap();
+        let previous_peak = failed["firn_aof_rewrite_peak"].parse::<u64>().unwrap();
+        assert!(previous_steps > 0);
+        assert!(previous_used > 0 && previous_peak >= previous_used, "seed failure must retain its reserve snapshot");
+        std::fs::remove_dir(&obstacle).unwrap();
+        if refused {
+            assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"1"]), Reply::Line(b"+OK".to_vec()));
+            // This reaches aof_rw_admit (unlike the command's busy refusal),
+            // and has no worker: all numeric diagnostics must start at zero.
+            assert_eq!(memory_request(&mut client, &["BGREWRITEAOF"]), "-ERR Can't execute an AOF background rewriting. Please check the server logs for more information.\r\n");
+            let reset = rewrite_info(&mut client);
+            assert_eq!(reset["aof_rewrite_in_progress"], "0");
+            assert_eq!(reset["aof_last_bgrewrite_status"], "err");
+            assert_eq!(reset["firn_aof_rewrite_abort_reason"], "admission", "a refused S0 must replace the previous reason");
+            for field in ["firn_aof_rewrite_journal_images", "firn_aof_rewrite_journal_effects", "firn_aof_rewrite_scan_steps", "firn_aof_rewrite_scan_done", "firn_aof_rewrite_used", "firn_aof_rewrite_peak"] {
+                assert_eq!(reset[field], "0", "refused admission must clear {field} from its nonzero predecessor");
+            }
+            assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"0"]), Reply::Line(b"+OK".to_vec()));
+        } else {
+            rewrite_start(&mut client);
+            let reset = rewrite_info(&mut client);
+            assert_eq!(reset["aof_rewrite_in_progress"], "1", "reset evidence must precede completion");
+            assert_eq!(reset["firn_aof_rewrite_abort_reason"], "", "accepted S0 clears the prior failure immediately");
+            assert_eq!(reset["firn_aof_rewrite_journal_images"], "0");
+            assert_eq!(reset["firn_aof_rewrite_journal_effects"], "0");
+            assert_eq!(reset["firn_aof_rewrite_scan_done"], "0");
+            // S0 charges fixed storage and the asynchronous worker may already
+            // have scanned some keys. Compare with the fully scanned, large-journal
+            // predecessor rather than claiming that active use/peak/steps are 0.
+            assert!(reset["firn_aof_rewrite_scan_steps"].parse::<u64>().unwrap() < previous_steps, "accepted S0 must restart the scan counter");
+            for field in ["firn_aof_rewrite_used", "firn_aof_rewrite_peak"] {
+                let previous = failed[field].parse::<u64>().unwrap();
+                assert!(reset[field].parse::<u64>().unwrap() < previous, "accepted S0 must discard the previous large journal's {field}");
+            }
+            let succeeded = rewrite_wait(&mut client);
+            assert_eq!(succeeded["aof_last_bgrewrite_status"], "ok");
+            assert_eq!(succeeded["firn_aof_rewrite_abort_reason"], "");
+            assert_eq!(succeeded["firn_aof_rewrite_journal_images"], "0");
+            assert_eq!(succeeded["firn_aof_rewrite_journal_effects"], "0");
+            assert_eq!(succeeded["firn_aof_rewrite_used"], "0");
+            assert_eq!(succeeded["firn_aof_rewrite_scan_done"], "1");
+            assert_eq!(bulk(request(&mut client, &[b"GET", b"hot"])), payload);
+        }
+        rewrite_stop(&mut client, child);
     }
 }
 
@@ -466,6 +597,7 @@ fn reconciled_scan_pressure_after_s1_aborts_before_installation() {
     request(&mut client, &[b"PING"]);
     let info = rewrite_wait(&mut client);
     assert_eq!(info["aof_last_bgrewrite_status"], "err", "post-S1 pressure must cancel retained work");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "memory_pressure", "pressure must remain the first cause through cleanup");
     assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"0"]), Reply::Line(b"+OK".to_vec()));
     let text = std::fs::read_to_string(&manifest).unwrap();
     assert!(text.contains("appendonly.aof.1.base.aof"));
@@ -512,6 +644,7 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         let info = rewrite_info(&mut client);
         if info["aof_rewrite_in_progress"] == "0" {
             assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance");
+            assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
             break;
         }
         assert!(Instant::now() < deadline, "post-cut backlog never aborted");
