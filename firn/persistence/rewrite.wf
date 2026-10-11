@@ -16,7 +16,8 @@ fn aof_rw_cancelled(store: &Keyspace) -> cancelled: Bool reads(store) waits {
   atomic m = &store^.meta {
     let stopping = bor(m^.stopping, cancelled);
     if stopping {
-      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: pkg::store::rewrite_reason_cancelled);
+      let abort_reason_1 = pkg::store::rewrite_reason_cancelled;
+      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: abort_reason_1);
     }
     set cancelled = bor(stopping, m^.rewrite.aborted);
   }
@@ -56,7 +57,8 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
   let boundary = aof_rw_boundary(store: store, factory: factory, log: log, clock: clock);
   if boundary.whole {
   } else {
-    aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_boundary);
+    let abort_reason_2 = pkg::store::rewrite_reason_boundary;
+    aof_rw_abort(store: store, reason: abort_reason_2);
     return False();
   }
   if boundary.unfinished {
@@ -68,7 +70,8 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
         }
       }
       Err(error: problem) => {
-        aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_writer_io);
+        let abort_reason_3 = pkg::store::rewrite_reason_writer_io;
+        aof_rw_abort(store: store, reason: abort_reason_3);
         return False();
       }
     }
@@ -77,7 +80,8 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
     Ok(value: synced) => {
     }
     Err(error: problem) => {
-      aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_writer_io);
+      let abort_reason_4 = pkg::store::rewrite_reason_writer_io;
+      aof_rw_abort(store: store, reason: abort_reason_4);
       return False();
     }
   }
@@ -86,7 +90,8 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
     return False();
   }
   if log^.manifest.incr_sequence == 9223372036854775807_i64 {
-    aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_sequence_exhausted);
+    let abort_reason_5 = pkg::store::rewrite_reason_sequence_exhausted;
+    aof_rw_abort(store: store, reason: abort_reason_5);
     return False();
   }
   let next = log^.manifest.incr_sequence +wrap 1_i64;
@@ -95,7 +100,8 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
   let name = aof_rw_name(prefix: prefix, sequence: next, suffix: &aof_rw_incr_suffix[0_u64..9_u64]);
   let length = name.inner.len;
   let bytes = &name.inner[0_u64..length];
-  match aof_rw_open(store: store, factory: factory, writable: &log^.writable, name: bytes, reason: pkg::store::rewrite_reason_writer_io) {
+  let abort_reason_6 = pkg::store::rewrite_reason_writer_io;
+  match aof_rw_open(store: store, factory: factory, writable: &log^.writable, name: bytes, reason: abort_reason_6) {
     Ok(value: opened) => {
       let candidate = aof_rw_manifest(original: &log^.manifest);
       let copied = aof_copy(input: bytes);
@@ -105,7 +111,8 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
       let persisted = aof_rw_persist(store: store, factory: factory, writable: &log^.writable, prefix: prefix, manifest: &candidate);
       if persisted.durable {
       } else {
-        aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_install_io);
+        let abort_reason_7 = pkg::store::rewrite_reason_install_io;
+        aof_rw_abort(store: store, reason: abort_reason_7);
       }
       if persisted.published {
         set log^.manifest = move candidate;
@@ -115,7 +122,8 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
             return persisted.durable;
           }
           Err(error: problem) => {
-            aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_writer_io);
+            let abort_reason_8 = pkg::store::rewrite_reason_writer_io;
+            aof_rw_abort(store: store, reason: abort_reason_8);
             return False();
           }
         }
@@ -124,7 +132,8 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
       return False();
     }
     Err(error: problem) => {
-      aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_writer_io);
+      let abort_reason_9 = pkg::store::rewrite_reason_writer_io;
+      aof_rw_abort(store: store, reason: abort_reason_9);
       return False();
     }
   }
@@ -171,7 +180,8 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pen
         set last_sync^ = reading;
       }
       Err(error: problem) => {
-        aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_writer_io);
+        let abort_reason_10 = pkg::store::rewrite_reason_writer_io;
+        aof_rw_abort(store: store, reason: abort_reason_10);
         return False();
       }
     }
@@ -213,7 +223,8 @@ fn aof_rw_install(store: &Keyspace, factory: &HandleFactory, writable: &std::fs:
     Ok(value: renamed) => {
     }
     Err(error: problem) => {
-      aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_install_io);
+      let abort_reason_11 = pkg::store::rewrite_reason_install_io;
+      aof_rw_abort(store: store, reason: abort_reason_11);
       return False();
     }
   }
@@ -236,7 +247,8 @@ fn aof_rw_install(store: &Keyspace, factory: &HandleFactory, writable: &std::fs:
   let persisted = aof_rw_persist(store: store, factory: factory, writable: writable, prefix: prefix, manifest: &candidate);
   if persisted.durable {
   } else {
-    aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_install_io);
+    let abort_reason_12 = pkg::store::rewrite_reason_install_io;
+    aof_rw_abort(store: store, reason: abort_reason_12);
   }
   if persisted.published {
     set manifest^ = move candidate;
@@ -394,7 +406,8 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, clock
       }
     }
     Err(error: problem) => {
-      aof_rw_abort(store: &store, reason: pkg::store::rewrite_reason_cancelled);
+      let abort_reason_13 = pkg::store::rewrite_reason_cancelled;
+      aof_rw_abort(store: &store, reason: abort_reason_13);
     }
   }
   let journal = None<Box<Ring<Box<Slots<u8>>>>>();
@@ -427,7 +440,8 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, clock
                   set size = selected;
                 }
                 Err(error: problem) => {
-                  aof_rw_abort(store: &store, reason: pkg::store::rewrite_reason_base_io);
+                  let abort_reason_14 = pkg::store::rewrite_reason_base_io;
+                  aof_rw_abort(store: &store, reason: abort_reason_14);
                   set accepted = False();
                 }
               }
@@ -456,7 +470,8 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, clock
   let partial_header = decoder.header != 0_u64;
   let incomplete = bor(unfinished, partial_header);
   if incomplete {
-    aof_rw_abort(store: &store, reason: pkg::store::rewrite_reason_journal_invalid);
+    let abort_reason_15 = pkg::store::rewrite_reason_journal_invalid;
+    aof_rw_abort(store: &store, reason: abort_reason_15);
     set accepted = False();
   }
   if accepted {
@@ -464,7 +479,8 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, clock
       Ok(value: synced) => {
       }
       Err(error: problem) => {
-        aof_rw_abort(store: &store, reason: pkg::store::rewrite_reason_base_io);
+        let abort_reason_16 = pkg::store::rewrite_reason_base_io;
+        aof_rw_abort(store: &store, reason: abort_reason_16);
         set accepted = False();
       }
     }
@@ -473,7 +489,8 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, clock
     Ok(value: closed) => {
     }
     Err(error: problem) => {
-      aof_rw_abort(store: &store, reason: pkg::store::rewrite_reason_base_io);
+      let abort_reason_17 = pkg::store::rewrite_reason_base_io;
+      aof_rw_abort(store: &store, reason: abort_reason_17);
       set accepted = False();
     }
   }
@@ -515,7 +532,8 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
     atomic exhausted = &store^.meta {
       set exhausted^.rewrite = pkg::store::rewrite_capture_new();
       set exhausted^.rewrite.running = True();
-      pkg::store::rewrite_abort(capture: &exhausted^.rewrite, reason: pkg::store::rewrite_reason_sequence_exhausted);
+      let abort_reason_18 = pkg::store::rewrite_reason_sequence_exhausted;
+      pkg::store::rewrite_abort(capture: &exhausted^.rewrite, reason: abort_reason_18);
     }
     aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
     return move log;
@@ -531,7 +549,8 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
   let temporary = aof_rw_temporary(prefix: &log.prefix.inner[0_u64..filename_length]);
   let temp_length = temporary.inner.len;
   let temp_name = &temporary.inner[0_u64..temp_length];
-  match aof_rw_open(store: store, factory: factory, writable: &log.writable, name: temp_name, reason: pkg::store::rewrite_reason_base_io) {
+  let abort_reason_19 = pkg::store::rewrite_reason_base_io;
+  match aof_rw_open(store: store, factory: factory, writable: &log.writable, name: temp_name, reason: abort_reason_19) {
     Ok(value: opened) => {
       let worker_store = pkg::store::keyspace_share(store: store);
       let worker_factory = std::io::factory_share(factory: factory);
@@ -551,7 +570,8 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
           set scan_done = m^.rewrite.scan_done;
           set cut_done = m^.rewrite.cut_done;
           if stopping {
-            pkg::store::rewrite_abort(capture: &m^.rewrite, reason: pkg::store::rewrite_reason_cancelled);
+            let abort_reason_20 = pkg::store::rewrite_reason_cancelled;
+            pkg::store::rewrite_abort(capture: &m^.rewrite, reason: abort_reason_20);
           }
           set aborted = m^.rewrite.aborted;
         }
@@ -584,14 +604,16 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
             set outcome^.rewrite.rotating = False();
             if switched {
             } else {
-              pkg::store::rewrite_abort(capture: &outcome^.rewrite, reason: pkg::store::rewrite_reason_boundary);
+              let abort_reason_21 = pkg::store::rewrite_reason_boundary;
+              pkg::store::rewrite_abort(capture: &outcome^.rewrite, reason: abort_reason_21);
             }
           }
         }
         let drained = aof_rw_flush(store: store, factory: factory, file: &log.file, pending: pending, clock: clock, last_sync: last_sync, force: stopping);
         if drained {
         } else {
-          aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_writer_io);
+          let abort_reason_22 = pkg::store::rewrite_reason_writer_io;
+          aof_rw_abort(store: store, reason: abort_reason_22);
         }
       }
       let size = rebuilt.size;
@@ -603,7 +625,8 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
           let stopping = bor(install_meta^.stopping, state^.shutdown);
           let refused = bor(stopping, install_meta^.rewrite.aborted);
           if refused {
-            pkg::store::rewrite_abort(capture: &install_meta^.rewrite, reason: pkg::store::rewrite_reason_cancelled);
+            let abort_reason_23 = pkg::store::rewrite_reason_cancelled;
+            pkg::store::rewrite_abort(capture: &install_meta^.rewrite, reason: abort_reason_23);
           } else {
             set install_meta^.aof_installing = 1_u64;
             set install = True();
@@ -622,7 +645,8 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
       aof_rw_complete(store: store, accepted: accepted, manual: manual, started: yes);
     }
     Err(error: problem) => {
-      aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_base_io);
+      let abort_reason_24 = pkg::store::rewrite_reason_base_io;
+      aof_rw_abort(store: store, reason: abort_reason_24);
       aof_rw_discard(store: store, clock: clock);
       aof_rw_complete(store: store, accepted: no, manual: manual, started: yes);
     }
@@ -659,7 +683,8 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pen
   atomic m = &store^.meta {
     if drained {
     } else {
-      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: pkg::store::rewrite_reason_drain);
+      let abort_reason_25 = pkg::store::rewrite_reason_drain;
+      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: abort_reason_25);
     }
     set m^.aof_current_size = m^.aof_current_size +wrap appended;
     if drained {
