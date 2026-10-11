@@ -412,7 +412,9 @@ baseline is the loaded base file's size, as Redis 7.0.15 initializes it.
 `CONFIG SET` also changes both thresholds, atomically with any other parameters
 in the call, for the next automatic-rewrite decision. The percentage accepts
 integers from `0` through `2147483647`; min-size accepts Redis memory units and
-byte counts from `0` through `9223372036854775807`. `CONFIG GET` reports the
+byte counts from `0` through `9223372036854775807`; as in Redis, a unit's
+product wraps modulo 2^64 and an empty value or a bare unit reads as `0`.
+`CONFIG GET` reports the
 current percentage and min-size in decimal, min-size in bytes, and includes
 both in glob matches. Setting the percentage to `0` disables automatic rewrites
 without cancelling a rewrite already in progress.
