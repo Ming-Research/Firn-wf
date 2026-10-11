@@ -38,4 +38,4 @@ jobs:
       - name: Diagnose reserve admission
         env:
           FIRN: ${{ github.workspace }}/build/firn-test
-        run: cargo test --manifest-path tests/Cargo.toml --locked --test network memory_limit::noeviction_reclaims_map_reserve_before_refusing_a_write -- --nocapture
+        run: cargo test --manifest-path tests/Cargo.toml --locked --test network -- --nocapture
