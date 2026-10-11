@@ -102,13 +102,24 @@ impl CompiledProgram {
         settings: &[(&str, &str)],
         arguments: &[&[u8]],
     ) -> ProgramChild {
+        self.spawn_on_route_with_stderr(native_ring, settings, arguments, false)
+    }
+
+    // EXPERIMENT NOT FOR MERGE: only the reserve-admission case inherits stderr.
+    pub fn spawn_on_route_with_stderr(
+        &self,
+        native_ring: bool,
+        settings: &[(&str, &str)],
+        arguments: &[&[u8]],
+        inherit_stderr: bool,
+    ) -> ProgramChild {
         let mut command = Command::new(&self.executable);
         command
             .current_dir(&self.directory)
             .args(arguments.iter().map(|bytes| invocation_argument(bytes)))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(if inherit_stderr { Stdio::inherit() } else { Stdio::piped() });
         select_route(&mut command, native_ring);
         command.env_remove("WF_WORKERS").env_remove("WF_DRIVERS");
         for (name, count) in settings {

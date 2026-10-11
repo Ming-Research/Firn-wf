@@ -64,6 +64,135 @@ alias shutdown_requested = pkg::store::shutdown_requested;
 alias request_shutdown = pkg::store::request_shutdown;
 alias write_log = pkg::persistence::write_log;
 
+const experiment_admission: Array<u8, 42> =[69_u8, 88_u8, 80_u8, 69_u8, 82_u8, 73_u8, 77_u8, 69_u8, 78_u8, 84_u8, 32_u8, 78_u8, 79_u8, 84_u8, 95_u8, 70_u8, 79_u8, 82_u8, 95_u8, 77_u8, 69_u8, 82_u8, 71_u8, 69_u8, 32_u8, 109_u8, 101_u8, 109_u8, 100_u8, 105_u8, 97_u8, 103_u8, 32_u8, 97_u8, 100_u8, 109_u8, 105_u8, 115_u8, 115_u8, 105_u8, 111_u8, 110_u8];
+
+const experiment_exec: Array<u8, 37> =[69_u8, 88_u8, 80_u8, 69_u8, 82_u8, 73_u8, 77_u8, 69_u8, 78_u8, 84_u8, 32_u8, 78_u8, 79_u8, 84_u8, 95_u8, 70_u8, 79_u8, 82_u8, 95_u8, 77_u8, 69_u8, 82_u8, 71_u8, 69_u8, 32_u8, 109_u8, 101_u8, 109_u8, 100_u8, 105_u8, 97_u8, 103_u8, 32_u8, 69_u8, 88_u8, 69_u8, 67_u8];
+
+const experiment_maxmemory: Array<u8, 11> =[32_u8, 109_u8, 97_u8, 120_u8, 109_u8, 101_u8, 109_u8, 111_u8, 114_u8, 121_u8, 61_u8];
+
+const experiment_before: Array<u8, 16> =[32_u8, 99_u8, 111_u8, 117_u8, 110_u8, 116_u8, 101_u8, 100_u8, 95_u8, 98_u8, 101_u8, 102_u8, 111_u8, 114_u8, 101_u8, 61_u8];
+
+const experiment_freed: Array<u8, 15> =[32_u8, 114_u8, 101_u8, 115_u8, 101_u8, 114_u8, 118_u8, 101_u8, 95_u8, 102_u8, 114_u8, 101_u8, 101_u8, 100_u8, 61_u8];
+
+const experiment_after: Array<u8, 15> =[32_u8, 99_u8, 111_u8, 117_u8, 110_u8, 116_u8, 101_u8, 100_u8, 95_u8, 97_u8, 102_u8, 116_u8, 101_u8, 114_u8, 61_u8];
+
+const experiment_decides: Array<u8, 21> =[32_u8, 109_u8, 101_u8, 109_u8, 111_u8, 114_u8, 121_u8, 95_u8, 111_u8, 118_u8, 101_u8, 114_u8, 95_u8, 99_u8, 111_u8, 117_u8, 110_u8, 116_u8, 101_u8, 100_u8, 61_u8];
+
+const experiment_over: Array<u8, 6> =[32_u8, 111_u8, 118_u8, 101_u8, 114_u8, 61_u8];
+
+const experiment_attempted: Array<u8, 19> =[32_u8, 114_u8, 101_u8, 108_u8, 101_u8, 97_u8, 115_u8, 101_u8, 95_u8, 97_u8, 116_u8, 116_u8, 101_u8, 109_u8, 112_u8, 116_u8, 101_u8, 100_u8, 61_u8];
+
+const experiment_execbefore: Array<u8, 16> =[32_u8, 99_u8, 111_u8, 117_u8, 110_u8, 116_u8, 101_u8, 100_u8, 95_u8, 98_u8, 101_u8, 102_u8, 111_u8, 114_u8, 101_u8, 61_u8];
+
+const experiment_execafter: Array<u8, 22> =[32_u8, 99_u8, 111_u8, 117_u8, 110_u8, 116_u8, 101_u8, 100_u8, 95_u8, 97_u8, 102_u8, 116_u8, 101_u8, 114_u8, 95_u8, 114_u8, 101_u8, 116_u8, 117_u8, 114_u8, 110_u8, 61_u8];
+
+const experiment_newline: Array<u8, 1> =[10_u8];
+
+const experiment_digits: Array<u8, 10> =[48_u8, 49_u8, 50_u8, 51_u8, 52_u8, 53_u8, 54_u8, 55_u8, 56_u8, 57_u8];
+
+fn experiment_write(factory: &HandleFactory, output: &std::io::OutputStream, source: &[u8]) -> result: unit reads(source), writes(factory), writes(output) waits {
+  doc "EXPERIMENT NOT_FOR_MERGE: writes inline diagnostic bytes to inherited stderr, retrying partial host writes.";
+  let sent = 0_u64;
+  let never = std::time::cancel_never();
+  loop @writing {
+    let length = source^.len;
+    if sent < length {
+      let deadline = None<Instant>();
+      match std::io::write_once(factory: factory, output: output, source: source, start: sent, end: length, deadline: deadline, cancel: &never) {
+        Ok(value: next) => {
+          if next == sent {
+            break @writing;
+          }
+          set sent = next;
+        }
+        Err(error: unused_error) => {
+          break @writing;
+        }
+      }
+    } else {
+      break @writing;
+    }
+  }
+  std::time::close_cancel_watch(watch: move never);
+  return unit;
+}
+
+fn experiment_number(factory: &HandleFactory, output: &std::io::OutputStream, value: u64) -> result: unit writes(factory), writes(output) waits {
+  doc "EXPERIMENT NOT_FOR_MERGE: decimal numbers use inline storage, padded to 20 digits to avoid heap formatting allocations.";
+  let digits = slots_new::<u8, 20>();
+  let rest = value;
+  for @extract (
+    at in 0_u64..20_u64,
+    invariant filled: digits.len == at
+  ) {
+    let digit = rest % 10_u64;
+    let glyph = experiment_digits[digit];
+    place_back(window: &digits, value: glyph);
+    set rest = rest / 10_u64;
+  }
+  let text = slots_new::<u8, 20>();
+  for @reverse (
+    at in 0_u64..20_u64,
+    invariant left: digits.len + at == 20_u64,
+    invariant filled: text.len == at
+  ) {
+    let glyph = take_back(window: &digits);
+    place_back(window: &text, value: glyph);
+  }
+  experiment_write(factory: factory, output: output, source: &text[0_u64..20_u64]);
+  return unit;
+}
+
+fn experiment_flush(factory: &HandleFactory, output: &std::io::OutputStream, store: &Keyspace, client: &Client) -> result: unit reads(store), writes(factory), writes(output), writes(client) waits {
+  doc "EXPERIMENT NOT_FOR_MERGE: flushes numeric snapshots after command execution and peak recording, before replying to the client.";
+  if client^.experiment_exec {
+    let used = 0_u64;
+    match client^.meter {
+      Some(value: meter) => {
+        set used = std::process::heap_in_use(meter: meter);
+      }
+      None() => {
+      }
+    }
+    let excluded = 0_u64;
+    if store^.logging {
+      atomic meta = &store^.meta {
+        set excluded = meta^.log.inner.cap +sat meta^.aof_pending_capacity;
+      }
+    }
+    set client^.experiment_numbers[8_u64] = used -sat excluded;
+  }
+  if client^.experiment_admission {
+    experiment_write(factory: factory, output: output, source: &experiment_admission[0_u64..42_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_maxmemory[0_u64..11_u64]);
+    experiment_number(factory: factory, output: output, value: client^.experiment_numbers[0_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_before[0_u64..16_u64]);
+    experiment_number(factory: factory, output: output, value: client^.experiment_numbers[1_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_freed[0_u64..15_u64]);
+    experiment_number(factory: factory, output: output, value: client^.experiment_numbers[2_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_after[0_u64..15_u64]);
+    experiment_number(factory: factory, output: output, value: client^.experiment_numbers[3_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_decides[0_u64..21_u64]);
+    experiment_number(factory: factory, output: output, value: client^.experiment_numbers[4_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_over[0_u64..6_u64]);
+    experiment_number(factory: factory, output: output, value: client^.experiment_numbers[5_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_attempted[0_u64..19_u64]);
+    experiment_number(factory: factory, output: output, value: client^.experiment_numbers[6_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_newline[0_u64..1_u64]);
+  }
+  if client^.experiment_exec {
+    experiment_write(factory: factory, output: output, source: &experiment_exec[0_u64..37_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_execbefore[0_u64..16_u64]);
+    experiment_number(factory: factory, output: output, value: client^.experiment_numbers[7_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_execafter[0_u64..22_u64]);
+    experiment_number(factory: factory, output: output, value: client^.experiment_numbers[8_u64]);
+    experiment_write(factory: factory, output: output, source: &experiment_newline[0_u64..1_u64]);
+  }
+  set client^.experiment_admission = False();
+  set client^.experiment_exec = False();
+  return unit;
+}
+
 fn send_all(send: &TcpSend, source: &[u8], length: u64, store: &Keyspace, clock: &Clock, base: Instant) -> result: Result<unit, IoError> reads(source), reads(store), writes(send), writes(clock) waits contract {
   define source_length = source^.len;
   requires length <= source_length;
@@ -286,7 +415,7 @@ fn read_time(wall: &WallClock) -> result: Reading reads(wall) {
   return Reading(time: time, unix_us: unix_us);
 }
 
-fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter, shutdown: CancelSource) -> result: unit pure waits {
+fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter, shutdown: CancelSource, experiment_stderr: Option<std::io::OutputStream>) -> result: unit pure waits {
   doc "Serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: a receive has no deadline at zero and otherwise waits for the remaining idle interval. It keeps a watch of a receive wake generation across requests. A changed limit installs a fresh generation and fires the old one; shutdown fires the current generation. After cancellation or a deadline the client reads shutdown and the limit again, replacing a fired watch only while still running, and waits again unless stopping or expired. Active clients also re-read the state at most once a second while processing requests; these reads observe shutdown and close after held replies are sent. When command dispatch reports an accepted shutdown request, the receive generation has already been fired and the client context fires its separate shutdown source before another wait, without reading server state again. Sends keep their never-firing watch and retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
   let env = KeyEnv();
   let client = client_new(capacity: 16384_u64);
@@ -421,6 +550,14 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
           std::time::cancel_fire(source: &shutdown);
         }
         pkg::commands::record_memory_peak(store: &store, client: &client);
+        let experiment_sink = &experiment_stderr;
+        match experiment_sink^ {
+          Some(value: output) => {
+            experiment_flush(factory: &factory, output: output, store: &store, client: &client);
+          }
+          None() => {
+          }
+        }
         if client.closing {
           set closing = True();
           break @commands;
@@ -566,6 +703,7 @@ struct Options {
   count: u64;
   idle: u64;
   logging: Bool;
+  experiment_memdiag: Bool;
   aof: Box<Slots<u8>>;
   bind: Box<Slots<u8>>;
   password: Box<Slots<u8>>;
@@ -828,6 +966,8 @@ fn rewrite_option_size(text: &Box<Slots<u8>>) -> number: Decimal reads(text) {
   return Decimal(value: 0_u64, valid: invalid);
 }
 
+const option_experiment_memdiag: Array<u8, 18> = "EXPERIMENT-MEMDIAG";
+
 fn apply_named(options: &Options, name: Box<Slots<u8>>, value: Box<Slots<u8>>) -> applied: Bool writes(options) {
   doc "Applies one option given by name to the options, returning false for an unknown name or a value that does not read.";
   let is_port = option_named(text: &name, word: &option_port[0_u64..4_u64]);
@@ -839,6 +979,13 @@ fn apply_named(options: &Options, name: Box<Slots<u8>>, value: Box<Slots<u8>>) -
   let is_clients = option_named(text: &name, word: &option_clients[0_u64..7_u64]);
   let is_rewrite_percentage = option_named(text: &name, word: &option_rewrite_percentage[0_u64..27_u64]);
   let is_rewrite_min_size = option_named(text: &name, word: &option_rewrite_min_size[0_u64..25_u64]);
+  let is_experiment_memdiag = option_named(text: &name, word: &option_experiment_memdiag[0_u64..17_u64]);
+  if is_experiment_memdiag {
+    let yes = spelled(text: &value, word: &word_yes[0_u64..3_u64]);
+    let no = spelled(text: &value, word: &word_no[0_u64..2_u64]);
+    set options^.experiment_memdiag = yes;
+    return bor(yes, no);
+  }
   if is_rewrite_percentage {
     let number = decimal(text: &value, limit: 2147483647_u64);
     set options^.rewrite_percentage = number.value;
@@ -931,7 +1078,7 @@ fn read_options(args: &std::text::Args) -> options: Options reads(args) {
   let password = box_slots_new::<u8>(capacity: 0_u64);
   let off = False();
   let readable = True();
-  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, valid: readable);
+  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, logging: off, experiment_memdiag: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, valid: readable);
   let position = 1_u64;
   let ordinal = 0_u64;
   let named = False();
@@ -990,9 +1137,15 @@ fn read_options(args: &std::text::Args) -> options: Options reads(args) {
 
 fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation, which read_options reads, names up to four arguments by position, the port, how many clients to accept, zero for no limit, the append-only file's name or - for none, and the idle limit, then options by name, --port, --bind, --timeout, --appendonly, --appendfilename, --requirepass, --clients, --auto-aof-rewrite-percentage and --auto-aof-rewrite-min-size; an invocation that does not read stops firn with status 1. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from just before firn listens, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; firn stops with status 3 when it cannot listen, on its address or for those signals.";
-  let Inputs(args: args, cwd: cwd_directory, stdout: unused_stdout, stderr: unused_stderr, handles: handles, stdin: unused_stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter) = move inputs;
+  let Inputs(args: args, cwd: cwd_directory, stdout: unused_stdout, stderr: experiment_output, handles: handles, stdin: unused_stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter) = move inputs;
   let std::fs::Directory(read: cwd, write: cwd_write) = move cwd_directory;
   let options = read_options(args: &args);
+  let experiment_stderr = None<std::io::OutputStream>();
+  if options.experiment_memdiag {
+    set experiment_stderr = Some<std::io::OutputStream>(value: move experiment_output);
+  } else {
+    let unused_experiment_output = move experiment_output;
+  }
   if options.valid {
   } else {
     close_directory_write(factory: &handles, directory: move cwd_write);
@@ -1110,7 +1263,9 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
               }
               set accepted = accepted +wrap 1_u64;
               let serving_shutdown = std::time::cancel_share(source: &shutdown);
-              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown);
+              let serving_stderr = None<std::io::OutputStream>();
+              swap(first: &serving_stderr, second: &experiment_stderr);
+              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown, experiment_stderr: move serving_stderr);
             }
             Err(error: problem) => {
               break @accepting;

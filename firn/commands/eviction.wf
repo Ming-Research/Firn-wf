@@ -48,11 +48,18 @@ fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(s
 }
 
 fn memory_over(meta: &Meta, client: &Client, logged: Bool) -> over: Bool writes(meta), writes(client) {
-  doc "Redis 7.0.15 getMaxmemoryState: raw used_memory minus excluded AOF capacity, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed. Pressure aborts retained rewrite work before the Meta-serialized installation commitment; after commitment eviction waits for publication and cleanup, as shutdown already does.";
+  doc "EXPERIMENT NOT FOR MERGE: captures the exact counted comparison input. Redis 7.0.15 getMaxmemoryState: raw used_memory minus excluded AOF capacity, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed. Pressure aborts retained rewrite work before the Meta-serialized installation commitment; after commitment eviction waits for publication and cleanup, as shutdown already does.";
   let used = heap_read(client: client);
   set meta^.memory_peak = imax(meta^.memory_peak, used);
   let excluded = memory_excluded(meta: meta, logged: logged);
   let counted = used -sat excluded;
+  if client^.memory_policy == 7_u64 {
+    set client^.experiment_numbers[4_u64] = counted;
+    set client^.experiment_numbers[5_u64] = 0_u64;
+    if counted > client^.maxmemory {
+      set client^.experiment_numbers[5_u64] = 1_u64;
+    }
+  }
   if meta^.aof_rewrite_in_progress {
     let headroom = imax(meta^.rewrite.limit, 1048576_u64);
     let needed = counted +sat headroom;
@@ -308,14 +315,22 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
 }
 
 fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool reads(store), writes(client), writes(clock) waits {
-  doc "Redis 7.0.15 performEvictions: only EVICT_FAIL sets OOM. Over the limit, the keyspace map's reserve is given back first and the limit read again, since that storage holds no key. Each command's context re-reads the heap before every victim; no global command turn is held. EVICT_RUNNING permits the command and the next command resumes, replacing Redis's evictionTimeProc continuation as the owner ruled. Check monotonic tenacity every 16 deletions, and every 16 unsuccessful batches to bound sparse/ghost searches. An exhaustion decision reads the heap in the same whole-map and Meta statement as its final sample, which is its admission point even if a writer starts afterward. Each deletion, DEL propagation and statistic update holds the chosen entry plus Meta together; an entry now expired follows active expiry instead of eviction. A single map_scan and a single deletion remain indivisible, as Redis's sampling and deletion do.";
+  doc "EXPERIMENT NOT FOR MERGE: inline snapshots around the existing reserve release, emitted after dispatch. Redis 7.0.15 performEvictions: only EVICT_FAIL sets OOM. Over the limit, the keyspace map's reserve is given back first and the limit read again, since that storage holds no key. Each command's context re-reads the heap before every victim; no global command turn is held. EVICT_RUNNING permits the command and the next command resumes, replacing Redis's evictionTimeProc continuation as the owner ruled. Check monotonic tenacity every 16 deletions, and every 16 unsuccessful batches to bound sparse/ghost searches. An exhaustion decision reads the heap in the same whole-map and Meta statement as its final sample, which is its admission point even if a writer starts afterward. Each deletion, DEL propagation and statistic update holds the chosen entry plus Meta together; an entry now expired follows active expiry instead of eviction. A single map_scan and a single deletion remain indivisible, as Redis's sampling and deletion do.";
   if client^.maxmemory == 0_u64 {
     return False();
   }
   let logged = store^.logging;
   let over = False();
+  if client^.memory_policy == 7_u64 {
+    set client^.experiment_admission = True();
+    set client^.experiment_numbers[0_u64] = client^.maxmemory;
+    set client^.experiment_numbers[2_u64] = 0_u64;
+    set client^.experiment_numbers[6_u64] = 0_u64;
+  }
   atomic meta = &store^.meta {
     set over = memory_over(meta: meta, client: client, logged: logged);
+    set client^.experiment_numbers[1_u64] = client^.experiment_numbers[4_u64];
+    set client^.experiment_numbers[3_u64] = client^.experiment_numbers[4_u64];
   }
   if bnot(over) {
     return False();
@@ -330,7 +345,19 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
     atomic cleaned = &store^.meta when bnot(cleaned^.aof_rewrite_in_progress) {
     }
   }
-  release_reserve(store: store, client: client);
+  let experiment_before = heap_read(client: client);
+  let experiment_excluded = 0_u64;
+  atomic experiment_meta = &store^.meta {
+    set experiment_excluded = memory_excluded(meta: experiment_meta, logged: logged);
+  }
+  let experiment_freed = release_reserve(store: store, client: client);
+  let experiment_after = heap_read(client: client);
+  if client^.memory_policy == 7_u64 {
+    set client^.experiment_numbers[1_u64] = experiment_before -sat experiment_excluded;
+    set client^.experiment_numbers[2_u64] = experiment_freed;
+    set client^.experiment_numbers[3_u64] = experiment_after -sat experiment_excluded;
+    set client^.experiment_numbers[6_u64] = 1_u64;
+  }
   atomic released_meta = &store^.meta {
     set over = memory_over(meta: released_meta, client: client, logged: logged);
   }

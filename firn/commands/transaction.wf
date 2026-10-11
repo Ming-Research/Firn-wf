@@ -231,7 +231,7 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
 }
 
 fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transaction: &Transaction) -> result: unit reads(store), reads(env), reads(time), writes(client), writes(transaction) waits {
-  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order by its parts, in one statement holding every key and the keyspace's metadata so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. There are no memory checks between queued commands after EXEC admission. A queue-time OOM marks the transaction dirty, so an admitted EXEC returns Redis 7.0.15 execCommand's previous-errors abort, even after memory recovers. OOM rejection of EXEC itself happens earlier during admission and returns the explicit OOM cause. The transaction then closes.";
+  doc "EXPERIMENT NOT FOR MERGE: captures counted heap before EXEC temporary storage; serve samples after return. EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order by its parts, in one statement holding every key and the keyspace's metadata so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. There are no memory checks between queued commands after EXEC admission. A queue-time OOM marks the transaction dirty, so an admitted EXEC returns Redis 7.0.15 execCommand's previous-errors abort, even after memory recovers. OOM rejection of EXEC itself happens earlier during admission and returns the explicit OOM cause. The transaction then closes.";
   let journal = None<pkg::store::AccessJournal>();
   if transaction^.dirty {
     reply_error(client: client, word: &text_execabort[0_u64..59_u64]);
@@ -243,6 +243,12 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
     transaction_reset(transaction: transaction);
     return unit;
   }
+  let experiment_used = heap_read(client: client);
+  atomic experiment_meta = &store^.meta {
+    let excluded = memory_excluded(meta: experiment_meta, logged: store^.logging);
+    set client^.experiment_numbers[7_u64] = experiment_used -sat excluded;
+  }
+  set client^.experiment_exec = True();
   prepare_access(client: client, time: time);
   let commands = transaction^.counts.inner.len;
   reply_array(client: client, count: commands);

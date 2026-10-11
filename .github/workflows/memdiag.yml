@@ -1,0 +1,41 @@
+# EXPERIMENT NOT FOR MERGE: remove with exp/script-keys-memdiag.
+name: memdiag
+
+on:
+  push:
+    branches: [exp/script-keys-memdiag]
+
+concurrency:
+  group: memdiag-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  memdiag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      # Setup copied from check.yml; the Redis suite itself is not run here.
+      - name: Install the host toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tcl redis-tools
+          make toolchain
+          ld.lld --version
+          /usr/bin/clang --version
+          python3 --version
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Build the network-test server
+        run: make firn-test
+
+      - name: Diagnose reserve admission
+        env:
+          FIRN: ${{ github.workspace }}/build/firn-test
+        run: cargo test --manifest-path tests/Cargo.toml --locked --test network memory_limit::noeviction_reclaims_map_reserve_before_refusing_a_write -- --nocapture

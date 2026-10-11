@@ -97,8 +97,10 @@ fn noeviction_refuses_denyoom_but_allows_reads_and_deletes() {
 fn noeviction_reclaims_map_reserve_before_refusing_a_write() {
     let port = free_port();
     let text = port.to_string();
-    let child = firn().spawn_on_route_with(
-        true, &[("WF_DRIVERS", "1"), ("WF_WORKERS", "1")], &[text.as_bytes(), b"1"],
+    // EXPERIMENT NOT FOR MERGE: stream diagnostics even if the assertion panics.
+    let child = firn().spawn_on_route_with_stderr(
+        true, &[("WF_DRIVERS", "1"), ("WF_WORKERS", "1")],
+        &[text.as_bytes(), b"1", b"--experiment-memdiag", b"yes"], true,
     );
     let mut client = connect_when_ready(port);
     assert_eq!(memory_request(&mut client, &["FLUSHDB"]), "+OK\r\n");
