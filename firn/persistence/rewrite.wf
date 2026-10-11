@@ -76,10 +76,16 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
       }
     }
     Err(error: problem) => {
-      atomic m = &store^.meta {
-        set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
+      let counted = aof_sync_counts(error: &problem);
+      if counted {
+        atomic m = &store^.meta {
+          set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
+        }
+        return False();
       }
-      return False();
+      atomic m = &store^.meta {
+        set m^.aof_sync_error = None<std::io::IoError>();
+      }
     }
   }
   let aborted = aof_rw_cancelled(store: store);
@@ -145,6 +151,102 @@ fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool
   return unit;
 }
 
+fn aof_sync_counts(error: &std::io::IoError) -> counted: Bool reads(error) {
+  doc "Whether a failed sync of the active file latches the sync error. Redis 7.0.15 bio.c:235-247 treats EINVAL from fsync as success, so a file that cannot be synchronized does not refuse writes; Whitefoot maps EINVAL alone to InvalidInput. Redis also ignores EBADF, which it can meet only because its main thread may close and reuse the descriptor; firn owns its WriteFile, so that case cannot arise.";
+  match error^ {
+    NotFound(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    PermissionDenied(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    AlreadyExists(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    NotDirectory(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    IsDirectory(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    DirectoryNotEmpty(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    ReadOnly(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    ResourceBusy(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    InvalidInput(code: native_code, origin: native_origin) => {
+      return False();
+    }
+    InvalidPath(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    Unsupported(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    TimedOut(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    DeadlinePassed() => {
+      return True();
+    }
+    Cancelled() => {
+      return True();
+    }
+    BrokenPipe(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    WriteZero(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    UnexpectedEnd(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    ConnectionRefused(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    ConnectionReset(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    ConnectionAborted(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    NotConnected(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    AddressInUse(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    AddressUnavailable(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    ResourceExhausted(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    FileTooLarge(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    NoSpace(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    QuotaExceeded(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    CrossDevice(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    DeviceFailure(code: native_code, origin: native_origin) => {
+      return True();
+    }
+    Other(code: native_code, origin: native_origin) => {
+      return True();
+    }
+  }
+}
+
 fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, force: Bool) -> drained: Bool reads(store), writes(factory), writes(file), writes(pending), writes(clock), writes(last_sync), writes(last_append) waits {
   doc "Take collecting bytes only after retained bytes drain; shutdown instead combines both for its one forced attempt. Publish retained length/capacity with each exchange and append result. Failed appends retry about once per second without client writes (Redis 7.0.15 server.c:1384-1393); failed syncs also retry about once per second while idle, deliberately unlike Redis's new-byte-dependent schedule (aof.c:1067-1089,1255-1261).";
   let append_failed = False();
@@ -193,10 +295,16 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pen
         }
       }
       Err(error: problem) => {
-        atomic m = &store^.meta {
-          set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
+        let counted = aof_sync_counts(error: &problem);
+        if counted {
+          atomic m = &store^.meta {
+            set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
+          }
+          return False();
         }
-        return False();
+        atomic m = &store^.meta {
+          set m^.aof_sync_error = None<std::io::IoError>();
+        }
       }
     }
   }
