@@ -979,7 +979,7 @@ fn apply_named(options: &Options, name: Box<Slots<u8>>, value: Box<Slots<u8>>) -
   let is_clients = option_named(text: &name, word: &option_clients[0_u64..7_u64]);
   let is_rewrite_percentage = option_named(text: &name, word: &option_rewrite_percentage[0_u64..27_u64]);
   let is_rewrite_min_size = option_named(text: &name, word: &option_rewrite_min_size[0_u64..25_u64]);
-  let is_experiment_memdiag = option_named(text: &name, word: &option_experiment_memdiag[0_u64..17_u64]);
+  let is_experiment_memdiag = option_named(text: &name, word: &option_experiment_memdiag[0_u64..18_u64]);
   if is_experiment_memdiag {
     let yes = spelled(text: &value, word: &word_yes[0_u64..3_u64]);
     let no = spelled(text: &value, word: &word_no[0_u64..2_u64]);
