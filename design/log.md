@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-11 Scripts hold only their declared keys
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/command-parts, firn/scripts
+
+Owner-approved: On the shared status board on 2026-10-11, the owner chose option A (approve) on card firn-q-approve-47-tree, which asked to approve PR #47's design-tree changes at head 7e2fa43, carrying out the owner's earlier choice of option A on card firn-q-script-engine.
+
+Summary: A script first holds the entries of its declared KEYS with Meta; an undeclared key or a whole-map command abandons the attempt before it touches any entry, restores each changed entry from a logical copy taken before its first change, and reruns the script holding the whole keyspace, because declared entries keep isolation while Redis 7.0.15 allows undeclared keys outside cluster mode. Restore is logical rather than layout-exact because firn offers no collection cursor or layout-dependent result. Meta stays held for the whole attempt, so scripts still run one at a time; one shared engine remains until the engine pool, sized by the Whitefoot driver count, lands. Script commands map their operands onto declared ranks through the shared command bodies. Scripts keep complete rewrite images even for one declared key; single-key byte capture stays limited to ordinary commands. The old whole-keyspace and single-engine decisions and the rejection of engine pools are retired ([investigation](../research/investigations/script-engines/README.md)).
+
 ## 2026-10-10 AOF rewrite from a reconciled live scan and an effect journal
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/aof-rewrite/sequence
