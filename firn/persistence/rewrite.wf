@@ -199,7 +199,12 @@ fn aof_rw_open(store: &Keyspace, factory: &HandleFactory, writable: &std::fs::Di
         }
         Err(error: problem) => {
           aof_rw_abort(store: store, reason: reason);
-          std::fs::close_write(factory: factory, file: move opened);
+          let journal_reason = pkg::store::RewriteAbortReason::JournalIo();
+          if reason == journal_reason {
+            aof_rw_journal_close_write(store: store, factory: factory, file: move opened);
+          } else {
+            std::fs::close_write(factory: factory, file: move opened);
+          }
           return Err<WriteFile, unit>(error: unit);
         }
       }
@@ -390,8 +395,8 @@ fn aof_rw_admit(store: &Keyspace, meter: &std::process::MemoryMeter, manual: Boo
   return admitted;
 }
 
-fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, clock: Clock, meter: std::process::MemoryMeter) -> rebuilt: AofScanResult pure waits {
-  doc "Scan while the sole writer appends to the original increment. Wait for its atomic S1 cut and rotation before reconciling the frozen journal. On every exit, release journal chunks with waits before announcing completion.";
+fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, journal: std::fs::ReadFile, clock: Clock, meter: std::process::MemoryMeter) -> rebuilt: AofScanResult pure waits {
+  doc "Scan while the sole writer appends to the original increment. Wait for its atomic S1 cut, finite journal drain and rotation before streaming the completed journal. The writer owns staged chunks and cleanup; close the read handle before announcing completion.";
   let size = 0_u64;
   let accepted = False();
   match aof_rw_dataset(store: &store, factory: &factory, file: &file, clock: &clock, meter: &meter) {
@@ -410,68 +415,19 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, clock
       aof_rw_abort(store: &store, reason: reason_cancelled_13);
     }
   }
-  let journal = None<Box<Ring<Box<Slots<u8>>>>>();
-  let first = 0_u64;
-  let last = 0_u64;
-  let limit = 0_u64;
-  atomic frozen = &store.meta {
-    set frozen^.rewrite.active = False();
-    swap(first: &journal, second: &frozen^.rewrite.journal);
-    set first = frozen^.rewrite.start;
-    set last = frozen^.rewrite.end;
-    set limit = frozen^.rewrite.limit;
-  }
-  let decoder = AofReconcile(limit: limit, sequence: 0_u64, length: 0_u64, header: 0_u64, factor: 1_u64, remaining: 0_u64, previous: first, end: last);
-  match move journal {
-    Some(value: chunks) => {
-      loop @releasing {
-        if chunks.inner.len == 0_u64 {
-          break @releasing;
-        }
-        let block = take_front(window: &chunks.inner);
-        if accepted {
-          let stopped = aof_rw_cancelled(store: &store);
-          if stopped {
-            set accepted = False();
-          } else {
-            if size == 0_u64 {
-              match aof_rw_select_empty(factory: &factory, file: &file) {
-                Ok(value: selected) => {
-                  set size = selected;
-                }
-                Err(error: problem) => {
-                  let reason_base_io_14 = pkg::store::RewriteAbortReason::BaseIo();
-                  aof_rw_abort(store: &store, reason: reason_base_io_14);
-                  set accepted = False();
-                }
-              }
-            }
-            if accepted {
-              match aof_rw_reconcile(factory: &factory, file: &file, block: &block, decoder: &decoder) {
-                Ok(value: appended) => {
-                  set size = size +sat appended;
-                }
-                Err(error: reconcile_reason) => {
-                  aof_rw_abort(store: &store, reason: reconcile_reason);
-                  set accepted = False();
-                }
-              }
-            }
-          }
-        }
-        aof_rw_release::<Box<Slots<u8>>>(value: move block);
-        aof_rw_pause(clock: &clock);
+  if accepted {
+    match aof_rw_journal_read(store: &store, factory: &factory, journal: &journal, file: &file, clock: &clock, initial_size: size) {
+      Ok(value: reconciled) => {
+        set size = reconciled;
+      }
+      Err(error: problem) => {
+        set accepted = False();
       }
     }
-    None() => {
-    }
   }
-  let unfinished = decoder.remaining != 0_u64;
-  let partial_header = decoder.header != 0_u64;
-  let incomplete = bor(unfinished, partial_header);
-  if incomplete {
-    let reason_journal_invalid_15 = pkg::store::RewriteAbortReason::JournalInvalid();
-    aof_rw_abort(store: &store, reason: reason_journal_invalid_15);
+  let journal_closed = aof_rw_journal_close_read(store: &store, factory: &factory, file: move journal);
+  if journal_closed {
+  } else {
     set accepted = False();
   }
   if accepted {
@@ -549,104 +505,137 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
   let temporary = aof_rw_temporary(prefix: &log.prefix.inner[0_u64..filename_length]);
   let temp_length = temporary.inner.len;
   let temp_name = &temporary.inner[0_u64..temp_length];
-  let reason_base_io_19 = pkg::store::RewriteAbortReason::BaseIo();
-  match aof_rw_open(store: store, factory: factory, writable: &log.writable, name: temp_name, reason: reason_base_io_19) {
-    Ok(value: opened) => {
-      let worker_store = pkg::store::keyspace_share(store: store);
-      let worker_factory = std::io::factory_share(factory: factory);
-      let worker_clock = std::time::clock_share(clock: clock);
-      let worker_meter = std::process::meter_share(meter: meter);
-      let rebuilt = spawn aof_rw_worker(store: move worker_store, factory: move worker_factory, file: move opened, clock: move worker_clock, meter: move worker_meter);
-      let closed_size = 0_u64;
-      loop @rebuilding {
-        aof_rw_pause(clock: clock);
-        let done = False();
-        let scan_done = False();
-        let cut_done = False();
-        let aborted = False();
-        let stopping = aof_rw_cancelled(store: store);
-        atomic m = &store^.meta {
-          set done = m^.aof_worker_done;
-          set scan_done = m^.rewrite.scan_done;
-          set cut_done = m^.rewrite.cut_done;
-          if stopping {
-            let reason_cancelled_20 = pkg::store::RewriteAbortReason::Cancelled();
-            pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_cancelled_20);
-          }
-          set aborted = m^.rewrite.aborted;
-        }
-        if done {
-          break @rebuilding;
-        }
-        let uncut = bnot(cut_done);
-        let needs_cut = band(scan_done, uncut);
-        if needs_cut {
-          let switched = False();
-          if aborted {
-          } else {
-            let prior_drained = aof_rw_drain(store: store, factory: factory, file: &log.file, pending: pending);
-            if prior_drained {
-              let cut = aof_rw_cut(store: store, pending: pending);
-              if cut {
-                let sealed = aof_rw_drain(store: store, factory: factory, file: &log.file, pending: pending);
-                if sealed {
-                  set switched = aof_rw_switch(store: store, factory: factory, log: &log, clock: clock);
-                  atomic size_meta = &store^.meta {
-                    set closed_size = size_meta^.aof_current_size;
+  let journal_name = aof_rw_journal_name(prefix: &log.prefix.inner[0_u64..filename_length]);
+  let journal_length = journal_name.inner.len;
+  let journal_bytes = &journal_name.inner[0_u64..journal_length];
+  match aof_rw_journal_open(store: store, factory: factory, log: &log, name: journal_bytes) {
+    Ok(value: journal) => {
+      let AofJournalFiles(read: journal_read, write: journal_write) = move journal;
+      let journal_count = AofJournalCount(header: 0_u64, length: 0_u64, kind: 0_u64, factor: 1_u64, remaining: 0_u64, images: 0_u64, effects: 0_u64);
+      let reason_base_io_19 = pkg::store::RewriteAbortReason::BaseIo();
+      match aof_rw_open(store: store, factory: factory, writable: &log.writable, name: temp_name, reason: reason_base_io_19) {
+        Ok(value: opened) => {
+          let worker_store = pkg::store::keyspace_share(store: store);
+          let worker_factory = std::io::factory_share(factory: factory);
+          let worker_clock = std::time::clock_share(clock: clock);
+          let worker_meter = std::process::meter_share(meter: meter);
+          let rebuilt = spawn aof_rw_worker(store: move worker_store, factory: move worker_factory, file: move opened, journal: move journal_read, clock: move worker_clock, meter: move worker_meter);
+          let closed_size = 0_u64;
+          loop @rebuilding {
+            aof_rw_pause(clock: clock);
+            let done = False();
+            let scan_done = False();
+            let cut_done = False();
+            let aborted = False();
+            let stopping = aof_rw_cancelled(store: store);
+            atomic m = &store^.meta {
+              set done = m^.aof_worker_done;
+              set scan_done = m^.rewrite.scan_done;
+              set cut_done = m^.rewrite.cut_done;
+              if stopping {
+                let reason_cancelled_20 = pkg::store::RewriteAbortReason::Cancelled();
+                pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_cancelled_20);
+              }
+              set aborted = m^.rewrite.aborted;
+            }
+            if done {
+              break @rebuilding;
+            }
+            let uncut = bnot(cut_done);
+            let needs_cut = band(scan_done, uncut);
+            if needs_cut {
+              let switched = False();
+              if aborted {
+              } else {
+                let prior_drained = aof_rw_drain(store: store, factory: factory, file: &log.file, pending: pending);
+                if prior_drained {
+                  let cut = aof_rw_cut(store: store, pending: pending);
+                  if cut {
+                    let sealed = aof_rw_drain(store: store, factory: factory, file: &log.file, pending: pending);
+                    if sealed {
+                      let journal_drained = aof_rw_journal_drain(store: store, factory: factory, file: &journal_write, decoder: &journal_count, maximum: 18446744073709551615_u64);
+                      if journal_drained {
+                        set switched = aof_rw_switch(store: store, factory: factory, log: &log, clock: clock);
+                        atomic size_meta = &store^.meta {
+                          set closed_size = size_meta^.aof_current_size;
+                        }
+                      }
+                    }
                   }
                 }
               }
+              atomic outcome = &store^.meta {
+                set outcome^.rewrite.rotated = switched;
+                set outcome^.rewrite.cut_done = True();
+                set outcome^.rewrite.rotating = False();
+                if switched {
+                } else {
+                  let reason_boundary_21 = pkg::store::RewriteAbortReason::Boundary();
+                  pkg::store::rewrite_abort(capture: &outcome^.rewrite, reason: reason_boundary_21);
+                }
+              }
             }
-          }
-          atomic outcome = &store^.meta {
-            set outcome^.rewrite.rotated = switched;
-            set outcome^.rewrite.cut_done = True();
-            set outcome^.rewrite.rotating = False();
-            if switched {
+            let journal_drained = aof_rw_journal_drain(store: store, factory: factory, file: &journal_write, decoder: &journal_count, maximum: 16_u64);
+            let drained = aof_rw_flush(store: store, factory: factory, file: &log.file, pending: pending, clock: clock, last_sync: last_sync, force: stopping);
+            if drained {
             } else {
-              let reason_boundary_21 = pkg::store::RewriteAbortReason::Boundary();
-              pkg::store::rewrite_abort(capture: &outcome^.rewrite, reason: reason_boundary_21);
+              let reason_writer_io_22 = pkg::store::RewriteAbortReason::WriterIo();
+              aof_rw_abort(store: store, reason: reason_writer_io_22);
             }
           }
-        }
-        let drained = aof_rw_flush(store: store, factory: factory, file: &log.file, pending: pending, clock: clock, last_sync: last_sync, force: stopping);
-        if drained {
-        } else {
-          let reason_writer_io_22 = pkg::store::RewriteAbortReason::WriterIo();
-          aof_rw_abort(store: store, reason: reason_writer_io_22);
-        }
-      }
-      let size = rebuilt.size;
-      let built = rebuilt.accepted;
-      let accepted = False();
-      if built {
-        let install = False();
-        atomic install_meta = &store^.meta, state = &store^.server {
-          let stopping = bor(install_meta^.stopping, state^.shutdown);
-          let refused = bor(stopping, install_meta^.rewrite.aborted);
-          if refused {
-            let reason_cancelled_23 = pkg::store::RewriteAbortReason::Cancelled();
-            pkg::store::rewrite_abort(capture: &install_meta^.rewrite, reason: reason_cancelled_23);
+          let size = rebuilt.size;
+          let built = rebuilt.accepted;
+          let journal_closed = aof_rw_journal_close_write(store: store, factory: factory, file: move journal_write);
+          if journal_closed {
           } else {
-            set install_meta^.aof_installing = 1_u64;
-            set install = True();
+            set built = False();
           }
+          aof_rw_discard(store: store, clock: clock);
+          let removed = aof_rw_journal_remove(store: store, factory: factory, writable: &log.writable, name: journal_bytes);
+          if removed {
+          } else {
+            let reason = pkg::store::RewriteAbortReason::JournalIo();
+            aof_rw_abort(store: store, reason: reason);
+            set built = False();
+          }
+          let accepted = False();
+          if built {
+            let install = False();
+            atomic install_meta = &store^.meta, state = &store^.server {
+              let stopping = bor(install_meta^.stopping, state^.shutdown);
+              let refused = bor(stopping, install_meta^.rewrite.aborted);
+              if refused {
+                let reason_cancelled_23 = pkg::store::RewriteAbortReason::Cancelled();
+                pkg::store::rewrite_abort(capture: &install_meta^.rewrite, reason: reason_cancelled_23);
+              } else {
+                set install_meta^.aof_installing = 1_u64;
+                set install = True();
+              }
+            }
+            if install {
+              let prefix_length = log.prefix.inner.len;
+              let prefix_bytes = &log.prefix.inner[0_u64..prefix_length];
+              set accepted = aof_rw_install(store: store, factory: factory, writable: &log.writable, prefix: prefix_bytes, manifest: &log.manifest, temporary: temp_name, size: size, closed_size: closed_size);
+              atomic installed = &store^.meta {
+                set installed^.aof_installing = 0_u64;
+              }
+            }
+          }
+          std::fs::remove_file(factory: factory, root: &log.writable, name: temp_name, start: 0_u64, end: temp_length);
+          aof_rw_complete(store: store, accepted: accepted, manual: manual, started: yes);
         }
-        if install {
-          let prefix_length = log.prefix.inner.len;
-          let prefix_bytes = &log.prefix.inner[0_u64..prefix_length];
-          set accepted = aof_rw_install(store: store, factory: factory, writable: &log.writable, prefix: prefix_bytes, manifest: &log.manifest, temporary: temp_name, size: size, closed_size: closed_size);
-          atomic installed = &store^.meta {
-            set installed^.aof_installing = 0_u64;
-          }
+        Err(error: problem) => {
+          aof_rw_journal_close_read(store: store, factory: factory, file: move journal_read);
+          aof_rw_journal_close_write(store: store, factory: factory, file: move journal_write);
+          let removed = aof_rw_journal_remove(store: store, factory: factory, writable: &log.writable, name: journal_bytes);
+          let reason_base_io_24 = pkg::store::RewriteAbortReason::BaseIo();
+          aof_rw_abort(store: store, reason: reason_base_io_24);
+          aof_rw_discard(store: store, clock: clock);
+          aof_rw_complete(store: store, accepted: no, manual: manual, started: yes);
         }
       }
-      std::fs::remove_file(factory: factory, root: &log.writable, name: temp_name, start: 0_u64, end: temp_length);
-      aof_rw_complete(store: store, accepted: accepted, manual: manual, started: yes);
     }
     Err(error: problem) => {
-      let reason_base_io_24 = pkg::store::RewriteAbortReason::BaseIo();
-      aof_rw_abort(store: store, reason: reason_base_io_24);
       aof_rw_discard(store: store, clock: clock);
       aof_rw_complete(store: store, accepted: no, manual: manual, started: yes);
     }
@@ -667,6 +656,9 @@ fn aof_rw_discard(store: &Keyspace, clock: &Clock) -> result: unit reads(store),
         }
         let released = take_front(window: &chunks.inner);
         aof_rw_release::<Box<Slots<u8>>>(value: move released);
+        atomic refunded = &store^.meta {
+          set refunded^.rewrite.used = refunded^.rewrite.used -sat 65560_u64;
+        }
         aof_rw_pause(clock: clock);
       }
     }

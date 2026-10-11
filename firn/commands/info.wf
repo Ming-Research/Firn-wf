@@ -342,6 +342,14 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         text_number(text: &text, value: rewrite_used);
         text_word(text: &text, word: &info_rw_peak[0_u64..24_u64]);
         text_number(text: &text, value: rewrite_peak);
+        text_word(text: &text, word: &info_rw_cleanup_failed[0_u64..34_u64]);
+        text_number(text: &text, value: persistence^.rewrite.cleanup_failed);
+        let leftover_number = 0_u64;
+        if persistence^.aof_rewrite_journal_leftover {
+          set leftover_number = 1_u64;
+        }
+        text_word(text: &text, word: &info_rw_journal_leftover[0_u64..36_u64]);
+        text_number(text: &text, value: leftover_number);
         text_word(text: &text, word: &info_rw_journal_images[0_u64..34_u64]);
         text_number(text: &text, value: persistence^.rewrite.journal_images);
         text_word(text: &text, word: &info_rw_journal_effects[0_u64..35_u64]);
@@ -575,6 +583,10 @@ const info_rw_used: Array<u8, 24> = "\r\nfirn_aof_rewrite_used:";
 
 const info_rw_peak: Array<u8, 24> = "\r\nfirn_aof_rewrite_peak:";
 
+const info_rw_cleanup_failed: Array<u8, 34> = "\r\nfirn_aof_rewrite_cleanup_failed:";
+
+const info_rw_journal_leftover: Array<u8, 36> = "\r\nfirn_aof_rewrite_journal_leftover:";
+
 const info_rw_journal_images: Array<u8, 34> = "\r\nfirn_aof_rewrite_journal_images:";
 
 const info_rw_journal_effects: Array<u8, 35> = "\r\nfirn_aof_rewrite_journal_effects:";
@@ -588,6 +600,10 @@ const info_rw_reason_reserve: Array<u8, 7> = "reserve";
 const info_rw_reason_capture: Array<u8, 7> = "capture";
 
 const info_rw_reason_journal_slots: Array<u8, 13> = "journal_slots";
+
+const info_rw_reason_journal_backlog: Array<u8, 15> = "journal_backlog";
+
+const info_rw_reason_journal_io: Array<u8, 10> = "journal_io";
 
 const info_rw_reason_flush: Array<u8, 5> = "flush";
 
@@ -627,6 +643,12 @@ fn info_rewrite_reason(text: &Box<Slots<u8>>, reason: pkg::store::RewriteAbortRe
     }
     JournalSlots() => {
       text_word(text: text, word: &info_rw_reason_journal_slots[0_u64..13_u64]);
+    }
+    JournalBacklog() => {
+      text_word(text: text, word: &info_rw_reason_journal_backlog[0_u64..15_u64]);
+    }
+    JournalIo() => {
+      text_word(text: text, word: &info_rw_reason_journal_io[0_u64..10_u64]);
     }
     Flush() => {
       text_word(text: text, word: &info_rw_reason_flush[0_u64..5_u64]);

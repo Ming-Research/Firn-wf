@@ -4,11 +4,11 @@ fn rewrite_capture_new() -> capture: RewriteCapture pure {
   let no = False();
   let journal = None<Box<Ring<Box<Slots<u8>>>>>();
   let no_reason = RewriteAbortReason::None();
-  return RewriteCapture(running: no, active: no, aborted: no, scan_done: no, cut: no, cut_done: no, rotated: no, rotating: no, start: 0_u64, end: 0_u64, limit: 0_u64, used: 0_u64, peak: 0_u64, scan_peak: 0_u64, abort_reason: no_reason, abort_used: 0_u64, abort_peak: 0_u64, journal_images: 0_u64, journal_effects: 0_u64, scan_steps: 0_u64, journal: move journal);
+  return RewriteCapture(running: no, active: no, aborted: no, scan_done: no, cut: no, cut_done: no, rotated: no, rotating: no, start: 0_u64, end: 0_u64, limit: 0_u64, used: 0_u64, peak: 0_u64, scan_peak: 0_u64, abort_reason: no_reason, abort_used: 0_u64, abort_peak: 0_u64, journal_images: 0_u64, journal_effects: 0_u64, journal_bytes: 0_u64, cleanup_failed: 0_u64, scan_steps: 0_u64, journal: move journal);
 }
 
 fn rewrite_abort(capture: &RewriteCapture, reason: RewriteAbortReason) -> result: unit writes(capture) {
-  doc "Logical abort only: retained chunks stay charged until the worker detaches and releases them outside holds, one chunk per waiting turn.";
+  doc "Logical abort only: retained chunks stay charged until the sole writer detaches and releases them outside holds, one chunk per waiting turn.";
   if capture^.running {
   } else {
     return unit;
@@ -194,7 +194,10 @@ fn rewrite_journal_byte(chunks: &Box<Ring<Box<Slots<u8>>>>, value: u8) -> result
 }
 
 fn rewrite_journal_room(capture: &RewriteCapture, length: u64) -> accepted: Bool writes(capture) {
-  doc "Reserve all new 64 KiB chunks for an entire unit before appending its first byte. The fixed pointer directory never grows and is at most one cleanup chunk itself.";
+  doc "Reserve all new 64 KiB staging chunks for an entire unit before appending its first byte. A full staging queue aborts capture rather than waiting for its disk drainer. The fixed pointer directory never grows and is at most one cleanup chunk itself.";
+  if capture^.aborted {
+    return False();
+  }
   let free = 0_u64;
   let count = 0_u64;
   let capacity = 0_u64;
@@ -221,11 +224,17 @@ fn rewrite_journal_room(capture: &RewriteCapture, length: u64) -> accepted: Bool
   let needed = rounded / 65536_u64;
   let slots = capacity -sat count;
   if needed > slots {
-    let journal_slots_reason = RewriteAbortReason::JournalSlots();
-    rewrite_abort(capture: capture, reason: journal_slots_reason);
+    let journal_backlog_reason = RewriteAbortReason::JournalBacklog();
+    rewrite_abort(capture: capture, reason: journal_backlog_reason);
     return False();
   }
   let bytes = needed *sat 65560_u64;
+  let available = capture^.limit -sat capture^.used;
+  if bytes > available {
+    let journal_backlog_reason = RewriteAbortReason::JournalBacklog();
+    rewrite_abort(capture: capture, reason: journal_backlog_reason);
+    return False();
+  }
   return rewrite_charge(capture: capture, bytes: bytes);
 }
 
@@ -281,7 +290,7 @@ fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads
           let bytes = records^.inner[index].output.inner.len;
           set length = length +sat bytes;
         }
-        let framed = length +sat 16_u64;
+        let framed = length +sat 24_u64;
         let overlap = sequence^.retained;
         let charged = rewrite_charge(capture: &meta^.rewrite, bytes: overlap);
         if charged {
@@ -291,6 +300,7 @@ fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads
               Some(value: chunks) => {
                 rewrite_journal_number(chunks: chunks, value: sequence^.value);
                 rewrite_journal_number(chunks: chunks, value: length);
+                rewrite_journal_number(chunks: chunks, value: 0_u64);
                 for (index in 0_u64..records^.inner.len) {
                   let output = &records^.inner[index].output;
                   for (offset in 0_u64..output^.inner.len) {
@@ -298,7 +308,6 @@ fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads
                     rewrite_journal_put(chunks: chunks, value: byte);
                   }
                 }
-                set meta^.rewrite.journal_images = meta^.rewrite.journal_images +sat 1_u64;
               }
               None() => {
               }
@@ -324,18 +333,18 @@ fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: uni
     return unit;
   }
   let length = end - start;
-  let framed = length +sat 16_u64;
+  let framed = length +sat 24_u64;
   let room = rewrite_journal_room(capture: &meta^.rewrite, length: framed);
   if room {
     match meta^.rewrite.journal {
       Some(value: chunks) => {
         rewrite_journal_number(chunks: chunks, value: sequence^.value);
         rewrite_journal_number(chunks: chunks, value: length);
+        rewrite_journal_number(chunks: chunks, value: 1_u64);
         for (offset in start..end) {
           let byte = meta^.log.inner[offset];
           rewrite_journal_put(chunks: chunks, value: byte);
         }
-        set meta^.rewrite.journal_effects = meta^.rewrite.journal_effects +sat 1_u64;
       }
       None() => {
       }

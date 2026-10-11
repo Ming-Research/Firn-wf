@@ -347,7 +347,9 @@ directory. A listed file that is missing or malformed stops firn with status
 4 before it listens. Only the last file may have an incomplete tail cut,
 as with `aof-load-truncated yes`; an incomplete earlier file stops startup.
 Listed history files are removed after loading only after syncing appendonlydir;
-a failed sync leaves them listed and on disk. Unlisted files are kept.
+a failed sync leaves them listed and on disk. Unlisted files are kept except
+this dataset's temporary journal `temp-F.journal`, whose cleanup is attempted
+as described below.
 An old single file `F` in the working directory is upgraded by persisting a
 manifest and moving `F` into `appendonlydir`. Interrupted upgrades resume;
 when both copies exist and the manifest names `F`, the directory copy wins.
@@ -358,12 +360,19 @@ With append-only persistence enabled, `BGREWRITEAOF` answers started after
 S0 admission. The worker scans the live map in separate statements while
 mutations journal a changed key's complete image at its first write in the
 rewrite and, for a command on that one key afterwards, the command's AOF
-bytes. The writer seals the old increment
-and rotates once at S1, then the worker reconciles the scan with ordered
-DEL-plus-reconstruction images. Installation selects base(S1) and only the
-increment containing later writes, before removing old files.
+bytes. Statements stage complete records in bounded memory; the sole AOF
+writer drains them outside atomic statements into `temp-F.journal`. The
+writer seals the old increment and rotates once at S1 after draining the
+frozen journal, then the worker reads the journal in bounded chunks to
+reconcile the scan with ordered DEL-plus-reconstruction images and subsequent
+effects. Installation selects
+base(S1) and only the increment containing later writes, before removing old
+files.
 
-R is five percent of maxmemory, or 16 MiB when maxmemory is zero. Admission
+R is five percent of maxmemory, or 16 MiB when maxmemory is zero. It covers
+rewrite memory, including staging, in-flight chunks and readback, while the
+temporary journal can exceed R on disk. A full staging queue aborts the
+rewrite without waiting for disk or blocking ordinary writes. Admission
 also requires max(R, 1 MiB) of service headroom. Capture overflow, oversized
 images, flush, exhaustion, shutdown and I/O failure abort the attempt; client
 commands and ordinary AOF appends continue. Aborts report `err`. Any
@@ -373,10 +382,11 @@ a delay of up to an hour. A key is copied whole in one hold when the scan
 reaches it or a write changes it during a rewrite, so a large key pauses
 other clients for the copy. The rewrite holds about two copies of a key, so a
 key above about half the reserve (8 MiB without maxmemory) aborts every
-rewrite. EXEC and scripts still copy every key they change. The fixed journal
-directory permits at most 8188 chunks. If startup left the file inside an
-unfinished MULTI, the rewrite cuts the sealed file before that MULTI; the new
-base holds the live writes appended after it, as Redis's rewrite does.
+rewrite. EXEC and scripts still copy every key they change. The fixed staging
+directory permits at most 8188 queued chunks, further limited by R. If startup
+left the file inside an unfinished MULTI, the rewrite cuts the sealed file
+before that MULTI; the new base holds the live writes appended after it, as
+Redis's rewrite does.
 
 The scan currently uses count hint 1 and charges the returned KeySet before
 copying payloads. This permits one scan step's allocation before charging,
@@ -386,11 +396,21 @@ long-key regression remains ignored for that gap. File calls still have no
 bounded cancellation contract, so prompt cleanup under stalled I/O is
 unverified.
 
-The temporary base is `temp-F.base` beside `temp-F.manifest`, so servers
-sharing `appendonlydir` with distinct appendfilenames use distinct temporary
-base names. Those names can still collide with another dataset's upgraded
-base: if its appendfilename is literally `temp-F.base`, rewriting `F` can
-truncate that dataset's base. Do not share a directory with that overlap.
+The temporary base `temp-F.base` and journal `temp-F.journal` sit beside
+`temp-F.manifest`, so servers sharing `appendonlydir` with distinct
+appendfilenames use distinct temporary names. The journal is never named by
+a rewrite manifest and needs no fsync: the completed base is synced before
+publication. Journal handles are closed and removal is attempted after
+success or abort, including flush, shutdown and early I/O failures. Startup
+attempts removal of an unlisted leftover after loading the authoritative
+manifest and serves even if that cleanup fails; INFO reports the failure.
+Before opening or truncating the next journal, a rewrite must remove any
+unlisted old name. A failed removal refuses that rewrite with `journal_io`
+and leaves the old file unchanged. A manifest-listed name is protected.
+Those names can still collide with another dataset's upgraded base: an
+appendfilename literally `temp-F.base` or `temp-F.journal` in another dataset
+can overlap a temporary name used while rewriting `F`. Do not share a
+directory with that overlap.
 Whitefoot does not yet offer exclusive file creation to refuse the collision;
 Redis's `temp-F.incr` has the same class of collision. The remaining work is
 exclusive creation for temporary append-only files, board item
@@ -443,14 +463,23 @@ latest admitted attempt has crossed S1 (also retained after completion),
 and 0 otherwise; it lets the backlog regression begin writes after capture
 has stopped.
 
+`firn_aof_rewrite_journal_leftover` reports the last cleanup observation of
+the unlisted temporary journal: 1 after removal failed, and 0 after absence
+or successful removal was observed. It survives rewrite admissions, including
+a startup observation made before any rewrite attempt. It is not a continuous
+check of the current filesystem.
+
 The following additional `INFO persistence` fields describe the current or
 most recently completed attempt. They reset when admission is attempted,
 including a refused admission; counters start at zero before the first attempt.
 
 - `firn_aof_rewrite_abort_reason` is empty until failure and on success.
   The first cause is latched under Meta before cleanup, and later failures
-  cannot replace it. Values are `reserve` (a scan, journal or boundary reserve
-  charge), `capture` (statement capture allowance), `journal_slots`, `flush`,
+  cannot replace it. Values are `reserve` (a rewrite buffer or boundary
+  reserve charge), `capture` (statement capture allowance), `journal_slots`
+  (missing staging queue),
+  `journal_backlog` (insufficient staging slots or memory), `journal_io`
+  (temporary-journal host I/O), `flush`,
   `sequence_exhausted`, `memory_pressure`, `cancelled`, `base_io`, `writer_io`,
   `drain` (incremental append did not drain), `boundary` (sealed-file reading
   or validation), `install_io` (manifest publication or base installation),
@@ -463,10 +492,17 @@ including a refused admission; counters start at zero before the first attempt.
   and its peak; on failure both freeze at the first failure, before refunds.
   Successful completion reports zero used and retains the attempt's peak.
 - `firn_aof_rewrite_journal_images` and
-  `firn_aof_rewrite_journal_effects` count complete journal units appended as
-  replacement images or statement AOF bytes, respectively. A multi-key
-  statement's image unit counts once, regardless of how many keys it holds;
-  scan output does not count. Counts survive cleanup on failure and success.
+  `firn_aof_rewrite_journal_effects` count complete records successfully
+  appended to the journal file as replacement images or statement AOF bytes,
+  respectively. These asynchronous counts can lag committed writes while
+  their records remain staged. A multi-key statement's image unit counts
+  once, regardless of how many keys it holds; scan output does not count.
+  Counts survive cleanup on failure and success.
+- `firn_aof_rewrite_cleanup_failed` counts each journal close or removal
+  step that returned failure during this attempt, including cleanup after
+  an early error. It preserves the first abort cause and resets on admission.
+  Startup cleanup leaves this count at zero and reports failed removal
+  through `firn_aof_rewrite_journal_leftover` instead.
 - `firn_aof_rewrite_scan_steps` counts completed map_scan calls, including
   empty steps and steps whose subsequent copying fails.
   `firn_aof_rewrite_scan_done` is 1 after the scan finishes writing its base,

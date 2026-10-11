@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-11 Keep the AOF rewrite journal on disk
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-11, the owner chose option A (approve) on card firn-q-approve-54-tree, which asked to approve PR #54's design-tree changes at head 3622c21, carrying out the owner's earlier choice of option A on card firn-q-rw-pace.
+
+Summary: Statements still publish framed after-images or effects under Meta, but into bounded 64 KiB staging chunks charged to the reserve; the sole AOF writer drains them outside Meta to temp-F.journal and the rewrite reads the file back through one charged buffer after the cut, because a journal held in memory approached a second copy of the dataset under uniform writes and aborted every rewrite. A full staging queue aborts the rewrite with journal_backlog without blocking client writes. Startup serves even when a leftover journal cannot be removed, as Redis 7.0.15 ignores temporary-file unlink failures, and INFO reports cleanup failures and the leftover separately from the first abort cause. On the 14900K the rewrite no longer aborted and the reserve peaked at 8.3 MB of 16 MiB ([investigation](../research/investigations/aof-rewrite/journal-disk.md)).
+
 ## 2026-10-11 Report why an AOF rewrite stopped
 
 Nodes: firn/aof-rewrite/capture
