@@ -11,6 +11,40 @@ alias Span = pkg::protocol::Span;
 
 public const ceiling: u64 = 4294967296_u64;
 
+public const rewrite_reason_none: u64 = 0_u64;
+
+public const rewrite_reason_reserve: u64 = 1_u64;
+
+public const rewrite_reason_capture: u64 = 2_u64;
+
+public const rewrite_reason_journal_slots: u64 = 3_u64;
+
+public const rewrite_reason_flush: u64 = 4_u64;
+
+public const rewrite_reason_sequence_exhausted: u64 = 5_u64;
+
+public const rewrite_reason_memory_pressure: u64 = 6_u64;
+
+public const rewrite_reason_cancelled: u64 = 7_u64;
+
+public const rewrite_reason_base_io: u64 = 8_u64;
+
+public const rewrite_reason_writer_io: u64 = 9_u64;
+
+public const rewrite_reason_drain: u64 = 10_u64;
+
+public const rewrite_reason_boundary: u64 = 11_u64;
+
+public const rewrite_reason_install_io: u64 = 12_u64;
+
+public const rewrite_reason_rotation_reserve: u64 = 13_u64;
+
+public const rewrite_reason_sequence_invalid: u64 = 14_u64;
+
+public const rewrite_reason_journal_invalid: u64 = 15_u64;
+
+public const rewrite_reason_admission: u64 = 16_u64;
+
 public struct Rank {
   doc "A sorted set's member at its score, the key the set's order keeps.";
   public score: f64;
@@ -47,6 +81,7 @@ public struct WriteSequence {
   public exhausted: Bool;
   public capturing: Bool;
   public failed: Bool;
+  public failure: u64;
   public allowance: u64;
   public retained: u64;
   public single: Bool;
@@ -65,7 +100,8 @@ public struct RewriteImage {
 }
 
 public struct RewriteCapture {
-  doc "The reserve remains owned until worker and chunk cleanup finish. active covers (start,end]; aborted permanently prevents installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result. Journal chunks contain little-endian sequence and byte-count frames followed by owned RESP replacements, in Meta commit order.";
+  doc "running covers admission through worker and chunk cleanup; diagnostics survive it. active covers (start,end]; aborted prevents this attempt's installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result. Journal chunks contain little-endian sequence and byte-count frames followed by owned RESP replacements, in Meta commit order.";
+  public running: Bool;
   public active: Bool;
   public aborted: Bool;
   public scan_done: Bool;
@@ -79,6 +115,12 @@ public struct RewriteCapture {
   public used: u64;
   public peak: u64;
   public scan_peak: u64;
+  public abort_reason: u64;
+  public abort_used: u64;
+  public abort_peak: u64;
+  public journal_images: u64;
+  public journal_effects: u64;
+  public scan_steps: u64;
   public journal: Option<Box<Ring<Box<Slots<u8>>>>>;
 }
 
@@ -214,6 +256,10 @@ public fn sequence_change(sequence: &WriteSequence) -> result: unit writes(seque
 
 public fn sequence_stamp(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit reads(slot), writes(sequence), writes(slot.Some.value.last_write) doc "Publishes an actual entry change through the statement's lazy sequence and stamps a surviving entry. Call only for a change; deletion and FLUSH use the same sequence_change contract. Loading stamps zero.";
 
+public fn sequence_replace(sequence: &WriteSequence, slot: &Option<Entry>, replacement: Option<Entry>) -> result: unit writes(sequence), writes(slot) doc "Records the replaced destination's anchor before installing a fresh or transferred entry. The caller then stamps and captures the final value; no replacement uses the incoming entry's stamp as its anchor.";
+
+public fn sequence_fail(sequence: &WriteSequence, reason: u64) -> result: unit writes(sequence.failed), writes(sequence.failure) doc "Latches the first statement-local capture failure for publication under the outer Meta hold.";
+
 public fn sequence_entry(sequence: &WriteSequence, value: &Entry) -> result: unit writes(sequence), writes(value.last_write) doc "Stamps a changed entry already held through a match, sharing sequence_stamp's publication contract.";
 
 public fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit writes(sequence), writes(slot) doc "Removes a present entry and takes the statement's sequence; an absent entry changes nothing. Expiry, eviction and command deletion share this contract.";
@@ -274,7 +320,7 @@ public fn sequence_delete_at(sequence: &WriteSequence, slot: &Option<Entry>, key
 
 public fn rewrite_capture_new() -> capture: RewriteCapture pure doc "An inactive empty capture with no journal allocation; construct only after any previous worker and bounded cleanup have completed.";
 
-public fn rewrite_abort(capture: &RewriteCapture) -> result: unit writes(capture.active), writes(capture.aborted), writes(capture.rotating) doc "Disables capture and permanently marks this attempt failed. Journal ownership and its charge remain until bounded worker cleanup.";
+public fn rewrite_abort(capture: &RewriteCapture, reason: u64) -> result: unit writes(capture) doc "For a running attempt, disables capture and latches the first failure reason, reserve use and peak under Meta before any cleanup. Later failures and ordinary writer activity outside an attempt preserve that snapshot; journal ownership remains until bounded worker cleanup.";
 
 public fn rewrite_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes(capture) doc "Reserves bytes before allocation, or logically aborts this attempt without allocating when they exceed the remaining allowance. Includes peak reservation accounting.";
 

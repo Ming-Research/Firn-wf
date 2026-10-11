@@ -317,6 +317,46 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
 }
 
 #[test]
+fn reconciled_scan_repeated_sets_journal_one_image_then_effects() {
+    let program = CompiledProgram::from_environment();
+    fixture(&program);
+    let (child, mut client, _) = start(&program);
+    rewrite_start(&mut client);
+    let keys = scanned_keys(&program, &mut client);
+    let before = rewrite_info(&mut client);
+    assert_eq!(before["firn_aof_rewrite_abort_reason"], "");
+    assert_eq!(before["firn_aof_rewrite_journal_images"], "0");
+    assert_eq!(before["firn_aof_rewrite_journal_effects"], "0");
+    // Cover replacement of an existing list as well as a newly created key.
+    // With the old SET path each write loses last_write and emits an image.
+    for key in [keys[1].as_slice(), b"set:journal:new".as_slice()] {
+        for index in 0..8 {
+            let value = index.to_string();
+            assert_eq!(request(&mut client, &[b"SET", key, value.as_bytes()]), Reply::Line(b"+OK".to_vec()));
+        }
+    }
+    let captured = rewrite_info(&mut client);
+    assert_eq!(captured["firn_aof_rewrite_scan_done"], "0", "all writes must precede the cut");
+    assert_eq!(captured["firn_aof_rewrite_journal_images"], "2", "only each key's first write needs an image");
+    assert_eq!(captured["firn_aof_rewrite_journal_effects"], "14", "later SETs must use statement bytes");
+    let complete = rewrite_wait(&mut client);
+    assert_eq!(complete["aof_last_bgrewrite_status"], "ok");
+    assert_eq!(complete["firn_aof_rewrite_abort_reason"], "");
+    assert_eq!(complete["firn_aof_rewrite_journal_images"], "2");
+    assert_eq!(complete["firn_aof_rewrite_journal_effects"], "14");
+    assert_eq!(complete["firn_aof_rewrite_scan_done"], "1");
+    assert!(complete["firn_aof_rewrite_scan_steps"].parse::<u64>().unwrap() > 0);
+    assert_eq!(complete["firn_aof_rewrite_used"], "0");
+    assert!(complete["firn_aof_rewrite_peak"].parse::<u64>().unwrap() > 0);
+    rewrite_stop(&mut client, child);
+    let (child, mut restored, _) = start(&program);
+    for key in [keys[1].as_slice(), b"set:journal:new".as_slice()] {
+        assert_eq!(bulk(request(&mut restored, &[b"GET", key])), b"7");
+    }
+    rewrite_stop(&mut restored, child);
+}
+
+#[test]
 fn reconciled_scan_reserve_abort_keeps_writes_and_old_files() {
     let program = CompiledProgram::from_environment();
     fixture(&program);
@@ -340,7 +380,7 @@ fn reconciled_scan_reserve_abort_keeps_writes_and_old_files() {
             assert_eq!(info["firn_aof_rewrite_reserve"].parse::<u64>().unwrap(), limit / 20);
             break;
         }
-        assert!(Instant::now() < deadline, "retained images never exhausted R");
+        assert!(Instant::now() < deadline, "retained journal never exhausted R");
     }
     assert!(writes > 1);
     assert_old_manifest(&program);
@@ -374,15 +414,49 @@ fn reconciled_scan_flush_aborts_even_in_exec_and_script() {
             "EVAL" => { request(&mut client, &[b"EVAL", b"redis.call('FLUSHDB'); return redis.call('SET','after','value')", b"0"]); }
             other => { request(&mut client, &[other.as_bytes()]); request(&mut client, &[b"SET", b"after", b"value"]); }
         }
-        assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "err");
+        let failed = rewrite_wait(&mut client);
+        assert_eq!(failed["aof_last_bgrewrite_status"], "err");
+        assert_eq!(failed["firn_aof_rewrite_abort_reason"], "flush");
+        assert_eq!(failed["firn_aof_rewrite_scan_done"], "0");
+        let used = failed["firn_aof_rewrite_used"].parse::<u64>().unwrap();
+        let peak = failed["firn_aof_rewrite_peak"].parse::<u64>().unwrap();
+        assert!(used > 0 && peak >= used, "failure must retain its reserve snapshot after cleanup");
         assert_old_manifest(&program);
         let expected = snapshot(&mut client);
         assert_eq!(expected.len(), 1);
+        let retained = rewrite_info(&mut client);
+        for field in ["firn_aof_rewrite_abort_reason", "firn_aof_rewrite_used", "firn_aof_rewrite_peak"] {
+            assert_eq!(retained[field], failed[field], "service and cleanup must preserve the first failure");
+        }
         rewrite_stop(&mut client, child);
         let (child, mut restored, _) = start(&program);
         assert_eq!(snapshot(&mut restored), expected, "flush must never install scanned stale keys");
         rewrite_stop(&mut restored, child);
     }
+}
+
+#[test]
+fn reconciled_scan_retry_clears_abort_diagnostics() {
+    let program = CompiledProgram::from_environment();
+    fixture(&program);
+    let (child, mut client, _) = start(&program);
+    rewrite_start(&mut client);
+    scanned_keys(&program, &mut client);
+    request(&mut client, &[b"FLUSHALL"]);
+    request(&mut client, &[b"SET", b"after", b"value"]);
+    let failed = rewrite_wait(&mut client);
+    assert_eq!(failed["aof_last_bgrewrite_status"], "err");
+    assert_eq!(failed["firn_aof_rewrite_abort_reason"], "flush");
+    rewrite_start(&mut client);
+    let succeeded = rewrite_wait(&mut client);
+    assert_eq!(succeeded["aof_last_bgrewrite_status"], "ok");
+    assert_eq!(succeeded["firn_aof_rewrite_abort_reason"], "", "a new admission clears the prior failure");
+    assert_eq!(succeeded["firn_aof_rewrite_journal_images"], "0");
+    assert_eq!(succeeded["firn_aof_rewrite_journal_effects"], "0");
+    assert_eq!(succeeded["firn_aof_rewrite_used"], "0");
+    assert_eq!(succeeded["firn_aof_rewrite_scan_done"], "1");
+    assert_eq!(bulk(request(&mut client, &[b"GET", b"after"])), b"value");
+    rewrite_stop(&mut client, child);
 }
 
 #[test]

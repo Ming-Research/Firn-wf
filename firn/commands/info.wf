@@ -329,6 +329,30 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
           set scan_peak = persistence^.rewrite.scan_peak;
         }
         text_number(text: &text, value: scan_peak);
+        text_word(text: &text, word: &info_rw_abort_reason[0_u64..32_u64]);
+        info_rewrite_reason(text: &text, reason: persistence^.rewrite.abort_reason);
+        let rewrite_used = persistence^.rewrite.used;
+        let rewrite_peak = persistence^.rewrite.peak;
+        if persistence^.rewrite.abort_reason != pkg::store::rewrite_reason_none {
+          set rewrite_used = persistence^.rewrite.abort_used;
+          set rewrite_peak = persistence^.rewrite.abort_peak;
+        }
+        text_word(text: &text, word: &info_rw_used[0_u64..24_u64]);
+        text_number(text: &text, value: rewrite_used);
+        text_word(text: &text, word: &info_rw_peak[0_u64..24_u64]);
+        text_number(text: &text, value: rewrite_peak);
+        text_word(text: &text, word: &info_rw_journal_images[0_u64..34_u64]);
+        text_number(text: &text, value: persistence^.rewrite.journal_images);
+        text_word(text: &text, word: &info_rw_journal_effects[0_u64..35_u64]);
+        text_number(text: &text, value: persistence^.rewrite.journal_effects);
+        text_word(text: &text, word: &info_rw_scan_steps[0_u64..30_u64]);
+        text_number(text: &text, value: persistence^.rewrite.scan_steps);
+        let scan_done = 0_u64;
+        if persistence^.rewrite.scan_done {
+          set scan_done = 1_u64;
+        }
+        text_word(text: &text, word: &info_rw_scan_done[0_u64..29_u64]);
+        text_number(text: &text, value: scan_done);
         if logged {
           text_word(text: &text, word: &info_rw_current[0_u64..19_u64]);
           text_number(text: &text, value: persistence^.aof_current_size);
@@ -543,3 +567,86 @@ const info_rw_reserve: Array<u8, 27> = "\r\nfirn_aof_rewrite_reserve:";
 const info_rw_scan_peak: Array<u8, 29> = "\r\nfirn_aof_rewrite_scan_peak:";
 
 const info_rw_cut: Array<u8, 23> = "\r\nfirn_aof_rewrite_cut:";
+
+const info_rw_abort_reason: Array<u8, 32> = "\r\nfirn_aof_rewrite_abort_reason:";
+
+const info_rw_used: Array<u8, 24> = "\r\nfirn_aof_rewrite_used:";
+
+const info_rw_peak: Array<u8, 24> = "\r\nfirn_aof_rewrite_peak:";
+
+const info_rw_journal_images: Array<u8, 34> = "\r\nfirn_aof_rewrite_journal_images:";
+
+const info_rw_journal_effects: Array<u8, 35> = "\r\nfirn_aof_rewrite_journal_effects:";
+
+const info_rw_scan_steps: Array<u8, 30> = "\r\nfirn_aof_rewrite_scan_steps:";
+
+const info_rw_scan_done: Array<u8, 29> = "\r\nfirn_aof_rewrite_scan_done:";
+
+const info_rw_reason_reserve: Array<u8, 7> = "reserve";
+
+const info_rw_reason_capture: Array<u8, 7> = "capture";
+
+const info_rw_reason_journal_slots: Array<u8, 13> = "journal_slots";
+
+const info_rw_reason_flush: Array<u8, 5> = "flush";
+
+const info_rw_reason_sequence_exhausted: Array<u8, 18> = "sequence_exhausted";
+
+const info_rw_reason_memory_pressure: Array<u8, 15> = "memory_pressure";
+
+const info_rw_reason_cancelled: Array<u8, 9> = "cancelled";
+
+const info_rw_reason_base_io: Array<u8, 7> = "base_io";
+
+const info_rw_reason_writer_io: Array<u8, 9> = "writer_io";
+
+const info_rw_reason_drain: Array<u8, 5> = "drain";
+
+const info_rw_reason_boundary: Array<u8, 8> = "boundary";
+
+const info_rw_reason_install_io: Array<u8, 10> = "install_io";
+
+const info_rw_reason_rotation_reserve: Array<u8, 16> = "rotation_reserve";
+
+const info_rw_reason_sequence_invalid: Array<u8, 16> = "sequence_invalid";
+
+const info_rw_reason_journal_invalid: Array<u8, 15> = "journal_invalid";
+
+const info_rw_reason_admission: Array<u8, 9> = "admission";
+
+fn info_rewrite_reason(text: &Box<Slots<u8>>, reason: u64) -> result: unit writes(text) {
+  if reason == pkg::store::rewrite_reason_reserve {
+    text_word(text: text, word: &info_rw_reason_reserve[0_u64..7_u64]);
+  } else if reason == pkg::store::rewrite_reason_capture {
+    text_word(text: text, word: &info_rw_reason_capture[0_u64..7_u64]);
+  } else if reason == pkg::store::rewrite_reason_journal_slots {
+    text_word(text: text, word: &info_rw_reason_journal_slots[0_u64..13_u64]);
+  } else if reason == pkg::store::rewrite_reason_flush {
+    text_word(text: text, word: &info_rw_reason_flush[0_u64..5_u64]);
+  } else if reason == pkg::store::rewrite_reason_sequence_exhausted {
+    text_word(text: text, word: &info_rw_reason_sequence_exhausted[0_u64..18_u64]);
+  } else if reason == pkg::store::rewrite_reason_memory_pressure {
+    text_word(text: text, word: &info_rw_reason_memory_pressure[0_u64..15_u64]);
+  } else if reason == pkg::store::rewrite_reason_cancelled {
+    text_word(text: text, word: &info_rw_reason_cancelled[0_u64..9_u64]);
+  } else if reason == pkg::store::rewrite_reason_base_io {
+    text_word(text: text, word: &info_rw_reason_base_io[0_u64..7_u64]);
+  } else if reason == pkg::store::rewrite_reason_writer_io {
+    text_word(text: text, word: &info_rw_reason_writer_io[0_u64..9_u64]);
+  } else if reason == pkg::store::rewrite_reason_drain {
+    text_word(text: text, word: &info_rw_reason_drain[0_u64..5_u64]);
+  } else if reason == pkg::store::rewrite_reason_boundary {
+    text_word(text: text, word: &info_rw_reason_boundary[0_u64..8_u64]);
+  } else if reason == pkg::store::rewrite_reason_install_io {
+    text_word(text: text, word: &info_rw_reason_install_io[0_u64..10_u64]);
+  } else if reason == pkg::store::rewrite_reason_rotation_reserve {
+    text_word(text: text, word: &info_rw_reason_rotation_reserve[0_u64..16_u64]);
+  } else if reason == pkg::store::rewrite_reason_sequence_invalid {
+    text_word(text: text, word: &info_rw_reason_sequence_invalid[0_u64..16_u64]);
+  } else if reason == pkg::store::rewrite_reason_journal_invalid {
+    text_word(text: text, word: &info_rw_reason_journal_invalid[0_u64..15_u64]);
+  } else if reason == pkg::store::rewrite_reason_admission {
+    text_word(text: text, word: &info_rw_reason_admission[0_u64..9_u64]);
+  }
+  return unit;
+}

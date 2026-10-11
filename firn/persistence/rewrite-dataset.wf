@@ -27,6 +27,7 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
           let heap_before = std::process::heap_in_use(meter: meter);
           let keys = key_set_new(capacity: 1_u64);
           set cursor = map_scan::<Entry>(map: table, cursor: cursor, count: 1_u64, keys: &keys);
+          set m^.rewrite.scan_steps = m^.rewrite.scan_steps +sat 1_u64;
           let heap_after = std::process::heap_in_use(meter: meter);
           let observed_heap = heap_after -sat heap_before;
           set m^.rewrite.scan_peak = imax(m^.rewrite.scan_peak, observed_heap);
@@ -79,7 +80,7 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
                     let measure = pkg::store::rewrite_measure(slot: slot, key_length: length);
                     let future = stamp > m^.commit_seq;
                     if future {
-                      pkg::store::rewrite_abort(capture: &m^.rewrite);
+                      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: pkg::store::rewrite_reason_sequence_invalid);
                     } else {
                       let with_key = measure.bytes +sat length;
                       let bytes = with_key +sat 256_u64;
@@ -122,6 +123,7 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
           if appended == bytes.inner.len {
             set size = size +sat appended;
           } else {
+            aof_rw_abort(store: store, reason: pkg::store::rewrite_reason_base_io);
             set okay = False();
           }
         }
@@ -130,11 +132,11 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
       }
     }
     atomic released = &store^.meta {
-      set released^.rewrite.used = released^.rewrite.used -sat step_charge;
       if okay {
       } else {
-        pkg::store::rewrite_abort(capture: &released^.rewrite);
+        pkg::store::rewrite_abort(capture: &released^.rewrite, reason: pkg::store::rewrite_reason_cancelled);
       }
+      set released^.rewrite.used = released^.rewrite.used -sat step_charge;
     }
     aof_rw_pause(clock: clock);
     if okay {
@@ -180,7 +182,7 @@ fn aof_rw_select_empty(factory: &HandleFactory, file: &WriteFile) -> result: Res
   }
 }
 
-fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots<u8>>, decoder: &AofReconcile) -> result: Result<u64, unit> reads(block), writes(factory), writes(file), writes(decoder) waits {
+fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots<u8>>, decoder: &AofReconcile) -> result: Result<u64, u64> reads(block), writes(factory), writes(file), writes(decoder) waits {
   doc "Strip the internal sequence/length frames while streaming chronological units, each complete replacement images or a one-key statement's own append-only bytes. A frame may cross a chunk; no output allocation is needed and each append borrows only this one at-most-64-KiB chunk.";
   let size = 0_u64;
   let offset = 0_u64;
@@ -202,7 +204,7 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
         match std::fs::append_once(factory: factory, file: file, source: bytes, start: offset, end: end) {
           Ok(value: next) => {
             if next <= offset {
-              return Err<u64, unit>(error: unit);
+              return Err<u64, u64>(error: pkg::store::rewrite_reason_base_io);
             }
             let written = next -sat offset;
             set decoder^.remaining = decoder^.remaining -sat written;
@@ -210,7 +212,7 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
             set offset = next;
           }
           Err(error: problem) => {
-            return Err<u64, unit>(error: unit);
+            return Err<u64, u64>(error: pkg::store::rewrite_reason_base_io);
           }
         }
       }
@@ -230,13 +232,13 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
         set decoder^.factor = 1_u64;
       } else if decoder^.header == 16_u64 {
         if decoder^.sequence <= decoder^.previous {
-          return Err<u64, unit>(error: unit);
+          return Err<u64, u64>(error: pkg::store::rewrite_reason_journal_invalid);
         }
         if decoder^.sequence > decoder^.end {
-          return Err<u64, unit>(error: unit);
+          return Err<u64, u64>(error: pkg::store::rewrite_reason_journal_invalid);
         }
         if decoder^.length > decoder^.limit {
-          return Err<u64, unit>(error: unit);
+          return Err<u64, u64>(error: pkg::store::rewrite_reason_journal_invalid);
         }
         set decoder^.remaining = decoder^.length;
         set decoder^.previous = decoder^.sequence;
@@ -247,5 +249,5 @@ fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &Box<Slots
       }
     }
   }
-  return Ok<u64, unit>(value: size);
+  return Ok<u64, u64>(value: size);
 }

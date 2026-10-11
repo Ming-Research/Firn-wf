@@ -5,7 +5,7 @@ fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(met
   let capturing = band(meta^.rewrite.active, serving);
   let allowance = meta^.rewrite.limit -sat meta^.rewrite.used;
   let images = None<Box<Slots<RewriteImage>>>();
-  return WriteSequence(value: meta^.commit_seq, taken: taken, loading: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, allowance: allowance, retained: 0_u64, single: taken, start: meta^.rewrite.start, log_start: meta^.log.inner.len, anchor_seen: taken, anchored: taken, effect: taken, images: move images);
+  return WriteSequence(value: meta^.commit_seq, taken: taken, loading: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, failure: rewrite_reason_none, allowance: allowance, retained: 0_u64, single: taken, start: meta^.rewrite.start, log_start: meta^.log.inner.len, anchor_seen: taken, anchored: taken, effect: taken, images: move images);
 }
 
 fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) {
@@ -44,8 +44,23 @@ fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) {
   }
   if sequence^.value == 18446744073709551615_u64 {
     set sequence^.exhausted = True();
+    sequence_fail(sequence: sequence, reason: rewrite_reason_sequence_exhausted);
   }
   set sequence^.taken = True();
+  return unit;
+}
+
+fn sequence_replace(sequence: &WriteSequence, slot: &Option<Entry>, replacement: Option<Entry>) -> result: unit writes(sequence), writes(slot) {
+  doc "Anchor a replacement from the destination's old stamp before discarding it, never from a fresh or transferred entry's stamp. The caller stamps and captures the final value after replacement.";
+  match slot^ {
+    Some(value: replaced_entry) => {
+      sequence_anchor(sequence: sequence, previous: replaced_entry^.last_write);
+    }
+    None() => {
+      sequence_anchor(sequence: sequence, previous: 0_u64);
+    }
+  }
+  set slot^ = move replacement;
   return unit;
 }
 
@@ -82,11 +97,20 @@ fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: un
 
 fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), reads(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) {
   doc "Commits sequence, after-images and any rotation-buffer allocation or overflow under the same outer keys-and-Meta hold, including effects before an EXEC or script error. The separate log budget permits held command parts to borrow their sequence and encoder allowance without overlapping owners.";
-  if budget^.failed {
-    rewrite_abort(capture: &meta^.rewrite);
-  }
   set meta^.rewrite.used = meta^.rewrite.used +sat budget^.charged;
   set meta^.rewrite.peak = imax(meta^.rewrite.peak, meta^.rewrite.used);
+  if sequence^.failed {
+    if meta^.rewrite.active {
+      let scratch = sequence^.retained;
+      set meta^.rewrite.used = meta^.rewrite.used +sat scratch;
+      set meta^.rewrite.peak = imax(meta^.rewrite.peak, meta^.rewrite.used);
+      rewrite_abort(capture: &meta^.rewrite, reason: sequence^.failure);
+      set meta^.rewrite.used = meta^.rewrite.used -sat scratch;
+    }
+  }
+  if budget^.failed {
+    rewrite_abort(capture: &meta^.rewrite, reason: rewrite_reason_rotation_reserve);
+  }
   if sequence^.taken {
     set meta^.commit_seq = sequence^.value;
     set meta^.aof_rewrite_seq_exhausted = sequence^.exhausted;

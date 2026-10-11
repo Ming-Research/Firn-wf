@@ -434,6 +434,35 @@ latest admitted attempt has crossed S1 (also retained after completion),
 and 0 otherwise; it lets the backlog regression begin writes after capture
 has stopped.
 
+The following additional `INFO persistence` fields describe the current or
+most recently completed attempt. They reset when admission is attempted,
+including a refused admission; counters start at zero before the first attempt.
+
+- `firn_aof_rewrite_abort_reason` is empty until failure and on success.
+  The first cause is latched under Meta before cleanup, and later failures
+  cannot replace it. Values are `reserve` (a scan, journal or boundary reserve
+  charge), `capture` (statement capture allowance), `journal_slots`, `flush`,
+  `sequence_exhausted`, `memory_pressure`, `cancelled`, `base_io`, `writer_io`,
+  `drain` (incremental append did not drain), `boundary` (sealed-file reading
+  or validation), `install_io` (manifest publication or base installation),
+  `rotation_reserve` (collecting-buffer growth), `sequence_invalid`
+  (a scanned stamp beyond the commit sequence), `journal_invalid` (invalid
+  framing or effect-byte range), and `admission` (insufficient reserve or
+  service headroom).
+- `firn_aof_rewrite_used` and `firn_aof_rewrite_peak` are reserve ledger
+  bytes, not heap or RSS measurements. While running they show current use
+  and its peak; on failure both freeze at the first failure, before refunds.
+  Successful completion reports zero used and retains the attempt's peak.
+- `firn_aof_rewrite_journal_images` and
+  `firn_aof_rewrite_journal_effects` count complete journal units appended as
+  replacement images or statement AOF bytes, respectively. A multi-key
+  statement's image unit counts once, regardless of how many keys it holds;
+  scan output does not count. Counts survive cleanup on failure and success.
+- `firn_aof_rewrite_scan_steps` counts completed map_scan calls, including
+  empty steps and steps whose subsequent copying fails.
+  `firn_aof_rewrite_scan_done` is 1 after the scan finishes writing its base,
+  otherwise 0. It does not claim that rotation or installation succeeded.
+
 Failure before rotation leaves the original manifest authoritative. After
 rotation it leaves the manifest naming the old base and all increments
 replayable. If manifest rename succeeds but

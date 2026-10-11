@@ -58,7 +58,7 @@ fn memory_over(meta: &Meta, client: &Client, logged: Bool) -> over: Bool writes(
     let needed = counted +sat headroom;
     if needed > client^.maxmemory {
       if meta^.aof_installing == 0_u64 {
-        pkg::store::rewrite_abort(capture: &meta^.rewrite);
+        pkg::store::rewrite_abort(capture: &meta^.rewrite, reason: pkg::store::rewrite_reason_memory_pressure);
       }
     }
   }

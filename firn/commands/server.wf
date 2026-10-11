@@ -167,7 +167,7 @@ fn flush_meta(due: &ExpiryQueue, none_due: &PriorityQueue<Due, ceiling>, log: &B
 fn flush_body(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>) -> result: unit writes(sequence), writes(keys) {
   doc "Empties the held keyspace. Entry references for later commands must be formed after this call.";
   pkg::store::sequence_change(sequence: sequence);
-  set sequence^.failed = True();
+  pkg::store::sequence_fail(sequence: sequence, reason: pkg::store::rewrite_reason_flush);
   map_clear::<Entry>(map: keys);
   return unit;
 }

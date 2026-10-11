@@ -9418,6 +9418,13 @@ fn firn_rewrite_host_failures_keep_a_replayable_manifest() {
         assert_eq!(response, "+Background append only file rewriting started\r\n");
         let info = rewrite_wait(&mut client);
         assert_eq!(info["aof_last_bgrewrite_status"], "err");
+        let expected_reason = match failure {
+            "new-incremental" => "writer_io",
+            "temporary-base" => "base_io",
+            "base-rename" | "switch-manifest" => "install_io",
+            _ => unreachable!(),
+        };
+        assert_eq!(info["firn_aof_rewrite_abort_reason"], expected_reason, "first cause for {failure}");
         assert_eq!(info["aof_rewrites"], "1");
         client.write_all(&resp(&["INCR", "n"])).unwrap();
         assert_eq!(integer_reply(&mut client, "after failed rewrite"), 2);
