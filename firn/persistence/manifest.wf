@@ -390,6 +390,30 @@ struct AofPublication {
 }
 
 fn aof_persist(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> outcome: AofPublication reads(prefix), writes(factory), writes(writable), writes(manifest) waits {
+  let reporting = None<Keyspace>();
+  return aof_persist_record(reporting: &reporting, factory: factory, writable: writable, prefix: prefix, manifest: manifest);
+}
+
+fn aof_rw_persist(store: &Keyspace, factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> outcome: AofPublication reads(store), reads(prefix), writes(factory), writes(writable), writes(manifest) waits {
+  doc "Only publication that determines a rewrite's outcome reports failure to it; startup and nonfatal history cleanup use aof_persist without a reporting target.";
+  let shared = pkg::store::keyspace_share(store: store);
+  let reporting = Some<Keyspace>(value: move shared);
+  return aof_persist_record(reporting: &reporting, factory: factory, writable: writable, prefix: prefix, manifest: manifest);
+}
+
+fn aof_publication_failed(reporting: &Option<Keyspace>) -> result: unit reads(reporting) waits {
+  match reporting^ {
+    Some(value: rewrite_store) => {
+      let reason_install_io_1 = pkg::store::RewriteAbortReason::InstallIo();
+      aof_rw_abort(store: rewrite_store, reason: reason_install_io_1);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn aof_persist_record(reporting: &Option<Keyspace>, factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> outcome: AofPublication reads(reporting), reads(prefix), writes(factory), writes(writable), writes(manifest) waits {
   doc "Publication succeeds once rename replaces the manifest, even if the following directory sync fails. Callers must retain the files it names on that outcome. A failed sync leaves dirty set for a later persistence attempt.";
   let yes = True();
   let no = False();
@@ -426,7 +450,7 @@ fn aof_persist(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, pref
   let temporary = aof_named(prefix: &aof_temp_prefix[0_u64..5_u64], suffix: name);
   let temp_length = temporary.inner.len;
   let temp_name = &temporary.inner[0_u64..temp_length];
-  let written = aof_replace(factory: factory, writable: writable, name: temp_name, contents: &output);
+  let written = aof_replace_record(reporting: reporting, factory: factory, writable: writable, name: temp_name, contents: &output);
   if written {
   } else {
     return AofPublication(published: no, durable: no);
@@ -435,6 +459,7 @@ fn aof_persist(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, pref
     Ok(value: renamed) => {
     }
     Err(error: problem) => {
+      aof_publication_failed(reporting: reporting);
       return AofPublication(published: no, durable: no);
     }
   }
@@ -444,12 +469,18 @@ fn aof_persist(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, pref
       return AofPublication(published: yes, durable: yes);
     }
     Err(error: problem) => {
+      aof_publication_failed(reporting: reporting);
       return AofPublication(published: yes, durable: no);
     }
   }
 }
 
 fn aof_replace(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name: &[u8], contents: &Box<Slots<u8>>) -> accepted: Bool reads(writable), reads(name), reads(contents), writes(factory) waits {
+  let reporting = None<Keyspace>();
+  return aof_replace_record(reporting: &reporting, factory: factory, writable: writable, name: name, contents: contents);
+}
+
+fn aof_replace_record(reporting: &Option<Keyspace>, factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name: &[u8], contents: &Box<Slots<u8>>) -> accepted: Bool reads(reporting), reads(writable), reads(name), reads(contents), writes(factory) waits {
   let length = name^.len;
   match std::fs::open_append(factory: factory, root: writable, name: name, start: 0_u64, end: length) {
     Ok(value: opened) => {
@@ -463,23 +494,29 @@ fn aof_replace(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name
                 set accepted = True();
               }
               Err(error: problem) => {
+                aof_publication_failed(reporting: reporting);
               }
             }
+          } else {
+            aof_publication_failed(reporting: reporting);
           }
         }
         Err(error: problem) => {
+          aof_publication_failed(reporting: reporting);
         }
       }
       match close_write(factory: factory, file: move opened) {
         Ok(value: closed) => {
         }
         Err(error: problem) => {
+          aof_publication_failed(reporting: reporting);
           set accepted = False();
         }
       }
       return accepted;
     }
     Err(error: problem) => {
+      aof_publication_failed(reporting: reporting);
       return False();
     }
   }

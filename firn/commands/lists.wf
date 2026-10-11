@@ -1136,7 +1136,8 @@ fn place_element(sequence: &pkg::store::WriteSequence, client: &Client, slot: &O
   let made = Value::Items(items: move list);
   let stamp = new_access(client: client);
   let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
-  set slot^ = Some<Entry>(value: move fresh);
+  let replacement = Some<Entry>(value: move fresh);
+  pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
   pkg::store::sequence_stamp(sequence: sequence, slot: slot);
   return unit;
 }
@@ -1232,7 +1233,8 @@ fn push_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
       let made = Value::Items(items: move list);
       let stamp = new_access(client: client);
       let fresh = Entry(value: move made, expires: 0_u64, access: stamp, last_write: 0_u64);
-      set slot^ = Some<Entry>(value: move fresh);
+      let replacement = Some<Entry>(value: move fresh);
+      pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
       pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: access_key);
       set client^.state = state_done;
     }

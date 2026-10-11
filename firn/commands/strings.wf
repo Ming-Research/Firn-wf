@@ -248,7 +248,8 @@ fn put_text(sequence: &pkg::store::WriteSequence, capture_key: &[u8], client: &C
   let text = Value::Text(bytes: move value);
   let stamp = replacement_access(slot: slot, client: client);
   let held_entry = Entry(value: move text, expires: expires, access: stamp, last_write: 0_u64);
-  set slot^ = Some<Entry>(value: move held_entry);
+  let replacement = Some<Entry>(value: move held_entry);
+  pkg::store::sequence_replace(sequence: sequence, slot: slot, replacement: move replacement);
   pkg::store::sequence_stamp_key(sequence: sequence, slot: slot, key: capture_key);
   return unit;
 }
