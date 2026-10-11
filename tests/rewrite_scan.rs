@@ -555,7 +555,6 @@ fn reconciled_scan_rewrites_large_keys_scanned_and_written() {
 }
 
 #[test]
-#[ignore = "pending firn-gap-scan-bound (status board): pinned map_scan copies a step's keys before the caller can charge them"]
 fn reconciled_scan_exact_reserve_includes_one_long_key_step() {
     let program = CompiledProgram::from_environment();
     let key = vec![b'k'; 17 * 1024 * 1024];
@@ -568,7 +567,9 @@ fn reconciled_scan_exact_reserve_includes_one_long_key_step() {
     assert_eq!(info["aof_last_bgrewrite_status"], "err");
     let peak: u64 = info["firn_aof_rewrite_scan_peak"].parse().unwrap();
     let reserve: u64 = info["firn_aof_rewrite_reserve"].parse().unwrap();
+    assert_eq!(reserve, 16 * 1024 * 1024, "unlimited maxmemory must retain its explicit 16-MiB rewrite allowance");
     assert!(peak <= reserve, "independently observed allocator growth for one scan step exceeds the entire reserve: {peak} > {reserve}");
+    assert_old_manifest(&program);
     assert_eq!(bulk(request(&mut client, &[b"GET", &key])), b"v", "reserve refusal must not reject or remove the live key");
     rewrite_stop(&mut client, child);
 }
