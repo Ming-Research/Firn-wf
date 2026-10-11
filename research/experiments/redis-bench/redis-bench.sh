@@ -107,6 +107,10 @@
 #                                 reports all three rates, sampled during time,
 #                                 INFO aof_last_rewrite_time_sec (unavailable if
 #                                 omitted), aof_last_bgrewrite_status and completion.
+#                                 rewrite-during-info.csv keeps every reported
+#                                 firn_aof_rewrite_* field and the last status,
+#                                 including on failure, keyed by line, pass,
+#                                 cpus and connections. Missing fields add no rows.
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
 # the records before the quick mode built it with none. The redis-bench
@@ -1032,6 +1036,7 @@ if [ "$MODE" = workloads ]; then
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"
     echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
     echo 'line,pass,cpus,workload,connections,keys,value_size,seed,before_rate,during_rate,after_rate,during_seconds,aof_last_rewrite_time_sec,aof_last_bgrewrite_status,rewrite_completed' >"$OUT/rewrite-during.csv"
+    echo 'line,pass,cpus,connections,field,value' >"$OUT/rewrite-during-info.csv"
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,refused_sets,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections,keys_at_start,keys_at_end' >"$OUT/evict-zipf.csv"
     echo 'line,pass,cpus,workload,connections,keys,value_size,seed,warmup_seconds,sample_ms,maxmemory' >"$OUT/session-limits-settings.csv"
     # Accept only the measurement parameters shared by these opt-in workloads;
@@ -1110,14 +1115,25 @@ if [ "$MODE" = workloads ]; then
                         for conns in ${WORKLOAD_CONNECTIONS:-50}; do
                             for line in $rewrite_order; do
                                 start "$line" aof
-                                result=$(taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
+                                rewrite_info="$OUT/rewrite-during-info.tmp"
+                                rm -f "$rewrite_info"
+                                rewrite_status=0
+                                result=$(REWRITE_INFO_OUT="$rewrite_info" taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
                                     --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
                                     --workload rewrite-during --seconds "${WORKLOAD_SECONDS:-10}" \
-                                    --seed "$pass") || {
-                                    rewrite_status=$?
+                                    --seed "$pass") || rewrite_status=$?
+                                # Save diagnostics before a failed measurement
+                                # exits; the ordinary rates CSV stays unchanged.
+                                if [ -f "$rewrite_info" ]; then
+                                    while IFS= read -r info_row; do
+                                        printf '%s,%s,%s,%s,%s\n' "$line" "$pass" "$n" "$conns" "$info_row"
+                                    done <"$rewrite_info" | tee -a "$OUT/rewrite-during-info.csv"
+                                    rm -f "$rewrite_info"
+                                fi
+                                if [ "$rewrite_status" -ne 0 ]; then
                                     echo "rewrite workload failed: line=$line pass=$pass cpus=$n connections=$conns (exit $rewrite_status)" >&2
                                     exit "$rewrite_status"
-                                }
+                                fi
                                 echo "$line,$pass,$n,$result" | tee -a "$OUT/rewrite-during.csv"
                                 stop
                                 server=

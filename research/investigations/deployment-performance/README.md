@@ -300,7 +300,21 @@ crossed S1; scan peak is only the observed heap increase during KeySet
 creation and a map scan, not the journal or total rewrite peak
 ([field definitions](../../../firn/README.md)). A failed
 status alone does not prove reserve exhaustion. If INFO cannot be read,
-the diagnostic error is printed and the original workload result is kept.
+the diagnostic error is printed; an existing workload failure is preserved.
+When the harness requests a CSV capture, a capture failure also fails an
+otherwise successful run.
+
+`rewrite-during-info.csv` holds `line,pass,cpus,connections,field,value`.
+After the measurement ends, the client saves every reported
+`firn_aof_rewrite_*` field and `aof_last_bgrewrite_status` from that INFO
+snapshot. The harness sets `REWRITE_INFO_OUT` to a temporary field/value
+CSV, appends the run identifiers, prints the rows to the job log and removes
+the temporary file. It saves these rows before propagating a workload
+failure, including a rewrite ending with `err`. Missing fields produce no
+rows or fabricated defaults; Redis contributes only its last status.
+Future firn rewrite fields are included automatically, and empty values
+(such as the abort reason on success) are retained. The workflow uploads
+the CSV even when measurement fails.
 
 `rewrite-during.csv` holds
 `line,pass,cpus,workload,connections,keys,value_size,seed,before_rate,during_rate,after_rate,during_seconds,aof_last_rewrite_time_sec,aof_last_bgrewrite_status,rewrite_completed`.

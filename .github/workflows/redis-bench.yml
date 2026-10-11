@@ -54,7 +54,7 @@ on:
         type: string
         default: "1 2"
       tests:
-        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits rewrite-during (AOF only; before/during/after rates, 120 s rewrite bound)"
+        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits rewrite-during (AOF only; before/during/after rates, 120 s bound, INFO sidecar CSV even on failure)"
         type: string
         default: ""
       depths:

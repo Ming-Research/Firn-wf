@@ -201,21 +201,48 @@ fn write_diagnostics(info: &str, out: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-fn diagnostics(port: u16, out: &mut impl Write) -> Result<()> {
+fn write_info_csv(info: &str, out: &mut impl Write) -> Result<()> {
+    for line in info.lines() {
+        let Some((name, value)) = line.split_once(':') else { continue; };
+        if name.starts_with("firn_aof_rewrite_") || name == "aof_last_bgrewrite_status" {
+            // Quote both cells so future diagnostic values remain valid CSV.
+            writeln!(out, "\"{}\",\"{}\"", name.replace('"', "\"\""), value.replace('"', "\"\""))?;
+        }
+    }
+    Ok(())
+}
+
+fn diagnostics(port: u16, out: &mut impl Write) -> Result<String> {
     // A timeout may leave the polling connection with an unread reply. Use a
     // fresh connection and deadline, and one INFO for persistence and memory.
     let mut control = Control::new(port)?;
     let wire = control.call_before(&[b"INFO"], Some(Instant::now() + TIMEOUT))?;
-    write_diagnostics(info_body(&wire)?, out)
+    let info = info_body(&wire)?;
+    write_diagnostics(info, out)?;
+    Ok(info.to_owned())
 }
 
 pub(super) fn run(opts: &Options) -> Result<()> {
-    let result = run_inner(opts);
+    let path = env::var_os("REWRITE_INFO_OUT").map(std::path::PathBuf::from);
+    finish_run(run_inner(opts), opts.port, path.as_deref(), &mut io::stderr().lock())
+}
+
+fn finish_run(result: Result<()>, port: u16, path: Option<&std::path::Path>,
+              out: &mut impl Write) -> Result<()> {
     let outcome = if result.is_ok() { "success" } else { "failure" };
-    eprintln!("rewrite-during INFO after {outcome}:");
-    if let Err(e) = diagnostics(opts.port, &mut io::stderr().lock()) {
+    let _ = writeln!(out, "rewrite-during INFO after {outcome}:");
+    let capture = (|| -> Result<()> {
+        let info = diagnostics(port, out)?;
+        if let Some(path) = path {
+            let mut file = std::fs::File::create(path)?;
+            write_info_csv(&info, &mut file)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = capture {
         // Diagnostics must not replace the workload's original failure.
-        eprintln!("rewrite-during INFO unavailable: {e}");
+        let _ = writeln!(out, "rewrite-during INFO unavailable: {e}");
+        if result.is_ok() && path.is_some() { return Err(e); }
     }
     result
 }
@@ -344,6 +371,59 @@ mod tests {
         let mut out = Vec::new();
         write_diagnostics(info(), &mut out).unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), info().replace("\r\n", "\n"));
+    }
+
+    #[test]
+    fn info_csv_keeps_optional_future_and_empty_values() {
+        let mut out = Vec::new();
+        write_info_csv(concat!("# Persistence\r\naof_last_bgrewrite_status:ok\r\n",
+            "firn_aof_rewrite_abort_reason:\r\nfirn_aof_rewrite_used:0\r\n",
+            "firn_aof_rewrite_future:a,\"b\":c\r\naof_rewrites:2\r\n",
+            "used_memory:42\r\n"), &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), concat!(
+            "\"aof_last_bgrewrite_status\",\"ok\"\n",
+            "\"firn_aof_rewrite_abort_reason\",\"\"\n",
+            "\"firn_aof_rewrite_used\",\"0\"\n",
+            "\"firn_aof_rewrite_future\",\"a,\"\"b\"\":c\"\n"));
+        let mut redis = Vec::new();
+        write_info_csv(info(), &mut redis).unwrap();
+        assert_eq!(String::from_utf8(redis).unwrap(), "\"aof_last_bgrewrite_status\",\"ok\"\n");
+        let mut missing = Vec::new();
+        write_info_csv("# Persistence\r\naof_rewrites:1\r\n", &mut missing).unwrap();
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn failed_measurement_saves_info_before_returning_original_error() {
+        use std::net::TcpListener;
+        for status in ["ok", "err"] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let path = std::env::temp_dir().join(format!("firn-rewrite-info-{}-{port}.csv", std::process::id()));
+            let body = format!("aof_last_bgrewrite_status:{status}\r\nfirn_aof_rewrite_abort_reason:{}\r\nfirn_aof_rewrite_peak:123\r\n",
+                if status == "err" { "reserve" } else { "" });
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+                super::super::tests::expect_command(&mut socket, &[b"INFO"]);
+                write!(socket, "${}\r\n{body}\r\n", body.len()).unwrap();
+            });
+            let result = if status == "err" { Err("aof_last_bgrewrite_status:err".into()) } else { Ok(()) };
+            let mut log = Vec::new();
+            let result = finish_run(result, port, Some(&path), &mut log);
+            server.join().unwrap();
+            let csv = std::fs::read_to_string(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            assert!(csv.contains(&format!("\"aof_last_bgrewrite_status\",\"{status}\"\n")));
+            assert!(csv.contains("\"firn_aof_rewrite_peak\",\"123\"\n"));
+            assert!(String::from_utf8(log).unwrap().contains("firn_aof_rewrite_peak:123"));
+            if status == "err" {
+                assert!(csv.contains("\"firn_aof_rewrite_abort_reason\",\"reserve\"\n"));
+                assert_eq!(result.unwrap_err().to_string(), "aof_last_bgrewrite_status:err");
+            } else {
+                result.unwrap();
+            }
+        }
     }
 
     #[test]
