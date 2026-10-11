@@ -243,14 +243,18 @@ The sequence/capture rewrite is now merged into this worktree. Its
 sequence_change changes that token and entry stamps, while sequence_commit alone publishes Meta.commit_seq,
 capture, exhaustion and rotation reserve charges. The declared-key path therefore restores entry stamps and
 drops the token, effects and LogBudget on abandonment without calling sequence_commit. Accepted Done and Lua
-Error publish once before releasing their hold. sequence_new_key is not used merely because one key was
-declared: whole fallback may access or change additional keys.
+Error publish once before releasing their hold. All script attempts currently use image capture, including
+an accepted narrow attempt with one declared key. This is a conservative deferral under firn-script-keys,
+not a claim that single-key byte capture is inherently unsafe for that accepted narrow attempt. Selecting
+byte capture from numkeys alone would be insufficient because whole fallback may access or change other keys.
 Integration must keep one token for an accepted script (or enclosing EXEC), stamp all changed entries with it,
 and capture final replacements/tombstones before releasing the hold. Discard an abandoned token and restore
 last_write; publish neither capture failures nor reserve charges from abandoned scratch. Account temporary
 allocations while owned and return their charge on drop. Do not choose sequence_new_key merely because numkeys
 == 1: an accepted whole fallback can modify several keys, and script effects may read other keys. Initially
-use sequence_new for all scripts/EXEC, including Lua errors after effects. Capturing read-only access stamps
+use sequence_new for all scripts/EXEC, including Lua errors after effects. Reopen the one-key script
+optimization when capture evidence distinguishes accepted narrow attempts from abandoned attempts and
+whole retries; until then, a growing scripted key still incurs full image copies. Capturing read-only access stamps
 takes no dataset sequence. The draft uses the merged contract directly and imports no historical rewrite implementation.
 
 Keep Time and the per-read memory settings across retries. Lazy expiry is an entry mutation and must enter

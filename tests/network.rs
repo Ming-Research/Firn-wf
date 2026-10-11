@@ -7181,11 +7181,77 @@ fn firn_script_fallback_restores_collection_payloads_but_not_lua_errors() {
     assert_eq!(finished(child).0, 0);
 }
 
+/// Each script branches on its original declared entry before mutating it
+/// and accessing an undeclared key. A retry that fails to undo the deadline,
+/// value variant, creation or deletion returns a distinct wrong-state marker;
+/// repeated idempotent writes cannot conceal failed restoration. Replies and
+/// AOF commands follow Redis 7.0.15; the sequence delta follows firn's contract.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_script_fallback_restores_deadlines_types_and_presence() {
+    let program = CompiledProgram::from_environment();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-branches.aof"]);
+    let mut client = connect_when_ready(port);
+    for (args, reply) in [
+        (vec!["SET", "deadline", "v", "PXAT", "9999999999999"], "+OK\r\n"),
+        (vec!["RPUSH", "typed", "a", "b"], ":2\r\n"),
+        (vec!["SET", "removed", "original"], "+OK\r\n"),
+    ] {
+        assert_eq!(memory_request(&mut client, &args), reply);
+    }
+    let deadline = "local t=redis.call('PEXPIRETIME',KEYS[1]); \
+        if t~=9999999999999 then return 'wrong-deadline' end; \
+        redis.call('PEXPIREAT',KEYS[1],9999999998888); \
+        redis.call('GET','outside'); return t";
+    let before = script_fallback_sequence(&mut client);
+    assert_eq!(memory_request(&mut client, &["EVAL", deadline, "1", "deadline"]), ":9999999999999\r\n");
+    assert_eq!(script_fallback_sequence(&mut client), before + 1);
+    assert_eq!(memory_request(&mut client, &["PEXPIRETIME", "deadline"]), ":9999999998888\r\n");
+    let typed = "if redis.call('TYPE',KEYS[1]).ok~='list' then return 'wrong-type' end; \
+        local r=redis.call('LRANGE',KEYS[1],0,-1); \
+        if #r~=2 or r[1]~='a' or r[2]~='b' then return 'wrong-payload' end; \
+        redis.call('SET',KEYS[1],'new'); redis.call('GET','outside'); return r";
+    let before = script_fallback_sequence(&mut client);
+    assert_eq!(memory_request(&mut client, &["EVAL", typed, "1", "typed"]), "*2\r\n$1\r\na\r\n$1\r\nb\r\n");
+    assert_eq!(script_fallback_sequence(&mut client), before + 1);
+    let presence = "local a=redis.call('EXISTS',KEYS[1]); local b=redis.call('EXISTS',KEYS[2]); \
+        if a~=0 then return 'wrong-created' end; if b~=1 then return 'wrong-deleted' end; \
+        redis.call('SET',KEYS[1],'new'); redis.call('DEL',KEYS[2]); \
+        redis.call('GET','outside'); return {a,b}";
+    let before = script_fallback_sequence(&mut client);
+    assert_eq!(memory_request(&mut client, &["EVAL", presence, "2", "created", "removed"]), "*2\r\n:0\r\n:1\r\n");
+    assert_eq!(script_fallback_sequence(&mut client), before + 1);
+    assert_eq!(memory_request(&mut client, &["MGET", "deadline", "typed", "created", "removed"]), "*4\r\n$1\r\nv\r\n$3\r\nnew\r\n$3\r\nnew\r\n$-1\r\n");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+    let requests: &[&[&str]] = &[
+        &["SET", "deadline", "v", "PXAT", "9999999999999"],
+        &["RPUSH", "typed", "a", "b"],
+        &["SET", "removed", "original"],
+        &["PEXPIREAT", "deadline", "9999999998888"],
+        &["SET", "typed", "new"],
+        &["MULTI"], &["SET", "created", "new"], &["DEL", "removed"], &["EXEC"],
+    ];
+    let expected: Vec<u8> = requests.iter().flat_map(|args| resp(args)).collect();
+    assert_eq!(std::fs::read(aof_incremental_path(program.working_directory(), "fallback-branches.aof")).unwrap(), expected, "only accepted effects, with the two-effect invocation wrapped once");
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-branches.aof"]);
+    let mut client = connect_when_ready(port);
+    assert_eq!(memory_request(&mut client, &["MGET", "deadline", "typed", "created", "removed"]), "*4\r\n$1\r\nv\r\n$3\r\nnew\r\n$3\r\nnew\r\n$-1\r\n");
+    assert_eq!(memory_request(&mut client, &["PEXPIRETIME", "deadline"]), ":9999999998888\r\n");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
 /// Empty, binary and duplicated names remain Lua arguments; the hold's key
 /// set is required to remain immutable when Lua replaces KEYS; these replies
 /// protect the argument semantics, while hold width needs code review. Global
 /// enumeration and zero-key commands
-/// remain legal. Deadline restoration is checked exactly, without timing noise.
+/// remain legal. INCR preserves the absolute deadline; the branch-sensitive
+/// case above separately proves restoration after a deadline change.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_script_declared_names_and_global_fallback_preserve_replies() {
@@ -7232,6 +7298,8 @@ fn firn_script_declared_names_and_global_fallback_preserve_replies() {
 /// so the accepted attempt emits its DEL. Warm source and pipelined pairs make
 /// the narrow path likely, but active expiry can win between SET and EVAL;
 /// this is not deterministic evidence of undo without CI fault demonstration.
+/// firn has no DEBUG SET-ACTIVE-EXPIRE control (only DEBUG LOG is admitted),
+/// so this case cannot disable the expiry worker to force that ordering.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_script_fallback_keeps_lazy_expiry_effects() {
