@@ -2,6 +2,7 @@
 //! Loopback RESP2; worker threads multiplex nonblocking connections using std only.
 mod limiter;
 mod eviction;
+mod rewrite;
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
@@ -15,7 +16,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKLOADS: &[&str] = &[
     "limiter-script", "limiter-tx", "setmany-tx", "session-set", "session-get",
-    "evict-zipf",
+    "evict-zipf", "rewrite-during",
 ];
 
 #[derive(Clone)]
@@ -38,16 +39,19 @@ struct Options {
 
 impl Options {
     fn parse() -> Result<Self> {
+        Self::parse_args(env::args().skip(1), thread::available_parallelism()?.get())
+    }
+
+    fn parse_args(mut args: impl Iterator<Item = String>, threads: usize) -> Result<Self> {
         let mut opts = Self {
             port: 0, connections: 50,
-            threads: thread::available_parallelism()?.get(),
+            threads,
             seconds: None, requests: None, keys: 100_000,
             value: vec![b'x'; 200], workload: String::new(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::from_secs(5),
             sample_interval: Duration::from_millis(10), maxmemory: None,
         };
         let (mut keys_given, mut value_given) = (false, false);
-        let mut args = env::args().skip(1);
         while let Some(flag) = args.next() {
             let value = args.next().ok_or("each option needs a value")?;
             match flag.as_str() {
@@ -76,16 +80,19 @@ impl Options {
                 _ => return Err(format!("unknown option: {flag}").into()),
             }
         }
-        if opts.workload == "evict-zipf" {
+        if matches!(opts.workload.as_str(), "evict-zipf" | "rewrite-during") {
             if !keys_given { opts.keys = 1_000_000; }
             if !value_given { opts.value = vec![b'x'; 64]; }
+        }
+        if opts.workload == "rewrite-during" && (opts.seconds.is_none() || opts.fill.is_some()) {
+            return Err("rewrite-during requires --seconds (per before/after phase), without --fill".into());
         }
         if !opts.zipf_s.is_finite() || opts.zipf_s < 0.0 || opts.sample_interval.is_zero() {
             return Err("--zipf-s must be finite and nonnegative; --sample-ms must be positive".into());
         }
-        if opts.maxmemory.is_some() && (!matches!(opts.workload.as_str(), "session-set" | "session-get")
+        if opts.maxmemory.is_some() && (!matches!(opts.workload.as_str(), "session-set" | "session-get" | "rewrite-during")
             || opts.fill.is_some()) {
-            return Err("--maxmemory only applies to measured session-set/session-get".into());
+            return Err("--maxmemory only applies to measured session-set/session-get or rewrite-during".into());
         }
         if opts.port == 0 || opts.connections == 0 || opts.threads == 0 || opts.keys == 0 {
             return Err("--port, --connections, --threads and --keys must be positive".into());
@@ -178,7 +185,7 @@ fn fill(opts: &Options, count: u64) -> Result<()> {
         out.clear();
         let mut batch = 0;
         while next < count && batch < 256 && out.len() < 1_048_576 {
-            if opts.workload == "evict-zipf" {
+            if matches!(opts.workload.as_str(), "evict-zipf" | "rewrite-during") {
                 let key = format!("key:{next}");
                 command(&mut out, &[b"SET", key.as_bytes(), &opts.value]);
             } else {
@@ -255,6 +262,7 @@ fn request(out: &mut Vec<u8>, opts: &Options, rng: &mut u64, sha: &[u8]) -> usiz
             1
         }
         "session-get" => { command(out, &[b"GET", key]); 1 }
+        "rewrite-during" => { command(out, &[b"SET", key, &opts.value]); 1 }
         _ => unreachable!(),
     }
 }
@@ -342,6 +350,10 @@ impl Connection {
                 } else {
                     self.hit = eviction::get_hit(&self.input[..size], &opts.value)?;
                 }
+            } else if opts.workload == "rewrite-during" {
+                if &self.input[..size] != b"+OK\r\n" {
+                    return Err("rewrite workload SET did not return OK".into());
+                }
             } else if opts.maxmemory.is_some() {
                 if opts.workload == "session-get" {
                     if !eviction::get_hit(&self.input[..size], &opts.value)? {
@@ -379,7 +391,8 @@ fn share(n: u64, total: usize, id: usize) -> u64 {
 // Exact, sparse one-microsecond bins, with no clipped tail or averaged percentiles.
 type Histogram = HashMap<u64, u64>;
 fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
-          cancelled: &AtomicBool, zipf: Option<&eviction::Zipf>) -> Result<(Histogram, Instant, u64, usize, u64)> {
+          cancelled: &AtomicBool, zipf: Option<&eviction::Zipf>,
+          progress: Option<&rewrite::Progress>) -> Result<(Histogram, Instant, u64, usize, u64)> {
     let mut histogram = Histogram::new();
     let mut hits = 0;
     loop {
@@ -387,7 +400,8 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
         let mut active = false;
         for c in &mut connections {
             if c.replies == 0 {
-                if c.remaining == 0 || opts.seconds.is_some_and(|s| start.elapsed() >= s) { continue; }
+                if c.remaining == 0 || opts.seconds.is_some_and(|s| start.elapsed() >= s)
+                    || progress.is_some_and(|p| p.stopped()) { continue; }
                 if let Some(zipf) = zipf {
                     c.out.clear();
                     c.cache_key = format!("key:{}", zipf.draw(&mut c.rng)).into_bytes();
@@ -406,6 +420,7 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
             if c.advance(opts)? {
                 let us = c.started.elapsed().as_nanos().div_ceil(1000) as u64;
                 *histogram.entry(us).or_insert(0) += 1;
+                if let Some(p) = progress { p.completed(); }
                 hits += u64::from(c.hit);
             }
         }
@@ -463,7 +478,7 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
             (opts.clone(), barrier.clone(), cancelled.clone(), start.clone());
         handles.push(thread::spawn(move || {
             barrier.wait();
-            let result = worker(connections, &opts, *start.get().unwrap(), &cancelled, zipf.as_deref());
+            let result = worker(connections, &opts, *start.get().unwrap(), &cancelled, zipf.as_deref(), None);
             if result.is_err() { cancelled.store(true, Ordering::Relaxed); }
             result
         }));
@@ -514,6 +529,7 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
 fn run(opts: Options) -> Result<()> {
     if let Some(count) = opts.fill { return fill(&opts, count); }
     if opts.workload == "evict-zipf" { return eviction::run(&opts); }
+    if opts.workload == "rewrite-during" { return rewrite::run(&opts); }
     if opts.maxmemory.is_some() { return eviction::session_limit(&opts); }
     println!("{}", measure(&opts, None, None)?.csv(&opts));
     Ok(())
@@ -546,11 +562,34 @@ mod tests {
     }
 
     #[test]
+    fn maxmemory_options_accept_rewrite_and_sessions_only() {
+        let parse = |workload: &str, extra: &[&str]| {
+            let mut args = vec!["--port", "6379", "--workload", workload, "--seconds", "1"];
+            args.extend_from_slice(extra);
+            Options::parse_args(args.into_iter().map(str::to_string), 2)
+        };
+        assert_eq!(parse("rewrite-during", &[]).unwrap().maxmemory, None);
+        for workload in ["rewrite-during", "session-set", "session-get"] {
+            for (value, expected) in [("0", 0), ("1073741824", 1_073_741_824)] {
+                assert_eq!(parse(workload, &["--maxmemory", value]).unwrap().maxmemory, Some(expected));
+            }
+        }
+        for workload in ["evict-zipf", "limiter-tx", "setmany-tx"] {
+            assert!(parse(workload, &["--maxmemory", "1"]).err().unwrap()
+                .to_string().contains("--maxmemory only applies"));
+        }
+        for value in ["-1", "garbage", "18446744073709551616"] {
+            assert!(parse("rewrite-during", &["--maxmemory", value]).is_err());
+        }
+        assert!(parse("rewrite-during", &["--maxmemory"]).is_err());
+    }
+
+    #[test]
     fn workloads_send_consumer_forms_and_count_transactions_once() {
         use std::net::TcpListener;
         for &workload in WORKLOADS {
-            // Cache-aside has its own hit/miss state-machine and setup cases.
-            if workload == "evict-zipf" { continue; }
+            // Opt-in workloads have their own state-machine and setup cases.
+            if matches!(workload, "evict-zipf" | "rewrite-during") { continue; }
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {
@@ -615,6 +654,8 @@ mod tests {
             ("evict-zipf", b"+OK\r\n".as_slice(), None),
             ("evict-zipf", b"-ERR rejected\r\n".as_slice(), Some("ERR rejected")),
             ("evict-zipf", eviction::OOM_REPLY, Some("server error: OOM")),
+            ("rewrite-during", b"+OK\r\n".as_slice(), None),
+            ("rewrite-during", b"-ERR rejected\r\n".as_slice(), Some("ERR rejected")),
         ] {
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
@@ -622,7 +663,7 @@ mod tests {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket.set_read_timeout(Some(TIMEOUT)).unwrap();
                 for id in 0..257 {
-                    if workload == "evict-zipf" {
+                    if matches!(workload, "evict-zipf" | "rewrite-during") {
                         let key = format!("key:{id}");
                         expect_command(&mut socket, &[b"SET", key.as_bytes(), b"x"]);
                     } else {

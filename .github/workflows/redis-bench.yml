@@ -13,7 +13,8 @@
 #   mode workloads  this checkout's firn and Redis, without and with AOF,
 #                   on consumer command forms or opt-in memory-limit workloads;
 #                   with workload_images, instead the image each revision
-#                   builds and Redis, interleaved, without AOF
+#                   builds and Redis, interleaved, without AOF;
+#                   rewrite-during uses AOF only in either configuration
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
 #
@@ -53,7 +54,7 @@ on:
         type: string
         default: "1 2"
       tests:
-        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits"
+        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits rewrite-during (AOF only; before/during/after rates, 120 s rewrite bound)"
         type: string
         default: ""
       depths:
@@ -65,7 +66,7 @@ on:
         type: string
         default: "2"
       seconds:
-        description: Seconds per measured run; probe with 5 first
+        description: Seconds per measured run (each before/after phase for rewrite-during); probe with 5 first
         type: string
         default: "5"
       connections:
@@ -73,7 +74,7 @@ on:
         type: string
         default: "50"
       workload_options:
-        description: "Memory workloads only: space-separated --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Empty keeps workload defaults; seed is the pass."
+        description: "Memory/rewrite workloads only: space-separated --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Rewrite-during alone also accepts --maxmemory BYTES (default 0, noeviction). Empty keeps defaults; seed is the pass (zipf-s only for evict-zipf)."
         type: string
         default: ""
       workload_images:

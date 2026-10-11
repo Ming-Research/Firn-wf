@@ -54,18 +54,18 @@ pub(super) fn get_hit(wire: &[u8], expected: &[u8]) -> Result<bool> {
     Ok(true)
 }
 
-struct Control {
+pub(super) struct Control {
     socket: TcpStream,
 }
 
 impl Control {
-    fn new(port: u16) -> Result<Self> { Ok(Self { socket: connect(port)? }) }
+    pub(super) fn new(port: u16) -> Result<Self> { Ok(Self { socket: connect(port)? }) }
 
     fn call(&mut self, args: &[&[u8]]) -> Result<Vec<u8>> {
         self.call_before(args, None)
     }
 
-    fn call_before(&mut self, args: &[&[u8]], deadline: Option<Instant>) -> Result<Vec<u8>> {
+    pub(super) fn call_before(&mut self, args: &[&[u8]], deadline: Option<Instant>) -> Result<Vec<u8>> {
         let remaining = || -> Result<Duration> {
             match deadline {
                 Some(end) => end.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())
@@ -97,7 +97,7 @@ impl Control {
         Ok(())
     }
 
-    fn config(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+    pub(super) fn config(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         self.ok(&[b"CONFIG", b"SET", key, value])
     }
 
@@ -130,7 +130,7 @@ impl Control {
 }
 
 // Control::call has already validated RESP framing before these parsers run.
-fn info_body(wire: &[u8]) -> Result<&str> {
+pub(super) fn info_body(wire: &[u8]) -> Result<&str> {
     if wire.first() != Some(&b'$') || wire == b"$-1\r\n" { return Err("INFO is not a bulk string".into()); }
     let start = wire.windows(2).position(|w| w == b"\r\n").ok_or("missing INFO header")? + 2;
     Ok(std::str::from_utf8(&wire[start..wire.len() - 2])?)
