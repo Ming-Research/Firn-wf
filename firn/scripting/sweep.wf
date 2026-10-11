@@ -1,3 +1,4 @@
+alias EnginePool = pkg::script_pool::EnginePool;
 alias PooledEngine = pkg::script_pool::PooledEngine;
 alias SweepKind = pkg::script_pool::SweepKind;
 alias SweepRow = pkg::script_pool::SweepRow;
