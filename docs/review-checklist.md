@@ -19,8 +19,8 @@
 - [ ] **T1 — The ratchet.** A row leaves `tests/redis-suite/passing.tsv` or
   enters `unstable.tsv` only on `redis-suite-record.yml` evidence or a stated
   technical reason; new passes the ratchet reported are added.
-- [ ] **T2 — Local and CI correspondence.** CI runs the same Makefile targets
-  as local `make check`; changed selection adds no omission or extra check.
+- [ ] **T2 — Gate and CI correspondence.** CI runs the same Makefile targets
+  as `make check`; changed selection adds no omission or extra check.
 - [ ] **T3 — The pins.** The [review items](../whitefoot-kit/downstream.md#review-items)
   of Whitefoot-kit hold for `whitefoot.pin` and the `whitefoot-kit` and
   `design/skill` submodules, and firn's checks pass with them.
