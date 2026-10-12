@@ -9197,6 +9197,14 @@ fn rewrite_start(client: &mut TcpStream) {
     );
 }
 
+/// Sets Redis 7.0.15's hidden rdb-key-save-delay, the microseconds its
+/// rewrite sleeps after each key, so that a rewrite stays in progress long
+/// enough for a case to act during it, as Redis's own suite does.
+fn rewrite_key_delay(client: &mut TcpStream, microseconds: &str) {
+    client.write_all(&resp(&["CONFIG", "SET", "rdb-key-save-delay", microseconds])).unwrap();
+    expect_replies(client, b"+OK\r\n", "rdb-key-save-delay");
+}
+
 fn rewrite_stop(client: &mut TcpStream, child: ProgramChild) {
     client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
     shutdown_finished(child);
@@ -9566,6 +9574,7 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
             (operation, count)
         }));
     }
+    rewrite_key_delay(&mut control, "100");
     rewrite_start(&mut control);
     assert_eq!(rewrite_info(&mut control)["aof_rewrite_in_progress"], "1", "fixture must overlap the rewrite");
     control.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
@@ -9612,6 +9621,7 @@ fn firn_shutdown_cancels_scan_before_rotation() {
     let text = port.to_string();
     let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
     let mut client = connect_when_ready(port);
+    rewrite_key_delay(&mut client, "100");
     rewrite_start(&mut client);
     assert_eq!(rewrite_info(&mut client)["aof_rewrite_in_progress"], "1");
     client.write_all(&resp(&["INCR", "after-switch"])).unwrap();
@@ -9794,6 +9804,8 @@ fn firn_simultaneous_rewrites_in_one_directory_keep_independent_datasets() {
     let second_text = second_port.to_string();
     let second = program.spawn_on_route(true, &[second_text.as_bytes(), b"0", b"second.aof"]);
     let mut second_client = connect_when_ready(second_port);
+    rewrite_key_delay(&mut first_client, "100");
+    rewrite_key_delay(&mut second_client, "100");
     rewrite_start(&mut first_client);
     rewrite_start(&mut second_client);
     assert_eq!(rewrite_info(&mut first_client)["aof_rewrite_in_progress"], "1", "fixture must overlap both rewrites");
@@ -9819,6 +9831,44 @@ fn memory_object(client: &mut TcpStream, sub: &str, key: &str) -> i64 {
     let reply = memory_request(client, &["OBJECT", sub, key]);
     reply.strip_prefix(':').and_then(|s| s.strip_suffix("\r\n"))
         .and_then(|s| s.parse().ok()).unwrap_or_else(|| panic!("OBJECT {sub} {key}: {reply:?}"))
+}
+
+/// Redis 7.0.15 config.c declares rdb-key-save-delay a hidden integer from
+/// INT_MIN through INT_MAX, read by string2ll: CONFIG GET answers it only to
+/// its whole name in either case, never to a pattern, and CONFIG SET checks
+/// it and rolls back with every other pair of a refused SET.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_configures_rdb_key_save_delay_as_a_hidden_parameter() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let name = "rdb-key-save-delay";
+    assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, "0"]));
+    for value in ["-2147483648", "-1", "0", "1000", "2147483647"] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", name, value]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, value]));
+    }
+    assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "RDB-KEY-SAVE-DELAY"]).as_bytes(), resp(&["RDB-KEY-SAVE-DELAY", "2147483647"]));
+    for pattern in ["rdb-key-save-dela?", "rdb-*", "*delay", "*"] {
+        let reply = memory_request(&mut client, &["CONFIG", "GET", pattern]);
+        assert!(!reply.contains(name), "a pattern must not reach a hidden parameter: {pattern} {reply:?}");
+    }
+    let bounds = "argument must be between -2147483648 and 2147483647 inclusive";
+    let integer_error = "argument couldn't be parsed into an integer";
+    for (value, reason) in [
+        ("2147483648", bounds), ("-2147483649", bounds), ("9223372036854775807", bounds),
+        ("", integer_error), ("1ms", integer_error), ("+1", integer_error), ("01", integer_error),
+    ] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "lfu-log-factor", "12", name, value]),
+            format!("-ERR CONFIG SET failed (possibly related to argument '{name}') - {reason}\r\n"));
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, "2147483647"]));
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "lfu-log-factor"]).as_bytes(), resp(&["lfu-log-factor", "10"]));
+    }
+    drop(client);
+    assert_eq!(finished(child).0, 0);
 }
 
 /// Redis 7.0.15 config.c declares an integer percentage and a signed off_t

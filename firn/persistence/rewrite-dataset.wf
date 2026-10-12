@@ -6,112 +6,165 @@ alias WriteFile = std::fs::WriteFile;
 
 const aof_rw_select: Array<u8, 23> = "*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n";
 
+const aof_rw_scan_most: u64 = 64_u64;
+
+const aof_rw_slice: u64 = 1000000_u64;
+
+const aof_rw_step_buffer: u64 = 65560_u64;
+
 fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, clock: &Clock, meter: &std::process::MemoryMeter) -> result: Result<u64, unit> reads(store), writes(factory), writes(file), writes(clock), writes(meter) waits {
-  doc "One whole-map-and-Meta statement observes membership, complete owned payload, absolute expiry and last_write per step. Count 1 is the owner-authorized temporary limit pending firn-gap-scan-bound: the returned KeySet is charged immediately, before any payload copy. The pinned count is only a hint; a collision step can contain multiple keys. Empty steps also wait outside every hold.";
+  doc "One whole-map-and-Meta statement per step observes membership, complete owned payload, absolute expiry and last_write. Each step scans with map_scan_within, its limit the reserve left after the step's 64-KiB output buffer, and charges the KeySet's bytes as key_set_bytes reports them, so no scan allocation precedes its charge or exceeds R. A first position that needs more than that limit waits outside every hold and retries while R less admission's fixed charge could ever hold it, and otherwise aborts with reserve. The count hint starts at 64 and halves after a step emitting more than 64 KiB, doubling back after one emitting at most 32 KiB; a step of several positions whose copies do not fit is discarded unwritten and retried at hint 1, where a copy that does not fit aborts with reserve as before. Steps run back to back until about 1 ms has passed since the last wait, then pause outside every hold, so the scan yields its driver once per slice. A nonzero rdb-key-save-delay, read at each step, scans one position per step and replaces the slice pause with Redis's per-key delay.";
   let cursor = 0_u64;
   let size = 0_u64;
   let selected = False();
+  let count = aof_rw_scan_most;
+  let skipped = 0_u64;
+  let slice = std::time::now(clock: clock);
   loop @scanning {
     let output = None<Box<Slots<u8>>>();
     let step_charge = 0_u64;
     let okay = False();
+    let waiting = False();
+    let split = False();
+    let progressed = False();
+    let selecting = False();
+    let next_cursor = cursor;
+    let scanned = 0_u64;
+    let emitted = 0_u64;
+    let delay = 0_i64;
     let cancelled = aof_rw_cancelled(store: store);
     if cancelled {
       return Err<u64, unit>(error: unit);
     }
     atomic table = &store^.keys, m = &store^.meta {
+      set delay = m^.aof_rewrite_key_delay;
       if m^.rewrite.active {
-        let baseline = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 99328_u64);
-        if baseline {
-          set step_charge = 99328_u64;
-          let heap_before = std::process::heap_in_use(meter: meter);
-          let keys = key_set_new(capacity: 1_u64);
-          set cursor = map_scan::<Entry>(map: table, cursor: cursor, count: 1_u64, keys: &keys);
-          set m^.rewrite.scan_steps = m^.rewrite.scan_steps +sat 1_u64;
+        let hint = count;
+        if delay != 0_i64 {
+          set hint = 1_u64;
+        }
+        let splittable = hint > 1_u64;
+        let heap_before = std::process::heap_in_use(meter: meter);
+        let keys = key_set_new(capacity: 0_u64);
+        let created = key_set_bytes(keys: &keys);
+        let fresh = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: created);
+        if fresh {
+          set step_charge = created;
+          let room = m^.rewrite.limit -sat m^.rewrite.used;
+          let limit = room -sat aof_rw_step_buffer;
+          let before = key_set_bytes(keys: &keys);
+          let step = map_scan_within::<Entry>(map: table, cursor: cursor, count: hint, limit: limit, keys: &keys);
+          let after = key_set_bytes(keys: &keys);
           let heap_after = std::process::heap_in_use(meter: meter);
+          set m^.rewrite.scan_steps = m^.rewrite.scan_steps +sat 1_u64;
           let observed_heap = heap_after -sat heap_before;
           set m^.rewrite.scan_peak = imax(m^.rewrite.scan_peak, observed_heap);
-          let key_bytes = 0_u64;
-          let probe = array_filled::<u8, 0>(value: 0_u8);
-          for (index in 0_u64..keys.len) {
-            let length = key_set_read_key(keys: &keys, index: index, out: &probe[0_u64..0_u64]);
-            set key_bytes = key_bytes +sat length;
-          }
-          let key_charge = key_bytes;
-          if keys.len > 1_u64 {
-            let arena = key_bytes *sat 3_u64;
-            let entries = keys.len *sat 128_u64;
-            set key_charge = arena +sat entries;
-          }
-          let observed = m^.rewrite.used +sat key_charge;
-          set m^.rewrite.peak = imax(m^.rewrite.peak, observed);
-          let charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: key_charge);
-          if charged {
-            set step_charge = step_charge +sat key_charge;
-            let scratch = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 65560_u64);
-            if scratch {
-              set step_charge = step_charge +sat 65560_u64;
-              let buffer = box_slots_new::<u8>(capacity: 65536_u64);
-              if selected {
-              } else if keys.len > 0_u64 {
-                pkg::store::log_append_plain(log: &buffer, bytes: &aof_rw_select[0_u64..23_u64]);
-                set selected = True();
+          let retained = after - before;
+          match step {
+            Needs(bytes: needed) => {
+              let held = m^.rewrite.fixed +sat created;
+              let floor = held +sat aof_rw_step_buffer;
+              let most = m^.rewrite.limit -sat floor;
+              if needed <= most {
+                set waiting = True();
+                set okay = True();
+              } else {
+                let reason_reserve_1 = pkg::store::RewriteAbortReason::Reserve();
+                pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_reserve_1);
               }
-              for (index in 0_u64..keys.len) {
-                if m^.rewrite.active {
-                  let length = key_set_read_key(keys: &keys, index: index, out: &probe[0_u64..0_u64]);
-                  let key_allocation = length +sat 16_u64;
-                  let key_room = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: key_allocation);
-                  if key_room {
-                    set step_charge = step_charge +sat key_allocation;
-                    let copied = box_array_filled::<u8>(count: length, value: 0_u8);
-                    let copied_length = copied.inner.len;
-                    let key = &copied.inner[0_u64..copied_length];
-                    key_set_read_key(keys: &keys, index: index, out: key);
-                    let slot = &table^[key];
-                    let stamp = 0_u64;
-                    match slot^ {
-                      Some(value: held) => {
-                        set stamp = held^.last_write;
-                      }
-                      None() => {
+            }
+            Next(next: reached) => {
+              let charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: retained);
+              if charged {
+                set step_charge = step_charge +sat retained;
+                if keys.len == 0_u64 {
+                  set okay = True();
+                  set progressed = True();
+                  set next_cursor = reached;
+                } else {
+                  let scratch = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: aof_rw_step_buffer);
+                  if scratch {
+                    set step_charge = step_charge +sat aof_rw_step_buffer;
+                    let buffer = box_slots_new::<u8>(capacity: 65536_u64);
+                    let probe = array_filled::<u8, 0>(value: 0_u8);
+                    if selected {
+                    } else {
+                      pkg::store::log_append_plain(log: &buffer, bytes: &aof_rw_select[0_u64..23_u64]);
+                      set selecting = True();
+                    }
+                    for (index in 0_u64..keys.len) {
+                      if split {
+                      } else if m^.rewrite.active {
+                        let length = key_set_read_key(keys: &keys, index: index, out: &probe[0_u64..0_u64]);
+                        let key_allocation = length +sat 16_u64;
+                        let key_room = aof_rw_step_charge(capture: &m^.rewrite, bytes: key_allocation, splittable: splittable);
+                        if key_room {
+                          set step_charge = step_charge +sat key_allocation;
+                          let copied = box_array_filled::<u8>(count: length, value: 0_u8);
+                          let copied_length = copied.inner.len;
+                          let key = &copied.inner[0_u64..copied_length];
+                          key_set_read_key(keys: &keys, index: index, out: key);
+                          let slot = &table^[key];
+                          let stamp = 0_u64;
+                          match slot^ {
+                            Some(value: held) => {
+                              set stamp = held^.last_write;
+                            }
+                            None() => {
+                            }
+                          }
+                          let measure = pkg::store::rewrite_measure(slot: slot, key_length: length);
+                          let future = stamp > m^.commit_seq;
+                          if future {
+                            let reason_sequence_invalid_2 = pkg::store::RewriteAbortReason::SequenceInvalid();
+                            pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_sequence_invalid_2);
+                          } else {
+                            let with_key = measure.bytes +sat length;
+                            let bytes = with_key +sat 256_u64;
+                            let room_for_image = aof_rw_step_charge(capture: &m^.rewrite, bytes: bytes, splittable: splittable);
+                            if room_for_image {
+                              set step_charge = step_charge +sat bytes;
+                              let no = False();
+                              let image = pkg::store::rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: no);
+                              let written = image.inner.len;
+                              let wanted = buffer.inner.len +sat written;
+                              let fits = True();
+                              if wanted > buffer.inner.cap {
+                                let doubled = buffer.inner.cap *sat 2_u64;
+                                let target = imax(doubled, wanted);
+                                let growth = target +sat 24_u64;
+                                set fits = aof_rw_step_charge(capture: &m^.rewrite, bytes: growth, splittable: splittable);
+                                if fits {
+                                  set step_charge = step_charge +sat growth;
+                                }
+                              }
+                              if fits {
+                                pkg::store::log_append_plain(log: &buffer, bytes: &image.inner[0_u64..written]);
+                              } else if splittable {
+                                set split = True();
+                              }
+                            } else if splittable {
+                              set split = True();
+                            }
+                          }
+                        } else if splittable {
+                          set split = True();
+                        }
                       }
                     }
-                    let measure = pkg::store::rewrite_measure(slot: slot, key_length: length);
-                    let future = stamp > m^.commit_seq;
-                    if future {
-                      let reason_sequence_invalid_1 = pkg::store::RewriteAbortReason::SequenceInvalid();
-                      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_sequence_invalid_1);
+                    if split {
+                      aof_rw_release::<Box<Slots<u8>>>(value: move buffer);
+                      set okay = m^.rewrite.active;
                     } else {
-                      let with_key = measure.bytes +sat length;
-                      let bytes = with_key +sat 256_u64;
-                      let room = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: bytes);
-                      if room {
-                        set step_charge = step_charge +sat bytes;
-                        let no = False();
-                        let image = pkg::store::rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: no);
-                        let written = image.inner.len;
-                        let wanted = buffer.inner.len +sat written;
-                        let fits = True();
-                        if wanted > buffer.inner.cap {
-                          let doubled = buffer.inner.cap *sat 2_u64;
-                          let target = imax(doubled, wanted);
-                          let growth = target +sat 24_u64;
-                          set fits = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: growth);
-                          if fits {
-                            set step_charge = step_charge +sat growth;
-                          }
-                        }
-                        if fits {
-                          pkg::store::log_append_plain(log: &buffer, bytes: &image.inner[0_u64..written]);
-                        }
-                      }
+                      set okay = m^.rewrite.active;
+                      set progressed = okay;
+                      set next_cursor = reached;
+                      set scanned = keys.len;
+                      set output = Some<Box<Slots<u8>>>(value: move buffer);
                     }
                   }
                 }
               }
-              set okay = m^.rewrite.active;
-              set output = Some<Box<Slots<u8>>>(value: move buffer);
             }
           }
         }
@@ -123,9 +176,13 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
           let appended = append_all(factory: factory, file: file, source: &bytes);
           if appended == bytes.inner.len {
             set size = size +sat appended;
+            set emitted = appended;
+            if selecting {
+              set selected = True();
+            }
           } else {
-            let reason_base_io_2 = pkg::store::RewriteAbortReason::BaseIo();
-            aof_rw_abort(store: store, reason: reason_base_io_2);
+            let reason_base_io_3 = pkg::store::RewriteAbortReason::BaseIo();
+            aof_rw_abort(store: store, reason: reason_base_io_3);
             set okay = False();
           }
         }
@@ -136,21 +193,77 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
     atomic released = &store^.meta {
       if okay {
       } else {
-        let reason_cancelled_3 = pkg::store::RewriteAbortReason::Cancelled();
-        pkg::store::rewrite_abort(capture: &released^.rewrite, reason: reason_cancelled_3);
+        let reason_cancelled_4 = pkg::store::RewriteAbortReason::Cancelled();
+        pkg::store::rewrite_abort(capture: &released^.rewrite, reason: reason_cancelled_4);
       }
       set released^.rewrite.used = released^.rewrite.used -sat step_charge;
     }
-    aof_rw_pause(clock: clock);
     if okay {
     } else {
       return Err<u64, unit>(error: unit);
     }
-    if cursor == 0_u64 {
-      break @scanning;
+    if split {
+      set count = 1_u64;
+    } else if emitted > 65536_u64 {
+      let halved = count / 2_u64;
+      set count = imax(halved, 1_u64);
+    } else if progressed {
+      if emitted <= 32768_u64 {
+        let doubled = count *sat 2_u64;
+        set count = imin(doubled, aof_rw_scan_most);
+      }
+    }
+    let paused = False();
+    if waiting {
+      aof_rw_pause(clock: clock);
+      set paused = True();
+    } else if delay > 0_i64 {
+      if scanned > 0_u64 {
+        let micros = cvt.wrap::<i64, u64>(delay);
+        let per_key = micros *sat 1000_u64;
+        let nanoseconds = per_key *sat scanned;
+        aof_rw_sleep(clock: clock, nanoseconds: nanoseconds);
+        set paused = True();
+      }
+    } else if delay < 0_i64 {
+      let negated = 0_i64 -wrap delay;
+      let every = cvt.wrap::<i64, u64>(negated);
+      set skipped = skipped +sat scanned;
+      if every == 0_u64 {
+      } else if skipped >= every {
+        set skipped = skipped % every;
+        aof_rw_sleep(clock: clock, nanoseconds: 1000_u64);
+        set paused = True();
+      }
+    }
+    if paused {
+      set slice = std::time::now(clock: clock);
+    } else {
+      let now = std::time::now(clock: clock);
+      let worked = std::time::nanoseconds_from(earlier: slice, later: now);
+      if worked >= aof_rw_slice {
+        aof_rw_pause(clock: clock);
+        set slice = std::time::now(clock: clock);
+      }
+    }
+    if progressed {
+      set cursor = next_cursor;
+      if cursor == 0_u64 {
+        break @scanning;
+      }
     }
   }
   return Ok<u64, unit>(value: size);
+}
+
+fn aof_rw_step_charge(capture: &pkg::store::RewriteCapture, bytes: u64, splittable: Bool) -> fits: Bool writes(capture) {
+  doc "Charges a scan step's copy before allocating it. A step of several positions that does not fit leaves the attempt live, so that the caller discards the step unwritten and retries one position; a one-position step that does not fit aborts with reserve, as every other charge does.";
+  if splittable {
+    let tried = pkg::store::rewrite_try_charge(capture: capture, bytes: bytes);
+    return tried;
+  }
+  let charged = pkg::store::rewrite_charge(capture: capture, bytes: bytes);
+  return charged;
 }
 
 struct AofReconcile {
