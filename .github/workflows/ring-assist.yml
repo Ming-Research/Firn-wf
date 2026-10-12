@@ -1,0 +1,82 @@
+# Temporary: runs the ring-assist witness (research/experiments/ring-assist/)
+# on the owner's i9-14900K or a GitHub runner, as
+# research/experiments/ring-assist/run.env sets when that file changes on this
+# branch, and keeps its CSV, the driver's standard error and each run's
+# standard output and error. Removed before the branch is ready.
+name: ring-assist
+
+on:
+  push:
+    branches: [claude/witness-ring]
+    paths: [research/experiments/ring-assist/run.env]
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ring-assist-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  settings:
+    runs-on: ubuntu-24.04
+    outputs:
+      runner: ${{ steps.read.outputs.runner }}
+      runs: ${{ steps.read.outputs.runs }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: grep -E '^(runner|runs)=' research/experiments/ring-assist/run.env >> "$GITHUB_OUTPUT"
+
+  witness:
+    needs: settings
+    name: ring-assist (${{ needs.settings.outputs.runner }})
+    runs-on: ${{ needs.settings.outputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out Whitefoot-kit
+        run: git submodule update --init whitefoot-kit deps/halo-wf
+
+      # The self-hosted machine keeps its tools installed and gives a job no
+      # passwordless sudo.
+      - name: Install or check the pinned release's LLVM
+        run: |
+          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+            make toolchain
+          else
+            make toolchain-check
+          fi
+
+      # Fails when any echo came more than 100 ms after its ping, the
+      # acceptance condition; the rows are written as each run ends.
+      - name: Run the witness
+        env:
+          RUNS: ${{ needs.settings.outputs.runs }}
+        run: bash research/experiments/ring-assist/run.sh --out "$RUNNER_TEMP/ring-assist"
+
+      - name: Publish the results
+        if: always()
+        run: |
+          {
+            echo "## ring-assist"
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/ring-assist/host.txt" "$RUNNER_TEMP/ring-assist/results.csv" "$RUNNER_TEMP/ring-assist/driver.err" 2>/dev/null
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ring-assist-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ring-assist/*.csv
+            ${{ runner.temp }}/ring-assist/*.txt
+            ${{ runner.temp }}/ring-assist/*.err
+            ${{ runner.temp }}/ring-assist/runs/

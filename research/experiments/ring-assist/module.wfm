@@ -1,0 +1,4 @@
+alias ExitStatus = std::process::ExitStatus;
+alias Inputs = std::process::Inputs;
+
+public fn main(inputs: Inputs) -> status: ExitStatus pure waits doc "Listens on 127.0.0.1 at the port its first argument names, accepts exactly two connections and serves each in a context of its own: a connection whose first line is go N computes N steps with no wait and answers the result, any other connection echoes its lines until the peer finishes sending.";

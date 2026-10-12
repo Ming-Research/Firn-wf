@@ -1,0 +1,288 @@
+alias AcceptedConnection = std::net::AcceptedConnection;
+alias CancelWatch = std::time::CancelWatch;
+alias ExitStatus = std::process::ExitStatus;
+alias HandleFactory = std::io::HandleFactory;
+alias Inputs = std::process::Inputs;
+alias Instant = std::time::Instant;
+alias TcpConnection = std::net::TcpConnection;
+alias TcpSend = std::net::TcpSend;
+alias exit_status = std::process::exit_status;
+
+struct Line {
+  doc "Where the first complete line of a connection's held input ends: found is false while the input holds no newline, and end is the index after the newline when it is true.";
+  found: Bool;
+  end: u64;
+}
+
+fn port_argument(args: &std::text::Args) -> result: Option<u64> reads(args) {
+  doc "The first invocation argument read as a decimal port from 1 to 65,535, or None.";
+  match std::text::arg_get(args: args, position: 1_u64) {
+    Ok(value: host) => {
+      let digits = array_filled::<u8, 5>(value: 0_u8);
+      match std::text::host_copy_bytes(value: &host, destination: &digits[0_u64..5_u64], start: 0_u64, end: 5_u64) {
+        Ok(value: length) => {
+          let total = 0_u64;
+          for @digit (at in 0_u64..length) {
+            let byte = digits[at];
+            if byte < 48_u8 {
+              return None<u64>();
+            }
+            if byte > 57_u8 {
+              return None<u64>();
+            }
+            let digit = byte - 48_u8;
+            let value = cvt::<u8, u64>(digit);
+            set total = total *wrap 10_u64;
+            set total = total +wrap value;
+          }
+          if total == 0_u64 {
+            return None<u64>();
+          }
+          if total > 65535_u64 {
+            return None<u64>();
+          }
+          return Some<u64>(value: total);
+        }
+        Err(error: short) => {
+          return None<u64>();
+        }
+      }
+    }
+    Err(error: missing) => {
+      return None<u64>();
+    }
+  }
+}
+
+fn step(state: u64) -> next: u64 pure {
+  doc "One step of the computation: one step of a 64-bit linear congruential sequence, as the runtime-contention witnesses take it, which no compiler folds across a loop.";
+  let scaled = state *wrap 6364136223846793005_u64;
+  return scaled +wrap 1442695040888963407_u64;
+}
+
+fn compute(steps: u64) -> result: u64 pure {
+  doc "Runs steps steps from steps itself and returns the last value; it calls nothing that waits, so the context running it keeps its driver throughout.";
+  let state = steps;
+  for @run (turn in 0_u64..steps) {
+    set state = step(state: state);
+  }
+  return state;
+}
+
+fn find_line(input: &[u8], held: u64) -> line: Line reads(input) {
+  doc "Finds the first newline among the first held bytes of input.";
+  let limit = input^.len;
+  for @scan (at in 0_u64..held) {
+    if at < limit {
+      if input^[at] == 10_u8 {
+        let found = True();
+        let after = at +wrap 1_u64;
+        return Line(found: found, end: after);
+      }
+    }
+  }
+  let missing = False();
+  return Line(found: missing, end: 0_u64);
+}
+
+fn go_steps(input: &[u8], end: u64) -> steps: Option<u64> reads(input) {
+  doc "The step count of a line go N ending before end, N being decimal digits, or None when the line is not such a line.";
+  let limit = input^.len;
+  if end < 5_u64 {
+    return None<u64>();
+  }
+  if end > limit {
+    return None<u64>();
+  }
+  if input^[0_u64] != 103_u8 {
+    return None<u64>();
+  }
+  if input^[1_u64] != 111_u8 {
+    return None<u64>();
+  }
+  if input^[2_u64] != 32_u8 {
+    return None<u64>();
+  }
+  let last = end -wrap 1_u64;
+  let total = 0_u64;
+  for @digit (at in 3_u64..last) {
+    let byte = input^[at];
+    if byte < 48_u8 {
+      return None<u64>();
+    }
+    if byte > 57_u8 {
+      return None<u64>();
+    }
+    let digit = byte - 48_u8;
+    let value = cvt::<u8, u64>(digit);
+    set total = total *wrap 10_u64;
+    set total = total +wrap value;
+  }
+  return Some<u64>(value: total);
+}
+
+fn send_all(send: &TcpSend, source: &[u8], length: u64, never: &CancelWatch) -> sent: Bool reads(source), reads(never), writes(send) waits {
+  doc "Sends the first length bytes of source until the connection accepts them all; false reports a connection that refused them.";
+  let limit = source^.len;
+  if length > limit {
+    return False();
+  }
+  let at = 0_u64;
+  loop @sending {
+    if at < length {
+    } else {
+      break @sending;
+    }
+    let unbounded = None<Instant>();
+    match std::net::send_once(send: send, source: source, start: at, end: length, deadline: unbounded, cancel: never) {
+      Ok(value: next) => {
+        set at = next;
+      }
+      Err(error: problem) => {
+        return False();
+      }
+    }
+  }
+  return True();
+}
+
+fn answer(send: &TcpSend, value: u64, never: &CancelWatch) -> sent: Bool reads(never), writes(send) waits {
+  doc "Sends value in decimal and a newline.";
+  let digits = slots_new::<u8, 20>();
+  let rest = value;
+  loop @split {
+    let low = rest % 10_u64;
+    let glyph = cvt.wrap::<u64, u8>(low);
+    let shown = glyph +wrap 48_u8;
+    if digits.len < digits.cap {
+      place_back(window: &digits, value: shown);
+    }
+    set rest = rest / 10_u64;
+    if rest == 0_u64 {
+      break @split;
+    }
+  }
+  let line = array_filled::<u8, 21>(value: 10_u8);
+  let length = 0_u64;
+  loop @emit {
+    if digits.len == 0_u64 {
+      break @emit;
+    }
+    let shown = take_back(window: &digits);
+    if length < 20_u64 {
+      set line[length] = shown;
+      set length = length +wrap 1_u64;
+    }
+  }
+  set length = length +wrap 1_u64;
+  return send_all(send: send, source: &line[0_u64..21_u64], length: length, never: never);
+}
+
+fn serve(connection: TcpConnection, factory: HandleFactory) -> result: unit pure waits {
+  doc "Serves one connection in a context of its own. When its first line is go N it computes N steps, sends the result and a newline and closes; otherwise it sends back every line it receives, the first included, until the peer finishes sending. A line longer than the 4,096-byte input is sent back in pieces of the input's size.";
+  let input = array_filled::<u8, 4096>(value: 0_u8);
+  let held = 0_u64;
+  let first = True();
+  let never = std::time::cancel_never();
+  loop @lines {
+    let line = find_line(input: &input[0_u64..4096_u64], held: held);
+    if line.found {
+      if first {
+        set first = False();
+        match go_steps(input: &input[0_u64..4096_u64], end: line.end) {
+          Some(value: steps) => {
+            let result = compute(steps: steps);
+            answer(send: &connection.send, value: result, never: &never);
+            break @lines;
+          }
+          None() => {
+          }
+        }
+      }
+      if send_all(send: &connection.send, source: &input[0_u64..4096_u64], length: line.end, never: &never) {
+      } else {
+        break @lines;
+      }
+      for @shift (at in line.end..held) {
+        let to = at -wrap line.end;
+        if at < input.len {
+          if to < input.len {
+            let byte = input[at];
+            set input[to] = byte;
+          }
+        }
+      }
+      set held = held -wrap line.end;
+    } else {
+      if held >= 4096_u64 {
+        set first = False();
+        if send_all(send: &connection.send, source: &input[0_u64..4096_u64], length: held, never: &never) {
+        } else {
+          break @lines;
+        }
+        set held = 0_u64;
+      }
+      let unbounded = None<Instant>();
+      match std::net::receive_next(receive: &connection.receive, destination: &input[0_u64..4096_u64], start: held, end: 4096_u64, deadline: unbounded, cancel: &never) {
+        Ok(value: next) => {
+          set held = next;
+        }
+        Err(error: stop) => {
+          break @lines;
+        }
+      }
+    }
+  }
+  std::time::close_cancel_watch(watch: move never);
+  let TcpConnection(receive: receiving, send: sending) = move connection;
+  std::net::close_receive(factory: &factory, receive: move receiving);
+  std::net::close_send(factory: &factory, send: move sending);
+  return unit;
+}
+
+fn main(inputs: Inputs) -> status: ExitStatus pure waits {
+  doc "Listens on 127.0.0.1 at the port its first argument names, accepts exactly two connections and serves each in a context of its own: a connection whose first line is go N computes N steps with no wait and answers the result, any other connection echoes its lines until the peer finishes sending.";
+  let Inputs(args: args, cwd: directory, handles: factory, ..) = move inputs;
+  let std::fs::Directory(read: read_directory, write: write_directory) = move directory;
+  std::fs::close_directory_write(factory: &factory, directory: move write_directory);
+  std::fs::close_directory(factory: &factory, directory: move read_directory);
+  let port = 0_u64;
+  match port_argument(args: &args) {
+    Some(value: number) => {
+      set port = number;
+    }
+    None() => {
+      return exit_status(code: 2_u8);
+    }
+  }
+  let narrow = cvt.wrap::<u64, u16>(port);
+  let address = std::net::socket_address_v4(a: 127_u8, b: 0_u8, c: 0_u8, d: 1_u8, port: narrow);
+  let failed = False();
+  match std::net::tcp_listen(factory: &factory, address: &address) {
+    Ok(value: listener) => {
+      let never = std::time::cancel_never();
+      for @accepting (index in 0_u64..2_u64) {
+        let unbounded = None<Instant>();
+        match std::net::tcp_accept(factory: &factory, listener: &listener, deadline: unbounded, cancel: &never) {
+          Ok(value: next) => {
+            let AcceptedConnection(connection: connection, peer: unused_peer) = move next;
+            let serving = std::io::factory_share(factory: &factory);
+            spawn serve(connection: move connection, factory: move serving);
+          }
+          Err(error: problem) => {
+            set failed = True();
+          }
+        }
+      }
+      std::time::close_cancel_watch(watch: move never);
+      std::net::close_listener(factory: &factory, listener: move listener);
+    }
+    Err(error: problem) => {
+      return exit_status(code: 3_u8);
+    }
+  }
+  if failed {
+    return exit_status(code: 1_u8);
+  }
+  return exit_status(code: 0_u8);
+}

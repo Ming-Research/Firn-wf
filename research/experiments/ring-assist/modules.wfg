@@ -1,0 +1,3 @@
+pkg: [std::process, std::text, std::time, std::io, std::fs, std::net];
+
+entry ring_assist = pkg::main;
