@@ -420,7 +420,6 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
         if requested {
           std::time::cancel_fire(source: &shutdown);
         }
-        pkg::commands::record_memory_peak(store: &store, client: &client);
         if client.closing {
           set closing = True();
           break @commands;
