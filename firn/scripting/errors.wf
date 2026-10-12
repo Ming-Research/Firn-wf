@@ -170,11 +170,7 @@ fn reply_error_text(client: &pkg::protocol::Client, text: &Box<Slots<u8>>, forma
   let shown = imin(end, text^.inner.len);
   for (i in 0_u64..shown) {
     let b = text^.inner[i];
-    let cr = b == 13_u8;
-    let lf = b == 10_u8;
-    if bor(cr, lf) {
-      set text^.inner[i] = 32_u8;
-    }
+    set text^.inner[i] = pkg::protocol::echoed(byte: b);
   }
   pkg::protocol::reply_error(client: client, word: &text^.inner[0_u64..shown]);
   return unit;

@@ -23,11 +23,7 @@ fn value_reply(vm: &Vm, value: Value, client: &Client, mode: u8) -> r: unit read
   if mode == 3_u8 {
     for (i in 0_u64..n) {
       let b = bytes.inner[i];
-      let cr = b == 13_u8;
-      let lf = b == 10_u8;
-      if bor(cr, lf) {
-        set bytes.inner[i] = 32_u8;
-      }
+      set bytes.inner[i] = pkg::protocol::echoed(byte: b);
     }
   }
   let bulk = mode == 0_u8;
@@ -56,12 +52,8 @@ fn value_reply(vm: &Vm, value: Value, client: &Client, mode: u8) -> r: unit read
     for (i in 0_u64..end) {
       if i < bytes.inner.len {
         let b = bytes.inner[i];
-        let lf = b == 10_u8;
-        let cr = b == 13_u8;
-        if bor(lf, cr) {
-          set b = 32_u8;
-        }
-        reply_byte(client: client, value: b);
+        let shown = pkg::protocol::echoed(byte: b);
+        reply_byte(client: client, value: shown);
       }
     }
     reply_word(client: client, word: &replies_text_0[0_u64..2_u64]);

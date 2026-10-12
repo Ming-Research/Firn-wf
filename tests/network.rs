@@ -4397,7 +4397,8 @@ fn firn_runs_scripts_as_redis_does() {
 /// addReplyErrorFormat writes them, which also drops the line breaks that end
 /// the text; a raised error, a string, a table or a redis.call error caught by
 /// pcall and raised again, is written as Redis 7.2.13 and later write it,
-/// through addReplyErrorSdsExSafe, where Redis 7.0.15 wrote the raw bytes.
+/// through addReplyErrorSdsExSafe, where Redis 7.0.15 wrote the raw bytes;
+/// the line breaks that end a raised error's text stay, as spaces.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_keeps_a_script_error_reply_on_one_line() {
@@ -4416,6 +4417,8 @@ fn firn_keeps_a_script_error_reply_on_one_line() {
         vec!["ECHO", "after raised string"],
         vec!["EVAL", "error({err='a\\r\\nb'})", "0"],
         vec!["ECHO", "after raised table"],
+        vec!["EVAL", "error({err='a\\r\\n'})", "0"],
+        vec!["ECHO", "after raised ending"],
         vec![
             "EVAL",
             "local ok, e = pcall(redis.call, 'INCRBY', KEYS[1], 'x'); error(e .. '\\r\\n+OK')",
@@ -4438,6 +4441,8 @@ fn firn_keeps_a_script_error_reply_on_one_line() {
         "$19\r\nafter raised string\r\n",
         "-a  b script: 395169d0f7980ab3a9b6c9c08f3f3ef78d1f7caf, on @user_script:1.\r\n",
         "$18\r\nafter raised table\r\n",
+        "-a   script: 79b4f309833604ff0b8aaecc979a6969dc73a1ac, on @user_script:1.\r\n",
+        "$19\r\nafter raised ending\r\n",
         "-ERR user_script:1: ERR value is not an integer or out of range  +OK script: e5a5f29309db0a4a11c0a63ebedda47a2cd7f51a, on @user_script:1.\r\n",
         "$29\r\nafter raised redis.call error\r\n",
         "-ERR Error compiling script (new function): user_script:1: unfinished string near ''a b'\r\n",
