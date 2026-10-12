@@ -52,14 +52,22 @@ When priorities conflict, first:
 
 ## Checks
 
-- `make check`, the gate, runs in CI on every push: it downloads the pinned
-  compiler (`make compiler`), builds firn and runs its network cases
-  (`tests/`), the Redis 7.0.15 suite ratchet (`tests/redis-suite/`, without
-  `--tolerant`) and the design lint. The ratchet requires every test in
-  `passing.tsv` to pass and reports new passes to add in the same PR;
+- `make check`, the gate, runs in CI on every push, its targets in three
+  parallel jobs (`check.yml`) so that the answer takes as long as the
+  slowest: it downloads the pinned compiler (`make compiler`), builds firn
+  and runs the Redis 7.0.15 suite ratchet (`tests/redis-suite/`, without
+  `--tolerant`); builds firn and runs its network cases (`tests/`); and runs
+  the design lint. `make gate-sync` fails when the targets `check.yml` runs
+  and those of `make check` differ, so a target added to one is added to the
+  other. The suite runs as two shards side by side
+  (`tests/redis-suite/run-shards.sh`): `ratchet.py assign` splits its units
+  by the times in `unit-seconds.tsv`, which puts `unit/type/list` alone in
+  the first shard, and `ratchet.py merge` fails unless the shards together
+  ran every unit of the suite exactly once. The ratchet requires every test
+  in `passing.tsv` to pass and reports new passes to add in the same PR;
   `unstable.tsv` records exclusions from repeated CI runs, and the
   dispatch-only `redis-suite-record.yml` workflow produces both lists for
-  review and commit.
+  review and commit, running the suite unsharded.
 - The gate needs git, curl, Python 3, Rust stable with Cargo, `tclsh` 8.5 or
   later, `redis-cli` and `redis-benchmark`, the submodules
   (`git submodule update --init`), `/usr/bin/clang` and, on Linux, LLD of
