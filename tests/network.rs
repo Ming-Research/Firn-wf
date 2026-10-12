@@ -4852,7 +4852,9 @@ fn firn_runs_a_loaded_script_on_every_engine_of_its_pool() {
 /// turn answers the first part's SCRIPT LOAD only after the written script.
 /// A part whose written script ended too soon to decide reruns with a longer
 /// one, at most three rounds each. The SHA1s are those of the loaded
-/// sources, as Redis 7.0.15 answers SCRIPT LOAD.
+/// sources, as Redis 7.0.15 answers SCRIPT LOAD. Each connection answers a
+/// PING first, so that the metadata a connection takes as it starts is
+/// behind it before any written script holds the metadata.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_loads_a_script_on_an_idle_engine_while_a_written_script_runs() {
@@ -4863,10 +4865,12 @@ fn firn_loads_a_script_on_an_idle_engine_while_a_written_script_runs() {
     let mut writer = connect_when_ready(port);
     let mut loader = connect_when_ready(port);
     let mut waiting = connect_when_ready(port);
-    for stream in [&writer, &loader, &waiting] {
+    for stream in [&mut writer, &mut loader, &mut waiting] {
         stream
             .set_read_timeout(Some(Duration::from_secs(120)))
             .expect("bound the reads that wait for the writing script");
+        stream.write_all(&resp(&["PING"])).expect("send the first PING");
+        expect_replies(stream, b"+PONG\r\n", "the first PING");
     }
     let mut iterations = 10_000_000_u64;
     for round in 1.. {
@@ -4928,66 +4932,77 @@ fn firn_loads_a_script_on_an_idle_engine_while_a_written_script_runs() {
     assert_eq!(status, 0);
 }
 
-/// TEMPORARY diagnostic, to be removed after one CI run: it always fails, to
-/// put its measurements in the gate's log. On two drivers, a written script
-/// that counts for a while runs on one connection; 100 ms later a second
-/// connection sends PING, which takes no engine, pool or keyspace, and a
-/// third sends SCRIPT LOAD. It reports when each of the three replies
-/// arrived, counted from the moment the written script was sent, and the
-/// runtime's per-driver scheduling counters (WF_SCHED_REPORT=2). A PING
-/// answered only once the written script ended means the runtime does not
-/// serve a connection whose receive completed while its driver runs a
-/// context that never waits; a PING answered at once with SCRIPT LOAD
-/// answered only after the written script means SCRIPT LOAD waits for
-/// something the script holds.
+/// firn answers PING and SCRIPT LOAD on other connections while a written
+/// script runs: on two drivers, a written script holds one of two engines,
+/// its key and the metadata until it ends, and PING, which takes none of
+/// them, and SCRIPT LOAD, which takes the other engine, both answer before
+/// the script does, within half the script's run counted from when it was
+/// sent. Each connection answers a PING first, so that the metadata a
+/// connection takes as it starts is behind it. A server that recorded the
+/// heap peak after each command in the metadata held both replies until the
+/// written script ended (on two drivers, PING and SCRIPT LOAD answered only
+/// after a 388 ms script). A round whose written script ended before 400 ms,
+/// too soon for half its run to separate the two, reruns with a longer
+/// script, at most three rounds.
 #[cfg(target_os = "linux")]
 #[test]
-fn diagnose_what_a_written_script_delays() {
+fn firn_answers_ping_and_script_load_while_a_written_script_runs() {
     let program = firn();
     let port = free_port();
     let text = port.to_string();
-    let child = program.spawn_on_route_with(
-        true,
-        &[("WF_DRIVERS", "2"), ("WF_SCHED_REPORT", "2")],
-        &[text.as_bytes(), b"3"],
-    );
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "2")], &[text.as_bytes(), b"3"]);
     let mut writer = connect_when_ready(port);
     let mut pinger = connect_when_ready(port);
     let mut loader = connect_when_ready(port);
-    let first_byte = |mut stream: TcpStream, start: Instant| {
-        std::thread::spawn(move || {
-            stream
-                .set_read_timeout(Some(Duration::from_secs(300)))
-                .expect("bound the diagnostic's read");
-            let mut byte = [0_u8; 1];
-            let outcome = stream.read(&mut byte);
-            (start.elapsed(), outcome.map(|n| (n, byte[0] as char)), stream)
-        })
-    };
-    let start = Instant::now();
-    writer
-        .write_all(&resp(&["EVAL", &written_loop(10_000_000), "1", "written"]))
-        .expect("start the writing script");
-    let writer_reply = first_byte(writer, start);
-    std::thread::sleep(Duration::from_millis(100));
-    pinger.write_all(&resp(&["PING"])).expect("send PING");
-    let ping_reply = first_byte(pinger, start);
-    loader
-        .write_all(&resp(&["SCRIPT", "LOAD", "return 1"]))
-        .expect("send SCRIPT LOAD");
-    let load_reply = first_byte(loader, start);
-    let (writer_at, writer_byte, writer) = writer_reply.join().expect("the writer's reply");
-    let (ping_at, ping_byte, pinger) = ping_reply.join().expect("PING's reply");
-    let (load_at, load_byte, loader) = load_reply.join().expect("SCRIPT LOAD's reply");
+    for stream in [&mut writer, &mut pinger, &mut loader] {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(120)))
+            .expect("bound the reads that wait for the writing script");
+        stream.write_all(&resp(&["PING"])).expect("send the first PING");
+        expect_replies(stream, b"+PONG\r\n", "the first PING");
+    }
+    let mut iterations = 50_000_000_u64;
+    for round in 1.. {
+        assert!(round <= 3, "the written script ended before 400 ms in three rounds");
+        let sent = Instant::now();
+        writer
+            .write_all(&resp(&["EVAL", &written_loop(iterations), "1", "written"]))
+            .expect("start the writing script");
+        std::thread::sleep(Duration::from_millis(100));
+        pinger.write_all(&resp(&["PING"])).expect("PING while the written script runs");
+        loader
+            .write_all(&resp(&["SCRIPT", "LOAD", "return 1"]))
+            .expect("load a script while the written one runs");
+        expect_replies(&mut pinger, b"+PONG\r\n", "PING while the written script runs");
+        let pinged = sent.elapsed();
+        expect_replies(
+            &mut loader,
+            b"$40\r\ne0e1f9fabfc9d4800c877a703b823ac0578ff8db\r\n",
+            "SCRIPT LOAD while the written script runs",
+        );
+        let loaded = sent.elapsed();
+        let running = still_running(&mut writer, "the writing script");
+        assert_eq!(integer_reply(&mut writer, "the writing script"), iterations as i64);
+        let ended = sent.elapsed();
+        if ended < Duration::from_millis(400) {
+            iterations *= 5;
+            continue;
+        }
+        assert!(
+            running,
+            "the written script answered before PING and SCRIPT LOAD: PING at {pinged:?}, SCRIPT LOAD at {loaded:?}, the script at {ended:?}"
+        );
+        assert!(
+            pinged <= ended / 2 && loaded <= ended / 2,
+            "PING at {pinged:?} or SCRIPT LOAD at {loaded:?} answered later than half the written script's {ended:?}"
+        );
+        break;
+    }
     drop(writer);
     drop(pinger);
     drop(loader);
-    let output = child.wait_with_output().expect("wait for firn");
-    panic!(
-        "diagnostic: written script answered at {writer_at:?} ({writer_byte:?}), PING at {ping_at:?} ({ping_byte:?}), SCRIPT LOAD at {load_at:?} ({load_byte:?}); firn exited {:?}; scheduler report:\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
 }
 
 /// firn removes a key INCRBYFLOAT finds expired before it refuses an

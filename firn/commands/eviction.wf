@@ -39,18 +39,25 @@ fn memory_excluded(meta: &Meta, logged: Bool) -> bytes: u64 reads(meta) {
 }
 
 fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(store), writes(client) waits {
-  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading. This short Meta statement does not cover command execution.";
+  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading.";
   let used = heap_read(client: client);
-  atomic meta = &store^.meta {
-    set meta^.memory_peak = imax(meta^.memory_peak, used);
+  raise_peak(store: store, client: client, used: used);
+  return unit;
+}
+
+fn raise_peak(store: &Keyspace, client: &Client, used: u64) -> result: unit reads(store), writes(client) waits {
+  doc "Raises the observed heap peak to a heap reading. The peak only rises, so a reading at or below the peak this client last saw recorded cannot change it and takes no statement; a higher one takes a short statement on the peak alone, which does not cover command execution, and remembers the peak it leaves. The peak is apart from Meta, so recording waits for no Meta statement, a written script's included, which holds Meta for its whole run.";
+  if used > client^.seen_peak {
+    atomic peak = &store^.peak {
+      set peak^ = imax(peak^, used);
+      set client^.seen_peak = peak^;
+    }
   }
   return unit;
 }
 
-fn memory_over(meta: &Meta, client: &Client, logged: Bool) -> over: Bool writes(meta), writes(client) {
-  doc "Redis 7.0.15 getMaxmemoryState: raw used_memory minus excluded AOF capacity, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed. Pressure aborts retained rewrite work before the Meta-serialized installation commitment; after commitment eviction waits for publication and cleanup, as shutdown already does.";
-  let used = heap_read(client: client);
-  set meta^.memory_peak = imax(meta^.memory_peak, used);
+fn memory_over(meta: &Meta, used: u64, client: &Client, logged: Bool) -> over: Bool reads(client), writes(meta) {
+  doc "Redis 7.0.15 getMaxmemoryState: raw used_memory minus excluded AOF capacity, saturating at zero. used is the heap reading the caller takes in the same statement that holds Meta, again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed; the caller records it to the observed peak after that statement. Pressure aborts retained rewrite work before the Meta-serialized installation commitment; after commitment eviction waits for publication and cleanup, as shutdown already does.";
   let excluded = memory_excluded(meta: meta, logged: logged);
   let counted = used -sat excluded;
   if meta^.aof_rewrite_in_progress {
@@ -309,15 +316,18 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
 }
 
 fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool reads(store), writes(client), writes(clock) waits {
-  doc "Redis 7.0.15 performEvictions: only EVICT_FAIL sets OOM. Over the limit, the keyspace map's reserve is given back first and the limit read again, since that storage holds no key. Each command's context re-reads the heap before every victim; no global command turn is held. EVICT_RUNNING permits the command and the next command resumes, replacing Redis's evictionTimeProc continuation as the owner ruled. Check monotonic tenacity every 16 deletions, and every 16 unsuccessful batches to bound sparse/ghost searches. An exhaustion decision reads the heap in the same whole-map and Meta statement as its final sample, which is its admission point even if a writer starts afterward. Each deletion, DEL propagation and statistic update holds the chosen entry plus Meta together; an entry now expired follows active expiry instead of eviction. A single map_scan and a single deletion remain indivisible, as Redis's sampling and deletion do.";
+  doc "Redis 7.0.15 performEvictions: only EVICT_FAIL sets OOM. Over the limit, the keyspace map's reserve is given back first and the limit read again, since that storage holds no key. Each command's context re-reads the heap before every victim; no global command turn is held. EVICT_RUNNING permits the command and the next command resumes, replacing Redis's evictionTimeProc continuation as the owner ruled. Check monotonic tenacity every 16 deletions, and every 16 unsuccessful batches to bound sparse/ghost searches. An exhaustion decision reads the heap in the same whole-map and Meta statement as its final sample, which is its admission point even if a writer starts afterward. Every heap reading is raised into the observed peak after the statement that took it, in a statement on the peak alone, since the peak only rises and no decision here reads it. Each deletion, DEL propagation and statistic update holds the chosen entry plus Meta together; an entry now expired follows active expiry instead of eviction. A single map_scan and a single deletion remain indivisible, as Redis's sampling and deletion do.";
   if client^.maxmemory == 0_u64 {
     return False();
   }
   let logged = store^.logging;
   let over = False();
+  let used = 0_u64;
   atomic meta = &store^.meta {
-    set over = memory_over(meta: meta, client: client, logged: logged);
+    set used = heap_read(client: client);
+    set over = memory_over(meta: meta, used: used, client: client, logged: logged);
   }
+  raise_peak(store: store, client: client, used: used);
   if bnot(over) {
     return False();
   }
@@ -333,8 +343,10 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
   }
   release_reserve(store: store, client: client);
   atomic released_meta = &store^.meta {
-    set over = memory_over(meta: released_meta, client: client, logged: logged);
+    set used = heap_read(client: client);
+    set over = memory_over(meta: released_meta, used: used, client: client, logged: logged);
   }
+  raise_peak(store: store, client: client, used: used);
   if bnot(over) {
     return False();
   }
@@ -348,29 +360,36 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
   loop {
     let loop_cleanup = False();
     atomic check_meta = &store^.meta {
-      set over = memory_over(meta: check_meta, client: client, logged: logged);
+      set used = heap_read(client: client);
+      set over = memory_over(meta: check_meta, used: used, client: client, logged: logged);
       let committed = check_meta^.aof_installing != 0_u64;
       let retained = bor(check_meta^.rewrite.aborted, committed);
       set loop_cleanup = band(check_meta^.aof_rewrite_in_progress, retained);
     }
+    raise_peak(store: store, client: client, used: used);
     if loop_cleanup {
       atomic cleaned = &store^.meta when bnot(cleaned^.aof_rewrite_in_progress) {
       }
       atomic after_cleanup = &store^.meta {
-        set over = memory_over(meta: after_cleanup, client: client, logged: logged);
+        set used = heap_read(client: client);
+        set over = memory_over(meta: after_cleanup, used: used, client: client, logged: logged);
       }
+      raise_peak(store: store, client: client, used: used);
     }
     if bnot(over) {
       return False();
     }
     let no_key = None<Box<Array<u8>>>();
     let sample = EvictionSample(key: move no_key, exhausted: over);
+    set used = 0_u64;
     atomic keys = &store^.keys, meta = &store^.meta {
       set sample = eviction_sample(keys: keys, meta: meta, client: client);
       if sample.exhausted {
-        set over = memory_over(meta: meta, client: client, logged: logged);
+        set used = heap_read(client: client);
+        set over = memory_over(meta: meta, used: used, client: client, logged: logged);
       }
     }
+    raise_peak(store: store, client: client, used: used);
     let EvictionSample(key: victim, exhausted: exhausted) = move sample;
     let removed = False();
     match move victim {
@@ -382,7 +401,8 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
           let loading = False();
           let sequence = pkg::store::sequence_new(meta: meta, loading: loading);
           let log_budget = pkg::store::log_budget_begin(meta: meta, loading: loading);
-          set over = memory_over(meta: meta, client: client, logged: logged);
+          set used = heap_read(client: client);
+          set over = memory_over(meta: meta, used: used, client: client, logged: logged);
           let committed = meta^.aof_installing != 0_u64;
           let retained = bor(meta^.rewrite.aborted, committed);
           let victim_cleanup = band(meta^.aof_rewrite_in_progress, retained);
@@ -416,6 +436,7 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
           }
           pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &log_budget);
         }
+        raise_peak(store: store, client: client, used: used);
         if bnot(over) {
           return False();
         }
