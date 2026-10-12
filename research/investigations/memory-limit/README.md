@@ -778,3 +778,45 @@ they are not added.
 These runs establish compiler acceptance and the sequential network and
 suite behavior only. The concurrency, fault and crash evidence and the owed
 14900K measurements listed above remain open.
+
+## Peak recording across cores
+
+Redis 7.0.15's `call()` raises `stat_peak_memory` to the allocator's reading
+after every command. firn did the same with a short exclusive statement on
+Meta after every command on every connection
+(`record_memory_peak`, `firn/commands/eviction.wf`). On the native-Linux
+i9-14900K, firn's depth-16 GET throughput fell as server cores rose: 7.85M/s
+on 4 P-cores, 2.99M/s on 8, 0.87M/s on all 16 hyperthreads, with
+negligible steals and migrations and user time dominating (redis-bench runs
+38224448983, 38225163541, 38225724456).
+
+The comparison below was exploratory: it had no prior criterion, and it
+looked for the share of that collapse the peak statement caused. Five firn
+builds from the same main revision were interleaved in one run, redis-bench
+run 38227806896 (`redis-bench.sh` compare mode, Linux 7.0.0-38, server
+pinned to CPUs 0,2,...,14, clients to E-cores 16-31, GET and SET at depth
+16, 50 connections, two 10-second passes, perf 7.0.14 with
+perf_event_paranoid -1):
+
+| Build | GET M/s (passes) | SET M/s (passes) |
+|---|---|---|
+| base: Meta statement after every command | 2.99, 2.96 | 1.16, 1.14 |
+| base twin | 3.40, 3.20 | 1.52, 1.20 |
+| no heap reading, Meta statement kept | 3.62, 3.00 | 1.54, 1.19 |
+| Meta statement only when the reading exceeds the connection's last seen peak | 20.24, 18.18 | 2.27, 2.41 |
+| no peak recording | 26.97, 27.00 | 2.13, 1.80 |
+
+In the base profile 83% of cycles were in `wf__shared_acquire` and 6.5% in
+`wf__shared_unlock`: every driver queued on Meta for each command. Removing
+the heap reading alone changed nothing beyond the twin's spread, so the
+statement, not the reading, caused the collapse. With the per-connection
+check, 35% of cycles remained in `record_memory_peak`, and perf c2c placed
+the hottest contended cache line on the runtime's heap counter read by
+`heap_in_use`; that remainder is a runtime cost, filed to Whitefoot.
+
+The per-connection check keeps the recorded peak exact. The peak only rises,
+and a connection's remembered value is one Meta held at some time, so a
+reading at or below it cannot raise Meta's peak; a reading above it takes
+the statement as before. Recording once per read batch instead was not
+measured and was not adopted: a pipeline whose later command frees what an
+earlier one allocated would hide a peak Redis records.
