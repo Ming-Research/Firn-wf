@@ -60,6 +60,10 @@ jobs:
       - name: Build firn once
         run: make firn
 
+      # Each run skips the tests hung.tsv lists, as make redis-suite does: a
+      # listed test run anyway can fail instead of hanging and leave its
+      # connection's state to the tests after it, which would then fail in
+      # the recording but pass in the gate.
       - name: Record repeated runs and generate the lists
         run: |
           python3 -B tests/redis-suite/ratchet.py --self-test
@@ -67,11 +71,32 @@ jobs:
           for ((i = 1; i <= RECORD_RUNS; i++)); do
             out="build/redis-suite/run-$i"
             started=$SECONDS
-            tests/redis-suite/run.sh --out "$out" firn build/firn
+            tests/redis-suite/run.sh --out "$out" --known-hangs tests/redis-suite/hung.tsv firn build/firn
             echo "Run $i of $RECORD_RUNS took $((SECONDS - started)) seconds"
             results+=("$out/tests.tsv")
           done
           python3 -B tests/redis-suite/ratchet.py record "${results[@]}" --out build/redis-suite
+
+      # One run of the units hung.tsv names, without the list, reports each
+      # listed test's outcomes, timed-out while it still hangs; one that
+      # passes, fails or errors has stopped hanging and can leave the list.
+      # This run feeds neither list.
+      - name: Run the listed hangs' units without the list
+        run: |
+          units=$(awk -F '\t' '!/^#/ && NF >= 2 { print $1 }' tests/redis-suite/hung.tsv | sort -u | tr '\n' ' ')
+          if [ -z "${units// /}" ]; then
+            echo "hung.tsv lists no test"
+            exit 0
+          fi
+          out=build/redis-suite/hangs
+          tests/redis-suite/run.sh --out "$out" --units "$units" firn build/firn
+          awk -F '\t' '
+            NR == FNR { if (FNR > 1) { key = $1 FS $5; seen[key] = (key in seen ? seen[key] "," : "") $2 }; next }
+            /^#/ || NF < 2 { next }
+            { key = $1 FS $2; print $1 FS $2 FS (key in seen ? seen[key] : "not-reached") }
+          ' "$out/tests.tsv" tests/redis-suite/hung.tsv > "$out/listed.tsv"
+          echo "Listed hangs (unit, test, outcomes without the list):"
+          cat "$out/listed.tsv"
 
       - name: Upload the recorded runs and proposed lists
         if: always()
@@ -84,3 +109,7 @@ jobs:
             build/redis-suite/run-*/summary.txt
             build/redis-suite/passing.tsv
             build/redis-suite/unstable.tsv
+            build/redis-suite/hangs/tests.tsv
+            build/redis-suite/hangs/meta.txt
+            build/redis-suite/hangs/summary.txt
+            build/redis-suite/hangs/listed.tsv
