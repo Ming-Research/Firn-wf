@@ -121,8 +121,8 @@
 # client list's length. Each selected placement is recorded once per mode,
 # also in host.txt when present. Nothing else should run on the host meanwhile.
 set -e
-# The workflow passes an empty WF_SCHED_REPORT when its input is off; the
-# runtime reads only a set variable, so an empty one is removed.
+# The workflow passes an empty WF_SCHED_REPORT when its input is off; unset
+# it so firn runs exactly as it does without the variable.
 [ -n "${WF_SCHED_REPORT:-}" ] || unset WF_SCHED_REPORT
 
 # Python already serves the workload checks and measurement session helpers;
