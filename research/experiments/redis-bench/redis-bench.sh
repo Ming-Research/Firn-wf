@@ -44,7 +44,9 @@
 #                                 COMPARE_PASSES passes (default 6); with PERF
 #                                 naming a perf executable it then records a
 #                                 flat profile of each image under
-#                                 COMPARE_PROFILE (default mset at depth 16);
+#                                 COMPARE_PROFILE (default mset at depth 16),
+#                                 and with PERF_C2C set a perf c2c report of
+#                                 the cache lines cores contend for;
 #                                 on Linux it records each server and client
 #                                 CPU's busy fraction per sample; each image
 #                                 runs with as many Whitefoot drivers as server
@@ -1060,6 +1062,22 @@ if [ "$MODE" = compare ]; then
                             >"$OUT/callers-$name-$n-$ptest.txt" 2>/dev/null
                     fi
                     rm -f "$OUT/perf-$name-$n-$ptest.data"
+                    # With PERF_C2C set, a second run of the same test records
+                    # perf c2c's load and store samples, which name the cache
+                    # lines several cores write and read in turn.
+                    if [ -n "$PERF_C2C" ]; then
+                        start "image-$name"
+                        "$PERF" c2c record -p "$server" -o "$OUT/c2c-$name-$n-$ptest.data" >/dev/null 2>&1 &
+                        recorder=$!
+                        sleep 1
+                        compare_client "$ptest" "$pdepth" "$requests" | sed "s/^/c2c,$name,$n,$ptest,/"
+                        kill -INT "$recorder"
+                        wait "$recorder" || true
+                        stop
+                        "$PERF" c2c report -i "$OUT/c2c-$name-$n-$ptest.data" --stdio --full-symbols \
+                            >"$OUT/c2c-$name-$n-$ptest.txt" 2>&1 || true
+                        rm -f "$OUT/c2c-$name-$n-$ptest.data"
+                    fi
                 done
             done
         fi

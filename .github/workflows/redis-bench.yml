@@ -64,6 +64,10 @@ on:
         description: "Whitefoot drivers for each measured image; empty gives one per server CPU"
         type: string
         default: ""
+      c2c:
+        description: "With profile, also record perf c2c on each profiled test: the cache lines several cores contend for"
+        type: boolean
+        default: false
       sched_report:
         description: "Set WF_SCHED_REPORT=2 on firn images, so each compare pass's kept server log ends with the Whitefoot runtime's per-driver scheduling counts"
         type: boolean
@@ -352,6 +356,7 @@ jobs:
           CLIENT_CPU_LIST: ${{ inputs.client_cpus }}
           WF_SCHED_REPORT: ${{ inputs.sched_report && '2' || '' }}
           IMAGE_DRIVERS: ${{ inputs.drivers }}
+          PERF_C2C: ${{ inputs.c2c && '1' || '' }}
           COMPARE_CPUS: ${{ inputs.cpus }}
           COMPARE_TESTS: ${{ inputs.tests || 'mset set get' }}
           COMPARE_DEPTHS: ${{ inputs.depths }}
