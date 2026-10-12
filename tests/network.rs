@@ -4390,6 +4390,71 @@ fn firn_runs_scripts_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// A script's error text keeps every error reply on one line: firn writes
+/// each carriage return and line feed of it as a space, so a script cannot
+/// split its error reply into replies of its own and the next command on the
+/// connection gets its own reply. A returned error table, as from
+/// redis.error_reply, and a compile error are written as Redis 7.0.15's
+/// addReplyErrorFormat writes them, which also drops the line breaks that end
+/// the text; a raised error, a string, a table or a redis.call error caught by
+/// pcall and raised again, is written as Redis 7.2.13 and later write it,
+/// through addReplyErrorSdsExSafe, where Redis 7.0.15 wrote the raw bytes;
+/// the line breaks that end a raised error's text stay, as spaces.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_keeps_a_script_error_reply_on_one_line() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["EVAL", "return redis.error_reply('a\\r\\nb')", "0"],
+        vec!["ECHO", "after returned error_reply"],
+        vec!["EVAL", "return {err='a\\nb\\r\\n'}", "0"],
+        vec!["ECHO", "after returned table"],
+        vec!["EVAL", "error('a\\r\\nb')", "0"],
+        vec!["ECHO", "after raised string"],
+        vec!["EVAL", "error({err='a\\r\\nb'})", "0"],
+        vec!["ECHO", "after raised table"],
+        vec!["EVAL", "error({err='a\\r\\n'})", "0"],
+        vec!["ECHO", "after raised ending"],
+        vec![
+            "EVAL",
+            "local ok, e = pcall(redis.call, 'INCRBY', KEYS[1], 'x'); error(e .. '\\r\\n+OK')",
+            "1",
+            "k",
+        ],
+        vec!["ECHO", "after raised redis.call error"],
+        vec!["EVAL", "return 'a\\nb\n", "0"],
+        vec!["ECHO", "after compile error"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the script error batch");
+    let expected = concat!(
+        "-ERR a  b\r\n",
+        "$26\r\nafter returned error_reply\r\n",
+        "-a b\r\n",
+        "$20\r\nafter returned table\r\n",
+        "-ERR user_script:1: a  b script: 9651526a9f202dabbb853951a21a9aa00e6d7e2e, on @user_script:1.\r\n",
+        "$19\r\nafter raised string\r\n",
+        "-a  b script: 395169d0f7980ab3a9b6c9c08f3f3ef78d1f7caf, on @user_script:1.\r\n",
+        "$18\r\nafter raised table\r\n",
+        "-a   script: 79b4f309833604ff0b8aaecc979a6969dc73a1ac, on @user_script:1.\r\n",
+        "$19\r\nafter raised ending\r\n",
+        "-ERR user_script:1: ERR value is not an integer or out of range  +OK script: e5a5f29309db0a4a11c0a63ebedda47a2cd7f51a, on @user_script:1.\r\n",
+        "$29\r\nafter raised redis.call error\r\n",
+        "-ERR Error compiling script (new function): user_script:1: unfinished string near ''a b'\r\n",
+        "$19\r\nafter compile error\r\n",
+    );
+    expect_replies(&mut client, expected.as_bytes(), "the script error batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn's SCRIPT KILL stops a script that has written nothing at the end of
 /// its current attempt and answers it Redis 7.0.15's error, naming the
 /// script's SHA1 and the line it ran, and SCRIPT KILL answers NOTBUSY when no
