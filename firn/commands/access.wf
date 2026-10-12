@@ -267,14 +267,14 @@ fn config_memory_value(input: &[u8], span: Span, which: u64, client: &Client) ->
   doc "Redis 7.0.15 config.c enumConfigSet/numericConfigSet bounds and error text for the six maxmemory settings; maxmemory uses util.c memtoull through memory_value.";
   let no = False();
   let yes = True();
-  if which == 22_u64 {
+  if which == 24_u64 {
     let parsed = memory_value(input: input, span: span);
     if bnot(parsed.valid) {
       reply_set_failed(client: client, which: which, reason: &text_not_memory[0_u64..31_u64]);
     }
     return parsed;
   }
-  if which == 23_u64 {
+  if which == 25_u64 {
     let policy = memory_policy(input: input, span: span);
     if policy == 8_u64 {
       reply_set_failed(client: client, which: which, reason: &memory_policy_error[0_u64..153_u64]);
@@ -289,10 +289,10 @@ fn config_memory_value(input: &[u8], span: Span, which: u64, client: &Client) ->
   }
   let least = 0_i64;
   let most = 2147483647_i64;
-  if which == 24_u64 {
+  if which == 26_u64 {
     set least = 1_i64;
   }
-  if which == 27_u64 {
+  if which == 29_u64 {
     set most = 100_i64;
   }
   let below = number.value < least;

@@ -1,2 +1,3 @@
 # unit	test name	reason
 unit/multi	Flushall while watching several keys by one client	false pass: firn answers WATCH outside MULTI as unknown, and the test, which asserts nothing, passes only because the preceding MULTI with config error test fails with readraw still on
+unit/type/zset	ZRANDMEMBER count of 0 is handled correctly - emptyarray	passed in 1 of 3 recorded runs

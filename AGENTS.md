@@ -24,9 +24,12 @@ When priorities conflict, first:
 
 ## References
 
-- The reference is Redis 7.0.15 on x86-64 Linux: its replies, the
+- The reference is Redis 7.2.16 on x86-64 Linux: its replies, the
   append-only files it writes and reads, its own test suite
   (`tests/redis-suite/`), and its source where the documentation is silent.
+  Its `redis-server`, `redis-cli` and `redis-benchmark` are built from the
+  release archive, whose SHA-256 `tests/redis-suite/reference.sh` pins, and
+  every reference run uses that build; Ubuntu's package is 7.0.15.
 - The language is the pinned Whitefoot commit: read its specification,
   maintained programs and standard-library interfaces at that commit as
   [whitefoot-kit/downstream.md](whitefoot-kit/downstream.md#reading-the-language)
@@ -55,7 +58,7 @@ When priorities conflict, first:
 - `make check`, the gate, runs in CI on every push, its targets in three
   parallel jobs (`check.yml`) so that the answer takes as long as the
   slowest: it downloads the pinned compiler (`make compiler`), builds firn
-  and runs the Redis 7.0.15 suite ratchet (`tests/redis-suite/`, without
+  and runs the Redis 7.2.16 suite ratchet (`tests/redis-suite/`, without
   `--tolerant`); builds firn and runs its network cases (`tests/`); and runs
   the design lint. `make gate-sync` fails when the targets `check.yml` runs
   and those of `make check` differ, so a target added to one is added to the
@@ -70,7 +73,8 @@ When priorities conflict, first:
   review and commit, running the suite in the gate's two shards so that its
   evidence holds under the gate's load.
 - The gate needs git, curl, Python 3, Rust stable with Cargo, `tclsh` 8.5 or
-  later, `redis-cli` and `redis-benchmark`, the submodules
+  later, a C compiler and `make` (the suite builds the Redis 7.2.16 tools it
+  needs from source and caches them), the submodules
   (`git submodule update --init`), `/usr/bin/clang` and, on Linux, LLD of
   the LLVM major the pinned release names (`make toolchain` installs it,
   `make toolchain-check` checks it); the Redis suite runner needs Linux's
@@ -81,7 +85,8 @@ When priorities conflict, first:
   of `make check`, because it needs a device only root can make. The job
   makes the device with `sudo tests/aof_sync_fault_device.sh setup MOUNT
   UID:GID`, a device-mapper device whose writes and flushes fail on command,
-  builds a redis-server 7.2.16 as the oracle, runs `make aof-sync-fault` and
+  takes the redis-server 7.2.16 that `tests/redis-suite/reference.sh` builds
+  as the oracle, runs `make aof-sync-fault` and
   removes the device with `teardown MOUNT` even when a step failed. The
   target runs the sync-failure case of `tests/aof_sync_fault.rs`, ignored in
   `make check`, against firn and the oracle, and fails unless

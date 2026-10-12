@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the test suite of Redis 7.0.15 against one server in the suite's
+# Runs the test suite of Redis 7.2.16 against one server in the suite's
 # external mode, one unit at a time, then summarizes the outcome with
 # summarize.py. research/experiments/redis-compat/README.md describes the
 # method and the historical results.
@@ -8,9 +8,9 @@
 #        run.sh --out DIR [options] firn FIRN_EXECUTABLE
 #        run.sh --out DIR [options] external HOST PORT
 #
-#   redis     starts the installed redis-server, which must be 7.0.15, anew
-#             for every unit on a free port, without persistence and with
-#             any further arguments given
+#   redis     starts the reference redis-server, Redis 7.2.16 built by
+#             reference.sh, anew for every unit on a free port, without
+#             persistence and with any further arguments given
 #   firn      starts the given firn executable anew for every unit on a free
 #             port, as `firn PORT 0 - 0`
 #   external  runs every unit against a server that is already running
@@ -43,16 +43,18 @@
 #                    not a measure of compatibility
 #   -- ARG ...       further runtest arguments, such as --tags -needs:debug
 #
-# REDIS_COMPAT_CACHE names the directory that keeps the Redis source archive,
-# ${XDG_CACHE_HOME:-$HOME/.cache}/whitefoot-redis-compat by default; the
-# archive is fetched when missing and checked against its SHA-256 every run.
+# The suite's sources are the Redis 7.2.16 release archive, and redis-server,
+# redis-cli and redis-benchmark are built from that archive: reference.sh
+# fetches the archive, checks its SHA-256, builds the tools and caches both.
+# They stand first on PATH for this script, the suite and the servers it
+# starts. REDIS_COMPAT_CACHE names the cache directory,
+# ${XDG_CACHE_HOME:-$HOME/.cache}/whitefoot-redis-compat by default.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-version=7.0.15
-sha256=98066f5363504b26c34dd20fbcc3c957990d764cdf42576c836fc021073f4341
-url=https://download.redis.io/releases/redis-$version.tar.gz
-cache=${REDIS_COMPAT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/whitefoot-redis-compat}
+build_reference=$here/reference.sh
+version=$("$build_reference" version)
+sha256=$("$build_reference" sha256)
 # Seconds a whole unit may take, a backstop behind the suite's own timeout.
 unit_limit=3600
 
@@ -113,6 +115,8 @@ if [ $# -gt 0 ]; then
     extra=("$@")
 fi
 
+archive=$("$build_reference" archive)
+PATH=$("$build_reference" bin):$PATH
 if [ "$target" = redis ]; then
     installed=$(redis-server --version | sed -n 's/^Redis server v=\([^ ]*\).*/\1/p')
     if [ "$installed" != "$version" ]; then
@@ -120,31 +124,17 @@ if [ "$target" = redis ]; then
         exit 1
     fi
 fi
-command -v redis-cli > /dev/null || { echo "run.sh: redis-cli is needed" >&2; exit 1; }
 
-mkdir -p "$cache" "$out"
+mkdir -p "$out"
 out=$(cd "$out" && pwd)
-archive=$cache/redis-$version.tar.gz
-if [ ! -f "$archive" ]; then
-    # Shards started together may all find the archive missing; each fetches
-    # into a name of its own and the last rename wins with the same bytes.
-    part=$(mktemp "$archive.part.XXXXXX")
-    curl -fsSL -o "$part" "$url"
-    mv -f "$part" "$archive"
-fi
-if ! echo "$sha256  $archive" | sha256sum --check --status; then
-    echo "run.sh: $archive does not have the SHA-256 $sha256" >&2
-    exit 1
-fi
 suite=$out/redis-$version
 rm -rf "$suite" "$out/logs" "$out/servers" "$out/hung" "$out/data"
 tar -xzf "$archive" -C "$out"
 # Tests that run the suite's own client tools look for them in src/, as in a
-# built source tree; the installed 7.0.15 tools stand in for them.
+# built source tree; the 7.2.16 tools built from the same archive stand in
+# for them.
 for tool in redis-cli redis-benchmark; do
-    if command -v "$tool" > /dev/null; then
-        ln -s "$(command -v "$tool")" "$suite/src/$tool"
-    fi
+    ln -s "$(command -v "$tool")" "$suite/src/$tool"
 done
 if [ "$tolerant" = 1 ]; then
     # The six calls of run_external_server_test become calls that may fail;
