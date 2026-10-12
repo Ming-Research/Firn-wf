@@ -41,18 +41,26 @@ charges the bytes `key_set_bytes` reports for it, and calls
 buffer as its limit. The call's heap growth, temporary storage included,
 stays within that limit, and its postconditions bound the KeySet's bytes
 after the call between their value before and that value plus the limit, so
-firn charges `after - before` with a subtraction the compiler proves.
-`Needs(bytes)` inserts nothing: the scan sleeps outside every hold and
-retries while `bytes` fits R less admission's fixed charge and the step
-buffer, since journal staging drains and frees the rest, and aborts with
-`reserve` otherwise.
+firn charges `after - before`, for either result, with a subtraction the
+compiler proves. `Needs(bytes)` inserts nothing: the scan sleeps outside
+every hold and retries while `bytes` fits R less admission's fixed charge,
+the KeySet's bytes and the step buffer, since journal staging and statement
+scratch drain and free the rest, and aborts with `reserve` otherwise.
 
-The count hint starts at 64, the scan count this investigation first
-proposed, halves after a step writing more than 64 KiB and doubles back
-after one writing at most 32 KiB. When a step of several positions finds a
-key copy, image or buffer growth that does not fit, it is discarded
-unwritten, its cursor kept, and retried at hint 1; one position that does
-not fit aborts with `reserve` as before. Steps run back to back; after
+Key copies, images and output-buffer growth are charged before allocation
+without aborting. A step with one that does not fit is discarded unwritten,
+its cursor kept. A step of several positions is retried at count hint 1 at
+once. A one-position step records its whole need so far, every charge it
+made plus the one that did not fit, and waits and retries as `Needs` does
+while that need could fit R less admission's fixed charge, aborting with
+`reserve` otherwise. That need is a lower bound of the step's total, so a
+step that can never fit aborts at the latest on the retry that reaches its
+larger charges with every drainable byte free.
+
+The count hint counts scan positions, not keys. It starts at 64, the scan
+count this investigation first proposed, halves after a step writing more
+than 64 KiB and doubles back after one writing at most 32 KiB. Steps run
+back to back; after
 each, the scan reads the monotonic clock and sleeps 100 microseconds once
 1 ms has passed since it last slept, which yields the driver to clients.
 
@@ -66,9 +74,13 @@ Cases that write during a rewrite relied on the slow scan to stay in
 progress. They now set Redis 7.0.15's hidden `rdb-key-save-delay`, which
 Redis's `rewriteAppendOnlyFileRio` (`aof.c:2337`) applies after each key and
 Redis's own suite sets for the same purpose, to 100 microseconds, the old
-per-step sleep. A nonzero value scans one position per step and sleeps per
-key in place of the slice pause, so these cases keep the pace they were
-written against.
+per-step sleep. Any nonzero value scans one position per step; a positive
+one sleeps per key in place of the slice pause, so these cases keep the pace
+they were written against. Every sleep is rounded up to whole milliseconds
+by the driver's timer. A delay is taken in slices of at most 100 ms that end
+when CONFIG SET changes it or the rewrite is cancelled, so SHUTDOWN stops a
+rewrite delayed by `2147483647`, the value Redis's `unit/type/set` sets,
+within about 100 ms; Redis kills its rewrite child instead.
 
 ## Comparison and rejection criteria
 
@@ -76,7 +88,17 @@ Network cases: the quiescent 17-MiB key must abort with `reserve` with both
 the independently sampled heap growth and the ledger peak within R; 100,000
 keys must rewrite and restore under a concurrent writer in fewer than one
 eighth as many steps as keys and within 30 s. Count hint 1 needs a step per
-key, and its millisecond per step exceeds `rewrite_wait`'s 60 s.
+key, and its millisecond per step exceeds `rewrite_wait`'s 60 s. 100 keys
+of 1 MiB at R = 16 MiB must rewrite each key's image once and restore, in
+more steps than keys, which only a discarded step explains. A rewrite delayed
+by `2147483647` microseconds per key must stop within five seconds of
+SHUTDOWN, and finish once CONFIG SET returns the delay to 0.
+
+No deterministic case covers the wait path. It needs part of R held by
+journal staging or statement scratch at the moment a step does not fit,
+and the sole writer drains staging on its next turn and scratch is released
+when its statement commits; holding either from outside needs a server test
+hook or stalled host I/O.
 
 On the idle 14900K through CI, repeat the million-key rewrite-during
 workload at R = 16 MiB with `make firn-lto` builds of this branch and its

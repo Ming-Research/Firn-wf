@@ -1085,3 +1085,89 @@ fn reconciled_scan_time_slices_many_keys_per_step_under_writes() {
     assert!(values(&mut restored) == live, "the installed base and increment must restore every live value");
     rewrite_stop(&mut restored, child);
 }
+
+/// A first step of up to 64 positions holding 1-MiB values cannot fit the
+/// default 16-MiB R, so it must be discarded unwritten, its cursor kept, and
+/// retried one position at a time: each key's image reaches the base once.
+/// Successful steps cover distinct positions, at most one per key, so more
+/// steps than keys shows a discarded step.
+#[test]
+fn reconciled_scan_discards_a_step_that_does_not_fit_and_retries_narrower() {
+    let program = CompiledProgram::from_environment();
+    let keys = 100_usize;
+    let names: Vec<Vec<u8>> = (0..keys).map(|index| format!("large:{index}").into_bytes()).collect();
+    let value = |index: usize| -> Vec<u8> {
+        let mut bytes = vec![b'v'; 1024 * 1024];
+        bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+        bytes
+    };
+    multipart_files(&program, &[("appendonly.aof.1.base.aof", &[]), ("appendonly.aof.1.incr.aof", &[])], &rewrite_manifest(1, 1));
+    let mut bytes = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        bytes.extend(wire(&[b"SET", name, &value(index)]));
+    }
+    std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
+    let (child, mut client, _) = start(&program);
+    rewrite_start(&mut client);
+    let info = rewrite_wait(&mut client);
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok", "a step too large for R must be narrowed, not abort: {info:?}");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "");
+    let reserve: u64 = info["firn_aof_rewrite_reserve"].parse().unwrap();
+    assert_eq!(reserve, 16 * 1024 * 1024);
+    let ledger_peak: u64 = info["firn_aof_rewrite_peak"].parse().unwrap();
+    assert!(ledger_peak <= reserve, "the reserve ledger must stay within R: {ledger_peak} > {reserve}");
+    let steps: u64 = info["firn_aof_rewrite_scan_steps"].parse().unwrap();
+    assert!(steps > keys as u64, "a discarded step must precede the narrowed ones: {steps} steps for {keys} keys");
+    let base = std::fs::read(program.working_directory().join("appendonlydir/appendonly.aof.2.base.aof")).unwrap();
+    let records = prefix_records(&base);
+    for (index, name) in names.iter().enumerate() {
+        let images: Vec<_> = records.iter().filter(|words| words.get(1) == Some(name)).collect();
+        assert_eq!(images.len(), 1, "{} must reach the base exactly once", String::from_utf8_lossy(name));
+        assert!(images[0].len() == 3 && images[0][0] == b"SET" && images[0][2] == value(index), "{} must keep its whole value", String::from_utf8_lossy(name));
+    }
+    let expected = snapshot(&mut client);
+    assert_eq!(expected.len(), keys);
+    rewrite_stop(&mut client, child);
+    let (child, mut restored, _) = start(&program);
+    assert!(snapshot(&mut restored) == expected, "the narrowed rewrite must restore every value");
+    rewrite_stop(&mut restored, child);
+}
+
+/// Redis 7.0.15's unit/type/set sets rdb-key-save-delay to 2147483647, about
+/// 36 minutes per key, and Redis kills its rewrite child on shutdown. firn's
+/// scan must leave such a sleep when SHUTDOWN cancels the rewrite or CONFIG
+/// SET changes the delay.
+#[test]
+fn reconciled_scan_key_delay_yields_to_shutdown_and_config() {
+    for stopping in [true, false] {
+        let program = CompiledProgram::from_environment();
+        fixture_keys(&program, 10);
+        let (child, mut client, _) = start(&program);
+        assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"2147483647"]), Reply::Line(b"+OK".to_vec()));
+        rewrite_start(&mut client);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let info = rewrite_info(&mut client);
+            assert_eq!(info["aof_rewrite_in_progress"], "1", "the delayed scan must still run: {info:?}");
+            if info["firn_aof_rewrite_scan_steps"] != "0" { break; }
+            assert!(Instant::now() < deadline, "the scan never took its first step");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if stopping {
+            // rewrite_stop allows the orderly stop five seconds.
+            rewrite_stop(&mut client, child);
+            assert_old_manifest(&program);
+            assert_journal_removed(&program);
+            let (child, mut restored, _) = start(&program);
+            assert_eq!(request(&mut restored, &[b"DBSIZE"]), Reply::Line(b":10".to_vec()));
+            rewrite_stop(&mut restored, child);
+        } else {
+            let released = Instant::now();
+            assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"0"]), Reply::Line(b"+OK".to_vec()));
+            let info = rewrite_wait(&mut client);
+            assert_eq!(info["aof_last_bgrewrite_status"], "ok");
+            assert!(released.elapsed() < Duration::from_secs(5), "CONFIG SET 0 must end the delay: {:?}", released.elapsed());
+            rewrite_stop(&mut client, child);
+        }
+    }
+}
