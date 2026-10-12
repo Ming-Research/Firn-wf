@@ -100,7 +100,20 @@ description equality was an explicitly pending check (`firn-req-io-error-text`);
 No local build or runtime test is authorized; only the named compiler check,
 diff whitespace check and design lint may run here. Runtime results await CI.
 
-## Sync-failure fixture options (deferred)
+## Sync-failure fixture options (built 2026-10-12)
+
+Update, 2026-10-12: the dm-flakey fixture now exists
+(`tests/aof_sync_fault_device.sh`, `tests/aof_sync_fault.rs`, the
+`aof-sync-fault` job of `.github/workflows/check.yml`). It is an ext4
+filesystem without a journal, mounted `errors=continue`, on a flakey device
+with up 0 and down 1 using `error_writes`. Its probe confirmed that write(2)
+succeeds while fsync returns EIO, and that fsync succeeds after the device
+heals. It was verified on CI in
+[run 38235060604](https://github.com/Ming-Research/Firn-wf/actions/runs/38235060604).
+A mutation that never clears the sync error fails the case in
+[run 38237361217](https://github.com/Ming-Research/Firn-wf/actions/runs/38237361217).
+The comparison of options below is the history from before the fixture was
+built.
 
 RLIMIT_FSIZE cannot fault fdatasync. A pass-through FUSE filesystem can return EIO
 from fsync for one incremental inode while recording write/truncate/fsync requests;
