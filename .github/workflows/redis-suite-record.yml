@@ -1,5 +1,6 @@
-# Record the ratchet on one firn build. Commit the generated lists after
-# reviewing the runs; this workflow never changes the checked-in baseline.
+# Record the ratchet on one firn build against the Redis 7.2.16 suite.
+# Commit the generated lists after reviewing the runs; this workflow never
+# changes the checked-in baseline.
 name: redis-suite-record
 
 on:
@@ -31,23 +32,30 @@ jobs:
       - name: Install the host toolchain and suite tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends tcl redis-tools
+          sudo apt-get install -y --no-install-recommends tcl
           make toolchain
           ld.lld --version
           /usr/bin/clang --version
           python3 --version
 
-      - name: Read the Redis archive pin
-        id: redis
-        run: |
-          sha256=$(sed -n 's/^sha256=//p' tests/redis-suite/run.sh)
-          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
-          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@v4
+      # The reference Redis 7.2.16 is built from its pinned release archive
+      # (tests/redis-suite/reference.sh) and shares the gate's cache key.
+      - name: Restore the Redis build
+        id: redis-cache
+        uses: actions/cache/restore@v4
         with:
           path: build/redis-compat-cache
-          key: redis-source-${{ steps.redis.outputs.sha256 }}
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build the reference Redis
+        run: tests/redis-suite/reference.sh
+
+      - name: Save the Redis build
+        if: ${{ steps.redis-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
       - name: Build firn once
         run: make firn

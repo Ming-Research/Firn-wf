@@ -5,7 +5,7 @@
 #   run.sh <consumer> <server>
 #
 # consumer: django, connect-redis or rate-limiter-flexible; server: redis, the
-# redis-server on PATH, which must be Redis 7.0.15, with MONITOR recording
+# redis-server on PATH, which must be Redis 7.2.16, with MONITOR recording
 # every command into monitor.log from before the tests start, or firn, the
 # executable FIRN names. The consumer's test output goes to test.log and its
 # exit status to status, under $OUT/<consumer>-<server>/. The script exits 0
@@ -38,8 +38,8 @@ esac
 case $server in
     redis)
         command -v redis-server >/dev/null || { echo "no redis-server" >&2; exit 1; }
-        redis-server --version | grep -q 'v=7\.0\.15 ' ||
-            { echo "the reference must be Redis 7.0.15: $(redis-server --version)" >&2; exit 1; } ;;
+        redis-server --version | grep -q 'v=7\.2\.16 ' ||
+            { echo "the reference must be Redis 7.2.16: $(redis-server --version)" >&2; exit 1; } ;;
     firn) test -x "${FIRN:-}" || { echo "FIRN names no executable" >&2; exit 1; } ;;
     *) echo "unknown server $server" >&2; exit 1 ;;
 esac

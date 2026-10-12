@@ -24,9 +24,12 @@ When priorities conflict, first:
 
 ## References
 
-- The reference is Redis 7.0.15 on x86-64 Linux: its replies, the
+- The reference is Redis 7.2.16 on x86-64 Linux: its replies, the
   append-only files it writes and reads, its own test suite
   (`tests/redis-suite/`), and its source where the documentation is silent.
+  Its `redis-server`, `redis-cli` and `redis-benchmark` are built from the
+  release archive, whose SHA-256 `tests/redis-suite/reference.sh` pins, and
+  every reference run uses that build; Ubuntu's package is 7.0.15.
 - The language is the pinned Whitefoot commit: read its specification,
   maintained programs and standard-library interfaces at that commit as
   [whitefoot-kit/downstream.md](whitefoot-kit/downstream.md#reading-the-language)
@@ -54,14 +57,15 @@ When priorities conflict, first:
 
 - `make check`, the gate, runs in CI on every push: it downloads the pinned
   compiler (`make compiler`), builds firn and runs its network cases
-  (`tests/`), the Redis 7.0.15 suite ratchet (`tests/redis-suite/`, without
+  (`tests/`), the Redis 7.2.16 suite ratchet (`tests/redis-suite/`, without
   `--tolerant`) and the design lint. The ratchet requires every test in
   `passing.tsv` to pass and reports new passes to add in the same PR;
   `unstable.tsv` records exclusions from repeated CI runs, and the
   dispatch-only `redis-suite-record.yml` workflow produces both lists for
   review and commit.
 - The gate needs git, curl, Python 3, Rust stable with Cargo, `tclsh` 8.5 or
-  later, `redis-cli` and `redis-benchmark`, the submodules
+  later, a C compiler and `make` (the suite builds the Redis 7.2.16 tools it
+  needs from source and caches them), the submodules
   (`git submodule update --init`), `/usr/bin/clang` and, on Linux, LLD of
   the LLVM major the pinned release names (`make toolchain` installs it,
   `make toolchain-check` checks it); the Redis suite runner needs Linux's

@@ -8,7 +8,8 @@ PY ?= python3
 ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 BUILD := $(ROOT)/build
 
-# Redis's source archive is shared between suite runs and checked on reuse.
+# The Redis 7.2.16 source archive, checked on reuse, and the reference tools
+# built from it (tests/redis-suite/reference.sh) are shared between suite runs.
 REDIS_COMPAT_CACHE ?= $(BUILD)/redis-compat-cache
 
 # The live design trees: every root node file directly under design/ except
