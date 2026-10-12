@@ -121,6 +121,9 @@
 # client list's length. Each selected placement is recorded once per mode,
 # also in host.txt when present. Nothing else should run on the host meanwhile.
 set -e
+# The workflow passes an empty WF_SCHED_REPORT when its input is off; the
+# runtime reads only a set variable, so an empty one is removed.
+[ -n "${WF_SCHED_REPORT:-}" ] || unset WF_SCHED_REPORT
 
 # Python already serves the workload checks and measurement session helpers;
 # use it here to parse sysfs CPU ranges and sibling sets without shell eval.
@@ -282,8 +285,11 @@ placement_for_count() {
 # The busy fraction of each server and client CPU between two copies of
 # /proc/stat, <before> <after> <server CPUs> <client CPUs>: of the ticks a
 # CPU's line counts from user through steal (guest time is already inside
-# user and nice), those neither idle nor iowait. Prints cpu,role,busy for each
-# CPU of the two comma-separated lists in turn.
+# user and nice), those neither idle nor iowait, and of them the user share
+# (user and nice) and the kernel share (system, irq and softirq), since a
+# thread spinning through sched_yield shows as kernel time. Prints
+# cpu,role,busy,user,system for each CPU of the two comma-separated lists in
+# turn.
 cpu_busy() {
     python3 - "$@" <<'PY'
 import sys
@@ -308,7 +314,10 @@ try:
             total = sum(delta)
             if total <= 0:
                 raise ValueError(f"cpu{cpu} counted no ticks between the two reads")
-            print(f"{cpu},{role},{(total - delta[3] - delta[4]) / total:.4f}")
+            busy = (total - delta[3] - delta[4]) / total
+            user = (delta[0] + delta[1]) / total
+            system = (delta[2] + delta[5] + delta[6]) / total
+            print(f"{cpu},{role},{busy:.4f},{user:.4f},{system:.4f}")
 except (OSError, ValueError) as error:
     print(f"cpu-busy: {error}", file=sys.stderr)
     sys.exit(1)
@@ -416,7 +425,7 @@ placement_selftest() (
     printf 'cpu  110 0 50 1930 10 0 0 0 0 0\ncpu0 100 0 50 850 0 0 0 0 0 0\ncpu1 0 0 0 1000 0 0 0 0 0 0\ncpu2 10 0 0 80 10 0 0 0 0 0\n' >"$fixture/stat-before"
     printf 'cpu  460 0 150 3540 50 0 0 0 40 0\ncpu0 400 0 150 1450 0 0 0 0 0 0\ncpu1 0 0 0 2000 0 0 0 0 0 0\ncpu2 60 0 0 90 50 0 0 0 40 0\n' >"$fixture/stat-after"
     actual=$(cpu_busy "$fixture/stat-before" "$fixture/stat-after" 0 1,2 | tr '\n' ' ')
-    [ "$actual" = '0,server,0.4000 1,client,0.0000 2,client,0.5000 ' ] || {
+    [ "$actual" = '0,server,0.4000,0.3000,0.1000 1,client,0.0000,0.0000,0.0000 2,client,0.5000,0.5000,0.0000 ' ] || {
         echo "placement-selftest: cpu_busy gave '$actual'" >&2
         exit 1
     }
@@ -953,14 +962,17 @@ compare_client() {
 # request count is sized from the
 # fastest image's pilot so that every image runs the same count. Where
 # /proc/stat exists, each measured sample also gives compare-cpu.csv one
-# line,pass,cpus,test,depth,cpu,role,busy row per server and client CPU: the
-# fraction of that CPU's time not idle over the client's run.
+# line,pass,cpus,test,depth,cpu,role,busy,user,system row per server and
+# client CPU: the fraction of that CPU's time not idle over the client's run,
+# and its user and kernel shares. Each image's server log, which holds the
+# Whitefoot runtime's per-driver counts when WF_SCHED_REPORT is set, is kept
+# per pass as compare-server-<line>-<cpus>-<pass>.txt.
 if [ "$MODE" = compare ]; then
     total=$(nproc)
     cpu_record=
     if [ -r /proc/stat ]; then
         cpu_record="$OUT/compare-cpu.csv"
-        echo 'line,pass,cpus,test,depth,cpu,role,busy' >"$cpu_record"
+        echo 'line,pass,cpus,test,depth,cpu,role,busy,user,system' >"$cpu_record"
     else
         echo "skip,compare-cpu.csv,no /proc/stat"
     fi
@@ -1011,6 +1023,7 @@ if [ "$MODE" = compare ]; then
                     fi
                 done <"$sizes"
                 stop
+                cp "$OUT/server.log" "$OUT/compare-server-$name-$n-$pass.txt"
             done
             pass=$((pass + 1))
         done
