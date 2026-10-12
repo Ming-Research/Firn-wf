@@ -17,9 +17,16 @@
 #
 # options:
 #   --out DIR        run directory, created if missing; it receives a copy of
-#                    the suite, every unit's output, tests.tsv, units.tsv and
-#                    summary.txt
+#                    the suite, every unit's output, tests.tsv, units.tsv,
+#                    summary.txt, suite-units.txt (every unit the suite lists)
+#                    and shard-units.txt (the units this run was to run)
 #   --units "U ..."  units to run, by default every unit the suite lists
+#   --shard I/N      runs only shard I of N (1 <= I <= N) of those units, as
+#                    ratchet.py assign splits them by the times in
+#                    unit-seconds.tsv, and takes its ports from the I-th of N
+#                    equal parts of the range below the ephemeral ports, so
+#                    that shards run side by side, each with an --out of its
+#                    own (run-shards.sh does this and merges them)
 #   --timeout SEC    seconds a test may go without progress before the suite
 #                    stops the unit, default 120
 #   --retries N      times a unit is run again past a test that timed out,
@@ -56,11 +63,12 @@ usage() {
     exit 2
 }
 
-out= units= timeout=120 retries=5 reference= tolerant=0 known=
+out= units= timeout=120 retries=5 reference= tolerant=0 known= shard=
 while [ $# -gt 0 ]; do
     case $1 in
         --out) out=${2:?}; shift 2 ;;
         --units) units=${2:?}; shift 2 ;;
+        --shard) shard=${2:?}; shift 2 ;;
         --timeout) timeout=${2:?}; shift 2 ;;
         --retries) retries=${2:?}; shift 2 ;;
         --reference) reference=$(realpath "${2:?}"); shift 2 ;;
@@ -71,6 +79,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -n "$out" ] && [ $# -ge 1 ] || usage
+shard_index=1 shard_count=1
+if [ -n "$shard" ]; then
+    [[ $shard =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] || usage
+    shard_index=${BASH_REMATCH[1]} shard_count=${BASH_REMATCH[2]}
+    [ "$shard_index" -le "$shard_count" ] || usage
+fi
 target=$1
 shift
 host=127.0.0.1 port= firn=
@@ -140,7 +154,12 @@ if [ "$tolerant" = 1 ]; then
 fi
 mkdir -p "$out/logs" "$out/servers" "$out/hung" "$out/data"
 cd "$suite"
-[ -n "$units" ] || units=$(./runtest --list-tests)
+./runtest --list-tests > "$out/suite-units.txt"
+[ -n "$units" ] || units=$(cat "$out/suite-units.txt")
+if [ -n "$shard" ]; then
+    units=$(printf '%s\n' $units | python3 -B "$here/ratchet.py" assign --costs "$here/unit-seconds.tsv" --shard "$shard")
+fi
+printf '%s\n' $units > "$out/shard-units.txt"
 
 flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeout")
 {
@@ -153,7 +172,8 @@ flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeou
               echo "server arguments: PORT 0 - 0" ;;
         external) echo "server: $host:$port" ;;
     esac
-    echo "runtest arguments: --host $host --port PORT --single UNIT --baseport FREE ${flags[*]} --skipfile HUNG ${extra[*]}"
+    echo "runtest arguments: --host $host --port PORT --single UNIT --baseport FREE --portcount 1000 ${flags[*]} --skipfile HUNG ${extra[*]}"
+    echo "shard: ${shard:-none}"
     if [ "$tolerant" = 1 ]; then
         echo "framework: tolerant (FLUSHALL, FUNCTION FLUSH and the overrides' CONFIG GET, CONFIG SET and INFO may fail)"
     else
@@ -178,10 +198,23 @@ if [ "$ephemeral_low" -le 11000 ]; then
     exit 1
 fi
 
-# Prints a loopback port below the ephemeral range that nothing listens on.
+# A shard takes its ports from its own part of the range below the ephemeral
+# ports, so shards running side by side start their servers on ports of
+# their own. The suite's port search also binds port+10000 for an instant as
+# its cluster-bus probe, which can land in another shard's part; a collision
+# there makes the search skip the port or start_server retry.
+port_low=$((10000 + (shard_index - 1) * (ephemeral_low - 10000) / shard_count))
+port_high=$((10000 + shard_index * (ephemeral_low - 10000) / shard_count))
+if [ $((port_high - port_low)) -lt 3000 ]; then
+    echo "run.sh: shard $shard_index of $shard_count has only ports $port_low to $((port_high - 1))" >&2
+    exit 1
+fi
+
+# Prints a loopback port from this run's range that nothing listens on and
+# that leaves the given number of ports above it in the range.
 free_port() {
     local candidate
-    for candidate in $(shuf -i "10000-$((ephemeral_low - 1))" -n 100); do
+    for candidate in $(shuf -i "$port_low-$((port_high - 1 - ${1:-0}))" -n 100); do
         if ! (exec 3<> "/dev/tcp/127.0.0.1/$candidate") 2> /dev/null; then
             echo "$candidate"
             return 0
@@ -268,13 +301,15 @@ for unit in $units; do
         [ "$target" = external ] || start_server "$out/servers/$unit.$attempt.log"
         # The suite listens for its own test client on the port below its
         # base port, and its check for a busy port misses one that another
-        # process holds on 127.0.0.1, so the port is chosen here.
-        control=$(free_port)
+        # process holds on 127.0.0.1, so the port is chosen here. The ports
+        # the suite's own servers take, 1000 from its base port, stay within
+        # this run's range.
+        control=$(free_port 1100)
         # timeout runs the suite in a process group of its own, which the
         # cleanup above stops whole if this script is stopped.
         rc=0
         TERM=dumb timeout -k 10 "$unit_limit" ./runtest --host "$host" --port "$port" \
-            --single "$unit" --baseport "$((control + 32))" "${flags[@]}" --skipfile "$hung" \
+            --single "$unit" --baseport "$((control + 32))" --portcount 1000 "${flags[@]}" --skipfile "$hung" \
             "${extra[@]}" > "$log" 2>&1 &
         unit_pid=$!
         wait "$unit_pid" || rc=$?

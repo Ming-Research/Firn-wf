@@ -20,10 +20,11 @@
   enters `unstable.tsv` only on `redis-suite-record.yml` evidence or a stated
   technical reason; new passes the ratchet reported are added.
 - [ ] **T2 — Gate and CI correspondence.** CI runs the same Makefile targets
-  as `make check`; changed selection adds no omission or extra check.
-  The `aof-sync-fault` job is the one check beside it: it runs the Makefile
-  target of the same name on a device only root can make, and its pass is
-  required for a merge like the gate's.
+  as `make check`, in parallel jobs that `make gate-sync` requires to
+  cover them all; changed selection adds no omission or extra check.
+  The `aof-sync-fault` job is the one check beside them: it runs the Makefile
+  target of the same name on a device only root can make, which gate-sync
+  leaves out, and its pass is required for a merge like the gate's.
 - [ ] **T3 — The pins.** The [review items](../whitefoot-kit/downstream.md#review-items)
   of Whitefoot-kit hold for `whitefoot.pin` and the `whitefoot-kit` and
   `design/skill` submodules, and firn's checks pass with them.

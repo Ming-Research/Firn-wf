@@ -1,7 +1,10 @@
-# firn's gate: every push runs `make check`, which downloads the pinned
-# Whitefoot compiler release, builds firn and runs its network cases, the
-# Redis 7.2.16 suite ratchet and the design lint. The exact revision that
-# merges into main passes this first.
+# firn's gate: every push runs the targets of `make check` in three parallel
+# jobs, so that its answer takes as long as the slowest, the Redis suite. The
+# jobs download the pinned Whitefoot compiler release, then build firn and run
+# the Redis suite ratchet; build firn and run its network cases; and lint the
+# design trees. `make gate-sync` fails when the targets they run and the
+# targets of `make check` differ, so each `make TARGET` step below stays on
+# one line. The exact revision that merges into main passes this first.
 name: check
 
 on:
@@ -13,52 +16,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: make check
+  suite:
+    name: firn and Redis suite
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
-          fetch-depth: 0
-
-      - name: Name main as a local ref
-        run: git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
-
-      # A work branch is reviewed against its fork point from main; a main
-      # push against its previous tip.
-      - name: Select the design review base
-        env:
-          PUSH_BEFORE: ${{ github.event.before }}
-        run: |
-          design_review_base=$(sh design/skill/review-base.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$PUSH_BEFORE")
-          echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
-          git log --oneline -1 "$design_review_base"
 
       # The pinned compiler links with /usr/bin/clang, and a cached build
       # links its ThinLTO fragments with LLD on Linux, of the LLVM major the
       # pinned release was built with, which Whitefoot-kit's `make toolchain`
-      # installs.
-      - name: Install the host toolchain
+      # installs. The suite runs under tclsh; its redis-cli and
+      # redis-benchmark come from the reference build below.
+      - name: Install the suite's tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends tcl
-          make toolchain
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Show the host toolchain
+        run: |
           ld.lld --version
           /usr/bin/clang --version
           python3 --version
 
-      - name: Select the Rust toolchain
-        run: rustup default stable && cargo --version
-
       # The reference Redis 7.2.16 (AGENTS.md) is built from its release
       # archive, whose SHA-256 reference.sh pins; Ubuntu packages 7.0.15. The
-      # suite's sources, its redis-cli and redis-benchmark and the comparator
-      # server come from this one build. The key names reference.sh, which
-      # holds the pin and the build recipe. The build is saved as soon as it
-      # is made, so that a later failing step, as a ratchet regression is,
-      # does not discard it.
+      # suite's sources and its redis-cli and redis-benchmark come from this
+      # one build. The key names reference.sh, which holds the pin and the
+      # build recipe. The build is saved as soon as it is made, so that a
+      # later failing step, as a ratchet regression is, does not discard it.
       - name: Restore the Redis build
         id: redis-cache
         uses: actions/cache/restore@v4
@@ -78,8 +72,11 @@ jobs:
           path: build/redis-compat-cache
           key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
-      - name: Check
-        run: make check
+      - name: Build firn
+        run: make firn
+
+      - name: Run the Redis suite in two shards and check the ratchet
+        run: make redis-suite
 
       - name: Upload the Redis suite run
         if: always()
@@ -87,6 +84,64 @@ jobs:
         with:
           name: redis-suite-${{ github.sha }}
           path: build/redis-suite
+
+  network:
+    name: network tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Show the host toolchain
+        run: |
+          ld.lld --version
+          /usr/bin/clang --version
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Build firn for the network cases and run them
+        run: make test
+
+  design:
+    name: design lint and gate sync
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The Makefile includes Whitefoot-kit, and the lint is Design-skill's.
+      - name: Check out Design-skill and Whitefoot-kit
+        run: git submodule update --init design/skill whitefoot-kit
+
+      - name: Name main as a local ref
+        run: git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+
+      # A work branch is reviewed against its fork point from main; a main
+      # push against its previous tip.
+      - name: Select the design review base
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          design_review_base=$(sh design/skill/review-base.sh "$GITHUB_EVENT_NAME" "$GITHUB_REF" "$PUSH_BEFORE")
+          echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
+          git log --oneline -1 "$design_review_base"
+
+      - name: Lint the design trees
+        run: make design-lint
+
+      - name: Check that these jobs run every target of make check
+        run: make gate-sync
 
   # The append-only file's sync failing on a real device:
   # tests/aof_sync_fault_device.sh makes a device-mapper device whose writes

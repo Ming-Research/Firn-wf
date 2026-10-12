@@ -40,8 +40,12 @@ complete() {
 fetch_archive() {
     mkdir -p "$cache"
     if [ ! -f "$archive" ]; then
-        curl -fsSL -o "$archive.part" "$url"
-        mv "$archive.part" "$archive"
+        # Callers started together may all find the archive missing; each
+        # fetches into a name of its own and the last rename wins.
+        local part
+        part=$(mktemp "$archive.part.XXXXXX")
+        curl -fsSL -o "$part" "$url"
+        mv -f "$part" "$archive"
     fi
     if ! echo "$sha256  $archive" | sha256sum --check --status; then
         echo "reference.sh: $archive does not have the SHA-256 $sha256" >&2

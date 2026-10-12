@@ -71,7 +71,7 @@ jobs:
           for ((i = 1; i <= RECORD_RUNS; i++)); do
             out="build/redis-suite/run-$i"
             started=$SECONDS
-            tests/redis-suite/run.sh --out "$out" --known-hangs tests/redis-suite/hung.tsv firn build/firn
+            tests/redis-suite/run-shards.sh --shards 2 --out "$out" --known-hangs tests/redis-suite/hung.tsv firn build/firn
             echo "Run $i of $RECORD_RUNS took $((SECONDS - started)) seconds"
             results+=("$out/tests.tsv")
           done

@@ -1,5 +1,6 @@
 # firn's canonical checks. `make check` is the gate a revision passes before
-# it merges into main; CI runs the same targets.
+# it merges into main; CI runs the same targets, split among parallel jobs
+# (.github/workflows/check.yml), which `make gate-sync` keeps complete.
 
 PY ?= python3
 
@@ -28,11 +29,18 @@ include $(ROOT)/whitefoot-kit/whitefoot.mk
 # firn is one module program; any of its sources changes the build, Halo's
 # among them, which deps/halo-wf brings.
 FIRN_GRAPH := $(ROOT)/firn/modules.wfg
-FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
+FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' -o -name '*.wfm' -o -name '*.wfg' 2>/dev/null)
 
-.PHONY: check firn firn-test test redis-suite aof-sync-fault firn-lto design-lint design-ready
+# The Redis suite runs as this many run.sh shards side by side.
+SUITE_SHARDS ?= 2
 
-check: compiler firn test redis-suite design-lint
+.PHONY: check firn firn-test test redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync
+
+# The gate's targets: check.yml runs each in a job of its own, which
+# gate-sync requires.
+CHECK_TARGETS := compiler firn test redis-suite design-lint gate-sync
+
+check: $(CHECK_TARGETS)
 
 # The server as a developer runs it: an incremental cache keeps each module's
 # checked and compiled parts, so a rebuild compiles only what an edit changed.
@@ -54,11 +62,12 @@ $(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 test: firn-test
 	FIRN=$(BUILD)/firn-test cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked
 
-# Redis's released suite runs against the cached server build. Every listed
-# pass must still pass; new passes are candidates to add in the same PR.
+# Redis's released suite runs against the cached server build, split into
+# shards that run side by side and merge into one run. Every listed pass must
+# still pass; new passes are candidates to add in the same PR.
 redis-suite: $(BUILD)/firn
 	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py --self-test
-	REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/run.sh --out "$(BUILD)/redis-suite" --known-hangs $(ROOT)/tests/redis-suite/hung.tsv firn "$(BUILD)/firn"
+	REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/run-shards.sh --shards $(SUITE_SHARDS) --out "$(BUILD)/redis-suite" --known-hangs $(ROOT)/tests/redis-suite/hung.tsv firn "$(BUILD)/firn"
 	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py check "$(BUILD)/redis-suite/tests.tsv" --passing $(ROOT)/tests/redis-suite/passing.tsv --unstable $(ROOT)/tests/redis-suite/unstable.tsv
 
 # The append-only file's sync failing on a real device, firn against Redis
@@ -96,3 +105,18 @@ design-lint:
 
 design-ready:
 	@$(if $(DESIGN_TREES),$(PY) -B $(ROOT)/design/skill/lint.py --root $(ROOT)/design --trees $(DESIGN_TREES) --base "$(DESIGN_REVIEW_BASE)" --require-approval,echo "design ready: no live tree")
+
+# CI runs every target of the gate: each `make TARGET` step of check.yml is
+# one line, and the targets they name, less the host setup of `make
+# toolchain` and the aof-sync-fault job's own target, are exactly
+# CHECK_TARGETS. The comparison must also refuse a
+# workflow without `make redis-suite` and one with an extra `make firn-lto`.
+gate-sync:
+	@workflow=$(ROOT)/.github/workflows/check.yml; \
+	want="$$(printf '%s\n' $(CHECK_TARGETS) | sort -u | tr '\n' ' ')"; \
+	runs() { sed -n -E 's/^ +run: make ([a-z-]+)$$/\1/p' | grep -vx -e toolchain -e aof-sync-fault | sort -u | tr '\n' ' '; }; \
+	[ "$$(runs < $$workflow)" = "$$want" ] || { echo "gate-sync: check.yml runs [$$(runs < $$workflow)] but make check runs [$$want]" >&2; exit 1; }; \
+	[ "$$(grep -v 'run: make redis-suite$$' $$workflow | runs)" != "$$want" ] \
+		&& [ "$$({ cat $$workflow; echo '        run: make firn-lto'; } | runs)" != "$$want" ] \
+		|| { echo "gate-sync: the comparison accepted a changed workflow" >&2; exit 1; }; \
+	echo "gate-sync: check.yml runs every target of make check: $$want"
