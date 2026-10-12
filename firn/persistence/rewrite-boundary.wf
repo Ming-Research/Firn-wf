@@ -182,6 +182,11 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
             set held = pkg::protocol::keep_rest(input: &input, from: consumed, held: held);
             aof_rw_pause(clock: clock);
           }
+          if accepted {
+          } else {
+            let reason_boundary_1 = pkg::store::RewriteAbortReason::Boundary();
+            aof_rw_abort(store: store, reason: reason_boundary_1);
+          }
           aof_rw_release::<Box<Slots<u8>>>(value: move input);
           aof_rw_release::<Box<Slots<Span>>>(value: move args);
           atomic released = &store^.meta {
@@ -191,12 +196,16 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
             Ok(value: closed) => {
             }
             Err(error: problem) => {
+              let reason_boundary_2 = pkg::store::RewriteAbortReason::Boundary();
+              aof_rw_abort(store: store, reason: reason_boundary_2);
               set accepted = False();
             }
           }
         }
         Err(error: problem) => {
           atomic unopened = &store^.meta {
+            let reason_boundary_3 = pkg::store::RewriteAbortReason::Boundary();
+            pkg::store::rewrite_abort(capture: &unopened^.rewrite, reason: reason_boundary_3);
             set unopened^.rewrite.used = unopened^.rewrite.used -sat 589872_u64;
           }
         }
