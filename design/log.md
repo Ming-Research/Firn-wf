@@ -12,6 +12,46 @@ Owner-approved: On the shared status board on 2026-10-12, the owner chose option
 
 Summary: Each live scan step calls map_scan_within with the reserve left after the step buffer as its limit and charges the growth key_set_bytes reports, so a step never exceeds R; copies and buffer growth are charged before allocation, and a one-position step that does not fit is discarded, waits outside every hold and retries while it could fit, or aborts with reserve when it never can. The scan runs steps back to back and yields about every millisecond, with a per-step key hint starting at 64 that halves or doubles by the bytes a step writes and falls back to one position when several do not fit, because a 100-microsecond sleep per one-key step cost about a millisecond per key and a million-key rewrite could not finish under write load. CONFIG answers Redis 7.0.15's hidden rdb-key-save-delay so cases can keep a rewrite in progress without a firn-only hook. The post-call charging limitation and its rejection entry are replaced by three rejected alternatives ([scan pacing](../research/investigations/aof-rewrite/scan-pace.md#design)).
 
+## 2026-10-12 Take Redis 7.2.16 as the gate's suite and the reference server
+
+Nodes: firn, firn/consumers
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A (approve) on card firn-q-approve-64-tree, which asked to approve PR #64's four design-tree changes at head fb94ca4 (the tree is unchanged at d46597e): the gate's suite moves to the reference Redis 7.2.16; the recorder skips known hangs and reruns their units unskipped, a hang leaving the list only when it passes; every use of the reference server builds it from the pinned 7.2.16 release archive checked by SHA-256, with the system package, Redis's apt repository and the official container image rejected; the application comparison runs against 7.2.16 with AOF on both sides.
+
+Summary: firn's reference moved from Redis 7.0.15 to 7.2.16 as the owner ruled on the reference-version card, and the tree now says so where the gate, the recorder, the reference build and the application comparison depend on it. The gate keeps its per-test ratchet over 7.2.16's suite. The recorder treats an error or timeout of a known hang, run unskipped, as no evidence it stopped hanging, since a hung test leaves its connection in a state such as an open MULTI that makes later tests fail at once. The reference server is built from the release archive because Ubuntu 24.04 ships 7.0.15 and an unpinned package or image can change between runs.
+
+## 2026-10-12 Keep a raised script error's reply on one line
+
+Nodes: firn/scripts
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A (approve) on card firn-q-script-error-crlf-tree, which asked to approve PR #62's design-tree change at head 14841e0: a raised script error written as Redis 7.2.13 and later write it, every carriage return and line feed as a space, with writing it raw as Redis 7.0.15 does rejected.
+
+Summary: A script that raises an error whose text holds CR or LF no longer splits its reply into replies the client reads as answers to its next commands. firn writes a raised error as Redis 7.2.13 and later do (addReplyErrorSdsExSafe), the reference Redis 7.2.16 included; 7.0.15 wrote the raw bytes, a defect Redis fixed as a security issue. Returned error tables and compile errors were already one line in both versions; firn's compile-error path, which wrote Halo's message raw, now matches them.
+
+## 2026-10-12 Validate the first release on the usage survey's applications
+
+Nodes: firn/consumers
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A on card firn-q-production-scope, which asked whether firn's first release takes the scope the usage survey proposes; the ruling reads (translated) "The first release takes the survey's proposed scope ... Validation applications are added in the order the survey gives."
+
+Summary: The owner set firn's first release to production drop-in use. The consumers node keeps the deployment milestone's three consumers and adds, after them and in the survey's order, Sidekiq, Celery, BullMQ, the Socket.IO and ActionCable pub/sub applications, Redisson's default lock and a smoke test of twelve mainstream clients, each run unchanged against Redis 7.2.16 and firn with the append-only file on. The first release's command scope is the survey's approved list, consumers' refusals still naming work. The rejection of BullMQ and Sidekiq as unselected scenarios is removed, since the ruling supersedes it ([survey](../research/investigations/usage-survey/README.md#validation-applications-and-clients)).
+
+## 2026-10-12 Raise the heap peak only past a connection's last seen peak
+
+Nodes: firn/memory-limit
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A (approve) on card firn-q-approve-59-tree, which asked to approve PR #59's design-tree changes at head 550e4a0.
+
+Summary: After each command a connection takes Meta to raise the recorded heap peak only when its heap reading exceeds the peak it last saw recorded, because the peak only rises, so a lower reading cannot change it, while a Meta statement after every command on every connection serialized all cores: on 8 P-cores of the i9-14900K depth-16 GET ran at 2.98M/s with it and 19.2M/s with the per-connection check. Recording once per read batch was not adopted because a later pipelined command can free what an earlier one allocated and hide a peak Redis records; the per-command Meta statement is retired as a rejected alternative ([peak recording](../research/investigations/memory-limit/README.md#peak-recording-across-cores)).
+
+## 2026-10-12 Refuse writes while the append-only file cannot be written or synced
+
+Nodes: firn/append-only-file, firn/orderly-stop, firn/scripts, firn/transactions
+
+Owner-approved: On the shared status board on 2026-10-11, the owner chose option A (approve) on card firn-q-approve-55-tree, which asked to approve PR #55's design-tree changes at head 9a584fe; on 2026-10-12 the owner chose option A (approve) on card firn-q-approve-55-tree-2, which asked to approve the two decisions changed since then at head c06b0b4 (the MISCONF suffix and the 100 ms append retry). On 2026-10-12 the owner also chose option C on card firn-q-sync-fail-evidence: merge with the sync-failure path checked against Redis 7.0.15's source, and add a runtime sync-failure case before the Whitefoot release as a separate item.
+
+Summary: The sole AOF writer publishes separate append and sync errors in Meta. WRITE commands and PING are refused with Redis's MISCONF reply while either error stands, checked at admission and again under the mutation's Meta hold; reads, expiry and eviction continue. The reply's suffix is the host's description of the saved error, taken from Whitefoot's std::io::error_copy_description, choosing the append error when nothing of the failed append was written and otherwise the sync error, as Redis 7.0.15 does. A partly written append is suffixed with no text until Whitefoot can describe ENOSPC without a platform number. An incomplete append is truncated back, or its written prefix accounted, so only the bytes still owed are retried, every 100 ms whether or not clients write, which is Redis's idle cadence. A rewrite's new incremental file keeps the error state. Scripts check before their first accepted write, MULTI and EXEC follow Redis's EXECABORT ordering, and shutdown makes one final append and sync attempt and then exits with status 0 even on failure. firn keeps its single everysec policy ([investigation](../research/investigations/aof-write-errors/README.md)).
+
 ## 2026-10-11 Scripts hold only their declared keys
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/command-parts, firn/scripts

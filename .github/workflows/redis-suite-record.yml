@@ -1,5 +1,6 @@
-# Record the ratchet on one firn build. Commit the generated lists after
-# reviewing the runs; this workflow never changes the checked-in baseline.
+# Record the ratchet on one firn build against the Redis 7.2.16 suite.
+# Commit the generated lists after reviewing the runs; this workflow never
+# changes the checked-in baseline.
 name: redis-suite-record
 
 on:
@@ -31,27 +32,38 @@ jobs:
       - name: Install the host toolchain and suite tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends tcl redis-tools
+          sudo apt-get install -y --no-install-recommends tcl
           make toolchain
           ld.lld --version
           /usr/bin/clang --version
           python3 --version
 
-      - name: Read the Redis archive pin
-        id: redis
-        run: |
-          sha256=$(sed -n 's/^sha256=//p' tests/redis-suite/run.sh)
-          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
-          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@v4
+      # The reference Redis 7.2.16 is built from its pinned release archive
+      # (tests/redis-suite/reference.sh) and shares the gate's cache key.
+      - name: Restore the Redis build
+        id: redis-cache
+        uses: actions/cache/restore@v4
         with:
           path: build/redis-compat-cache
-          key: redis-source-${{ steps.redis.outputs.sha256 }}
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build the reference Redis
+        run: tests/redis-suite/reference.sh
+
+      - name: Save the Redis build
+        if: ${{ steps.redis-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
       - name: Build firn once
         run: make firn
 
+      # Each run skips the tests hung.tsv lists, as make redis-suite does: a
+      # listed test run anyway can fail instead of hanging and leave its
+      # connection's state to the tests after it, which would then fail in
+      # the recording but pass in the gate.
       - name: Record repeated runs and generate the lists
         run: |
           python3 -B tests/redis-suite/ratchet.py --self-test
@@ -59,11 +71,44 @@ jobs:
           for ((i = 1; i <= RECORD_RUNS; i++)); do
             out="build/redis-suite/run-$i"
             started=$SECONDS
-            tests/redis-suite/run.sh --out "$out" firn build/firn
+            tests/redis-suite/run-shards.sh --shards 2 --out "$out" --known-hangs tests/redis-suite/hung.tsv firn build/firn
             echo "Run $i of $RECORD_RUNS took $((SECONDS - started)) seconds"
             results+=("$out/tests.tsv")
           done
           python3 -B tests/redis-suite/ratchet.py record "${results[@]}" --out build/redis-suite
+
+      # One run of the units hung.tsv names, without the list, reports each
+      # listed test's outcomes. Only a test whose every row passed is a
+      # candidate to leave the list. One that timed out, failed or errored
+      # stays listed: without the list a refused CONFIG SET leaves a listed
+      # unit/multi test's connection inside MULTI, so the tests after it
+      # error at once whether or not they would still hang, and an error or
+      # failure does not show that a test stopped hanging. This run feeds
+      # neither list.
+      - name: Run the listed hangs' units without the list
+        run: |
+          units=$(awk -F '\t' '!/^#/ && NF >= 2 { print $1 }' tests/redis-suite/hung.tsv | sort -u | tr '\n' ' ')
+          if [ -z "${units// /}" ]; then
+            echo "hung.tsv lists no test"
+            exit 0
+          fi
+          out=build/redis-suite/hangs
+          tests/redis-suite/run.sh --out "$out" --units "$units" firn build/firn
+          awk -F '\t' '
+            NR == FNR { if (FNR > 1) { key = $1 FS $5; seen[key] = (key in seen ? seen[key] "," : "") $2 }; next }
+            /^#/ || NF < 2 { next }
+            {
+              key = $1 FS $2
+              outcomes = (key in seen ? seen[key] : "not-reached")
+              verdict = "candidate to leave the list"
+              n = split(outcomes, each, ",")
+              for (i = 1; i <= n; i++) if (each[i] != "passed") verdict = "stays listed"
+              print $1 FS $2 FS outcomes FS verdict
+            }
+          ' "$out/tests.tsv" tests/redis-suite/hung.tsv > "$out/listed.tsv"
+          echo "Listed hangs (unit, test, outcomes without the list, verdict):"
+          cat "$out/listed.tsv"
+          echo "Only a test whose every row passed is a candidate to leave hung.tsv; any other outcome, an error or a failure included, leaves it listed."
 
       - name: Upload the recorded runs and proposed lists
         if: always()
@@ -76,3 +121,7 @@ jobs:
             build/redis-suite/run-*/summary.txt
             build/redis-suite/passing.tsv
             build/redis-suite/unstable.tsv
+            build/redis-suite/hangs/tests.tsv
+            build/redis-suite/hangs/meta.txt
+            build/redis-suite/hangs/summary.txt
+            build/redis-suite/hangs/listed.tsv

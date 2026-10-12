@@ -39,6 +39,8 @@ alias reply_array = pkg::protocol::reply_array;
 alias reply_error = pkg::protocol::reply_error;
 alias reply_integer = pkg::protocol::reply_integer;
 alias reply_nil = pkg::protocol::reply_nil;
+alias reply_nil_array = pkg::protocol::reply_nil_array;
+alias reply_arity_word = pkg::protocol::reply_arity_word;
 alias reply_pair = pkg::protocol::reply_pair;
 alias reply_pairs = pkg::protocol::reply_pairs;
 alias reply_score = pkg::scores::reply_score;
@@ -64,6 +66,12 @@ const code_zrem: u64 = 1296388698_u64;
 const code_zrank: u64 = 323435450970_u64;
 
 const code_zrevrank: u64 = 5426346422918533722_u64;
+
+const word_withscore: Array<u8, 9> = "WITHSCORE";
+
+const word_zrank_command: Array<u8, 5> = "zrank";
+
+const word_zrevrank_command: Array<u8, 8> = "zrevrank";
 
 const code_zcount: u64 = 92695415440218_u64;
 
@@ -503,6 +511,9 @@ fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let lapsed = zadd_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
@@ -629,6 +640,9 @@ fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let lapsed = zrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
@@ -874,6 +888,9 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let lapsed = zpop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
@@ -1228,7 +1245,7 @@ fn rank_before(link: &Slots<Box<OrderedNode<Rank, unit>>, 1>, key: &Rank, env: &
 }
 
 fn member_rank(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env) {
-  doc "Records in number the prepared member's rank in a live sorted set, counted from its lowest member, or from its highest when low is 1, and done, or leaves absent when the set does not hold the member; records wrong for another kind and expired for an expired entry.";
+  doc "Records in number the prepared member's rank in a live sorted set, counted from its lowest member, or from its highest when low is 1, and done, with the member's score among the prepared scores when high is 1, or leaves absent when the set does not hold the member; records wrong for another kind and expired for an expired entry.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -1250,6 +1267,9 @@ fn member_rank(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
             let size = ordered_map_len::<Rank, unit, ceiling>(map: &sorted^.order);
             let above = size -wrap below;
             set env^.number = above -wrap 1_u64;
+          }
+          if env^.high == 1_i64 {
+            push_score(client: env, score: probe.score);
           }
           set env^.state = state_done;
         } else {
@@ -1278,7 +1298,25 @@ fn member_rank(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
 }
 
 fn zrank_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, reverse: Bool) -> valid: Bool reads(input), reads(args), writes(client) {
-  doc "Prepares ZRANK's arguments and refusals before either path looks up its key.";
+  doc "Prepares ZRANK's and ZREVRANK's arguments and refusals before either path looks up its key, as Redis 7.2.16's zrankGenericCommand reads them: more than four arguments are refused with the command's arity error, and a fourth that is not WITHSCORE, compared in either case up to a zero byte, with the syntax error. high records whether WITHSCORE was given, low whether the rank counts from the highest member.";
+  let count = args^.inner.len;
+  if count > 4_u64 {
+    if reverse {
+      reply_arity_word(client: client, word: &word_zrevrank_command[0_u64..8_u64]);
+    } else {
+      reply_arity_word(client: client, word: &word_zrank_command[0_u64..5_u64]);
+    }
+    return False();
+  }
+  let withscore = False();
+  if count == 4_u64 {
+    let option = arg(args: args, index: 3_u64);
+    set withscore = word_at(input: input, span: option, word: &word_withscore[0_u64..9_u64]);
+    if bnot(withscore) {
+      reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
+      return False();
+    }
+  }
   clear_items(client: client);
   let member = key_at(input: input, args: args, index: 2_u64);
   push_item(client: client, item: move member);
@@ -1287,6 +1325,10 @@ fn zrank_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, reverse: 
   set client^.low = 0_i64;
   if reverse {
     set client^.low = 1_i64;
+  }
+  set client^.high = 0_i64;
+  if withscore {
+    set client^.high = 1_i64;
   }
   return True();
 }
@@ -1305,10 +1347,21 @@ fn zrank_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
 }
 
 fn zrank_finish(client: &Client) -> result: unit writes(client) {
-  doc "Completes ZRANK's network reply, retaining replies written while visiting the entry.";
+  doc "Completes ZRANK's network reply, retaining replies written while visiting the entry: the rank as an integer, or with WITHSCORE an array of the rank and the score as firn writes every score, Redis 7.0.15's %.17g, which differs from the shortest form of Redis 7.2.16's addReplyDouble for some values, such as 0.1 (board item firn-score-text-72); for an absent key or member the null bulk string, or with WITHSCORE the null array, each in the client's protocol, as Redis 7.2.16's zrankGenericCommand replies.";
+  let withscore = client^.high == 1_i64;
+  let score = 0.0_f64;
+  if client^.scores.inner.len > 0_u64 {
+    set score = take_back(window: &client^.scores.inner);
+  }
   clear_items(client: client);
   if client^.state == state_done {
     let rank = cvt.wrap::<u64, i64>(client^.number);
+    if withscore {
+      reply_array(client: client, count: 2_u64);
+      reply_integer(client: client, value: rank);
+      reply_score(client: client, score: score);
+      return unit;
+    }
     reply_integer(client: client, value: rank);
     return unit;
   }
@@ -1316,12 +1369,16 @@ fn zrank_finish(client: &Client) -> result: unit writes(client) {
     reply_wrong_type(client: client);
     return unit;
   }
+  if withscore {
+    reply_nil_array(client: client);
+    return unit;
+  }
   reply_nil(client: client);
   return unit;
 }
 
 fn run_zrank(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, reverse: Bool) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "ZRANK key member and ZREVRANK (reverse): answers the member's rank, counted from 0 at the lowest member, or at the highest, or the null bulk string when the key or the member is absent.";
+  doc "ZRANK key member [WITHSCORE] and ZREVRANK (reverse): answers the member's rank, counted from 0 at the lowest member, or at the highest, with its score when WITHSCORE is given, or a null reply when the key or the member is absent, as zrank_finish writes them.";
   let journal = None<pkg::store::AccessJournal>();
   let valid = zrank_parse(input: input, args: args, client: client, reverse: reverse);
   if bnot(valid) {

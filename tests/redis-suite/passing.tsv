@@ -22,6 +22,8 @@ integration/redis-cli	Non-interactive non-TTY CLI: Quoted input arguments	1
 integration/redis-cli	Non-interactive non-TTY CLI: Read last argument from file	1
 integration/redis-cli	Non-interactive non-TTY CLI: Read last argument from pipe	1
 integration/redis-cli	Non-interactive non-TTY CLI: Status reply	1
+integration/redis-cli	Non-interactive non-TTY CLI: Test command-line hinting - latest server	1
+integration/redis-cli	Non-interactive non-TTY CLI: Test command-line hinting - no server	1
 integration/redis-cli	Options -X with illegal argument	1
 integration/redis-cli	Piping raw protocol	1
 integration/redis-cli	Scan mode	1
@@ -95,6 +97,7 @@ unit/introspection	PING	1
 unit/introspection-2	TOUCH alters the last access time of a key	1
 unit/introspection-2	TOUCH returns the number of existing keys specified	1
 unit/introspection-2	TTL, TYPE and EXISTS do not alter the last access time of a key	1
+unit/introspection-2	The microsecond part of the TIME command will not overflow	1
 unit/keyspace	COPY basic usage for string	1
 unit/keyspace	COPY can copy key expire metadata as well	1
 unit/keyspace	COPY does not create an expire if it does not exist	1
@@ -143,6 +146,8 @@ unit/multi	WATCH inside MULTI is not allowed	1
 unit/other	APPEND basics	1
 unit/other	APPEND basics, integer encoded values	1
 unit/other	APPEND fuzzing	1
+unit/other	Coverage: MEMORY MALLOC-STATS	1
+unit/other	Coverage: MEMORY PURGE	1
 unit/other	FLUSHDB	1
 unit/other	FUZZ stresser with data model alpha	1
 unit/other	FUZZ stresser with data model binary	1
@@ -182,10 +187,7 @@ unit/scripting	EVALSHA - Can we call a SHA1 in uppercase?	1
 unit/scripting	EVALSHA - Do we get an error on invalid SHA1?	1
 unit/scripting	EVALSHA - Do we get an error on non defined SHA1?	1
 unit/scripting	INCRBYFLOAT: We can call scripts expanding client->argv from Lua	1
-unit/scripting	LUA redis.status_reply API	1
-unit/scripting	LUA test pcall	1
-unit/scripting	LUA test pcall with error	1
-unit/scripting	LUA test pcall with non string/integer arg	1
+unit/scripting	LUA test trim string as expected	1
 unit/scripting	SCRIPT EXISTS - can detect already defined scripts?	1
 unit/scripting	SCRIPT LOAD - is able to register scripts in the scripting cache	1
 unit/scripting	SCRIPTING FLUSH - is able to clear the scripts cache?	1
@@ -197,6 +199,9 @@ unit/sort	SETRANGE with huge offset	1
 unit/sort	SORT sorted set: +inf and -inf handling	1
 unit/type/hash	HSET/HLEN - Small hash creation	1
 unit/type/hash	Is the small hash encoded with a listpack?	1
+unit/type/incr	DECR against key created by incr	1
+unit/type/incr	DECR against key is not exist and incr	1
+unit/type/incr	DECRBY against key is not exist	1
 unit/type/incr	DECRBY negation overflow	1
 unit/type/incr	DECRBY over 32bit value with over 32bit increment, negative res	1
 unit/type/incr	INCR against key created by incr itself	1
@@ -219,124 +224,137 @@ unit/type/incr	INCRBYFLOAT fails against key with spaces (right)	1
 unit/type/incr	INCRBYFLOAT over 32bit value	1
 unit/type/incr	INCRBYFLOAT over 32bit value with over 32bit increment	1
 unit/type/incr	No negative zero	1
+unit/type/incr	decr operation should update encoding from raw to int	1
+unit/type/incr	decrby operation should update encoding from raw to int	1
+unit/type/incr	incr operation should update encoding from raw to int	1
+unit/type/incr	incrby operation should update encoding from raw to int	1
 unit/type/incr	string to double with null terminator	1
 unit/type/list	DEL a list	1
 unit/type/list	LINDEX against non existing key	1
 unit/type/list	LINDEX against non-list value error	1
+unit/type/list	LINDEX consistency test - listpack	2
 unit/type/list	LINDEX consistency test - quicklist	2
+unit/type/list	LINDEX random access - listpack	2
 unit/type/list	LINDEX random access - quicklist	2
-unit/type/list	LINSERT - linkedlist	1
-unit/type/list	LINSERT - ziplist	1
+unit/type/list	LINSERT - listpack	1
+unit/type/list	LINSERT - quicklist	1
+unit/type/list	LINSERT against non existing key	1
+unit/type/list	LINSERT against non-list value error	1
 unit/type/list	LINSERT raise error on bad syntax	1
 unit/type/list	LLEN against non existing key	1
 unit/type/list	LLEN against non-list value error	1
-unit/type/list	LMOVE left left base case - linkedlist	1
-unit/type/list	LMOVE left left base case - ziplist	1
-unit/type/list	LMOVE left left with linkedlist source and existing target linkedlist	1
-unit/type/list	LMOVE left left with linkedlist source and existing target ziplist	1
-unit/type/list	LMOVE left left with the same list as src and dst - linkedlist	1
-unit/type/list	LMOVE left left with the same list as src and dst - ziplist	1
-unit/type/list	LMOVE left left with ziplist source and existing target linkedlist	1
-unit/type/list	LMOVE left left with ziplist source and existing target ziplist	1
-unit/type/list	LMOVE left right base case - linkedlist	1
-unit/type/list	LMOVE left right base case - ziplist	1
-unit/type/list	LMOVE left right with linkedlist source and existing target linkedlist	1
-unit/type/list	LMOVE left right with linkedlist source and existing target ziplist	1
-unit/type/list	LMOVE left right with the same list as src and dst - linkedlist	1
-unit/type/list	LMOVE left right with the same list as src and dst - ziplist	1
-unit/type/list	LMOVE left right with ziplist source and existing target linkedlist	1
-unit/type/list	LMOVE left right with ziplist source and existing target ziplist	1
-unit/type/list	LMOVE right left base case - linkedlist	1
-unit/type/list	LMOVE right left base case - ziplist	1
-unit/type/list	LMOVE right left with linkedlist source and existing target linkedlist	1
-unit/type/list	LMOVE right left with linkedlist source and existing target ziplist	1
-unit/type/list	LMOVE right left with the same list as src and dst - linkedlist	1
-unit/type/list	LMOVE right left with the same list as src and dst - ziplist	1
-unit/type/list	LMOVE right left with ziplist source and existing target linkedlist	1
-unit/type/list	LMOVE right left with ziplist source and existing target ziplist	1
-unit/type/list	LMOVE right right base case - linkedlist	1
-unit/type/list	LMOVE right right base case - ziplist	1
-unit/type/list	LMOVE right right with linkedlist source and existing target linkedlist	1
-unit/type/list	LMOVE right right with linkedlist source and existing target ziplist	1
-unit/type/list	LMOVE right right with the same list as src and dst - linkedlist	1
-unit/type/list	LMOVE right right with the same list as src and dst - ziplist	1
-unit/type/list	LMOVE right right with ziplist source and existing target linkedlist	1
-unit/type/list	LMOVE right right with ziplist source and existing target ziplist	1
+unit/type/list	LMOVE left left base case - listpack	1
+unit/type/list	LMOVE left left base case - quicklist	1
+unit/type/list	LMOVE left left with listpack source and existing target listpack	1
+unit/type/list	LMOVE left left with listpack source and existing target quicklist	1
+unit/type/list	LMOVE left left with quicklist source and existing target listpack	1
+unit/type/list	LMOVE left left with quicklist source and existing target quicklist	1
+unit/type/list	LMOVE left left with the same list as src and dst - listpack	1
+unit/type/list	LMOVE left left with the same list as src and dst - quicklist	1
+unit/type/list	LMOVE left right base case - listpack	1
+unit/type/list	LMOVE left right base case - quicklist	1
+unit/type/list	LMOVE left right with listpack source and existing target listpack	1
+unit/type/list	LMOVE left right with listpack source and existing target quicklist	1
+unit/type/list	LMOVE left right with quicklist source and existing target listpack	1
+unit/type/list	LMOVE left right with quicklist source and existing target quicklist	1
+unit/type/list	LMOVE left right with the same list as src and dst - listpack	1
+unit/type/list	LMOVE left right with the same list as src and dst - quicklist	1
+unit/type/list	LMOVE right left base case - listpack	1
+unit/type/list	LMOVE right left base case - quicklist	1
+unit/type/list	LMOVE right left with listpack source and existing target listpack	1
+unit/type/list	LMOVE right left with listpack source and existing target quicklist	1
+unit/type/list	LMOVE right left with quicklist source and existing target listpack	1
+unit/type/list	LMOVE right left with quicklist source and existing target quicklist	1
+unit/type/list	LMOVE right left with the same list as src and dst - listpack	1
+unit/type/list	LMOVE right left with the same list as src and dst - quicklist	1
+unit/type/list	LMOVE right right base case - listpack	1
+unit/type/list	LMOVE right right base case - quicklist	1
+unit/type/list	LMOVE right right with listpack source and existing target listpack	1
+unit/type/list	LMOVE right right with listpack source and existing target quicklist	1
+unit/type/list	LMOVE right right with quicklist source and existing target listpack	1
+unit/type/list	LMOVE right right with quicklist source and existing target quicklist	1
+unit/type/list	LMOVE right right with the same list as src and dst - listpack	1
+unit/type/list	LMOVE right right with the same list as src and dst - quicklist	1
 unit/type/list	LPOP/RPOP against non existing key in RESP2	1
 unit/type/list	LPOP/RPOP against non existing key in RESP3	1
 unit/type/list	LPOP/RPOP with <count> against non existing key in RESP2	1
 unit/type/list	LPOP/RPOP with <count> against non existing key in RESP3	1
 unit/type/list	LPOP/RPOP with the count 0 returns an empty array in RESP2	1
 unit/type/list	LPOP/RPOP with the count 0 returns an empty array in RESP3	1
-unit/type/list	LPOP/RPOP with wrong number of arguments	1
-unit/type/list	LPOS COUNT + RANK option	1
-unit/type/list	LPOS COUNT option	1
-unit/type/list	LPOS MAXLEN	1
-unit/type/list	LPOS RANK (positive, negative and zero rank) option	1
-unit/type/list	LPOS basic usage	1
-unit/type/list	LPOS no match	1
-unit/type/list	LPOS non existing key	1
-unit/type/list	LPOS when RANK is greater than matches	1
+unit/type/list	LPOP/RPOP with wrong number of arguments	2
+unit/type/list	LPOS COUNT + RANK option	2
+unit/type/list	LPOS COUNT option	2
+unit/type/list	LPOS MAXLEN	2
+unit/type/list	LPOS RANK (positive, negative and zero rank) option	2
+unit/type/list	LPOS basic usage - listpack	1
+unit/type/list	LPOS basic usage - quicklist	1
+unit/type/list	LPOS no match	2
+unit/type/list	LPOS non existing key	2
+unit/type/list	LPOS when RANK is greater than matches	2
 unit/type/list	LPUSH against non-list value error	1
-unit/type/list	LPUSH, RPUSH, LLENGTH, LINDEX, LPOP - regular list	1
-unit/type/list	LPUSH, RPUSH, LLENGTH, LINDEX, LPOP - ziplist	1
+unit/type/list	LPUSH, RPUSH, LLENGTH, LINDEX, LPOP - listpack	1
+unit/type/list	LPUSH, RPUSH, LLENGTH, LINDEX, LPOP - quicklist	1
 unit/type/list	LPUSHX, RPUSHX - generic	1
-unit/type/list	LPUSHX, RPUSHX - linkedlist	1
-unit/type/list	LPUSHX, RPUSHX - ziplist	1
+unit/type/list	LPUSHX, RPUSHX - listpack	1
+unit/type/list	LPUSHX, RPUSHX - quicklist	1
 unit/type/list	LRANGE against non existing key	1
-unit/type/list	LRANGE basics - linkedlist	1
-unit/type/list	LRANGE basics - ziplist	1
-unit/type/list	LRANGE inverted indexes - linkedlist	1
-unit/type/list	LRANGE inverted indexes - ziplist	1
-unit/type/list	LRANGE out of range indexes including the full list - linkedlist	1
-unit/type/list	LRANGE out of range indexes including the full list - ziplist	1
-unit/type/list	LRANGE out of range negative end index - linkedlist	1
-unit/type/list	LRANGE out of range negative end index - ziplist	1
+unit/type/list	LRANGE basics - listpack	1
+unit/type/list	LRANGE basics - quicklist	1
+unit/type/list	LRANGE inverted indexes - listpack	1
+unit/type/list	LRANGE inverted indexes - quicklist	1
+unit/type/list	LRANGE out of range indexes including the full list - listpack	1
+unit/type/list	LRANGE out of range indexes including the full list - quicklist	1
+unit/type/list	LRANGE out of range negative end index - listpack	1
+unit/type/list	LRANGE out of range negative end index - quicklist	1
 unit/type/list	LRANGE with start > end yields an empty array for backward compatibility	1
-unit/type/list	LREM deleting objects that may be int encoded - linkedlist	1
-unit/type/list	LREM deleting objects that may be int encoded - ziplist	1
-unit/type/list	LREM remove all the occurrences - linkedlist	1
-unit/type/list	LREM remove all the occurrences - ziplist	1
-unit/type/list	LREM remove non existing element - linkedlist	1
-unit/type/list	LREM remove non existing element - ziplist	1
-unit/type/list	LREM remove the first occurrence - linkedlist	1
-unit/type/list	LREM remove the first occurrence - ziplist	1
-unit/type/list	LREM starting from tail with negative count (2) - linkedlist	1
-unit/type/list	LREM starting from tail with negative count (2) - ziplist	1
-unit/type/list	LREM starting from tail with negative count - linkedlist	1
-unit/type/list	LREM starting from tail with negative count - ziplist	1
-unit/type/list	LSET - linkedlist	1
-unit/type/list	LSET - ziplist	1
+unit/type/list	LREM deleting objects that may be int encoded - listpack	1
+unit/type/list	LREM deleting objects that may be int encoded - quicklist	1
+unit/type/list	LREM remove all the occurrences - listpack	1
+unit/type/list	LREM remove all the occurrences - quicklist	1
+unit/type/list	LREM remove non existing element - listpack	1
+unit/type/list	LREM remove non existing element - quicklist	1
+unit/type/list	LREM remove the first occurrence - listpack	1
+unit/type/list	LREM remove the first occurrence - quicklist	1
+unit/type/list	LREM starting from tail with negative count (2) - listpack	1
+unit/type/list	LREM starting from tail with negative count (2) - quicklist	1
+unit/type/list	LREM starting from tail with negative count - listpack	1
+unit/type/list	LREM starting from tail with negative count - quicklist	1
+unit/type/list	LSET - listpack	1
+unit/type/list	LSET - quicklist	1
 unit/type/list	LSET against non existing key	1
 unit/type/list	LSET against non list value	1
-unit/type/list	LSET out of range index - linkedlist	1
-unit/type/list	LSET out of range index - ziplist	1
-unit/type/list	LTRIM basics - linkedlist	1
-unit/type/list	LTRIM basics - ziplist	1
-unit/type/list	LTRIM out of range negative end index - linkedlist	1
-unit/type/list	LTRIM out of range negative end index - ziplist	1
-unit/type/list	Mass RPOP/LPOP - quicklist	2
-unit/type/list	RPOP/LPOP with the optional count argument	1
+unit/type/list	LSET out of range index - listpack	1
+unit/type/list	LSET out of range index - quicklist	1
+unit/type/list	LTRIM basics - listpack	1
+unit/type/list	LTRIM basics - quicklist	1
+unit/type/list	LTRIM out of range negative end index - listpack	1
+unit/type/list	LTRIM out of range negative end index - quicklist	1
+unit/type/list	List invalid list-max-listpack-size config	1
+unit/type/list	List listpack -> quicklist encoding conversion	2
+unit/type/list	List quicklist -> listpack encoding conversion	1
+unit/type/list	Mass RPOP/LPOP - listpack	2
+unit/type/list	RPOP/LPOP with the optional count argument - listpack	1
+unit/type/list	RPOP/LPOP with the optional count argument - quicklist	1
 unit/type/list	RPOPLPUSH against non existing key	1
 unit/type/list	RPOPLPUSH against non existing src key	1
-unit/type/list	RPOPLPUSH against non list dst key	1
+unit/type/list	RPOPLPUSH against non list dst key - listpack	1
+unit/type/list	RPOPLPUSH against non list dst key - quicklist	1
 unit/type/list	RPOPLPUSH against non list src key	1
-unit/type/list	RPOPLPUSH base case - linkedlist	1
-unit/type/list	RPOPLPUSH base case - ziplist	1
-unit/type/list	RPOPLPUSH with linkedlist source and existing target linkedlist	1
-unit/type/list	RPOPLPUSH with linkedlist source and existing target ziplist	1
-unit/type/list	RPOPLPUSH with the same list as src and dst - linkedlist	1
-unit/type/list	RPOPLPUSH with the same list as src and dst - ziplist	1
-unit/type/list	RPOPLPUSH with ziplist source and existing target linkedlist	1
-unit/type/list	RPOPLPUSH with ziplist source and existing target ziplist	1
+unit/type/list	RPOPLPUSH base case - listpack	1
+unit/type/list	RPOPLPUSH base case - quicklist	1
+unit/type/list	RPOPLPUSH with listpack source and existing target listpack	1
+unit/type/list	RPOPLPUSH with listpack source and existing target quicklist	1
+unit/type/list	RPOPLPUSH with quicklist source and existing target listpack	1
+unit/type/list	RPOPLPUSH with quicklist source and existing target quicklist	1
+unit/type/list	RPOPLPUSH with the same list as src and dst - listpack	1
+unit/type/list	RPOPLPUSH with the same list as src and dst - quicklist	1
 unit/type/list	RPUSH against non-list value error	1
-unit/type/list	Regression for bug 593 - chaining BRPOPLPUSH with other blocking cmds	1
 unit/type/list	Variadic RPUSH/LPUSH	1
 unit/type/list	reg node check compression combined with trim	1
 unit/type/list	reg node check compression with insert and pop	1
 unit/type/list	reg node check compression with lset	1
-unit/type/list-2	LTRIM stress testing - linkedlist	1
-unit/type/list-2	LTRIM stress testing - ziplist	1
+unit/type/list-2	LTRIM stress testing - listpack	1
+unit/type/list-2	LTRIM stress testing - quicklist	1
 unit/type/list-3	Check compression with recompress	1
 unit/type/list-3	Crash due to wrongly recompress after lrem	1
 unit/type/list-3	Explicit regression for a list bug	1
@@ -348,51 +366,61 @@ unit/type/list-3	Stress tester for #3343-alike bugs comp: 1	1
 unit/type/list-3	Stress tester for #3343-alike bugs comp: 2	1
 unit/type/list-3	ziplist implementation: encoding stress testing	1
 unit/type/list-3	ziplist implementation: value encoding and backlink	1
-unit/type/set	Generated sets must be encoded as hashtable	1
-unit/type/set	Generated sets must be encoded as intset	1
-unit/type/set	SADD a non-integer against an intset	1
+unit/type/set	Generated sets must be encoded correctly - intset	1
+unit/type/set	Generated sets must be encoded correctly - regular	1
+unit/type/set	SADD a non-integer against a large intset	1
+unit/type/set	SADD a non-integer against a small intset	1
 unit/type/set	SADD against non set	1
 unit/type/set	SADD an integer larger than 64 bits	1
-unit/type/set	SADD overflows the maximum allowed integers in an intset	1
+unit/type/set	SADD an integer larger than 64 bits to a large intset	1
+unit/type/set	SADD overflows the maximum allowed elements in a listpack - multiple	1
+unit/type/set	SADD overflows the maximum allowed elements in a listpack - single	1
+unit/type/set	SADD overflows the maximum allowed elements in a listpack - single_multiple	1
+unit/type/set	SADD overflows the maximum allowed integers in an intset - multiple	1
+unit/type/set	SADD overflows the maximum allowed integers in an intset - single	1
+unit/type/set	SADD overflows the maximum allowed integers in an intset - single_multiple	1
+unit/type/set	SADD, SCARD, SISMEMBER, SMISMEMBER, SMEMBERS basics - hashtable	1
 unit/type/set	SADD, SCARD, SISMEMBER, SMISMEMBER, SMEMBERS basics - intset	1
-unit/type/set	SADD, SCARD, SISMEMBER, SMISMEMBER, SMEMBERS basics - regular set	1
+unit/type/set	SADD, SCARD, SISMEMBER, SMISMEMBER, SMEMBERS basics - listpack	1
 unit/type/set	SDIFF against non-set should throw error	1
 unit/type/set	SDIFF fuzzing	1
 unit/type/set	SDIFF should handle non existing key as empty	1
 unit/type/set	SDIFF with first set empty	1
 unit/type/set	SDIFF with same set two times	1
-unit/type/set	SDIFF with three sets - hashtable	1
 unit/type/set	SDIFF with three sets - intset	1
-unit/type/set	SDIFF with two sets - hashtable	1
+unit/type/set	SDIFF with three sets - regular	1
 unit/type/set	SDIFF with two sets - intset	1
+unit/type/set	SDIFF with two sets - regular	1
 unit/type/set	SDIFFSTORE against non-set should throw error	1
 unit/type/set	SDIFFSTORE should handle non existing key as empty	1
-unit/type/set	SDIFFSTORE with three sets - hashtable	1
 unit/type/set	SDIFFSTORE with three sets - intset	1
+unit/type/set	SDIFFSTORE with three sets - regular	1
 unit/type/set	SINTER against non-set should throw error	1
-unit/type/set	SINTER against three sets - hashtable	1
 unit/type/set	SINTER against three sets - intset	1
+unit/type/set	SINTER against three sets - regular	1
 unit/type/set	SINTER should handle non existing key as empty	1
 unit/type/set	SINTER with same integer elements but different encoding	1
-unit/type/set	SINTER with two sets - hashtable	1
 unit/type/set	SINTER with two sets - intset	1
-unit/type/set	SINTER/SUNION/SDIFF with three same sets - hashtable	1
+unit/type/set	SINTER with two sets - regular	1
 unit/type/set	SINTER/SUNION/SDIFF with three same sets - intset	1
+unit/type/set	SINTER/SUNION/SDIFF with three same sets - regular	1
 unit/type/set	SINTERCARD against non-existing key	1
 unit/type/set	SINTERCARD against non-set should throw error	1
-unit/type/set	SINTERCARD against three sets - hashtable	1
 unit/type/set	SINTERCARD against three sets - intset	1
+unit/type/set	SINTERCARD against three sets - regular	1
 unit/type/set	SINTERCARD with illegal arguments	1
-unit/type/set	SINTERCARD with two sets - hashtable	1
 unit/type/set	SINTERCARD with two sets - intset	1
+unit/type/set	SINTERCARD with two sets - regular	1
 unit/type/set	SINTERSTORE against non existing keys should delete dstkey	1
 unit/type/set	SINTERSTORE against non-set should throw error	1
-unit/type/set	SINTERSTORE with three sets - hashtable	1
 unit/type/set	SINTERSTORE with three sets - intset	1
-unit/type/set	SINTERSTORE with two sets - hashtable	1
+unit/type/set	SINTERSTORE with three sets - regular	1
+unit/type/set	SINTERSTORE with two hashtable sets where result is intset	1
+unit/type/set	SINTERSTORE with two listpack sets where result is intset	1
 unit/type/set	SINTERSTORE with two sets - intset	1
-unit/type/set	SMISMEMBER against non set	1
-unit/type/set	SMISMEMBER non existing key	1
+unit/type/set	SINTERSTORE with two sets - regular	1
+unit/type/set	SMISMEMBER SMEMBERS SCARD against non existing key	1
+unit/type/set	SMISMEMBER SMEMBERS SCARD against non set	1
 unit/type/set	SMISMEMBER requires one or more members	1
 unit/type/set	SMOVE basics - from intset to regular set	1
 unit/type/set	SMOVE basics - from regular set to intset	1
@@ -403,44 +431,54 @@ unit/type/set	SMOVE non existing src set	1
 unit/type/set	SMOVE with identical source and destination	1
 unit/type/set	SMOVE wrong dst key type	1
 unit/type/set	SMOVE wrong src key type	1
-unit/type/set	SPOP basics - hashtable	1
 unit/type/set	SPOP basics - intset	1
-unit/type/set	SPOP new implementation: code path #1	1
-unit/type/set	SPOP new implementation: code path #2	1
-unit/type/set	SPOP new implementation: code path #3	1
+unit/type/set	SPOP basics - listpack	1
+unit/type/set	SPOP integer from listpack set	1
+unit/type/set	SPOP new implementation: code path #1 intset	1
+unit/type/set	SPOP new implementation: code path #1 listpack	1
+unit/type/set	SPOP new implementation: code path #2 intset	1
+unit/type/set	SPOP new implementation: code path #2 listpack	1
+unit/type/set	SPOP new implementation: code path #3 intset	1
+unit/type/set	SPOP new implementation: code path #3 listpack	1
 unit/type/set	SPOP using integers with Knuth's algorithm	1
 unit/type/set	SPOP using integers, testing Knuth's and Floyd's algorithm	1
-unit/type/set	SPOP with <count>	2
-unit/type/set	SPOP with <count>=1 - hashtable	1
+unit/type/set	SPOP with <count> - hashtable	1
+unit/type/set	SPOP with <count> - intset	1
+unit/type/set	SPOP with <count> - listpack	1
 unit/type/set	SPOP with <count>=1 - intset	1
-unit/type/set	SRANDMEMBER - hashtable	1
+unit/type/set	SPOP with <count>=1 - listpack	1
 unit/type/set	SRANDMEMBER - intset	1
+unit/type/set	SRANDMEMBER - listpack	1
 unit/type/set	SRANDMEMBER count of 0 is handled correctly	1
 unit/type/set	SRANDMEMBER count of 0 is handled correctly - emptyarray	1
 unit/type/set	SRANDMEMBER count overflow	1
 unit/type/set	SRANDMEMBER with <count> - hashtable	1
 unit/type/set	SRANDMEMBER with <count> - intset	1
+unit/type/set	SRANDMEMBER with <count> - listpack	1
 unit/type/set	SRANDMEMBER with <count> against non existing key	1
 unit/type/set	SRANDMEMBER with <count> against non existing key - emptyarray	1
+unit/type/set	SREM basics - $type	2
 unit/type/set	SREM basics - intset	1
-unit/type/set	SREM basics - regular set	1
 unit/type/set	SREM variadic version with more args needed to destroy the key	1
 unit/type/set	SREM with multiple arguments	1
 unit/type/set	SUNION against non-set should throw error	1
+unit/type/set	SUNION hashtable and listpack	1
 unit/type/set	SUNION should handle non existing key as empty	1
-unit/type/set	SUNION with non existing keys - hashtable	1
 unit/type/set	SUNION with non existing keys - intset	1
-unit/type/set	SUNION with two sets - hashtable	1
+unit/type/set	SUNION with non existing keys - regular	1
 unit/type/set	SUNION with two sets - intset	1
+unit/type/set	SUNION with two sets - regular	1
 unit/type/set	SUNIONSTORE against non existing keys should delete dstkey	1
 unit/type/set	SUNIONSTORE against non-set should throw error	1
 unit/type/set	SUNIONSTORE should handle non existing key as empty	1
-unit/type/set	SUNIONSTORE with two sets - hashtable	1
 unit/type/set	SUNIONSTORE with two sets - intset	1
+unit/type/set	SUNIONSTORE with two sets - regular	1
 unit/type/set	Variadic SADD	1
 unit/type/set	intsets implementation stress testing	1
 unit/type/stream	XADD with ID 0-0	1
 unit/type/stream-cgroups	XGROUP CREATE: automatic stream creation fails without MKSTREAM	1
+unit/type/string	APPEND modifies the encoding from int to raw	1
+unit/type/string	Coverage: SUBSTR	1
 unit/type/string	DBSIZE should be 10000 now	1
 unit/type/string	Extended SET EX option	1
 unit/type/string	Extended SET EXAT option	1
@@ -463,12 +501,14 @@ unit/type/string	GETEX EXAT option	1
 unit/type/string	GETEX PERSIST option	1
 unit/type/string	GETEX PX option	1
 unit/type/string	GETEX PXAT option	1
+unit/type/string	GETEX and GET expired key or not exist	1
 unit/type/string	GETEX no arguments	1
 unit/type/string	GETEX no option	1
 unit/type/string	GETEX syntax errors	1
 unit/type/string	GETRANGE against integer-encoded value	1
 unit/type/string	GETRANGE against non-existing key	1
 unit/type/string	GETRANGE against string value	1
+unit/type/string	GETRANGE against wrong key type	1
 unit/type/string	GETRANGE fuzzing	1
 unit/type/string	GETRANGE with huge ranges, Github issue #1844	1
 unit/type/string	GETSET (replace old value)	1
@@ -477,6 +517,7 @@ unit/type/string	MGET	1
 unit/type/string	MGET against non existing key	1
 unit/type/string	MGET against non-string key	1
 unit/type/string	MSET base case	1
+unit/type/string	MSET with already existing - same key twice	1
 unit/type/string	MSET/MSETNX wrong number of args	1
 unit/type/string	MSETNX with already existent key	1
 unit/type/string	MSETNX with already existing keys - same key twice	1
@@ -501,11 +542,14 @@ unit/type/string	STRLEN against plain string	1
 unit/type/string	Very big payload in GET/SET	1
 unit/type/string	Very big payload random access	1
 unit/type/zset	Basic ZPOPMIN/ZPOPMAX - listpack RESP3	1
-unit/type/zset	Basic ZPOPMIN/ZPOPMAX - skiplist RESP3	1
 unit/type/zset	Check encoding - listpack	1
 unit/type/zset	Check encoding - skiplist	1
-unit/type/zset	ZADD - Variadic version does not add nothing on single parsing err - $encoding	2
-unit/type/zset	ZADD - Variadic version will raise error on missing arg - $encoding	2
+unit/type/zset	ZADD - Return value is the number of actually added items - listpack	1
+unit/type/zset	ZADD - Variadic version base case - listpack	1
+unit/type/zset	ZADD - Variadic version does not add nothing on single parsing err - listpack	1
+unit/type/zset	ZADD - Variadic version does not add nothing on single parsing err - skiplist	1
+unit/type/zset	ZADD - Variadic version will raise error on missing arg - listpack	1
+unit/type/zset	ZADD - Variadic version will raise error on missing arg - skiplist	1
 unit/type/zset	ZADD CH option changes return value to all changed elements - listpack	1
 unit/type/zset	ZADD CH option changes return value to all changed elements - skiplist	1
 unit/type/zset	ZADD GT XX updates existing elements when new scores are greater and skips new elements - listpack	1
@@ -552,49 +596,32 @@ unit/type/zset	ZINCRBY - can create a new sorted set - listpack	1
 unit/type/zset	ZINCRBY - increment and decrement - listpack	1
 unit/type/zset	ZINCRBY calls leading to NaN result in error - listpack	1
 unit/type/zset	ZINCRBY calls leading to NaN result in error - skiplist	1
-unit/type/zset	ZINCRBY does not work variadic even if shares ZADD implementation - $encoding	2
+unit/type/zset	ZINCRBY does not work variadic even if shares ZADD implementation - listpack	1
+unit/type/zset	ZINCRBY does not work variadic even if shares ZADD implementation - skiplist	1
 unit/type/zset	ZINCRBY return value - listpack	1
-unit/type/zset	ZINCRBY return value - skiplist	1
 unit/type/zset	ZLEXCOUNT advanced - listpack	1
-unit/type/zset	ZLEXCOUNT advanced - skiplist	1
-unit/type/zset	ZPOPMAX with negative count	2
-unit/type/zset	ZPOPMAX with the count 0 returns an empty array	2
-unit/type/zset	ZPOPMIN with negative count	2
-unit/type/zset	ZPOPMIN with the count 0 returns an empty array	2
-unit/type/zset	ZPOPMIN/ZPOPMAX readraw in RESP3	1
 unit/type/zset	ZPOPMIN/ZPOPMAX with count - listpack RESP3	1
-unit/type/zset	ZPOPMIN/ZPOPMAX with count - skiplist RESP3	1
 unit/type/zset	ZRANGE basics - listpack	1
 unit/type/zset	ZRANGEBYLEX with invalid lex range specifiers - listpack	1
-unit/type/zset	ZRANGEBYLEX with invalid lex range specifiers - skiplist	1
 unit/type/zset	ZRANGEBYLEX/ZREVRANGEBYLEX/ZLEXCOUNT basics - listpack	1
-unit/type/zset	ZRANGEBYLEX/ZREVRANGEBYLEX/ZLEXCOUNT basics - skiplist	1
 unit/type/zset	ZRANGEBYSCORE with LIMIT - listpack	1
-unit/type/zset	ZRANGEBYSCORE with LIMIT - skiplist	1
 unit/type/zset	ZRANGEBYSCORE with LIMIT and WITHSCORES - listpack	1
 unit/type/zset	ZRANGEBYSCORE with WITHSCORES - listpack	1
 unit/type/zset	ZRANGEBYSCORE with non-value min or max - listpack	1
-unit/type/zset	ZRANGEBYSCORE with non-value min or max - skiplist	1
 unit/type/zset	ZRANGEBYSCORE/ZREVRANGEBYSCORE/ZCOUNT basics - listpack	1
-unit/type/zset	ZRANGEBYSCORE/ZREVRANGEBYSCORE/ZCOUNT basics - skiplist	1
 unit/type/zset	ZRANGEBYSLEX with LIMIT - listpack	1
-unit/type/zset	ZRANGEBYSLEX with LIMIT - skiplist	1
 unit/type/zset	ZRANK - after deletion - listpack	1
-unit/type/zset	ZRANK - after deletion - skiplist	1
 unit/type/zset	ZRANK/ZREVRANK basics - listpack	1
-unit/type/zset	ZRANK/ZREVRANK basics - skiplist	1
 unit/type/zset	ZREM removes key after last element is removed - listpack	1
 unit/type/zset	ZREM removes key after last element is removed - skiplist	1
 unit/type/zset	ZREM variadic version - listpack	1
 unit/type/zset	ZREM variadic version - skiplist	1
 unit/type/zset	ZREM variadic version -- remove elements after key deletion - listpack	1
 unit/type/zset	ZREM variadic version -- remove elements after key deletion - skiplist	1
+unit/type/zset	ZREMRANGEBYLEX basics - listpack	1
 unit/type/zset	ZREMRANGEBYRANK basics - listpack	1
-unit/type/zset	ZREMRANGEBYRANK basics - skiplist	1
 unit/type/zset	ZREMRANGEBYSCORE basics - listpack	1
-unit/type/zset	ZREMRANGEBYSCORE basics - skiplist	1
 unit/type/zset	ZREMRANGEBYSCORE with non-value min or max - listpack	1
-unit/type/zset	ZREMRANGEBYSCORE with non-value min or max - skiplist	1
 unit/type/zset	ZREVRANGE basics - listpack	1
 unit/type/zset	ZSET basic ZADD and score update - listpack	1
 unit/type/zset	ZSET basic ZADD and score update - skiplist	1

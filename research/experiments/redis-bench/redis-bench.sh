@@ -995,8 +995,8 @@ if [ "$MODE" = workloads ]; then
     if [ -n "$memory_workloads" ]; then
         reference_version=$(redis-server --version)
         case " $reference_version " in
-            *" v=7.0.15 "*) ;;
-            *) echo "memory workloads require Redis 7.0.15: $reference_version" >&2; exit 1 ;;
+            *" v=7.2.16 "*) ;;
+            *) echo "memory workloads require Redis 7.2.16: $reference_version" >&2; exit 1 ;;
         esac
     fi
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"

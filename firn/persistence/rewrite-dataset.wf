@@ -196,9 +196,9 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
       Some(value: bytes) => {
         if okay {
           let appended = append_all(factory: factory, file: file, source: &bytes);
-          if appended == bytes.inner.len {
-            set size = size +sat appended;
-            set emitted = appended;
+          if appended.written == bytes.inner.len {
+            set size = size +sat appended.written;
+            set emitted = appended.written;
             if selecting {
               set selected = True();
             }

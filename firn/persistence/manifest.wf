@@ -488,7 +488,7 @@ fn aof_replace_record(reporting: &Option<Keyspace>, factory: &HandleFactory, wri
       match std::fs::truncate_file(factory: factory, file: &opened, length: 0_u64) {
         Ok(value: cut) => {
           let count = append_all(factory: factory, file: &opened, source: contents);
-          if count == contents^.inner.len {
+          if count.written == contents^.inner.len {
             match sync_file(factory: factory, file: &opened) {
               Ok(value: synced) => {
                 set accepted = True();

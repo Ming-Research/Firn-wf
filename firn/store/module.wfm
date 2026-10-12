@@ -163,7 +163,7 @@ public struct EvictionCandidate {
 }
 
 public struct Meta {
-  doc "What the keyspace keeps beside its keys: the queued expiries, the dataset statement sequence and capture-exhaustion state, the append-only file's collecting buffer and published writer capacity, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the active-file byte count and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion, automatic thresholds and the rdb-key-save-delay testing delay the scan reads at each step, the clients connected, whether the server is stopping, and the state SPOP draws from. aof_rewrite_journal_leftover records the latest failed removal of an unlisted temporary journal until a later removal or absence is observed; admission does not reset it and it is not a filesystem stat.";
+  doc "What the keyspace keeps beside its keys: the queued expiries, the dataset statement sequence and capture-exhaustion state, the append-only file's collecting buffer, published retained length/capacity, saved append/sync IoErrors and partial-append marker, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the total active-file and current incremental byte counts and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion, automatic thresholds and the rdb-key-save-delay testing delay the scan reads at each step, the clients connected, whether the server is stopping, and the state SPOP draws from. aof_rewrite_journal_leftover records the latest failed removal of an unlisted temporary journal until a later removal or absence is observed; admission does not reset it and it is not a filesystem stat.";
   public due: ExpiryQueue;
   public commit_seq: u64;
   public aof_rewrite_seq_exhausted: Bool;
@@ -175,6 +175,10 @@ public struct Meta {
   public aof_rewrite_journal_leftover: Bool;
   public log: Box<Slots<u8>>;
   public aof_pending_capacity: u64;
+  public aof_pending_length: u64;
+  public aof_append_error: Option<std::io::IoError>;
+  public aof_sync_error: Option<std::io::IoError>;
+  public aof_append_partial: Bool;
   public memory_peak: u64;
   public evicted_keys: u64;
   public expired_keys: u64;
@@ -185,6 +189,7 @@ public struct Meta {
   public eviction_searching: Bool;
   public eviction_wrapped: Bool;
   public aof_current_size: u64;
+  public aof_incr_size: u64;
   public aof_base_size: u64;
   public aof_rewrite_in_progress: Bool;
   public aof_rewrite_requested: Bool;
@@ -201,6 +206,10 @@ public struct Meta {
   public random: u64;
 }
 
+public fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_described selects the error the refusal describes.";
+
+public fn aof_error_described(meta: &Meta) -> described: Option<std::io::IoError> reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error) doc "The error whose host description follows the MISCONF prefix, as Redis 7.0.15 writeCommandsDeniedByDiskError (server.c:4324-4344) selects aof_last_write_errno: a failed append's own error when nothing of it was written (aof.c:1157-1162); otherwise the sync error (aof_bio_fsync_errno). A partial append reports ENOSPC whatever the host returned (aof.c:1163-1184); std names no host code for that class, so it yields None, pending board item firn-req-enospc-text.";
+
 public struct MemoryConfig {
   doc "Redis 7.0.15 config.c memory settings; policies use maxmemory_policy_enum order, with noeviction at 7. Access tracking and command admission share each connection read's snapshot, refreshed after its own CONFIG SET.";
   public maxmemory: u64;
@@ -212,12 +221,12 @@ public struct MemoryConfig {
 }
 
 public struct ServerState {
-  doc "What the server keeps beside the keyspace that every connection reaches: the password clients must give, empty for none, and how many seconds a silent client is kept, zero for no limit, which CONFIG SET changes; the current receive wake source, replaced with each idle-limit change and fired after replacement or a shutdown request, outside the atomic statement; the values of the parameters whose only effect in Redis is on its internal encodings, which CONFIG SET sets and CONFIG GET reports and firn does not use, in the order of their names: hash-max-listpack-entries, hash-max-listpack-value, list-compress-depth, list-max-listpack-size, set-max-intset-entries, stream-node-max-bytes, stream-node-max-entries, zset-max-listpack-entries and zset-max-listpack-value; how many connections the server has accepted since it started or CONFIG RESETSTAT last ran; the shutdown request, which SHUTDOWN and a stop signal set and main sets again with Meta.stopping, separate from it until every client has left; the calendar time in milliseconds at which it started, which INFO's uptime counts from; and the six maxmemory and LFU settings CONFIG exposes.";
+  doc "What the server keeps beside the keyspace that every connection reaches: the password clients must give, empty for none, and how many seconds a silent client is kept, zero for no limit, which CONFIG SET changes; the current receive wake source, replaced with each idle-limit change and fired after replacement or a shutdown request, outside the atomic statement; the values of the parameters whose only effect in Redis is on its internal encodings, which CONFIG SET sets and CONFIG GET reports and firn does not use, in the order of their names: hash-max-listpack-entries, hash-max-listpack-value, list-compress-depth, list-max-listpack-size, set-max-intset-entries, set-max-listpack-entries, set-max-listpack-value, stream-node-max-bytes, stream-node-max-entries, zset-max-listpack-entries and zset-max-listpack-value; how many connections the server has accepted since it started or CONFIG RESETSTAT last ran; the shutdown request, which SHUTDOWN and a stop signal set and main sets again with Meta.stopping, separate from it until every client has left; the calendar time in milliseconds at which it started, which INFO's uptime counts from; and the six maxmemory and LFU settings CONFIG exposes.";
   public password: Bytes;
   public timeout: u64;
   public wake: CancelSource;
   public shutdown: Bool;
-  public encodings: Array<i64, 9>;
+  public encodings: Array<i64, 11>;
   public connections: u64;
   public started: u64;
   public memory: MemoryConfig;
