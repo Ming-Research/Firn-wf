@@ -16,7 +16,10 @@ success. Ordinary rewrite rotation preserves both error states
 (`aof.c:790-852`); `aof.c:999-1013` resets them only when CONFIG re-enables AOF,
 not when a rewrite opens a new increment. This corrects the earlier investigation's
 overbroad reopening summary.
-`server.c:1384-1393` retries failed appends about once per second.
+Failed appends are retried from `beforeSleep` on every event-loop iteration
+(`server.c:1660-1666`), at least hz (default 10) times a second, besides the
+once-per-second `serverCron` retry (`server.c:1384-1393`). An earlier version of
+this record cited only the cron retry and concluded once per second.
 
 `server.c:3881-3905,4324-4353` refuses CMD_WRITE and PING after command validation,
 authentication and eviction; reads remain available. `multi.c:85-87,105-109,
@@ -53,8 +56,10 @@ as [below](#misconf-description-whitefoot-v0132).
 
 Rollback partial appends before retrying, retaining either the whole buffer or
 only its unwritten suffix according to truncation success. Track the incremental
-size separately from total AOF size. Retry failed appends and syncs about once per
-second. Idle sync retry deliberately differs from Redis's new-byte-dependent
+size separately from total AOF size. Retry failed appends every 100 ms, Redis's
+idle cadence at hz 10, and failed syncs once per second while idle; only an
+attempted append or sync that fails counts as a writer failure for an active
+rewrite. Idle sync retry deliberately differs from Redis's new-byte-dependent
 scheduling (`aof.c:1067-1089,1255-1261`), avoiding a permanently latched idle error.
 Preserve health when rotation installs a new incremental file; successful drain
 and sync before rotation can clear their respective errors normally. Preserve
@@ -113,12 +118,13 @@ sync failure and failed truncate receive source review only.
 Implemented on the uncommitted worktree based on
 `8967d1f4af6b3e5042e56bf3b0235cd8524565bb` (`origin/main`). These are source and
 check-only results, not executed fault experiments. The design-tree additions
-remain proposed; no approval record was written. `whitefoot.pin` remains
-`wf-a3205af0bbea` and no submodule moved.
+remain proposed; no approval record was written. At this step `whitefoot.pin`
+remained `wf-a3205af0bbea` and no submodule moved; the branch now pins
+`wf-94d353e33034` (specification v0.132) for `error_copy_description`.
 
 | File, relative to the repository | Change |
 | --- | --- |
-| `firn/modules.wfg` | Declare store's direct `std::io` dependency for saved errors. |
+| `firn/modules.wfg` | Declare store's direct `std::io` dependency for saved errors, and later protocol's for describing them in the MISCONF reply. |
 | `firn/store/module.wfm` | Meta's append/sync errors, partial-result flag, incremental size and retained length; shared health query. |
 | `firn/store/store.wf` | Initialize those fields and implement the health query. |
 | `firn/persistence/persistence.wf` | Return append progress with its terminal error; track append retry time and exit after the final forced attempt. |
@@ -191,7 +197,9 @@ refusals were corrected against the pinned syntax and module rules:
   transaction field and `writing` for local values.
 
 These were source mistakes, not semantic language gaps. The known native error
-text gap `firn-req-io-error-text` remains pending, with prefix-only assertions;
+text gap `firn-req-io-error-text` was then pending, with prefix-only assertions;
+it is superseded by the [MISCONF description](#misconf-description-whitefoot-v0132)
+section;
 no new Whitefoot gap was found or filed. No build, Rust compilation, runtime
 test, CI run, GitHub operation, board update or commit was performed. Native
 and fallback RLIMIT behavior, call/pcall wire output, recovery and shutdown
@@ -258,5 +266,29 @@ host's `No space left on device`. firn leaves that suffix empty, filed as
 Whitefoot item `firn-req-enospc-text`; the case asserting the ENOSPC text is
 ignored with that key.
 
-Status: implemented on the work branch and accepted by the wf-94d353e33034
-compiler's check-only mode. Runtime results await CI.
+Status: implemented on the work branch. The gate at `36ac0a5`
+([run 38203897532](https://github.com/Ming-Research/Firn-wf/actions/runs/38203897532))
+passed, including the four `aof_write_errors` cases on both routes with their
+full `File too large` assertions; the short-write ENOSPC case is ignored,
+citing `firn-req-enospc-text`.
+
+## Completion review fixes
+
+- A writer tick on which a failed append's retry is not yet due attempts no
+  I/O. It used to report the flush as failed, so an active rewrite aborted as
+  `writer_io` before any real failure; only an attempted append that does not
+  drain, or a counted sync failure, now aborts it, and the rewrite reports the
+  attempted append's `drain`. The case
+  `aof_rewrite_during_latched_append_error_reports_the_attempted_drain`
+  starts a rewrite while an append error is latched and requires `drain`.
+- The append retry cadence follows Redis's event loop (every 100 ms) instead
+  of the once-per-second cron retry; the idle sync retry stays once per second.
+  No test pins the cadence: a timing bound tight enough to separate 100 ms from
+  one second would be a CI timing assertion.
+- Queued MULTI commands no longer take a second Meta hold: Redis reads the
+  disk status once in `processCommand` before `queueMultiCommand`, and firn's
+  admission check already refuses and dirties the queue; EXEC and each
+  mutation recheck under their own hold.
+- Scripts that hold only their declared keys (Firn-wf#47) check the AOF
+  status in shared script admission, between arity and DENYOOM as
+  `scriptCall` orders them (`script.c:530-557`), with the attempt's held Meta.

@@ -185,8 +185,9 @@ fn aof_failure_refuses_write_flags_and_ping_and_recovers_without_new_writes() {
         assert_eq!(memory_request(&mut client, &["AUTH", "secret"]), "+OK\r\n");
         misconf(&memory_request(&mut client, &["SET", "absent", "v"]), MISCONF);
         file_limit(&child, old.soft);
-        // INFO is the only traffic during recovery: server.c:1384-1393's
-        // once-per-second append retry must recover without a client write.
+        // INFO is the only traffic during recovery: Redis retries a retained
+        // buffer from beforeSleep (server.c:1660-1666) and serverCron
+        // (server.c:1384-1393), so recovery needs no client write.
         let recovered = wait_status(&mut client, "ok");
         assert_eq!(info_field(&recovered, "aof_buffer_length").as_deref(), Some("0"));
         expected.extend(resp(&["SET", "retained", "r"]));
@@ -217,6 +218,11 @@ fn aof_failure_transaction_admission_and_legacy_script_first_write() {
         let pcall_source = "local e=redis.pcall('DEL','missing'); return {e.err,redis.call('GET','readable')}";
         other.write_all(&resp(&["SCRIPT", "LOAD", pcall_source])).unwrap();
         let pcall_sha = bulk_reply(&mut other, "load pcall legacy script");
+        // Every key is declared, so this runs as a declared-entry attempt
+        // (Firn-wf#47) rather than the whole-keyspace fallback above.
+        let declared_source = "redis.call('GET',KEYS[1]); return redis.call('DEL',KEYS[2])";
+        other.write_all(&resp(&["SCRIPT", "LOAD", declared_source])).unwrap();
+        let declared_sha = bulk_reply(&mut other, "load declared-key legacy script");
         assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
         assert_eq!(memory_request(&mut client, &["INCR", "queued"]), "+QUEUED\r\n");
         // PING is refused at queue admission but is not CMD_WRITE: Redis
@@ -247,6 +253,10 @@ fn aof_failure_transaction_admission_and_legacy_script_first_write() {
             // the script and line (script_lua.c:1711-1722).
             let raised = memory_request(&mut client, &[name, call, "0"]);
             assert_eq!(raised, format!("{MISCONF}{EFBIG_TEXT} script: {call_sha}, on @user_script:1.\r\n"), "redis.call must raise");
+            let declared = if name == "EVAL" { declared_source } else { &declared_sha };
+            assert_eq!(memory_request(&mut client, &[name, declared, "2", "readable", "missing"]),
+                format!("{MISCONF}{EFBIG_TEXT} script: {declared_sha}, on @user_script:1.\r\n"),
+                "declared-entry attempt checks the held Meta at its first write");
             let pcall = if name == "EVAL" { pcall_source } else { &pcall_sha };
             client.write_all(&resp(&[name, pcall, "0"])).unwrap();
             assert_eq!(reply_line(&mut client, "pcall result"), "*2\r\n");
@@ -303,6 +313,38 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
             "*3\r\n$6\r\nbefore\r\n$6\r\nduring\r\n$4\r\nlast\r\n");
         stop(&mut reader, replayed);
         assert_eq!(std::fs::read(path).unwrap(), expected, "replay adds no records");
+    }
+}
+
+/// A rewrite admitted while an append error is latched must name the first
+/// real failure (capture.md's first-cause diagnostics): the writer's next
+/// attempted append fails and latches `drain`. A tick on which the append
+/// retry is not yet due attempts nothing and must not abort the rewrite as
+/// `writer_io`. The 5000 keys keep the scan running past the first ticks, so
+/// the cut's own drain is not what latches the cause.
+#[test]
+fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
+    for native in [false, true] {
+        let program = CompiledProgram::from_environment();
+        let (child, mut client, _) = start(&program, native);
+        let path = incremental(&program);
+        let mut args = vec!["MSET".to_owned()];
+        for index in 0..5000 {
+            args.push(format!("key:{index}"));
+            args.push("v".to_owned());
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        assert_eq!(memory_request(&mut client, &args), "+OK\r\n");
+        wait_bytes(&path, &resp(&args));
+        wait_empty_healthy_buffer(&mut client);
+        let old = fault(&child, &mut client, &path);
+        rewrite_start(&mut client);
+        let info = rewrite_wait(&mut client);
+        assert_eq!(info["aof_last_bgrewrite_status"], "err");
+        assert_eq!(info["firn_aof_rewrite_abort_reason"], "drain", "first real failure, not a deferred retry: {info:?}");
+        file_limit(&child, old.soft);
+        wait_status(&mut client, "ok");
+        stop(&mut client, child);
     }
 }
 
