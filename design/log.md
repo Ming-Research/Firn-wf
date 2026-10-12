@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-12 Keep a raised script error's reply on one line
+
+Nodes: firn/scripts
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A (approve) on card firn-q-script-error-crlf-tree, which asked to approve PR #62's design-tree change at head 14841e0: a raised script error written as Redis 7.2.13 and later write it, every carriage return and line feed as a space, with writing it raw as Redis 7.0.15 does rejected.
+
+Summary: A script that raises an error whose text holds CR or LF no longer splits its reply into replies the client reads as answers to its next commands. firn writes a raised error as Redis 7.2.13 and later do (addReplyErrorSdsExSafe), the reference Redis 7.2.16 included; 7.0.15 wrote the raw bytes, a defect Redis fixed as a security issue. Returned error tables and compile errors were already one line in both versions; firn's compile-error path, which wrote Halo's message raw, now matches them.
+
 ## 2026-10-12 Raise the heap peak only past a connection's last seen peak
 
 Nodes: firn/memory-limit
