@@ -5,6 +5,7 @@
 mod support;
 mod memory_limit;
 mod aof_write_errors;
+mod aof_sync_fault;
 mod rewrite_sequence;
 mod rewrite_scan;
 

@@ -87,3 +87,78 @@ jobs:
         with:
           name: redis-suite-${{ github.sha }}
           path: build/redis-suite
+
+  # The append-only file's sync failing on a real device:
+  # tests/aof_sync_fault_device.sh makes a device-mapper device whose writes
+  # and flushes fail on command, under an ext4 filesystem the case runs firn
+  # and Redis 7.2.16, its oracle, on. The case is ignored in `make check`,
+  # which has no such device; here it runs alone, and a device that cannot be
+  # made, a missing oracle or a run that passes no case fails the job.
+  aof-sync-fault:
+    name: AOF sync failure on a faulty device
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      REDIS_VERSION: 7.2.16
+      REDIS_SHA256: 960a8ec15e34ff40e57ff16837b26b33bd81f2da6d24497bb63de532a323a18e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # As in `check`: the cached test build links with /usr/bin/clang and
+      # LLD of the pinned release's LLVM major. dmsetup drives the device.
+      - name: Install the host toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dmsetup
+          make toolchain
+          ld.lld --version
+          /usr/bin/clang --version
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Build firn as the network cases run it
+        run: make compiler firn-test
+
+      - uses: actions/cache@v4
+        with:
+          path: build/redis-${{ env.REDIS_VERSION }}
+          key: redis-server-${{ env.REDIS_SHA256 }}-ubuntu-24.04
+
+      - name: Build redis-server ${{ env.REDIS_VERSION }}, the oracle
+        run: |
+          if [ ! -x "build/redis-$REDIS_VERSION/src/redis-server" ]; then
+            curl -fsSL -o "build/redis-$REDIS_VERSION.tar.gz" "https://download.redis.io/releases/redis-$REDIS_VERSION.tar.gz"
+            echo "$REDIS_SHA256  build/redis-$REDIS_VERSION.tar.gz" | sha256sum -c -
+            tar -xzf "build/redis-$REDIS_VERSION.tar.gz" -C build
+            make -C "build/redis-$REDIS_VERSION" -j"$(nproc)"
+          fi
+          "build/redis-$REDIS_VERSION/src/redis-server" --version
+          echo "REDIS_SERVER=$GITHUB_WORKSPACE/build/redis-$REDIS_VERSION/src/redis-server" >> "$GITHUB_ENV"
+
+      - name: Make the faulty device
+        run: |
+          uname -r
+          mount="$RUNNER_TEMP/sync-fault"
+          sudo tests/aof_sync_fault_device.sh setup "$mount" "$(id -u):$(id -g)"
+          echo "FIRN_SYNC_FAULT_MOUNT=$mount" >> "$GITHUB_ENV"
+
+      # The target fails without FIRN_SYNC_FAULT_MOUNT and REDIS_SERVER, set
+      # by the steps above, and without a case that passed.
+      - name: Run the sync-failure case
+        run: make aof-sync-fault
+
+      - name: Show the kernel's account of the device
+        if: always()
+        run: sudo dmesg | grep -E 'dm-|EXT4-fs|I/O error|flakey|loop' | tail -n 100 || true
+
+      - name: Show Redis's log
+        if: failure()
+        run: cat /tmp/firn-sync-fault-redis-*.log || true
+
+      # Also after a setup that failed half way: teardown skips what is gone.
+      - name: Remove the faulty device
+        if: always()
+        run: sudo tests/aof_sync_fault_device.sh teardown "$RUNNER_TEMP/sync-fault"

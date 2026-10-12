@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-12 Raise the heap peak only past a connection's last seen peak
+
+Nodes: firn/memory-limit
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A (approve) on card firn-q-approve-59-tree, which asked to approve PR #59's design-tree changes at head 550e4a0.
+
+Summary: After each command a connection takes Meta to raise the recorded heap peak only when its heap reading exceeds the peak it last saw recorded, because the peak only rises, so a lower reading cannot change it, while a Meta statement after every command on every connection serialized all cores: on 8 P-cores of the i9-14900K depth-16 GET ran at 2.98M/s with it and 19.2M/s with the per-connection check. Recording once per read batch was not adopted because a later pipelined command can free what an earlier one allocated and hide a peak Redis records; the per-command Meta statement is retired as a rejected alternative ([peak recording](../research/investigations/memory-limit/README.md#peak-recording-across-cores)).
+
 ## 2026-10-12 Refuse writes while the append-only file cannot be written or synced
 
 Nodes: firn/append-only-file, firn/orderly-stop, firn/scripts, firn/transactions
