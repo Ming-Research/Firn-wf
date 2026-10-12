@@ -530,7 +530,7 @@ fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.
 }
 
 fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) {
-  doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. The saved append IoError retains its host kind/code, while aof_append_partial records Redis 7.0.15 aof.c:1157-1184's ENOSPC suffix selection for a partial append; native descriptions await firn-req-io-error-text.";
+  doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_described selects the error the refusal describes.";
   let failed = False();
   match meta^.aof_append_error {
     Some(..) => {
@@ -547,4 +547,19 @@ fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(m
     }
   }
   return failed;
+}
+
+fn aof_error_described(meta: &Meta) -> described: Option<std::io::IoError> reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error) {
+  doc "Redis 7.0.15 server.c:4329-4340 tests the write status before the fsync status, and aof.c:1157-1184 sets aof_last_write_errno to the write's errno, or to ENOSPC after a short write. The ENOSPC case yields None until std can name that host code (firn-req-enospc-text).";
+  match meta^.aof_append_error {
+    Some(value: problem) => {
+      if meta^.aof_append_partial {
+        return None<std::io::IoError>();
+      }
+      return Some<std::io::IoError>(value: problem^);
+    }
+    None() => {
+    }
+  }
+  return meta^.aof_sync_error;
 }

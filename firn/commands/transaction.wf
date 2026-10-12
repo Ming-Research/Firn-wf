@@ -249,7 +249,8 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
     if transaction^.write_commands {
       if pkg::store::aof_failed(meta: m) {
         let aborted = True();
-        pkg::protocol::reply_aof_error(client: client, execabort: aborted);
+        let described = pkg::store::aof_error_described(meta: m);
+        pkg::protocol::reply_aof_error(client: client, execabort: aborted, error: &described);
         transaction_reset(transaction: transaction);
         return unit;
       }
@@ -431,7 +432,8 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     atomic disk_meta = &store^.meta {
       set failed = pkg::store::aof_failed(meta: disk_meta);
       if failed {
-        pkg::protocol::reply_aof_error(client: client, execabort: exec);
+        let described = pkg::store::aof_error_described(meta: disk_meta);
+        pkg::protocol::reply_aof_error(client: client, execabort: exec, error: &described);
         if exec {
           transaction_reset(transaction: transaction);
         } else if transaction^.open {
@@ -497,7 +499,8 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       if disk_sensitive {
         if pkg::store::aof_failed(meta: queue_meta) {
           let ordinary = False();
-          pkg::protocol::reply_aof_error(client: client, execabort: ordinary);
+          let described = pkg::store::aof_error_described(meta: queue_meta);
+          pkg::protocol::reply_aof_error(client: client, execabort: ordinary, error: &described);
           set transaction^.dirty = True();
           return False();
         }

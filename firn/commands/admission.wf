@@ -32,11 +32,12 @@ fn command_writes(kind: u64) -> marked: Bool pure {
   return False();
 }
 
-fn aof_refuse(meta: &pkg::store::Meta, client: &Client) -> refused: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error), writes(client) {
+fn aof_refuse(meta: &pkg::store::Meta, client: &Client) -> refused: Bool reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error), writes(client) {
   doc "The CMD_WRITE mutation statement rechecks active-file health while holding Meta jointly with its keys (Redis 7.0.15 server.c:3881-3905). Reads and internal expiry/eviction do not call this; queue and EXEC admission use the same saved status and reply writer.";
   if pkg::store::aof_failed(meta: meta) {
     let ordinary = False();
-    pkg::protocol::reply_aof_error(client: client, execabort: ordinary);
+    let described = pkg::store::aof_error_described(meta: meta);
+    pkg::protocol::reply_aof_error(client: client, execabort: ordinary, error: &described);
     return True();
   }
   return False();

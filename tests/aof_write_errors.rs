@@ -3,7 +3,9 @@
 //! 170-178,229-233 define the file, admission and transaction expectations.
 //! script.c:349-386,547-557 and script_lua.c:988-994,1711-1722 define
 //! first-write refusal, redis.call raising and redis.pcall error tables.
-//! Native MISCONF suffix equality is pending firn-req-io-error-text.
+//! The MISCONF suffix is strerror(aof_last_write_errno) (server.c:4346-4355):
+//! the text below is glibc's on Linux x86-64 in the C locale. A short write's
+//! ENOSPC text (aof.c:1163-1184) is pending firn-req-enospc-text.
 
 use super::*;
 use std::path::Path;
@@ -12,6 +14,12 @@ const MISCONF: &str = "-MISCONF Errors writing to the AOF file: ";
 const EXEC_MISCONF: &str = "-EXECABORT Transaction discarded because of: MISCONF Errors writing to the AOF file: ";
 const PREVIOUS_ERRORS: &str = "-EXECABORT Transaction discarded because of previous errors.\r\n";
 const POLL_LIMIT: Duration = Duration::from_secs(10);
+/// glibc strerror(EFBIG). `fault` sets RLIMIT_FSIZE to the file's current
+/// length, so write(2) fails before writing a byte; aofWrite returns -1
+/// (aof.c:1031-1033) and flushAppendOnlyFile keeps that errno (aof.c:1157-1162).
+const EFBIG_TEXT: &str = "File too large";
+/// glibc strerror(ENOSPC), which aof.c:1184 reports for every short write.
+const ENOSPC_TEXT: &str = "No space left on device";
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -99,9 +107,7 @@ fn wait_bytes(path: &Path, expected: &[u8]) {
 }
 
 fn misconf(reply: &str, prefix: &str) {
-    assert!(reply.starts_with(prefix) && reply.ends_with("\r\n"), "{reply:?}");
-    // PENDING firn-req-io-error-text: compare the native description after
-    // this exact Redis prefix once Whitefoot exposes IoError's host text.
+    assert_eq!(reply, format!("{prefix}{EFBIG_TEXT}\r\n"));
 }
 
 fn stop(client: &mut TcpStream, child: ProgramChild) {
@@ -236,15 +242,16 @@ fn aof_failure_transaction_admission_and_legacy_script_first_write() {
             let read = if name == "EVAL" { read_source } else { &read_sha };
             assert_eq!(memory_request(&mut client, &[name, read, "0"]), "$1\r\nv\r\n");
             let call = if name == "EVAL" { call_source } else { &call_sha };
+            // script.c:383-386 stores the reply without its CR LF as the
+            // error table (script_lua.c:546-570), and luaCallFunction adds
+            // the script and line (script_lua.c:1711-1722).
             let raised = memory_request(&mut client, &[name, call, "0"]);
-            assert!(raised.starts_with(MISCONF) && raised.contains(" script: ") && raised.ends_with("\r\n"), "redis.call must raise: {raised:?}");
-            // PENDING firn-req-io-error-text: redis.call's native errno suffix.
+            assert_eq!(raised, format!("{MISCONF}{EFBIG_TEXT} script: {call_sha}, on @user_script:1.\r\n"), "redis.call must raise");
             let pcall = if name == "EVAL" { pcall_source } else { &pcall_sha };
             client.write_all(&resp(&[name, pcall, "0"])).unwrap();
             assert_eq!(reply_line(&mut client, "pcall result"), "*2\r\n");
             let error = bulk_reply(&mut client, "pcall err table");
-            assert!(error.starts_with(&MISCONF[1..]), "redis.pcall returns err table: {error:?}");
-            // PENDING firn-req-io-error-text: error table's native suffix.
+            assert_eq!(error, format!("{}{EFBIG_TEXT}", &MISCONF[1..]), "redis.pcall returns err table");
             assert_eq!(bulk_reply(&mut client, "read after pcall"), "v");
         }
         assert_eq!(memory_request(&mut client, &["GET", "queued"]), "$-1\r\n");
@@ -296,6 +303,36 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
             "*3\r\n$6\r\nbefore\r\n$6\r\nduring\r\n$4\r\nlast\r\n");
         stop(&mut reader, replayed);
         assert_eq!(std::fs::read(path).unwrap(), expected, "replay adds no records");
+    }
+}
+
+/// A short write reports ENOSPC whatever write(2) returned next (aof.c:1163-
+/// 1184): here the second write gets EFBIG, yet Redis replies with ENOSPC's
+/// text, outside MULTI and at queue admission inside it.
+#[test]
+#[ignore = "firn-req-enospc-text: std names no host code for ENOSPC, so firn cannot describe a short write yet"]
+fn aof_short_append_reports_no_space_on_both_routes() {
+    for native in [false, true] {
+        let program = CompiledProgram::from_environment();
+        let (child, mut client, _) = start(&program, native);
+        let path = incremental(&program);
+        assert_eq!(memory_request(&mut client, &["SET", "before", "b"]), "+OK\r\n");
+        let expected = resp(&["SET", "before", "b"]);
+        wait_bytes(&path, &expected);
+        wait_empty_healthy_buffer(&mut client);
+        let old = file_limit(&child, expected.len() as u64 + 7);
+        assert!(resp(&["SET", "during", "d"]).len() > 7);
+        assert_eq!(memory_request(&mut client, &["SET", "during", "d"]), "+OK\r\n");
+        wait_status(&mut client, "err");
+        assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["SET", "queued", "q"]),
+            format!("{MISCONF}{ENOSPC_TEXT}\r\n"));
+        assert_eq!(memory_request(&mut client, &["EXEC"]), PREVIOUS_ERRORS);
+        assert_eq!(memory_request(&mut client, &["SET", "after", "a"]),
+            format!("{MISCONF}{ENOSPC_TEXT}\r\n"));
+        file_limit(&child, old.soft);
+        wait_status(&mut client, "ok");
+        stop(&mut client, child);
     }
 }
 

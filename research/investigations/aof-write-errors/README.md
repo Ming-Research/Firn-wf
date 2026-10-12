@@ -47,8 +47,9 @@ Keep firn's everysec-only scope; reopen selectable always/no when a selected
 consumer needs them. Preserve separate append and sync IoErrors in existing Meta,
 publishing alongside writer accounting, and observe admission jointly with mutation.
 A separate Shared adds no needed capability. One reply writer owns the exact
-MISCONF prefix; its native description suffix remains pending Whitefoot item
-`firn-req-io-error-text`, with no errno-to-text substitute.
+MISCONF prefix; its native description suffix was pending Whitefoot item
+`firn-req-io-error-text`, with no errno-to-text substitute, and is now filled
+as [below](#misconf-description-whitefoot-v0132).
 
 Rollback partial appends before retrying, retaining either the whole buffer or
 only its unwritten suffix according to truncation success. Track the incremental
@@ -89,7 +90,8 @@ Reject the design if any mutation can pass its admission boundary after a failur
 is published, retained bytes duplicate or disappear on recovery, INFO reports ok
 with either error set, recovery requires a new client write, or shutdown retries
 permanent errors indefinitely. A fault not reached is not evidence. Native error
-description equality is an explicitly pending check (`firn-req-io-error-text`).
+description equality was an explicitly pending check (`firn-req-io-error-text`);
+[below](#misconf-description-whitefoot-v0132) replaces it.
 No local build or runtime test is authorized; only the named compiler check,
 diff whitespace check and design lint may run here. Runtime results await CI.
 
@@ -205,3 +207,56 @@ DC1-DC3 passed source review; T1, T3 and DC4 remain unverified where they requir
 runtime or full-gate evidence, and R1 is not applicable. It reran no check or
 suite and relied on the primary agent's observed check-only results. The test
 readiness race was fixed before that final review. Owner approval remains pending.
+
+## MISCONF description (Whitefoot v0.132)
+
+Question: with PRE-2's `std::io::error_copy_description` (Whitefoot
+`94d353e33`, specification v0.132), can firn's MISCONF suffix equal Redis
+7.0.15's `strerror(aof_last_write_errno)` in every refusal?
+
+Oracle, Redis 7.0.15 `src/`:
+
+- `server.c:4324-4344` tests the write status before the fsync status; only
+  the fsync branch copies `aof_bio_fsync_errno` into `aof_last_write_errno`,
+  so a latched append error is described by its own errno.
+- `aof.c:1024-1040`: `aofWrite` retries short writes and returns `-1` only
+  when nothing was written; after a positive prefix a failing `write(2)`
+  returns the prefix length. `aof.c:1157-1162` keeps `errno` for `-1`;
+  `aof.c:1163-1184` sets `ENOSPC` for every short write, whether or not the
+  truncate succeeds. Under RLIMIT_FSIZE a file at the limit therefore
+  reports `File too large`, and a prefix followed by EFBIG reports
+  `No space left on device`.
+- `server.c:4346-4355` formats `-MISCONF Errors writing to the AOF file: %s`.
+  Ordinary refusals send it as is (`server.c:3900-3904,3568-3577`); EXEC's
+  discard wraps it as `-EXECABORT Transaction discarded because of: MISCONF
+  ...` (`multi.c:136-140`).
+- Legacy EVAL and EVALSHA (no shebang; firn rejects every shebang) skip
+  `scriptPrepareForRun`'s "Writable scripts are blocked" text
+  (`script.c:139-175`, only without `SCRIPT_FLAG_EVAL_COMPAT_MODE`). Their
+  first write gets the same message from `scriptVerifyWriteCommandAllow`
+  (`script.c:375-386`), stored without `-` and CR LF as the error table
+  (`script_lua.c:546-570`); `redis.call` raises it with ` script: <sha>, on
+  @user_script:<line>.` (`script_lua.c:1711-1722`), and `redis.pcall`
+  returns the table.
+
+Comparison and falsifier: the RLIMIT_FSIZE cases assert the complete reply
+with glibc's C-locale text. The design is rejected if a zero-progress append
+fault, its EXECABORT wrapping, or the script call and pcall paths give
+anything but `File too large` after the exact prefix.
+
+Design: `reply_aof_error` receives the error `aof_error_described` selects
+from Meta and copies its description straight into the reply window. When
+the window is too small the window grows by the length the host reports and
+the copy runs once more. `DescriptionUnavailable` leaves the suffix empty;
+glibc describes every code, so on Linux this needs a host failure.
+
+Gap: a short write must be described as ENOSPC, but std offers no way to
+name the host's ENOSPC code. Constructing `NoSpace(code: 28, origin: 3)`
+hard-codes the Linux and macOS number (Windows' disk-full code is 112), and
+`NoSpace(code: 0, origin: 0)` gives PRE-2's fixed `No space left`, not the
+host's `No space left on device`. firn leaves that suffix empty, filed as
+Whitefoot item `firn-req-enospc-text`; the case asserting the ENOSPC text is
+ignored with that key.
+
+Status: implemented on the work branch and accepted by the wf-94d353e33034
+compiler's check-only mode. Runtime results await CI.
