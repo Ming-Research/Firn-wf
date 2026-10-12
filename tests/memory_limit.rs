@@ -508,6 +508,85 @@ fn aof_capacity_is_excluded_and_eviction_survives_replay() {
     assert_eq!(finished(child).0, 0);
 }
 
+/// Without an append-only file, admission compares the raw heap with the
+/// limit outside Meta (getMaxmemoryState with nothing excluded). The limit
+/// sits far above use, then between two readings, so a check that answered
+/// "not over" there would admit the refused SET and evict nothing.
+#[test]
+fn admission_without_aof_compares_the_heap_with_the_limit() {
+    let (child, mut client, _) = start(b"1");
+    let value = "u".repeat(VALUE_BYTES);
+    assert_eq!(memory_request(&mut client, &["SET", "warm-input", &value]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["DEL", "warm-input"]), ":1\r\n");
+    let baseline = info(&mut client, "memory");
+    assert_eq!(number(&baseline, "mem_not_counted_for_evict"), 0);
+    let roomy = number(&baseline, "used_memory") + (32 << 20);
+    configure(&mut client, &["maxmemory", &roomy.to_string(), "maxmemory-policy", "noeviction"]);
+    for index in 0..8 {
+        assert_eq!(memory_request(&mut client, &["SET", &format!("under:{index}"), &value]), "+OK\r\n");
+    }
+    assert_eq!(memory_request(&mut client, &["GET", "under:0"]), format!("${VALUE_BYTES}\r\n{value}\r\n"));
+    assert_eq!(number(&info(&mut client, "stats"), "evicted_keys"), 0);
+
+    // The peak still rises under a limit: a value stored and deleted before
+    // the next INFO leaves the peak above that INFO's own reading.
+    const BIG: usize = 1 << 20;
+    let big = "g".repeat(BIG);
+    let before = number(&info(&mut client, "memory"), "used_memory");
+    assert_eq!(memory_request(&mut client, &["SET", "peak:big", &big]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["DEL", "peak:big"]), ":1\r\n");
+    let after = info(&mut client, "memory");
+    assert!(number(&after, "used_memory_peak") >= before + (BIG / 2) as u64, "before={before}: {after}");
+    assert!(number(&after, "used_memory") < roomy, "{after}");
+
+    // Admission reads the live heap, not the recorded peak: a limit between
+    // the two still admits a write.
+    let (used, peak) = (number(&after, "used_memory"), number(&after, "used_memory_peak"));
+    assert!(peak > used + (BIG / 4) as u64, "{after}");
+    configure(&mut client, &["maxmemory", &(used + (BIG / 8) as u64).to_string()]);
+    assert_eq!(memory_request(&mut client, &["SET", "between", "v"]), "+OK\r\n");
+    assert_eq!(number(&info(&mut client, "stats"), "evicted_keys"), 0);
+
+    let tight = number(&info(&mut client, "memory"), "used_memory") - (2 * VALUE_BYTES) as u64;
+    configure(&mut client, &["maxmemory", &tight.to_string()]);
+    assert_eq!(memory_request(&mut client, &["SET", "over", &value]), OOM);
+    assert_eq!(memory_request(&mut client, &["EXISTS", "over"]), ":0\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "under:1"]), format!("${VALUE_BYTES}\r\n{value}\r\n"));
+    assert_eq!(number(&info(&mut client, "stats"), "evicted_keys"), 0);
+
+    configure(&mut client, &["maxmemory-policy", "allkeys-lru", "maxmemory-eviction-tenacity", "100"]);
+    assert_eq!(memory_request(&mut client, &["SET", "admitted", "v"]), "+OK\r\n");
+    assert!(number(&info(&mut client, "stats"), "evicted_keys") > 0);
+    assert_eq!(memory_request(&mut client, &["GET", "admitted"]), "$1\r\nv\r\n");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// With an append-only file, admission keeps its Meta statement, counting
+/// used memory less the AOF buffers. A limit far above use admits writes;
+/// an impossible one refuses them under noeviction while reads still run.
+#[test]
+fn admission_with_aof_refuses_writes_over_the_limit() {
+    let program = CompiledProgram::from_environment();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"admission.aof"]);
+    let mut client = connect_when_ready(port);
+    let value = "w".repeat(VALUE_BYTES);
+    let measured = info(&mut client, "memory");
+    let counted = number(&measured, "used_memory").saturating_sub(number(&measured, "mem_not_counted_for_evict"));
+    let roomy = counted + (32 << 20);
+    configure(&mut client, &["maxmemory", &roomy.to_string(), "maxmemory-policy", "noeviction"]);
+    assert_eq!(memory_request(&mut client, &["SET", "under", &value]), "+OK\r\n");
+    configure(&mut client, &["maxmemory", "1"]);
+    assert_eq!(memory_request(&mut client, &["SET", "over", &value]), OOM);
+    assert_eq!(memory_request(&mut client, &["EXISTS", "over"]), ":0\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "under"]), format!("${VALUE_BYTES}\r\n{value}\r\n"));
+    assert_eq!(number(&info(&mut client, "stats"), "evicted_keys"), 0);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
 /// Correct the existing constant cached-script count while changing INFO.
 #[test]
 fn info_counts_registered_scripts_and_flush() {
