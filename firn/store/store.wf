@@ -52,7 +52,8 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   let keys = shared_map_new::<Entry>(capacity: keyspace_capacity);
   let due_queue = priority_queue_new::<Due, ceiling>();
   let changed = False();
-  let due = ExpiryQueue(queue: move due_queue, eligibility_changed: changed);
+  let staged_due = None<Box<Slots<Due>>>();
+  let due = ExpiryQueue(queue: move due_queue, eligibility_changed: changed, staged: move staged_due);
   let log = box_slots_new::<u8>(capacity: 65536_u64);
   let running = False();
   let rewrite_ok = True();
@@ -235,6 +236,25 @@ fn queue_due(due: &ExpiryQueue, key: &[u8], at: u64, env: &KeyEnv) -> result: un
   let length = key^.len;
   let copied = bytes_new(input: key, start: 0_u64, length: length);
   let queued_due = Due(key: move copied, at: at);
+  match due^.staged {
+    Some(value: records) => {
+      let capacity = records^.inner.cap;
+      if records^.inner.len == capacity {
+        let needed = records^.inner.len +sat 1_u64;
+        let doubled = capacity +sat capacity;
+        let target = imax(needed, doubled);
+        grow(cell: records, capacity: target);
+      }
+      if records^.inner.len < records^.inner.cap {
+        place_back(window: &records^.inner, value: move queued_due);
+      } else {
+        let discarded = move queued_due;
+      }
+      return unit;
+    }
+    None() => {
+    }
+  }
   let queued = priority_queue_push::<DueOrder, ceiling>(queue: &due^.queue, value: move queued_due, env: env);
   return unit;
 }

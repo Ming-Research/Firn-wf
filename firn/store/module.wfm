@@ -131,6 +131,17 @@ public struct AccessJournal {
   public entries: Box<Slots<AccessUndo>>;
 }
 
+public struct AttemptEntryUndo {
+  doc "One declared insertion index and its original optional entry; None records original absence, not an unsaved index.";
+  public index: u64;
+  public original: Option<Entry>;
+}
+
+public struct AttemptUndo {
+  doc "Owned originals saved before each declared entry's first possible dataset mutation. AccessJournal restores earlier refresh stamps after these payloads.";
+  public entries: Box<Slots<AttemptEntryUndo>>;
+}
+
 public struct Due {
   doc "An expiry queued for active removal: the key's bytes and the calendar milliseconds it was set to expire at.";
   public key: Bytes;
@@ -138,9 +149,10 @@ public struct Due {
 }
 
 public struct ExpiryQueue {
-  doc "Active-expiry queue plus invalidation of a resumable volatile-policy absence scan. Every successful creation or transfer of a nonzero expiry calls queue_due in the same entry-and-Meta statement, which sets eligibility_changed even if the queue is full. Removing expiry records or clearing the queue cannot add eligibility and preserves this flag.";
+  doc "Active-expiry queue plus invalidation of a resumable volatile-policy absence scan. A script attempt instead sets staged to an ordered private list, published only on acceptance through queue_due. Every successful creation or transfer of a nonzero expiry sets eligibility_changed even if the ordinary queue is full. Removing expiry records or clearing the queue cannot add eligibility and preserves this flag.";
   public queue: PriorityQueue<Due, ceiling>;
   public eligibility_changed: Bool;
+  public staged: Option<Box<Slots<Due>>>;
 }
 
 public struct EvictionCandidate {
@@ -309,6 +321,27 @@ public fn access_journal_new() -> journal: AccessJournal pure doc "An empty jour
 public fn record_access(journal: &Option<AccessJournal>, key: &[u8], stamp: u32) -> result: unit reads(key), writes(journal) doc "Records the original stamp at a key's first live refresh in this attempt; later refreshes preserve that first value. None disables journaling for commands outside a script attempt.";
 
 public fn restore_access(journal: &Option<AccessJournal>, keys: &ConcurrentHashMap<Entry>) -> result: unit reads(journal), writes(keys) doc "Restores every journaled stamp before an abandoned, unwritten script attempt releases its atomic keyspace hold. Completed attempts and attempts that wrote never call this.";
+
+public fn copy_value(value: &Value) -> made: Value reads(value) doc "An owned logical deep copy of all five dataset value variants, shared by COPY and script undo: members, values, scores and list order are exact; collection backing is rebuilt.";
+
+public fn attempt_undo_new() -> undo: AttemptUndo pure doc "An empty first-mutation journal for a declared-key script attempt.";
+
+public fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result: unit reads(slot), writes(undo) doc "Saves an optional logical entry copy once at this declared insertion index before any possible mutation: members, values, scores, list order, expiry, access and last-write stamps are exact; collection backing is rebuilt. No collection cursor or layout-dependent result is promised; revisit if such a command or guarantee is added (research/investigations/script-engines/README.md, Logical collection restore).";
+
+public fn attempt_restore(undo: &AttemptUndo, slots: &Entries<Entry>) -> result: unit writes(undo), writes(slots) contract {
+  ensures slots^.len == entry(slots)^.len;
+} doc "Moves saved optional entries back into their held declared slots before access stamps are restored; consumes the journal's saved copies.";
+
+public fn key_rank(keys: &KeySet, key: &[u8]) -> index: u64 reads(keys), reads(key) doc "Immutable binary-name lookup in insertion order; returns keys.len when absent without widening the declaration.";
+
+public fn restore_access_entries(journal: &Option<AccessJournal>, declared: &KeySet, slots: &Entries<Entry>) -> result: unit reads(journal), reads(declared), writes(slots) contract {
+  requires slots^.len == declared^.len;
+  ensures slots^.len == entry(slots)^.len;
+} doc "Restores original first-refresh stamps in held declared entries after payload undo, preserving original absence.";
+
+public fn attempt_due_new() -> due: ExpiryQueue pure doc "An empty private expiry queue; its invalidation flag is unpublished until attempt acceptance.";
+
+public fn attempt_due_commit(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(staged), writes(target) doc "Publishes accepted expiry insertions and volatile eligibility into held metadata; abandonment drops the private queue instead.";
 
 public fn sequence_stamp_key(sequence: &WriteSequence, slot: &Option<Entry>, key: &[u8]) -> result: unit reads(slot), reads(key), writes(sequence), writes(slot.Some.value.last_write) doc "Takes the shared statement sequence, stamps a changed surviving entry and captures it: a complete replacement image, or effect mode for an anchored one-key statement. A missing changed slot records a tombstone.";
 

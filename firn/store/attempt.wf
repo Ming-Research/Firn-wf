@@ -1,0 +1,294 @@
+alias Bytes = pkg::bytes::Bytes;
+alias Key = pkg::bytes::Key;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias KeyHash = pkg::bytes::KeyHash;
+alias HashMap = std::collections::hash_map::HashMap;
+alias OrderedMap = std::collections::ordered_map::OrderedMap;
+alias DequeVisit = std::collections::deque::DequeVisit;
+alias bytes_new = pkg::bytes::bytes_new;
+alias priority_queue_new = std::collections::priority_queue::priority_queue_new;
+alias bytes_boxed = pkg::bytes::bytes_boxed;
+alias bytes_copy = pkg::bytes::bytes_copy;
+alias copy_key = pkg::bytes::copy_key;
+alias deque_new = std::collections::deque::deque_new;
+alias deque_push_back = std::collections::deque::deque_push_back;
+alias deque_visit = std::collections::deque::deque_visit;
+alias hash_map_each = std::collections::hash_map::hash_map_each;
+alias hash_map_len = std::collections::hash_map::hash_map_len;
+alias hash_map_new = std::collections::hash_map::hash_map_new;
+alias hash_map_put = std::collections::hash_map::hash_map_put;
+alias ordered_map_each = std::collections::ordered_map::ordered_map_each;
+alias ordered_map_new = std::collections::ordered_map::ordered_map_new;
+alias ordered_map_put = std::collections::ordered_map::ordered_map_put;
+
+struct ListCopy {
+  items: Box<Ring<Box<Slots<u8>>>>;
+}
+
+struct MemberCopy {
+  members: HashMap<Key, unit, ceiling>;
+  keys: KeyEnv;
+}
+
+struct FieldCopy {
+  fields: HashMap<Key, Bytes, ceiling>;
+  keys: KeyEnv;
+}
+
+struct RankCopy {
+  order: OrderedMap<Rank, unit, ceiling>;
+  keys: KeyEnv;
+}
+
+struct ScoreCopy {
+  scores: HashMap<Key, f64, ceiling>;
+  keys: KeyEnv;
+}
+
+fn copy_element(env: &ListCopy, value: &Box<Slots<u8>>) -> result: unit reads(value), writes(env) {
+  doc "Appends a copy of one list element to the copy being built, which was made with room for every element.";
+  let length = value^.inner.len;
+  let window = &value^.inner[0_u64..length];
+  let text = bytes_new(input: window, start: 0_u64, length: length);
+  let copied = bytes_boxed(bytes: move text);
+  if env^.items.inner.len < env^.items.inner.cap {
+    let placed = deque_push_back::<Box<Slots<u8>>>(values: &env^.items, value: move copied);
+  } else {
+    let dropped = move copied;
+  }
+  return unit;
+}
+
+binding ElementCopy : DequeVisit<Box<Slots<u8>>, ListCopy> {
+  accept = copy_element;
+}
+
+fn copy_member(env: &MemberCopy, key: &Key, value: &unit) -> result: unit reads(key), writes(env) {
+  doc "Adds a copy of one set member to the copy being built.";
+  let copied = copy_key(key: key);
+  let keys = env^.keys;
+  let put = hash_map_put::<KeyHash, unit, ceiling>(map: &env^.members, key: move copied, value: unit, env: &keys);
+  return unit;
+}
+
+fn copy_field(env: &FieldCopy, key: &Key, value: &Bytes) -> result: unit reads(key), reads(value), writes(env) {
+  doc "Adds a copy of one hash field and its value to the copy being built.";
+  let copied = copy_key(key: key);
+  let text = bytes_copy(bytes: value);
+  let keys = env^.keys;
+  let put = hash_map_put::<KeyHash, Bytes, ceiling>(map: &env^.fields, key: move copied, value: move text, env: &keys);
+  return unit;
+}
+
+fn copy_rank(env: &RankCopy, key: &Rank, value: &unit) -> result: unit reads(key), writes(env) {
+  doc "Adds a copy of one sorted-set member at its score to the order being built.";
+  let member = copy_key(key: &key^.member);
+  let rank = Rank(score: key^.score, member: move member);
+  let keys = env^.keys;
+  let put = ordered_map_put::<RankOrder, unit, ceiling>(map: &env^.order, key: move rank, value: unit, env: &keys);
+  return unit;
+}
+
+fn copy_score(env: &ScoreCopy, key: &Key, value: &f64) -> result: unit reads(key), reads(value), writes(env) {
+  doc "Adds a copy of one sorted-set member's score to the scores being built.";
+  let copied = copy_key(key: key);
+  let keys = env^.keys;
+  let put = hash_map_put::<KeyHash, f64, ceiling>(map: &env^.scores, key: move copied, value: value^, env: &keys);
+  return unit;
+}
+
+fn copy_value(value: &Value) -> made: Value reads(value) {
+  doc "A copy of a value, every element, member, field and score copied, as COPY duplicates one; a container is made with room for what the original holds, within the ceiling every container of firn keeps.";
+  match value^ {
+    Text(bytes: stored) => {
+      let copied = bytes_copy(bytes: stored);
+      return Value::Text(bytes: move copied);
+    }
+    Items(items: list) => {
+      let length = list^.inner.len;
+      let made = deque_new::<Box<Slots<u8>>, ceiling>(capacity: 0_u64);
+      if length <= ceiling {
+        set made = deque_new::<Box<Slots<u8>>, ceiling>(capacity: length);
+      }
+      let env = ListCopy(items: move made);
+      deque_visit::<ElementCopy>(values: list, env: &env);
+      let ListCopy(items: copied) = move env;
+      return Value::Items(items: move copied);
+    }
+    Members(members: set_of) => {
+      let length = hash_map_len::<Key, unit, ceiling>(map: set_of);
+      let made = hash_map_new::<Key, unit, ceiling>(capacity: 0_u64);
+      if length <= ceiling {
+        set made = hash_map_new::<Key, unit, ceiling>(capacity: length);
+      }
+      let keys = KeyEnv();
+      let env = MemberCopy(members: move made, keys: keys);
+      hash_map_each::<Key, unit, MemberCopy, fn copy_member, ceiling>(map: set_of, env: &env);
+      let MemberCopy(members: copied, keys: unused) = move env;
+      return Value::Members(members: move copied);
+    }
+    Fields(fields: hash_of) => {
+      let length = hash_map_len::<Key, Bytes, ceiling>(map: hash_of);
+      let made = hash_map_new::<Key, Bytes, ceiling>(capacity: 0_u64);
+      if length <= ceiling {
+        set made = hash_map_new::<Key, Bytes, ceiling>(capacity: length);
+      }
+      let keys = KeyEnv();
+      let env = FieldCopy(fields: move made, keys: keys);
+      hash_map_each::<Key, Bytes, FieldCopy, fn copy_field, ceiling>(map: hash_of, env: &env);
+      let FieldCopy(fields: copied, keys: unused) = move env;
+      return Value::Fields(fields: move copied);
+    }
+    Ranked(ranked: sorted) => {
+      let order = ordered_map_new::<Rank, unit, ceiling>();
+      let keys = KeyEnv();
+      let ranks = RankCopy(order: move order, keys: keys);
+      ordered_map_each::<Rank, unit, RankCopy, fn copy_rank, ceiling>(map: &sorted^.order, env: &ranks);
+      let RankCopy(order: copied_order, keys: unused_order) = move ranks;
+      let length = hash_map_len::<Key, f64, ceiling>(map: &sorted^.scores);
+      let made = hash_map_new::<Key, f64, ceiling>(capacity: 0_u64);
+      if length <= ceiling {
+        set made = hash_map_new::<Key, f64, ceiling>(capacity: length);
+      }
+      let score_keys = KeyEnv();
+      let scores = ScoreCopy(scores: move made, keys: score_keys);
+      hash_map_each::<Key, f64, ScoreCopy, fn copy_score, ceiling>(map: &sorted^.scores, env: &scores);
+      let ScoreCopy(scores: copied_scores, keys: unused_scores) = move scores;
+      let copied = Sorted(order: move copied_order, scores: move copied_scores);
+      return Value::Ranked(ranked: move copied);
+    }
+  }
+}
+
+fn attempt_undo_new() -> undo: AttemptUndo pure {
+  let entries = box_slots_new::<AttemptEntryUndo>(capacity: 0_u64);
+  return AttemptUndo(entries: move entries);
+}
+
+fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result: unit reads(slot), writes(undo) {
+  for (saved in 0_u64..undo^.entries.inner.len) {
+    if undo^.entries.inner[saved].index == index {
+      return unit;
+    }
+  }
+  let capacity = undo^.entries.inner.cap;
+  if undo^.entries.inner.len == capacity {
+    let needed = undo^.entries.inner.len +sat 1_u64;
+    let doubled = capacity +sat capacity;
+    let target = imax(needed, doubled);
+    grow(cell: &undo^.entries, capacity: target);
+  }
+  if undo^.entries.inner.len < undo^.entries.inner.cap {
+    let original = None<Entry>();
+    match slot^ {
+      Some(value: held) => {
+        let payload = copy_value(value: &held^.value);
+        let saved = Entry(value: move payload, expires: held^.expires, access: held^.access, last_write: held^.last_write);
+        set original = Some<Entry>(value: move saved);
+      }
+      None() => {
+      }
+    }
+    let record = AttemptEntryUndo(index: index, original: move original);
+    place_back(window: &undo^.entries.inner, value: move record);
+  }
+  return unit;
+}
+
+fn attempt_restore(undo: &AttemptUndo, slots: &Entries<Entry>) -> result: unit writes(undo), writes(slots) contract {
+  ensures slots^.len == entry(slots)^.len;
+} {
+  loop {
+    if undo^.entries.inner.len == 0_u64 {
+      break;
+    }
+    let saved = take_back(window: &undo^.entries.inner);
+    let index = saved.index;
+    if index < slots^.len {
+      set slots^[index] = move saved.original;
+    } else {
+      let discarded = move saved.original;
+    }
+  }
+  return unit;
+}
+
+fn key_rank(keys: &KeySet, key: &[u8]) -> index: u64 reads(keys), reads(key) {
+  let buffer = box_array_filled::<u8>(count: key^.len, value: 0_u8);
+  let length = buffer.inner.len;
+  for (index in 0_u64..keys^.len) {
+    let found = key_set_read_key(keys: keys, index: index, out: &buffer.inner[0_u64..length]);
+    if found == key^.len {
+      let order = pkg::bytes::windows_order(left: key, right: &buffer.inner[0_u64..length]);
+      if order == 0_i32 {
+        return index;
+      }
+    }
+  }
+  return keys^.len;
+}
+
+fn restore_access_entries(journal: &Option<AccessJournal>, declared: &KeySet, slots: &Entries<Entry>) -> result: unit reads(journal), reads(declared), writes(slots) contract {
+  requires slots^.len == declared^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  match journal^ {
+    Some(value: saved) => {
+      for (index in 0_u64..saved^.entries.inner.len) {
+        let undo = &saved^.entries.inner[index];
+        let length = undo^.key.inner.len;
+        let rank = key_rank(keys: declared, key: &undo^.key.inner[0_u64..length]);
+        if rank < slots^.len {
+          let slot = &slots^[rank];
+          match slot^ {
+            Some(value: restored) => {
+              set restored^.access = undo^.stamp;
+            }
+            None() => {
+            }
+          }
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn attempt_due_new() -> due: ExpiryQueue pure {
+  let queue = priority_queue_new::<Due, ceiling>();
+  let entries = box_slots_new::<Due>(capacity: 0_u64);
+  let staged = Some<Box<Slots<Due>>>(value: move entries);
+  let unchanged = False();
+  return ExpiryQueue(queue: move queue, eligibility_changed: unchanged, staged: move staged);
+}
+
+fn attempt_due_commit(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(staged), writes(target) {
+  if staged^.eligibility_changed {
+    set target^.eligibility_changed = True();
+  }
+  let pending = None<Box<Slots<Due>>>();
+  swap(first: &staged^.staged, second: &pending);
+  match move pending {
+    Some(value: records) => {
+      let held_records = &records;
+      for (index in 0_u64..held_records^.inner.len) {
+        let due = &held_records^.inner[index];
+        match due^.key {
+          Short(bytes: short) => {
+            let length = short^.len;
+            queue_due(due: target, key: &short^[0_u64..length], at: due^.at, env: env);
+          }
+          Long(bytes: long) => {
+            let length = long^.inner.len;
+            queue_due(due: target, key: &long^.inner[0_u64..length], at: due^.at, env: env);
+          }
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}

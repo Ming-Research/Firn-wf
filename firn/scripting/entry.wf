@@ -111,7 +111,7 @@ fn return_engine(store: &Keyspace, pooled: PooledEngine) -> r: unit reads(store)
 }
 
 fn register(store: &Keyspace, sha: &Array<u8, 40>, source: &[u8]) -> r: unit reads(store), reads(sha), reads(source) waits {
-  doc "Redis 7.0.15 luaCreateFunction retains every successfully compiled EVAL/LOAD source until scriptingReset; duplicate SHA1 does not grow the registry. No script-count cap or LRU eviction. Source/hash payload accounting is separate from allocator overhead and the engine heap.";
+  doc "Redis 7.0.15 luaCreateFunction retains every successfully compiled EVAL/LOAD source until scriptingReset; duplicate SHA1 does not grow the registry. No script-count cap or LRU eviction. Source/hash payload accounting is separate from allocator overhead and the engine heap. Allocation is total [STOR-8], so the branch that drops the copy is reachable only when the registry capacity saturates at 2^64; it remains because the checker needs len < cap before place_back.";
   let span = Span(start: 0_u64, length: source^.len);
   let copied = copy_source(input: source, span: span);
   atomic p = &store^.scripts {
@@ -290,6 +290,60 @@ fn answer_call<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, e
   let logged = True();
   let appended = ScriptCommands::call(sequence: sequence, memory: &env^.memory, journal: &env^.access, keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
   set client^.resp = protocol;
+  return complete_command_call(sequence: sequence, engine: engine, env: env, client: client, id: id, appended: appended, reply_start: reply_start, budget: budget);
+}
+
+fn answer_call_entries<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, meta: &pkg::store::Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(declared), reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error), reads(keys_env), reads(time), writes(sequence), writes(engine), writes(env), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
+  requires slots^.len == declared^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "Runs a pending Redis command against the immutable declared entries using the same reply conversion as whole-map execution. NeedWholeMap stops the host without completing or failing the Lua call, so neither redis.pcall nor Lua pcall can catch the attempt abandonment.";
+  let id = 0_u32;
+  let argc = 0_u64;
+  match halo::embed::pending_call(engine: engine) {
+    Some(value: call) => {
+      set id = call.id;
+      set argc = call.argc;
+    }
+    None() => {
+      return Outcome::HostStopped();
+    }
+  }
+  let input = box_slots_new::<u8>(capacity: 64_u64);
+  let spans = box_slots_new::<Span>(capacity: 8_u64);
+  for @arguments (i in 0_u64..argc) {
+    let v = halo::embed::pending_argument(engine: engine, index: i);
+    let text = command_argument(vm: &engine^.vm, v: v);
+    let start = input.inner.len;
+    value_bytes(vm: &engine^.vm, v: text, out: &input);
+    let end = input.inner.len;
+    let length = end -sat start;
+    push_arg(args: &spans, start: start, length: length);
+  }
+  let n = input.inner.len;
+  let reply_start = client^.at;
+  let protocol = client^.resp;
+  let scripted = cvt::<u8, u64>(env^.resp);
+  set client^.resp = scripted;
+  set client^.now = time^.check;
+  let logged = True();
+  let result = ScriptCommands::call_entries(sequence: sequence, memory: &env^.memory, journal: &env^.access, slots: slots, declared: declared, undo: undo, due: due, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
+  set client^.resp = protocol;
+  let appended = 0_u64;
+  match result {
+    Completed(appended: count) => {
+      set appended = count;
+    }
+    NeedWholeMap() => {
+      set env^.need_whole = True();
+      set client^.at = reply_start;
+      return Outcome::HostStopped();
+    }
+  }
+  return complete_command_call(sequence: sequence, engine: engine, env: env, client: client, id: id, appended: appended, reply_start: reply_start, budget: budget);
+}
+
+fn complete_command_call(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, client: &Client, id: u32, appended: u64, reply_start: u64, budget: u64) -> outcome: Outcome reads(sequence), writes(engine), writes(env), writes(client) {
   if sequence^.taken {
     set env^.held.wrote = True();
   }
@@ -319,7 +373,7 @@ fn answer_call<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, e
 }
 
 fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, keys_env: &KeyEnv, time: &Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(keys_env), reads(time), writes(client), writes(clock) waits {
-  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, each in one atomic statement holding every key and the keyspace's metadata. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and, for each attempt whose engine has not compiled it, reads the registry again and copies the script's source from that read, answering NOSCRIPT then only if SCRIPT FLUSH came after the registry check and before the script first took the engine, as if the FLUSH came first; the first take counts the script and records its kill mark atomically with taking the engine, and FLUSH waits for it until it ends, including between attempts. An attempt whose engine has compiled it copies nothing. An attempt that runs out of its budget having written nothing restores every first-refresh journal entry and the client random state used by LFU before releasing the keys, then is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits to take the engine again is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
+  doc "EVAL or EVALSHA: checks the number of keys and finds or compiles the script, then runs it in attempts, initially in one atomic statement holding the immutable declared entry set and metadata, with sticky whole-keyspace retry after an undeclared or global command. Abandonment restores logical entry copies and access stamps, resets client and engine state, and drops unpublished effects and sequence/capture scratch before release. EVALSHA answers NOSCRIPT when the registry does not hold the script, before it takes the engine, and, for each attempt whose engine has not compiled it, reads the registry again and copies the script's source from that read, answering NOSCRIPT then only if SCRIPT FLUSH came after the registry check and before the script first took the engine, as if the FLUSH came first; the first take counts the script and records its kill mark atomically with taking the engine, and FLUSH waits for it until it ends, including between attempts. An attempt whose engine has compiled it copies nothing. An attempt that runs out of its budget having written nothing restores every first-refresh journal entry and the client random state used by LFU before releasing the keys, then is abandoned, and between attempts the script waits a millisecond, since a context that never waits keeps the others its thread serves from running, SCRIPT KILL's among them, then takes the engine again and stops with Redis's error if SCRIPT KILL was sent since it first took the engine, and otherwise runs again with twice the budget. A kill sent while a script waits to take the engine again is thus seen once it has the engine, and one sent before a script first has it is not that script's. Engine allocation follows Redis's default of no script-specific memory cap; the host's resources remain its limit.";
   let count = args^.inner.len;
   let body = pkg::protocol::arg(args: args, index: 1_u64);
   if by_sha {
@@ -370,6 +424,15 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
     reply_error(client: client, word: &entry_text_6[0_u64..45_u64]);
     return unit;
   }
+  let declared = key_set_new(capacity: keys);
+  let key_end = keys +sat 3_u64;
+  for (index in 3_u64..key_end) {
+    let span = pkg::protocol::arg(args: args, index: index);
+    let name = copy_source(input: input, span: span);
+    let length = name.inner.len;
+    let rank = key_set_insert(keys: &declared, key: &name.inner[0_u64..length]);
+  }
+  let whole = False();
   let script_oom = client^.pre_command_oom;
   let budget = 1000_u64;
   let mark = 0_u64;
@@ -386,6 +449,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
       set begun = True();
     }
     let retry = False();
+    let fallback = False();
     let unregistered = False();
     let slot = 0_u64;
     if bnot(killed) {
@@ -425,75 +489,177 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
           let access = pkg::store::access_journal_new();
           let journal = Some<pkg::store::AccessJournal>(value: move access);
           let memory = ScriptMemory(pre_command_oom: script_oom, write_dirty: no);
-          let env = Env(memory: memory, held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64, access: move journal, access_random: client^.random);
+          let env = Env(memory: memory, held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64, access: move journal, access_random: client^.random, need_whole: no);
           let effects = box_slots_new::<u8>(capacity: 64_u64);
           let logged = store^.logging;
           let random = pooled.engine.vm.random_state;
           let configs = config_snapshot(vm: &pooled.engine.vm);
           let config_active = pooled.engine.vm.cjson_active_config;
-          atomic t = &store^.keys, m = &store^.meta {
-            let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
-            let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-            let held_keys = map_count::<pkg::store::Entry>(map: t);
-            let held_clients = m^.clients;
-            let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
-            loop {
-              match outcome {
-                Budget() => {
-                  if env.held.wrote {
-                    set outcome = halo::embed::resume::<ScriptHost>(engine: &pooled.engine, env: &env, budget: 18446744073709551615_u64);
-                  } else {
-                    pkg::store::restore_access(journal: &env.access, keys: t);
-                    set client^.random = env.access_random;
-                    set retry = True();
-                    set stopped_at = paused_line(vm: &pooled.engine.vm);
-                    set pooled.engine.vm.random_state = random;
-                    halo::embed::reset(engine: &pooled.engine);
-                    config_restore(vm: &pooled.engine.vm, saved: &configs, active: config_active);
+          let attempt_reply_start = client^.at;
+          if whole {
+            atomic t = &store^.keys, m = &store^.meta {
+              let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+              let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+              let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
+              loop {
+                match outcome {
+                  Budget() => {
+                    if env.held.wrote {
+                      set outcome = halo::embed::resume::<ScriptHost>(engine: &pooled.engine, env: &env, budget: 18446744073709551615_u64);
+                    } else {
+                      pkg::store::restore_access(journal: &env.access, keys: t);
+                      set client^.random = env.access_random;
+                      set client^.at = attempt_reply_start;
+                      set retry = True();
+                      set stopped_at = paused_line(vm: &pooled.engine.vm);
+                      set pooled.engine.vm.random_state = random;
+                      halo::embed::reset(engine: &pooled.engine);
+                      config_restore(vm: &pooled.engine.vm, saved: &configs, active: config_active);
+                      break;
+                    }
+                  }
+                  HostCall() => {
+                    let more = pooled.engine.vm.budget;
+                    if env.held.wrote {
+                      set more = 18446744073709551615_u64;
+                    }
+                    set outcome = answer_call::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, keys: t, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                  }
+                  Done(..) => {
+                    let v = Value::Nil();
+                    match halo::embed::result(engine: &pooled.engine, index: 0_u64) {
+                      Some(value: result) => {
+                        set v = result;
+                      }
+                      None() => {
+                      }
+                    }
+                    lua_to_protocol(vm: &pooled.engine.vm, value: v, client: client, resp: env.resp);
+                    if logged {
+                      record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
+                    }
+                    break;
+                  }
+                  Error() => {
+                    let line = halo::embed::error_line(engine: &pooled.engine);
+                    let value = halo::embed::error_value(engine: &pooled.engine);
+                    let locate = readonly_message(vm: &pooled.engine.vm, value: value);
+                    let formatted = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
+                    let length = formatted.inner.len;
+                    reply_error(client: client, word: &formatted.inner[0_u64..length]);
+                    if logged {
+                      record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
+                    }
+                    break;
+                  }
+                  HostStopped() => {
+                    reply_error(client: client, word: &entry_text_7[0_u64..23_u64]);
                     break;
                   }
                 }
-                HostCall() => {
-                  let more = pooled.engine.vm.budget;
-                  if env.held.wrote {
-                    set more = 18446744073709551615_u64;
-                  }
-                  set outcome = answer_call::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, keys: t, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
-                }
-                Done(..) => {
-                  let v = Value::Nil();
-                  match halo::embed::result(engine: &pooled.engine, index: 0_u64) {
-                    Some(value: result) => {
-                      set v = result;
-                    }
-                    None() => {
-                    }
-                  }
-                  lua_to_protocol(vm: &pooled.engine.vm, value: v, client: client, resp: env.resp);
-                  if logged {
-                    record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
-                  }
-                  break;
-                }
-                Error() => {
-                  let line = halo::embed::error_line(engine: &pooled.engine);
-                  let value = halo::embed::error_value(engine: &pooled.engine);
-                  let locate = readonly_message(vm: &pooled.engine.vm, value: value);
-                  let formatted = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
-                  let length = formatted.inner.len;
-                  reply_error(client: client, word: &formatted.inner[0_u64..length]);
-                  if logged {
-                    record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
-                  }
-                  break;
-                }
-                HostStopped() => {
-                  reply_error(client: client, word: &entry_text_7[0_u64..23_u64]);
-                  break;
-                }
+              }
+              if bnot(retry) {
+                pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
               }
             }
-            pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+          } else {
+            atomic t = &store^.keys[declared], m = &store^.meta {
+              let saved = pkg::store::attempt_undo_new();
+              let undo = Some<pkg::store::AttemptUndo>(value: move saved);
+              let due = pkg::store::attempt_due_new();
+              let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+              let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+              let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
+              loop (
+                invariant aligned: t^.len == declared.len
+              ) {
+                match outcome {
+                  Budget() => {
+                    if env.held.wrote {
+                      set outcome = halo::embed::resume::<ScriptHost>(engine: &pooled.engine, env: &env, budget: 18446744073709551615_u64);
+                    } else {
+                      match &undo {
+                        Some(value: saved_entries) => {
+                          pkg::store::attempt_restore(undo: saved_entries, slots: t);
+                        }
+                        None() => {
+                        }
+                      }
+                      pkg::store::restore_access_entries(journal: &env.access, declared: &declared, slots: t);
+                      set client^.random = env.access_random;
+                      set client^.at = attempt_reply_start;
+                      set retry = True();
+                      set stopped_at = paused_line(vm: &pooled.engine.vm);
+                      set pooled.engine.vm.random_state = random;
+                      halo::embed::reset(engine: &pooled.engine);
+                      config_restore(vm: &pooled.engine.vm, saved: &configs, active: config_active);
+                      break;
+                    }
+                  }
+                  HostCall() => {
+                    let more = pooled.engine.vm.budget;
+                    if env.held.wrote {
+                      set more = 18446744073709551615_u64;
+                    }
+                    set outcome = answer_call_entries::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, slots: t, declared: &declared, undo: &undo, due: &due, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                  }
+                  Done(..) => {
+                    let v = Value::Nil();
+                    match halo::embed::result(engine: &pooled.engine, index: 0_u64) {
+                      Some(value: result) => {
+                        set v = result;
+                      }
+                      None() => {
+                      }
+                    }
+                    lua_to_protocol(vm: &pooled.engine.vm, value: v, client: client, resp: env.resp);
+                    if logged {
+                      record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
+                    }
+                    break;
+                  }
+                  Error() => {
+                    let line = halo::embed::error_line(engine: &pooled.engine);
+                    let value = halo::embed::error_value(engine: &pooled.engine);
+                    let locate = readonly_message(vm: &pooled.engine.vm, value: value);
+                    let formatted = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
+                    let length = formatted.inner.len;
+                    reply_error(client: client, word: &formatted.inner[0_u64..length]);
+                    if logged {
+                      record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
+                    }
+                    break;
+                  }
+                  HostStopped() => {
+                    if env.need_whole {
+                      match &undo {
+                        Some(value: saved_entries) => {
+                          pkg::store::attempt_restore(undo: saved_entries, slots: t);
+                        }
+                        None() => {
+                        }
+                      }
+                      pkg::store::restore_access_entries(journal: &env.access, declared: &declared, slots: t);
+                      set client^.random = env.access_random;
+                      set client^.at = attempt_reply_start;
+                      set pooled.engine.vm.random_state = random;
+                      halo::embed::reset(engine: &pooled.engine);
+                      config_restore(vm: &pooled.engine.vm, saved: &configs, active: config_active);
+                      set whole = True();
+                      set fallback = True();
+                      set retry = True();
+                    } else {
+                      reply_error(client: client, word: &entry_text_7[0_u64..23_u64]);
+                    }
+                    break;
+                  }
+                }
+              }
+              if bnot(retry) {
+                pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
+                pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+              }
+            }
           }
         }
       }
@@ -518,7 +684,9 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
       Err(..) => {
       }
     }
-    set budget = budget +sat budget;
+    if bnot(fallback) {
+      set budget = budget +sat budget;
+    }
   }
   std::time::close_cancel_watch(watch: move never);
   script_ends(store: store);
