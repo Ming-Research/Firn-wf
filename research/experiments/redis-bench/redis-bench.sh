@@ -46,7 +46,9 @@
 #                                 flat profile of each image under
 #                                 COMPARE_PROFILE (default mset at depth 16);
 #                                 on Linux it records each server and client
-#                                 CPU's busy fraction per sample
+#                                 CPU's busy fraction per sample; each image
+#                                 runs with as many Whitefoot drivers as server
+#                                 CPUs, or IMAGE_DRIVERS when it is set
 #   sh redis-bench.sh workloads   the deployment-performance investigation's
 #                                 std-only Rust client, built offline with
 #                                 cargo in release mode; Redis and firn, each
@@ -576,7 +578,8 @@ start() {
                 ) >"$OUT/server.log" 2>&1 &
             ;;
         image-*)
-            (registered; WF_DRIVERS=$(cpu_count "$SERVER_CPUS") exec taskset -c "$SERVER_CPUS" \
+            (registered; WF_DRIVERS=${IMAGE_DRIVERS:-$(cpu_count "$SERVER_CPUS")} \
+                exec taskset -c "$SERVER_CPUS" \
                 "$(image_path "${1#image-}")" "$PORT" 0 - "${IDLE:-0}" \
                 ) >"$OUT/server.log" 2>&1 &
             ;;
