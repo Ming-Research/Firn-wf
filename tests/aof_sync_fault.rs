@@ -21,10 +21,24 @@
 //! design/firn/append-only-file.md records, and so accepts writes again
 //! without a restart.
 //!
-//! The case is ignored in `make check`, which has no such device; the
-//! `aof-sync-fault` job of .github/workflows/check.yml makes it and runs the
-//! case alone through `make aof-sync-fault`, failing when the device cannot
-//! be made.
+//! When Linux fails to write a file's dirty pages back, it leaves them clean
+//! and records the error for the next fsync of the file to report once; a
+//! later fsync that succeeds does not write those pages again. So bytes a
+//! server acknowledged before a failed sync reach the device afterwards only
+//! if a later write dirties their page (with a filesystem block smaller than
+//! a page, their block) again. In the first case the write after recovery
+//! does. The second case, aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end,
+//! pads the file so that the write acknowledged during the failure ends at a
+//! page end and the write after recovery starts on the next page, then
+//! reads what a restart finds once the filesystem is remounted. It records
+//! Redis 7.2.16's outcome as an observation and requires firn to keep every
+//! write it acknowledged.
+//!
+//! The cases are ignored in `make check`, which has no such device; the
+//! `aof-sync-fault` job of .github/workflows/check.yml makes it and runs both
+//! cases one after the other through `make aof-sync-fault`, failing when the
+//! device cannot be made. They share the device, so they never run at once,
+//! and a case that fails while the device fails heals it for the next.
 
 use super::*;
 use std::collections::BTreeMap;
@@ -80,6 +94,18 @@ impl Device {
     fn run(&self, action: &str) {
         let output = support::run_command(Command::new("sudo").arg("-n").arg(&self.script).arg(action));
         assert!(output.status.success(), "device {action}: {output:?}");
+    }
+}
+
+/// Heals the device when a case fails, so that a case failing while the
+/// device fails leaves the next case of the module a working device.
+struct HealOnPanic<'a>(&'a Device);
+
+impl Drop for HealOnPanic<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let _ = Command::new("sudo").arg("-n").arg(&self.0.script).arg("heal").status();
+        }
     }
 }
 
@@ -145,14 +171,19 @@ fn stop(client: &mut TcpStream, child: ProgramChild) {
     assert_eq!(client.read(&mut [0]).unwrap(), 0);
 }
 
-/// Seeds the server, lets it sync, fails the device, writes once and reads
-/// what the server shows once its sync has failed.
-fn fail(device: &Device, client: &mut TcpStream) -> Failure {
+/// Writes the seed and lets the server sync it.
+fn seed(client: &mut TcpStream) -> String {
     for command in SEED {
         assert!(!memory_request(client, command).starts_with('-'), "seed {command:?}");
     }
     std::thread::sleep(SETTLE);
-    let before = wait_status(client, "ok");
+    wait_status(client, "ok")
+}
+
+/// Seeds the server, lets it sync, fails the device, writes once and reads
+/// what the server shows once its sync has failed.
+fn fail(device: &Device, client: &mut TcpStream) -> Failure {
+    let before = seed(client);
     device.run("fail");
     let during = memory_request(client, DURING);
     let failed = wait_status(client, "err");
@@ -169,7 +200,7 @@ fn fail(device: &Device, client: &mut TcpStream) -> Failure {
     Failure { during, refused, read, fields: fields(&failed) }
 }
 
-fn start_redis(binary: &Path, directory: &Path, log: &Path) -> (ProgramChild, TcpStream) {
+fn spawn_redis(binary: &Path, directory: &Path, log: &Path) -> (ProgramChild, u16) {
     let port = free_port().to_string();
     let mut command = Command::new(binary);
     command.current_dir(directory)
@@ -178,23 +209,38 @@ fn start_redis(binary: &Path, directory: &Path, log: &Path) -> (ProgramChild, Tc
         .arg(directory).arg("--logfile").arg(log)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = ProgramChild::spawn(&mut command).expect("spawn redis-server");
-    (child, connect_when_ready(port.parse().unwrap()))
+    (child, port.parse().unwrap())
+}
+
+fn start_redis(binary: &Path, directory: &Path, log: &Path) -> (ProgramChild, TcpStream) {
+    let (child, port) = spawn_redis(binary, directory, log);
+    (child, connect_when_ready(port))
+}
+
+fn spawn_firn(program: &CompiledProgram, native: bool) -> (ProgramChild, u16) {
+    let port = free_port();
+    let text = port.to_string();
+    (program.spawn_on_route(native, &[text.as_bytes(), b"0", b"sync.aof"]), port)
 }
 
 fn start_firn(program: &CompiledProgram, native: bool) -> (ProgramChild, TcpStream) {
-    let port = free_port();
-    let text = port.to_string();
-    let child = program.spawn_on_route(native, &[text.as_bytes(), b"0", b"sync.aof"]);
+    let (child, port) = spawn_firn(program, native);
     (child, connect_when_ready(port))
+}
+
+/// The redis-server REDIS_SERVER names, checked to be 7.2.16, the oracle.
+fn oracle() -> PathBuf {
+    let binary = std::env::var_os("REDIS_SERVER").map(PathBuf::from)
+        .expect("REDIS_SERVER must name redis-server 7.2.16, the oracle");
+    let version = support::run_command(Command::new(&binary).arg("--version"));
+    assert!(String::from_utf8_lossy(&version.stdout).contains(" v=7.2.16 "), "{version:?}");
+    binary
 }
 
 /// Redis 7.2.16 through the failure, then watched staying refused while
 /// idle once the device heals.
 fn redis_failure(device: &Device) -> Failure {
-    let binary = std::env::var_os("REDIS_SERVER").map(PathBuf::from)
-        .expect("REDIS_SERVER must name redis-server 7.2.16, the oracle");
-    let version = support::run_command(Command::new(&binary).arg("--version"));
-    assert!(String::from_utf8_lossy(&version.stdout).contains(" v=7.2.16 "), "{version:?}");
+    let binary = oracle();
     let directory = device.mount.join(format!("redis-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let log = std::env::temp_dir().join(format!("firn-sync-fault-redis-{}.log", std::process::id()));
@@ -241,11 +287,12 @@ fn redis_failure(device: &Device) -> Failure {
 /// write acknowledged while the device was failing reaches it only because
 /// the write after recovery dirties the same page again: Linux leaves the
 /// pages whose writeback failed clean, so firn's successful retry alone
-/// would not rewrite them.
+/// would not rewrite them. The page-end case below takes that write away.
 #[test]
 #[ignore = "needs the faulty device the aof-sync-fault job of .github/workflows/check.yml makes"]
 fn aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device() {
     let device = Device::from_environment();
+    let _heal = HealOnPanic(&device);
     let redis = redis_failure(&device);
     for native in [false, true] {
         let route = if native { "native ring" } else { "file adapter" };
@@ -287,5 +334,298 @@ fn aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device() {
             assert_eq!(memory_request(&mut client, command), expected, "{route}: (d) {command:?} after a restart");
         }
         stop(&mut client, child);
+    }
+}
+
+/// The page size of the x86-64 hosts the job runs on, checked at the start
+/// of the case: the page cache tracks dirty data per page, and per block of
+/// the filesystem within one.
+const PAGE: u64 = 4096;
+/// Written once the device has healed and the server syncs again.
+const AFTER: &[&str] = &["SET", "after", "p"];
+/// What a restart is asked, by the name each observation gives it.
+const KEPT: &[(&str, &[&str])] = &[
+    ("during", &["GET", "during"]), ("after", &["GET", "after"]), ("k1", &["GET", "k1"]),
+    ("k2", &["GET", "k2"]), ("l", &["LRANGE", "l", "0", "-1"]), ("pad", &["STRLEN", "pad"]),
+];
+
+/// What one server did in the page-end case, and what it kept.
+struct PageEnd {
+    server: String,
+    /// The reply to DURING.
+    during: String,
+    /// The incremental file's size once DURING's record was in it, a page
+    /// end, or why the layout the case is for was not reached.
+    layout: Result<u64, String>,
+    /// The length of the padding value.
+    pad: usize,
+    /// The reply to AFTER.
+    after: String,
+    /// The replies to KEPT after the remount and restart, or how the server
+    /// exited instead of answering.
+    restart: Result<BTreeMap<String, String>, String>,
+}
+
+impl PageEnd {
+    /// One line per server, in a stable form for the research record.
+    fn observation(&self) -> String {
+        let layout = match &self.layout {
+            Ok(end) => format!("page-end@{end}"),
+            Err(why) => format!("missed({why:?})"),
+        };
+        let mut line = format!("observation: {} during-write={:?} layout={layout} pad-length={} after-write={:?}",
+            self.server, self.during, self.pad, self.after);
+        match &self.restart {
+            Ok(replies) => {
+                line.push_str(" loaded=yes");
+                for (name, _) in KEPT {
+                    line.push_str(&format!(" {name}={:?}", replies[*name]));
+                }
+            }
+            Err(why) => line.push_str(&format!(" loaded=no exit={why:?}")),
+        }
+        line
+    }
+}
+
+/// The incremental file's size on the device's filesystem.
+///
+/// The layout is measured on the file itself rather than through INFO's
+/// aof_current_size, which counts the base file too once a server has
+/// loaded one (firn's startup sums every part; Redis 7.2.16 sets it to all
+/// the files' size, aof.c:1759) and equals the incremental file's size only
+/// because this case starts both servers on an empty directory. The size is
+/// the inode's, which a write(2) of the file adapter and a completed write of
+/// the native ring both extend before they report, so once nothing is
+/// buffered it holds every byte the server wrote. INFO's account of DURING
+/// is still checked against it.
+fn on_disk(incremental: &Path) -> u64 {
+    std::fs::metadata(incremental)
+        .unwrap_or_else(|error| panic!("the incremental file {}: {error}", incremental.display()))
+        .len()
+}
+
+/// The value of `SET pad VALUE` whose record, appended to a file of `size`
+/// bytes, leaves exactly DURING's record before a page end. A value one byte
+/// longer can lengthen the record by two, when its length gains a digit, so
+/// a gap no record fits is moved one page on.
+fn padding(size: u64) -> String {
+    let record = |length: usize| resp(&["SET", "pad", ""]).len() + length + length.to_string().len() - 1;
+    let during = resp(DURING).len() as u64;
+    let gap = (PAGE - (size + during) % PAGE) % PAGE;
+    for target in [gap, gap + PAGE, gap + 2 * PAGE] {
+        if let Some(length) = (0..=target as usize).find(|length| record(*length) as u64 == target) {
+            let value = "x".repeat(length);
+            assert_eq!(resp(&["SET", "pad", &value]).len() as u64, target);
+            return value;
+        }
+    }
+    unreachable!("some record fits one of three successive page ends");
+}
+
+/// The page size and the filesystem's block size, which must divide the
+/// page: then a page end is also a block end, and a write starting there
+/// dirties neither the page nor the block before it.
+fn check_page_layout(device: &Device) {
+    let page = support::run_command(Command::new("getconf").arg("PAGESIZE"));
+    let page = String::from_utf8_lossy(&page.stdout).trim().to_string();
+    let block = support::run_command(Command::new("stat").args(["-f", "-c", "%S"]).arg(&device.mount));
+    let block = String::from_utf8_lossy(&block.stdout).trim().to_string();
+    eprintln!("page size {page}, filesystem block size {block}");
+    assert_eq!(page, PAGE.to_string(), "the case assumes {PAGE}-byte pages");
+    let block: u64 = block.parse().unwrap_or_else(|_| panic!("block size {block:?}"));
+    assert!(block > 0 && PAGE % block == 0, "block size {block} does not divide the page");
+}
+
+/// Seeds the server and pads its incremental file so that DURING's record
+/// will end at a page end, lets both reach the device, fails the device and
+/// sends DURING at once, then waits until the sync has failed after DURING
+/// was in the file. Returns the reply to DURING, the layout reached and the
+/// padding's length.
+fn fail_at_page_end(device: &Device, client: &mut TcpStream, incremental: &Path, server: &str)
+    -> (String, Result<u64, String>, usize) {
+    seed(client);
+    let seeded = on_disk(incremental);
+    let pad = padding(seeded);
+    let pad_record = resp(&["SET", "pad", &pad]).len() as u64;
+    assert_eq!(memory_request(client, &["SET", "pad", &pad]), "+OK\r\n", "{server}: the padding");
+    std::thread::sleep(SETTLE);
+    let padded_info = wait_status(client, "ok");
+    let padded = on_disk(incremental);
+    // Sent the moment the device fails: firn's sync runs once a second
+    // whatever was written, and one that fails before DURING arrives makes
+    // firn refuse it, which leaves nothing in the page to lose.
+    device.run("fail");
+    let during = memory_request(client, DURING);
+    wait_status(client, "err");
+    // firn may append DURING just after a failed sync; two more of its
+    // once-a-second syncs, still failing, make sure a writeback of DURING's
+    // page was tried and failed before the device heals, or a healed sync
+    // could write the page that never failed and the case pass for that.
+    // Redis 7.2.16 reports the failure only from the sync of the new bytes.
+    std::thread::sleep(SETTLE);
+    let failed = wait_status(client, "err");
+    let written = on_disk(incremental);
+    let during_record = resp(DURING).len() as u64;
+    let counted = size(&failed) as i128 - size(&padded_info) as i128;
+    let layout = if during != "+OK\r\n" {
+        Err(format!("the write during the failure was {}", branch(&during)))
+    } else if padded != seeded + pad_record {
+        Err(format!("the padding of {pad_record} bytes took the file from {seeded} to {padded} bytes"))
+    } else if written != padded + during_record || written % PAGE != 0 {
+        Err(format!("the write during the failure took the file from {padded} to {written} bytes, not to a page end"))
+    } else if counted != during_record as i128 {
+        Err(format!("INFO counts {counted} bytes for the write during the failure, the file {during_record}"))
+    } else {
+        Ok(written)
+    };
+    eprintln!("layout: {server} seed ends at {seeded}, padding at {padded}, the write during the failure at {written}");
+    (during, layout, pad.len())
+}
+
+/// The restarted server once it answers PING, or how it exited: a server
+/// whose append-only file does not load exits, Redis 7.2.16 after it has
+/// begun listening (server.c:7321-7331, 6773-6776) and firn before.
+fn answering(mut child: ProgramChild, port: u16, server: &str) -> Result<(ProgramChild, TcpStream), String> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if child.try_wait().expect("poll the restarted server").is_some() {
+            let output = child.wait_with_output().expect("the exited server's output");
+            eprintln!("{server}: exited at restart with {}; stdout {:?}; stderr {:?}", output.status,
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return Err(output.status.to_string());
+        }
+        assert!(Instant::now() < deadline, "{server} neither answered nor exited after its restart");
+        if let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
+            let mut stream = bounded_stream(stream);
+            if stream.write_all(&resp(&["PING"])).is_ok() {
+                let mut line = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !line.ends_with(b"\r\n") && matches!(stream.read(&mut byte), Ok(1)) {
+                    line.push(byte[0]);
+                }
+                // -LOADING, a reset or EOF: ask again until it answers or exits.
+                if line == b"+PONG\r\n" {
+                    return Ok((child, stream));
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Restarts a server on what reached the device and asks it KEPT.
+fn restart(child: ProgramChild, port: u16, server: &str) -> Result<BTreeMap<String, String>, String> {
+    let (child, mut client) = answering(child, port, server)?;
+    let replies: BTreeMap<String, String> = KEPT.iter()
+        .map(|(name, command)| (name.to_string(), memory_request(&mut client, command)))
+        .collect();
+    stop(&mut client, child);
+    Ok(replies)
+}
+
+/// Redis 7.2.16 through the page-end case. It refuses AFTER while idle once
+/// the device heals, so its restart shows only what became of DURING.
+fn redis_page_end(device: &Device) -> PageEnd {
+    let server = "redis-7.2.16";
+    let binary = oracle();
+    let directory = device.mount.join(format!("redis-page-end-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let log = std::env::temp_dir().join(format!("firn-sync-fault-redis-page-end-{}.log", std::process::id()));
+    let incremental = aof_incremental_path(&directory, "sync.aof");
+    let (child, mut client) = start_redis(&binary, &directory, &log);
+    let (during, layout, pad) = fail_at_page_end(device, &mut client, &incremental, server);
+    device.run("heal");
+    std::thread::sleep(IDLE_WATCH);
+    let after = memory_request(&mut client, AFTER);
+    stop(&mut client, child);
+    device.run("remount");
+    let (child, port) = spawn_redis(&binary, &directory, &log);
+    let restart = restart(child, port, server);
+    if restart.is_err() {
+        eprintln!("{server} log: {}", std::fs::read_to_string(&log).unwrap_or_default());
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+    PageEnd { server: server.to_string(), during, layout, pad, after, restart }
+}
+
+/// firn on one route through the page-end case.
+fn firn_page_end(device: &Device, native: bool) -> PageEnd {
+    let server = if native { "firn-native-ring" } else { "firn-file-adapter" };
+    let program = CompiledProgram::from_environment_under(&device.mount);
+    let incremental = aof_incremental_path(program.working_directory(), "sync.aof");
+    let (child, mut client) = start_firn(&program, native);
+    let (during, layout, pad) = fail_at_page_end(device, &mut client, &incremental, server);
+    device.run("heal");
+    wait_status(&mut client, "ok");
+    let before = on_disk(&incremental);
+    let after = memory_request(&mut client, AFTER);
+    // The periodic sync, not the one at shutdown, carries AFTER to the
+    // device, so a lost DURING cannot be blamed on the stop.
+    std::thread::sleep(SETTLE);
+    wait_status(&mut client, "ok");
+    eprintln!("layout: {server} the write after recovery took the file from {before} to {} bytes",
+        on_disk(&incremental));
+    stop(&mut client, child);
+    device.run("remount");
+    let (child, port) = spawn_firn(&program, native);
+    let restart = restart(child, port, server);
+    PageEnd { server: server.to_string(), during, layout, pad, after, restart }
+}
+
+/// A write acknowledged while the device fails, whose record ends exactly
+/// at a page end, is in the file a restart reads from the device once the
+/// device has healed, the server has synced again and a later write has
+/// started on the next page.
+///
+/// Linux leaves the pages whose writeback failed clean and reports the
+/// error once to the next fsync, so the first successful sync after the
+/// device heals does not write them again: only a later write that dirties
+/// the same page (or filesystem block) brings their bytes to the device. In
+/// the case above AFTER dirties DURING's page; here the seed is padded so
+/// that DURING's record ends at a page end and AFTER starts on the next
+/// page, which leaves DURING's page as the failed writeback left it. The
+/// case then stops the server, remounts so that only what reached the
+/// device counts, restarts it and reads every key.
+///
+/// Redis 7.2.16 goes through the same steps as an observation for the
+/// research record, not as an oracle: it refuses AFTER while idle, and its
+/// restart shows whether DURING survived. firn runs on both routes, and the
+/// case prints every server's observation before it asserts firn's: the
+/// file loads, DURING and AFTER read back, and the seed and padding are
+/// intact. When firn refused DURING, because its once-a-second sync failed
+/// first, the layout was not exercised and the case fails saying so.
+#[test]
+#[ignore = "needs the faulty device the aof-sync-fault job of .github/workflows/check.yml makes"]
+fn aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end() {
+    let device = Device::from_environment();
+    let _heal = HealOnPanic(&device);
+    check_page_layout(&device);
+    // Each observation is printed as its run ends, so a run that fails
+    // part way still leaves the earlier ones in the log.
+    let mut outcomes = Vec::new();
+    let mut record = |outcome: PageEnd| {
+        eprintln!("{}", outcome.observation());
+        outcomes.push(outcome);
+    };
+    record(redis_page_end(&device));
+    record(firn_page_end(&device, false));
+    record(firn_page_end(&device, true));
+    for outcome in outcomes.iter().filter(|outcome| outcome.server.starts_with("firn")) {
+        let server = &outcome.server;
+        if let Err(why) = &outcome.layout {
+            panic!("{server}: the page-end layout was not exercised, so the case tested nothing: {why}");
+        }
+        assert_eq!(outcome.after, "+OK\r\n", "{server}: the write after recovery is accepted");
+        let replies = outcome.restart.as_ref()
+            .unwrap_or_else(|why| panic!("{server}: the append-only file does not load after a remount: {why}"));
+        let pad = format!(":{}\r\n", outcome.pad);
+        for (name, expected) in [
+            ("during", "$1\r\nw\r\n"), ("after", "$1\r\np\r\n"), ("k1", "$2\r\nv1\r\n"),
+            ("k2", "$2\r\nv2\r\n"), ("l", "*2\r\n$1\r\na\r\n$1\r\nb\r\n"), ("pad", pad.as_str()),
+        ] {
+            assert_eq!(replies[name], expected, "{server}: {name} after a remount and restart");
+        }
     }
 }
