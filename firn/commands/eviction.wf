@@ -39,10 +39,13 @@ fn memory_excluded(meta: &Meta, logged: Bool) -> bytes: u64 reads(meta) {
 }
 
 fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(store), writes(client) waits {
-  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading. This short Meta statement does not cover command execution.";
+  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading. The peak only rises, so a reading at or below the peak this client last saw recorded cannot change it and takes no Meta statement; a higher one takes this short statement, which does not cover command execution, and remembers the peak it leaves.";
   let used = heap_read(client: client);
-  atomic meta = &store^.meta {
-    set meta^.memory_peak = imax(meta^.memory_peak, used);
+  if used > client^.seen_peak {
+    atomic meta = &store^.meta {
+      set meta^.memory_peak = imax(meta^.memory_peak, used);
+      set client^.seen_peak = meta^.memory_peak;
+    }
   }
   return unit;
 }
