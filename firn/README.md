@@ -395,11 +395,13 @@ R. Key copies, images and output-buffer growth are charged before they are
 allocated. A step that does not fit is discarded unwritten and its cursor
 kept. A step of several scan positions is retried at once one position at a
 time. A one-position step waits outside every hold and retries while its
-whole need could fit R less the fixed storage admission charged; for a
-position whose keys alone do not fit the limit, that need also counts the
-KeySet's bytes and the step buffer. A step that could never fit, such as a
+need so far could fit R less the fixed storage admission charged; for a
+position whose keys alone do not fit the limit, that need also counts a
+fresh KeySet's bytes and the step buffer. A step that could never fit, such as a
 key longer than about R less 64 KiB and that fixed storage, aborts the
-rewrite with `reserve`. The count hint counts scan positions, not keys: it
+rewrite with `reserve`. The count hint asks for about that many keys per
+step, whole scan positions kept together, which the specification leaves to
+the runtime: it
 starts at 64, halves after a step writes more than 64 KiB and doubles back
 after one that writes at most 32 KiB. Steps run back to back until about a
 millisecond has passed since the scan last waited, then it sleeps briefly,

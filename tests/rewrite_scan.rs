@@ -1089,8 +1089,10 @@ fn reconciled_scan_time_slices_many_keys_per_step_under_writes() {
 /// A first step of up to 64 positions holding 1-MiB values cannot fit the
 /// default 16-MiB R, so it must be discarded unwritten, its cursor kept, and
 /// retried one position at a time: each key's image reaches the base once.
-/// Successful steps cover distinct positions, at most one per key, so more
-/// steps than keys shows a discarded step.
+/// Successful steps cover distinct positions, at most one per key, and the
+/// pinned runtime returns the end cursor with the last key, so more steps
+/// than keys shows a discarded step. A runtime that ends with a separate
+/// empty step would need one step more; the specification allows either.
 #[test]
 fn reconciled_scan_discards_a_step_that_does_not_fit_and_retries_narrower() {
     let program = CompiledProgram::from_environment();

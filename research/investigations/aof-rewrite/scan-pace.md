@@ -57,7 +57,9 @@ while that need could fit R less admission's fixed charge, aborting with
 step that can never fit aborts at the latest on the retry that reaches its
 larger charges with every drainable byte free.
 
-The count hint counts scan positions, not keys. It starts at 64, the scan
+The count hint asks for about that many keys per step: the specification
+leaves the extent to the runtime, and the pinned runtime stops once it holds
+at least that many keys, keeping whole positions together. It starts at 64, the scan
 count this investigation first proposed, halves after a step writing more
 than 64 KiB and doubles back after one writing at most 32 KiB. Steps run
 back to back; after
