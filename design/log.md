@@ -12,6 +12,14 @@ Owner-approved: On the shared status board on 2026-10-12, the owner chose option
 
 Summary: A script that raises an error whose text holds CR or LF no longer splits its reply into replies the client reads as answers to its next commands. firn writes a raised error as Redis 7.2.13 and later do (addReplyErrorSdsExSafe), the reference Redis 7.2.16 included; 7.0.15 wrote the raw bytes, a defect Redis fixed as a security issue. Returned error tables and compile errors were already one line in both versions; firn's compile-error path, which wrote Halo's message raw, now matches them.
 
+## 2026-10-12 Validate the first release on the usage survey's applications
+
+Nodes: firn/consumers
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A on card firn-q-production-scope, which asked whether firn's first release takes the scope the usage survey proposes; the ruling reads (translated) "The first release takes the survey's proposed scope ... Validation applications are added in the order the survey gives."
+
+Summary: The owner set firn's first release to production drop-in use. The consumers node keeps the deployment milestone's three consumers and adds, after them and in the survey's order, Sidekiq, Celery, BullMQ, the Socket.IO and ActionCable pub/sub applications, Redisson's default lock and a smoke test of twelve mainstream clients, each run unchanged against Redis 7.2.16 and firn with the append-only file on. The first release's command scope is the survey's approved list, consumers' refusals still naming work. The rejection of BullMQ and Sidekiq as unselected scenarios is removed, since the ruling supersedes it ([survey](../research/investigations/usage-survey/README.md#validation-applications-and-clients)).
+
 ## 2026-10-12 Raise the heap peak only past a connection's last seen peak
 
 Nodes: firn/memory-limit
