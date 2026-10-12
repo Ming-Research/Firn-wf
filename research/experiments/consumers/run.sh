@@ -40,7 +40,8 @@ case $server in
         command -v redis-server >/dev/null || { echo "no redis-server" >&2; exit 1; }
         redis-server --version | grep -q 'v=7\.2\.16 ' ||
             { echo "the reference must be Redis 7.2.16: $(redis-server --version)" >&2; exit 1; } ;;
-    firn) test -x "${FIRN:-}" || { echo "FIRN names no executable" >&2; exit 1; } ;;
+    firn) test -x "${FIRN:-}" || { echo "FIRN names no executable" >&2; exit 1; }
+        FIRN=$(cd "$(dirname "$FIRN")" && pwd)/$(basename "$FIRN") ;;
     *) echo "unknown server $server" >&2; exit 1 ;;
 esac
 real_redis=$(command -v redis-server || true)
@@ -60,10 +61,13 @@ export PATH="$out/bin:$PATH"
 started=
 watching=
 start_server() {
+    # Both servers keep an append-only file, as a deployment would, each in
+    # its own directory.
+    mkdir -p "$out/data"
     if [ "$server" = redis ]; then
-        "$real_redis" --port "$port" --save "" --appendonly no --daemonize no > "$out/server.log" 2>&1 &
+        "$real_redis" --port "$port" --save "" --appendonly yes --dir "$out/data" --daemonize no > "$out/server.log" 2>&1 &
     else
-        "$FIRN" --port "$port" > "$out/server.log" 2>&1 &
+        (cd "$out/data" && exec "$FIRN" --port "$port" --appendonly yes) > "$out/server.log" 2>&1 &
     fi
     started=$!
     for i in $(seq 1 50); do

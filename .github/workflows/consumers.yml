@@ -2,12 +2,15 @@
 # each consumer's own Redis tests run against Redis 7.2.16, the reference of
 # AGENTS.md built from its release archive by tests/redis-suite/reference.sh,
 # recording the commands they send, and against firn built at this revision.
-# Dispatched by hand; an investigation copies the results it relies on into
-# its record.
+# Dispatched by hand, and weekly so a change that breaks a consumer is seen
+# within a week; an investigation copies the results it relies on into its
+# record.
 name: consumers
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
 
 defaults:
   run:
