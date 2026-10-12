@@ -9,7 +9,7 @@
 #   CONTEXTS   contexts each witness starts (default 64)
 #   MILLIS     milliseconds each run lasts (default 5000)
 #   PASSES     passes over every list and witness (default 1)
-#   WITNESSES  witnesses to run, in order (default "base private shared read read_param write")
+#   WITNESSES  witnesses to run, in order (default "base private shared read read_param write heap")
 #   CPU_LISTS  taskset CPU lists (default "0,2 0,2,4,6 0,2,4,6,8,10,12,14 0-15")
 #
 # It writes DIR/results.csv with one row per run,
@@ -38,7 +38,7 @@ done
 CONTEXTS=${CONTEXTS:-64}
 MILLIS=${MILLIS:-5000}
 PASSES=${PASSES:-1}
-WITNESSES=${WITNESSES:-"base private shared read read_param write"}
+WITNESSES=${WITNESSES:-"base private shared read read_param write heap"}
 CPU_LISTS=${CPU_LISTS:-"0,2 0,2,4,6 0,2,4,6,8,10,12,14 0-15"}
 
 mkdir -p "$out/bin" "$out/runs"

@@ -11,3 +11,5 @@ entry w_read = pkg::read_main;
 entry w_write = pkg::write_main;
 
 entry w_read_param = pkg::read_param_main;
+
+entry w_heap = pkg::heap_main;

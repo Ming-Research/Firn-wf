@@ -40,7 +40,7 @@ struct Gate {
 }
 
 struct Bench {
-  doc "One witness run: the contexts to start and the milliseconds they run, read from the invocation's two arguments, valid when both are positive decimal numbers; the runtime's driver count; and the handles the report needs.";
+  doc "One witness run: the contexts to start and the milliseconds they run, read from the invocation's two arguments, valid when both are positive decimal numbers; the runtime's driver count; the handles the report needs; and the process's memory meter, which W-heap shares with its contexts.";
   contexts: u64;
   millis: u64;
   valid: Bool;
@@ -48,6 +48,7 @@ struct Bench {
   clock: Clock;
   factory: HandleFactory;
   output: OutputStream;
+  meter: std::process::MemoryMeter;
 }
 
 fn arg_number(args: &std::text::Args, position: u64) -> result: Option<u64> reads(args) {
@@ -89,7 +90,7 @@ fn arg_number(args: &std::text::Args, position: u64) -> result: Option<u64> read
 
 fn bench_begin(inputs: Inputs) -> bench: Bench pure waits {
   doc "Reads CONTEXTS and MILLISECONDS, the invocation's two arguments, and keeps the clock, the standard output and the runtime's driver count.";
-  let Inputs(args: args, drivers: drivers, cwd: directory, stdout: output, handles: factory, clock: clock, ..) = move inputs;
+  let Inputs(args: args, drivers: drivers, cwd: directory, stdout: output, handles: factory, clock: clock, memory_meter: meter, ..) = move inputs;
   let std::fs::Directory(read: read_directory, write: write_directory) = move directory;
   std::fs::close_directory_write(factory: &factory, directory: move write_directory);
   std::fs::close_directory(factory: &factory, directory: move read_directory);
@@ -111,7 +112,7 @@ fn bench_begin(inputs: Inputs) -> bench: Bench pure waits {
     None() => {
     }
   }
-  return Bench(contexts: contexts, millis: millis, valid: valid, drivers: drivers, clock: move clock, factory: move factory, output: move output);
+  return Bench(contexts: contexts, millis: millis, valid: valid, drivers: drivers, clock: move clock, factory: move factory, output: move output, meter: move meter);
 }
 
 fn gate_new(clock: &Clock) -> result: Shared<Gate> writes(clock) {
