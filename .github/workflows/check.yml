@@ -1,7 +1,10 @@
-# firn's gate: every push runs `make check`, which downloads the pinned
-# Whitefoot compiler release, builds firn and runs its network cases, Redis
-# suite ratchet and design lint. The exact revision that merges into main
-# passes this first.
+# firn's gate: every push runs the targets of `make check` in three parallel
+# jobs, so that its answer takes as long as the slowest, the Redis suite. The
+# jobs download the pinned Whitefoot compiler release, then build firn and run
+# the Redis suite ratchet; build firn and run its network cases; and lint the
+# design trees. `make gate-sync` fails when the targets they run and the
+# targets of `make check` differ, so each `make TARGET` step below stays on
+# one line. The exact revision that merges into main passes this first.
 name: check
 
 on:
@@ -13,15 +16,100 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: make check
+  suite:
+    name: firn and Redis suite
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
+      # The pinned compiler links with /usr/bin/clang, and a cached build
+      # links its ThinLTO fragments with LLD on Linux, of the LLVM major the
+      # pinned release was built with, which Whitefoot-kit's `make toolchain`
+      # installs. The suite runs under tclsh and uses redis-cli and
+      # redis-benchmark.
+      - name: Install the suite's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tcl redis-tools
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Show the host toolchain
+        run: |
+          ld.lld --version
+          /usr/bin/clang --version
+          python3 --version
+
+      - name: Read the Redis archive pin
+        id: redis
+        run: |
+          sha256=$(sed -n 's/^sha256=//p' tests/redis-suite/run.sh)
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-source-${{ steps.redis.outputs.sha256 }}
+
+      - name: Build firn
+        run: make firn
+
+      - name: Run the Redis suite in two shards and check the ratchet
+        run: make redis-suite
+
+      - name: Upload the Redis suite run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-suite-${{ github.sha }}
+          path: build/redis-suite
+
+  network:
+    name: network tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Show the host toolchain
+        run: |
+          ld.lld --version
+          /usr/bin/clang --version
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Build firn for the network cases and run them
+        run: make test
+
+  design:
+    name: design lint and gate sync
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
           fetch-depth: 0
+
+      # The Makefile includes Whitefoot-kit, and the lint is Design-skill's.
+      - name: Check out Design-skill and Whitefoot-kit
+        run: git submodule update --init design/skill whitefoot-kit
 
       - name: Name main as a local ref
         run: git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
@@ -36,43 +124,11 @@ jobs:
           echo "DESIGN_REVIEW_BASE=$design_review_base" >> "$GITHUB_ENV"
           git log --oneline -1 "$design_review_base"
 
-      # The pinned compiler links with /usr/bin/clang, and a cached build
-      # links its ThinLTO fragments with LLD on Linux, of the LLVM major the
-      # pinned release was built with, which Whitefoot-kit's `make toolchain`
-      # installs.
-      - name: Install the host toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends tcl redis-tools
-          make toolchain
-          ld.lld --version
-          /usr/bin/clang --version
-          python3 --version
+      - name: Lint the design trees
+        run: make design-lint
 
-      - name: Select the Rust toolchain
-        run: rustup default stable && cargo --version
-
-      - name: Read the Redis archive pin
-        id: redis
-        run: |
-          sha256=$(sed -n 's/^sha256=//p' tests/redis-suite/run.sh)
-          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]]
-          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@v4
-        with:
-          path: build/redis-compat-cache
-          key: redis-source-${{ steps.redis.outputs.sha256 }}
-
-      - name: Check
-        run: make check
-
-      - name: Upload the Redis suite run
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: redis-suite-${{ github.sha }}
-          path: build/redis-suite
+      - name: Check that these jobs run every target of make check
+        run: make gate-sync
 
   # The append-only file's sync failing on a real device:
   # tests/aof_sync_fault_device.sh makes a device-mapper device whose writes
