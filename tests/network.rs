@@ -4534,28 +4534,48 @@ fn firn_script_flush_waits_for_a_looping_script_to_be_killed() {
     assert_eq!(status, 0);
 }
 
-/// firn's scripts share one Lua state as Redis 7.0.15's do: the cjson
-/// precision one connection's script sets reaches another connection's
-/// script sent while a third connection's script runs. That script has
-/// written, so it runs to its end holding the one engine and the later
-/// script waits for both; with a pool of engines the later script, served
-/// on another of the four drivers meanwhile, would take a second engine and
-/// encode 3.14159 at the default precision of 14 digits. The expected bytes
-/// are redis-server 7.0.15's (Firn-wf probe run 37487261232), the running
-/// script's count its loop's.
+/// A script that writes a key and then counts to `iterations`, so that it
+/// holds its engine and the metadata until it ends: having written, it is
+/// never abandoned for its budget.
+#[cfg(target_os = "linux")]
+fn written_loop(iterations: u64) -> String {
+    format!("redis.call('SET',KEYS[1],'1') local i = 0 while i < {iterations} do i = i + 1 end return i")
+}
+
+/// Whether the script on `stream` has not answered yet, leaving its reply
+/// unread.
+#[cfg(target_os = "linux")]
+fn still_running(stream: &mut TcpStream, what: &str) -> bool {
+    silent_for(stream, Duration::from_millis(1)).unwrap_or_else(|error| panic!("{what}: {error}"))
+}
+
+/// firn's scripts share one Lua state as Redis 7.0.15's do, though they run
+/// on a pool of engines: the cjson precision one connection's script sets
+/// reaches the scripts six other connections send while a written script
+/// runs. The written script holds the engine the setter returned, which the
+/// pool hands out first, and the metadata until it ends, so the readers sent
+/// meanwhile take the pool's other three engines, made fresh, before they
+/// wait for the metadata: an engine that kept its own Lua state would encode
+/// 3.14159 at the default precision of 14 digits there. A round in which the
+/// written script ended before the readers were sent proves nothing about
+/// the other engines and reruns with a longer script, at most three rounds.
+/// The expected bytes are redis-server 7.0.15's (Firn-wf probe run
+/// 37487261232).
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_scripts_share_one_lua_state_as_redis_does() {
+    const READERS: usize = 6;
     let program = firn();
     let port = free_port();
     let text = port.to_string();
-    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), b"3"]);
+    let clients = (READERS + 2).to_string();
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), clients.as_bytes()]);
     let mut setter = connect_when_ready(port);
     let mut writer = connect_when_ready(port);
-    let mut reader = connect_when_ready(port);
-    for stream in [&writer, &reader] {
+    let mut readers: Vec<TcpStream> = (0..READERS).map(|_| connect_when_ready(port)).collect();
+    for stream in std::iter::once(&writer).chain(readers.iter()) {
         stream
-            .set_read_timeout(Some(Duration::from_secs(60)))
+            .set_read_timeout(Some(Duration::from_secs(120)))
             .expect("bound the reads that wait for the writing script");
     }
     setter
@@ -4566,27 +4586,308 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
         ]))
         .expect("set the precision");
     expect_replies(&mut setter, b":1\r\n", "the precision set");
-    writer
-        .write_all(&resp(&[
-            "EVAL",
-            "redis.call('SET',KEYS[1],'1') local i = 0 while i < 10000000 do i = i + 1 end return i",
-            "1",
-            "written",
-        ]))
-        .expect("start the writing script");
-    std::thread::sleep(Duration::from_millis(100));
-    reader
-        .write_all(&resp(&["EVAL", "return cjson.encode(3.14159)", "0"]))
-        .expect("encode a number");
-    expect_replies(
-        &mut reader,
-        b"$4\r\n3.14\r\n",
-        "the number sent while a script runs",
-    );
-    expect_replies(&mut writer, b":10000000\r\n", "the writing script");
+    let mut iterations = 10_000_000_u64;
+    for round in 1.. {
+        assert!(round <= 3, "the written script ended before the readers were sent in three rounds");
+        writer
+            .write_all(&resp(&["EVAL", &written_loop(iterations), "1", "written"]))
+            .expect("start the writing script");
+        std::thread::sleep(Duration::from_millis(100));
+        for reader in &mut readers {
+            reader
+                .write_all(&resp(&["EVAL", "return cjson.encode(3.14159)", "0"]))
+                .expect("encode a number");
+        }
+        let running = still_running(&mut writer, "the writing script");
+        assert_eq!(integer_reply(&mut writer, "the writing script"), iterations as i64);
+        for reader in &mut readers {
+            expect_replies(reader, b"$4\r\n3.14\r\n", "the number sent while a script runs");
+        }
+        if running {
+            break;
+        }
+        iterations *= 5;
+    }
     drop(setter);
     drop(writer);
-    drop(reader);
+    drop(readers);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn's engines share math.random's generator as Redis 7.0.15's one Lua
+/// state does: after one connection's script calls math.randomseed(7), the
+/// scripts six other connections send while a written script runs draw the
+/// generator's next six numbers between them, whichever engines they run on.
+/// As in the cjson case above, the readers sent meanwhile take the pool's
+/// three other engines, made fresh, where an engine that kept its own
+/// generator would draw 396465, the first draw of an unseeded one, so the
+/// draws could not be the six distinct numbers seed 7 gives. The draws are
+/// compared without their order, which the connections cannot see. The first
+/// three numbers are redis-server 7.0.15's for seed 7 (Firn-wf probe run
+/// 38223467544); the next three follow from Redis's rand.c and
+/// redis_math_random, whose computation gives the three observed numbers and
+/// the three an unseeded server observably draws first.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_engines_share_math_random_as_redis_does() {
+    const DRAWERS: usize = 6;
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let clients = (DRAWERS + 2).to_string();
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), clients.as_bytes()]);
+    let mut seeder = connect_when_ready(port);
+    let mut writer = connect_when_ready(port);
+    let mut drawers: Vec<TcpStream> = (0..DRAWERS).map(|_| connect_when_ready(port)).collect();
+    for stream in std::iter::once(&writer).chain(drawers.iter()) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(120)))
+            .expect("bound the reads that wait for the writing script");
+    }
+    let mut expected = vec![266445_i64, 682036, 265491, 129111, 494605, 297573];
+    expected.sort_unstable();
+    let mut iterations = 10_000_000_u64;
+    for round in 1.. {
+        assert!(round <= 3, "the written script ended before the draws were sent in three rounds");
+        seeder
+            .write_all(&resp(&["EVAL", "math.randomseed(7) return 1", "0"]))
+            .expect("seed the generator");
+        expect_replies(&mut seeder, b":1\r\n", "the seeding script");
+        writer
+            .write_all(&resp(&["EVAL", &written_loop(iterations), "1", "written"]))
+            .expect("start the writing script");
+        std::thread::sleep(Duration::from_millis(100));
+        for drawer in &mut drawers {
+            drawer
+                .write_all(&resp(&["EVAL", "return math.random(1000000)", "0"]))
+                .expect("draw a number");
+        }
+        let running = still_running(&mut writer, "the writing script");
+        assert_eq!(integer_reply(&mut writer, "the writing script"), iterations as i64);
+        let mut drawn: Vec<i64> = drawers
+            .iter_mut()
+            .map(|drawer| integer_reply(drawer, "a number drawn while a script runs"))
+            .collect();
+        drawn.sort_unstable();
+        assert_eq!(drawn, expected, "the draws after math.randomseed(7)");
+        if running {
+            break;
+        }
+        iterations *= 5;
+    }
+    drop(seeder);
+    drop(writer);
+    drop(drawers);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// SCRIPT FLUSH returns the cjson settings to their defaults and leaves
+/// math.random's generator where it was, as Redis 7.0.15 starts a new Lua
+/// state with cjson's defaults beside its process-wide generator: on a server
+/// whose scripts have drawn nothing, two draws, a FLUSH and a third draw give
+/// the generator's first three numbers, and a precision set before a FLUSH
+/// no longer applies after it. A FLUSH that reset the generator would draw
+/// the first number again, and one that kept the shared cjson settings would
+/// encode at the precision of 3. The expected bytes are redis-server
+/// 7.0.15's (Firn-wf probe run 38223467544).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_script_flush_keeps_math_random_and_resets_cjson_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["EVAL", "return math.random(1000000)", "0"],
+        vec!["EVAL", "return math.random(1000000)", "0"],
+        vec!["SCRIPT", "FLUSH"],
+        vec!["EVAL", "return math.random(1000000)", "0"],
+        vec!["EVAL", "cjson.encode_number_precision(3) return cjson.encode(3.14159)", "0"],
+        vec!["EVAL", "return cjson.encode(3.14159)", "0"],
+        vec!["SCRIPT", "FLUSH"],
+        vec!["EVAL", "return cjson.encode(3.14159)", "0"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the draws and flushes");
+    expect_replies(
+        &mut client,
+        b":396465\r\n:840486\r\n+OK\r\n:353337\r\n$4\r\n3.14\r\n$4\r\n3.14\r\n+OK\r\n$7\r\n3.14159\r\n",
+        "draws and cjson settings across SCRIPT FLUSH",
+    );
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// Every engine of firn's pool runs a script any connection loaded, as
+/// Redis 7.0.15's one registry lets EVALSHA run a script another connection
+/// loaded: sixteen connections send EVALSHA of a script SCRIPT LOAD compiled
+/// on one engine while a written script holds that engine, which the pool
+/// hands out first, and the metadata, so those that take the pool's other
+/// three engines meanwhile run it on engines that compile it from the
+/// registry at their first use, and each answers its own argument; an
+/// engine that answered NOSCRIPT, or ran nothing, for a script it had not
+/// compiled fails the case. After SCRIPT FLUSH, every connection's EVALSHA
+/// answers NOSCRIPT, as the registry holds the script no more. A round in
+/// which the written script ended before the EVALSHA requests were sent
+/// reruns with a longer script, at most three rounds.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_a_loaded_script_on_every_engine_of_its_pool() {
+    const READERS: usize = 16;
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let clients = (READERS + 2).to_string();
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), clients.as_bytes()]);
+    let mut loader = connect_when_ready(port);
+    let mut writer = connect_when_ready(port);
+    let mut readers: Vec<TcpStream> = (0..READERS).map(|_| connect_when_ready(port)).collect();
+    for stream in std::iter::once(&writer).chain(readers.iter()) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(120)))
+            .expect("bound the reads that wait for the writing script");
+    }
+    let sha = "098e0f0d1448c0a81dafe820f66d460eb09263da";
+    loader
+        .write_all(&resp(&["SCRIPT", "LOAD", "return ARGV[1]"]))
+        .expect("load the script");
+    expect_replies(&mut loader, format!("$40\r\n{sha}\r\n").as_bytes(), "the loaded script's SHA1");
+    let mut iterations = 10_000_000_u64;
+    for round in 1.. {
+        assert!(round <= 3, "the written script ended before the EVALSHA requests were sent in three rounds");
+        writer
+            .write_all(&resp(&["EVAL", &written_loop(iterations), "1", "written"]))
+            .expect("start the writing script");
+        std::thread::sleep(Duration::from_millis(100));
+        for (index, reader) in readers.iter_mut().enumerate() {
+            reader
+                .write_all(&resp(&["EVALSHA", sha, "0", &index.to_string()]))
+                .expect("run the loaded script");
+        }
+        let running = still_running(&mut writer, "the writing script");
+        assert_eq!(integer_reply(&mut writer, "the writing script"), iterations as i64);
+        for (index, reader) in readers.iter_mut().enumerate() {
+            assert_eq!(bulk_reply(reader, "EVALSHA on one of the pool's engines"), index.to_string());
+        }
+        if running {
+            break;
+        }
+        iterations *= 5;
+    }
+    loader
+        .write_all(&resp(&["SCRIPT", "FLUSH"]))
+        .expect("flush the scripts");
+    expect_replies(&mut loader, b"+OK\r\n", "SCRIPT FLUSH");
+    for reader in &mut readers {
+        reader
+            .write_all(&resp(&["EVALSHA", sha, "0", "x"]))
+            .expect("run the flushed script");
+    }
+    for reader in &mut readers {
+        expect_replies(
+            reader,
+            b"-NOSCRIPT No matching script. Please use EVAL.\r\n",
+            "EVALSHA after SCRIPT FLUSH",
+        );
+    }
+    drop(loader);
+    drop(writer);
+    drop(readers);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn's pool lets several scripts hold engines at once: while a written
+/// script holds one of two engines and the metadata, SCRIPT LOAD, which
+/// takes an engine but neither keys nor metadata, compiles its script on the
+/// other engine and answers before the written script ends. With both
+/// engines taken, by the written script and by a script waiting for the
+/// metadata, the same server's SCRIPT LOAD waits for the written script to
+/// return its engine. Both parts run on the same two drivers, so the second
+/// shows that the first's answer needed an idle engine, not an idle thread;
+/// one driver could not show it, since a written script that never waits
+/// keeps its driver's other contexts from running at all. One engine used in
+/// turn answers the first part's SCRIPT LOAD only after the written script.
+/// A part whose written script ended too soon to decide reruns with a longer
+/// one, at most three rounds each. The SHA1s are those of the loaded
+/// sources, as Redis 7.0.15 answers SCRIPT LOAD.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_loads_a_script_on_an_idle_engine_while_a_written_script_runs() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "2")], &[text.as_bytes(), b"3"]);
+    let mut writer = connect_when_ready(port);
+    let mut loader = connect_when_ready(port);
+    let mut waiting = connect_when_ready(port);
+    for stream in [&writer, &loader, &waiting] {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(120)))
+            .expect("bound the reads that wait for the writing script");
+    }
+    let mut iterations = 10_000_000_u64;
+    for round in 1.. {
+        assert!(round <= 3, "SCRIPT LOAD never answered while the written script ran, in three rounds");
+        writer
+            .write_all(&resp(&["EVAL", &written_loop(iterations), "1", "written"]))
+            .expect("start the writing script");
+        std::thread::sleep(Duration::from_millis(100));
+        loader
+            .write_all(&resp(&["SCRIPT", "LOAD", "return 1"]))
+            .expect("load a script while the written one runs");
+        expect_replies(
+            &mut loader,
+            b"$40\r\ne0e1f9fabfc9d4800c877a703b823ac0578ff8db\r\n",
+            "SCRIPT LOAD while the written script runs",
+        );
+        let running = still_running(&mut writer, "the writing script");
+        assert_eq!(integer_reply(&mut writer, "the writing script"), iterations as i64);
+        if running {
+            break;
+        }
+        iterations *= 5;
+    }
+    for round in 1.. {
+        assert!(round <= 3, "the written script ended before SCRIPT LOAD's wait was observed, in three rounds");
+        writer
+            .write_all(&resp(&["EVAL", &written_loop(iterations), "1", "written"]))
+            .expect("start the writing script");
+        std::thread::sleep(Duration::from_millis(100));
+        waiting
+            .write_all(&resp(&["EVAL", "return 2", "0"]))
+            .expect("take the other engine");
+        std::thread::sleep(Duration::from_millis(100));
+        loader
+            .write_all(&resp(&["SCRIPT", "LOAD", "return 3"]))
+            .expect("load a script while both engines are taken");
+        let loader_waited = silent_for(&mut loader, Duration::from_millis(300))
+            .expect("wait for SCRIPT LOAD while both engines are taken");
+        let running = still_running(&mut writer, "the writing script");
+        if running {
+            assert!(loader_waited, "SCRIPT LOAD answered while both engines were taken");
+        }
+        assert_eq!(integer_reply(&mut writer, "the writing script"), iterations as i64);
+        expect_replies(&mut waiting, b":2\r\n", "the script that waited for the metadata");
+        expect_replies(
+            &mut loader,
+            b"$40\r\n09d3822de862f46d784e6a36848b4f0736dda47a\r\n",
+            "SCRIPT LOAD once an engine was returned",
+        );
+        if running {
+            break;
+        }
+        iterations *= 5;
+    }
+    drop(writer);
+    drop(loader);
+    drop(waiting);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
 }
@@ -7328,7 +7629,7 @@ fn firn_script_fallback_keeps_lazy_expiry_effects() {
     assert_eq!(std::fs::read(aof_incremental_path(program.working_directory(), "fallback-expiry.aof")).unwrap(), expected, "each expired value must have one accepted deletion effect");
 }
 
-/// The single engine and held Meta still serialize these scripts. Starting
+/// Held Meta still serializes these scripts, each on an engine of the pool. Starting
 /// disjoint requests together must nevertheless terminate with one serial
 /// history, without losing a mutation or mixing the two scripts' KEYS. The
 /// bounded reads also reject a hold or checkout that is never released. This
@@ -8276,7 +8577,7 @@ fn firn_stops_in_order_on_sigterm_and_sigint_on_both_routes() {
 /// default, so a second signal ends it at once, by that signal, before its
 /// drain ends (design/firn/orderly-stop.md). An unfinished script keeps one
 /// client alive because cancelling script waits is outside host cancellation.
-/// SCRIPT EXISTS observes its registration after the script takes the engine;
+/// SCRIPT EXISTS observes its registration after the script takes an engine;
 /// that observer then stays idle. Its EOF after the first signal proves the
 /// request was recorded, after the listener was closed, without a fixed delay.
 /// Were the second ignored, as Redis 7.0.15 ignores a second SIGTERM, the
@@ -8313,7 +8614,7 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
                 break;
             }
             assert_eq!(present, 0, "SCRIPT EXISTS result");
-            assert!(Instant::now() < deadline, "script never took the engine");
+            assert!(Instant::now() < deadline, "script never took an engine");
             std::thread::sleep(Duration::from_millis(10));
         }
         send_signal(&child, signal);

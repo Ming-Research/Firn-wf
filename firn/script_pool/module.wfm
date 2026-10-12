@@ -4,9 +4,23 @@ public struct Cached {
 }
 
 public struct PooledEngine {
+  doc "One engine of the pool, the flush generation it was made under, the scripts it has compiled, and the shared Lua state as it stood when the engine was made, which LuaShared's empty parts stand for.";
   public engine: halo::embed::Engine;
   public generation: u64;
   public cache: Box<Slots<Cached>>;
+  public fresh: LuaSettings;
+}
+
+public struct LuaSettings {
+  doc "The Lua state that Redis 7.0.15's one Lua state carries from one script to the next and that firn's engines must therefore share: the state of the generator math.random draws from and math.randomseed sets, and the settings of the cjson module's own configuration, which its setters change. Every other table a script can reach is read-only, so it cannot carry anything between scripts.";
+  public random: u64;
+  public cjson: Array<u64, 9>;
+}
+
+public struct LuaShared {
+  doc "The one canonical copy of LuaSettings that every engine shares. A script's attempt holds it together with the keys and metadata, copies it into its engine before the script runs, and copies the engine's state back when the script ends, with its result or with a Lua error; an abandoned attempt copies nothing back. An empty part stands for the value an engine has when it is made: random until a script first ends, cjson until a script first ends after the last SCRIPT FLUSH. SCRIPT FLUSH empties cjson, as Redis's new Lua state starts cjson with its defaults, and keeps random, as Redis's generator is the process's and outlives the Lua state.";
+  public random: Option<u64>;
+  public cjson: Option<Array<u64, 9>>;
 }
 
 public struct Registered {
@@ -15,9 +29,10 @@ public struct Registered {
 }
 
 public struct EnginePool {
-  doc "The one engine scripts run on and the SHA1-to-source registry. A script takes the engine in a short statement that waits while out is 1, keeps it outside the pool's statements while one of its attempts runs, and puts it back after the attempt, so that scripts use the engine in turn and see the state earlier ones left in it, as Redis's scripts share one Lua state; idle holds it while no script has it. running counts the scripts in progress, which SCRIPT KILL answers by, and kills the kills requested, which a script compares, between its attempts, with the count it saw when it first took the engine.";
+  doc "The script engines and the server-wide SHA1-to-source registry. The pool holds at most size engines, size being the runtime's driver count; an engine is made when a script finds none idle and fewer than size made. A script takes any idle engine in a short statement that waits while out, the engines taken, is size, keeps it outside the pool's statements while one of its attempts runs, and puts it back after the attempt; idle holds the engines no script has. Engines share LuaShared, not their own Lua state. running counts the scripts in progress, which SCRIPT KILL answers by, and kills the kills requested, which every script in progress compares, between its attempts, with the count it saw when it first took an engine.";
   public idle: Box<Slots<PooledEngine>>;
   public out: u64;
+  public size: u64;
   public registry: Box<Slots<Registered>>;
   public source_bytes: u64;
   public generation: u64;
@@ -25,4 +40,6 @@ public struct EnginePool {
   public kills: u64;
 }
 
-public fn new_pool() -> pool: EnginePool pure doc "A pool with no engine yet, the engine made when first taken.";
+public fn new_pool(size: u64) -> pool: EnginePool pure doc "A pool of at most size engines, at least one, with none made yet, each made when first needed.";
+
+public fn new_lua_shared() -> shared: LuaShared pure doc "The shared Lua state before any script has run: both parts empty, so that engines start from their own initial state.";

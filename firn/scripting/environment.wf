@@ -290,32 +290,3 @@ const env_text_14: Array<u8, 4> = "ARGV";
 const env_text_15: Array<u8, 4> = "ERR ";
 
 const env_text_16: Array<u8, 3> = "err";
-
-fn config_snapshot(vm: &Vm) -> saved: Box<Slots<Array<u64, 9>>> reads(vm) {
-  doc "Cjson setters are engine-visible effects even before a keyspace write. Snapshot settings so an abandoned attempt leaves the engine's Lua environment as it found it.";
-  let n = vm^.cjson_configs.inner.len;
-  let saved = box_slots_new::<Array<u64, 9>>(capacity: n);
-  for (i in 0_u64..n) {
-    let settings = vm^.cjson_configs.inner[i].settings;
-    if saved.inner.len < saved.inner.cap {
-      place_back(window: &saved.inner, value: settings);
-    }
-  }
-  return move saved;
-}
-
-fn config_restore(vm: &Vm, saved: &Box<Slots<Array<u64, 9>>>, active: u64) -> r: unit reads(saved), writes(vm) {
-  loop {
-    if vm^.cjson_configs.inner.len <= saved^.inner.len {
-      break;
-    }
-    let dropped = take_back(window: &vm^.cjson_configs.inner);
-  }
-  for (i in 0_u64..saved^.inner.len) {
-    if i < vm^.cjson_configs.inner.len {
-      set vm^.cjson_configs.inner[i].settings = saved^.inner[i];
-    }
-  }
-  set vm^.cjson_active_config = active;
-  return unit;
-}

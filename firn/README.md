@@ -50,8 +50,13 @@ clients send on their own:
   of [Halo-wf](https://github.com/Ming-Research/Halo-wf), `deps/halo-wf`,
   with Redis's `KEYS`, `ARGV`, `redis` library and reply conversions, in
   either protocol. A compiled script is kept until `SCRIPT FLUSH`, as in
-  Redis 7.0.15. `SCRIPT FLUSH` waits until no script is in progress before
-  clearing the registry. `redis.call` and `redis.pcall` run the commands
+  Redis 7.0.15. Scripts run on a pool of as many Lua engines as the
+  runtime has drivers, which `WF_DRIVERS` sets as described below; each script takes any idle engine, which compiles a script the
+  first time it runs it, and the engines share math.random's generator
+  and the cjson settings, as Redis's one Lua state does. `SCRIPT FLUSH`
+  waits until no script is in progress before clearing the registry and
+  returning the cjson settings to their defaults; math.random's
+  generator continues, as Redis's does. `redis.call` and `redis.pcall` run the commands
   written as parts, those `MULTI` runs, inside the script's statement,
   through Halo's resumable host call; any other command is answered with
   Redis's error for an unknown one, noting that firn may not run it from
@@ -519,7 +524,7 @@ the incremental file after clients leave and joins the rebuild before exiting.
 See the [reconciled-scan protocol](../research/investigations/aof-rewrite/scan-log.md).
 
 `WF_DRIVERS` sets how many threads serve the connections, one per CPU by
-default.
+default, and so how many Lua engines scripts share.
 
 ## Layout
 
@@ -546,7 +551,7 @@ default.
   the connection and server commands, and the dispatch;
 - `scripting`: `EVAL`, `EVALSHA` and `SCRIPT`, the Redis Lua environment
   and the conversions between replies and Lua values; `script_pool` holds
-  the one Lua engine every script takes in turn and the registry of
-  scripts the keyspace shares;
+  the pool of Lua engines scripts take, the registry of scripts the
+  keyspace shares and the Lua state the engines share;
 - `persistence`: the append-only manifest, startup and upgrade, writer and replay;
 - `server`: connections, active expiry, the invocation's options and `main`.

@@ -1,5 +1,12 @@
-fn new_pool() -> pool: EnginePool pure {
-  let idle = box_slots_new::<PooledEngine>(capacity: 0_u64);
+fn new_pool(size: u64) -> pool: EnginePool pure {
+  let idle = box_slots_new::<PooledEngine>(capacity: size);
   let registry = box_slots_new::<Registered>(capacity: 0_u64);
-  return EnginePool(idle: move idle, out: 0_u64, registry: move registry, source_bytes: 0_u64, generation: 0_u64, running: 0_u64, kills: 0_u64);
+  let at_least_one = imax(size, 1_u64);
+  return EnginePool(idle: move idle, out: 0_u64, size: at_least_one, registry: move registry, source_bytes: 0_u64, generation: 0_u64, running: 0_u64, kills: 0_u64);
+}
+
+fn new_lua_shared() -> shared: LuaShared pure {
+  let random = None<u64>();
+  let cjson = None<Array<u64, 9>>();
+  return LuaShared(random: random, cjson: cjson);
 }

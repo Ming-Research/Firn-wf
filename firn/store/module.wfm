@@ -222,11 +222,12 @@ public struct ServerState {
 }
 
 public struct Keyspace {
-  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served.";
+  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state, to the script engines' pool and to the Lua state those engines share, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. The shared Lua state is an object of its own, apart from the pool, because a script's attempt holds it together with the keys and metadata while SCRIPT KILL and the taking of engines must reach the pool meanwhile.";
   public keys: Shared<ConcurrentHashMap<Entry>>;
   public meta: Shared<Meta>;
   public server: Shared<ServerState>;
   public scripts: Shared<pkg::script_pool::EnginePool>;
+  public lua: Shared<pkg::script_pool::LuaShared>;
   public logging: Bool;
 }
 
@@ -269,7 +270,7 @@ public fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> res
 
 public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), reads(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) doc "Publishes a taken sequence, its journal unit (after-images, or a one-key statement's own append-only bytes) and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
 
-public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
+public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64, engines: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started, with a pool of at most engines script engines, at least one, and the Lua state they share.";
 
 public fn shutdown_requested(store: &Keyspace) -> requested: Bool reads(store) waits doc "Whether SHUTDOWN or a stop signal requested that contexts drain and close, before the last client lets main stop the writer, or main has stopped it.";
 
