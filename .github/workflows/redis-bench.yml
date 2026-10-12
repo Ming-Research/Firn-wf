@@ -378,14 +378,25 @@ jobs:
           . "$RUNNER_TEMP/redis-bench-session.sh"
           if [ "$MODE" = compare ] || [ "$MODE" = workloads ]; then
             if [ "$PROFILE" = true ]; then
-              PERF=$(ls /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf 2>/dev/null | head -1 || true)
+              # The first perf that can count a task: the one on PATH, as the
+              # self-hosted machine installs it, then Ubuntu's per-kernel
+              # linux-tools builds; Ubuntu's PATH wrapper fails without one.
+              PERF=
+              for candidate in $(command -v perf 2>/dev/null) \
+                $(ls /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf 2>/dev/null); do
+                if "$candidate" stat -e task-clock true >/dev/null 2>&1; then
+                  PERF=$candidate
+                  break
+                fi
+              done
+              echo "perf: ${PERF:-none} $(${PERF:-false} --version 2>/dev/null) paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null)" | tee -a "$OUT/host.txt"
               if [ -n "$PERF" ]; then
                 if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
                   sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
                 fi
                 export PERF
               else
-                echo "no perf for this kernel; profiles skipped" | tee -a "$OUT/host.txt"
+                echo "no perf that can count a task; profiles skipped" | tee -a "$OUT/host.txt"
               fi
             fi
           fi
