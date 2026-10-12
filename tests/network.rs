@@ -4,6 +4,7 @@
 
 mod support;
 mod memory_limit;
+mod aof_write_errors;
 mod rewrite_sequence;
 mod rewrite_scan;
 

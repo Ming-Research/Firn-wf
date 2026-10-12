@@ -24,8 +24,14 @@ alias read_at = std::fs::read_at;
 alias sleep_until = std::time::sleep_until;
 alias sync_file = std::fs::sync_file;
 
-fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>) -> result: u64 reads(source), writes(factory), writes(file) waits {
-  doc "Appends every byte the buffer holds to the file, reattempting until the host has taken them all; returns the number of bytes accepted, including a partial append before a refusal.";
+struct AofAppend {
+  doc "A complete append or its accepted prefix and terminal host error. A zero-progress success becomes Whitefoot's semantic WriteZero, with no host code.";
+  written: u64;
+  error: Option<std::io::IoError>;
+}
+
+fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>) -> result: AofAppend reads(source), writes(factory), writes(file) waits {
+  doc "Retries positive short writes as Redis 7.0.15 aof.c:1024-1040 does; retains the terminal IoError alongside cumulative progress for rollback and admission status.";
   let length = source^.inner.len;
   let bytes = &source^.inner[0_u64..length];
   let written = 0_u64;
@@ -36,26 +42,31 @@ fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>
     match append_once(factory: factory, file: file, source: bytes, start: written, end: length) {
       Ok(value: next) => {
         if next == written {
-          return written;
+          let problem = std::io::IoError::WriteZero(code: 0_u32, origin: 0_u8);
+          let error = Some<std::io::IoError>(value: problem);
+          return AofAppend(written: written, error: error);
         }
         set written = next;
       }
       Err(error: problem) => {
-        return written;
+        let error = Some<std::io::IoError>(value: problem);
+        return AofAppend(written: written, error: error);
       }
     }
   }
-  return written;
+  let error = None<std::io::IoError>();
+  return AofAppend(written: written, error: error);
 }
 
 fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time, meter: std::process::MemoryMeter) -> result: unit pure waits {
-  doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Preserve a partial append for the next drain. Main sets stopping only after clients have left.";
+  doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Retain failed appends for periodic recovery. Main sets stopping only after clients have left; then take all collecting bytes for one final append and sync attempt, abandoning failures as Redis 7.0.15 everysec does (server.c:4239-4247,4301-4308).";
   let pending = box_slots_new::<u8>(capacity: 0_u64);
   atomic pending_meta = &store.meta {
     set pending = box_slots_new::<u8>(capacity: 65536_u64);
     set pending_meta^.aof_pending_capacity = pending.inner.cap;
   }
   let last_sync = std::time::now(clock: &clock);
+  let last_append = last_sync;
   let never = std::time::cancel_never();
   loop @writing {
     let started = std::time::now(clock: &clock);
@@ -70,17 +81,9 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
     atomic m = &store.meta {
       set stop = m^.stopping;
     }
-    let drained = aof_rw_flush(store: &store, factory: &factory, file: &log.file, pending: &pending, clock: &clock, last_sync: &last_sync, force: stop);
+    aof_rw_flush(store: &store, factory: &factory, file: &log.file, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, force: stop);
     if stop {
-      if drained {
-        let empty = False();
-        atomic m = &store.meta {
-          set empty = m^.log.inner.len == 0_u64;
-        }
-        if empty {
-          break @writing;
-        }
-      }
+      break @writing;
     } else {
       let cancelled = aof_rw_cancelled(store: &store);
       if cancelled {
@@ -108,7 +111,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
           }
         }
         if rewrite {
-          let aof_cycled = aof_rw_cycle(store: &store, factory: &factory, log: move log, pending: &pending, clock: &clock, last_sync: &last_sync, manual: manual, meter: &meter);
+          let aof_cycled = aof_rw_cycle(store: &store, factory: &factory, log: move log, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, manual: manual, meter: &meter);
           set log = move aof_cycled;
         }
       }

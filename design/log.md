@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-12 Refuse writes while the append-only file cannot be written or synced
+
+Nodes: firn/append-only-file, firn/orderly-stop, firn/scripts, firn/transactions
+
+Owner-approved: On the shared status board on 2026-10-11, the owner chose option A (approve) on card firn-q-approve-55-tree, which asked to approve PR #55's design-tree changes at head 9a584fe; on 2026-10-12 the owner chose option A (approve) on card firn-q-approve-55-tree-2, which asked to approve the two decisions changed since then at head c06b0b4 (the MISCONF suffix and the 100 ms append retry). On 2026-10-12 the owner also chose option C on card firn-q-sync-fail-evidence: merge with the sync-failure path checked against Redis 7.0.15's source, and add a runtime sync-failure case before the Whitefoot release as a separate item.
+
+Summary: The sole AOF writer publishes separate append and sync errors in Meta. WRITE commands and PING are refused with Redis's MISCONF reply while either error stands, checked at admission and again under the mutation's Meta hold; reads, expiry and eviction continue. The reply's suffix is the host's description of the saved error, taken from Whitefoot's std::io::error_copy_description, choosing the append error when nothing of the failed append was written and otherwise the sync error, as Redis 7.0.15 does. A partly written append is suffixed with no text until Whitefoot can describe ENOSPC without a platform number. An incomplete append is truncated back, or its written prefix accounted, so only the bytes still owed are retried, every 100 ms whether or not clients write, which is Redis's idle cadence. A rewrite's new incremental file keeps the error state. Scripts check before their first accepted write, MULTI and EXEC follow Redis's EXECABORT ordering, and shutdown makes one final append and sync attempt and then exits with status 0 even on failure. firn keeps its single everysec policy ([investigation](../research/investigations/aof-write-errors/README.md)).
+
 ## 2026-10-11 Scripts hold only their declared keys
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/command-parts, firn/scripts

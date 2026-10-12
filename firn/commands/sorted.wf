@@ -503,6 +503,9 @@ fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let lapsed = zadd_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
@@ -629,6 +632,9 @@ fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let lapsed = zrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
@@ -874,6 +880,9 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let lapsed = zpop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);

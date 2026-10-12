@@ -293,7 +293,7 @@ fn answer_call<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, e
   return complete_command_call(sequence: sequence, engine: engine, env: env, client: client, id: id, appended: appended, reply_start: reply_start, budget: budget);
 }
 
-fn answer_call_entries<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(declared), reads(keys_env), reads(time), writes(sequence), writes(engine), writes(env), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
+fn answer_call_entries<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, meta: &pkg::store::Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(declared), reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error), reads(keys_env), reads(time), writes(sequence), writes(engine), writes(env), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
   requires slots^.len == declared^.len;
   ensures slots^.len == entry(slots)^.len;
 } {
@@ -327,7 +327,7 @@ fn answer_call_entries<interface ScriptCommands>(sequence: &pkg::store::WriteSeq
   set client^.resp = scripted;
   set client^.now = time^.check;
   let logged = True();
-  let result = ScriptCommands::call_entries(sequence: sequence, memory: &env^.memory, journal: &env^.access, slots: slots, declared: declared, undo: undo, due: due, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
+  let result = ScriptCommands::call_entries(sequence: sequence, memory: &env^.memory, journal: &env^.access, slots: slots, declared: declared, undo: undo, due: due, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
   set client^.resp = protocol;
   let appended = 0_u64;
   match result {
@@ -601,7 +601,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     if env.held.wrote {
                       set more = 18446744073709551615_u64;
                     }
-                    set outcome = answer_call_entries::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, slots: t, declared: &declared, undo: &undo, due: &due, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                    set outcome = answer_call_entries::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, slots: t, declared: &declared, undo: &undo, due: &due, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
                   }
                   Done(..) => {
                     let v = Value::Nil();

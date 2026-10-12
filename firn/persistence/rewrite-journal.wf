@@ -235,7 +235,8 @@ fn aof_rw_journal_drain(store: &Keyspace, factory: &HandleFactory, file: &WriteF
     match move block {
       Some(value: bytes) => {
         let length = bytes.inner.len;
-        let appended = append_all(factory: factory, file: file, source: &bytes);
+        let append = append_all(factory: factory, file: file, source: &bytes);
+        let appended = append.written;
         if appended <= length {
           aof_rw_journal_count(bytes: &bytes.inner[0_u64..appended], decoder: decoder);
         }

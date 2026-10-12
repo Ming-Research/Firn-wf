@@ -188,6 +188,9 @@ fn held_flush(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Ent
 fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "FLUSHALL and FLUSHDB use the same parsing, map_clear body, expiry and file metadata, and reply as EXEC and scripts. Both modes release old values when the hold ends.";
   atomic t = &store^.keys, m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let appended = held_flush(sequence: &sequence, keys: t, due: &m^.due, log: &m^.log, logged: store^.logging, input: input, args: args, client: client, budget: &log_budget);
@@ -235,6 +238,9 @@ fn run_function(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
   }
   if store^.logging {
     atomic m = &store^.meta {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
       let loading = False();
       let sequence = pkg::store::sequence_new(meta: m, loading: loading);
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: loading);

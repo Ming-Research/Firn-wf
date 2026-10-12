@@ -464,6 +464,9 @@ fn set_key(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let none = False();
   let work = SetWork(outcome: state_absent, answered: none, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set work = set_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, value: move value, flags: flags, at: at);
@@ -699,6 +702,9 @@ fn run_getdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.now = time^.check;
   let kind = 0_u64;
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set kind = getdel_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
@@ -726,6 +732,9 @@ fn run_getex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let none = False();
   let work = GetexWork(kind: 0_u64, removed: none, change: 0_u64);
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set work = getex_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
@@ -785,6 +794,9 @@ fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   }
   let logged = store^.logging;
   atomic slots = &store^.keys[keys], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     for @stored (pair in 0_u64..pairs) {
@@ -898,6 +910,9 @@ fn run_incr(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let key = &input^[place.start..place.end];
   let counted = Counted(value: 0_i64, delta: delta, now: time^.check, state: state_absent);
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = incr_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, counted: &counted);
@@ -1271,6 +1286,9 @@ fn run_append(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let none = False();
   let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set work = append_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span);
@@ -1299,6 +1317,9 @@ fn run_setrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
   let none = False();
   let work = StringWork(outcome: state_absent, length: 0_u64, removed: none);
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set work = setrange_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span, offset: offset);
@@ -1428,6 +1449,9 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let logged = store^.logging;
   let stored = False();
   atomic slots = &store^.keys[keys], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let blocked = False();
@@ -1572,6 +1596,9 @@ fn run_incrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
   let empty = Bytes::Short(bytes: move nothing);
   let summed = FloatSum(increment: increment, text: move empty, now: time^.check, state: state_absent);
   atomic slot = &store^.keys[key], m = &store^.meta {
+    if aof_refuse(meta: m, client: client) {
+      return unit;
+    }
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let removed = incrbyfloat_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, summed: &summed);

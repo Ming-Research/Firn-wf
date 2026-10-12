@@ -216,9 +216,12 @@ expiry sleep and signal wait through a separate shared shutdown state.
 A command or batch already running still finishes before its client closes;
 cancellation does not
 interrupt scripts or the replies being sent. A send blocked on a client that does not read is abandoned
-at its next one-second deadline. Once every client has left, the append-only file's writer appends
-its last bytes, syncs and closes, and firn exits with status 0, as Redis
-does even when that sync fails. No snapshot is written: the `save` schedule
+at its next one-second deadline. Once every client has left, the append-only file's
+writer makes one forced attempt to append its remaining bytes and one sync
+attempt, then closes and firn exits with status 0. As in Redis 7.0.15's everysec
+shutdown (`server.c:4239-4247,4301-4308`), failed appends or syncs do not retry
+forever: retained bytes are abandoned and acknowledged changes may be lost.
+No snapshot is written: the `save` schedule
 is empty, and `SAVE` answers `ERR Errors trying to SHUTDOWN. Check logs.`
 and keeps serving unless `FORCE` is also given. `NOW` changes nothing, firn
 having no replicas, and `ABORT` answers `ERR No shutdown in progress.`
@@ -439,8 +442,43 @@ current percentage and min-size in decimal, min-size in bytes, and includes
 both in glob matches. Setting the percentage to `0` disables automatic rewrites
 without cancelling a rewrite already in progress.
 
-`INFO persistence` reports rewrite progress, attempts, last status, current
-active-file bytes and the rewrite baseline. The firn-only field
+With AOF enabled, a failed append or sync refuses Redis WRITE-flagged commands
+and PING with `-MISCONF Errors writing to the AOF file: ` followed by the
+host's description of the error, `strerror`'s C-locale text on Linux, such as
+`File too large`; GET, INFO and other reads remain available
+(`server.c:3881-3905,4324-4355`). A failed append is described when nothing
+of it was written; otherwise the sync error is. After a short write Redis
+reports `No space left on device` whatever the host returned
+(`aof.c:1163-1184`); firn leaves that suffix empty until Whitefoot can name
+the host's ENOSPC (board item `firn-req-enospc-text`), as it does when the
+host cannot describe an error.
+The command that exposed the failure can already have succeeded, since replies
+do not wait for everysec durability. Partial appends attempt rollback to the
+pre-flush incremental size, retaining all bytes on successful rollback and only
+the unwritten suffix otherwise (`aof.c:1146-1230`). Failed appends retry every
+100 ms, Redis's idle cadence at its default hz of 10; Redis also retries on
+every event-loop iteration that client traffic causes (`server.c:1660-1666`),
+which firn does not, so under traffic firn can recover up to 100 ms later. Failed syncs retry once per second while idle,
+deliberately differing from Redis's new-byte-dependent scheduling
+(`aof.c:1067-1089,1255-1261`).
+Only successful append and sync operations clear their respective failures;
+ordinary rewrite rotation does not reset them (`aof.c:790-852`).
+
+A refused queued write or PING dirties MULTI. EXEC with a queued WRITE command
+is discarded with EXECABORT and the MISCONF text while failure remains; read-only
+EXEC runs. Legacy EVAL/EVALSHA can read, but their first write gets MISCONF through
+redis.call's raised error or redis.pcall's error table. After an accepted WRITE
+command, subsequent script writes skip that check (`multi.c:85-87,105-109,
+136-140,170-178,229-233`; `script.c:349-386,547-557`).
+
+`INFO persistence` reports rewrite progress, attempts, last rewrite status, current
+active-file bytes and the rewrite baseline. `aof_last_write_status` is `ok` only
+when both append and sync errors are clear, otherwise `err`, independently of
+`aof_last_bgrewrite_status`. With AOF enabled, `aof_buffer_length` reports the
+collecting bytes plus bytes retained by the writer, excluding already appended
+bytes awaiting sync (`server.c:5596-5650`). `aof_pending_bio_fsync` and
+`aof_delayed_fsync` are zero: firn's sole writer performs sync itself, with no
+background BIO queue or append postponement behind a background sync. The firn-only field
 `firn_aof_rewrite_commit_seq` is the actual dataset statement sequence, also when
 AOF is disabled, following the [reported-facts rule](../design/firn/reported-facts.md).
 It starts at zero after loading, advances once for an atomic statement that
@@ -514,8 +552,8 @@ replayable. If manifest rename succeeds but
 directory sync fails, the new manifest stays in force, all files and history
 entries are retained, and `aof_last_bgrewrite_status` reports `err`.
 `SHUTDOWN` accepted before installation cancels the rebuild at its next step;
-once installation starts, shutdown waits for it to finish. Shutdown drains
-the incremental file after clients leave and joins the rebuild before exiting.
+once installation starts, shutdown waits for it to finish. Shutdown makes its
+final append and sync attempts after clients leave and joins the rebuild before exiting.
 See the [reconciled-scan protocol](../research/investigations/aof-rewrite/scan-log.md).
 
 `WF_DRIVERS` sets how many threads serve the connections, one per CPU by
