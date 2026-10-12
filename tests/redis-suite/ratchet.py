@@ -417,7 +417,7 @@ def shard_self_test(root, passing, unstable):
         failing = shard_dir("ok-3", ["unit/b", "unit/c"], rows=["unit/b\tpassed\t\t\tkept\n"])
         merge([one, failing], root / "merged-failing")
         assert check(root / "merged-failing/tests.tsv", passing, unstable) == 1
-    print("PASS: shards merge into one run that check applies to, a regression in either shard fails it")
+    print("PASS: shards merge into one run that check applies to, a regression in a shard fails it")
 
     merged("a unit in two shards rejected", [one, shard_dir("dup", ["unit/a", "unit/b", "unit/c"])],
            "unit unit/a runs in both")

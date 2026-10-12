@@ -28,7 +28,7 @@ include $(ROOT)/whitefoot-kit/whitefoot.mk
 # firn is one module program; any of its sources changes the build, Halo's
 # among them, which deps/halo-wf brings.
 FIRN_GRAPH := $(ROOT)/firn/modules.wfg
-FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' -o -name '*.wfm' -o -name '*.wfg')
+FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' -o -name '*.wfm' -o -name '*.wfg' 2>/dev/null)
 
 # The Redis suite runs as this many run.sh shards side by side.
 SUITE_SHARDS ?= 2

@@ -67,7 +67,8 @@ When priorities conflict, first:
   in `passing.tsv` to pass and reports new passes to add in the same PR;
   `unstable.tsv` records exclusions from repeated CI runs, and the
   dispatch-only `redis-suite-record.yml` workflow produces both lists for
-  review and commit, running the suite unsharded.
+  review and commit, running the suite in the gate's two shards so that its
+  evidence holds under the gate's load.
 - The gate needs git, curl, Python 3, Rust stable with Cargo, `tclsh` 8.5 or
   later, `redis-cli` and `redis-benchmark`, the submodules
   (`git submodule update --init`), `/usr/bin/clang` and, on Linux, LLD of

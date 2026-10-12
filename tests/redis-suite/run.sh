@@ -126,8 +126,11 @@ mkdir -p "$cache" "$out"
 out=$(cd "$out" && pwd)
 archive=$cache/redis-$version.tar.gz
 if [ ! -f "$archive" ]; then
-    curl -fsSL -o "$archive.part" "$url"
-    mv "$archive.part" "$archive"
+    # Shards started together may all find the archive missing; each fetches
+    # into a name of its own and the last rename wins with the same bytes.
+    part=$(mktemp "$archive.part.XXXXXX")
+    curl -fsSL -o "$part" "$url"
+    mv -f "$part" "$archive"
 fi
 if ! echo "$sha256  $archive" | sha256sum --check --status; then
     echo "run.sh: $archive does not have the SHA-256 $sha256" >&2
@@ -206,7 +209,10 @@ if [ "$ephemeral_low" -le 11000 ]; then
 fi
 
 # A shard takes its ports from its own part of the range below the ephemeral
-# ports, so shards running side by side never meet on a port.
+# ports, so shards running side by side start their servers on ports of
+# their own. The suite's port search also binds port+10000 for an instant as
+# its cluster-bus probe, which can land in another shard's part; a collision
+# there makes the search skip the port or start_server retry.
 port_low=$((10000 + (shard_index - 1) * (ephemeral_low - 10000) / shard_count))
 port_high=$((10000 + shard_index * (ephemeral_low - 10000) / shard_count))
 if [ $((port_high - port_low)) -lt 3000 ]; then
