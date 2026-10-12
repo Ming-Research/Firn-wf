@@ -45,9 +45,9 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-reference=$here/reference.sh
-version=$("$reference" version)
-sha256=$("$reference" sha256)
+build_reference=$here/reference.sh
+version=$("$build_reference" version)
+sha256=$("$build_reference" sha256)
 # Seconds a whole unit may take, a backstop behind the suite's own timeout.
 unit_limit=3600
 
@@ -101,8 +101,8 @@ if [ $# -gt 0 ]; then
     extra=("$@")
 fi
 
-archive=$("$reference" archive)
-PATH=$("$reference" bin):$PATH
+archive=$("$build_reference" archive)
+PATH=$("$build_reference" bin):$PATH
 if [ "$target" = redis ]; then
     installed=$(redis-server --version | sed -n 's/^Redis server v=\([^ ]*\).*/\1/p')
     if [ "$installed" != "$version" ]; then
