@@ -1,0 +1,72 @@
+alias Clock = std::time::Clock;
+alias ExitStatus = std::process::ExitStatus;
+alias Inputs = std::process::Inputs;
+alias Instant = std::time::Instant;
+
+const read_param_name: Array<u8, 10> =[114_u8, 101_u8, 97_u8, 100_u8, 95_u8, 112_u8, 97_u8, 114_u8, 97_u8, 109_u8];
+
+fn read_param_batch(map: &Shared<ConcurrentHashMap<u64>>, mine: &[u8], state: u64) -> next: u64 reads(map), reads(mine) waits {
+  doc "One batch of 1024 operations of W-read, reaching the map through a reference parameter whose row only reads it, as firn's command functions reach the keyspace: each holds the entry under mine, reads it and writes it back, then advances the local number.";
+  let current = state;
+  for @batch (turn in 0_u64..1024_u64) {
+    atomic slot = &map^[mine] {
+      match slot^ {
+        Some(value: held) => {
+          set current = ixor(current, held^);
+        }
+        None() => {
+        }
+      }
+      set slot^ = Some<u64>(value: current);
+    }
+    set current = step(state: current);
+  }
+  return current;
+}
+
+fn read_param_context(map: Shared<ConcurrentHashMap<u64>>, totals: Shared<Totals>, gate: Shared<Gate>, clock: Clock, index: u64) -> result: unit pure waits {
+  doc "W-read's context, its batches made by read_param_batch, which receives the map as a read-only reference parameter; then adds its count to the totals once.";
+  let deadline = gate_pass(gate: &gate, clock: &clock);
+  let key = context_key(index: index);
+  let mine = &key[0_u64..8_u64];
+  let state = index;
+  let done = 0_u64;
+  loop @run {
+    set state = read_param_batch(map: &map, mine: mine, state: state);
+    set done = done +wrap 1024_u64;
+    let at = std::time::now(clock: &clock);
+    if std::time::instant_reached(deadline: deadline, instant: at) {
+      break @run;
+    }
+  }
+  tally(totals: &totals, done: done, state: state);
+  return unit;
+}
+
+fn read_param_start(map: &Shared<ConcurrentHashMap<u64>>, totals: &Shared<Totals>, clock: &Clock, millis: u64, contexts: u64) -> started: Instant reads(map), reads(totals), writes(clock) waits {
+  doc "Spawns the contexts, opens the gate and returns the instant it opened, once every context has completed.";
+  let gate = gate_new(clock: clock);
+  for @start (index in 0_u64..contexts) {
+    let map_handle = shared_share::<ConcurrentHashMap<u64>>(shared: map);
+    let tally_handle = shared_share::<Totals>(shared: totals);
+    let gate_handle = shared_share::<Gate>(shared: &gate);
+    let ticks = std::time::clock_share(clock: clock);
+    spawn read_param_context(map: move map_handle, totals: move tally_handle, gate: move gate_handle, clock: move ticks, index: index);
+  }
+  let started = gate_open(gate: &gate, clock: clock, millis: millis);
+  return started;
+}
+
+fn read_param_main(inputs: Inputs) -> status: ExitStatus pure waits {
+  doc "W-read-param: W-read with each atomic statement reaching the map through a read-only reference parameter, as firn's GET does.";
+  let bench = bench_begin(inputs: move inputs);
+  if bench.valid {
+  } else {
+    return std::process::exit_status(code: 2_u8);
+  }
+  let map = shared_map_new::<u64>(capacity: bench.contexts);
+  let totals = totals_new();
+  let started = read_param_start(map: &map, totals: &totals, clock: &bench.clock, millis: bench.millis, contexts: bench.contexts);
+  let ended = std::time::now(clock: &bench.clock);
+  return bench_end(bench: move bench, name: &read_param_name[0_u64..10_u64], totals: &totals, started: started, ended: ended);
+}
