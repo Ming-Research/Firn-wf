@@ -1536,7 +1536,11 @@ fn firn_answers_the_value_types_as_redis_does() {
 
 /// firn answers list updates, moves, searches and set membership, algebra,
 /// stores and random draws as Redis does. The expected bytes are those
-/// redis-server 7.0.15 returns for the same requests.
+/// redis-server 7.2.16 returns for the same requests, among them LPOS RANK
+/// -9223372036854775808, which it refuses as out of range (t_list.c
+/// lposCommand reads the rank with getRangeLongFromObjectOrReply from
+/// -LONG_MAX to LONG_MAX) where 7.0.15, and firn before it, answered a
+/// position; the rank -9223372036854775807 is still read, and finds nothing.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_the_value_types_as_redis_does_with_lists_and_sets() {
@@ -1559,6 +1563,8 @@ fn firn_answers_the_value_types_as_redis_does_with_lists_and_sets() {
         vec!["LPOS", "li", "a", "RANK", "-1", "COUNT", "0"],
         vec!["LPOS", "li", "a", "RANK", "0"],
         vec!["LPOS", "li", "a", "COUNT"],
+        vec!["LPOS", "li", "a", "RANK", "-9223372036854775808"],
+        vec!["LPOS", "li", "a", "RANK", "-9223372036854775807"],
         vec!["RPUSH", "ls", "a", "b", "c"],
         vec!["LSET", "ls", "-1", "C"],
         vec!["LSET", "ls", "9", "x"],
@@ -1600,7 +1606,7 @@ fn firn_answers_the_value_types_as_redis_does_with_lists_and_sets() {
     client.write_all(&batch).expect("send the list batch");
     expect_replies(
         &mut client,
-        b":5\r\n$1\r\nb\r\n$-1\r\n-ERR value is not an integer or out of range\r\n$-1\r\n:1\r\n*2\r\n:4\r\n:0\r\n-ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list\r\n-ERR syntax error\r\n:3\r\n+OK\r\n-ERR index out of range\r\n-ERR no such key\r\n*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nC\r\n:5\r\n:2\r\n*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nb\r\n:2\r\n:3\r\n:4\r\n:-1\r\n-ERR syntax error\r\n*4\r\n$1\r\na\r\n$1\r\nx\r\n$1\r\nb\r\n$1\r\ny\r\n:5\r\n+OK\r\n*3\r\n$1\r\n2\r\n$1\r\n3\r\n$1\r\n4\r\n:0\r\n:1\r\n:2\r\n:3\r\n*3\r\n$1\r\na\r\n$1\r\nm\r\n$1\r\nz\r\n:3\r\n*0\r\n*2\r\n$1\r\nc\r\n$1\r\nb\r\n:3\r\n$1\r\na\r\n$1\r\nc\r\n$1\r\nb\r\n-ERR syntax error\r\n+OK\r\n-WRONGTYPE Operation against a key holding the wrong kind of value\r\n$-1\r\n*1\r\n$1\r\nc\r\n*2\r\n$1\r\nb\r\n$1\r\na\r\n",
+        b":5\r\n$1\r\nb\r\n$-1\r\n-ERR value is not an integer or out of range\r\n$-1\r\n:1\r\n*2\r\n:4\r\n:0\r\n-ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list\r\n-ERR syntax error\r\n-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n$-1\r\n:3\r\n+OK\r\n-ERR index out of range\r\n-ERR no such key\r\n*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nC\r\n:5\r\n:2\r\n*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nb\r\n:2\r\n:3\r\n:4\r\n:-1\r\n-ERR syntax error\r\n*4\r\n$1\r\na\r\n$1\r\nx\r\n$1\r\nb\r\n$1\r\ny\r\n:5\r\n+OK\r\n*3\r\n$1\r\n2\r\n$1\r\n3\r\n$1\r\n4\r\n:0\r\n:1\r\n:2\r\n:3\r\n*3\r\n$1\r\na\r\n$1\r\nm\r\n$1\r\nz\r\n:3\r\n*0\r\n*2\r\n$1\r\nc\r\n$1\r\nb\r\n:3\r\n$1\r\na\r\n$1\r\nc\r\n$1\r\nb\r\n-ERR syntax error\r\n+OK\r\n-WRONGTYPE Operation against a key holding the wrong kind of value\r\n$-1\r\n*1\r\n$1\r\nc\r\n*2\r\n$1\r\nb\r\n$1\r\na\r\n",
         "the list batch",
     );
     let mut batch = Vec::new();
@@ -2523,12 +2529,17 @@ fn firn_answers_commands_naming_a_key_twice_as_redis_does() {
 /// message, empty or not, succeeds, its name read up to a zero byte, while
 /// `LOG` without exactly one message and an unknown subcommand, its line breaks
 /// echoed as spaces, are answered as Redis answers a `DEBUG` subcommand it does
-/// not know. The expected replies are redis-server 7.0.15's to the same bytes,
+/// not know. The expected replies are redis-server 7.2.16's to the same bytes,
 /// its debug command enabled, a `CONFIG GET` of several parameters in
 /// alphabetical order, one of the orders Redis answers in, but for the last
 /// four `CONFIG SET`s, which ask for a snapshot schedule, the append-only file,
 /// another address and another port: Redis would apply them, and firn refuses
-/// them in Redis's form for a refused value, with its own reason.
+/// them in Redis's form for a refused value, with its own reason. The
+/// set-max-listpack-entries and set-max-listpack-value cases are new in Redis
+/// 7.2.16, which adds both as plain integers from 0 to 2^63 - 1 (config.c
+/// createSizeTConfig without MEMORY_CONFIG), so that 1kb is refused for either
+/// though zset-max-listpack-value takes it; before firn knew them, CONFIG SET
+/// answered them as unknown options and CONFIG GET matched nothing.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_config_and_echoes_client_bytes_as_redis_does() {
@@ -2577,6 +2588,19 @@ fn firn_answers_config_and_echoes_client_bytes_as_redis_does() {
         vec!["CONFIG", "SET", "set-max-intset-entries", "-1"],
         vec!["CONFIG", "SET", "stream-node-max-entries", "-1"],
         vec!["CONFIG", "SET", "zset-max-listpack-entries", "-1"],
+        vec![
+            "CONFIG",
+            "SET",
+            "set-max-listpack-entries",
+            "0",
+            "set-max-listpack-value",
+            "32",
+        ],
+        vec!["CONFIG", "GET", "set-max-listpack-*"],
+        vec!["CONFIG", "GET", "SET-MAX-LISTPACK-ENTRIES"],
+        vec!["CONFIG", "SET", "set-max-listpack-value", "-1"],
+        vec!["CONFIG", "SET", "set-max-listpack-value", "1kb"],
+        vec!["CONFIG", "SET", "set-max-listpack-entries", "1kb"],
         vec![
             "CONFIG",
             "SET",
@@ -2668,6 +2692,12 @@ fn firn_answers_config_and_echoes_client_bytes_as_redis_does() {
              {failed} 'set-max-intset-entries') - argument must be between 0 and {wide} inclusive\r\n\
              {failed} 'stream-node-max-entries') - argument must be between 0 and {wide} inclusive\r\n\
              {failed} 'zset-max-listpack-entries') - argument must be between 0 and {wide} inclusive\r\n\
+             +OK\r\n\
+             *4\r\n$24\r\nset-max-listpack-entries\r\n$1\r\n0\r\n$22\r\nset-max-listpack-value\r\n$2\r\n32\r\n\
+             *2\r\n$24\r\nSET-MAX-LISTPACK-ENTRIES\r\n$1\r\n0\r\n\
+             {failed} 'set-max-listpack-value') - argument must be between 0 and {wide} inclusive\r\n\
+             {failed} 'set-max-listpack-value') - argument couldn't be parsed into an integer\r\n\
+             {failed} 'set-max-listpack-entries') - argument couldn't be parsed into an integer\r\n\
              +OK\r\n+OK\r\n+OK\r\n\
              *6\r\n$23\r\nhash-max-listpack-value\r\n$2\r\n12\r\n$21\r\nstream-node-max-bytes\r\n$1\r\n0\r\n$23\r\nzset-max-listpack-value\r\n$4\r\n1024\r\n\
              {failed} 'stream-node-max-bytes') - argument must be between 0 and {wide} inclusive\r\n\
@@ -3184,6 +3214,8 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
 /// orders. Memory settings and automatic rewrite thresholds join glob results.
 /// Redis's *o*t matches only port and timeout among these parameters: the
 /// final t must end the name, so neither automatic rewrite threshold matches.
+/// set-max-listpack-entries and set-max-listpack-value, with their Redis
+/// 7.2.16 defaults 128 and 64, join every pattern that reaches s.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_matches_config_get_patterns_as_redis_does() {
@@ -3226,25 +3258,25 @@ fn firn_matches_config_get_patterns_as_redis_does() {
     client.write_all(&batch).expect("send the patterns");
     let port_field = format!("$4\r\nport\r\n${}\r\n{text}\r\n", text.len());
     let hash_and_list = "$25\r\nhash-max-listpack-entries\r\n$3\r\n512\r\n$23\r\nhash-max-listpack-value\r\n$2\r\n64\r\n$24\r\nhash-max-ziplist-entries\r\n$3\r\n512\r\n$22\r\nhash-max-ziplist-value\r\n$2\r\n64\r\n$19\r\nlist-compress-depth\r\n$1\r\n0\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n";
-    let s_fields = "$4\r\nsave\r\n$0\r\n\r\n$22\r\nset-max-intset-entries\r\n$3\r\n512\r\n$21\r\nstream-node-max-bytes\r\n$4\r\n4096\r\n$23\r\nstream-node-max-entries\r\n$3\r\n100\r\n";
+    let s_fields = "$4\r\nsave\r\n$0\r\n\r\n$22\r\nset-max-intset-entries\r\n$3\r\n512\r\n$24\r\nset-max-listpack-entries\r\n$3\r\n128\r\n$22\r\nset-max-listpack-value\r\n$2\r\n64\r\n$21\r\nstream-node-max-bytes\r\n$4\r\n4096\r\n$23\r\nstream-node-max-entries\r\n$3\r\n100\r\n";
     let zset_fields = "$25\r\nzset-max-listpack-entries\r\n$3\r\n128\r\n$23\r\nzset-max-listpack-value\r\n$2\r\n64\r\n$24\r\nzset-max-ziplist-entries\r\n$3\r\n128\r\n$22\r\nzset-max-ziplist-value\r\n$2\r\n64\r\n";
     let memory_fields = "$9\r\nmaxmemory\r\n$1\r\n0\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n$17\r\nmaxmemory-samples\r\n$1\r\n5\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$14\r\nlfu-decay-time\r\n$1\r\n1\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n";
     let rewrite_fields = "$27\r\nauto-aof-rewrite-percentage\r\n$3\r\n100\r\n$25\r\nauto-aof-rewrite-min-size\r\n$8\r\n67108864\r\n";
     let expected = format!(
-        "*60\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}\
+        "*64\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n{rewrite_fields}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n{rewrite_fields}\
          *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\
          *2\r\n{port_field}\
          *4\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n\
-         *18\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
+         *22\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
          *0\r\n\
          *0\r\n\
          *2\r\n{port_field}\
          *0\r\n\
-         *8\r\n{s_fields}\
+         *12\r\n{s_fields}\
          *2\r\n$9\r\nmaxmemory\r\n$1\r\n0\r\n\
-         *8\r\n{s_fields}"
+         *12\r\n{s_fields}"
     );
     expect_replies(&mut client, expected.as_bytes(), "the patterns");
     drop(client);
@@ -3499,6 +3531,7 @@ fn firn_requires_its_password_as_redis_does() {
     let mut batch = resp(&["HELLO", "2", "AUTH", "default", "secret"]);
     batch.extend(resp(&["PING"]));
     client.write_all(&batch).expect("authenticate with HELLO");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     expect_replies(
         &mut client,
         b"*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:2\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n+PONG\r\n",
@@ -3738,6 +3771,7 @@ fn firn_answers_connection_commands_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the connection batch");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
@@ -3830,6 +3864,7 @@ fn firn_answers_connection_commands_as_redis_does() {
     let info = bulk_reply(&mut client, "INFO");
     assert_eq!(info_sections(&info, "INFO"), &defaults[..]);
     for (field, value) in [
+        // Redis 7.2.16 reports its own version in INFO; firn still reports 7.0.15 (board item firn-host-72-diffs).
         ("redis_version", "7.0.15"),
         ("redis_git_sha1", "00000000"),
         ("tcp_port", text.as_str()),
@@ -3973,16 +4008,21 @@ fn firn_keeps_transactions_as_redis_does() {
     assert_eq!(status, 0);
 }
 
-/// firn answers in RESP3 after HELLO 3 as Redis 7.0.15 does, and in RESP2
+/// firn answers in RESP3 after HELLO 3 as Redis 7.2.16 does, and in RESP2
 /// again after HELLO 2: HELLO's map with protocol 3; the null for an absent
 /// string, an absent element of MGET and LPOP's count on an absent key; a map
 /// for HGETALL and CONFIG GET, an empty one for an absent hash; a set for
 /// SMEMBERS, set algebra and SPOP's count; doubles for scores; member and
 /// score pairs nested in ZRANGE WITHSCORES, ZPOPMIN with a count and
 /// HRANDFIELD WITHVALUES but not in ZPOPMIN without one; and INFO's text as a
-/// verbatim string. The expected bytes follow redis-server 7.0.15's reply
+/// verbatim string. The expected bytes follow redis-server 7.2.16's reply
 /// writers (addReplyNull, addReplyNullArray, addReplyMapLen, addReplySetLen,
-/// addReplyDouble, addReplyVerbatim) for the same requests.
+/// addReplyDouble, addReplyVerbatim) for the same requests, but for the
+/// version HELLO reports, which firn still gives as 7.0.15 (board item
+/// firn-host-72-diffs), and ZRANK and ZREVRANK WITHSCORE, which Redis 7.2
+/// adds, answer the rank and the score as a double, or the null, as Redis
+/// 7.2.16's zrankGenericCommand writes them; before firn read WITHSCORE, both
+/// were arity errors.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
@@ -4009,6 +4049,8 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
         vec!["ZADD", "z", "1.5", "a", "2", "b", "3", "c"],
         vec!["ZSCORE", "z", "a"],
         vec!["ZSCORE", "z", "absent"],
+        vec!["ZRANK", "z", "a", "WITHSCORE"],
+        vec!["ZREVRANK", "z", "absent", "WITHSCORE"],
         vec!["ZRANGE", "z", "0", "0", "WITHSCORES"],
         vec!["ZPOPMIN", "z"],
         vec!["ZPOPMIN", "z", "1"],
@@ -4022,12 +4064,103 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the RESP3 batch");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let hello2 = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
-        "{hello3}_\r\n+OK\r\n*2\r\n$1\r\nv\r\n_\r\n_\r\n:1\r\n%1\r\n$1\r\nf\r\n$1\r\nv\r\n%0\r\n*1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n:1\r\n~1\r\n$1\r\na\r\n~0\r\n~1\r\n$1\r\na\r\n:3\r\n,1.5\r\n_\r\n*1\r\n*2\r\n$1\r\na\r\n,1.5\r\n*2\r\n$1\r\na\r\n,1.5\r\n*1\r\n*2\r\n$1\r\nb\r\n,2\r\n%1\r\n$10\r\nappendonly\r\n$2\r\nno\r\n=34\r\ntxt:# Cluster\r\ncluster_enabled:0\r\n\r\n~1\r\n$1\r\na\r\n{hello2}$-1\r\n*0\r\n"
+        "{hello3}_\r\n+OK\r\n*2\r\n$1\r\nv\r\n_\r\n_\r\n:1\r\n%1\r\n$1\r\nf\r\n$1\r\nv\r\n%0\r\n*1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n:1\r\n~1\r\n$1\r\na\r\n~0\r\n~1\r\n$1\r\na\r\n:3\r\n,1.5\r\n_\r\n*2\r\n:0\r\n,1.5\r\n_\r\n*1\r\n*2\r\n$1\r\na\r\n,1.5\r\n*2\r\n$1\r\na\r\n,1.5\r\n*1\r\n*2\r\n$1\r\nb\r\n,2\r\n%1\r\n$10\r\nappendonly\r\n$2\r\nno\r\n=34\r\ntxt:# Cluster\r\ncluster_enabled:0\r\n\r\n~1\r\n$1\r\na\r\n{hello2}$-1\r\n*0\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the RESP3 batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers ZRANK and ZREVRANK with WITHSCORE, which Redis 7.2 adds, as
+/// Redis 7.2.16's zrankGenericCommand (t_zset.c) does, on the network, inside
+/// a transaction's EXEC and through a script: the rank with the score, in a
+/// two-element array, written as firn writes every score, Redis 7.0.15's
+/// %.17g, which differs from the shortest form of Redis 7.2.16's
+/// addReplyDouble for some values, such as 0.1 (board item
+/// firn-score-text-72); the null array for an
+/// absent key or member, which a script turns into the null bulk string, as
+/// Redis's Lua conversion turns it into false; the option read in either case
+/// up to a zero byte, as strcasecmp reads it; any other fourth argument
+/// refused with the syntax error and a fifth with the command's arity error,
+/// both before the key is looked up, so even inside EXEC; and the command's
+/// arity -3 still refusing two arguments. Before firn read WITHSCORE, its
+/// arity of 3 refused every request with a fourth argument, on the network
+/// and when queued.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_zrank_withscore_as_redis_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["ZADD", "z", "1.5", "a", "2", "b", "3", "c"],
+        vec!["SET", "wrong", "text"],
+        vec!["ZRANK", "z", "a", "WITHSCORE"],
+        vec!["ZREVRANK", "z", "a", "withscore"],
+        vec!["ZRANK", "z", "c", "WithScore\0x"],
+        vec!["ZRANK", "z", "absent", "WITHSCORE"],
+        vec!["ZREVRANK", "missing", "a", "WITHSCORE"],
+        vec!["ZRANK", "z", "absent"],
+        vec!["ZRANK", "z", "a", "WITHSCORES"],
+        vec!["ZRANK", "missing", "a", "bad"],
+        vec!["ZRANK", "z", "a", "WITHSCORE", "extra"],
+        vec!["ZREVRANK", "z", "a", "WITHSCORE", "extra"],
+        vec!["ZRANK", "wrong", "a", "WITHSCORE"],
+        vec!["ZRANK", "z"],
+        vec!["MULTI"],
+        vec!["ZRANK", "z", "b", "WITHSCORE"],
+        vec!["ZRANK", "z", "a", "WITHSCORE", "extra"],
+        vec!["ZREVRANK", "z", "absent", "WITHSCORE"],
+        vec!["EXEC"],
+        vec![
+            "EVAL",
+            "return redis.call('zrevrank', KEYS[1], ARGV[1], 'withscore')",
+            "1",
+            "z",
+            "b",
+        ],
+        vec![
+            "EVAL",
+            "return redis.call('zrank', KEYS[1], ARGV[1], 'WITHSCORE')",
+            "1",
+            "z",
+            "absent",
+        ],
+        vec![
+            "EVAL",
+            "return redis.pcall('zrank', KEYS[1], ARGV[1], 'WITHSCORE', 'x')",
+            "1",
+            "z",
+            "a",
+        ],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the ZRANK batch");
+    let arity = "-ERR wrong number of arguments for 'zrank' command\r\n";
+    let wrong = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+    let expected = format!(
+        ":3\r\n+OK\r\n\
+         *2\r\n:0\r\n$3\r\n1.5\r\n\
+         *2\r\n:2\r\n$3\r\n1.5\r\n\
+         *2\r\n:2\r\n$1\r\n3\r\n\
+         *-1\r\n*-1\r\n$-1\r\n\
+         -ERR syntax error\r\n-ERR syntax error\r\n\
+         {arity}-ERR wrong number of arguments for 'zrevrank' command\r\n\
+         {wrong}{arity}\
+         +OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
+         *3\r\n*2\r\n:1\r\n$1\r\n2\r\n{arity}*-1\r\n\
+         *2\r\n:1\r\n$1\r\n2\r\n$-1\r\n{arity}"
+    );
+    expect_replies(&mut client, expected.as_bytes(), "the ZRANK batch");
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
@@ -4070,6 +4203,7 @@ fn firn_answers_client_info_as_redis_does() {
     };
     let first = line("", 2);
     let second = line("conn-1", 3);
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
         "${}\r\n{first}\r\n+OK\r\n-ERR wrong number of arguments for 'client|info' command\r\n{hello3}={}\r\ntxt:{second}\r\n",
@@ -4374,6 +4508,7 @@ fn firn_runs_scripts_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the scripting batch");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     // redis-server 7.0.15 writes a result that contains itself to these
     // depths before its stack-limit error; a map's last level refuses both
@@ -5420,7 +5555,10 @@ fn firn_records_held_hashes_commands_as_redis_propagates_them() {
 /// firn runs the lists commands written as parts, LPUSH to RPOPLPUSH, inside a transaction's EXEC and through a script as Redis 7.0.15 does, LMOVE and RPOPLPUSH over one key and two among them. The same requests, from the same keys, run in one transaction,
 /// each error or boundary request in a transaction of its own, then through
 /// a script's redis.call and the errors through redis.pcall, and give the
-/// replies redis-server 7.0.15 gives (Firn-wf probe run 37499945138).
+/// replies redis-server 7.0.15 gives (Firn-wf probe run 37499945138), but for
+/// LPOS RANK -9223372036854775808, which Redis 7.2.16 refuses as out of range
+/// (t_list.c lposCommand, object.c getRangeLongFromObjectOrReply) where
+/// 7.0.15 answered the positions of the first matches.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_runs_lists_parts_as_redis_does() {
@@ -5578,8 +5716,8 @@ head2\r\n$1\r\nx\r\n:1\r\n*1\r\n$1\r\nz\r\n:0\r\n*-1\r\n$-1\r\n$-1\r\n:0\r\n\
 -ERR COUNT can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n\
 -ERR MAXLEN can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n\
 -ERR MAXLEN can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n\
-+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n\
-:2\r\n:0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
++OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n+OK\r\n+QUEUED\r\n*1\r\n\
 -WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
 +QUEUED\r\n*1\r\n\
 -WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
@@ -5621,7 +5759,7 @@ $1\r\nz\r\n:0\r\n$-1\r\n$-1\r\n$-1\r\n:0\r\n+OK\r\n*0\r\n\
 -ERR value is not an integer or out of range\r\n-ERR COUNT can't be negative\r\n\
 -ERR COUNT can't be negative\r\n-ERR MAXLEN can't be negative\r\n\
 -ERR MAXLEN can't be negative\r\n-ERR syntax error\r\n-ERR syntax error\r\n\
-*2\r\n:2\r\n:0\r\n\
+-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n\
 -WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
 -WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
 -ERR syntax error\r\n-ERR syntax error\r\n\

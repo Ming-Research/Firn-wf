@@ -194,9 +194,9 @@ const arity_zscore: i64 = 3_i64;
 
 const arity_zmscore: i64 = -3_i64;
 
-const arity_zrank: i64 = 3_i64;
+const arity_zrank: i64 = -3_i64;
 
-const arity_zrevrank: i64 = 3_i64;
+const arity_zrevrank: i64 = -3_i64;
 
 const arity_zrange: i64 = -4_i64;
 

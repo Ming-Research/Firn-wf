@@ -27,6 +27,9 @@ fi
 
 mkdir -p "$out"
 rm -rf "$out"/shard-*
+# The shards' run.sh would each fetch and build the reference Redis when its
+# cache is empty, and two builds replace each other's tools; build it once.
+"$here/reference.sh" bin > /dev/null
 dirs=() pids=()
 for ((i = 1; i <= shards; i++)); do
     dirs+=("$out/shard-$i")

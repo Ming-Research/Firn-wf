@@ -8,7 +8,7 @@
 ## C. Code and cases — changes to Whitefoot sources or tests
 
 - [ ] **C1 — Reference expectation.** Expected results come from Redis
-  7.0.15's replies and files, observed or read from its source, or its own
+  7.2.16's replies and files, observed or read from its source, or its own
   test suite.
 - [ ] **C2 — Interface fidelity.** Module bodies implement their `.wfm`
   interfaces as written, and no contract or effect row was weakened to let a
