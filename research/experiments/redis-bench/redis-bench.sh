@@ -10,8 +10,10 @@
 #   sh redis-bench.sh             the correctness pass and Experiments 7 and 8
 #   sh redis-bench.sh verify      only the correctness pass
 #   sh redis-bench.sh placement-selftest
-#                                 check placement against fake Linux topology,
-#                                 without building or starting any server
+#                                 check placement against fake Linux topology
+#                                 and the per-CPU busy reading against a fake
+#                                 /proc/stat, without building or starting any
+#                                 server
 #   sh redis-bench.sh suite       the correctness pass and the firn criteria:
 #                                 redis-benchmark's default suite on every line
 #   sh redis-bench.sh scale       the suite's lines on each server CPU count in
@@ -42,7 +44,9 @@
 #                                 COMPARE_PASSES passes (default 6); with PERF
 #                                 naming a perf executable it then records a
 #                                 flat profile of each image under
-#                                 COMPARE_PROFILE (default mset at depth 16)
+#                                 COMPARE_PROFILE (default mset at depth 16);
+#                                 on Linux it records each server and client
+#                                 CPU's busy fraction per sample
 #   sh redis-bench.sh workloads   the deployment-performance investigation's
 #                                 std-only Rust client, built offline with
 #                                 cargo in release mode; Redis and firn, each
@@ -108,10 +112,13 @@
 # Servers take the first n cores and clients the next cores, capped to those
 # remaining; neither side shares a physical core with the other. On the
 # native 14900K this gives server 2,4 and client 6,8,10,12,14 for n=2 with
-# up to 16 client threads requested. SERVER_CPU_LIST and CLIENT_CPU_LIST
-# override the respective lists (CPU numbers or ranges, comma-separated);
-# the server list must contain exactly n CPUs and both lists must still use
-# distinct physical cores. Each selected placement is recorded once per mode,
+# up to 16 client threads requested. SERVER_CPU_LIST and CLIENT_CPU_LIST,
+# when set and not empty, override the respective lists (CPU numbers or
+# ranges, comma-separated), which may then name any online CPU, core_id 0
+# included. The server list must contain exactly n CPUs and may name both
+# threads of a physical core, so n counts logical CPUs; no client CPU may
+# share a physical core with a server CPU. The client thread count is the
+# client list's length. Each selected placement is recorded once per mode,
 # also in host.txt when present. Nothing else should run on the host meanwhile.
 set -e
 
@@ -145,8 +152,9 @@ def choose():
     n, requested = map(int, sys.argv[2:])
     if n < 1 or requested < 1:
         raise ValueError("server and client CPU counts must be positive")
+    # An empty override, as the workflow passes for an empty input, is unset.
     overrides = {key: cpu_list(os.environ[key]) for key in
-                 ("SERVER_CPU_LIST", "CLIENT_CPU_LIST") if key in os.environ}
+                 ("SERVER_CPU_LIST", "CLIENT_CPU_LIST") if os.environ.get(key)}
     if "SERVER_CPU_LIST" in overrides and len(overrides["SERVER_CPU_LIST"]) != n:
         raise ValueError(f"SERVER_CPU_LIST must contain exactly {n} CPUs")
 
@@ -199,14 +207,11 @@ def choose():
             representatives.append(cpu)
             seen.add(cores[cpu])
 
-    def validate(cpus, name):
-        if any(cpu not in cores for cpu in cpus):
-            raise ValueError(f"{name} names a CPU without online topology")
-        if len({cores[cpu] for cpu in cpus}) != len(cpus):
-            raise ValueError(f"{name} must use distinct physical cores")
-
+    # Automatic servers are one thread per physical core; an explicit server
+    # list may name both threads of a core, so that n counts logical CPUs.
     servers = overrides.get("SERVER_CPU_LIST", representatives[:n])
-    validate(servers, "SERVER_CPU_LIST")
+    if any(cpu not in cores for cpu in servers):
+        raise ValueError("SERVER_CPU_LIST names a CPU without online topology")
     if len(servers) < n:
         print(f"skip,{n} server CPUs,only {len(representatives)} eligible physical cores", file=sys.stderr)
         return 2
@@ -274,6 +279,42 @@ placement_for_count() {
     esac
 }
 
+# The busy fraction of each server and client CPU between two copies of
+# /proc/stat, <before> <after> <server CPUs> <client CPUs>: of the ticks a
+# CPU's line counts from user through steal (guest time is already inside
+# user and nice), those neither idle nor iowait. Prints cpu,role,busy for each
+# CPU of the two comma-separated lists in turn.
+cpu_busy() {
+    python3 - "$@" <<'PY'
+import sys
+
+def ticks(path):
+    result = {}
+    with open(path) as stat:
+        for line in stat:
+            fields = line.split()
+            if fields and fields[0].startswith("cpu") and fields[0] != "cpu":
+                values = [int(x) for x in fields[1:9]]
+                result[int(fields[0][3:])] = values + [0] * (8 - len(values))
+    return result
+
+try:
+    before, after = ticks(sys.argv[1]), ticks(sys.argv[2])
+    for role, cpus in (("server", sys.argv[3]), ("client", sys.argv[4])):
+        for cpu in map(int, cpus.split(",")):
+            if cpu not in before or cpu not in after:
+                raise ValueError(f"/proc/stat has no line for cpu{cpu}")
+            delta = [a - b for a, b in zip(after[cpu], before[cpu])]
+            total = sum(delta)
+            if total <= 0:
+                raise ValueError(f"cpu{cpu} counted no ticks between the two reads")
+            print(f"{cpu},{role},{(total - delta[3] - delta[4]) / total:.4f}")
+except (OSError, ValueError) as error:
+    print(f"cpu-busy: {error}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
 placement_selftest() (
     fixture=$(mktemp -d)
     trap 'rm -rf "$fixture"' EXIT
@@ -323,9 +364,19 @@ placement_selftest() (
     expect_failure 7 16 2 'no distinct client core'
     expect_failure 8 16 2 'only 7 eligible physical cores'
     SERVER_CPU_LIST=2,4 CLIENT_CPU_LIST=10,12 expect_placement 2 16 '2,4 10,12 2 override'
+    # Empty overrides, as the workflow passes for empty inputs, are unset.
+    SERVER_CPU_LIST= CLIENT_CPU_LIST= expect_placement 2 16 '2,4 6,7,8,9,10,11,12,13,14,15 10 hybrid'
     SERVER_CPU_LIST=2 expect_failure 2 16 1 'exactly 2 CPUs'
-    SERVER_CPU_LIST=2,3 expect_failure 2 16 1 'distinct physical cores'
+    SERVER_CPU_LIST=0-15 CLIENT_CPU_LIST=16-31 expect_failure 8 16 1 'exactly 8 CPUs'
+    SERVER_CPU_LIST=32 expect_failure 1 16 1 'SERVER_CPU_LIST names a CPU without'
+    # An explicit server list may name core_id 0 and both threads of a core.
+    SERVER_CPU_LIST=2,3 expect_placement 2 16 '2,3 4,5,6,7,8,9,10,11,12,13,14,15 12 override'
+    SERVER_CPU_LIST=0,2,4,6,8,10,12,14 CLIENT_CPU_LIST=16-31 expect_placement 8 16 \
+        '0,2,4,6,8,10,12,14 16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 16 override'
+    SERVER_CPU_LIST=0-15 CLIENT_CPU_LIST=16-31 expect_placement 16 16 \
+        '0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 16 override'
     SERVER_CPU_LIST=2 CLIENT_CPU_LIST=3 expect_failure 1 16 1 'including siblings'
+    SERVER_CPU_LIST=0,2,4,6,8,10,12,14 CLIENT_CPU_LIST=15-31 expect_failure 8 16 1 'including siblings'
     SERVER_CPU_LIST=2 expect_placement 1 2 '2 4,5 2 override'
     CLIENT_CPU_LIST=10,12 expect_placement 2 16 '2,4 10,12 2 override'
     # cpu_capacity supplies the same hybrid classification without PMU lists.
@@ -360,6 +411,21 @@ placement_selftest() (
     expect_placement 2 16 '1,2 3,7 2 fallback'
     echo 0-2,4-6 >"$SYSFS_ROOT/devices/system/cpu/online"
     expect_placement 1 16 '1 2,6 2 fallback'
+    # cpu_busy: cpu0 300 user and 100 system of 1000 ticks; cpu1 idle; cpu2
+    # 50 user (40 of them guest) and 40 iowait of 100.
+    printf 'cpu  110 0 50 1930 10 0 0 0 0 0\ncpu0 100 0 50 850 0 0 0 0 0 0\ncpu1 0 0 0 1000 0 0 0 0 0 0\ncpu2 10 0 0 80 10 0 0 0 0 0\n' >"$fixture/stat-before"
+    printf 'cpu  460 0 150 3540 50 0 0 0 40 0\ncpu0 400 0 150 1450 0 0 0 0 0 0\ncpu1 0 0 0 2000 0 0 0 0 0 0\ncpu2 60 0 0 90 50 0 0 0 40 0\n' >"$fixture/stat-after"
+    actual=$(cpu_busy "$fixture/stat-before" "$fixture/stat-after" 0 1,2 | tr '\n' ' ')
+    [ "$actual" = '0,server,0.4000 1,client,0.0000 2,client,0.5000 ' ] || {
+        echo "placement-selftest: cpu_busy gave '$actual'" >&2
+        exit 1
+    }
+    status=0
+    cpu_busy "$fixture/stat-before" "$fixture/stat-after" 0 3 >/dev/null 2>"$fixture/stderr" || status=$?
+    [ "$status" = 1 ] && grep -q 'no line for cpu3' "$fixture/stderr" || {
+        echo "placement-selftest: cpu_busy accepted a CPU /proc/stat lacks" >&2
+        exit 1
+    }
     echo 'placement-selftest: passed'
 )
 
@@ -845,9 +911,12 @@ server_ticks() {
 # client's p50 and p99. redis-benchmark's own rate divides by a clock that
 # ticks every 250 ms, a step of 5% in a five-second run, so it is not used.
 # COMPARE_CLIENT=threads runs one redis-benchmark with CLIENT_THREADS
-# threads instead of one process per client CPU.
+# threads instead of one process per client CPU. With cpu_record set, it copies
+# /proc/stat to compare-stat-before and compare-stat-after just outside the
+# timed interval, for cpu_busy.
 compare_client() {
     ticks=$(server_ticks)
+    [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-before"
     begin=$(date +%s%N)
     if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
         taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" --threads "$CLIENT_THREADS" \
@@ -869,6 +938,7 @@ compare_client() {
         set -- "$1" "$2" $(($3 / CLIENT_THREADS * CLIENT_THREADS))
     fi
     end=$(date +%s%N)
+    [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-after"
     ticks=$(($(server_ticks) - ticks))
     # The fields between the first and last quoted ones hold no quote.
     awk -F'","' -v n="$3" -v ns=$((end - begin)) -v ticks="$ticks" -v hz="$(getconf CLK_TCK)" '
@@ -881,9 +951,19 @@ compare_client() {
 # the run; every sample is kept as compare.csv's line,pass,cpus,test,depth,
 # requests,rps,server_cpu_us_per_request,p50_ms,p99_ms, and each test's
 # request count is sized from the
-# fastest image's pilot so that every image runs the same count.
+# fastest image's pilot so that every image runs the same count. Where
+# /proc/stat exists, each measured sample also gives compare-cpu.csv one
+# line,pass,cpus,test,depth,cpu,role,busy row per server and client CPU: the
+# fraction of that CPU's time not idle over the client's run.
 if [ "$MODE" = compare ]; then
     total=$(nproc)
+    cpu_record=
+    if [ -r /proc/stat ]; then
+        cpu_record="$OUT/compare-cpu.csv"
+        echo 'line,pass,cpus,test,depth,cpu,role,busy' >"$cpu_record"
+    else
+        echo "skip,compare-cpu.csv,no /proc/stat"
+    fi
     tests=${COMPARE_TESTS:-mset set get}
     depths=${COMPARE_DEPTHS:-16 1}
     names=
@@ -923,6 +1003,12 @@ if [ "$MODE" = compare ]; then
                 while read -r test depth requests; do
                     echo "$name,$pass,$n,$test,$depth,$requests,$(compare_client "$test" "$depth" "$requests")" |
                         tee -a "$OUT/compare.csv"
+                    if [ -n "$cpu_record" ]; then
+                        cpu_busy "$OUT/compare-stat-before" "$OUT/compare-stat-after" \
+                            "$SERVER_CPUS" "$CLIENT_CPUS" >"$OUT/compare-busy"
+                        awk -v key="$name,$pass,$n,$test,$depth" '{ print key "," $0 }' \
+                            "$OUT/compare-busy" >>"$cpu_record"
+                    fi
                 done <"$sizes"
                 stop
             done

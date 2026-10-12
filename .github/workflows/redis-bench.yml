@@ -52,6 +52,14 @@ on:
         description: Server CPU counts
         type: string
         default: "1 2"
+      server_cpus:
+        description: "Server CPUs, comma-separated numbers or ranges such as 0-15; both threads of a core may be named, and the list must hold exactly as many CPUs as each count in cpus, so give one count. Empty places servers automatically"
+        type: string
+        default: ""
+      client_cpus:
+        description: "Client CPUs, comma-separated numbers or ranges, none on a server CPU's physical core; one client process or thread per CPU. Empty places clients automatically"
+        type: string
+        default: ""
       tests:
         description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits"
         type: string
@@ -332,6 +340,8 @@ jobs:
         if: ${{ inputs.mode != 'build' }}
         timeout-minutes: 110
         env:
+          SERVER_CPU_LIST: ${{ inputs.server_cpus }}
+          CLIENT_CPU_LIST: ${{ inputs.client_cpus }}
           COMPARE_CPUS: ${{ inputs.cpus }}
           COMPARE_TESTS: ${{ inputs.tests || 'mset set get' }}
           COMPARE_DEPTHS: ${{ inputs.depths }}
