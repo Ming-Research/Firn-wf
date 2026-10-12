@@ -81,7 +81,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
     atomic m = &store.meta {
       set stop = m^.stopping;
     }
-    let drained = aof_rw_flush(store: &store, factory: &factory, file: &log.file, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, force: stop);
+    aof_rw_flush(store: &store, factory: &factory, file: &log.file, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, force: stop);
     if stop {
       break @writing;
     } else {

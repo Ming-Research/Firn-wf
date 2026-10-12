@@ -273,8 +273,8 @@ fn aof_sync_counts(error: &std::io::IoError) -> counted: Bool reads(error) {
   }
 }
 
-fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, force: Bool) -> drained: Bool reads(store), writes(factory), writes(file), writes(pending), writes(clock), writes(last_sync), writes(last_append) waits {
-  doc "Take collecting bytes only after retained bytes drain; shutdown instead combines both for its one forced attempt. Publish retained length/capacity with each exchange and append result. Failed appends retry about once per second without client writes (Redis 7.0.15 server.c:1384-1393); failed syncs also retry about once per second while idle, deliberately unlike Redis's new-byte-dependent schedule (aof.c:1067-1089,1255-1261).";
+fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, force: Bool) -> failed: Bool reads(store), writes(factory), writes(file), writes(pending), writes(clock), writes(last_sync), writes(last_append) waits {
+  doc "Take collecting bytes only after retained bytes drain; shutdown instead combines both for its one forced attempt. Publish retained length/capacity with each exchange and append result. Returns true only when this call attempted an append that did not drain or a sync whose failure counts; a deferred retry attempts nothing and is not a failure. Failed appends retry every 100 ms without client writes, the cadence at which Redis 7.0.15's event loop, woken at least hz (10) times a second by serverCron, calls flushAppendOnlyFile from beforeSleep (server.c:1660-1666) while the buffer is retained; failed syncs retry once per second while idle, deliberately unlike Redis's new-byte-dependent schedule (aof.c:1067-1089,1255-1261).";
   let append_failed = False();
   atomic m = &store^.meta {
     if force {
@@ -300,14 +300,15 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pen
   }
   let reading = std::time::now(clock: clock);
   let append_elapsed = std::time::nanoseconds_from(earlier: last_append^, later: reading);
-  let append_due = append_elapsed >= 1000000000_u64;
+  let append_due = append_elapsed >= 100000000_u64;
   let retry = bor(append_due, force);
   let healthy = bnot(append_failed);
   let append_now = bor(healthy, retry);
-  let drained = pending^.inner.len == 0_u64;
+  let failed = False();
   if append_now {
     set last_append^ = reading;
-    set drained = aof_rw_drain(store: store, factory: factory, file: file, pending: pending);
+    let drained = aof_rw_drain(store: store, factory: factory, file: file, pending: pending);
+    set failed = bnot(drained);
   }
   let elapsed = std::time::nanoseconds_from(earlier: last_sync^, later: reading);
   let due = elapsed >= 1000000000_u64;
@@ -328,7 +329,7 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pen
           }
           let reason_writer_io_10 = pkg::store::RewriteAbortReason::WriterIo();
           aof_rw_abort(store: store, reason: reason_writer_io_10);
-          return False();
+          return True();
         }
         atomic m = &store^.meta {
           set m^.aof_sync_error = None<std::io::IoError>();
@@ -336,7 +337,7 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pen
       }
     }
   }
-  return drained;
+  return failed;
 }
 
 fn aof_rw_open(store: &Keyspace, factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name: &[u8], reason: pkg::store::RewriteAbortReason) -> result: Result<WriteFile, unit> reads(store), reads(writable), reads(name), writes(factory) waits {
@@ -733,9 +734,8 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
             }
             if final_stop {
             } else {
-              let drained = aof_rw_flush(store: store, factory: factory, file: &log.file, pending: pending, clock: clock, last_sync: last_sync, last_append: last_append, force: no);
-              if drained {
-              } else {
+              let flush_failed = aof_rw_flush(store: store, factory: factory, file: &log.file, pending: pending, clock: clock, last_sync: last_sync, last_append: last_append, force: no);
+              if flush_failed {
                 let reason_writer_io_22 = pkg::store::RewriteAbortReason::WriterIo();
                 aof_rw_abort(store: store, reason: reason_writer_io_22);
               }

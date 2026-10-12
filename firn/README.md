@@ -455,9 +455,11 @@ host cannot describe an error.
 The command that exposed the failure can already have succeeded, since replies
 do not wait for everysec durability. Partial appends attempt rollback to the
 pre-flush incremental size, retaining all bytes on successful rollback and only
-the unwritten suffix otherwise (`aof.c:1146-1230`). Failed appends retry about
-once per second without new writes. Failed syncs also retry while idle, deliberately
-differing from Redis's new-byte-dependent scheduling (`aof.c:1067-1089,1255-1261`).
+the unwritten suffix otherwise (`aof.c:1146-1230`). Failed appends retry every
+100 ms without new writes, as Redis's event loop retries them at its default hz
+of 10 (`server.c:1660-1666`). Failed syncs retry once per second while idle,
+deliberately differing from Redis's new-byte-dependent scheduling
+(`aof.c:1067-1089,1255-1261`).
 Only successful append and sync operations clear their respective failures;
 ordinary rewrite rotation does not reset them (`aof.c:790-852`).
 
