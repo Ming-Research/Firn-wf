@@ -2,8 +2,10 @@
 
 ## The question
 
-firn's goal is that, when Whitefoot is released, users can run firn in production as a drop-in Redis
-replacement for common workloads, with performance well ahead of Redis, Valkey, Dragonfly and Garnet. Its
+firn's goal, as the owner set it on 2026-10-12 (item `firn-release-1` on the
+[shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip)), is that, when Whitefoot is
+released, users can run firn in production as a drop-in Redis replacement for common workloads, with
+performance well ahead of Redis, Valkey, Dragonfly and Garnet. This is a goal, not a result. Its
 reference is moving from Redis 7.0.15 to 7.2.16. What firn supports today was chosen from the traffic of three
 applications ([consumers investigation](../consumers/README.md)): Django's cache and sessions, connect-redis
 sessions, and rate-limiter-flexible's Lua scripts. Those three cannot say what the rest of production needs.
@@ -50,9 +52,10 @@ subcommands, 7.0.15 has 372, per the [Redis command tables](#redis-7015-to-7216)
 
 - Keys, expiry, `SCAN` and `KEYS`, strings, lists, sets, hashes and sorted sets: nearly all of the single-key
   commands and the store variants for sets. Sorted sets lack `ZUNIONSTORE`, `ZINTERSTORE`, `ZUNION`, `ZINTER`,
-  `ZDIFF`, `ZRANGESTORE`, `ZRANDMEMBER`, `ZMPOP` and every blocking `BZ*`. Lists lack `LMPOP` and every
-  blocking `B*`.
-- Scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD|EXISTS|FLUSH|KILL` on Halo, which has `cjson`, `cmsgpack`,
+  `ZINTERCARD`, `ZDIFF`, `ZDIFFSTORE`, `ZRANGESTORE`, `ZRANDMEMBER`, `ZMPOP`, `ZSCAN` and every blocking
+  `BZ*` (checked against the `sorted_set` group of Redis 7.2.16's `src/commands/*.json`). Lists lack `LMPOP`
+  and every blocking `B*`.
+- Scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD|EXISTS|FLUSH|KILL` (`SCRIPT DEBUG` and `SCRIPT HELP` are unknown subcommands) on Halo, which has `cjson`, `cmsgpack`,
   `struct` and `bit` libraries (file names in Halo-wf `lib/halo/vm/library-*.wf`, read 2026-10-12). Scripts
   with a `#!` line are refused. `EVALSHA_RO`, `EVAL_RO`, `FUNCTION` (except `FLUSH`) and `FCALL` are unknown.
 - `MULTI`, `EXEC`, `DISCARD`. `WATCH` is unknown.
@@ -65,9 +68,11 @@ subcommands, 7.0.15 has 372, per the [Redis command tables](#redis-7015-to-7216)
   `SORT`, `DUMP`/`RESTORE`, `OBJECT ENCODING`, `MONITOR`, `SLOWLOG`, `LATENCY`, `MEMORY`, ACL, replication,
   cluster, modules, more than one database.
 - `INFO` has `redis_version`, `role`, `loading`, `uptime_in_days`, `connected_clients`, `maxmemory_policy`,
-  `evicted_keys`, `total_connections_received`, `aof_enabled` among its fields. It has no
-  `total_commands_processed`, `keyspace_hits`, `keyspace_misses`, `expired_keys`, `total_net_input_bytes` or
-  command statistics (grep of `firn/commands/info.wf`).
+  `used_memory`, `used_memory_human`, `used_memory_peak`, `evicted_keys`, `total_connections_received`,
+  `aof_enabled` among its fields. It has no `total_commands_processed`, `keyspace_hits`, `keyspace_misses`,
+  `expired_keys`, `total_net_input_bytes`, `used_memory_peak_human` (read by Sidekiq's Web UI) or command
+  statistics (its `# Commandstats` section is empty) (grep of `firn/commands/info.wf`). These are the seven
+  INFO gaps this record cites.
 
 ## Data
 
@@ -132,13 +137,13 @@ path or shipped scripts (the matrix, so not options). All 63 coded applications 
 |---|---|---|---|
 | Celery broker (kombu 5.6.2) | 28,947 | `BRPOP` (4 priority keys, 1 s), `PSUBSCRIBE`/`PUBLISH` fanout (on by default: Mingle, Gossip, Heartbeat, Control worker steps), `WATCH` (`restore_by_tag`), `MULTI` for ack | `kombu/transport/redis.py:963-977,903,435,365`; `celery/worker/consumer/consumer.py:169-180` |
 | Celery result backend (5.6.3) | | `SUBSCRIBE` for `AsyncResult.get`, `PUBLISH` inside `MULTI` | `celery/backends/redis.py:107-172,432-438` |
-| Sidekiq 8.1.7 | 13,557 | `BRPOP` (every processor, 2 s); `SSCAN`, `ZSCAN` in the Web UI and API; `BITFIELD`/`BITFIELD_RO` for metrics; one shipped script (`ZRANGE ... BYSCORE LIMIT` + `ZREM`) via `SCRIPT LOAD` + `EVALSHA`; refuses to start below Redis 7.0 (checks `INFO` `redis_version`) | `fetch.rb:48`, `scheduled.rb:12-62`, `metrics/tracking.rb`, `cli.rb:76-78` |
-| BullMQ 6.3.13 | 9,497 | `BZPOPMIN` (idle worker), `XADD`/`XTRIM`/`XREAD BLOCK` (events), `CLIENT LIST` (`getWorkers`), `SSCAN`/`HSCAN` inside Lua, 50 Lua scripts using `cjson`, `cmsgpack` and keys built from `ARGV`; version 5.0 hard floor, 6.2 recommended, parsed from `INFO` | `src/classes/redis-queue-backend.ts:2791,2863,1995`, `src/commands/*.lua`, `redis-connection.ts:154` |
+| Sidekiq 8.1.7 | 13,557 | `BRPOP` (every processor, 2 s); `SSCAN`, `ZSCAN` in the Web UI and API; `BITFIELD`/`BITFIELD_RO` for metrics; one shipped script (`ZRANGE ... BYSCORE LIMIT` + `ZREM`) via `SCRIPT LOAD` + `EVALSHA`; refuses to start below Redis 7.0 (checks `INFO` `redis_version`) | `fetch.rb:48`, `scheduled.rb:12-62`, `metrics/shared.rb:90,103` (reached from `metrics/tracking.rb:76`), `cli.rb:76-78` |
+| BullMQ 6.3.13 | 9,497 | `BZPOPMIN` (idle worker), `XADD`/`XTRIM`/`XREAD BLOCK` (events), `CLIENT LIST` (`getWorkers`), `SSCAN`/`HSCAN` inside Lua, 49 top-level Lua scripts (68 more are includes) using `cjson`, `cmsgpack` and keys built from `ARGV`; version 5.0 hard floor, 6.2 recommended, parsed from `INFO` | `src/classes/redis-queue-backend.ts:2791,2863,2016`, `src/commands/*.lua`, `redis-connection.ts:154` |
 | RQ 2.12 | 10,692 | `BLMOVE` (>= 6.2) or `BLPOP`, `SUBSCRIBE`/`PUBLISH` (worker commands), `WATCH`, Streams for results (`XADD`, `XREAD BLOCK`, `XREVRANGE`, `XLEN`), `CLIENT LIST` (tolerates failure) | `queue.py:1533,1558`, `worker/base.py:1056,252`, `results.py:263,290` |
 | Bull 4.16.5 | 16,254 | `BRPOPLPUSH`, `PSUBSCRIBE`/`SUBSCRIBE`, `PUBLISH` inside 29 Lua scripts, `CLIENT LIST`, `SCAN` inside a script | `lib/queue.js:1246,543`, `lib/commands/*.lua` |
 | Asynq 0.26.0 | 13,750 | `SUBSCRIBE`/`PUBLISH` (task cancel channel); 49 Lua scripts otherwise | `internal/rdb/rdb.go:1488,1501` |
 | Dramatiq 2.2.1 | 5,330 | `BRPOPLPUSH` (results, rate-limit barriers), `WATCH` (rate limiter) | `results/backends/redis.py:93`, `rate_limits/backends/redis.py:49-107` |
-| Laravel queue (13.35.0) | 34,959 | `BLPOP` only when `block_for` is set (default off: polls and sleeps) | `Queue/RedisQueue.php` |
+| Laravel queue (13.35.0) | 34,959 (the framework's) | `BLPOP` only when `block_for` is set (default off: polls and sleeps) | `Queue/RedisQueue.php` |
 | Laravel Horizon 5.50.0 | 4,176 | `ZSCAN` inside the purge script | `src/LuaScripts.php` |
 | Huey 3.4.0 | 6,045 | `BRPOP` (default), `BZPOPMIN` (priority), `BLPOP` (result wait) | `huey/storage.py:557,793,646` |
 | node-resque 9.7.1 | 1,414 | `WATCH`/`UNWATCH` in the scheduler cleanup (optional) | `scheduler.ts:324` |
@@ -224,7 +229,8 @@ Consequences, all [source] unless noted:
 - **RESP3 is the default of most current clients** (redis-py 8, node-redis 6, ioredis 6, go-redis 9, Lettuce,
   rueidis, redis-client, StackExchange.Redis). firn answers `HELLO 3` already; for redis-py 8 and node-redis a
   `HELLO` failure is fatal, which is the failure the consumers investigation observed.
-- **`CLIENT SETINFO` is sent by every mainstream client except Redisson and the PHP and C clients**, since 2023
+- **`CLIENT SETINFO` is sent by every client in the table except Redisson, phpredis, redigo and hiredis**
+  (Predis and redis-rs do send it), since 2023
   (redis-py 5.0.0, node-redis 4.6.11, go-redis 9.2.0 and 9.5.0, Jedis 4.4.0, Lettuce 6.3.0). Every client
   tolerates an error reply today, so firn works as is; but it is a Redis 7.2 command and the reference moves to
   7.2.16.
@@ -275,11 +281,13 @@ What other servers chose, from their own pages (counts by script over the raw ta
 
 ### Operational tools
 
-A drop-in replacement is also read by monitoring. `redis_exporter` (3,696 stars, v1.93.0, commit `6de1e8b`,
-re-checked in `exporter/*.go`) sends `INFO` and `INFO ALL`, `CONFIG GET`, `CLIENT LIST`, `SLOWLOG LEN|GET`,
+A drop-in replacement is also read by monitoring. `redis_exporter` (3,696 stars, tag v1.93.0, commit `589a1cd`,
+re-checked in `exporter/*.go` at that tag) sends `INFO` and `INFO ALL`, `CONFIG GET`, `CLIENT LIST`, `SLOWLOG LEN|GET`,
 `LATENCY`, `MEMORY USAGE`, `COMMAND INFO`, `SCAN`, `TYPE`, `PING`, and exports
 `total_commands_processed`, `keyspace_hits`, `keyspace_misses`, `expired_keys`, `evicted_keys`,
 `total_net_input_bytes`, `connected_clients` and `used_memory`. firn's `INFO` lacks five of those (commands processed, keyspace hits, keyspace misses, expired keys, net input bytes; grep of `firn/commands/info.wf`).
+The only later exporter commit, `6de1e8b` (it changes how `INFO commandstats` is parsed), adds no command
+cited here.
 This is one tool, not a survey of tools.
 
 ### Redis 7.0.15 to 7.2.16
@@ -305,7 +313,9 @@ and later 7.2.x notes):
 ### Commands by number of coded applications that send them
 
 Of 63 coded applications. The right column says whether firn has it (Y), has it partly (P) or lacks it (-).
-All 63 are listed in the appendix; the top of the order, then every command firn lacks:
+All 63 are listed in the appendix; the table gives every command sent by 11 or more applications, then
+every command firn lacks and the commands it has only partly (`SCRIPT`, `CLIENT`, `SELECT`; `CONFIG`, sent
+by one, is left out) (counts recomputed from the appendix sets):
 
 | Count | Commands | firn |
 |---|---|---|
@@ -322,8 +332,9 @@ All 63 are listed in the appendix; the top of the order, then every command firn
 | 14 | `HGETALL`, `SCAN` | Y |
 | **13** | **`SUBSCRIBE`** | **-** |
 | 13 | `KEYS`, `HDEL`, `RPUSH` | Y |
+| 12 | `ZRANGE`, `LRANGE`, `ZRANGEBYSCORE`, `ZREMRANGEBYSCORE` | Y |
 | 11 | `INFO`, `UNLINK`, `LPUSH`, `LLEN` | Y (INFO partial in fields) |
-| 7 | `SCRIPT` | P (no `EVALSHA_RO`) |
+| 7 | `SCRIPT` | P (no `SCRIPT DEBUG` or `SCRIPT HELP`; `EVAL_RO` and `EVALSHA_RO` are separate commands, also unknown, sent by none of the 63) |
 | **6** | **`PSUBSCRIBE`, `WATCH`** | **-** |
 | 4 | `CLIENT` | P (no `LIST`, `SETINFO`) |
 | **4** | **`UNSUBSCRIBE`, `BLPOP`** | **-** |
@@ -332,8 +343,9 @@ All 63 are listed in the appendix; the top of the order, then every command firn
 | **2** | **`HSCAN`, `BRPOPLPUSH`, `UNWATCH`** | **-** |
 | **1** | **`BITFIELD`, `BITFIELD_RO`, `XTRIM`, `XLEN`, `BLMOVE`, `XREVRANGE`, `XRANGE`, `PUNSUBSCRIBE`, `ZINTERSTORE`, `ZUNIONSTORE`** | **-** |
 
-Every command firn already has is in the top half of the table. The commands firn lacks are few in number
-but each stops a whole category.
+Every command sent by 15 or more applications is one firn has; the highest count among those it lacks is
+`PUBLISH` at 14, and the partly supported `SCRIPT` (7), `CLIENT` (4) and `SELECT` (2) sit among the missing
+ones lower down. The commands firn lacks are few in number but each stops a whole category.
 
 ### Features by number of applications they stop
 
@@ -365,8 +377,10 @@ Applications fully served at command-name level, adding the families in this ord
 | + `ZUNIONSTORE`/`ZINTERSTORE` | 63 |
 
 This is a count of applications, not users. The 29 unserved applications include the six queue systems with
-the most stars among those read (Celery, Bull, Asynq, Sidekiq, RQ, BullMQ; Resque, which is served, comes
-next with 9,467) and Redisson, so the families above matter more than the application count suggests:
+the most stars of their own repositories among those read (Celery, Bull, Asynq, Sidekiq, RQ, BullMQ; Resque,
+which is served, comes next with 9,467) and Redisson. The unserved Laravel queue is left out of that
+comparison because its 34,959 stars are the framework's, and it stops only on the optional `BLPOP` (off by
+default). So the families above matter more than the application count suggests:
 firn serves 4 of 17 queue and scheduler applications today.
 
 ## Proposal
@@ -374,13 +388,15 @@ firn serves 4 of 17 queue and scheduler applications today.
 ### Production scope
 
 What firn must support at release, each with the applications that need it. "Have" means firn has it today.
-The scope follows the data above; where it rests on judgment the text says so.
+The scope follows the data above; where it rests on judgment the text says so. The owner's ruling on the
+first-release scope (2026-10-12) took items 2 to 9, 12 and 13 as the ten items of the first release, with item 1 as
+what firn already has, items 10, 11 and 14 left to their own cards and item 15 for later.
 
 | # | Feature | Needed by | Status |
 |---|---|---|---|
 | 1 | The command families firn has, with RESP2 and RESP3 | all 63 | have |
 | 2 | Client handshake: `HELLO 2|3`, `AUTH [user] pass` for the default user, `CLIENT SETNAME|GETNAME|ID|INFO`, **`CLIENT SETINFO LIB-NAME|LIB-VER` answering OK** (a 7.2 command; every client tolerates an error, but the reference now has it), **`CLIENT LIST`** with the fields clients read (id, name, addr), **`CLIENT NO-TOUCH`** and the other 7.2 additions the reference adds | redis-py, node-redis, ioredis, Jedis, Lettuce, go-redis, redis-client send `SETINFO`; `CLIENT LIST`: BullMQ `getWorkers`, RQ, Bull, redis_exporter | partly |
-| 3 | **`INFO`** fields clients and monitors read: `redis_version`, `redis_mode`, `role`, `loading:0`, `maxmemory_policy`, `uptime_in_days`, `connected_clients`, `used_memory*`, plus **`total_commands_processed`, `keyspace_hits`, `keyspace_misses`, `expired_keys`, `total_net_input_bytes`** | ioredis (ready check), Sidekiq (version gate and Web UI), BullMQ, Symfony tags, Rails, keyv, RQ, Huey, redis_exporter | most; the five counters missing |
+| 3 | **`INFO`** fields clients and monitors read: `redis_version`, `redis_mode`, `role`, `loading:0`, `maxmemory_policy`, `uptime_in_days`, `connected_clients`, `used_memory`, `used_memory_human`, `used_memory_peak`, plus **`used_memory_peak_human`** (Sidekiq's Web UI), **`total_commands_processed`, `keyspace_hits`, `keyspace_misses`, `expired_keys`, `total_net_input_bytes`** (redis_exporter) and **`commandstats`** lines | ioredis (ready check), Sidekiq (version gate and Web UI), BullMQ, Symfony tags, Rails, keyv, RQ, Huey, redis_exporter | most; missing: the five counters, `used_memory_peak_human` and `commandstats` |
 | 4 | **Pub/sub**: `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`, `PUBLISH`, `PUBSUB CHANNELS|NUMSUB|NUMPAT`, subscriber mode in RESP2 and push frames in RESP3, `PUBLISH` from `redis.call`; `SPUBLISH`/`SSUBSCRIBE`/`PUBSUB SHARDNUMSUB` as the same mechanism on a standalone server | 15 applications: Celery (broker fanout is on by default and result backend), Bull, RQ, Asynq, Redisson, Spring Session indexed, Socket.IO, ActionCable, channels_redis, SignalR, Laravel broadcasting, Phoenix, GrowthBook | missing |
 | 5 | **Blocking list operations**: `BLPOP`, `BRPOP`, `BRPOPLPUSH`, `BLMOVE` (fractional timeouts), woken by pushes from other connections, `MULTI`, and scripts. In 7.2 these run non-blocking inside a script or `MULTI` | Celery, Sidekiq, RQ, Bull, Dramatiq, Huey, python-redis-lock, Laravel queue (optional) | missing |
 | 6 | **`BZPOPMIN`/`BZPOPMAX`** with fractional timeouts, woken by a `ZADD` from a script | BullMQ (idle loop), Huey, channels_redis | missing |
@@ -389,13 +405,17 @@ The scope follows the data above; where it rests on judgment the text says so.
 | 9 | **Scripts as clients use them**: `EVALSHA` after `SCRIPT LOAD` with the exact `NOSCRIPT` error text, `EVAL_RO`/`EVALSHA_RO` (Redisson, go-redis `RunRO`, rueidis), `cjson`, `cmsgpack`, `redis.pcall`, `redis.error_reply`, `redis.replicate_commands`, commands named from `ARGV`, undeclared keys, `unpack` of long argument lists | BullMQ, redis_rate, node-redlock, Redisson, Dramatiq, Laravel | mostly; `*_RO` and the library items to check |
 | 10 | **`SELECT n`** for databases 0 through 15 (`CONFIG GET databases` is 16 in Redis) | Symfony sends it on every connect; URLs of Rails, Celery, Sidekiq, Resque, Spring Session take a database; Garnet's most-wanted feature | `SELECT 0` only; **decision needed** (see below) |
 | 11 | **Minimal Streams**: `XADD` (with `MAXLEN ~`), `XREAD` with `BLOCK`, `XRANGE`, `XREVRANGE`, `XLEN`, `XTRIM`, `XDEL`, ids and trimming exactly as Redis | BullMQ events, RQ job results, Socket.IO streams adapter. No surveyed queue uses consumer groups | missing; **decision needed on release or after** |
-| 12 | **`ZUNIONSTORE`, `ZINTERSTORE`** (and `ZUNION`, `ZINTER`, `ZDIFF`, `ZINTERCARD`, `ZRANGESTORE`, `ZMPOP`, `ZRANDMEMBER` as one family) | agoragames/leaderboard and Redisson's sorted set; the Redis suite tests that left the ratchet when these went missing come back | missing |
-| 13 | **Redis 7.2.16 behavior** for the commands firn has: `ZRANK WITHSCORE`, `HELLO` failing without side effects, time frozen per command, `WAITAOF` (answering the error a server without replicas gives), `CLIENT NO-TOUCH` | the reference move | in progress |
+| 12 | **`ZUNIONSTORE`, `ZINTERSTORE`** (and `ZUNION`, `ZINTER`, `ZDIFF`, `ZDIFFSTORE`, `ZINTERCARD`, `ZRANGESTORE`, `ZMPOP`, `ZRANDMEMBER` as one family) | agoragames/leaderboard and Redisson's sorted set; the Redis suite tests that left the ratchet when these went missing come back | missing |
+| 13 | **Redis 7.2.16 behavior**: for the commands firn has, `ZRANK WITHSCORE`, `HELLO` failing without side effects, time frozen per command and `CLIENT NO-TOUCH`; and the 7.2 command `WAITAOF numlocal numreplicas timeout` as a standalone server answers it: the error `WAITAOF cannot be used when numlocal is set but appendonly is disabled.` when `numlocal` is 1 and the append-only file is off, otherwise `[acklocal, 0]`, once the file's fsync covers the client's last write (immediately inside `MULTI` or a script), and with `numreplicas` above 0 it waits for the timeout (0 means without limit) and then answers `[acklocal, 0]`; the replica-instance error never applies (Redis 7.2.16 `src/replication.c:3571-3604`, `src/blocked.c:229-245`, read 2026-10-12) | the reference move | in progress |
 | 14 | **`BITFIELD`/`BITFIELD_RO`** | Sidekiq 8 metrics at each heartbeat. Whether Sidekiq tolerates an error reply is not known; settle by running it | conditional on the Sidekiq run |
 | 15 | **Operations basics**: `SLOWLOG GET|LEN|RESET`, `LATENCY` as an empty answer, `MEMORY USAGE` | redis_exporter reads them; managed services block them, so no application depends on them | later |
 
 Items 4 to 8 take the coded applications from 34 to 58 of 63 and stop being the reason any one of the
-widely used queues, pub/sub libraries or tag caches cannot use firn.
+pub/sub libraries or tag caches cannot use firn. They do not make every widely used queue work. The five
+applications still unserved at 58 are Sidekiq (`BITFIELD`, item 14), BullMQ, RQ and the Socket.IO streams
+adapter (Streams, item 11) and agoragames/leaderboard (item 12). So Sidekiq and BullMQ, the first and third
+validation applications below, run on firn only after items 14 and 11 land (for Sidekiq, unless its run shows
+that an error reply from `BITFIELD` is tolerated).
 
 ### Not doing
 
@@ -404,7 +424,7 @@ Each with its reason and what would reopen it.
 | Not doing | Reason (evidence) | Reopen when |
 |---|---|---|
 | **Cluster mode** (`CLUSTER *`, slots, `MOVED`/`ASK`, `READONLY`) | None of the 63 applications requires a server in cluster mode; each works on one node, and cluster support in clients is optional (Sidekiq refuses it: `redis_connection.rb:21`). firn's scale-out plan is cores on one node. Dragonfly emulates 8 of 30 `CLUSTER` subcommands, Garnet partly; no peer is judged on the rest. Cost is high. | An application on the validation list requires it |
-| **Replication, `WAIT`, `WAITAOF`, `FAILOVER`, Sentinel** | No application needs a replica; Redisson sends `WAIT` and `WAITAOF` probes only in non-single modes (an `ERR unknown command` clears them, `CommandAsyncService.java:1095-1200`). Every managed service blocks `REPLICAOF`/`PSYNC`. Clients configured for Sentinel need Sentinel servers, which firn is not. | A durability story that needs a second copy |
+| **Replication, `WAIT`, replica acknowledgement for `WAITAOF`, `FAILOVER`, Sentinel** | No application needs a replica; Redisson sends `WAIT` and `WAITAOF` probes only in non-single modes (an `ERR unknown command` clears them, `CommandAsyncService.java:1095-1200`). Every managed service blocks `REPLICAOF`/`PSYNC`. Clients configured for Sentinel need Sentinel servers, which firn is not. `WAITAOF` itself stays in the scope (item 13) as the standalone answer only, with no replicas to acknowledge. | A durability story that needs a second copy |
 | **Modules** (RedisJSON, RediSearch, ...) | Only the Next.js stack handler and Upstash's own extensions need them; the strings handler needs `HSCAN`. | A flagship workload needs one |
 | **`FUNCTION`/`FCALL`** | Not needed by any of the 63 applications' normal paths (Redisson's API and Valkey Glide's limiter class use it optionally). Dragonfly lists `FUNCTION` unsupported and Garnet lists all 11 commands unsupported. | An application on the list uses it |
 | **`#!` script flags** | None of the shipped scripts surveyed starts with `#!` (re-checked). Keep refusing. | A selected application ships flagged scripts |
@@ -421,6 +441,14 @@ Selection criteria, in order: coverage of the scope in the table above, populari
 whether its own tests run unchanged against a server named by host and port (the criterion of the
 [consumers investigation](../consumers/README.md#criteria-stated-before-choosing)).
 
+What changed since the consumers investigation: that investigation chose the three milestone consumers and,
+in [design/firn/consumers.md](../../../design/firn/consumers.md), rejected BullMQ and Sidekiq because "a queue
+is a candidate scenario, not one the milestone selected". On 2026-10-12 the owner set firn's first-release
+goal to production drop-in use (see [The question](#the-question)) and approved this validation list and its
+order (owner's ruling on the first-release scope, 2026-10-12). The queues and pub/sub applications are now
+selected by that goal and the survey's ranking, and consumers.md records the list in place of the old
+rejection.
+
 Keep the existing three (Django cache and sessions, connect-redis, rate-limiter-flexible). Add these, in
 this order:
 
@@ -430,14 +458,16 @@ this order:
    `ZSCAN`, `BITFIELD`, plus the 7.0 version gate from `INFO`. Its tests take `REDIS_URL` and default to
    `redis://localhost:6379/0` and `FLUSHDB` between tests (`test/helper.rb:24-36`, re-checked), so they run
    unchanged against another server. Covers items 2, 3, 5, 8, 9 and 14, and adds Ruby and the
-   RESP3 `redis-client` path, which none of the first three uses.
+   RESP3 `redis-client` path, which none of the first three uses. It stays blocked by `BITFIELD` (item 14) until that item lands or its run shows
+   an error reply is tolerated.
 2. **Celery** with the Redis broker and result backend (Python, kombu 5.6 and redis-py). The most starred Python
    task system read (28,947 stars; PyPI celery 43.2M and kombu 44.3M a month). Covers `BRPOP`, pub/sub fanout
    (on by default), `WATCH` and `MULTI` in one application, and its integration tests take
    `TEST_BACKEND` (default `redis://`, `t/integration/conftest.py:22`, re-checked). Covers items 2, 4, 5, 7.
 3. **BullMQ** (Node, ioredis). The most downloaded JavaScript queue of those measured (npm 9.72M a week against 1.66M for Bull; 9,497 stars). It is
-   the stress case for scripts: 50 Lua scripts using `cjson` and `cmsgpack`, keys from `ARGV`,
-   `BZPOPMIN`, Streams, `CLIENT LIST`, `INFO`. Covers items 6, 8, 9, 11. Its tests take `REDIS_HOST`
+   the stress case for scripts: 49 top-level Lua scripts using `cjson` and `cmsgpack`, keys from `ARGV`,
+   `BZPOPMIN`, Streams, `CLIENT LIST`, `INFO`. Covers items 6, 8, 9, 11. It stays blocked by Streams
+   (item 11) until that item lands. Its tests take `REDIS_HOST`
    (`tests/ioredis-client.test.ts:144`, re-checked); whether every test file does was not checked.
 4. **A pub/sub application**: Socket.IO's redis adapter (npm 1.92M a week) and Rails ActionCable
    (RESP3 `SUBSCRIBE`), which between them use classic and RESP3 subscriber modes. Covers item 4.
@@ -448,9 +478,10 @@ this order:
    `CLIENT LIST` and `WATCH` (10,692 stars). Not needed for coverage beyond items 5, 7, 11.
 
 Resque, Asynq, Dramatiq, Huey, Laravel queues and Horizon would add little coverage that the first three
-do not. Rails' cache store, Spring Data cache and Laravel cache remain the reserve named in
+do not. Rails' `RedisCacheStore` and Laravel's Redis cache and sessions remain the reserve named in
 [design/firn/consumers.md](../../../design/firn/consumers.md); this survey finds nothing that changes that
-(they use only commands firn has), except tagged caches, which need `SSCAN`/`ZSCAN`.
+(they use only commands firn has), except the Laravel and Symfony tagged caches, which need `ZSCAN` and `SSCAN`. Spring Data cache is
+not in that reserve; like them it uses only commands firn has, and the survey adds no validation run for it.
 
 **Clients**, validated by connecting and running a fixed smoke set (handshake, `GET`/`SET`, pipeline,
 `MULTI`/`EXEC`, a script through the client's own script helper, pub/sub, one blocking pop) rather than by
@@ -478,13 +509,13 @@ exists in `research/`; the board is the record (read 2026-10-12). Disposition, b
 | - `BZPOPMIN`, `BZPOPMAX` (same) | unknown | BullMQ, Huey, channels_redis | **Reopen** |
 | - `ZUNIONSTORE`, `ZINTERSTORE` and the other sorted-set algebra, `ZMPOP`, `ZRANDMEMBER` (same) | unknown; also the reason 13 Redis-suite tests left the ratchet | 1 coded application plus Redisson | **Reopen** as a family (low frequency, cheap, and returns the 13 suite tests) |
 | - `LMPOP`, `SORT`, `LCS`, `DUMP`/`RESTORE`, `MOVE`, `MIGRATE`, `WAIT` (same) | unknown | 0 applications (Redisson probes `WAIT` only in non-single modes) | Keep cancelled; make `WAIT 0 0` answer 0 if it comes up |
-| - `CLIENT` subcommands, `COMMAND` subcommands (same) | partial | `CLIENT SETINFO` sent by every mainstream client; `CLIENT LIST` by BullMQ, RQ, Bull, redis_exporter; `CLIENT INFO` `addr` missing for want of Whitefoot socket addresses (a separate request) | **Reopen** `SETINFO` and `LIST`; keep the rest cancelled |
+| - `CLIENT` subcommands, `COMMAND` subcommands (same) | partial | `CLIENT SETINFO` sent by most mainstream clients (not Redisson, phpredis, redigo, hiredis); `CLIENT LIST` by BullMQ, RQ, Bull, redis_exporter; `CLIENT INFO` `addr` missing for want of Whitefoot socket addresses (a separate request) | **Reopen** `SETINFO` and `LIST`; keep the rest cancelled |
 | - `SELECT` only 0 (same) | partial | indirect: Symfony sends it on connect; common in URLs; Garnet's top issue | **Decision card** (below) |
 | - `FUNCTION`, `DEBUG`, only `default` user, `--bind`, `CONFIG SET appendonly|port|bind` | partial | 0 applications | Keep cancelled |
 | - negative-zero score in a skip list, expiry overflow | numeric corner cases | 0 applications | Keep cancelled |
 | Scripts with `#!` flags (`firn-bl-01-32`) | refused | no shipped script uses them (re-checked) | Keep cancelled |
 | `OBJECT ENCODING` and `REFCOUNT` (`firn-bl-01-31`) | unknown subcommands | 0 applications | Keep cancelled |
-| `INFO` omits unmeasured metrics (`firn-bl-01-22`) | no stats counters or command statistics | redis_exporter exports five counters firn lacks; Sidekiq's Web UI reads memory fields | **Reopen the five counters and `commandstats`** (monitoring); leave CPU and error statistics cancelled |
+| `INFO` omits unmeasured metrics (`firn-bl-01-22`) | no stats counters or command statistics | redis_exporter exports five counters firn lacks; Sidekiq's Web UI reads `used_memory_peak_human`, which firn lacks | **Reopen the five counters, `used_memory_peak_human` and `commandstats`** (monitoring); leave CPU and error statistics cancelled |
 | `INFO` inside `EXEC` or a script (`firn-bl-01-27`) | refused | no application | Keep cancelled |
 | `BGREWRITEAOF` with `appendonly no` (`firn-bl-01-29`) | cannot rebuild | no application | Keep cancelled |
 | `SPOP` with a count writes one `SREM` (`firn-bl-01-08`) | AOF differs from Redis | 0 applications use `SPOP` | Keep cancelled |
@@ -512,10 +543,13 @@ exists in `research/`; the board is the record (read 2026-10-12). Disposition, b
 ## Unverified and limits
 
 - The command lists of the applications are subagent reads of named tags; I re-checked a sample (Sidekiq's
-  and Celery's test setup, the shebang grep, redis_exporter), not every line.
+  and Celery's test setup, BullMQ's test host setting, the shebang grep, redis_exporter), not every line.
+  The completion review's corrections were re-checked at the tags afterwards: BullMQ's `CLIENT LIST` line and
+  script count at v6.3.13, Sidekiq's `BITFIELD` calls at v8.1.7, redis_exporter's commands at v1.93.0, and
+  Redis 7.2.16's `WAITAOF`, `SCRIPT` subcommands and `sorted_set` command group.
 - Counts are by application, command name and normal path or shipped Lua; options, reply shape and error
-  text are not in them. Optional and admin paths are excluded from the coded sets unless stated (for example
-  Laravel's `BLPOP` and `KEYS`).
+  text are not in them. Optional and admin paths are excluded from the coded sets unless marked `*` in the
+  appendix (for example Laravel queue's `BLPOP` and `KEYS`, node-resque's `WATCH` and `UNWATCH`).
 - Not read: Laravel's and Predis's wire behavior beyond their connectors, Spring Data's `DefaultScriptExecutor`
   (assumed `EVALSHA`, then `EVAL`), Celery's remote-control extras, Bull and Resque cluster support, Sidekiq
   Pro and Enterprise scripts, APScheduler 4.x, kombu's cluster mode, Python and other leaderboard libraries
@@ -533,7 +567,7 @@ exists in `research/`; the board is the record (read 2026-10-12). Disposition, b
 
 My coding of each application's normal-path commands and shipped Lua, from the sources above. Counts in
 the ranking are computed from these sets. Q is a queue or scheduler, C a cache or session store, L a limiter or
-lock, R a realtime or pub/sub library, F a flag store or other. `*` marks an admin or UI path included.
+lock, R a realtime or pub/sub library, F a flag store or other. `*` marks an admin, UI or optional path included.
 
 ```
 Q Celery broker (kombu)       LPUSH BRPOP MULTI EXEC ZADD HSET ZREM HDEL SET ZREVRANGEBYSCORE WATCH HGET PUBLISH PSUBSCRIBE UNSUBSCRIBE SADD SREM EXISTS DEL LLEN SMEMBERS RPOP RPUSH PING EVALSHA GET
@@ -545,12 +579,12 @@ Q Resque                      RPUSH SADD LPOP LLEN LRANGE LINDEX LREM SMEMBERS S
 Q Bull                        BRPOPLPUSH PSUBSCRIBE SUBSCRIBE PUBLISH CLIENT EVALSHA MULTI EXEC KEYS INFO DEL EXISTS GET HDEL HGET HGETALL HINCRBY HMGET HMSET HSET INCR LINDEX LINSERT LLEN LPUSH LRANGE LREM LSET LTRIM PSETEX PTTL RENAME RPOPLPUSH RPUSH SADD SCAN SCARD SET SISMEMBER SMEMBERS SREM TYPE ZADD ZCARD ZCOUNT ZRANGE ZRANGEBYSCORE ZREM ZREMRANGEBYRANK ZREMRANGEBYSCORE ZREVRANGE ZREVRANGEBYSCORE ZSCORE HEXISTS TTL
 Q Asynq                       EVALSHA SADD SMEMBERS ZSCORE ZADD ZREM DEL HSET PING PUBLISH SUBSCRIBE EXISTS LPUSH HDEL HGET RPOPLPUSH EXPIREAT GET INCR LREM SET ZRANGE RPUSH ZRANGEBYSCORE ZCARD ZREMRANGEBYRANK ZREVRANGE EXPIRE SETEX ZREMRANGEBYSCORE
 Q Dramatiq                    EVALSHA ZADD ZRANGEBYSCORE SMEMBERS HEXISTS RPUSH DEL KEYS ZREM HDEL HSET LPOP SADD HMGET SREM HGET HLEN SCARD BRPOPLPUSH RPOPLPUSH LINDEX MULTI EXEC LPUSH PEXPIRE SET WATCH GET
-Q Laravel queue               EVAL RPUSH LLEN ZCARD ZADD LPOP ZREM ZRANGEBYSCORE ZREMRANGEBYRANK DEL LRANGE ZRANGE LINDEX KEYS BLPOP MULTI EXEC
+Q Laravel queue               EVAL RPUSH LLEN ZCARD ZADD LPOP ZREM ZRANGEBYSCORE ZREMRANGEBYRANK DEL LRANGE ZRANGE LINDEX KEYS* BLPOP* MULTI EXEC
 Q Laravel Horizon             EVAL HSETNX SADD HMGET HMSET ZSCAN ZREM DEL GET ZREMRANGEBYSCORE ZADD ZRANGE HGET EXPIREAT EXPIRE ZCARD SMEMBERS SET ZREVRANGEBYSCORE ZREMRANGEBYRANK MULTI EXEC LLEN HDEL ZREVRANGE ZCOUNT SREM SETNX RPUSH LTRIM LRANGE INCR HSET HKEYS HGETALL EXISTS SCAN
 Q Huey                        LPUSH BRPOP RPOP ZADD BZPOPMIN ZPOPMIN EVALSHA ZRANGEBYSCORE ZREMRANGEBYSCORE ZCARD ZRANGE DEL HSET HGET HMGET HDEL HEXISTS HLEN HGETALL HINCRBY HSETNX EXPIRE BLPOP SET GET MGET EXISTS SCAN INFO
 Q redbeat                     HGET HSET HSETNX ZADD ZRANGEBYSCORE ZREM DEL ZRANK SMEMBERS SADD SREM SET GET EVALSHA PTTL PEXPIRE MULTI EXEC
 Q APScheduler job store       HGET ZRANGEBYSCORE HMGET ZRANGE HGETALL HEXISTS MULTI EXEC HSET ZADD ZREM HDEL DEL
-Q node-resque                 LPOP EVALSHA SET SADD SMEMBERS DEL LLEN LRANGE LREM GET MGET EXPIRE MULTI EXEC ZRANGEBYSCORE SISMEMBER SREM SELECT QUIT SCAN WATCH UNWATCH
+Q node-resque                 LPOP EVALSHA SET SADD SMEMBERS DEL LLEN LRANGE LREM GET MGET EXPIRE MULTI EXEC ZRANGEBYSCORE SISMEMBER SREM SELECT QUIT SCAN WATCH* UNWATCH*
 Q arq                         WATCH EXISTS MULTI EXEC PSETEX ZADD ZRANGEBYSCORE ZCARD ZSCORE GET INCR EXPIRE SET ZREM DEL KEYS INFO DBSIZE
 Q sidekiq-cron                SADD SREM SMEMBERS HSET HGETALL HGET ZADD ZREMRANGEBYSCORE LPUSH LTRIM LRANGE DEL EXISTS SCARD KEYS
 C Rails RedisCacheStore       GET MGET SET UNLINK INCRBY EXPIRE TTL FLUSHDB SCAN INFO
