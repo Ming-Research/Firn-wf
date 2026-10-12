@@ -32,6 +32,13 @@ pub struct CompiledProgram {
 
 impl CompiledProgram {
     pub fn from_environment() -> Self {
+        Self::from_environment_under(&std::env::temp_dir())
+    }
+
+    /// The program `FIRN` names, run in a fresh directory under `parent`
+    /// rather than the host's temporary directory, for a case whose files
+    /// must lie on a particular filesystem.
+    pub fn from_environment_under(parent: &Path) -> Self {
         let executable = std::env::var_os("FIRN")
             .map(PathBuf::from)
             .expect("FIRN must name the absolute path to a built firn executable");
@@ -41,7 +48,7 @@ impl CompiledProgram {
             executable.display()
         );
         let sequence = NEXT_EXECUTION.fetch_add(1, Ordering::Relaxed);
-        let directory = std::env::temp_dir().join(format!(
+        let directory = parent.join(format!(
             "firn-tests-program-{}-{sequence}",
             std::process::id()
         ));
