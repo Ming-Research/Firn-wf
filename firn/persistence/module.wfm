@@ -36,7 +36,7 @@ public struct AofManifest {
 }
 
 public struct AofLog {
-  doc "The writer owns the directory halves, appendfilename, manifest and last incremental file; the scan worker owns only its temporary base handle, leaving boundary validation and authoritative appends with the writer.";
+  doc "The writer owns the directory halves, appendfilename, manifest and last incremental file; the scan worker owns its temporary base and journal read handles, leaving boundary validation and authoritative appends with the writer.";
   public directory: DirectoryRead;
   public writable: std::fs::DirectoryWrite;
   public prefix: Box<Slots<u8>>;
