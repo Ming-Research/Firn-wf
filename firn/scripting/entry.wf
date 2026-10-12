@@ -180,10 +180,13 @@ fn compiled_at(pooled: &PooledEngine, index: u64, sha: &Array<u8, 40>, source: &
 }
 
 fn compile_error(client: &Client, error: &halo::compile::CompileError) -> r: unit reads(error), writes(client) {
-  reply_word(client: client, word: &entry_text_1[0_u64..44_u64]);
+  doc "Redis 7.0.15 eval.c:445-449's reply to a script that does not compile, written by addReplyErrorFormat, which writes a carriage return or line feed of Lua's message, such as one inside the string a syntax error names, as a space.";
+  let text = box_slots_new::<u8>(capacity: 128_u64);
+  text_bytes(out: &text, bytes: &entry_text_1[0_u64..43_u64]);
   let n = error^.message.inner.len;
-  reply_word(client: client, word: &error^.message.inner[0_u64..n]);
-  reply_word(client: client, word: &entry_text_2[0_u64..2_u64]);
+  text_bytes(out: &text, bytes: &error^.message.inner[0_u64..n]);
+  let printed = True();
+  reply_error_text(client: client, text: &text, formatted: printed);
   return unit;
 }
 
@@ -544,9 +547,9 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     let line = halo::embed::error_line(engine: &pooled.engine);
                     let value = halo::embed::error_value(engine: &pooled.engine);
                     let locate = readonly_message(vm: &pooled.engine.vm, value: value);
-                    let formatted = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
-                    let length = formatted.inner.len;
-                    reply_error(client: client, word: &formatted.inner[0_u64..length]);
+                    let message = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
+                    let raised = False();
+                    reply_error_text(client: client, text: &message, formatted: raised);
                     if logged {
                       record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
                     }
@@ -622,9 +625,9 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     let line = halo::embed::error_line(engine: &pooled.engine);
                     let value = halo::embed::error_value(engine: &pooled.engine);
                     let locate = readonly_message(vm: &pooled.engine.vm, value: value);
-                    let formatted = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
-                    let length = formatted.inner.len;
-                    reply_error(client: client, word: &formatted.inner[0_u64..length]);
+                    let message = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
+                    let raised = False();
+                    reply_error_text(client: client, text: &message, formatted: raised);
                     if logged {
                       record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
                     }
@@ -826,9 +829,7 @@ fn script_unknown(client: &Client, input: &[u8], sub: Span) -> r: unit reads(inp
 
 const entry_text_0: Array<u8, 12> = "@user_script";
 
-const entry_text_1: Array<u8, 44> = "-ERR Error compiling script (new function): ";
-
-const entry_text_2: Array<u8, 2> = "\r\n";
+const entry_text_1: Array<u8, 43> = "ERR Error compiling script (new function): ";
 
 const entry_text_3: Array<u8, 43> = "ERR value is not an integer or out of range";
 

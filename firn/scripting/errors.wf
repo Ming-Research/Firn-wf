@@ -137,3 +137,45 @@ fn format_redis_error(engine: &Engine, sha: &Array<u8, 40>, line: u64, locate: B
   }
   return move out;
 }
+
+fn reply_error_text(client: &pkg::protocol::Client, text: &Box<Slots<u8>>, formatted: Bool) -> r: unit writes(text), writes(client) {
+  doc "Writes an error reply whose text a script supplied, the one writer for such text: a minus sign, the text with every carriage return and line feed written as a space, so that the reply stays one line and a script cannot add replies of its own, and CR LF. formatted writes the text as Redis 7.0.15's addReplyErrorFormat does (networking.c:614-627), for a compile error and a returned error table: read up to its first zero byte and without the carriage returns and line feeds that end it. Otherwise the text is written whole, as addReplyErrorSdsExSafe writes a raised error (Redis 7.2.16 networking.c:629-632, script_lua.c:1757), where Redis 7.0.15's addReplyErrorSdsEx wrote the raw bytes.";
+  let end = text^.inner.len;
+  if formatted {
+    for (i in 0_u64..end) {
+      if text^.inner[i] == 0_u8 {
+        set end = i;
+        break;
+      }
+    }
+    loop {
+      if end == 0_u64 {
+        break;
+      }
+      let last = end - 1_u64;
+      if last < text^.inner.len {
+        let b = text^.inner[last];
+        let cr = b == 13_u8;
+        let lf = b == 10_u8;
+        if bor(cr, lf) {
+          set end = last;
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+  }
+  let shown = imin(end, text^.inner.len);
+  for (i in 0_u64..shown) {
+    let b = text^.inner[i];
+    let cr = b == 13_u8;
+    let lf = b == 10_u8;
+    if bor(cr, lf) {
+      set text^.inner[i] = 32_u8;
+    }
+  }
+  pkg::protocol::reply_error(client: client, word: &text^.inner[0_u64..shown]);
+  return unit;
+}
