@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-12 Take Redis 7.2.16 as the gate's suite and the reference server
+
+Nodes: firn, firn/consumers
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A (approve) on card firn-q-approve-64-tree, which asked to approve PR #64's four design-tree changes at head fb94ca4 (the tree is unchanged at d46597e): the gate's suite moves to the reference Redis 7.2.16; the recorder skips known hangs and reruns their units unskipped, a hang leaving the list only when it passes; every use of the reference server builds it from the pinned 7.2.16 release archive checked by SHA-256, with the system package, Redis's apt repository and the official container image rejected; the application comparison runs against 7.2.16 with AOF on both sides.
+
+Summary: firn's reference moved from Redis 7.0.15 to 7.2.16 as the owner ruled on the reference-version card, and the tree now says so where the gate, the recorder, the reference build and the application comparison depend on it. The gate keeps its per-test ratchet over 7.2.16's suite. The recorder treats an error or timeout of a known hang, run unskipped, as no evidence it stopped hanging, since a hung test leaves its connection in a state such as an open MULTI that makes later tests fail at once. The reference server is built from the release archive because Ubuntu 24.04 ships 7.0.15 and an unpinned package or image can change between runs.
+
 ## 2026-10-12 Keep a raised script error's reply on one line
 
 Nodes: firn/scripts
