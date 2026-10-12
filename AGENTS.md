@@ -66,6 +66,12 @@ When priorities conflict, first:
   the LLVM major the pinned release names (`make toolchain` installs it,
   `make toolchain-check` checks it); the Redis suite runner needs Linux's
   GNU tools.
+- The `aof-sync-fault` job of the same workflow runs beside `make check` on
+  every push: `tests/aof_sync_fault_device.sh` makes, as root, a
+  device-mapper device whose writes and flushes fail on command, and the
+  sync-failure case of `tests/aof_sync_fault.rs`, ignored in `make check`,
+  runs on it against firn and a redis-server 7.2.16 the job builds as its
+  oracle. It needs Linux with passwordless sudo, dm-flakey and `dmsetup`.
 - `make pin-ready`, with the readiness check: `whitefoot.pin` names no
   experiment release.
 
