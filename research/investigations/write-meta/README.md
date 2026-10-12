@@ -4,7 +4,9 @@ Board item `firn-write-meta-free`, under `firn-core-scaling`. Every claim
 below is labelled: **source-read** (read in this repository at `e4ec8bc`, in
 Whitefoot at the pinned commit `94d353e33034` or in the named branch),
 **measured** (with its run or record), or **judgment** (reasoning not yet
-tested). Nothing in this record was built or run for it.
+tested). Sections 1 to 3 and 5 to 7 were written before anything was built;
+only step 1 (section 3(a)) has been built since, and the one run of it so far
+is in "Step 1 results" in section 4.
 
 ## 1. The question
 
@@ -82,6 +84,7 @@ named.
 | Field(s) | Written or read by a write | Purpose |
 |---|---|---|
 | `aof_append_error`, `aof_sync_error`, `aof_append_partial` | read by `aof_refuse` (`firn/commands/admission.wf:35-44`) before the change | MISCONF refusal |
+| the same three fields, read by admission's own exclusive Meta statement | one statement for every write and every PING, before the command's statement (`disk_sensitive`, `firn/commands/transaction.wf:429-430`) | MISCONF refusal at admission; **found in the completion review, not in the first inventory** |
 | `commit_seq`, `aof_rewrite_seq_exhausted` | read by `sequence_new` (`firn/store/sequence.wf:1-10`), written by `sequence_commit` (`:100-123`) | one dataset statement sequence; entry `last_write` stamps; rewrite cut S0/S1 (`firn/persistence/rewrite.wf:535,623`); INFO `firn_aof_rewrite_commit_seq` |
 | `rewrite` (`active`, `start`, `limit`, `used`, `peak`, `journal`, abort state) | read at `sequence_new`, written at `sequence_commit` | rewrite capture: after-images or effect bytes staged in sequence order, charged to the reserve R |
 | `log` | appended by the command's metadata step (e.g. `set_meta`, `strings.wf:553`) | the AOF collecting buffer, swapped out by the writer every 10 ms (`firn/persistence/rewrite.wf:276-300`) |
@@ -101,8 +104,9 @@ a different `appendonly` (`firn/commands/server.wf`, CONFIG SET doc).
 BGREWRITEAOF with AOF off answers the rewrite-start failure
 (`design/firn/aof-rewrite.md`), so capture never becomes active. The writer
 is not started, so no append or sync error is ever saved. With AOF off a
-write therefore needs Meta only for `due` (expiry options) and for the
-firn-only counter `commit_seq`, which then serves only the INFO field
+write therefore needs Meta neither at admission (the disk-error statement of
+the table's second row) nor, in its own statement, for anything but `due`
+(expiry options) and the firn-only counter `commit_seq`, which then serves only the INFO field
 `firn_aof_rewrite_commit_seq` (`firn/README.md:481-492`) and stamps no
 stamp anyone reads. maxmemory adds nothing to the write statement itself:
 eviction runs in its own statements before the command
@@ -168,6 +172,31 @@ separates the body from the metadata step
 (`design/firn/command-parts.md`), so the second form calls the same body and
 skips the metadata step.
 
+Admission's disk-error check belongs to the same change. It takes one
+exclusive Meta statement before the command's own statement for every write
+and every PING, to read the saved append and sync errors. The first version
+of step 1 missed it, so with AOF off every write still took one exclusive
+Meta hold at admission; the completion review found it (F1), and the fix skips
+that statement while `store^.logging` is false, because only the writer saves
+such an error and the writer runs only with a file.
+
+**Roster (what keeps Meta).** Commands that can queue or transfer an expiry
+keep Meta in every configuration: SET and GETEX with an expiry option, SETEX,
+PSETEX, the EXPIRE family, RENAME and COPY. So do RANDOMKEY, which draws from
+Meta's random state, SCAN and the flushes, which hold the whole map, and EXEC
+and scripts. A SET or GETEX without an expiry option, and every other write
+whose statement reads nothing else from Meta, takes the Meta-free form. The
+choice is made at run time from `store^.logging`, fixed at startup, and, for
+SET and GETEX, from the parsed expiry option.
+
+**Replay at startup (source-read).** AOF replay runs on the keyspace as
+created with `logging` false (`firn/server/server.wf:1021-1031`); the handle
+with `logging` true is made only after `aof_start` has replayed the file, so
+replayed commands that queue no expiry take the Meta-free form. That is
+equivalent to the Meta form: replay already used the inert loading token,
+which takes no sequence and captures nothing, and replay is a single context,
+so no other statement orders against it.
+
 **Guarantees.** P1, P2, P4 and P5 have no file to protect. P3 cannot occur.
 P6: `firn_aof_rewrite_commit_seq` would stop counting with AOF off; under the
 reported-facts rule (`design/firn/reported-facts.md`) the field is then left
@@ -175,8 +204,24 @@ out when AOF is off, which changes the README's documented behavior and
 needs the owner. Commands with an expiry option (SET EX, SETEX, EXPIRE, GETEX
 and others) keep the Meta form, because `due` is in Meta.
 
-**Whitefoot.** Nothing new. This is not a way around a gap: with AOF off
-nothing needs the order Meta provides.
+**Whitefoot.** No new runtime capability is needed: with AOF off nothing
+needs the order Meta provides. Writing it did expose a language limitation.
+An atomic statement's targets are fixed syntax, so a statement cannot hold
+Meta only when a run-time condition (AOF on, an expiry option) holds. Each
+converted command is therefore two atomic statements around an ordinary `if`,
+one with the Meta target and one without. They share the body function but
+duplicate 4 to 30 lines of statement scaffolding per command, and drift
+between the two copies is the residual risk. The minimal witness is a
+conditional target,
+
+```whitefoot
+atomic slot = &s^.keys[k], m = &s^.meta if want_meta { ... }
+```
+
+or a compiler that holds Meta only on the paths that touch it, which the
+specification's rule that an implementation may hold less than a statement's
+states already allows. Disposition: whether to file this with Whitefoot is an
+owner decision, tracked on the status board.
 
 **Expected effect (judgment).** SET and MSET without expiry options then
 hold only their entries, as GET does. GET went from 4.0 to 25.6 M/s once
@@ -372,6 +417,39 @@ peak statement cannot be mistaken for the remaining cost.
   spread is smaller than the miss: another serializer remains (allocator,
   table hold, peak statement), and perf c2c on the (a) arm locates it.
 - *Reject (a)* if any network case or the Redis suite ratchet fails.
+
+### Step 1 results
+
+**Measured, 2 cores only.** Run
+[38319226722](https://github.com/Ming-Research/Firn-wf/actions/runs/38319226722),
+i9-14900K, server on CPUs 2,4 (2 P-cores), clients on CPUs 16-31, pipeline
+depth 16, 6 interleaved passes of 10 s each, AOF off. Builds: main (`fd25006`),
+main-twin (the same revision, a second build, as the noise control) and step1
+(`9294228`). Medians in k requests/s; the percentage is step1 against main.
+
+| Test | main | main-twin | step1 | step1 vs main |
+|---|---|---|---|---|
+| SET | 4716 | 4666 | 6141 | +30.2% |
+| INCR | 4504 | 4400 | 5910 | +31.2% |
+| LPUSH | 3341 | 3326 | 4214 | +26.1% |
+| SADD | 3586 | 3627 | 4349 | +21.3% |
+| MSET | 1604 | 1631 | 1911 | +19.1% |
+| HSET | 3258 | 3238 | 3853 | +18.3% |
+| ZADD | 1154 | 1156 | 1171 | +1.4% |
+| GET (control) | 6331 | 6403 | 6420 | +1.4% |
+
+The twin is within 2.3% of main on every test, so the gains of 18% to 31%
+on the six tests that gain exceed the noise; the slowest step1 SET pass (6.09 M/s) is above the fastest
+main SET pass (4.89 M/s). GET, which step 1 does not change, differs by 1.4%,
+inside the twin's spread. ZADD gains only 1.4%, inside the spread, and is not
+explained here.
+
+**Not yet the step-1 verdict.** That build (`9294228`) still held Meta in
+admission's disk-error statement for every write (section 3(a)), so these
+numbers understate the Meta-free path. Pending: 2-, 4- and 8-core runs of the
+fixed head (`22b5318`), with the criterion above unchanged: SET and MSET each
+at least 1.6 times per core doubling, and 8-core SET at least half of 8-core
+GET in the same run. Scaling past 2 cores is unmeasured for step 1.
 
 **Comparison for step 2.** Builds base, twin, (b)+(c) on a Whitefoot
 experiment release (`whitefoot-kit/downstream.md`, trying an unmerged

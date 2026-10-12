@@ -1,7 +1,8 @@
 //! Writes without an append-only file hold their keys alone: a statement that
 //! queues no expiry takes no Meta target (design/firn/command-parts.md). The
-//! oracle is Redis 7.0.15's replies and expiry behavior; these cases run with
-//! AOF off, where that path is taken, and guard what Meta still carries there.
+//! oracle is Redis 7.2.16's documented replies and expiry behavior, written
+//! here by hand and not recorded from a run; these cases run with AOF off,
+//! where that path is taken, and guard what Meta still carries there.
 
 use super::*;
 
