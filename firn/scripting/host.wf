@@ -22,6 +22,7 @@ struct Env {
   appended: u64;
   access: Option<pkg::store::AccessJournal>;
   access_random: u64;
+  need_whole: Bool;
 }
 
 fn raw(vm: &Vm, table: Value, key: Value, value: Value) -> r: unit writes(vm) {
