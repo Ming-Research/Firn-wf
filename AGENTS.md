@@ -76,7 +76,8 @@ When priorities conflict, first:
   of `make check`, because it needs a device only root can make. The job
   makes the device with `sudo tests/aof_sync_fault_device.sh setup MOUNT
   UID:GID`, a device-mapper device whose writes and flushes fail on command,
-  builds a redis-server 7.2.16 as the oracle, runs `make aof-sync-fault` and
+  takes the redis-server 7.2.16 that `tests/redis-suite/reference.sh` builds
+  as the oracle, runs `make aof-sync-fault` and
   removes the device with `teardown MOUNT` even when a step failed. The
   target runs the sync-failure case of `tests/aof_sync_fault.rs`, ignored in
   `make check`, against firn and the oracle, and fails unless

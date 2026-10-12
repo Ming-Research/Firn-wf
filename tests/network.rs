@@ -1535,10 +1535,10 @@ fn firn_answers_the_value_types_as_redis_does() {
 
 /// firn answers list updates, moves, searches and set membership, algebra,
 /// stores and random draws as Redis does. The expected bytes are those
-/// redis-server 7.0.15 returns for the same requests, but for LPOS RANK
-/// -9223372036854775808, which Redis 7.2.16 refuses as out of range
-/// (t_list.c lposCommand reads the rank with getRangeLongFromObjectOrReply
-/// from -LONG_MAX to LONG_MAX) where 7.0.15, and firn before it, answered a
+/// redis-server 7.2.16 returns for the same requests, among them LPOS RANK
+/// -9223372036854775808, which it refuses as out of range (t_list.c
+/// lposCommand reads the rank with getRangeLongFromObjectOrReply from
+/// -LONG_MAX to LONG_MAX) where 7.0.15, and firn before it, answered a
 /// position; the rank -9223372036854775807 is still read, and finds nothing.
 #[cfg(target_os = "linux")]
 #[test]
@@ -2528,13 +2528,13 @@ fn firn_answers_commands_naming_a_key_twice_as_redis_does() {
 /// message, empty or not, succeeds, its name read up to a zero byte, while
 /// `LOG` without exactly one message and an unknown subcommand, its line breaks
 /// echoed as spaces, are answered as Redis answers a `DEBUG` subcommand it does
-/// not know. The expected replies are redis-server 7.0.15's to the same bytes,
+/// not know. The expected replies are redis-server 7.2.16's to the same bytes,
 /// its debug command enabled, a `CONFIG GET` of several parameters in
 /// alphabetical order, one of the orders Redis answers in, but for the last
 /// four `CONFIG SET`s, which ask for a snapshot schedule, the append-only file,
 /// another address and another port: Redis would apply them, and firn refuses
 /// them in Redis's form for a refused value, with its own reason. The
-/// set-max-listpack-entries and set-max-listpack-value cases follow Redis
+/// set-max-listpack-entries and set-max-listpack-value cases are new in Redis
 /// 7.2.16, which adds both as plain integers from 0 to 2^63 - 1 (config.c
 /// createSizeTConfig without MEMORY_CONFIG), so that 1kb is refused for either
 /// though zset-max-listpack-value takes it; before firn knew them, CONFIG SET
@@ -3530,6 +3530,7 @@ fn firn_requires_its_password_as_redis_does() {
     let mut batch = resp(&["HELLO", "2", "AUTH", "default", "secret"]);
     batch.extend(resp(&["PING"]));
     client.write_all(&batch).expect("authenticate with HELLO");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     expect_replies(
         &mut client,
         b"*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:2\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n+PONG\r\n",
@@ -3769,6 +3770,7 @@ fn firn_answers_connection_commands_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the connection batch");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
@@ -3861,6 +3863,7 @@ fn firn_answers_connection_commands_as_redis_does() {
     let info = bulk_reply(&mut client, "INFO");
     assert_eq!(info_sections(&info, "INFO"), &defaults[..]);
     for (field, value) in [
+        // Redis 7.2.16 reports its own version in INFO; firn still reports 7.0.15 (board item firn-host-72-diffs).
         ("redis_version", "7.0.15"),
         ("redis_git_sha1", "00000000"),
         ("tcp_port", text.as_str()),
@@ -4004,19 +4007,21 @@ fn firn_keeps_transactions_as_redis_does() {
     assert_eq!(status, 0);
 }
 
-/// firn answers in RESP3 after HELLO 3 as Redis 7.0.15 does, and in RESP2
+/// firn answers in RESP3 after HELLO 3 as Redis 7.2.16 does, and in RESP2
 /// again after HELLO 2: HELLO's map with protocol 3; the null for an absent
 /// string, an absent element of MGET and LPOP's count on an absent key; a map
 /// for HGETALL and CONFIG GET, an empty one for an absent hash; a set for
 /// SMEMBERS, set algebra and SPOP's count; doubles for scores; member and
 /// score pairs nested in ZRANGE WITHSCORES, ZPOPMIN with a count and
 /// HRANDFIELD WITHVALUES but not in ZPOPMIN without one; and INFO's text as a
-/// verbatim string. The expected bytes follow redis-server 7.0.15's reply
+/// verbatim string. The expected bytes follow redis-server 7.2.16's reply
 /// writers (addReplyNull, addReplyNullArray, addReplyMapLen, addReplySetLen,
-/// addReplyDouble, addReplyVerbatim) for the same requests, and ZRANK and
-/// ZREVRANK WITHSCORE, which Redis 7.2 adds, answer the rank and the score as
-/// a double, or the null, as Redis 7.2.16's zrankGenericCommand writes them;
-/// before firn read WITHSCORE, both were arity errors.
+/// addReplyDouble, addReplyVerbatim) for the same requests, but for the
+/// version HELLO reports, which firn still gives as 7.0.15 (board item
+/// firn-host-72-diffs), and ZRANK and ZREVRANK WITHSCORE, which Redis 7.2
+/// adds, answer the rank and the score as a double, or the null, as Redis
+/// 7.2.16's zrankGenericCommand writes them; before firn read WITHSCORE, both
+/// were arity errors.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
@@ -4058,6 +4063,7 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the RESP3 batch");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let hello2 = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
@@ -4071,8 +4077,11 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
 
 /// firn answers ZRANK and ZREVRANK with WITHSCORE, which Redis 7.2 adds, as
 /// Redis 7.2.16's zrankGenericCommand (t_zset.c) does, on the network, inside
-/// a transaction's EXEC and through a script: the rank with the score as
-/// addReplyDouble writes it, in a two-element array; the null array for an
+/// a transaction's EXEC and through a script: the rank with the score, in a
+/// two-element array, written as firn writes every score, Redis 7.0.15's
+/// %.17g, which differs from the shortest form of Redis 7.2.16's
+/// addReplyDouble for some values, such as 0.1 (board item
+/// firn-score-text-72); the null array for an
 /// absent key or member, which a script turns into the null bulk string, as
 /// Redis's Lua conversion turns it into false; the option read in either case
 /// up to a zero byte, as strcasecmp reads it; any other fourth argument
@@ -4193,6 +4202,7 @@ fn firn_answers_client_info_as_redis_does() {
     };
     let first = line("", 2);
     let second = line("conn-1", 3);
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
         "${}\r\n{first}\r\n+OK\r\n-ERR wrong number of arguments for 'client|info' command\r\n{hello3}={}\r\ntxt:{second}\r\n",
@@ -4497,6 +4507,7 @@ fn firn_runs_scripts_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the scripting batch");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     // redis-server 7.0.15 writes a result that contains itself to these
     // depths before its stack-limit error; a map's last level refuses both

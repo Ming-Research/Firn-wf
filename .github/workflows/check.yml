@@ -99,8 +99,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      REDIS_VERSION: 7.2.16
-      REDIS_SHA256: 960a8ec15e34ff40e57ff16837b26b33bd81f2da6d24497bb63de532a323a18e
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -122,21 +121,28 @@ jobs:
       - name: Build firn as the network cases run it
         run: make compiler firn-test
 
-      - uses: actions/cache@v4
+      # The oracle is the reference Redis 7.2.16 of the gate's job, built by
+      # reference.sh from its pinned release archive and cached under the
+      # same key.
+      - name: Restore the Redis build
+        id: redis-cache
+        uses: actions/cache/restore@v4
         with:
-          path: build/redis-${{ env.REDIS_VERSION }}
-          key: redis-server-${{ env.REDIS_SHA256 }}-ubuntu-24.04
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
-      - name: Build redis-server ${{ env.REDIS_VERSION }}, the oracle
+      - name: Build the reference Redis, the oracle
         run: |
-          if [ ! -x "build/redis-$REDIS_VERSION/src/redis-server" ]; then
-            curl -fsSL -o "build/redis-$REDIS_VERSION.tar.gz" "https://download.redis.io/releases/redis-$REDIS_VERSION.tar.gz"
-            echo "$REDIS_SHA256  build/redis-$REDIS_VERSION.tar.gz" | sha256sum -c -
-            tar -xzf "build/redis-$REDIS_VERSION.tar.gz" -C build
-            make -C "build/redis-$REDIS_VERSION" -j"$(nproc)"
-          fi
-          "build/redis-$REDIS_VERSION/src/redis-server" --version
-          echo "REDIS_SERVER=$GITHUB_WORKSPACE/build/redis-$REDIS_VERSION/src/redis-server" >> "$GITHUB_ENV"
+          bin=$(tests/redis-suite/reference.sh)
+          "$bin/redis-server" --version
+          echo "REDIS_SERVER=$bin/redis-server" >> "$GITHUB_ENV"
+
+      - name: Save the Redis build
+        if: ${{ steps.redis-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
       - name: Make the faulty device
         run: |

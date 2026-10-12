@@ -78,9 +78,13 @@ jobs:
           python3 -B tests/redis-suite/ratchet.py record "${results[@]}" --out build/redis-suite
 
       # One run of the units hung.tsv names, without the list, reports each
-      # listed test's outcomes, timed-out while it still hangs; one that
-      # passes, fails or errors has stopped hanging and can leave the list.
-      # This run feeds neither list.
+      # listed test's outcomes. Only a test whose every row passed is a
+      # candidate to leave the list. One that timed out, failed or errored
+      # stays listed: without the list a refused CONFIG SET leaves a listed
+      # unit/multi test's connection inside MULTI, so the tests after it
+      # error at once whether or not they would still hang, and an error or
+      # failure does not show that a test stopped hanging. This run feeds
+      # neither list.
       - name: Run the listed hangs' units without the list
         run: |
           units=$(awk -F '\t' '!/^#/ && NF >= 2 { print $1 }' tests/redis-suite/hung.tsv | sort -u | tr '\n' ' ')
@@ -93,10 +97,18 @@ jobs:
           awk -F '\t' '
             NR == FNR { if (FNR > 1) { key = $1 FS $5; seen[key] = (key in seen ? seen[key] "," : "") $2 }; next }
             /^#/ || NF < 2 { next }
-            { key = $1 FS $2; print $1 FS $2 FS (key in seen ? seen[key] : "not-reached") }
+            {
+              key = $1 FS $2
+              outcomes = (key in seen ? seen[key] : "not-reached")
+              verdict = "candidate to leave the list"
+              n = split(outcomes, each, ",")
+              for (i = 1; i <= n; i++) if (each[i] != "passed") verdict = "stays listed"
+              print $1 FS $2 FS outcomes FS verdict
+            }
           ' "$out/tests.tsv" tests/redis-suite/hung.tsv > "$out/listed.tsv"
-          echo "Listed hangs (unit, test, outcomes without the list):"
+          echo "Listed hangs (unit, test, outcomes without the list, verdict):"
           cat "$out/listed.tsv"
+          echo "Only a test whose every row passed is a candidate to leave hung.tsv; any other outcome, an error or a failure included, leaves it listed."
 
       - name: Upload the recorded runs and proposed lists
         if: always()

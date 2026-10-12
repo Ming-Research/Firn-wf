@@ -4,9 +4,13 @@ firn is a server of Redis's protocol written in
 [Whitefoot](https://github.com/Ming-Research/Whitefoot), a systems language
 whose compiler admits a program only once every partial operation in it is
 proved safe. Redis clients talk to firn over TCP as they would to Redis
-7.2.16: it keeps strings, lists, sets, hashes and sorted sets in one shared
-keyspace, expires keys, and persists every change to an append-only file. It
-is named for firn, snow that has lasted a season: stored and compacted.
+7.2.16, apart from the known differences that
+[firn/README.md](firn/README.md) records and the
+[shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip)
+tracks, such as the version firn reports and the text of scores. It keeps
+strings, lists, sets, hashes and sorted sets in one shared keyspace, expires
+keys, and persists every change to an append-only file. It is named for firn,
+snow that has lasted a season: stored and compacted.
 
 firn exists to show what Whitefoot gives a concurrent, persistent network
 server and to expose what it still lacks. It began as the subset of Redis

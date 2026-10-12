@@ -40,10 +40,13 @@ clients send on their own:
 - sorted sets: `ZADD` with `NX`, `XX`, `GT`, `LT`, `CH` and `INCR`,
   `ZINCRBY`, `ZRANGE` with `BYSCORE`, `BYLEX`, `REV`, `LIMIT` and
   `WITHSCORES`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`,
-  `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZCOUNT`, `ZLEXCOUNT`, `ZRANK` and `ZREVRANK` with Redis 7.2's
-  `WITHSCORE`, `ZSCORE`, `ZMSCORE`, `ZCARD`, `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count,
-  `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores
-  read and written as Redis 7.0.15 reads and writes them;
+  `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZCOUNT`, `ZLEXCOUNT`, `ZRANK` and
+  `ZREVRANK` with Redis 7.2's `WITHSCORE`, `ZSCORE`, `ZMSCORE`, `ZCARD`,
+  `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count, `ZREMRANGEBYRANK`,
+  `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores read as Redis reads
+  them and written as Redis 7.0.15 writes them, in C's `%.17g`, which
+  differs from the shortest form of Redis 7.2.16 for some values, such as
+  0.1 (board item firn-score-text-72);
 - scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
   `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
   has written nothing, running Lua 5.1 scripts on the Halo engine
@@ -280,8 +283,9 @@ true of firn for the others it gives. It leaves out what firn cannot report:
 the peer's and its own address, which Whitefoot's socket address does not
 show, the descriptor, the events and the sizes of Redis's buffers.
 
-`HELLO` and `INFO` report the server as `redis` version 7.0.15, the version
-whose replies firn follows.
+`HELLO` and `INFO` report the server as `redis` version 7.0.15, though the
+reference firn follows is Redis 7.2.16, whose own reports give 7.2.16: the
+version is a known difference, tracked on board item firn-host-72-diffs.
 
 `HINCRBYFLOAT` computes in the long double of Redis on x86-64 Linux, x87's
 80-bit extended format, and answers as that Redis does. Redis built where
