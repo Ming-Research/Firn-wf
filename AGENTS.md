@@ -66,12 +66,20 @@ When priorities conflict, first:
   the LLVM major the pinned release names (`make toolchain` installs it,
   `make toolchain-check` checks it); the Redis suite runner needs Linux's
   GNU tools.
-- The `aof-sync-fault` job of the same workflow runs beside `make check` on
-  every push: `tests/aof_sync_fault_device.sh` makes, as root, a
-  device-mapper device whose writes and flushes fail on command, and the
-  sync-failure case of `tests/aof_sync_fault.rs`, ignored in `make check`,
-  runs on it against firn and a redis-server 7.2.16 the job builds as its
-  oracle. It needs Linux with passwordless sudo, dm-flakey and `dmsetup`.
+- The `aof-sync-fault` job is part of the check workflow
+  (`.github/workflows/check.yml`) and runs beside `make check` on every push.
+  A merge needs it green on the exact revision, like the gate. It is not part
+  of `make check`, because it needs a device only root can make. The job
+  makes the device with `sudo tests/aof_sync_fault_device.sh setup MOUNT
+  UID:GID`, a device-mapper device whose writes and flushes fail on command,
+  builds a redis-server 7.2.16 as the oracle, runs `make aof-sync-fault` and
+  removes the device with `teardown MOUNT` even when a step failed. The
+  target runs the sync-failure case of `tests/aof_sync_fault.rs`, ignored in
+  `make check`, against firn and the oracle, and fails unless
+  `FIRN_SYNC_FAULT_MOUNT` names that mount, `REDIS_SERVER` names the oracle
+  and the case passed. It needs Linux with passwordless sudo, `dmsetup` and
+  the dm-flakey module; `setup` may install `linux-modules-extra-$(uname -r)`
+  through `apt-get` on Ubuntu to get it.
 - `make pin-ready`, with the readiness check: `whitefoot.pin` names no
   experiment release.
 

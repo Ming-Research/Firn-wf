@@ -23,7 +23,8 @@
 //!
 //! The case is ignored in `make check`, which has no such device; the
 //! `aof-sync-fault` job of .github/workflows/check.yml makes it and runs the
-//! case alone with `--ignored`, failing when the device cannot be made.
+//! case alone through `make aof-sync-fault`, failing when the device cannot
+//! be made.
 
 use super::*;
 use std::collections::BTreeMap;
@@ -106,18 +107,35 @@ fn size(info: &str) -> u64 {
     info_field(info, "aof_current_size").expect("aof_current_size").parse().unwrap()
 }
 
-/// Polls until the status is `expected` with no background sync pending;
-/// Redis's bio thread sets the status before it leaves the pending count.
+/// Polls until the status is `expected` with no background sync pending and
+/// nothing buffered. Redis's bio thread sets the status before it leaves the
+/// pending count, and firn reports the pending count as always 0 and takes
+/// its buffer a little before its sync in the same tick, so a write
+/// acknowledged while the sync fails can still be buffered, and not yet in
+/// aof_current_size, when the status turns err. Redis writes its buffer in
+/// beforeSleep with nothing buffered once no sync is pending, so waiting for
+/// aof_buffer_length 0 holds for both servers.
 fn wait_status(client: &mut TcpStream, expected: &str) -> String {
     let deadline = Instant::now() + POLL_LIMIT;
     loop {
         let info = persistence(client);
         if info_field(&info, "aof_last_write_status").as_deref() == Some(expected)
-            && info_field(&info, "aof_pending_bio_fsync").as_deref() == Some("0") {
+            && info_field(&info, "aof_pending_bio_fsync").as_deref() == Some("0")
+            && info_field(&info, "aof_buffer_length").as_deref() == Some("0") {
             return info;
         }
-        assert!(Instant::now() < deadline, "wanted AOF status {expected}: {info}");
+        assert!(Instant::now() < deadline, "wanted AOF status {expected} with nothing buffered: {info}");
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The branch a server took for the write made once the device failed, named
+/// in the log so a run shows which path its assertions followed.
+fn branch(during: &str) -> String {
+    if during == "+OK\r\n" {
+        "acknowledged".to_string()
+    } else {
+        format!("refused with {during:?}")
     }
 }
 
@@ -182,6 +200,7 @@ fn redis_failure(device: &Device) -> Failure {
     let log = std::env::temp_dir().join(format!("firn-sync-fault-redis-{}.log", std::process::id()));
     let (child, mut client) = start_redis(&binary, &directory, &log);
     let failure = fail(device, &mut client);
+    eprintln!("redis 7.2.16: the write during the failure was {}", branch(&failure.during));
     assert_eq!(failure.during, "+OK\r\n", "Redis syncs only after new bytes, so it acknowledges them");
     let misconf = &failure.refused[0];
     assert!(misconf.starts_with(MISCONF) && misconf.len() > MISCONF.len() + 2, "{misconf:?}");
@@ -235,7 +254,12 @@ fn aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device() {
         let failure = fail(&device, &mut client);
         // firn also syncs while idle, so its sync can fail before this write
         // arrives, and then the write is refused as the ones below are.
+        // Redis syncs only after new bytes, so it always acknowledges this
+        // write (asserted in redis_failure), and the two branches may
+        // legitimately differ: the case asserts what each branch requires
+        // and logs the one taken.
         let acknowledged = failure.during == "+OK\r\n";
+        eprintln!("firn, {route}: the write during the failure was {}", branch(&failure.during));
         if !acknowledged {
             assert_eq!(&failure.during, &redis.refused[0], "{route}");
         }

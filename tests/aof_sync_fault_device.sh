@@ -2,10 +2,11 @@
 # Builds and drives the block device that tests/aof_sync_fault.rs makes the
 # append-only file's sync fail on. Run as root (the case calls it through
 # `sudo -n`); the `aof-sync-fault` job of .github/workflows/check.yml runs
-# `setup` before the case.
+# `setup` before the case and `teardown` after it, whatever the case did.
 #
 # usage: aof_sync_fault_device.sh setup MOUNT OWNER
 #        aof_sync_fault_device.sh fail | heal | remount
+#        aof_sync_fault_device.sh teardown MOUNT
 #
 #   setup    makes a 64 MiB loop file, puts device-mapper device
 #            firn-sync-fault over it as a linear map, makes an ext4
@@ -20,6 +21,11 @@
 #   heal     swaps the linear map back
 #   remount  unmounts and mounts the filesystem again, which drops its page
 #            cache, so what is read afterwards is what reached the device
+#   teardown unmounts MOUNT, removes the device-mapper device, detaches the
+#            loop device and deletes the image; each step is skipped when
+#            its part is already gone, so it is safe after a failed or
+#            partial `setup`. `setup` runs it itself when one of its steps
+#            fails, leaving nothing behind
 #
 # Why this filesystem: buffered write(2) only fills the page cache, so the
 # device's failure first shows at fsync, as Redis's background fsync and
@@ -34,9 +40,12 @@ set -euo pipefail
 
 name=firn-sync-fault
 device=/dev/mapper/$name
+# The loop device and image `setup` made, one per line, written as each
+# exists so that `teardown` finds them even when the map is gone.
+state=/var/tmp/$name.state
 
 usage() {
-    sed -n '/^# usage:/,/^#   remount/p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '/^# usage:/,/^#   teardown/p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -49,9 +58,15 @@ read_map() {
     under=$(awk '{print $4}' <<<"$table")
 }
 
+# A failed load leaves the device suspended, and every I/O to it then hangs,
+# so it is resumed with the table it had before the failure is reported.
 swap() {
     dmsetup suspend --nolockfs "$name"
-    dmsetup load "$name" --table "$1"
+    if ! dmsetup load "$name" --table "$1"; then
+        dmsetup resume "$name"
+        echo "dmsetup load failed; resumed $name with its previous table" >&2
+        return 1
+    fi
     dmsetup resume "$name"
     dmsetup table "$name"
 }
@@ -118,16 +133,49 @@ os.unlink(path)
 EOF
 }
 
+# Undoes `setup` as far as it got. Every step tolerates a part that is
+# already gone, so the function cannot fail, and the order is the reverse of
+# the making: the mount, the map, the loop device, the image.
+teardown() {
+    local target=$1 loop='' image=''
+    if [ -f "$state" ]; then
+        { read -r loop && read -r image; } <"$state" || true
+    fi
+    if findmnt -n "$target" >/dev/null 2>&1; then
+        umount "$target" 2>/dev/null || umount -l "$target" || true
+    fi
+    if dmsetup info "$name" >/dev/null 2>&1; then
+        dmsetup remove --retry "$name" 2>/dev/null || dmsetup remove --force "$name" || true
+    fi
+    if [ -n "$loop" ] && losetup "$loop" >/dev/null 2>&1; then
+        losetup -d "$loop" || true
+    fi
+    if [ -n "$image" ]; then
+        rm -f "$image"
+    fi
+    rm -f "$state"
+    rmdir "$target" 2>/dev/null || true
+    return 0
+}
+
 setup() {
     local target=$1 owner=$2 image loop
+    if [ -e "$state" ] || dmsetup info "$name" >/dev/null 2>&1; then
+        echo "$name is already set up; run teardown first" >&2
+        return 1
+    fi
+    # A step that fails removes what the earlier ones made.
+    trap "teardown '$target'" EXIT
     # Hosted runners' kernels may keep dm-flakey in the extra modules package.
     if ! modprobe dm_flakey 2>/dev/null; then
         apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)"
         modprobe dm_flakey
     fi
     image=$(mktemp /var/tmp/firn-sync-fault.XXXXXX)
+    printf '\n%s\n' "$image" >"$state"
     truncate -s 64M "$image"
     loop=$(losetup --find --show "$image")
+    printf '%s\n%s\n' "$loop" "$image" >"$state"
     dmsetup create "$name" --table "0 $(blockdev --getsz "$loop") linear $loop 0"
     mkfs.ext4 -q -F -O ^has_journal "$device"
     mkdir -p "$target"
@@ -138,6 +186,7 @@ setup() {
     # page is dirty, which is why a repeated sync keeps failing.
     echo "write cache: $(cat "/sys/block/$(basename "$(readlink -f "$device")")/queue/write_cache")"
     probe "$target"
+    trap - EXIT
 }
 
 [ $# -ge 1 ] || usage
@@ -148,5 +197,6 @@ case $action in
     fail) [ $# -eq 0 ] || usage; fail ;;
     heal) [ $# -eq 0 ] || usage; heal ;;
     remount) [ $# -eq 0 ] || usage; remount ;;
+    teardown) [ $# -eq 1 ] || usage; teardown "$1" ;;
     *) usage ;;
 esac

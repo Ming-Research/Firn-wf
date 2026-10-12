@@ -131,13 +131,10 @@ jobs:
           sudo tests/aof_sync_fault_device.sh setup "$mount" "$(id -u):$(id -g)"
           echo "FIRN_SYNC_FAULT_MOUNT=$mount" >> "$GITHUB_ENV"
 
+      # The target fails without FIRN_SYNC_FAULT_MOUNT and REDIS_SERVER, set
+      # by the steps above, and without a case that passed.
       - name: Run the sync-failure case
-        run: |
-          set -o pipefail
-          FIRN="$GITHUB_WORKSPACE/build/firn-test" cargo test --manifest-path tests/Cargo.toml --locked --test network -- \
-            --ignored --exact aof_sync_fault::aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device \
-            | tee "$RUNNER_TEMP/sync-fault.log"
-          grep -q '^test result: ok\. 1 passed' "$RUNNER_TEMP/sync-fault.log"
+        run: make aof-sync-fault
 
       - name: Show the kernel's account of the device
         if: always()
@@ -146,3 +143,8 @@ jobs:
       - name: Show Redis's log
         if: failure()
         run: cat /tmp/firn-sync-fault-redis-*.log || true
+
+      # Also after a setup that failed half way: teardown skips what is gone.
+      - name: Remove the faulty device
+        if: always()
+        run: sudo tests/aof_sync_fault_device.sh teardown "$RUNNER_TEMP/sync-fault"
