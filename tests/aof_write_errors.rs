@@ -321,7 +321,10 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
 /// attempted append fails and latches `drain`. A tick on which the append
 /// retry is not yet due attempts nothing and must not abort the rewrite as
 /// `writer_io`. The 5000 keys keep the scan running past the first ticks, so
-/// the cut's own drain is not what latches the cause.
+/// the cut's own drain is not what latches the cause. A 1-MiB value written
+/// and deleted before the fault makes the incremental file, and so the file
+/// size limit, larger than the whole base, so the base write cannot latch
+/// `base_io` first: an attempted drain is the only failure the rewrite meets.
 #[test]
 fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
     for native in [false, true] {
@@ -335,7 +338,13 @@ fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
         }
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         assert_eq!(memory_request(&mut client, &args), "+OK\r\n");
-        wait_bytes(&path, &resp(&args));
+        let padding = "p".repeat(1 << 20);
+        assert_eq!(memory_request(&mut client, &["SET", "padding", padding.as_str()]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["DEL", "padding"]), ":1\r\n");
+        let mut expected = resp(&args);
+        expected.extend(resp(&["SET", "padding", padding.as_str()]));
+        expected.extend(resp(&["DEL", "padding"]));
+        wait_bytes(&path, &expected);
         wait_empty_healthy_buffer(&mut client);
         let old = fault(&child, &mut client, &path);
         rewrite_start(&mut client);
