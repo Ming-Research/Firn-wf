@@ -100,6 +100,10 @@ on:
         description: "Workloads only: measure the images `revisions` names (a -twin as a noise control) against Redis, instead of this checkout's firn"
         type: boolean
         default: false
+      maxmemory:
+        description: "Compare only: maxmemory in bytes set with CONFIG SET on every measured server after it starts; empty sets none"
+        type: string
+        default: ""
       profile:
         description: "Record a perf profile of each image (compare), or rerun each firn line's first pass under perf (original consumer workloads only; memory workloads have no perf pass)"
         type: boolean
@@ -121,9 +125,6 @@ defaults:
   run:
     shell: bash
 
-concurrency:
-  group: redis-bench-${{ github.ref }}-${{ inputs.runner }}
-  cancel-in-progress: true
 
 permissions:
   actions: read
@@ -362,6 +363,7 @@ jobs:
           COMPARE_DEPTHS: ${{ inputs.depths }}
           COMPARE_PASSES: ${{ inputs.passes }}
           COMPARE_SECONDS: ${{ inputs.seconds }}
+          COMPARE_MAXMEMORY: ${{ inputs.maxmemory }}
           PROFILE: ${{ inputs.profile }}
           COMPARE_PROFILE: ${{ inputs.profile_test }}
           PERF_ANNOTATE: ${{ inputs.annotate }}

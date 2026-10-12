@@ -51,6 +51,15 @@
 #                                 CPU's busy fraction per sample; each image
 #                                 runs with as many Whitefoot drivers as server
 #                                 CPUs, or IMAGE_DRIVERS when it is set
+#                                 with COMPARE_MAXMEMORY set to a byte count
+#                                 (a nonnegative integer without leading
+#                                 zeros), every server of the run, twins
+#                                 included, gets CONFIG SET maxmemory of that
+#                                 value as soon as it answers PING, which must
+#                                 reply OK and read back by CONFIG GET; the
+#                                 run records it as setting,maxmemory=<value>
+#                                 in its output and in host.txt. Unset or
+#                                 empty sets nothing
 #   sh redis-bench.sh workloads   the deployment-performance investigation's
 #                                 std-only Rust client, built offline with
 #                                 cargo in release mode; Redis and firn, each
@@ -600,6 +609,22 @@ start() {
         fi
         sleep 0.05
     done
+    # Compare mode: every server, twins included, runs under the same memory
+    # limit, set after it starts and read back before anything is measured.
+    if [ "$MODE" = compare ] && [ -n "${COMPARE_MAXMEMORY:-}" ]; then
+        reply=$(redis-cli -p "$PORT" CONFIG SET maxmemory "$COMPARE_MAXMEMORY") || reply=
+        if [ "$reply" != OK ]; then
+            stop
+            echo "$1: CONFIG SET maxmemory $COMPARE_MAXMEMORY replied '$reply', not OK" >&2
+            exit 1
+        fi
+        reply=$(redis-cli -p "$PORT" CONFIG GET maxmemory | sed -n 2p) || reply=
+        if [ "$reply" != "$COMPARE_MAXMEMORY" ]; then
+            stop
+            echo "$1: CONFIG GET maxmemory read '$reply', not $COMPARE_MAXMEMORY" >&2
+            exit 1
+        fi
+    fi
 }
 
 stop() {
@@ -974,6 +999,18 @@ compare_client() {
 # per pass as compare-server-<line>-<cpus>-<pass>.txt.
 if [ "$MODE" = compare ]; then
     total=$(nproc)
+    if [ -n "${COMPARE_MAXMEMORY:-}" ]; then
+        case $COMPARE_MAXMEMORY in
+            *[!0-9]*|0?*)
+                echo "COMPARE_MAXMEMORY must be a nonnegative integer without leading zeros, not '$COMPARE_MAXMEMORY'" >&2
+                exit 1
+                ;;
+        esac
+        echo "setting,maxmemory=$COMPARE_MAXMEMORY"
+        if [ -f "$OUT/host.txt" ]; then
+            echo "setting,maxmemory=$COMPARE_MAXMEMORY" >>"$OUT/host.txt"
+        fi
+    fi
     cpu_record=
     if [ -r /proc/stat ]; then
         cpu_record="$OUT/compare-cpu.csv"
