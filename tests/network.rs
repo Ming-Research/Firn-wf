@@ -4388,6 +4388,42 @@ fn firn_runs_scripts_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// firn keeps the strings' metatable read-only, as Redis does since its fix
+/// for CVE-2025-46818 in 7.2.11 and 7.4.6, where Redis 7.0.15 lets a script
+/// add a field to it that later scripts see (Firn-wf probe run 38223467544):
+/// with a pool of engines, such a field would stay in the one engine that
+/// ran the script. Writing a field answers Redis's error for writing a
+/// read-only table, in the form 7.0.15 gives for writing the string
+/// library's table through the metatable's __index, with this script's SHA1;
+/// a later script finds no such field, and the metatable's __index still
+/// serves string methods.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_keeps_the_strings_metatable_read_only_as_redis_7_2_11_does() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    let mut client = connect_when_ready(port);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["EVAL", "getmetatable('').shared = {n = 1} return 1", "0"],
+        vec!["EVAL", "return getmetatable('').shared", "0"],
+        vec!["EVAL", "return ('ab'):upper()", "0"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("write into the strings' metatable");
+    expect_replies(
+        &mut client,
+        b"-ERR user_script:1: Attempt to modify a readonly table script: 077fdce7244eb8bb8ed2f5f531fbfa0d8654dae2, on @user_script:1.\r\n$-1\r\n$2\r\nAB\r\n",
+        "a write into the strings' metatable and a later read",
+    );
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn's SCRIPT KILL stops a script that has written nothing at the end of
 /// its current attempt and answers it Redis 7.0.15's error, naming the
 /// script's SHA1 and the line it ran, and SCRIPT KILL answers NOTBUSY when no

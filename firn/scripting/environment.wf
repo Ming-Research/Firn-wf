@@ -60,6 +60,7 @@ fn install_host(engine: &Engine) -> r: unit writes(engine) {
   }
   let globals = Value::Tab(h: vm^.globals);
   protect_table(vm: vm, table: globals);
+  protect_string_metatable(vm: vm);
   return unit;
 }
 
@@ -103,6 +104,16 @@ fn protect_table(vm: &Vm, table: Value) -> r: unit writes(vm) {
     }
     NoHandle() => {
     }
+  }
+  return unit;
+}
+
+fn protect_string_metatable(vm: &Vm) -> r: unit writes(vm) {
+  doc "Makes the strings' metatable read-only, as Redis does since the fix for CVE-2025-46818 in 7.2.11 and 7.4.6, where Redis 7.0.15 lets a script add fields to it that later scripts see: a field kept there would be one engine's and not the others', which Redis's one Lua state cannot show.";
+  let handle = vm^.type_metatables[3_u64];
+  if handle != no_handle {
+    let metatable = Value::Tab(h: handle);
+    protect_table(vm: vm, table: metatable);
   }
   return unit;
 }

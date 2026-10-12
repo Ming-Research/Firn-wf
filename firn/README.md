@@ -56,7 +56,9 @@ clients send on their own:
   and the cjson settings, as Redis's one Lua state does. `SCRIPT FLUSH`
   waits until no script is in progress before clearing the registry and
   returning the cjson settings to their defaults; math.random's
-  generator continues, as Redis's does. `redis.call` and `redis.pcall` run the commands
+  generator continues, as Redis's does. The strings' metatable is
+  read-only, as in Redis since 7.2.11 and 7.4.6, where Redis 7.0.15 lets
+  a script change it. `redis.call` and `redis.pcall` run the commands
   written as parts, those `MULTI` runs, inside the script's statement,
   through Halo's resumable host call; any other command is answered with
   Redis's error for an unknown one, noting that firn may not run it from
