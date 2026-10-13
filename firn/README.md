@@ -249,7 +249,7 @@ append-only file's last append and sync, and status 0, as Redis 7.0.15 shuts
 down gracefully on either signal under its default `shutdown-on-sigterm` and
 `shutdown-on-sigint`. firn hears them from before it replays its append-only
 file. One that comes during the replay ends it at the replay's next check,
-made before every 1024th command it reads, and firn exits with status 0
+made before the first command it reads and then before every 1024th, and firn exits with status 0
 without cutting, creating, removing or rewriting anything in `appendonlydir`,
 as Redis 7.2.16 serves events every 1024 commands while it loads
 (`aof.c:1480-1485`) and exits there with status 0 (`server.c:1592-1599`),

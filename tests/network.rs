@@ -9076,9 +9076,11 @@ fn replay_server_start(
 /// and bytes, as Redis 7.2.16 does: it takes the signals from `initServer`,
 /// before it loads, finds the request every 1024 commands while it loads and
 /// exits there (`aof.c:1480-1485`, `server.c:1592-1599`), and opens its file
-/// for appending only after loading (`server.c:7332`). The manifest lists a
-/// base and no increment, so a server that finished its replay would create
-/// and list an increment, changing the directory. The case finds the replay
+/// for appending only after loading (`server.c:7332`). In the first layout
+/// the manifest lists a base and no increment, so a server that finished its
+/// replay would create and list an increment; in the second the records lie
+/// in an increment ending in an unfinished record, which a whole replay would
+/// cut. Either way a finished replay changes the directory. The case finds the replay
 /// by the server holding its base file open while it does not yet serve,
 /// sends the signal then, and a restart must still load every key. firn
 /// before this case opened its stop listener only once its replay was done,
@@ -9089,15 +9091,26 @@ fn replay_server_start(
 #[test]
 fn firn_stops_its_replay_on_sigterm_and_sigint_as_redis_does() {
     use std::os::unix::process::ExitStatusExt;
-    let base = replay_stop_base();
-    let manifest = "file appendonly.aof.1.base.aof seq 1 type b\n";
-    for (server, signal) in [
-        (ReplayServer::Redis, "TERM"),
-        (ReplayServer::Redis, "INT"),
-        (ReplayServer::Firn { native_ring: false }, "TERM"),
-        (ReplayServer::Firn { native_ring: true }, "INT"),
+    let records = replay_stop_base();
+    // In the second layout the records lie in an increment after a one-key
+    // base and end in an unfinished record, so the stop comes in a later
+    // file whose end both servers would cut after a whole replay.
+    let mut unfinished = records.clone();
+    unfinished.extend_from_slice(b"*3\r\n$3\r\nSET\r\n$9\r\nkey:0");
+    let base_only = [("appendonly.aof.1.base.aof", records.as_slice())];
+    let with_increment = [
+        ("appendonly.aof.1.base.aof", b"*3\r\n$3\r\nSET\r\n$4\r\nbase\r\n$4\r\nkept\r\n".as_slice()),
+        ("appendonly.aof.1.incr.aof", unfinished.as_slice()),
+    ];
+    for (server, signal, files) in [
+        (ReplayServer::Redis, "TERM", base_only.as_slice()),
+        (ReplayServer::Redis, "INT", base_only.as_slice()),
+        (ReplayServer::Firn { native_ring: false }, "TERM", base_only.as_slice()),
+        (ReplayServer::Firn { native_ring: true }, "INT", base_only.as_slice()),
+        (ReplayServer::Redis, "TERM", with_increment.as_slice()),
+        (ReplayServer::Firn { native_ring: true }, "TERM", with_increment.as_slice()),
     ] {
-        let what = format!("{server:?} on SIG{signal}");
+        let what = format!("{server:?} on SIG{signal} with {} file(s)", files.len());
         let program = CompiledProgram::from_environment();
         let fixture = fixture_directory();
         let directory = match server {
@@ -9106,13 +9119,20 @@ fn firn_stops_its_replay_on_sigterm_and_sigint_as_redis_does() {
         };
         let aof = directory.join("appendonlydir");
         std::fs::create_dir(&aof).expect("create appendonlydir");
-        std::fs::write(aof.join("appendonly.aof.1.base.aof"), &base).expect("write the base file");
+        let mut manifest = String::new();
+        for (name, bytes) in files {
+            std::fs::write(aof.join(name), bytes).expect("write an append-only file");
+            let kind = if name.ends_with(".base.aof") { "b" } else { "i" };
+            manifest.push_str(&format!("file {name} seq 1 type {kind}\n"));
+        }
         std::fs::write(aof.join("appendonly.aof.manifest"), manifest).expect("write the manifest");
         let before = directory_snapshot(&aof);
+        // The file that holds the records, the last one, is the one whose
+        // replay the signal must interrupt.
         let base_path = aof
-            .join("appendonly.aof.1.base.aof")
+            .join(files[files.len() - 1].0)
             .canonicalize()
-            .expect("resolve the base file");
+            .expect("resolve the replayed file");
 
         let lease = support::lease_port();
         let mut child = replay_server_start(server, &program, &directory, &lease);
@@ -9172,10 +9192,17 @@ fn firn_stops_its_replay_on_sigterm_and_sigint_as_redis_does() {
         client.write_all(&resp(&["DBSIZE"])).expect("count the keys");
         assert_eq!(
             integer_reply(&mut client, "keys after the restart"),
-            REPLAY_STOP_KEYS as i64,
+            (REPLAY_STOP_KEYS + files.len() - 1) as i64,
             "{what}"
         );
-        for key in [0, 1, REPLAY_STOP_KEYS / 2, REPLAY_STOP_KEYS - 1] {
+        if files.len() > 1 {
+            client.write_all(&resp(&["GET", "base"])).expect("read the base's key");
+            assert_eq!(bulk_reply(&mut client, "the base's key"), "kept", "{what}");
+        }
+        // The last record, number REPLAY_STOP_RECORDS - 1, writes key 50879,
+        // so a restart that lost the file's end fails on it.
+        let last = (REPLAY_STOP_RECORDS - 1) % REPLAY_STOP_KEYS;
+        for key in [0, 1, REPLAY_STOP_KEYS / 2, REPLAY_STOP_KEYS - 1, last] {
             client
                 .write_all(&resp(&["GET", &format!("key:{key:05}")]))
                 .expect("read a replayed key");

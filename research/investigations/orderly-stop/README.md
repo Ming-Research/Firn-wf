@@ -344,7 +344,7 @@ changes. Its upgrade of an old-style file runs before loading
 
 firn now opens the listener before the replay, and the replay reads the
 shutdown request the signal context records in the server's state before
-every 1024th command it parses; a request seen there makes main exit with
+the first command it parses and then before every 1024th; a request seen there makes main exit with
 status 0 before any step after the replay.
 
 The case `firn_stops_its_replay_on_sigterm_and_sigint_as_redis_does`
@@ -360,4 +360,17 @@ firn does not exit with status 0, if `appendonlydir`'s file names or bytes
 differ afterwards, or if a restart does not load every key. The same case on
 the previous main must fail: there the signal finds the host default and ends
 firn by it. Redis must pass the same checks, or the case does not describe
-Redis.
+Redis. A second layout puts the same records in an increment after a one-key
+base and ends it in an unfinished record, so the signal stops a later file's
+replay whose end a whole replay would cut; it runs once for each server, with
+SIGTERM. The restart checks the key the last record writes, so a restart that
+lost the file's end fails.
+
+**Results.** With the base-only layout, gate
+[run 38479342901](https://github.com/Ming-Research/Firn-wf/actions/runs/38479342901)
+passed all four signal and server combinations. The same case without the
+firn change failed in
+[run 38479346275](https://github.com/Ming-Research/Firn-wf/actions/runs/38479346275):
+Redis passed both signals, and firn, sent SIGTERM during its replay, ended by
+signal 15. The second layout and the last-record check were added after
+review; their result is the next gate run on this change.
