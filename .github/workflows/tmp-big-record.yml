@@ -40,7 +40,7 @@ jobs:
         with:
           submodules: true
       - name: Check out main's firn sources beside this branch's tests
-        run: git fetch --depth=1 origin main && git checkout FETCH_HEAD -- firn whitefoot.pin && git submodule update --init
+        run: git fetch --depth=1 origin main && git rm -rq firn && git checkout FETCH_HEAD -- firn whitefoot.pin && git submodule update --init && git status --short firn | head
       - name: Download the pinned compiler
         run: make compiler
       - name: Install the pinned release's LLVM
