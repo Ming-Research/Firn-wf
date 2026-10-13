@@ -219,7 +219,8 @@ fn publish(hub: &Hub, shard: Bool, input: &[u8], args: &Box<Slots<Span>>, client
     let size = hub^.patterns.cells.inner.len;
     for (index in 0_u64..size) {
       if index < hub^.patterns.cells.inner.len {
-        match hub^.patterns.cells.inner[index] {
+        let held = &hub^.patterns.cells.inner[index];
+        match held^ {
           HashMapFilled(key: pattern, value: members) => {
             if pattern_matches(pattern: pattern, channel: &channel) {
               let matched = True();
@@ -264,7 +265,8 @@ fn list_channels(map: &HashMap<Key, Box<Slots<u64>>, extent>, input: &[u8], args
   let size = map^.cells.inner.len;
   for (index in 0_u64..size) {
     if index < map^.cells.inner.len {
-      match map^.cells.inner[index] {
+      let held = &map^.cells.inner[index];
+      match held^ {
         HashMapFilled(key: channel, value: members) => {
           let matched = True();
           if filtered {

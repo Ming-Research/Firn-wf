@@ -392,7 +392,8 @@ fn hub_stop(hub: &Shared<Hub>) -> result: unit reads(hub) waits {
     let count = state^.records.cells.inner.len;
     for (index in 0_u64..count) {
       if index < state^.records.cells.inner.len {
-        match state^.records.cells.inner[index] {
+        let held = &state^.records.cells.inner[index];
+        match held^ {
           HashMapFilled(key: identity, value: record) => {
             slots_push::<u64>(values: &ids, value: identity^);
           }
