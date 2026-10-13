@@ -220,6 +220,25 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let name = arg(args: args, index: 0_u64);
   let code = name_code(input: input, start: name.start, length: name.length);
   let open = bnot(client^.locked);
+  let events = pubsub_kind(input: input, name: name);
+  if events != 0_u64 {
+    if events == 193_u64 {
+      if pubsub_refused(input: input, args: args, client: client) {
+        return unit;
+      }
+    } else {
+      let arity = held_arity(kind: events);
+      if bnot(arity_holds(arity: arity, count: count)) {
+        reply_arity(client: client, input: input, name: name);
+        return unit;
+      }
+    }
+    if denied(client: client) {
+      return unit;
+    }
+    run_pubsub(store: store, kind: events, input: input, args: args, client: client);
+    return unit;
+  }
   let relative = False();
   let calendar = True();
   let whole_seconds = True();

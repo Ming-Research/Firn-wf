@@ -103,12 +103,15 @@ module dependency boundary. This is an interface proposal, not an edit to
 
 ### Ownership and delivery
 
-Propose an event hub: shared state containing live connection generations,
+Propose an event hub: shared state containing live connection identities,
 subscription registries, blocked-command records, ready-key queues and a
 committed output queue. It owns data, never TCP handles. A connection record
-is addressed by an id plus a nonwrapping generation; disconnect invalidates
-the record before its storage can be reused. The standard slab is suitable
-for reusable registration identities. No long-lived borrowed `Client` or
+is addressed by a monotonically allocated u64 id that is never reused during
+the process; disconnect removes its record. The supported lifetime contains
+fewer than 2^64 allocated identities, so a stale retained envelope can only
+reach its old closed inbox. Growing standard hash maps hold the records and
+channel indexes, following the owner's implementation ruling in
+[registration identities](#registration-identities). No long-lived borrowed `Client` or
 input-buffer reference crosses a context boundary.
 
 Keep the current receive/execute/send path for connections that have never
@@ -691,7 +694,7 @@ complete programs or claimed accepted compiler runs.
 | Timer and disarm | Same interface: monotonic `sleep_until`, `cancel_source`, `cancel_watch`, `cancel_fire`; use a separate disarm watch and fire it before a child join. No polling is needed for ordinary state-or-timer waits. |
 | Queued output and EOF | [Network interface](https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/lib/std/net/module.wfm): separate owned receive/send halves, cancellable host calls, explicit partial transfer endpoints, EOF and consuming closes. |
 | Many recipients | SHARE-1 `Frozen<T>` and `frozen_share` retain immutable data without a lock; ordinary shared queue state protects envelopes. A Frozen body contains no live socket/shared-state handle. |
-| Queues, ordered timers, reusable ids | [Library inventory](https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/lib/std/modules.wfg), deque, priority queue, hash map and slab interfaces. Slab retires exhausted generations rather than wrapping them. |
+| Queues, ordered timers, connection ids | [Library inventory](https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/lib/std/modules.wfg), deque, priority queue and growing hash map interfaces support the selected representation. Slab retires exhausted generations but has no capacity-growth API; its separately filed request does not block the [nonreused-id dictionary design](#registration-identities). |
 | Multiple database maps | SHARE-2 admits multiple whole-map targets, and TYPE-9/OP-11 admits swapping two held maps. The maps' permanent handles can be known before the atomic header. General multi-map helper alias proofs remain a witness obligation below. |
 | Memory evidence | [Process interface](https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/lib/std/process/module.wfm): actual drivers, `heap_in_use` and resident bytes; heap requested bytes are not Redis allocator-usable bytes. |
 
@@ -759,6 +762,28 @@ a compiler policy by state-type group: extra map targets acquire early, and
 later groups may pull earlier groups in. Use the lock ledger in CI to verify
 that an allegedly unused hub or Meta is actually untaken; source `if` alone
 is no evidence.
+
+### Registration identities
+
+The owner selected growing standard hash maps keyed by monotonically
+allocated u64 registration ids, with no reuse during the process. This is the
+natural dictionary representation of Redis's channel/client ownership, not a
+substitute spelling of the slab. Its lifetime bound is fewer than 2^64
+identity allocations; the implementation documents that bound rather than
+introducing a new subscriber ceiling. The proposed
+[pub/sub registry node](../../../design/firn/pubsub-registries.md) records this
+choice and rejects the slab for this representation.
+
+The pinned slab's inability to reserve more cells was filed by the primary
+agent as Whitefoot request `firn-req-slab-reserve`, P2. The capacity witness
+used `slab_new::<u64, 3, 1>(capacity: 2_u64)`, retained two successful
+insertions and attempted a third. The interface promises unchanged capacity;
+the implementation and maintained slab program return the third owner. No
+compiler or runtime result was recorded here. Explicit growth preserving
+indices, generations, occupancy and free-list sentinel meaning remains that
+request's acceptance, separately from pub/sub delivery. The standalone
+capacity-only witness has been removed after filing; no pub/sub dependency
+on its resolution remains.
 
 ### Missing capability: exact reference timeout numbers
 

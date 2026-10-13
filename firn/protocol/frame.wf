@@ -1,0 +1,67 @@
+const frame_crlf: Array<u8, 2> = "\r\n";
+
+fn frame_byte(buffer: &Box<Slots<u8>>, value: u8) -> result: unit writes(buffer) {
+  doc "Appends to a logical prefix buffer, growing its initialized window when full; Client reply buffers instead retain initialized storage and a separate output offset.";
+  if buffer^.inner.len >= buffer^.inner.cap {
+    let doubled = buffer^.inner.cap *sat 2_u64;
+    let capacity = imax(doubled, 8_u64);
+    grow(cell: buffer, capacity: capacity);
+  }
+  if buffer^.inner.len < buffer^.inner.cap {
+    place_back(window: &buffer^.inner, value: value);
+  }
+  return unit;
+}
+
+fn frame_word(buffer: &Box<Slots<u8>>, word: &[u8]) -> result: unit reads(word), writes(buffer) {
+  let length = word^.len;
+  for (index in 0_u64..length) {
+    frame_byte(buffer: buffer, value: word^[index]);
+  }
+  return unit;
+}
+
+fn frame_decimal(buffer: &Box<Slots<u8>>, number: u64) -> result: unit writes(buffer) {
+  let digits = slots_new::<u8, 20>();
+  let remaining = number;
+  loop @digits {
+    let remainder = remaining % 10_u64;
+    let byte = cvt.wrap::<u64, u8>(remainder);
+    let glyph = byte +wrap 48_u8;
+    if digits.len < 20_u64 {
+      place_back(window: &digits, value: glyph);
+    }
+    set remaining = remaining / 10_u64;
+    if remaining == 0_u64 {
+      break @digits;
+    }
+  }
+  loop @emit {
+    if digits.len > 0_u64 {
+      let glyph = take_back(window: &digits);
+      frame_byte(buffer: buffer, value: glyph);
+    } else {
+      break @emit;
+    }
+  }
+  return unit;
+}
+
+fn frame_bulk_input(buffer: &Box<Slots<u8>>, input: &[u8], start: u64, length: u64) -> result: unit reads(input), writes(buffer) {
+  frame_byte(buffer: buffer, value: 36_u8);
+  frame_decimal(buffer: buffer, number: length);
+  frame_word(buffer: buffer, word: &frame_crlf[0_u64..2_u64]);
+  for (index in 0_u64..length) {
+    let position = start +wrap index;
+    let byte = pkg::bytes::byte_at(input: input, index: position);
+    frame_byte(buffer: buffer, value: byte);
+  }
+  frame_word(buffer: buffer, word: &frame_crlf[0_u64..2_u64]);
+  return unit;
+}
+
+fn reply_push(client: &Client, count: u64) -> result: unit writes(client) {
+  doc "Writes a RESP3 push aggregate header through the shared protocol header writer; RESP2 pub/sub uses reply_array.";
+  reply_header(client: client, marker: 62_u8, count: count);
+  return unit;
+}
