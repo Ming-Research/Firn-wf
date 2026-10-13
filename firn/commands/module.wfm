@@ -6,6 +6,10 @@ alias Time = pkg::store::Time;
 
 public fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits doc "Answers one command, whose arguments are spans of the input, by appending its reply to the client's. A command that changes the keyspace does so in one atomic statement, which also appends the change to the append-only file's pending bytes when the keyspace keeps them. A connection that must authenticate first is answered NOAUTH for every command but AUTH, HELLO and QUIT, once the command is known and its arguments counted, as in Redis.";
 
+public fn replay_known(input: &[u8], args: &Box<Slots<Span>>) -> known: Bool reads(input), reads(args) doc "Resolves the command name and supported container subcommand for AOF loading, without rejecting ordinary argument-count errors. Redis 7.2.16 FUNCTION subcommands are recognized here; unknown subcommands are refused as unknown commands, and known unsupported function state is refused by replay_supported.";
+
+public fn replay_supported(input: &[u8], args: &Box<Slots<Span>>) -> reason: u8 reads(input), reads(args) doc "Zero permits startup execution, 2 refuses a nonzero SELECT database, and 3 refuses another command requiring replay state firn cannot represent. Ordinary execution errors remain the command's responsibility.";
+
 public struct Transaction {
   doc "One connection's MULTI state, as Redis 7.0.15 keeps it in the client: open between MULTI and EXEC or DISCARD; dirty once a command sent inside it was refused, including OOM or active AOF failure, and foreign once it queued a command firn does not run in transactions, either making EXEC abort it; denyoom and write_commands are the unions of queued DENYOOM and WRITE flags used for EXEC admission (server.c:3568-3576,3881-3905, multi.c:85-87); and the commands queued so far, their arguments one after another in bytes, each argument's place in bytes in spans, and each command's count of arguments in counts.";
   open: Bool;

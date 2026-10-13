@@ -47,6 +47,332 @@ fn assert_bad_format(output: &Output) {
     assert!(logged, "missing Redis's exact AOF format diagnostic {expected:?}: {output:?}");
 }
 
+fn assert_log_line(output: &Output, expected: &str) {
+    let logged = [&output.stdout, &output.stderr].iter().any(|bytes| {
+        String::from_utf8_lossy(bytes).lines().any(|line| line.ends_with(expected))
+    });
+    assert!(logged, "missing AOF diagnostic {expected:?}: {output:?}");
+}
+
+fn replay_child(
+    program: &CompiledProgram, binary: Option<&Path>, directory: &Path,
+    lease: &support::PortLease,
+) -> ProgramChild {
+    if let Some(binary) = binary {
+        start_redis(binary, directory, lease)
+    } else {
+        let text = lease.port().to_string();
+        program.spawn_in_directory(directory, &[text.as_bytes(), b"0", NAME.as_bytes()])
+            .with_port(lease)
+    }
+}
+
+#[test]
+fn unknown_commands_stop_replay_before_transaction_tail_recovery() {
+    // Redis 7.2.16 src/aof.c:1540-1547 looks up every complete command
+    // before queuing it in MULTI and exits 1 if it is unknown. In particular,
+    // an unclosed transaction cannot turn an unknown command into truncation.
+    let program = CompiledProgram::from_environment();
+    let binary = redis();
+    for command in ["BOGUSXX", "bogusxx"] {
+        for transaction in [0, 1, 2] {
+            let mut content = resp(&["SET", "before", "1"]);
+            if transaction != 0 { content.extend(resp(&["MULTI"])); }
+            content.extend(resp(&[command]));
+            content.extend(resp(&["SET", "after", "2"]));
+            if transaction == 1 { content.extend(resp(&["EXEC"])); }
+            let expected = format!("Unknown command '{command}' reading the append only file {NAME}.1.incr.aof");
+            for oracle in [false, true] {
+                if oracle && binary.is_none() { continue; }
+                let fixture = fixture_directory();
+                let path = aof_incremental_fixture(fixture.path(), NAME);
+                std::fs::write(&path, &content).unwrap();
+                let lease = support::lease_port();
+                let output = replay_child(&program, if oracle { binary.as_deref() } else { None },
+                    fixture.path(), &lease).wait_with_output().expect("wait for unknown-command refusal");
+                assert_eq!(output.status.code(), Some(1), "unknown-command startup: {output:?}");
+                assert_log_line(&output, &expected);
+                assert_eq!(std::fs::read(&path).unwrap(), content, "unknown commands never truncate their AOF");
+            }
+        }
+    }
+}
+
+#[test]
+fn unknown_container_subcommands_stop_replay_including_unfinished_transactions() {
+    // Redis's lookupCommand resolves container subcommands before execution;
+    // its AOF diagnostic prints the container name, not the subcommand.
+    let program = CompiledProgram::from_environment();
+    let binary = redis();
+    for container in ["FUNCTION", "CONFIG"] {
+        for transaction in [false, true] {
+            let mut content = Vec::new();
+            if transaction { content.extend(resp(&["MULTI"])); }
+            content.extend(resp(&[container, "BOGUS"]));
+            content.extend(resp(&["SET", "after", "2"]));
+            for oracle in [false, true] {
+                if oracle && binary.is_none() { continue; }
+                let fixture = fixture_directory();
+                let path = aof_incremental_fixture(fixture.path(), NAME);
+                std::fs::write(&path, &content).unwrap();
+                let lease = support::lease_port();
+                let output = replay_child(&program, if oracle { binary.as_deref() } else { None },
+                    fixture.path(), &lease).wait_with_output().expect("wait for unknown-subcommand refusal");
+                assert_eq!(output.status.code(), Some(1), "unknown-subcommand startup: {output:?}");
+                assert_log_line(&output, &format!("Unknown command '{container}' reading the append only file {NAME}.1.incr.aof"));
+                assert_eq!(std::fs::read(&path).unwrap(), content, "unknown subcommands never truncate");
+            }
+        }
+    }
+}
+
+#[test]
+fn nonzero_database_selection_refuses_firn_but_redis_loads_database_one() {
+    // Redis's SELECT changes the AOF client's database, also when queued in
+    // EXEC. Its AOF loader calls SELECT without an arity check, so an extra
+    // argument still selects db 1. Firn must refuse both instead of applying
+    // the SET in db 0 or treating the SELECT as a harmless arity error.
+    let program = CompiledProgram::from_environment();
+    let binary = redis();
+    for (selection, transaction) in [
+        (vec!["SELECT", "1"], false),
+        (vec!["SELECT", "1"], true),
+        (vec!["SELECT", "1", "extra"], false),
+        (vec!["SELECT", "1", "extra"], true),
+    ] {
+        let mut content = resp(&["SET", "before", "1"]);
+        if transaction { content.extend(resp(&["MULTI"])); }
+        content.extend(resp(&selection));
+        content.extend(resp(&["SET", "after", "2"]));
+        if transaction { content.extend(resp(&["EXEC"])); }
+        for oracle in [false, true] {
+            if oracle && binary.is_none() { continue; }
+            let fixture = fixture_directory();
+            let path = aof_incremental_fixture(fixture.path(), NAME);
+            std::fs::write(&path, &content).unwrap();
+            let lease = support::lease_port();
+            let child = replay_child(&program, if oracle { binary.as_deref() } else { None },
+                fixture.path(), &lease);
+            if oracle {
+                let mut client = connect_when_ready(lease.port(), &child);
+                assert_eq!(memory_request(&mut client, &["GET", "before"]), "$1\r\n1\r\n");
+                assert_eq!(memory_request(&mut client, &["GET", "after"]), "$-1\r\n");
+                assert_eq!(memory_request(&mut client, &["SELECT", "1"]), "+OK\r\n");
+                assert_eq!(memory_request(&mut client, &["GET", "before"]), "$-1\r\n");
+                assert_eq!(memory_request(&mut client, &["GET", "after"]), "$1\r\n2\r\n");
+                assert_eq!(std::fs::read(&path).unwrap(), content, "Redis loads the db 1 record intact");
+                client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
+                let output = child.wait_with_output().unwrap();
+                assert_eq!(output.status.code(), Some(0), "Redis supports database one: {output:?}");
+            } else {
+                let output = child.wait_with_output().expect("wait for unsupported database refusal");
+                assert_eq!(output.status.code(), Some(1), "Firn refuses database one: {output:?}");
+                assert_log_line(&output, &format!("Firn cannot load SELECT 1 reading the append only file {NAME}.1.incr.aof: only database 0 is supported"));
+                assert_eq!(std::fs::read(&path).unwrap(), content, "database refusal preserves the AOF");
+            }
+        }
+    }
+}
+
+#[test]
+fn database_zero_selection_still_loads_directly_and_in_transactions() {
+    let program = CompiledProgram::from_environment();
+    let binary = redis();
+    for transaction in [false, true] {
+        let mut content = resp(&["SET", "before", "1"]);
+        if transaction { content.extend(resp(&["MULTI"])); }
+        content.extend(resp(&["SELECT", "0"]));
+        content.extend(resp(&["SET", "after", "2"]));
+        if transaction { content.extend(resp(&["EXEC"])); }
+        for oracle in [false, true] {
+            if oracle && binary.is_none() { continue; }
+            let fixture = fixture_directory();
+            let path = aof_incremental_fixture(fixture.path(), NAME);
+            std::fs::write(&path, &content).unwrap();
+            let lease = support::lease_port();
+            let child = replay_child(&program, if oracle { binary.as_deref() } else { None },
+                fixture.path(), &lease);
+            loaded_checks(child, lease.port());
+            assert_eq!(std::fs::read(&path).unwrap(), content, "supported SELECT 0 remains intact");
+        }
+    }
+}
+
+#[test]
+fn cross_database_copy_refuses_firn_but_redis_copies_into_database_one() {
+    // COPY can address another database without SELECT. Refusing only SELECT
+    // would allow this record to copy into the wrong database or lose the copy.
+    let content = [resp(&["SET", "source", "value"]),
+        resp(&["COPY", "source", "target", "DB", "1"])].concat();
+    let program = CompiledProgram::from_environment();
+    let binary = redis();
+    for oracle in [false, true] {
+        if oracle && binary.is_none() { continue; }
+        let fixture = fixture_directory();
+        let path = aof_incremental_fixture(fixture.path(), NAME);
+        std::fs::write(&path, &content).unwrap();
+        let lease = support::lease_port();
+        let child = replay_child(&program, if oracle { binary.as_deref() } else { None },
+            fixture.path(), &lease);
+        if oracle {
+            let mut client = connect_when_ready(lease.port(), &child);
+            assert_eq!(memory_request(&mut client, &["GET", "source"]), "$5\r\nvalue\r\n");
+            assert_eq!(memory_request(&mut client, &["GET", "target"]), "$-1\r\n");
+            assert_eq!(memory_request(&mut client, &["SELECT", "1"]), "+OK\r\n");
+            assert_eq!(memory_request(&mut client, &["GET", "target"]), "$5\r\nvalue\r\n");
+            assert_eq!(std::fs::read(&path).unwrap(), content, "Redis loads cross-database COPY intact");
+            client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert_eq!(output.status.code(), Some(0), "Redis supports cross-database COPY: {output:?}");
+        } else {
+            let output = child.wait_with_output().expect("wait for unsupported replay state refusal");
+            assert_eq!(output.status.code(), Some(1), "Firn refuses cross-database COPY: {output:?}");
+            assert_log_line(&output, &format!("Firn cannot load COPY reading the append only file {NAME}.1.incr.aof: command requires unsupported replay state"));
+            assert_eq!(std::fs::read(&path).unwrap(), content, "unsupported replay state preserves the AOF");
+        }
+    }
+}
+
+#[test]
+fn unsupported_transaction_and_client_state_records_refuse_without_truncation() {
+    // Firn's replay parser cannot represent these client-state transitions
+    // or malformed transaction boundaries. They must not become ignored
+    // replies followed by a successful load of the remaining SET record.
+    let program = CompiledProgram::from_environment();
+    for arguments in [
+        vec!["DISCARD"], vec!["RESET"], vec!["WATCH", "key"],
+        vec!["MULTI", "extra"], vec!["EXEC", "extra"],
+    ] {
+        for transaction in [false, true] {
+            let mut content = Vec::new();
+            if transaction {
+                content.extend(resp(&["MULTI"]));
+                content.extend(resp(&["SET", "before", "1"]));
+            }
+            content.extend(resp(&arguments));
+            content.extend(resp(&["SET", "after", "2"]));
+            // In particular, EXEC extra must be refused while scanning,
+            // rather than mistaken for an unfinished block and truncated.
+            let fixture = fixture_directory();
+            let path = aof_incremental_fixture(fixture.path(), NAME);
+            std::fs::write(&path, &content).unwrap();
+            let lease = support::lease_port();
+            let output = replay_child(&program, None, fixture.path(), &lease)
+                .wait_with_output().expect("wait for unsupported client-state refusal");
+            assert_eq!(output.status.code(), Some(1), "unsupported client-state startup: {output:?}");
+            assert_log_line(&output, &format!("Firn cannot load {} reading the append only file {NAME}.1.incr.aof: command requires unsupported replay state", arguments[0]));
+            assert_eq!(std::fs::read(&path).unwrap(), content, "unsupported client state preserves the AOF");
+        }
+    }
+}
+
+#[test]
+fn persistent_function_load_refuses_firn_but_redis_restores_the_function() {
+    // FUNCTION LOAD changes persistent state outside Firn's keyspace. Redis
+    // restores the library and can call it; a successful Firn startup would
+    // silently discard that state even if no following record invokes it.
+    let source = "#!lua name=imported\nredis.register_function('loaded', function() return 1 end)";
+    let content = [resp(&["FUNCTION", "LOAD", source]),
+        resp(&["SET", "after", "2"])].concat();
+    let program = CompiledProgram::from_environment();
+    let binary = redis();
+    for oracle in [false, true] {
+        if oracle && binary.is_none() { continue; }
+        let fixture = fixture_directory();
+        let path = aof_incremental_fixture(fixture.path(), NAME);
+        std::fs::write(&path, &content).unwrap();
+        let lease = support::lease_port();
+        let child = replay_child(&program, if oracle { binary.as_deref() } else { None },
+            fixture.path(), &lease);
+        if oracle {
+            let mut client = connect_when_ready(lease.port(), &child);
+            assert_eq!(memory_request(&mut client, &["FCALL", "loaded", "0"]), ":1\r\n");
+            assert_eq!(memory_request(&mut client, &["GET", "after"]), "$1\r\n2\r\n");
+            assert_eq!(std::fs::read(&path).unwrap(), content, "Redis restores the persistent function intact");
+            client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert_eq!(output.status.code(), Some(0), "Redis supports persistent functions: {output:?}");
+        } else {
+            let output = child.wait_with_output().expect("wait for unsupported persistent function refusal");
+            assert_eq!(output.status.code(), Some(1), "Firn refuses persistent functions: {output:?}");
+            assert_log_line(&output, &format!("Firn cannot load FUNCTION reading the append only file {NAME}.1.incr.aof: command requires unsupported replay state"));
+            assert_eq!(std::fs::read(&path).unwrap(), content, "persistent function refusal preserves the AOF");
+        }
+    }
+}
+
+#[test]
+fn known_execution_errors_are_logged_and_replay_continues_including_exec() {
+    // Redis 7.2.16 src/aof.c:1550-1563 directly calls known commands.
+    // src/networking.c:561-586 logs errors and continues under the default
+    // propagation-error-behavior. EXEC retains its lastcmd while executing
+    // INCR, so Redis's critical log names 'exec' for that fixture.
+    let program = CompiledProgram::from_environment();
+    let binary = redis();
+    for transaction in [false, true] {
+        let mut content = resp(&["SET", "k", "x"]);
+        if transaction { content.extend(resp(&["MULTI"])); }
+        content.extend(resp(&["INCR", "k"]));
+        content.extend(resp(&["SET", "inside", "yes"]));
+        if transaction { content.extend(resp(&["EXEC"])); }
+        content.extend(resp(&["SET", "after", "yes"]));
+        for oracle in [false, true] {
+            if oracle && binary.is_none() { continue; }
+            let fixture = fixture_directory();
+            let path = aof_incremental_fixture(fixture.path(), NAME);
+            std::fs::write(&path, &content).unwrap();
+            let lease = support::lease_port();
+            let child = replay_child(&program, if oracle { binary.as_deref() } else { None },
+                fixture.path(), &lease);
+            let mut client = connect_when_ready(lease.port(), &child);
+            assert_eq!(memory_request(&mut client, &["GET", "k"]), "$1\r\nx\r\n");
+            assert_eq!(memory_request(&mut client, &["GET", "inside"]), "$3\r\nyes\r\n");
+            assert_eq!(memory_request(&mut client, &["GET", "after"]), "$3\r\nyes\r\n");
+            assert_eq!(std::fs::read(&path).unwrap(), content, "execution errors do not discard AOF records");
+            client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert_eq!(output.status.code(), Some(0), "execution-error continuation: {output:?}");
+            if oracle {
+                let command = if transaction { "exec" } else { "incr" };
+                assert_log_line(&output, &format!("== CRITICAL == This server is sending an error to its AOF-loading-client: 'value is not an integer or out of range' after processing the command '{command}'"));
+            } else {
+                assert_log_line(&output, &format!("Firn AOF replay error reading the append only file {NAME}.1.incr.aof: -ERR value is not an integer or out of range"));
+            }
+        }
+    }
+}
+
+#[test]
+fn exec_without_multi_logs_an_error_and_keeps_loading() {
+    // Redis 7.2.16 src/multi.c:154-157 returns an execution error, rather
+    // than a fatal AOF load error, when EXEC appears without MULTI.
+    let content = [resp(&["SET", "before", "1"]), resp(&["EXEC"]),
+        resp(&["SET", "after", "2"])].concat();
+    let program = CompiledProgram::from_environment();
+    let binary = redis();
+    for oracle in [false, true] {
+        if oracle && binary.is_none() { continue; }
+        let fixture = fixture_directory();
+        let path = aof_incremental_fixture(fixture.path(), NAME);
+        std::fs::write(&path, &content).unwrap();
+        let lease = support::lease_port();
+        let child = replay_child(&program, if oracle { binary.as_deref() } else { None },
+            fixture.path(), &lease);
+        let mut client = connect_when_ready(lease.port(), &child);
+        assert_eq!(memory_request(&mut client, &["GET", "before"]), "$1\r\n1\r\n");
+        assert_eq!(memory_request(&mut client, &["GET", "after"]), "$1\r\n2\r\n");
+        assert_eq!(std::fs::read(&path).unwrap(), content, "unmatched EXEC does not truncate");
+        client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "unmatched EXEC continuation: {output:?}");
+        assert_log_line(&output, &if oracle {
+            "== CRITICAL == This server is sending an error to its AOF-loading-client: 'EXEC without MULTI' after processing the command 'exec'".to_string()
+        } else {
+            format!("Firn AOF replay error reading the append only file {NAME}.1.incr.aof: -ERR EXEC without MULTI")
+        });
+    }
+}
+
 fn refuse_fixture(content: &[u8]) {
     let program = CompiledProgram::from_environment();
     let fixture = fixture_directory();

@@ -1,0 +1,77 @@
+alias Span = pkg::protocol::Span;
+alias arg = pkg::protocol::arg;
+alias name_is = pkg::bytes::name_is;
+alias name_code = pkg::bytes::name_code;
+
+const replay_function_names: Array<u64, 9> =[1145130828_u64, 19512274063672658_u64, 76228242195780_u64, 1347245380_u64, 1414744396_u64, 357895853139_u64, 1280067915_u64, 1347175752_u64, 310635744326_u64];
+
+fn replay_known(input: &[u8], args: &Box<Slots<Span>>) -> known: Bool reads(input), reads(args) {
+  let name = arg(args: args, index: 0_u64);
+  let kind = command_kind(input: input, name: name);
+  if kind == 0_u64 {
+    return False();
+  }
+  if args^.inner.len < 2_u64 {
+    return True();
+  }
+  if kind == 182_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    let code = name_code(input: input, start: sub.start, length: sub.length);
+    for (index in 0_u64..9_u64) {
+      if replay_function_names[index] == code {
+        return True();
+      }
+    }
+    return False();
+  }
+  let arity = admission_arity(kind: kind, input: input, args: args);
+  if kind == 166_u64 {
+    let planned = command_plan(input: input, args: args);
+    if planned == 3_u64 {
+      return True();
+    }
+  }
+  return arity != 0_i64;
+}
+
+fn replay_supported(input: &[u8], args: &Box<Slots<Span>>) -> reason: u8 reads(input), reads(args) {
+  let name = arg(args: args, index: 0_u64);
+  let kind = command_kind(input: input, name: name);
+  let count = args^.inner.len;
+  if kind == 163_u64 {
+    if count >= 2_u64 {
+      let error = select_plan(input: input, args: args);
+      if error == 3_u64 {
+        return 2_u8;
+      }
+    }
+  } else if kind == 39_u64 {
+    if count >= 3_u64 {
+      let plan = copy_parse(input: input, args: args);
+      if plan.error == 3_u64 {
+        return 3_u8;
+      }
+    }
+  } else if kind == 182_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    let flush = name_is(input: input, start: sub.start, length: sub.length, word: &word_flush[0_u64..5_u64]);
+    if bnot(flush) {
+      return 3_u8;
+    }
+  } else if kind == 187_u64 {
+    return 3_u8;
+  } else if kind == 188_u64 {
+    return 3_u8;
+  } else if kind == 189_u64 {
+    return 3_u8;
+  } else if kind == 185_u64 {
+    if count != 1_u64 {
+      return 3_u8;
+    }
+  } else if kind == 186_u64 {
+    if count != 1_u64 {
+      return 3_u8;
+    }
+  }
+  return 0_u8;
+}
