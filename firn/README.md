@@ -357,9 +357,17 @@ Persistence uses Redis 7.0.15's manifest layout: with prefix `F`, a fresh
 start creates `appendonlydir/F.1.base.aof` (empty), `F.1.incr.aof` and
 `F.manifest`. Base files use commands, not an RDB preamble. Manifest updates
 write `temp-F.manifest`, sync it, rename it over the manifest and sync the
-directory. A listed file that is missing or malformed stops firn with status
-4 before it listens. Only the last file may have an incomplete tail cut,
-as with `aof-load-truncated yes`; an incomplete earlier file stops startup.
+directory. A malformed AOF record stops firn with status 1 before it listens
+and writes Redis 7.2.16's bad-file-format message to stderr; a missing listed
+file or another unrecoverable startup refusal stops it with status 4.
+Startup accepts RESP array records, refuses inline commands, and skips each
+`#` annotation chunk through its first LF or 1023 bytes, matching Redis's
+1024-byte line buffer. It scans headers and rereads arguments by file
+position, so a command's total payload can exceed 2 GiB without exceeding
+the network input window. The command's contiguous payload allocation and
+the loaded values must fit available memory. Only the last file may have an
+incomplete tail cut, as with `aof-load-truncated yes`; an incomplete earlier
+file stops startup.
 Listed history files are removed after loading only after syncing appendonlydir;
 a failed sync leaves them listed and on disk. Unlisted files are kept except
 this dataset's temporary journal `temp-F.journal`, whose cleanup is attempted

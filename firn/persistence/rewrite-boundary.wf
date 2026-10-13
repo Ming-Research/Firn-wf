@@ -1,7 +1,6 @@
 alias Clock = std::time::Clock;
 alias HandleFactory = std::io::HandleFactory;
 alias Keyspace = pkg::store::Keyspace;
-alias Span = pkg::protocol::Span;
 
 struct AofBoundary {
   doc "Whether the sealed file reads whole, and, when it ends inside an unfinished block, the offset of that block's first MULTI and the bytes read.";
@@ -11,13 +10,8 @@ struct AofBoundary {
   size: u64;
 }
 
-fn aof_block_command(input: &[u8], args: &Box<Slots<Span>>) -> kind: u64 reads(input), reads(args) {
-  doc "Shared loader and syntax-only boundary rule: only a one-argument MULTI or EXEC changes block state; nested MULTI retains the first unfinished boundary while advancing Redis's latest-MULTI truncation boundary.";
-  let command = pkg::protocol::arg(args: args, index: 0_u64);
-  return aof_block_word(input: input, start: command.start, length: command.length, count: args^.inner.len);
-}
-
 fn aof_block_word(input: &[u8], start: u64, length: u64, count: u64) -> kind: u64 reads(input) {
+  doc "Shared loader and syntax-only boundary rule: only a one-argument MULTI or EXEC changes block state; nested MULTI retains the first unfinished boundary while advancing Redis's latest-MULTI truncation boundary.";
   if count != 1_u64 {
     return 0_u64;
   }
@@ -33,11 +27,12 @@ fn aof_block_word(input: &[u8], start: u64, length: u64, count: u64) -> kind: u6
 }
 
 fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> result: AofBoundary reads(store), reads(log), writes(factory), writes(clock) waits {
-  doc "Validate only syntax and block boundaries, never reconstruct a keyspace. The initial 64-KiB input and 32768 inline argument slots are charged before allocation. RESP bulk bodies stream through that window regardless of historical command size; incomplete headers or inline lines can grow only after charging the full new backing storage, using the ordinary parser rules. A sealed file that ends inside a block reports the first MULTI after the last EXEC that closed one, so the caller can cut there.";
+  doc "Validate with the startup scanner without retaining argument positions or executing commands. Charge 65536 bytes for its read buffer and a conservative 4096 bytes for two 1023-byte line windows, the five-byte command probe and reader, record and window descriptors before allocation. Each new bounded read checks rewrite cancellation and yields between chunks. Clean EOF inside a block reports its first MULTI for the caller to cut.";
   let accepted = False();
   let unfinished = False();
   let reverted = 0_u64;
   let size = 0_u64;
+  let allocated = 69632_u64;
   for (index in 0_u64..log^.manifest.parts.inner.len) {
     let part = &log^.manifest.parts.inner[index];
     let incremental = part^.kind == 105_u8;
@@ -46,7 +41,7 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
     if selected {
       let charged = False();
       atomic m = &store^.meta {
-        set charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 589872_u64);
+        set charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: allocated);
       }
       if charged {
       } else {
@@ -57,138 +52,46 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
       let name = &part^.name.inner[0_u64..length];
       match std::fs::open_file(factory: factory, root: &log^.directory, name: name, start: 0_u64, end: length) {
         Ok(value: file) => {
-          let allocated = 589872_u64;
-          let input = pkg::protocol::input_new(capacity: 65536_u64);
-          let args = box_slots_new::<Span>(capacity: 32768_u64);
-          let stream = pkg::protocol::request_stream_new();
-          let held = 0_u64;
-          let offset = 0_u64;
+          let bytes = box_array_filled::<u8>(count: 65536_u64, value: 0_u8);
+          let no_eof = False();
+          let reader = AofReader(bytes: move bytes, cursor: 0_u64, held: 0_u64, position: 0_u64, size: 0_u64, eof: no_eof);
           let scanning = False();
           let first_multi = 0_u64;
-          let latest_multi = 0_u64;
-          let command_start = 0_u64;
-          loop @chunks {
-            let cancelled = aof_rw_cancelled(store: store);
-            if cancelled {
-              break @chunks;
+          let valid = 0_u64;
+          let rewriting = True();
+          let retain = False();
+          loop @records {
+            let record = match aof_record(store: store, factory: factory, file: &file, reader: &reader, clock: clock, rewriting: rewriting, retain: retain) {
+              Ok(value: parsed) => {
+                give move parsed;
+              }
+              Err(error: reason) => {
+                if reason == 0_u8 {
+                  set accepted = True();
+                  set unfinished = scanning;
+                  set reverted = first_multi;
+                  set size = reader.size;
+                }
+                break @records;
+              }
             }
-            if held >= input.inner.len {
-              let old_input = input.inner.cap;
-              let old_args = args.inner.cap;
-              let capacity = old_input *sat 2_u64;
-              if capacity > 1073741824_u64 {
-                break @chunks;
-              }
-              let span_capacity = capacity / 2_u64;
-              let span_bytes = span_capacity *sat 16_u64;
-              let new_bytes = capacity +sat span_bytes;
-              let charge = new_bytes +sat 48_u64;
-              let room = False();
-              atomic expanded = &store^.meta {
-                set room = pkg::store::rewrite_charge(capture: &expanded^.rewrite, bytes: charge);
-              }
-              if room {
-                set allocated = allocated +sat charge;
-                if span_capacity >= args.inner.cap {
-                  grow(cell: &args, capacity: span_capacity);
-                } else {
-                  break @chunks;
-                }
-                pkg::protocol::input_grow(input: &input);
-                let old_span_bytes = old_args *sat 16_u64;
-                let old_bytes = old_input +sat old_span_bytes;
-                let released = old_bytes +sat 48_u64;
-                atomic grown = &store^.meta {
-                  set grown^.rewrite.used = grown^.rewrite.used -sat released;
-                }
-                set allocated = allocated -sat released;
+            if record.kind == 1_u64 {
+              if scanning {
               } else {
-                break @chunks;
+                set first_multi = valid;
               }
-              if held >= input.inner.len {
-                break @chunks;
-              }
+              set scanning = True();
+            } else if record.kind == 2_u64 {
+              set scanning = False();
             }
-            let capacity = input.inner.len;
-            let ended = False();
-            let failed = False();
-            let window = &input.inner[0_u64..capacity];
-            match std::fs::read_at(factory: factory, file: &file, destination: window, file_offset: offset, start: held, end: capacity) {
-              Ok(value: next) => {
-                let got = next -sat held;
-                set offset = offset +sat got;
-                set held = next;
-                set ended = got == 0_u64;
-              }
-              Err(error: problem) => {
-                set ended = True();
-                match problem {
-                  ReadEnd() => {
-                  }
-                  ReadFailed(error: why) => {
-                    set failed = True();
-                  }
-                }
-              }
-            }
-            if ended {
-              let empty = held == 0_u64;
-              let at_boundary = stream.phase == 0_u64;
-              let whole = band(empty, at_boundary);
-              let readable = bnot(failed);
-              set accepted = band(whole, readable);
-              set unfinished = scanning;
-              set reverted = first_multi;
-              set size = offset;
-              break @chunks;
-            }
-            let consumed = 0_u64;
-            let base = offset -sat held;
-            loop @commands {
-              let parsed = pkg::protocol::parse_request_stream(input: window, start: consumed, held: held, args: &args, stream: &stream);
-              if parsed.state == 0_u64 {
-                set consumed = parsed.next;
-                break @commands;
-              } else if parsed.state == 1_u64 {
-                let kind = 0_u64;
-                if stream.resp {
-                  set kind = aof_block_word(input: &stream.word[0_u64..5_u64], start: 0_u64, length: stream.length, count: stream.count);
-                } else {
-                  set kind = aof_block_command(input: window, args: &args);
-                }
-                if kind == 1_u64 {
-                  set latest_multi = command_start;
-                  if scanning {
-                  } else {
-                    set first_multi = latest_multi;
-                  }
-                  set scanning = True();
-                } else if kind == 2_u64 {
-                  set scanning = False();
-                }
-              } else if parsed.state != 6_u64 {
-                set failed = True();
-                break @commands;
-              }
-              set consumed = parsed.next;
-              set command_start = base +sat consumed;
-              if consumed >= held {
-                break @commands;
-              }
-            }
-            if failed {
-              break @chunks;
-            }
-            set held = pkg::protocol::keep_rest(input: &input, from: consumed, held: held);
-            aof_rw_pause(clock: clock);
+            set valid = reader.position;
           }
           if accepted {
           } else {
             let reason_boundary_1 = pkg::store::RewriteAbortReason::Boundary();
             aof_rw_abort(store: store, reason: reason_boundary_1);
           }
-          aof_rw_release::<Box<Slots<u8>>>(value: move input);
-          aof_rw_release::<Box<Slots<Span>>>(value: move args);
+          aof_rw_release::<AofReader>(value: move reader);
           atomic released = &store^.meta {
             set released^.rewrite.used = released^.rewrite.used -sat allocated;
           }
@@ -206,7 +109,7 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
           atomic unopened = &store^.meta {
             let reason_boundary_3 = pkg::store::RewriteAbortReason::Boundary();
             pkg::store::rewrite_abort(capture: &unopened^.rewrite, reason: reason_boundary_3);
-            set unopened^.rewrite.used = unopened^.rewrite.used -sat 589872_u64;
+            set unopened^.rewrite.used = unopened^.rewrite.used -sat allocated;
           }
         }
       }

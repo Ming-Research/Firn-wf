@@ -6,6 +6,7 @@ mod support;
 mod memory_limit;
 mod aof_write_errors;
 mod aof_sync_fault;
+mod aof_load;
 mod rewrite_sequence;
 mod rewrite_scan;
 mod write_meta;
@@ -1289,10 +1290,10 @@ fn firn_replays_blocks_and_cuts_an_unloaded_end_as_redis_does() {
     }
 }
 
-/// [PRE-2] firn stops with status 4 before it listens when its append-only
+/// [PRE-2] firn stops with status 1 before it listens when its append-only
 /// file holds a record that is not a well-formed command, here an argument
 /// line that does not start with `$` between two whole commands, where
-/// Redis 7.0.15's loader takes its format-error path and exits; the file
+/// Redis 7.2.16's loader takes its format-error path and exits; the file
 /// stays as it was, neither cut nor appended to.
 #[cfg(target_os = "linux")]
 #[test]
@@ -1314,8 +1315,8 @@ fn firn_stops_on_an_append_only_file_that_does_not_parse() {
     let output = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease).wait_with_output().expect("wait for compiled program");
     assert_eq!(
         output.status.code(),
-        Some(4),
-        "firn must stop with status 4: {output:?}"
+        Some(1),
+        "firn must stop with Redis's status 1: {output:?}"
     );
     let after = std::fs::read(&path).unwrap_or_else(|error| panic!("read the file: {error}"));
     assert_eq!(after, content, "the file must stay as it was");
