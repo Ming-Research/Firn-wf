@@ -69,7 +69,10 @@ def run(server, batch, port):
     args = [server, "--port", str(port), "--save", "", "--dir", d]
     if batch.get("rewrite_aof") or batch.get("appendonly"):
         args += ["--appendonly", "yes", "--aof-use-rdb-preamble", "no", "--auto-aof-rewrite-percentage", "0"]
-    for k, v in batch.get("config", []):
+    cfg = batch.get("config") or []
+    if isinstance(cfg, dict):
+        cfg = list(cfg.items())
+    for k, v in cfg:
         args += ["--" + k, v]
     resp = batch.get("resp", 2)
     p, s, f = start(server, args, port, resp)
