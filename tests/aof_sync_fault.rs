@@ -237,31 +237,35 @@ fn fail(device: &Device, client: &mut TcpStream) -> Failure {
 }
 
 fn spawn_redis(binary: &Path, directory: &Path, log: &Path) -> (ProgramChild, u16) {
-    let port = free_port().to_string();
+    let port_lease = support::lease_port();
+    let port = port_lease.port().to_string();
     let mut command = Command::new(binary);
     command.current_dir(directory)
         .args(["--port", port.as_str(), "--bind", "127.0.0.1", "--save", "", "--appendonly", "yes",
             "--appendfilename", "sync.aof", "--appendfsync", "everysec", "--dir"])
         .arg(directory).arg("--logfile").arg(log)
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child = ProgramChild::spawn(&mut command).expect("spawn redis-server");
+    let child = ProgramChild::spawn(&mut command).expect("spawn redis-server").with_port(&port_lease);
     (child, port.parse().unwrap())
 }
 
 fn start_redis(binary: &Path, directory: &Path, log: &Path) -> (ProgramChild, TcpStream) {
     let (child, port) = spawn_redis(binary, directory, log);
-    (child, connect_when_ready(port))
+    let client = connect_when_ready(port, &child);
+    (child, client)
 }
 
 fn spawn_firn(program: &CompiledProgram, native: bool) -> (ProgramChild, u16) {
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    (program.spawn_on_route(native, &[text.as_bytes(), b"0", b"sync.aof"]), port)
+    (program.spawn_on_route(native, &[text.as_bytes(), b"0", b"sync.aof"]).with_port(&port_lease), port)
 }
 
 fn start_firn(program: &CompiledProgram, native: bool) -> (ProgramChild, TcpStream) {
     let (child, port) = spawn_firn(program, native);
-    (child, connect_when_ready(port))
+    let client = connect_when_ready(port, &child);
+    (child, client)
 }
 
 /// The redis-server REDIS_SERVER names, checked to be 7.2.16, the oracle.
