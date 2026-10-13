@@ -685,16 +685,16 @@ fn case_eval(clock: &std::time::Clock, input: &[u8], script_length: u64, protect
   let env = pkg::bytes::KeyEnv();
   let time = pkg::store::Time(unix_ms: 1_u64, check: 1_u64, loading: no);
   pkg::scripting::eval::<FirnCommands>(store: &store, input: input, args: &args, client: &client, keys_env: &env, time: &time, clock: clock, by_sha: no);
-  let unchanged = False();
+  let list_preserved = False();
   atomic slot = &store.keys[store_key] {
-    set unchanged = case_original(slot: slot, length: 8_u64);
+    set list_preserved = case_original(slot: slot, length: 8_u64);
   }
   let reply_matches = if protected {
     give case_reply(client: &client, expected: &case_eval_pcall_reply[0_u64..54_u64]);
   } else {
     give case_reply(client: &client, expected: &case_eval_call_reply[0_u64..119_u64]);
   }
-  return band(unchanged, reply_matches);
+  return band(list_preserved, reply_matches);
 }
 
 fn list_ceiling_main(inputs: std::process::Inputs) -> status: CaseExitStatus pure waits {
