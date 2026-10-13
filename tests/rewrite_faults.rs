@@ -52,7 +52,7 @@ fn start(server: Server, oracle: &Path, directory: &Path, traced: bool) -> (Prog
                 .arg(directory);
         }
         Server::Firn(native) => {
-            command.args([&port, "0", "appendonly.aof", "--auto-aof-rewrite-percentage", "0"])
+            command.args(["--port", &port, "--firn-clients", "0", "--appendonly", "yes", "--appendfilename", "appendonly.aof", "--auto-aof-rewrite-percentage", "0"])
                 .env("WF_WORKERS", "2").env("WF_DRIVERS", "2").env_remove("WF_REQUIRE_WINDOWS_IOCP");
             if native { command.env_remove("WF_IO_NO_NATIVE_RING"); }
             else { command.env("WF_IO_NO_NATIVE_RING", "1"); }

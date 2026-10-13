@@ -264,7 +264,7 @@ fn spawn_firn(program: &CompiledProgram, native: bool) -> (ProgramChild, u16) {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    (program.spawn_on_route(native, &[text.as_bytes(), b"0", b"sync.aof"]).with_port(&port_lease), port)
+    (program.spawn_on_route(native, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"sync.aof"]).with_port(&port_lease), port)
 }
 
 fn start_firn(program: &CompiledProgram, native: bool) -> (ProgramChild, TcpStream) {

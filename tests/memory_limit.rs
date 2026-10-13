@@ -28,7 +28,7 @@ fn start(clients: &[u8]) -> (ProgramChild, TcpStream, u16) {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = firn().spawn_on_route(true, &[text.as_bytes(), clients]).with_port(&port_lease);
+    let child = firn().spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", clients]).with_port(&port_lease);
     let client = connect_when_ready(port, &child);
     (child, client, port)
 }
@@ -101,7 +101,7 @@ fn noeviction_reclaims_map_reserve_before_refusing_a_write() {
     let port = port_lease.port();
     let text = port.to_string();
     let child = firn().spawn_on_route_with(
-        true, &[("WF_DRIVERS", "1"), ("WF_WORKERS", "1")], &[text.as_bytes(), b"1"],
+        true, &[("WF_DRIVERS", "1"), ("WF_WORKERS", "1")], &[b"--port", text.as_bytes(), b"--firn-clients", b"1"],
     ).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["FLUSHDB"]), "+OK\r\n");
@@ -469,7 +469,7 @@ fn aof_capacity_is_excluded_and_eviction_survives_replay() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"memory.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"memory.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let value = "a".repeat(VALUE_BYTES);
     assert_eq!(memory_request(&mut client, &["SET", "victim", &value]), "+OK\r\n");
@@ -495,7 +495,7 @@ fn aof_capacity_is_excluded_and_eviction_survives_replay() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"memory.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"memory.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["STRLEN", "victim"]), format!(":{VALUE_BYTES}\r\n"));
     configure(&mut client, &["maxmemory", "1", "maxmemory-policy", "allkeys-random", "maxmemory-eviction-tenacity", "100"]);
@@ -507,7 +507,7 @@ fn aof_capacity_is_excluded_and_eviction_survives_replay() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"memory.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"memory.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["GET", "victim"]), "$-1\r\n");
     drop(client);
@@ -579,7 +579,7 @@ fn admission_with_aof_refuses_writes_over_the_limit() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"admission.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"admission.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let value = "w".repeat(VALUE_BYTES);
     let measured = info(&mut client, "memory");

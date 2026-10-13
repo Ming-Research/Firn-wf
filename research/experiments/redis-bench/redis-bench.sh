@@ -731,17 +731,17 @@ start() {
             ;;
         firn-base-*)
             (registered; WF_DRIVERS=${1#firn-base-} exec taskset -c "$SERVER_CPUS" \
-                "$FIRN_BASELINE" "$PORT" 0 - "${IDLE:-0}" \
+                "$FIRN_BASELINE" --port "$PORT" --timeout "${IDLE:-0}" --appendonly no \
                 ) >"$OUT/server.log" 2>&1 &
             ;;
         firn-aof-*)
             (registered && cd "$OUT" && WF_DRIVERS=${1##*-} exec taskset -c "$SERVER_CPUS" \
-                ./firn "$PORT" 0 firn.aof "${IDLE:-0}") \
+                ./firn --port "$PORT" --timeout "${IDLE:-0}" --appendonly yes --appendfilename firn.aof) \
                 >"$OUT/server.log" 2>&1 &
             ;;
         firn-*)
             (registered; WF_DRIVERS=${1#firn-} exec taskset -c "$SERVER_CPUS" \
-                "$OUT/firn" "$PORT" 0 - "${IDLE:-0}" \
+                "$OUT/firn" --port "$PORT" --timeout "${IDLE:-0}" --appendonly no \
                 ) >"$OUT/server.log" 2>&1 &
             ;;
         image-*)
@@ -756,12 +756,12 @@ start() {
                 (registered && cd "$AOF_DIR" && \
                     WF_DRIVERS=${IMAGE_DRIVERS:-$(cpu_count "$SERVER_CPUS")} \
                     exec taskset -c "$SERVER_CPUS" \
-                    "$img" "$PORT" 0 firn.aof "${IDLE:-0}" \
+                    "$img" --port "$PORT" --timeout "${IDLE:-0}" --appendonly yes --appendfilename firn.aof \
                     ) >"$OUT/server.log" 2>&1 &
             else
             (registered; WF_DRIVERS=${IMAGE_DRIVERS:-$(cpu_count "$SERVER_CPUS")} \
                 exec taskset -c "$SERVER_CPUS" \
-                "$(image_path "${1#image-}")" "$PORT" 0 - "${IDLE:-0}" \
+                "$(image_path "${1#image-}")" --port "$PORT" --timeout "${IDLE:-0}" --appendonly no \
                 ) >"$OUT/server.log" 2>&1 &
             fi
             ;;
