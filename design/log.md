@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Answer CLIENT handshake subcommands as Redis 7.2.16 does
+
+Nodes: firn/reported-facts, firn/transactions
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-client-handshake-tree, which asked to approve PR #74's design change at head ccc6c6a: CLIENT LIST leaves out idle, flags, multi and cmd for connections other than the caller; an address the host refuses to report is shown empty; supported CLIENT subcommands queued in a transaction run inside EXEC; EXEC publishes changed connection records before its atomic statement ends; the PR merges after the 14900K comparison against Redis, Valkey, Dragonfly and Garnet shows no regression.
+
+Summary: CLIENT LIST gives other connections only the fields they set themselves, because the four per-command fields could be shared only by a contended write to the client table on every command; replication and MONITOR, whose suite checks read another connection's flags, are outside firn's supported features. An unreported address is empty as in Redis 7.2.16's genClientAddrString, not the placeholder the parent decision rejects. Redis 7.2.16 queues the CLIENT subcommands, which lack NO_MULTI, and runs them in execCommand, so firn runs them inside EXEC's atomic statement and refuses EXECABORT for them; changed connection records are published inside that statement so no connection sees new keys with old connection facts. The pinned compiler takes the client table with Meta on every EXEC, so acquiring it only when CLIENT is queued is recorded as not implemented; the 14900K comparison decides whether that is a measurable cost to raise as a Whitefoot gap.
+
 ## 2026-10-13 Write a conditional Meta hold as one statement
 
 Nodes: firn/command-parts
