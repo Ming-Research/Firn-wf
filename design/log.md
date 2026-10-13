@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Describe a short AOF append by the host's no-space text
+
+Nodes: firn/append-only-file
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-enospc-design, which asked to approve PR #70's design change at head 13ba7ed with the pin moved from wf-c52e867cae4f (specification v0.135) to wf-2a785316590a (specification v0.136): a partial AOF append's MISCONF reply ends with the host's description of the no-space class.
+
+Summary: Redis 7.2.16 reports every short AOF write as ENOSPC. Whitefoot v0.136's error_copy_class_description gives the host's text for an error class, so firn's reply now equals Redis's word for word without naming a platform error number, which closes the gap the previous empty suffix recorded.
+
 ## 2026-10-12 Take Redis 7.2.16 as the gate's suite and the reference server
 
 Nodes: firn, firn/consumers
