@@ -1040,6 +1040,8 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       set delay_given = True();
       set new_delay = number.value;
     } else if memory_parameter {
+      invariant memory_selector_lower: which >= 24_u64;
+      invariant memory_selector_upper: which <= 29_u64;
       let memory_slot = which -wrap 24_u64;
       let parsed_memory = config_memory_value(input: input, span: value, which: which, client: client);
       if bnot(parsed_memory.valid) {

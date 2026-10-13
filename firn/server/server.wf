@@ -577,8 +577,11 @@ fn option_text(args: &std::text::Args, position: u64) -> text: Text reads(args) 
     Ok(value: host) => {
       let length = std::text::host_bytes_len(value: &host);
       let made = box_array_filled::<u8>(count: length, value: 0_u8);
+      invariant argument_storage: made.inner.len == length;
       match std::text::host_copy_bytes(value: &host, destination: &made.inner[0_u64..length], start: 0_u64, end: length) {
         Ok(value: next) => {
+          invariant copied_endpoint: next <= length;
+          invariant copied_prefix: next <= made.inner.len;
           let result = config_buffer();
           config_append(buffer: &result, source: &made.inner[0_u64..next]);
           if next != length {

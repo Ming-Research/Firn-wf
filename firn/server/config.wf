@@ -81,7 +81,7 @@ fn config_buffer() -> buffer: Text pure {
 }
 
 fn config_append(buffer: &Text, source: &[u8]) -> result: unit reads(source), writes(buffer) {
-  doc "Appends bytes without a fixed configuration-size limit; arithmetic exhaustion marks the buffer invalid, which every consuming startup path checks.";
+  doc "Appends bytes without a fixed configuration-size limit; arithmetic exhaustion marks the buffer invalid, which every consuming startup path checks. Reserve the full checked sum before the shared append helper, so its reservation never needs to grow or hit its own ceiling and every byte has room.";
   if buffer^.valid {
   } else {
     return unit;
@@ -107,14 +107,12 @@ fn config_append(buffer: &Text, source: &[u8]) -> result: unit reads(source), wr
       Err(error: overflow) => {
       }
     }
+    invariant growth: target >= needed;
     grow(cell: &buffer^.bytes, capacity: target);
   }
-  for (
-    index in 0_u64..count,
-    invariant filled: buffer^.bytes.inner.len == before + index
-  ) {
-    place_back(window: &buffer^.bytes.inner, value: source^[index]);
-  }
+  invariant preserved: buffer^.bytes.inner.len == before;
+  invariant room: buffer^.bytes.inner.cap >= needed;
+  pkg::store::log_append_plain(log: &buffer^.bytes, bytes: source);
   return unit;
 }
 
@@ -128,9 +126,13 @@ fn config_number(buffer: &Text, number: u64) -> result: unit writes(buffer) {
   let digits = array_filled::<u8, 20>(value: 0_u8);
   let value = number;
   let count = 0_u64;
-  loop {
+  loop (
+    invariant stored_digits: count <= 20_u64
+  ) {
     let digit = value % 10_u64;
+    invariant decimal_digit: digit <= 9_u64;
     let narrow = cvt::<u64, u8>(digit);
+    invariant narrow_digit: narrow <= 9_u8;
     let byte = narrow + 48_u8;
     if count < 20_u64 {
       set digits[count] = byte;
@@ -141,7 +143,9 @@ fn config_number(buffer: &Text, number: u64) -> result: unit writes(buffer) {
       break;
     }
   }
-  loop {
+  loop (
+    invariant remaining_digits: count <= 20_u64
+  ) {
     if count == 0_u64 {
       break;
     }
@@ -166,6 +170,7 @@ fn config_write(factory: &HandleFactory, output: &OutputStream, bytes: &[u8]) ->
     }
     match std::io::write_once(factory: factory, output: output, source: bytes, start: sent, end: length, deadline: deadline, cancel: &cancel) {
       Ok(value: next) => {
+        invariant sent_bound: next <= length;
         if next == sent {
           break;
         }
@@ -195,6 +200,7 @@ fn config_description(buffer: &Text, problem: &IoError) -> result: unit reads(pr
     let bytes = box_array_filled::<u8>(count: capacity, value: 0_u8);
     match std::io::error_copy_description(error: problem, destination: &bytes.inner[0_u64..capacity], start: 0_u64, end: capacity) {
       Ok(value: end) => {
+        invariant description_bound: end <= capacity;
         config_append(buffer: buffer, source: &bytes.inner[0_u64..end]);
         return unit;
       }
@@ -266,6 +272,7 @@ fn config_read_file(factory: &HandleFactory, file: std::fs::ReadFile, output: &O
   loop {
     match std::fs::read_at(factory: factory, file: &file, destination: &chunk[0_u64..4096_u64], file_offset: offset, start: 0_u64, end: 4096_u64) {
       Ok(value: next) => {
+        invariant read_bound: next <= 4096_u64;
         config_ingest(buffer: buffer, ingest: &ingest, source: &chunk[0_u64..next]);
         match offset +checked next {
           Ok(value: advanced) => {
@@ -323,6 +330,7 @@ fn config_read_stdin(factory: &HandleFactory, input: &InputStream, output: &Outp
   loop {
     match std::io::read_next(factory: factory, input: input, destination: &chunk[0_u64..4096_u64], start: 0_u64, end: 4096_u64, deadline: deadline, cancel: &cancel) {
       Ok(value: next) => {
+        invariant read_bound: next <= 4096_u64;
         config_ingest(buffer: buffer, ingest: &ingest, source: &chunk[0_u64..next]);
         if buffer^.valid {
         } else {
@@ -422,8 +430,12 @@ fn config_quote(buffer: &Text, value: &[u8]) -> result: unit reads(value), write
           config_byte(buffer: buffer, byte: 120_u8);
           let high = byte / 16_u8;
           let low = byte % 16_u8;
+          invariant high_nibble: high < 16_u8;
+          invariant low_nibble: low < 16_u8;
           let high_index = cvt::<u8, u64>(high);
           let low_index = cvt::<u8, u64>(low);
+          invariant high_digit: high_index < 16_u64;
+          invariant low_digit: low_index < 16_u64;
           config_byte(buffer: buffer, byte: config_hex_digits[high_index]);
           config_byte(buffer: buffer, byte: config_hex_digits[low_index]);
         }
@@ -535,6 +547,7 @@ fn config_apply(options: &Options, input: &[u8], arguments: &Box<Slots<Span>>) -
       let parsed = pkg::commands::parse_memory_config(input: input, span: span, which: kind);
       if parsed.valid {
         let index = kind - 24_u64;
+        invariant memory_index: index < 6_u64;
         set options^.memory[index] = parsed.value;
         return move empty;
       }
@@ -664,6 +677,7 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
       if end == length {
         break @line_end;
       }
+      invariant readable: end < length;
       let byte = source^[end];
       let feed = byte == 10_u8;
       let zero = byte == 0_u8;
@@ -681,6 +695,8 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
       if left == end {
         break @trim_left;
       }
+      invariant untrimmed: left < end;
+      invariant before_source_end: left < length;
       if config_trim(byte: source^[left]) {
         set left = left + 1_u64;
       } else {
@@ -694,7 +710,11 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
       if right == left {
         break @trim_right;
       }
+      invariant right_after_left: right > left;
+      invariant nonempty: right > 0_u64;
       let previous = right - 1_u64;
+      invariant before_right: previous < right;
+      invariant readable: previous < length;
       if config_trim(byte: source^[previous]) {
         set right = previous;
       } else {
@@ -702,6 +722,7 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
       }
     }
     if left < right {
+      invariant first_byte: left < length;
       if source^[left] != 35_u8 {
         let line = &source^[left..right];
         if number == invalid_line {
@@ -710,7 +731,9 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
           return unit;
         }
         let size = right - left;
+        invariant line_size: line^.len == size;
         let decoded = box_array_filled::<u8>(count: size, value: 0_u8);
+        invariant decoded_size: decoded.inner.len == size;
         for (index in 0_u64..size) {
           set decoded.inner[index] = line^[index];
         }
@@ -735,6 +758,7 @@ fn config_parse(options: &Options, source: &[u8], invalid_line: u64, factory: &H
     if end == length {
       break @lines;
     }
+    invariant terminator: end < length;
     if source^[end] == 0_u8 {
       break @lines;
     }
