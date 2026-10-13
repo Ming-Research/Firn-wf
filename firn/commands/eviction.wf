@@ -267,7 +267,8 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
               } else {
                 if candidates.inner.len == candidates.inner.cap {
                   let needed = candidates.inner.cap +sat 1_u64;
-                  let twice = candidates.inner.cap *sat 2_u64;
+                  let capacity_now = candidates.inner.cap;
+                  let twice = capacity_now +sat capacity_now;
                   let capacity = imax(needed, twice);
                   if capacity >= candidates.inner.cap {
                     grow(cell: &candidates, capacity: capacity);

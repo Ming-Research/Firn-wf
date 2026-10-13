@@ -224,7 +224,8 @@ fn blocking_drain(map_shared: &Shared<ConcurrentHashMap<Entry>>, keys: &Concurre
           }
           let live = False();
           let time = Time(unix_ms: millis, check: millis, loading: live);
-          if list_kind(slot: slot, now: millis) != entry_wanted {
+          let found = list_kind(slot: slot, now: millis);
+          if found != entry_wanted {
             break @waiters;
           }
           match pkg::connection_events::block_front(hub: hub, key: &name) {

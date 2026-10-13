@@ -18,7 +18,10 @@ fn promote(hub: &Hub, client: &Client) -> result: unit writes(hub), writes(clien
   if client^.pubsub_id == 0_u64 {
     let record = record_new(hub: hub, client: client);
     put_record(hub: hub, record: move record);
-  } else if bnot(connection_live(hub: hub, id: client^.pubsub_id)) {
+    return unit;
+  }
+  let registered = connection_live(hub: hub, id: client^.pubsub_id);
+  if bnot(registered) {
     set client^.closing = True();
   }
   return unit;
@@ -101,7 +104,8 @@ fn block_deadline_remove(hub: &Hub, id: u64, generation: u64) -> result: unit wr
 
 fn block_install(hub: &Hub, request: BlockedList) -> result: unit writes(hub) {
   let id = request.client.pubsub_id;
-  if bnot(connection_live(hub: hub, id: id)) {
+  let registered = connection_live(hub: hub, id: id);
+  if bnot(registered) {
     return unit;
   }
   let previous = block_take(hub: hub, id: id);
