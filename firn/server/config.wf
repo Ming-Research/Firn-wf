@@ -108,6 +108,7 @@ fn config_append(buffer: &Text, source: &[u8]) -> result: unit reads(source), wr
       }
     }
     invariant growth: target >= needed;
+    invariant grows_capacity: target >= buffer^.bytes.inner.cap;
     grow(cell: &buffer^.bytes, capacity: target);
   }
   invariant preserved: buffer^.bytes.inner.len == before;
@@ -238,7 +239,9 @@ struct ConfigIngest {
   invariant chunk(state): state.used < 1024_u64;
 }
 
-fn config_ingest(buffer: &Text, ingest: &ConfigIngest, source: &[u8]) -> result: unit reads(source), writes(buffer), writes(ingest) {
+fn config_ingest(buffer: &Text, ingest: &ConfigIngest, source: &[u8]) -> result: unit reads(source), writes(buffer), writes(ingest) contract {
+  ensures ingest^.used < 1024_u64;
+} {
   doc "Matches Redis loadServerConfig's fgets of at most 1024 bytes followed by sdscat: NUL hides the remainder of that fgets chunk, but a following line or 1024-byte chunk is read normally. State persists across arbitrary host read boundaries.";
   let length = source^.len;
   for (
@@ -253,12 +256,14 @@ fn config_ingest(buffer: &Text, ingest: &ConfigIngest, source: &[u8]) -> result:
       config_byte(buffer: buffer, byte: byte);
     }
     set ingest^.used = ingest^.used + 1_u64;
+    invariant filled_chunk: ingest^.used <= 1024_u64;
     let newline = byte == 10_u8;
     let full = ingest^.used == 1024_u64;
     if bor(newline, full) {
       set ingest^.used = 0_u64;
       set ingest^.truncated = False();
     }
+    invariant restored_chunk: ingest^.used < 1024_u64;
   }
   return unit;
 }
@@ -269,7 +274,9 @@ fn config_read_file(factory: &HandleFactory, file: std::fs::ReadFile, output: &O
   let untruncated = False();
   let ingest = ConfigIngest(used: 0_u64, truncated: untruncated);
   let success = True();
-  loop {
+  loop (
+    invariant ingest_chunk: ingest.used < 1024_u64
+  ) {
     match std::fs::read_at(factory: factory, file: &file, destination: &chunk[0_u64..4096_u64], file_offset: offset, start: 0_u64, end: 4096_u64) {
       Ok(value: next) => {
         invariant read_bound: next <= 4096_u64;
@@ -327,7 +334,9 @@ fn config_read_stdin(factory: &HandleFactory, input: &InputStream, output: &Outp
   let ingest = ConfigIngest(used: 0_u64, truncated: untruncated);
   let deadline = None<std::time::Instant>();
   let cancel = std::time::cancel_never();
-  loop {
+  loop (
+    invariant ingest_chunk: ingest.used < 1024_u64
+  ) {
     match std::io::read_next(factory: factory, input: input, destination: &chunk[0_u64..4096_u64], start: 0_u64, end: 4096_u64, deadline: deadline, cancel: &cancel) {
       Ok(value: next) => {
         invariant read_bound: next <= 4096_u64;
