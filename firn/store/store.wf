@@ -545,7 +545,7 @@ fn access_journal_new() -> journal: AccessJournal pure {
 }
 
 fn record_access(journal: &Option<AccessJournal>, key: &[u8], stamp: u32) -> result: unit reads(key), writes(journal) {
-  doc "Insertion-order indices identify duplicate keys without replacing their first stamp. Database tokens were validated before selection; AND bounds only the deduplication subscript and leaves the saved identity unchanged. None computes no subscript. The append grows before mutation; Whitefoot STOR-8 has no recoverable allocation failure, so no failed allocation can leave an unjournaled refresh.";
+  doc "Insertion-order indices identify duplicate keys without replacing their first stamp. Database tokens were validated before selection; AND bounds only the deduplication subscript and leaves the saved identity unchanged; it stands in for a compile-time bound until a type invariant can be carried through the journal record (Whitefoot request firn-req-invariant-through-fields), and is removed then. None computes no subscript. The append grows before mutation; Whitefoot STOR-8 has no recoverable allocation failure, so no failed allocation can leave an unjournaled refresh.";
   match journal^ {
     Some(value: recording) => {
       let database = iand(recording^.database, 15_u64);
