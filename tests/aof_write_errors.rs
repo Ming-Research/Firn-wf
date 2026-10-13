@@ -4,8 +4,8 @@
 //! script.c:349-386,547-557 and script_lua.c:988-994,1711-1722 define
 //! first-write refusal, redis.call raising and redis.pcall error tables.
 //! The MISCONF suffix is strerror(aof_last_write_errno) (server.c:4346-4355):
-//! the text below is glibc's on Linux x86-64 in the C locale. A short write's
-//! ENOSPC text (aof.c:1163-1184) is pending firn-req-enospc-text.
+//! the text below is glibc's on Linux x86-64 in the C locale. A short write is
+//! described as ENOSPC whatever the host returned (aof.c:1163-1184).
 
 use super::*;
 use std::path::Path;
@@ -361,7 +361,6 @@ fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
 /// 1184): here the second write gets EFBIG, yet Redis replies with ENOSPC's
 /// text, outside MULTI and at queue admission inside it.
 #[test]
-#[ignore = "firn-req-enospc-text: std names no host code for ENOSPC, so firn cannot describe a short write yet"]
 fn aof_short_append_reports_no_space_on_both_routes() {
     for native in [false, true] {
         let program = CompiledProgram::from_environment();

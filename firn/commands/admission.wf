@@ -37,7 +37,8 @@ fn aof_refuse(meta: &pkg::store::Meta, client: &Client) -> refused: Bool reads(m
   if pkg::store::aof_failed(meta: meta) {
     let ordinary = False();
     let described = pkg::store::aof_error_described(meta: meta);
-    pkg::protocol::reply_aof_error(client: client, execabort: ordinary, error: &described);
+    let by_class = pkg::store::aof_error_by_class(meta: meta);
+    pkg::protocol::reply_aof_error(client: client, execabort: ordinary, by_class: by_class, error: &described);
     return True();
   }
   return False();

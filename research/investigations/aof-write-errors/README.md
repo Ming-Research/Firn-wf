@@ -271,19 +271,19 @@ the window is too small the window grows by the length the host reports and
 the copy runs once more. `DescriptionUnavailable` leaves the suffix empty;
 glibc describes every code, so on Linux this needs a host failure.
 
-Gap: a short write must be described as ENOSPC, but std offers no way to
-name the host's ENOSPC code. Constructing `NoSpace(code: 28, origin: 3)`
-hard-codes the Linux and macOS number (Windows' disk-full code is 112), and
-`NoSpace(code: 0, origin: 0)` gives PRE-2's fixed `No space left`, not the
-host's `No space left on device`. firn leaves that suffix empty, filed as
-Whitefoot item `firn-req-enospc-text`; the case asserting the ENOSPC text is
-ignored with that key.
+Short write: Redis describes it as ENOSPC. Whitefoot's
+`error_copy_class_description` (specification v0.136) copies the host's text
+for the class of an error and ignores its code, so firn describes
+`NoSpace(code: 0, origin: 0)` by class and holds no platform number; before
+that release std named no host code for ENOSPC (Whitefoot item
+`firn-req-enospc-text`), and the suffix was left empty.
 
 Status: implemented on the work branch. The gate at `36ac0a5`
 ([run 38203897532](https://github.com/Ming-Research/Firn-wf/actions/runs/38203897532))
 passed, including the four `aof_write_errors` cases on both routes with their
-full `File too large` assertions; the short-write ENOSPC case is ignored,
-citing `firn-req-enospc-text`.
+full `File too large` assertions; the short-write ENOSPC case was ignored,
+citing `firn-req-enospc-text`, until the pin moved to the release with
+`error_copy_class_description`, which un-ignored it.
 
 ## Completion review fixes
 
