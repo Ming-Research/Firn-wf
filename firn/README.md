@@ -355,7 +355,7 @@ value; a later value replaces an earlier one:
 An unknown option, a value that does not read or an argument by position after
 an option stops firn with status 1.
 
-Persistence uses Redis 7.0.15's manifest layout: with prefix `F`, a fresh
+Persistence uses Redis 7.2.16's manifest layout: with prefix `F`, a fresh
 start creates `appendonlydir/F.1.base.aof` (empty), `F.1.incr.aof` and
 `F.manifest`. Base files use commands, not an RDB preamble. Manifest updates
 write `temp-F.manifest`, sync it, rename it over the manifest and sync the
@@ -365,8 +365,8 @@ also stops startup with status 1 and Redis's diagnostic
 `Unknown command '<command>' reading the append only file <filename>`.
 Lookup covers every complete record, including commands in an unfinished
 transaction, before tail recovery can truncate it. Refused records leave
-the AOF unchanged. A missing listed file or another I/O refusal retains
-status 4.
+the AOF unchanged. A missing listed file or another unrecoverable startup
+refusal also stops it with status 1.
 
 Known commands that return execution errors are logged and loading continues,
 as in Redis 7.2.16 with its default `propagation-error-behavior ignore`;
@@ -395,14 +395,21 @@ function state inside an unfinished transaction before tail recovery;
 `EXEC extra` must not be mistaken for a tail that can be discarded. Database
 selection and COPY checks run when the queued command would execute.
 `SELECT 0` remains supported.
+
 Startup accepts RESP array records, refuses inline commands, and skips each
 `#` annotation chunk through its first LF or 1023 bytes, matching Redis's
-1024-byte line buffer. It scans headers and rereads arguments by file
+1024-byte line buffer. Header numbers follow Redis's `atoi`/`strtol`
+decimal-prefix rules; array counts that convert to less than one are format
+errors, and the two bulk trailer bytes are consumed without checking CRLF.
+A negative converted bulk length is a format error in firn, a deliberate
+difference from Redis 7.2.16, which can crash when it passes that length to
+`sdsnewlen`. It scans headers and rereads arguments by file
 position, so a command's total payload can exceed 2 GiB without exceeding
 the network input window. The command's contiguous payload allocation and
 the loaded values must fit available memory. Only the last file may have an
 incomplete tail cut, as with `aof-load-truncated yes`; an incomplete earlier
-file stops startup.
+file stops startup without being cut; Redis 7.2.16 cuts that file before
+refusing startup (`aof.c:1581-1633,1699-1755`).
 Listed history files are removed after loading only after syncing appendonlydir;
 a failed sync leaves them listed and on disk. Unlisted files are kept except
 this dataset's temporary journal `temp-F.journal`, whose cleanup is attempted
@@ -537,7 +544,8 @@ rewrites. `--auto-aof-rewrite-min-size` defaults to `67108864` bytes (64 MiB)
 and accepts Redis's `b`, `k`, `m`, `g`, `kb`, `mb`, and `gb` suffixes. A rewrite
 starts when the active files exceed that minimum and have grown by at least
 the percentage over the size at the last successful rewrite. At startup the
-baseline is the loaded base file's size, as Redis 7.0.15 initializes it.
+baseline is the loaded base file's size, as Redis 7.2.16 initializes it
+(`aof.c:1759-1769`).
 `CONFIG SET` also changes both thresholds, atomically with any other parameters
 in the call, for the next automatic-rewrite decision. The percentage accepts
 integers from `0` through `2147483647`; min-size accepts Redis memory units and

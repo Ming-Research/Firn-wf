@@ -243,7 +243,7 @@ fn aof_probe(factory: &HandleFactory, file: &ReadFile, record: &AofRecord, name:
     let destination = &payload.inner[index];
     let copied = aof_read_payload(factory: factory, file: file, destination: destination, offset: source.start);
     if bnot(copied) {
-      return 4_u8;
+      return 1_u8;
     }
     pkg::protocol::push_arg(args: &args, start: at, length: source.length);
     set at = at +wrap source.length;
@@ -277,7 +277,7 @@ fn aof_apply(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, record:
     let copied = aof_read_payload(factory: factory, file: file, destination: destination, offset: source.start);
     if copied {
     } else {
-      return 4_u8;
+      return 1_u8;
     }
     pkg::protocol::push_arg(args: &args, start: at, length: source.length);
     set at = at +wrap source.length;
@@ -326,7 +326,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
   let cut = False();
   let stopped = False();
   let bad_format = False();
-  let exit_status = 0_u8;
   let unfinished = False();
   let reverted = 0_u64;
   let retained_valid = 0_u64;
@@ -380,10 +379,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
             } else {
               set stopped = True();
               set bad_format = reason == 2_u8;
-              set exit_status = 4_u8;
-              if bad_format {
-                set exit_status = 1_u8;
-              }
             }
             break @records;
           }
@@ -394,7 +389,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
           let status = aof_probe(factory: factory, file: &file, record: &record, name: filename, stderr: stderr);
           if status != 0_u8 {
             set stopped = True();
-            set exit_status = status;
             break @records;
           }
           if exec {
@@ -419,7 +413,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
               set applied = applied +wrap 1_u64;
             } else {
               set stopped = True();
-              set exit_status = accepted;
               break @records;
             }
           }
@@ -436,7 +429,6 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
             set applied = applied +wrap 1_u64;
           } else {
             set stopped = True();
-            set exit_status = accepted;
             break @records;
           }
         }
@@ -447,8 +439,7 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
     }
     Err(error: problem) => {
       set stopped = True();
-      set exit_status = 4_u8;
     }
   }
-  return Loaded(applied: applied, kept: kept, size: size, cut: cut, stopped: stopped, bad_format: bad_format, exit_status: exit_status, unfinished: unfinished, reverted: reverted, valid: retained_valid, continuable: continuable);
+  return Loaded(applied: applied, kept: kept, size: size, cut: cut, stopped: stopped, bad_format: bad_format, unfinished: unfinished, reverted: reverted, valid: retained_valid, continuable: continuable);
 }

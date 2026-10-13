@@ -8,14 +8,13 @@ alias WriteFile = std::fs::WriteFile;
 public fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time, meter: std::process::MemoryMeter) -> result: unit pure waits doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Retain failed appends for periodic recovery. After a saved sync error, each later successful sync with nothing retained starts a recovery rewrite, whatever the automatic-rewrite block, and only its durable installation clears the error; a recovery attempt that fails blocks automatic rewrites as any failed attempt does, and one that succeeds leaves the block as it found it, which only a manual success lifts. Main sets stopping only after clients have left; then take all collecting bytes for one final append and sync attempt, abandoning failures as Redis 7.0.15 everysec does (server.c:4239-4247,4301-4308).";
 
 public struct Loaded {
-  doc "Startup replay's command count, file size and optional truncation boundary. stopped refuses startup; bad_format distinguishes Redis's AOF framing error; exit_status is 1 for format, unknown-command or unsupported-state refusals, 4 for I/O failures, and 0 on success. A partial record cuts after the last whole command, and clean EOF in MULTI cuts before the latest MULTI. unfinished, reverted and valid describe the file after that cut: its first unclosed MULTI and last whole-command offset. continuable is false for an EOF-only completed annotation.";
+  doc "Startup replay's command count, file size and optional truncation boundary. stopped refuses startup with exit status 1; bad_format identifies the AOF framing errors that also emit Redis's diagnostic. A partial record cuts after the last whole command, and clean EOF in MULTI cuts before the latest MULTI. unfinished, reverted and valid describe the file after that cut: its first unclosed MULTI and last whole-command offset. continuable is false for an EOF-only completed annotation.";
   public applied: u64;
   public kept: u64;
   public size: u64;
   public cut: Bool;
   public stopped: Bool;
   public bad_format: Bool;
-  public exit_status: u8;
   public unfinished: Bool;
   public reverted: u64;
   public valid: u64;
@@ -61,4 +60,4 @@ public struct AofLog {
   public boundary: AofBoundary;
 }
 
-public fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, prefix: &[u8], time: &Time, clock: &Clock, stderr: &std::io::OutputStream) -> result: Result<AofLog, u8> reads(store), reads(cwd), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(clock), writes(stderr) waits doc "Opens appendonlydir, loads and upgrades Redis's manifest layout, cuts only its last active file, removes listed history and opens its last incremental file. A refusal returns its exit status before the listener starts: 1 for bad AOF framing, unknown commands or unsupported replay state, 4 for another startup failure.";
+public fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, prefix: &[u8], time: &Time, clock: &Clock, stderr: &std::io::OutputStream) -> result: Result<AofLog, u8> reads(store), reads(cwd), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(clock), writes(stderr) waits doc "Opens appendonlydir, loads and upgrades Redis's manifest layout, cuts only its last active file, removes listed history and opens its last incremental file. Every AOF startup refusal returns exit status 1 before the listener starts; bad AOF framing also emits Redis's diagnostic.";
