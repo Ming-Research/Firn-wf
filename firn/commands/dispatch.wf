@@ -719,6 +719,28 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
     return unit;
   }
+  let hash_scan = code == code_hscan;
+  let set_scan = code == code_sscan;
+  let sorted_scan = code == code_zscan;
+  let scan_sets = bor(set_scan, sorted_scan);
+  if bor(hash_scan, scan_sets) {
+    let fits = arity_holds(arity: arity_collection_scan, count: count);
+    let go = band(fits, open);
+    if bnot(go) {
+      refused(client: client, input: input, name: name, fits: fits);
+    }
+    if go {
+      let expected = if hash_scan {
+        give 4_u64;
+      } else if set_scan {
+        give 3_u64;
+      } else {
+        give 5_u64;
+      }
+      run_collection_scan(store: store, input: input, args: args, client: client, time: time, expected: expected);
+    }
+    return unit;
+  }
   if code == code_scan {
     let fits = arity_holds(arity: arity_scan, count: count);
     let go = band(fits, open);

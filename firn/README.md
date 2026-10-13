@@ -29,26 +29,30 @@ clients send on their own:
   `LINSERT`, `LPOS` with `RANK`, `COUNT` and `MAXLEN`, and `LMOVE` and
   `RPOPLPUSH`, which move an element in one statement holding both keys;
 - sets: `SADD`, `SREM`, `SPOP` and `SRANDMEMBER` with or without a count,
-  `SCARD`, `SMEMBERS`, `SISMEMBER`, `SMISMEMBER`, `SMOVE`, `SINTER`,
+  `SCARD`, `SMEMBERS`, `SSCAN key cursor [MATCH pattern] [COUNT count]`,
+  `SISMEMBER`, `SMISMEMBER`, `SMOVE`, `SINTER`,
   `SUNION`, `SDIFF`, `SINTERCARD` with `LIMIT`, and `SINTERSTORE`,
   `SUNIONSTORE` and `SDIFFSTORE`, each in one statement holding every key
   it names;
 - hashes: `HSET`, `HMSET`, `HSETNX`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`,
   `HSTRLEN`, `HLEN`, `HGETALL`, `HKEYS`, `HVALS`, `HINCRBY`, `HINCRBYFLOAT`,
   in the x87 extended precision Redis computes it in on x86-64, and
-  `HRANDFIELD` with a count and `WITHVALUES`;
+  `HRANDFIELD` with a count and `WITHVALUES`, and
+  `HSCAN key cursor [MATCH pattern] [COUNT count]`;
 - sorted sets: `ZADD` with `NX`, `XX`, `GT`, `LT`, `CH` and `INCR`,
   `ZINCRBY`, `ZRANGE` with `BYSCORE`, `BYLEX`, `REV`, `LIMIT` and
   `WITHSCORES`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`,
   `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZCOUNT`, `ZLEXCOUNT`, `ZRANK` and
   `ZREVRANK` with Redis 7.2's `WITHSCORE`, `ZSCORE`, `ZMSCORE`, `ZCARD`,
   `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count, `ZREMRANGEBYRANK`,
-  `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores read as Redis reads
-  them and replies written as Redis 7.2.16's `d2string` writes them:
+  `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, and
+  `ZSCAN key cursor [MATCH pattern] [COUNT count]`, with scores read as Redis
+  reads them and replies written as Redis 7.2.16's `d2string` writes them:
   signed zeros and infinities, integers through magnitude 2^62, and other
   values through Halo-wf's port of Grisu2 (`fpconv_dtoa`), without an exact
-  fallback. Rewritten append-only scores use plain `fpconv_dtoa` without
-  the reply's integer shortcut;
+  fallback; ZSCAN's text selection is described below. Rewritten
+  append-only scores use plain `fpconv_dtoa` without the reply's integer
+  shortcut;
 - scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
   `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
   has written nothing, running Lua 5.1 scripts on the Halo engine
@@ -74,8 +78,8 @@ clients send on their own:
 - transactions: `MULTI`, `EXEC` and `DISCARD`. `EXEC` runs the queued
   commands in order in one atomic statement, their time frozen at its start,
   for the commands written as parts: every keys, strings, hashes, lists, sets
-  and sorted sets command this list names, including `SCAN`, `KEYS` and
-  `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
+  and sorted sets command this list names, including `SCAN`, `SSCAN`, `HSCAN`,
+  `ZSCAN`, `KEYS` and `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
   `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`; `INFO` is not among
   them. These same command parts run in scripts.
   A command without parts, or any name firn does not run, is queued and makes
@@ -114,6 +118,31 @@ fresh position when it gathers none; its positions and draws are its own, so the
 differs from Redis's. All five commands,
 including both flush commands, run through their shared parts on the
 network, in `EXEC` and through `redis.call` or `redis.pcall`.
+
+`SSCAN`, `HSCAN` and `ZSCAN` return cursor `0` and the entire collection after
+MATCH filtering in one call, including when the incoming cursor is nonzero.
+They use firn's element order: map traversal for sets and hashes, and score
+then member order for sorted sets. COUNT is validated as Redis 7.2.16 validates
+it but does not limit this reply. Both protocols use an array of bulk strings;
+hash field/value and sorted-set member/score pairs stay flat. A missing key
+returns cursor `0` and an empty array before options are checked; a wrong type
+is also checked before options, while an invalid cursor is checked first.
+TYPE and NOVALUES are not collection-scan options in Redis 7.2.16.
+
+This whole-collection path supplies SCAN's coverage guarantee but has work
+and reply size proportional to the full collection. It is provisional while
+board item coord-wfbl-02-01 supplies bounded resumable scanning for Whitefoot's
+ordinary hash map; firn adds no direct bucket reads. Redis's compact-encoding
+history, element order, cursors and dictionary batch boundaries are not
+reproduced. ZSCAN uses d2string text while the current sorted set has at most
+128 members and every member is at most 64 bytes; otherwise it uses `%.17g`,
+which supplies Redis's dictionary ZSCAN `%.17Lg` digits for a widened double.
+Both are bulk strings in both protocols. This selection examines all members
+before MATCH and uses the default limits, independently of stored CONFIG
+encoding values. A set that grew beyond a limit and later shrank returns to
+d2string in firn, whereas Redis retains skiplist text after promotion.
+The recorded reference comparison and boundary cases are in
+[the collection-scan investigation](../research/investigations/firn/collection-scan.md).
 
 `CONFIG GET` takes Redis's glob patterns over firn's parameters:
 `appendfilename`, `appendonly`, `bind`, `databases`, `port`, `requirepass`,
