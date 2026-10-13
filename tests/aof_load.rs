@@ -96,8 +96,8 @@ fn zero_argument_record_is_bad_format_without_tail_recovery() {
 fn nul_array_header_is_a_read_error_but_bare_marker_at_eof_recovers() {
     // Redis's buf[1] == '\0' branch goes to readerr. An embedded NUL in a
     // line read before EOF is fatal; reading a bare '*' at EOF sets feof and
-    // permits truncation. Firn retains status 4 for non-format failures,
-    // while Redis uses status 1 for every fatal AOF load failure.
+    // permits truncation. Both servers use status 1 for every fatal AOF
+    // load failure, including this read error.
     let kept = resp(&["SET", "before", "1"]);
     let corrupt = [kept.clone(), b"*\0\n".to_vec(), resp(&["SET", "after", "2"])].concat();
     let partial = [kept.clone(), b"*".to_vec()].concat();
@@ -119,7 +119,7 @@ fn nul_array_header_is_a_read_error_but_bare_marker_at_eof_recovers() {
         };
         std::fs::write(&path, &corrupt).unwrap();
         let output = start().wait_with_output().expect("wait for embedded-NUL read error");
-        assert_eq!(output.status.code(), Some(if oracle { 1 } else { 4 }), "read-error startup: {output:?}");
+        assert_eq!(output.status.code(), Some(1), "read-error startup: {output:?}");
         assert_eq!(std::fs::read(&path).unwrap(), corrupt, "a read error before EOF never truncates");
 
         std::fs::write(&path, &partial).unwrap();
@@ -449,7 +449,7 @@ fn large_record(path: &Path) -> u64 {
 }
 
 fn large_loaded_checks(child: ProgramChild, port: u16) {
-    // This case is deliberately dispatched only on a memory-rich CI runner.
+    // This case is deliberately run alone on a CI runner with at least 12 GiB free.
     // Its longer process/readiness bounds are harness limits, not timings.
     let deadline = Instant::now() + Duration::from_secs(600);
     let mut client = loop {
@@ -492,8 +492,14 @@ fn large_loaded_checks(child: ProgramChild, port: u16) {
 }
 
 #[test]
-#[ignore = "requires memory-rich CI (at least 12 GiB available); a 2500 MiB record and payload/value/reply copies exceed a hosted runner's budget beside parallel suites"]
+#[ignore = "requires at least 12 GiB free on a CI runner; a 2500 MiB record and payload/value/reply copies exceed hosted-runner memory beside the parallel suites"]
 fn a_single_record_over_two_gib_loads_all_five_large_arguments() {
+    // Run outside the gate, alone on a CI runner with at least 12 GiB free:
+    // FIRN=<abs path to build/firn-test> cargo test --manifest-path tests/Cargo.toml --locked --test network aof_load::a_single_record_over_two_gib_loads_all_five_large_arguments -- --ignored --exact
+    // A standard ubuntu-24.04 hosted runner with 15 GiB passed this branch's
+    // case alone in 16.7 s: https://github.com/Ming-Research/Firn-wf/actions/runs/38437869851
+    // Against main's firn it failed with exit status 4 before listening:
+    // https://github.com/Ming-Research/Firn-wf/actions/runs/38438864780
     // The old replay grows a single input window only up to 2 GiB, then
     // refuses this valid RPUSH before applying it. The stored list permits
     // these five 500 MiB values; no argument crosses the 512 MiB bulk limit.

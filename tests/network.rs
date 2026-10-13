@@ -9076,7 +9076,7 @@ fn multipart_refused(program: &CompiledProgram) {
         program.working_directory(),
         &[text.as_bytes(), b"1", b"appendonly.aof"],
     ).with_port(&port_lease).wait_with_output().expect("wait for compiled program");
-    assert_eq!(result.status.code(), Some(4), "{result:?}");
+    assert_eq!(result.status.code(), Some(1), "{result:?}");
 }
 
 // Redis: Multi Part AOF can't load data when some file missing
