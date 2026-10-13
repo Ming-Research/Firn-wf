@@ -1,9 +1,9 @@
-# firn's gate: every push runs the targets of `make check` in three parallel
+# firn's gate: every push runs the targets of `make check` in four parallel
 # jobs, so that its answer takes as long as the slowest, the Redis suite. The
 # jobs download the pinned Whitefoot compiler release, then build firn and run
-# the Redis suite ratchet; build firn and run its network cases; and lint the
-# design trees. `make gate-sync` fails when the targets they run and the
-# targets of `make check` differ, so each `make TARGET` step below stays on
+# the Redis suite ratchet; build firn and run its network cases; lint the
+# design trees; and compile the safety witnesses. `make gate-sync` fails when
+# their targets differ from `make check`, so each `make TARGET` step stays on
 # one line. The exact revision that merges into main passes this first.
 name: check
 
@@ -110,6 +110,31 @@ jobs:
 
       - name: Build firn for the network cases and run them
         run: make test
+
+  safety-witnesses:
+    name: rejected and accepted safety witnesses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out Whitefoot-kit
+        run: git submodule update --init whitefoot-kit
+      - name: Download the pinned compiler
+        run: make compiler
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+      - name: Compile faulty and corrected bug patterns
+        run: make safety-witnesses
+      - name: Preserve diagnostics and source hashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-witnesses
+          path: |
+            build/safety-witnesses/results.json
+            build/safety-witnesses/**/*.stdout
+            build/safety-witnesses/**/*.stderr
+          if-no-files-found: warn
 
   design:
     name: design lint and gate sync

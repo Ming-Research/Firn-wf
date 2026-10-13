@@ -1,0 +1,35 @@
+struct SortedSet {
+  doc "Garnet ZTTL uses mutation authority for expiry removal: https://github.com/microsoft/garnet/pull/1642 .";
+  member: Option<u64>;
+  expires_at: u64;
+}
+
+fn expiry_query(sorted: &SortedSet, now: u64) -> ttl: u64 reads(sorted.expires_at), writes(sorted.member) {
+  doc "expires_at is copied to a local before the subtraction because the checker does not carry the field comparison to it (Whitefoot gap coord-wfbl-01-32); return to `sorted^.expires_at - now` once that gap is closed.";
+  let expires_at = sorted^.expires_at;
+  if expires_at <= now {
+    set sorted^.member = None<u64>();
+    return 0_u64;
+  }
+  return expires_at - now;
+}
+
+fn zttl(sorted: Shared<SortedSet>, now: u64) -> ttl: u64 pure waits {
+  let remaining = 0_u64;
+  atomic state = &sorted {
+    set remaining = expiry_query(sorted: state, now: now);
+  }
+  return remaining;
+}
+
+fn main() -> status: std::process::ExitStatus pure waits {
+  let member = Some<u64>(value: 7_u64);
+  let initial = SortedSet(member: member, expires_at: 10_u64);
+  let sorted = shared_new::<SortedSet>(value: initial);
+  let write_lock = shared_share::<SortedSet>(shared: &sorted);
+  let remaining = zttl(sorted: move write_lock, now: 11_u64);
+  if remaining == 0_u64 {
+    return std::process::exit_status(code: 0_u8);
+  }
+  return std::process::exit_status(code: 1_u8);
+}
