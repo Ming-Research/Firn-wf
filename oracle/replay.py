@@ -91,7 +91,7 @@ def scan(data, pos=0):
             raise Incomplete
         if data[stop:stop + 2] != b'\r\n':
             raise ValueError('invalid RESP payload terminator')
-        return stop + 2, tag, bytes(data[end:stop]) if tag == b'$' else None
+        return stop + 2, tag, bytes(data[end:stop]) if tag in (b'$', b'=') else None
     if tag in (b'*', b'~', b'>', b'%', b'|'):
         size = int(body)
         if size < -1:
