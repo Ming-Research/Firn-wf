@@ -231,3 +231,420 @@ retry/shutdown/rewrite interaction; runtime selectivity of a read's barrier
 against later or unrelated writes; and the 14900K throughput and rewrite
 pacing comparison. The existing failing kill run establishes the original
 bug, while all new and retained cases still require CI on this revision.
+
+## Measured cost and a cheaper protocol proposal (2026-10-13)
+
+This section is analysis and a proposal, not an implementation or an
+approved replacement of the AOF design. The inspected Firn revision is
+`5ded2213758d6d2ba2d20af909074e8ad934d3bc` (#97). The language and runtime
+sources inspected are the pinned Whitefoot commit
+`af7665be672d29912d878dd5da8c3932bb6f296c`. All source locations below refer
+to those revisions, or to Redis 7.2.16. No local compiler, build, test or
+benchmark was run.
+
+### Observation before attribution
+
+The owner supplied these results from
+[14900K run 38418748888](https://github.com/Ming-Research/Firn-wf/actions/runs/38418748888):
+AOF everysec, server on two cores, clients on E-cores, four rounds of five
+seconds. The main rates are rounded; the ratios are measurements supplied
+with the task, not independently re-extracted from the run here.
+
+| Command | Pipeline | Main ops/s | #97/main | Twin/main range | Minimum accepted ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| SET | 1 | 775,000 | 0.613 | 0.979–1.010 | 0.929 |
+| SET | 16 | 3,330,000 | 0.657 | 0.990–1.035 | 0.940 |
+| MSET | 1 | 492,000 | 0.597 | 0.943–1.027 | 0.893 |
+| MSET | 16 | 893,000 | 0.673 | 0.945–1.063 | 0.895 |
+
+SET p99 at pipeline 1 rose from 0.077 ms to about 0.17 ms. All four
+throughput results fail the previously proposed twin-minimum-minus-0.05
+criterion. Eight-core and Redis AOF-on comparisons remain pending.
+
+The source establishes added coordination and more frequent small appends.
+It does **not** establish what fraction of this loss comes from each
+mechanism. In particular, the result is not evidence of a healthy 10 ms
+sleep, nor of exactly two operating-system context switches per command.
+
+### Trace of one command and one append batch
+
+1. **Execute and collect.** SET holds its key and Meta at
+   `firn/commands/strings.wf:468`, appends and captures its sequence at
+   `:488-491`. MSET holds its key set and Meta at `:826`, appends at
+   `:863` and captures its sequence at `:866-867`. The new token is
+   returned under the existing hold, not by another post-command lock.
+   `firn/store/sequence.wf:111-114,146` distinguishes actual appended
+   records from a command that produced no record. Existing admission
+   and mutation holds remain part of each command's cost.
+2. **Wake the writer.** Publishing collecting bytes makes
+   `aof_writer_ready` true (`firn/persistence/persistence.wf:61-73`);
+   the writer waits in `atomic ... when` at `:128`. Healthy bytes wake
+   it directly. The separate timer at `:88-109` sets a coalesced 10 ms
+   housekeeping flag; it is not a healthy batching deadline. Failed
+   appends still retry at 100 ms (`firn/persistence/rewrite.wf:313-318`).
+3. **Seal a batch.** The writer exchanges all bytes currently collected
+   with its private empty buffer and snapshots their covering sequence
+   in one Meta hold (`firn/persistence/rewrite.wf:288-304`). It does not
+   wait for all clients, a pipeline to finish, or a particular batch size.
+4. **Append.** `append_all` passes the entire remaining byte range to
+   `append_once` (`firn/persistence/persistence.wf:33-58`, call at `:42`).
+   A full successful batch uses one host append operation. Positive
+   short writes require more operations; the host may retry EINTR.
+   Thus one `write(2)` per full successful batch is the ordinary case,
+   not a guaranteed syscall count for every outcome.
+5. **Publish completion.** After the host append returns, the writer
+   parses the batch to maintain its rewrite boundary
+   (`firn/persistence/rewrite.wf:926`;
+   `firn/persistence/rewrite-boundary.wf:33-74`). Only then does it publish
+   written-through (`rewrite.wf:931-940`). It also allocates a fresh
+   65,536-byte pending buffer inside that Meta hold (`:943`). Parsing
+   and allocation predate #97, but now run more often and precede reply
+   release. They cannot be attributed to a newly added parser.
+6. **Release replies.** A connection waits at
+   `firn/server/server.wf:211` for its reply run's sequence to be covered
+   by written-through, or by the separately documented append-failure
+   exception (`:103-119`). Consecutive ready runs coalesce under that
+   hold (`:212-245`) and send at `:249`. An already-covered guard can
+   complete without parking. A zero-sequence prefix bypasses Meta.
+
+A healthy iteration with no rewrite and no sync due takes **seven Meta
+atomic statements per append batch**: writer readiness (`persistence.wf:128`),
+buffer exchange (`rewrite.wf:288`), pre-append size (`:905`), completion
+(`:931`), sync eligibility (`:330`), cancellation (`:16`) and rewrite
+scheduling (`persistence.wf:150`). Cancellation also reads ServerState
+(`firn/store/store.wf:441`). Much of this machinery used to run at the
+10 ms cadence; eager draining raises its frequency with the append count.
+It is seven entries, not seven necessarily contended locks or seven
+necessarily suspended contexts. Sync, error and rewrite paths add work.
+
+For a batch of B commands releasing G connection contexts, the useful
+coordination is one writer wake/activation and up to G completion
+notifications: a fan-in to one writer, then a fan-out to the connections.
+An uncovered connection experiences a connection-to-writer-to-connection
+source-context dependency. The writer can already be running, several
+connections can share its batch, and true guards need not suspend.
+Therefore `(1 + G) / B` is a count of useful notification edges per
+command in this model, not an operating-system switch rate. Guard retries
+and host I/O completion can add further handoffs.
+
+There is also a host-I/O completion path. Pinned Whitefoot's
+`compiler/src/backend/ordinary_values.c:1190-1198` submits append as a
+completion operation. `completion/bridge.c:5531-5564` dispatches it; the
+Linux ring backend has no APPEND case
+(`completion/linux_io_uring.c:459-513`), so this path uses the file adapter
+queue (`completion/file_adapter.c:930-951`). Its POSIX implementation
+calls `write` (`completion/file_posix.c:310-317`). A joining thread can
+claim its own queued operation (`file_adapter.c:954-1001`), so a helper
+thread switch is possible, not mandatory on every append. Moving the
+Firn append into the connection does not itself remove this runtime path.
+
+### Batching that exists, and batching that is unknown
+
+The connection already executes every complete command in its received
+input before flushing (`firn/server/server.wf:556-607`), except when reply
+bytes exceed 16,384 (`:599-600`). It records sequence boundaries
+(`:573-584`), not a wait after each execution. A complete 16-command
+write-only pipeline whose records are all written can use one guard and
+one send. If the writer takes cuts inside that pipeline, it can instead
+require several prefix waits and sends, up to one per dependent command.
+It cannot blindly replace mixed-pipeline boundaries with a maximum token:
+`W1; R1; W2` must let R1 depend on W1 rather than W2.
+
+For approximately 50 closed-loop clients, pipeline 1 gives roughly
+1–50 commands available/in flight, while pipeline 16 permits roughly
+800. These are concurrency envelopes, not measured batch sizes. The
+benchmark's client count must be taken from its exact mode: threaded
+clients use `-c 50` (`redis-bench.sh:980-982`), while compare-mode process
+clients use three connections per client CPU (`:1086-1087`). Receive
+fragmentation and individual command Meta releases mean a pipeline-16
+append can still contain fewer than 16 commands. With no batching epoch,
+it is reasonable to expect small pipeline-1 batches and larger but
+variable pipeline-16 batches; claiming an average of 50 or 800 would be
+unsupported.
+
+By contrast, main could collect many thousands over 10 ms while replying
+independently: 775,000 SET/s corresponds arithmetically to about 7,750
+commands per 10 ms. That is an illustration using the supplied rate, not
+a recorded main batch size. #97 removes that unacknowledged-write window
+and exposes per-batch write submission, seven metadata entries, parser
+work, allocation and completion notification much more frequently.
+
+### Redis's execution structure
+
+Redis normally processes complete buffered commands for ready clients on
+its main event loop (`src/networking.c:2545-2605`). `beforeSleep` finishes
+the pending-read path (`src/server.c:1651`), flushes the collected AOF
+(`:1720-1724`), then sends pending replies (`:1739`).
+`src/aof.c:1131` passes the whole buffer to `aofWrite`; its loop at
+`:1028-1044` normally makes one `write(2)` and continues for short writes
+or EINTR. The loop's iteration provides a batching boundary without
+moving the append to a separate Firn-style context.
+
+Redis defaults to one I/O thread and threaded reads off
+(`src/config.c:3172,3074`). Even when network I/O threads are enabled,
+they defer command execution to main
+(`src/networking.c:2589-2595,4506-4535`); AOF append still occurs on main.
+Optional network or background-fsync threads are distinct from a
+cross-context command-to-AOF-writer handoff. Redis everysec's fsync
+postponement and failed-append exceptions remain those documented above;
+the proposed healthy guarantee does not use its two-second bypass.
+
+### Whitefoot constraints and two concrete gaps
+
+File I/O cannot run while an ordinary Whitefoot atomic statement holds
+the file state. Pinned [SHARE-2](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2342)
+(`spec/kernel-spec.md:2342-2347`) counts atomic as waiting but forbids
+waiting calls in its guard or body; `std::fs::append_once` and `sync_file`
+explicitly wait (`lib/std/fs/module.wfm:78-85`). Atomic-bound references
+end with the block (`spec/kernel-spec.md:2341`), so borrowing the file
+out of an atomic block is not a lease. Spawn takes owned values
+([WAIT-3], `:2282`), not a parent file reference shared among connections.
+
+**Gap 1: shared exclusive ownership of a linear file.** A correct
+leader would take ownership under a brief atomic statement, append outside
+it, then return the resource and publish completion. But
+[`Shared<T: drop>`](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2396)
+and `shared_new<T: drop>` (`:2575`) exclude
+[`WriteFile`, an opaque nodrop type](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/lib/std/fs/module.wfm#L23).
+PROV-6 (`spec/kernel-spec.md:773-784`) propagates linearity through
+Option, structs and boxes, regardless of the current variant. Thus
+`Shared<Option<AofLog>>` cannot hold the proposed available/taken state.
+
+Minimal complete witness function, normatively inadmissible at the drop
+bound; no compiler diagnostic was obtained because no compiler was run:
+
+```whitefoot
+alias WriteFile = std::fs::WriteFile;
+
+fn park(file: WriteFile) -> slot: Shared<Option<WriteFile>> pure {
+  let present = Some<WriteFile>(value: move file);
+  return shared_new::<Option<WriteFile>>(value: move present);
+}
+```
+
+The requested capability is scoped exclusive leasing of a linear resource
+with mandatory final recovery. Its owning scope must close admission,
+wait for every lease/operation, extract the resource exactly once and
+explicitly close it. Each error, disconnect and shutdown path must return
+the lease; only one lease can exist. This is a Whitefoot design request,
+not a proposal to remove `nodrop`, weaken `drop`, reopen a file per
+connection, leak handles or pass raw descriptor integers.
+
+**Gap 2: helper guards lose selective wake filtering.** #97 naturally
+uses the helpers at `server.wf:211` and `persistence.wf:128`. Pinned
+[`compiler/src/lowering/builder/wake.rs:297-357`](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/lowering/builder/wake.rs#L297)
+recognizes direct Boolean/integer conditions, but an ordinary helper call
+falls through to `Condition::True`; `:371-375` then emits no selective
+wake test. `compiler/src/backend/completion/bridge.c:3164` treats an
+empty test as true. Meta writes can therefore select a connection whose
+actual completion guard remains false.
+
+This is not a simultaneous broadcast to all clients. The runtime selects
+the oldest eligible watch and passes a reservation through candidates
+(`bridge.c:3388-3415,3431-3455,4110-4118`). A read-only release does not
+start a fresh write notification (`:4147`), but can forward an existing
+sweep. False resumes and Meta reacquisitions are consequently a concrete
+possible amplifier; their frequency and share of the regression have not
+been measured. SHARE-3 permits repeated guard evaluation (`spec:2358`),
+so this is a compiler performance gap, not evidence of wrong replies.
+
+A minimal source witness for the compiler request is:
+
+```whitefoot
+struct Progress {
+  written: u64;
+  unrelated: u64;
+}
+
+fn covered(progress: &Progress, target: u64) -> ready: Bool reads(progress.written) {
+  return progress^.written >= target;
+}
+
+fn wait_helper(state: Shared<Progress>, target: u64) -> result: unit pure waits {
+  atomic p = &state when covered(progress: p, target: target) {
+  }
+  return unit;
+}
+```
+
+While written remains below target, update unrelated. Compare the emitted
+wake predicate and false-resume counters with an equivalent direct
+comparison in a Whitefoot CI witness. Acceptance requires the natural
+helper form to retain an effective safe completion filter, including its
+call boundary. Firn must not inline/re-spell the guard to hide the gap.
+
+### Candidate protocols and estimated coordination cost
+
+These estimates count operations and dependencies, not measured cycles.
+Let B be commands per append, G the connections sharing it and K the
+ready prefixes a connection sends for its available input.
+
+| Proposal | Useful append coordination | Batch/syscall consequence | Constraint and likely cost |
+| --- | --- | --- | --- |
+| Connection leader/follower group commit | One connection claims the exclusive resource; leader has no separate Firn writer round trip; at most G−1 followers need completion notifications | One full host append for all bytes committed at the claim; still one write per full batch, with partial-write retries | Needs the linear-resource lease gap closed. Approximately two coordinated ownership/publication transitions per append can replace the seven-entry writer cycle if accounting is captured at claim and completion. Runtime file submission remains. |
+| One highest-sequence wait for an available write-only pipeline | One useful connection completion wait/send for P available writes instead of up to K | Does not stop another appender cutting between those P commands; may leave write syscall count unchanged | Pipeline processing is already implemented. Potential savings are prefix guard entries, boundary scanning and sends, predominantly at depth 16. Mixed read/write pipelines must retain their selective boundaries. Almost no depth-1 saving. |
+| Dedicated writer, eager wake and a brief spin | Keeps producer→writer→connection dependency; spin may avoid a park if work arrives during it | May enlarge a batch during a deliberately bounded gather period, or shrink it if it repeatedly flushes immediately | Eager wake already exists. Spinning can occupy one of the two available cores, contend on Meta and delay producers; zero spin is the baseline, not a 10 ms wait. No throughput improvement is established. |
+| Driver/event-loop epoch owns execution, append and reply sends | Redis-like zero separate append-context handoff for clients handled in that epoch | One append after the epoch's ready command groups | Requires a design for ready-request multiplexing, ownership of host handles, per-driver sequence merging and global publication. The current spawn-per-connection loop has no such epoch. This is broader than the next isolated comparison. |
+
+Separate improvements apply to either writer architecture: take size and
+health alongside the buffer exchange rather than reading them again;
+move rewrite/stop/sync scheduling back to actual control notifications and
+periodic maintenance rather than polling everything after every small
+append; and reuse storage rather than allocating 64 KiB under the
+completion hold. Reuse needs an actual cheap, valid initialized-prefix
+representation, not a claim that a per-byte clearing loop is free.
+Boundary correctness must remain: removing the parser without an encoder
+summary and startup/partial-write proof would retire a required check.
+Keeping parsing initially permits a clean attribution of coordination
+savings; a later boundary-summary change needs its own comparison.
+
+### Recommended protocol, conditional on Whitefoot support
+
+Recommend **connection-side leader/follower group commit with scoped
+linear-resource ownership**, while preserving input batching and selective
+reply ranges. Fix the helper-guard filtering gap first in Whitefoot and
+measure that change alone; it could remove a substantial part of the
+present cost without changing Firn's protocol. The recommendation is not
+that the current pin can already implement the lease, nor that source
+inspection proves group commit will pass the throughput line.
+
+Proposed flow:
+
+1. A connection executes its complete available input using the existing
+   mutation/commit boundary. It retains reply dependencies, including
+   EXEC/script units and expiry/eviction records. A write-only run may
+   use its highest token; an intervening read must not gain a later token.
+2. At reply release, if the required sequence is already written, send
+   without taking the file. Otherwise elect one leader, atomically claim
+   the complete active-file/pending-buffer/boundary/health bundle and
+   seal all currently committed collecting bytes with their final sequence.
+   The election and cut must be one coherent protocol, not independent
+   observations followed by an unchecked claim.
+3. Release atomic exclusion and append as the resource's unique owner.
+   Other connections keep executing and collecting while it performs
+   host I/O. A follower parks only while its required prefix is uncovered
+   and someone else owns the resource; when ownership returns, it either
+   sees completion or can become the next leader. Independent reads still
+   send without a file lease or completion wait.
+4. Return the bundle and publish full-append completion coherently.
+   Keep a compact completion object separate from mutable keyspace
+   bookkeeping for followers' observation; this separates responsibilities
+   even after compiler wake filtering is fixed. Update Meta byte/error
+   accounting in the same publication transition. Release the lease
+   **before** network sends, so a slow receiver cannot hold the AOF file.
+5. The maintenance context uses the same lease for sync, retained-byte
+   retries and rotation; it does not compete as an eagerly woken ordinary
+   writer for every healthy client append. It still drains expiry-only
+   records promptly: internal producers must request maintenance service,
+   or another capable connection must claim their batch. Background work
+   cannot depend on a future client write. Shutdown closes lease admission,
+   lets in-progress accepted work finish and performs the existing final
+   append/sync attempt before explicit file/directory closes.
+
+The resource protocol must order retained failed bytes before new bytes,
+give file rotation exclusive ownership, preserve the sealed S1 prefix and
+rotation-reserve charges, and bound/fairly hand off an appender's lease.
+The rewrite scanner keeps its own temporary file and must not monopolize
+the active-file lease during scanning or worker waits; active-file appends
+must continue between the finite sealing/switching operations. Combining
+election, accounting and publication into roughly two transitions per
+append is a design target for the new facility, not a proved count of
+locks or waiting calls in an implementation that does not yet exist.
+It must not hold Meta across host I/O. Written-through advances only after
+the entire batch is appended. The existing separately recorded everysec
+failed-append reply exception remains explicit; failure is never called
+written. Slow fsync gives no successful-reply bypass. Saturated sequence
+handling retains the conservative rule until a separately approved
+sequence-reinitialization design exists. A future per-driver buffer merge
+must publish a contiguous global written prefix, not merely the largest
+sequence seen on one driver.
+
+The leader eliminates the additional Firn source-context round trip for
+itself, but not for G−1 followers. For a large shared group, that direct
+benefit alone is small. The fuller proposal also removes repeated writer
+control polling and reduces the seven-entry batch cycle; fixing false
+wakes matters independently. Group commit without these distinctions
+could still be slow, or make more tiny appends. There is no deliberate
+sleep or unbounded busy spin in the recommended common path. Redis-like
+epoch batching remains a possible later direction if append histograms
+show that election still seals batches too early.
+
+Expected direction and the hurdle for the four measured rows are:
+
+| Workload | Expected benefit and remaining cost | Minimum improvement over current #97 to reach supplied line |
+| --- | --- | ---: |
+| SET, pipeline 1 | Less leader coordination latency; fewer batch bookkeeping holds and false wakes. Followers still wait and small appends still cost host I/O. Aim to reverse the p99 increase, not promise 0.077 ms. | about 51.5% more throughput; ratio at least 0.929, about 720k ops/s using rounded main |
+| SET, pipeline 16 | Input grouping plus fewer prefix waits/sends for write-only runs; fewer writer control transitions per append. Multiple leaders can still cut during another connection's pipeline. | about 43.1% more; ratio at least 0.940, about 3.13M ops/s |
+| MSET, pipeline 1 | Same coordination reduction; key-set acquisition, encoding and larger-record processing remain. No basis to assume SET's cycle saving transfers unchanged. | about 49.6% more; ratio at least 0.893, about 439k ops/s |
+| MSET, pipeline 16 | Amortized coordination and sends; large records and mutation work limit gains, while batching can reduce submissions per command. | about 33.0% more; ratio at least 0.895, about 799k ops/s |
+
+Those percentages are algebraic acceptance hurdles
+(`limit / current_ratio - 1`), **not forecasts**. The prediction is a
+directional reduction in coordination demand, strongest for latency at
+depth 1 and repeated prefix work at depth 16. The actual ratio may still
+miss every line; claiming a numerical forecast requires the missing
+batch/wake/CPU evidence.
+
+### Measurements that distinguish the hypotheses
+
+Before implementing Firn changes, retain the pending eight-core and
+Redis 7.2.16 AOF-on results. Resolve the exact main/twin heads, compiler,
+native/fallback route, workers/drivers, affinity, client mode and count,
+key/value sizes, fsync and rewrite settings from the artifacts; two server
+cores are not automatically two drivers, and about 50 clients is not an
+append batch size. Redis's single command/AOF thread and optional network
+threads must be stated with their settings. Record postponed Redis appends
+so that its exception is not mistaken for a stronger healthy guarantee.
+
+On the 14900K through CI, use these independent comparisons:
+
+- **Wake-filter attribution:** identical Firn source, current pinned
+  compiler versus a Whitefoot revision fixing helper guards, with its own
+  twin control. Check emitted predicates and existing guard-counter
+  instrumentation for true/false handoffs, reservations, notification
+  sweeps and re-parks. This isolates the compiler gap from a new protocol.
+- **Coordination and batching attribution:** after the language facility
+  has its own correctness evidence, same Firn source baseline versus
+  leader/follower changes, same compiler and settings, retaining parser
+  behavior for the first comparison. Report commands/bytes/connections
+  per append, full/short writes, appends per command, completion waits
+  that actually park, wake-to-append and append-to-send delay, lease
+  elections and follower count. Sampling/counters must not add a global
+  lock per command; measure their overhead separately from throughput.
+- **Cost breakdown:** sampled user/system CPU and call stacks for runtime
+  wake reservation/queueing, Meta holds, file adapter, boundary parsing
+  and allocation; syscall/context-switch tracing in separate diagnostic
+  runs. Do not infer CPU service time from reciprocal throughput alone.
+- **Acceptance:** interleave main, its twin, #97 and the candidate for
+  SET/MSET, pipeline 1/16, at both two and eight cores. Reuse the observed
+  five-second scale initially, extending only if spread prevents a
+  decision. Apply `candidate/main >= min(twin/main) - 0.05` separately
+  to each command/depth/core row, with p50/p99 and server/client CPU
+  reported. The new eight-core line comes from its own twin, not the
+  two-core limits above. Reject a supposed scheduling improvement if
+  its parked waits/false handoffs do not decrease, or it only increases
+  CPU occupancy while throughput remains below the line.
+
+Retain the kill, immediate-AOF, ordered pipeline, script/EXEC, append-error,
+sync-fault, rotation-backlog and shutdown checks. The proposed lease also
+needs contention/fairness, leader failure/disconnect, background-expiry-only
+progress, partial append, rotation racing append and mandatory final
+resource recovery cases. Existing timing/order tests alone cannot prove
+that reads avoid later or unrelated writes; that temporal witness remains
+required. Neither improved throughput nor an error-release watermark is
+evidence that bytes were written before successful healthy replies.
+
+This analysis names two Whitefoot requests, with witnesses and acceptance
+above. Their language/runtime changes belong to Whitefoot, and the
+resource facility requires an owner decision. No workaround, Firn
+implementation, design-tree ruling, approval log or pin movement is made
+by this proposal.
+
+An independent read-only GPT-6.1-Sol review checked this section against
+the measured Firn revision, pinned Whitefoot sources and Redis 7.2.16.
+It found no defect within proposal scope. It verified the consequential
+source traces and acceptance arithmetic, while leaving exact measurement
+provenance, batch/wake attribution and the proposed resource facility's
+soundness and implementation evidence unverified. Only source reads and
+small git commands ran; `git diff --check` passed. This is review of an
+analysis, not approval or validation of the proposed protocol.
