@@ -39,4 +39,4 @@ Rejected:
 - Writing the retained bytes into a fresh increment at the cut so the old selection is complete again: rejected because it needs two more manifest publications on the failing device, and a partial command left at the end of the old increment by a failed rollback stops startup once a later file follows it.
 - Waiting for repair, then rotating and installing: rejected because it never publishes while the fault lasts, holds R and the post-S1 backlog for as long as the device stays broken, and reclaims no space when the fault is ENOSPC.
 - Keeping the append error after a direct installation until a later append succeeds: rejected because with nothing left to append no repair can clear it, so writes stay refused indefinitely.
-- Releasing the retained bytes at the cut because base(S1) holds their effects: rejected because an abort or crash before durable installation then loses acknowledged commands from every selection.
+- Releasing the retained bytes at the cut because base(S1) holds their effects: rejected because an abort or crash before publication then loses acknowledged commands from every selection.
