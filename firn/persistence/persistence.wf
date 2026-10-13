@@ -59,7 +59,7 @@ fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>
 }
 
 fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock, time: Time, meter: std::process::MemoryMeter) -> result: unit pure waits {
-  doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Retain failed appends for periodic recovery. Main sets stopping only after clients have left; then take all collecting bytes for one final append and sync attempt, abandoning failures as Redis 7.0.15 everysec does (server.c:4239-4247,4301-4308).";
+  doc "Drain acknowledged commands, start manual or automatic rewrites at a metadata cut, and join every rebuild before closing the directories. Retain failed appends for periodic recovery. After a saved sync error, each later successful sync with nothing retained starts a recovery rewrite, whatever the automatic-rewrite block, and only its durable installation clears the error; a recovery attempt that fails blocks automatic rewrites as any failed attempt does, and one that succeeds leaves the block as it found it, which only a manual success lifts. Main sets stopping only after clients have left; then take all collecting bytes for one final append and sync attempt, abandoning failures as Redis 7.0.15 everysec does (server.c:4239-4247,4301-4308).";
   let pending = box_slots_new::<u8>(capacity: 0_u64);
   atomic pending_meta = &store.meta {
     set pending = box_slots_new::<u8>(capacity: 65536_u64);
@@ -67,6 +67,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
   }
   let last_sync = std::time::now(clock: &clock);
   let last_append = last_sync;
+  let healed = False();
   let never = std::time::cancel_never();
   loop @writing {
     let started = std::time::now(clock: &clock);
@@ -81,7 +82,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
     atomic m = &store.meta {
       set stop = m^.stopping;
     }
-    aof_rw_flush(store: &store, factory: &factory, file: &log.file, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, force: stop);
+    aof_rw_flush(store: &store, factory: &factory, file: &log.file, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, force: stop, healed: &healed);
     if stop {
       break @writing;
     } else {
@@ -97,11 +98,26 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
       } else {
         let rewrite = False();
         let manual = False();
+        let recovery = False();
+        let blocked = False();
         atomic m = &store.meta {
           set manual = m^.aof_rewrite_requested;
           set m^.aof_rewrite_requested = False();
           set rewrite = manual;
+          set blocked = m^.aof_rewrite_retry_blocked;
+          let saved = False();
+          match m^.aof_sync_error {
+            Some(..) => {
+              set saved = True();
+            }
+            None() => {
+            }
+          }
+          let recovering = band(healed, saved);
           if m^.aof_rewrite_in_progress {
+          } else if recovering {
+            set rewrite = True();
+            set recovery = True();
           } else if m^.aof_rewrite_retry_blocked {
           } else if m^.aof_rewrite_reply == 0_u64 {
             set rewrite = aof_rw_growth(current_size: m^.aof_current_size, base_size: m^.aof_base_size, percentage: m^.aof_rewrite_percentage, minimum: m^.aof_rewrite_min_size);
@@ -111,8 +127,16 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
           }
         }
         if rewrite {
+          set healed = False();
           let aof_cycled = aof_rw_cycle(store: &store, factory: &factory, log: move log, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, manual: manual, meter: &meter);
           set log = move aof_cycled;
+          if recovery {
+            atomic m = &store.meta {
+              if m^.aof_rewrite_ok {
+                set m^.aof_rewrite_retry_blocked = blocked;
+              }
+            }
+          }
         }
       }
     }
