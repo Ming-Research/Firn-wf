@@ -71,14 +71,14 @@ redis-suite: $(BUILD)/firn
 	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py check "$(BUILD)/redis-suite/tests.tsv" --passing $(ROOT)/tests/redis-suite/passing.tsv --unstable $(ROOT)/tests/redis-suite/unstable.tsv
 
 # The append-only file's sync failing on a real device, firn against Redis
-# 7.2.16: the two cases of tests/aof_sync_fault.rs. Not part of `make check`:
+# 7.2.16: the three cases of tests/aof_sync_fault.rs. Not part of `make check`:
 # the cases are ignored there because they need a device only root can make,
 # so the aof-sync-fault job of .github/workflows/check.yml makes it first with
 #   sudo tests/aof_sync_fault_device.sh setup MOUNT UID:GID
 # and exports FIRN_SYNC_FAULT_MOUNT=MOUNT and REDIS_SERVER, the path of a
 # redis-server 7.2.16. The cases fail and heal the one device, so they run on
 # one test thread, one after the other. Without one of the variables, or
-# unless both cases ran and passed, the target fails. The output is kept so
+# unless all three cases ran and passed, the target fails. The output is kept so
 # that each case's account of what every server did shows, and the pass is
 # read from the run itself.
 aof-sync-fault: firn-test
@@ -92,8 +92,9 @@ aof-sync-fault: firn-test
 	  --ignored --exact --nocapture --test-threads=1 \
 	  aof_sync_fault::aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device \
 	  aof_sync_fault::aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end \
+	  aof_sync_fault::aof_rewrite_close_sync_failure_is_isolated_and_recovers \
 	  >"$$log" 2>&1; status=$$?; cat "$$log"; \
-	[ $$status -eq 0 ] && grep -q '^test result: ok\. 2 passed' "$$log"
+	[ $$status -eq 0 ] && grep -q '^test result: ok\. 3 passed' "$$log"
 
 # The server as it is measured: the program and the runtime optimized
 # together under full link-time optimization.
