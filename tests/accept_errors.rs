@@ -324,12 +324,12 @@ fn firn_accept_recovers_after_emfile_on_native_route() {
 }
 
 #[test]
-fn firn_shutdown_cancels_emfile_pause_on_adapter() {
+fn firn_shutdown_completes_during_emfile_on_adapter() {
     accept_emfile_case(false, true);
 }
 
 #[test]
-fn firn_shutdown_cancels_emfile_pause_on_native_route() {
+fn firn_shutdown_completes_during_emfile_on_native_route() {
     accept_emfile_case(true, true);
 }
 

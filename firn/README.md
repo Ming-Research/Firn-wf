@@ -304,12 +304,14 @@ measurements and the design are in
 
 ## Accept-error diagnostics
 
-An operational accept failure leaves firn's listener open. Descriptor or
-memory exhaustion, including the runtime's handle-acquisition limit, waits
-100 ms before retrying; other accept errors retry immediately. The delay
-uses the orderly-stop cancellation watch, so shutdown does not wait for the
-timer to expire. Recovery after resources become available can take up to
-that retry interval, apart from scheduling and bounded diagnostic writes.
+An operational accept failure leaves firn's listener open. Cancellation
+from orderly stop ends accepting. An aborted connection retries
+immediately; every other surfaced accept error waits 100 ms before
+retrying, including resource exhaustion and errors for which the runtime
+has no more specific class. The delay uses the orderly-stop cancellation
+watch, so shutdown does not wait for the timer to expire. Recovery after a
+paced error can take up to that retry interval, apart from scheduling and
+bounded diagnostic writes.
 
 Firn writes accept-error diagnostics to stderr, beginning with
 `Accepting client connection: ` and the host's error description. The

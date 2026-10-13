@@ -346,8 +346,8 @@ new diagnostic count must be at most the whole elapsed seconds plus two
 boundary/drain lines. A retained client must be able to request successful
 orderly exit within one second while exhaustion persists. These are coarse
 CI regression bounds with scheduling margin, not precise CPU or
-cancellation-latency measurements. They are stated before this extension's
-CI run.
+cancellation-latency measurements. They were stated before the first
+pacing extension's CI run.
 
 ### Redis reference
 
@@ -365,8 +365,16 @@ excludes EMFILE. The
 is level-triggered. With a pending peer, a persistent EMFILE can make the
 listener readable on later loop turns. Returning on the first EMFILE and
 capping each callback permit other events to run; they provide no timed
-backoff or low-CPU promise in that state. With no peer pending, Redis's
-readiness callback does not keep issuing idle accept calls.
+backoff or low-CPU promise in that state. With a valid listener and no
+pending readable event, Redis does not invoke this callback merely to try
+an idle accept. This does not mean every malfunctioning listener becomes
+unreadable: a still-registered readable failure can refire on later loop
+turns. On Linux, closing the last reference to a watched descriptor invokes
+[eventpoll release](https://github.com/torvalds/linux/blob/v6.8/fs/file_table.c),
+whose [removal path](https://github.com/torvalds/linux/blob/v6.8/fs/eventpoll.c)
+removes its epoll entries; other listener failures do not universally imply
+that removal. Firn's direct accept retry is not gated on a new readiness
+callback, so defensive pacing is needed beyond the resource-error case.
 
 Firn retains its listener after operational errors. The pinned Whitefoot
 release `wf-af7665be672d` provides a
@@ -378,7 +386,7 @@ preserve the stop policy. Retaining the listener matches Redis; the pacing
 and diagnostic limits below are deliberate differences required by firn's
 blocking-accept structure.
 
-### Resource errors and pacing
+### Retry errors and pacing
 
 A blocking accept need not wait for a connection before returning EMFILE.
 Linux 6.8
@@ -412,25 +420,72 @@ includes synchronous completions. This ensures a scheduler handoff to ready
 clients, not low CPU when no other context is ready. It is not a substitute
 for retry pacing.
 
-Firn now waits 100 ms after `ResourceExhausted`, on the same orderly-stop
-watch as accept and diagnostics. The pinned
-[error mapping](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L563)
-puts EMFILE, ENFILE, ENOMEM and ENOBUFS in this class, as does
-[factory-credit exhaustion](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L594-L601).
-A cancelled sleep ends acceptance; an elapsed sleep returns to the ordinary
-shutdown checks. Other error classes add no artificial pause. The 100 ms
-delay limits repeated resource failures to at most ten retries per second,
-apart from the initial attempt; logging or scheduling can reduce that rate.
-Once resources become available, retry can be delayed by the remaining
-100 ms interval, apart from bounded logging and scheduling.
+Firn now waits 100 ms after every surfaced accept error except
+`ConnectionAborted` and orderly-stop cancellation, on the same shutdown
+watch as accept and diagnostics. Cancellation ends acceptance before the
+classifier is called; an aborted connection retries immediately. A
+cancelled sleep also ends acceptance, while an elapsed sleep returns to the
+normal shutdown checks. Persistent invalid, forbidden or otherwise broken
+accepts receive the same defensive pacing as resource exhaustion. The
+100 ms delay limits repeated paced failures to at most ten retries per
+second, apart from the initial attempt; logging or scheduling can reduce
+that rate. Recovery after a paced error can wait for the remaining interval,
+apart from bounded logging and scheduling.
+
+The pinned
+[POSIX error mapping](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L507-L573)
+establishes these source-level classifications:
+
+| Native error | Whitefoot class | Firn retry |
+|---|---|---|
+| ECONNABORTED | ConnectionAborted | Immediate |
+| EMFILE, ENFILE, ENOMEM, ENOBUFS | ResourceExhausted | 100 ms pause |
+| EINVAL | InvalidInput | 100 ms pause |
+| EPERM, EACCES | PermissionDenied | 100 ms pause |
+| EBADF, ENOTSOCK, a surfaced EINTR | Other | 100 ms pause |
+
+[Factory-credit exhaustion](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L594-L601)
+also uses ResourceExhausted. Every other non-cancellation class defaults
+to the same pause. This table is source inspection, not fault injection:
+ENFILE, ENOMEM and ENOBUFS have not been independently provoked, and the
+new non-resource pause paths and immediate ECONNABORTED path have no
+injection results. Actual EMFILE exercises the existing shared sleep path
+on both routes; it does not prove each listed failure can be induced.
+
+The pinned
+[IoError interface](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/lib/std/io/module.wfm#L13-L44)
+has no Interrupted class. The
+[adapter absorbs ordinary EINTR](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/completion/file_posix.c#L612-L634)
+for accept unless cancellation ended the operation. On the native route,
+[the transfer-kind predicate excludes accept](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/completion/linux_io_uring.c#L539-L543),
+so the ordinary
+[EINTR resubmission branch](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/completion/linux_io_uring.c#L1007-L1029)
+does not apply to it; a surfaced uncancelled interruption can therefore
+reach the mapping as Other. Native
+[deadline/cancellation completion](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/completion/linux_io_uring.c#L991-L1004)
+is separate and retains the distinct cancellation outcome.
+
+Exempting all Other errors to accelerate that possible interruption would
+also exempt persistent EBADF and ENOTSOCK failures. Firn instead accepts a
+bounded 100 ms delay for a surfaced native EINTR without checking platform
+errno numbers in application code. Some Linux network failures that Redis's
+retry predicate handles immediately can likewise be paced by this
+conservative class policy. The cost is a bounded retry delay, not an exit
+or loss of the listener. No real uncancelled native accept interruption has
+been observed here; whether that producer warrants aligning the native and
+adapter interruption handling is a possible future consistency question,
+not a confirmed Whitefoot runtime bug or a required language change.
 
 A client-close-only notification was not selected: global descriptor or
 memory resources can recover without a firn client closing. A cancellation-
 aware timer handles those cases without adding a timer context or a new
 shared notification protocol. This is an application policy using the
 pinned time interface, not a workaround for a missing Whitefoot capability.
-The former immediate-retry proposal is replaced because it conflated
-scheduler fairness with the absence of idle CPU spin.
+The former immediate-retry proposal conflated scheduler fairness with
+quiet idle behavior. Pacing only ResourceExhausted was then too narrow:
+persistent failures in the other classes can also repeat without a new
+readiness event. The current policy preserves immediate retry only for the
+specific aborted-connection class and ends orderly cancellation normally.
 
 ### Bounded accept-error diagnostics
 
@@ -532,10 +587,15 @@ The two recovery cases then queue a peer whose PING must stay unserved for
 ten seconds. Other clients remain open through a five-second successful
 SHUTDOWN NOSAVE deadline. The two saturated-stop cases instead free no
 slots or queued peer: a retained client requests SHUTDOWN NOSAVE and the
-process must exit successfully within one second. This bounds overall stop;
-the timing alone cannot isolate whether the 100 ms retry sleep was
-cancelled. Socket operations use remaining absolute deadlines, and stderr
-must retain the EMFILE evidence.
+process must exit successfully within one second. The case names are
+`firn_shutdown_completes_during_emfile_on_adapter` and
+`firn_shutdown_completes_during_emfile_on_native_route`: they bound overall
+stop during exhaustion, not isolated cancellation of the 100 ms sleep. A
+one-second deadline could also pass if that shorter pause merely elapsed.
+Cancellation is established separately by inspecting the call's
+`sleep_until(..., cancel: &cancel)` shutdown watch and the cancellation
+result's exit path. Socket operations use remaining absolute deadlines,
+and stderr must retain the EMFILE evidence.
 
 ### Results and remaining evidence
 
@@ -586,11 +646,19 @@ established by these observations; the upstream producer of the two
 inherited pipes remains unknown. The diagnostics retain targets, fdinfo,
 parent matches and authentication tokens for subsequent runs.
 
-No local compiler, build, test or measurement was run. The current 100 ms
-resource pacing, one-second diagnostic limiter and separate quiet/stop
-cases are uncommitted and have no CI result. The earlier green gate
-validates listener retention and recovery before this pacing extension;
-it does not validate the new CPU, log-rate or saturated-stop criteria.
-Compiler acceptance, both revised routes, their controls and the full gate
-remain to be established on the new revision. No required Whitefoot gap,
-pin movement or submodule change was found.
+The subsequent
+[full gate and AOF sync-fault job passed](https://github.com/Ming-Research/Firn-wf/actions/runs/38424744118)
+on `e7fa268b3a2e1950d0443e0651d233f145f00cda`, which paced only
+ResourceExhausted. Its four independent EMFILE cases cover quiet CPU and
+bounded diagnostic growth, recovery and successful stop during saturation,
+on the adapter and native route. The one-second stop result does not
+isolate sleep cancellation. This run provides no fault-injection evidence
+for ENFILE, ENOMEM, ENOBUFS or the newly paced non-resource errors.
+
+No local compiler, build, test or measurement was run. The current broader
+pause classifier and the two stop-case name corrections are uncommitted
+and have no CI result. The green resource-only gate does not validate this
+new error-class policy. Its non-resource paths and immediate
+ConnectionAborted exception have source-inspection evidence only; the
+existing EMFILE cases and the full gate must still pass on the revised
+code. No required Whitefoot gap, pin movement or submodule change was found.

@@ -161,98 +161,98 @@ fn log_accept_error(factory: &HandleFactory, output: &OutputStream, error: &IoEr
   return unit;
 }
 
-fn accept_resource_exhausted(error: &IoError) -> exhausted: Bool reads(error) {
-  doc "Whether accept failed for native descriptor or memory exhaustion, or for the factory acquisition limit. These failures need a cancellable delay even when no peer is pending; unrelated accept failures retain immediate retry.";
+fn accept_error_needs_pause(error: &IoError) -> needs_pause: Bool reads(error) {
+  doc "Whether a surfaced accept error needs a cancellable 100 ms pause before retrying. Cancellation ends acceptance before this classifier is called; ConnectionAborted alone retries immediately. Every other class is paced defensively because direct accept can repeatedly fail without a readiness event, and Other includes both persistent descriptor errors and any interruption the host route surfaces.";
   match error^ {
     NotFound(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     PermissionDenied(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     AlreadyExists(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     NotDirectory(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     IsDirectory(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     DirectoryNotEmpty(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     ReadOnly(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     ResourceBusy(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     InvalidInput(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     InvalidPath(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     Unsupported(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     TimedOut(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     DeadlinePassed() => {
-      return False();
+      return True();
     }
     Cancelled() => {
       return False();
     }
     BrokenPipe(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     WriteZero(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     UnexpectedEnd(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     ConnectionRefused(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     ConnectionReset(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     ConnectionAborted(code: native_code, origin: native_origin) => {
       return False();
     }
     NotConnected(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     AddressInUse(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     AddressUnavailable(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     ResourceExhausted(code: native_code, origin: native_origin) => {
       return True();
     }
     FileTooLarge(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     NoSpace(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     QuotaExceeded(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     CrossDevice(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     DeviceFailure(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
     Other(code: native_code, origin: native_origin) => {
-      return False();
+      return True();
     }
   }
 }
@@ -1333,7 +1333,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
               } else {
                 set suppressed_errors = suppressed_errors +sat 1_u64;
               }
-              if accept_resource_exhausted(error: &problem) {
+              if accept_error_needs_pause(error: &problem) {
                 let retry_from = std::time::now(clock: &clock);
                 let retry_at = instant_after(instant: retry_from, nanoseconds: 100000000_u64);
                 match sleep_until(deadline: retry_at, cancel: &cancel) {
