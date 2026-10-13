@@ -295,7 +295,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
         reply_error(client: client, word: &text_foreign_abort[0_u64..92_u64]);
       }
     }
-    pkg::store::record_effects(log: &m^.log, effects: &effects, appended: appended, sequence: &sequence, budget: &log_budget);
+    pkg::store::command_record_effects_log::<fn pkg::store::record_effects>(meta: m, effects: &effects, appended: appended, sequence: &sequence, budget: &log_budget);
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   pkg::store::keyspace_select(store: store, database: database);

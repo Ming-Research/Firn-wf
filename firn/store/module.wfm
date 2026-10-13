@@ -64,24 +64,24 @@ public struct Entry {
 public struct WriteSequence {
   doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; an inert token, taken while loading or by a statement that holds no Meta, leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed (database,key) pair before the outer statement commits; database selects subsequent capture identity, and effects_first_db/effects_selected retain the private effect stream's first and last propagated database, with 16 meaning no effects. The inactive path allocates nothing.";
   public readonly database: u64;
-  public effects_first_db: u64;
-  public effects_selected: u64;
-  public value: u64;
-  public taken: Bool;
-  public inert: Bool;
-  public exhausted: Bool;
-  public capturing: Bool;
-  public failed: Bool;
-  public failure: RewriteAbortReason;
-  public allowance: u64;
-  public retained: u64;
-  public single: Bool;
-  public start: u64;
-  public log_start: u64;
-  public anchor_seen: Bool;
-  public anchored: Bool;
-  public effect: Bool;
-  public images: Option<Box<Slots<RewriteImage>>>;
+  public readonly effects_first_db: u64;
+  public readonly effects_selected: u64;
+  public readonly value: u64;
+  public readonly taken: Bool;
+  public readonly inert: Bool;
+  public readonly exhausted: Bool;
+  public readonly capturing: Bool;
+  public readonly failed: Bool;
+  public readonly failure: RewriteAbortReason;
+  public readonly allowance: u64;
+  public readonly retained: u64;
+  public readonly single: Bool;
+  public readonly start: u64;
+  public readonly log_start: u64;
+  public readonly anchor_seen: Bool;
+  public readonly anchored: Bool;
+  public readonly effect: Bool;
+  public readonly images: Option<Box<Slots<RewriteImage>>>;
   invariant selected(sequence): sequence.database < 16_u64;
 }
 
@@ -154,80 +154,80 @@ public struct AttemptUndo {
 
 public struct Due {
   doc "An expiry queued for active removal: the key's bytes and the calendar milliseconds it was set to expire at.";
-  public key: Bytes;
-  public at: u64;
+  public readonly key: Bytes;
+  public readonly at: u64;
   public readonly database: u64;
   invariant selected(due): due.database < 16_u64;
 }
 
 public struct ExpiryQueue {
   doc "Active-expiry queue plus invalidation of a resumable volatile-policy absence scan. A script attempt instead sets staged to an ordered private list, published only on acceptance through queue_due. Every successful creation or transfer of a nonzero expiry sets eligibility_changed even if the ordinary queue is full. Removing expiry records or clearing the queue cannot add eligibility and preserves this flag.";
-  public queue: PriorityQueue<Due, ceiling>;
+  public readonly queue: PriorityQueue<Due, ceiling>;
   public readonly database: u64;
-  public eligibility_changed: Bool;
-  public staged: Option<Box<Slots<Due>>>;
+  public readonly eligibility_changed: Bool;
+  public readonly staged: Option<Box<Slots<Due>>>;
   invariant selected(due): due.database < 16_u64;
 }
 
 public struct EvictionCandidate {
   doc "Redis 7.0.15 evictionPoolPopulate's owned key and score; larger scores are better victims. The shared pool keeps at most EVPOOL_SIZE (16) candidates without borrowing the map.";
-  public key: Box<Array<u8>>;
-  public score: u64;
+  public readonly key: Box<Array<u8>>;
+  public readonly score: u64;
   public readonly database: u64;
   invariant selected(candidate): candidate.database < 16_u64;
 }
 
 public struct Meta {
   doc "What the keyspace keeps beside its keys: the queued expiries, the dataset statement sequence and capture-exhaustion state, the append-only file's collecting buffer, published retained length/capacity, saved append/sync IoErrors and partial-append marker, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the total active-file and current incremental byte counts, the incremental byte count at its last successful sync, and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion, automatic thresholds and the rdb-key-save-delay testing delay the scan reads at each step, the clients connected, whether the server is stopping, and the state SPOP draws from. aof_rewrite_journal_leftover records the latest failed removal of an unlisted temporary journal until a later removal or absence is observed; admission does not reset it and it is not a filesystem stat.";
-  public due: ExpiryQueue;
+  public readonly due: ExpiryQueue;
   public readonly database: u64;
-  public aof_database: u64;
-  public commit_seq: u64;
-  public aof_rewrite_seq_exhausted: Bool;
-  public rewrite: RewriteCapture;
-  public aof_rewrite_retry_blocked: Bool;
-  public aof_rewrite_reserve: u64;
-  public aof_rewrite_scan_peak: u64;
-  public aof_rewrite_cut: Bool;
-  public aof_rewrite_journal_leftover: Bool;
-  public log: Box<Slots<u8>>;
-  public aof_pending_capacity: u64;
-  public aof_pending_length: u64;
-  public aof_append_error: Option<std::io::IoError>;
-  public aof_sync_error: Option<std::io::IoError>;
-  public aof_append_partial: Bool;
-  public memory_peak: u64;
-  public evicted_keys: u64;
-  public expired_keys: u64;
-  public eviction_pool: Box<Slots<EvictionCandidate>>;
-  public eviction_policy: u64;
-  public eviction_database: u64;
-  public eviction_cursors: Array<u64, 16>;
-  public eviction_starts: Array<u64, 16>;
-  public eviction_searches: Array<Bool, 16>;
-  public eviction_wraps: Array<Bool, 16>;
-  public eviction_exhausted: Array<Bool, 16>;
-  public eviction_cursor: u64;
-  public eviction_start: u64;
-  public eviction_searching: Bool;
-  public eviction_wrapped: Bool;
-  public aof_current_size: u64;
-  public aof_incr_size: u64;
-  public aof_synced_size: u64;
-  public aof_base_size: u64;
-  public aof_rewrite_in_progress: Bool;
-  public aof_rewrite_requested: Bool;
-  public aof_rewrite_reply: u64;
-  public aof_rewrites: u64;
-  public aof_rewrite_ok: Bool;
-  public aof_worker_done: Bool;
-  public aof_installing: u64;
-  public aof_rewrite_percentage: u64;
-  public aof_rewrite_min_size: u64;
-  public aof_rewrite_key_delay: i64;
-  public clients: u64;
-  public stopping: Bool;
-  public random: u64;
+  public readonly aof_database: u64;
+  public readonly commit_seq: u64;
+  public readonly aof_rewrite_seq_exhausted: Bool;
+  public readonly rewrite: RewriteCapture;
+  public readonly aof_rewrite_retry_blocked: Bool;
+  public readonly aof_rewrite_reserve: u64;
+  public readonly aof_rewrite_scan_peak: u64;
+  public readonly aof_rewrite_cut: Bool;
+  public readonly aof_rewrite_journal_leftover: Bool;
+  public readonly log: Box<Slots<u8>>;
+  public readonly aof_pending_capacity: u64;
+  public readonly aof_pending_length: u64;
+  public readonly aof_append_error: Option<std::io::IoError>;
+  public readonly aof_sync_error: Option<std::io::IoError>;
+  public readonly aof_append_partial: Bool;
+  public readonly memory_peak: u64;
+  public readonly evicted_keys: u64;
+  public readonly expired_keys: u64;
+  public readonly eviction_pool: Box<Slots<EvictionCandidate>>;
+  public readonly eviction_policy: u64;
+  public readonly eviction_database: u64;
+  public readonly eviction_cursors: Array<u64, 16>;
+  public readonly eviction_starts: Array<u64, 16>;
+  public readonly eviction_searches: Array<Bool, 16>;
+  public readonly eviction_wraps: Array<Bool, 16>;
+  public readonly eviction_exhausted: Array<Bool, 16>;
+  public readonly eviction_cursor: u64;
+  public readonly eviction_start: u64;
+  public readonly eviction_searching: Bool;
+  public readonly eviction_wrapped: Bool;
+  public readonly aof_current_size: u64;
+  public readonly aof_incr_size: u64;
+  public readonly aof_synced_size: u64;
+  public readonly aof_base_size: u64;
+  public readonly aof_rewrite_in_progress: Bool;
+  public readonly aof_rewrite_requested: Bool;
+  public readonly aof_rewrite_reply: u64;
+  public readonly aof_rewrites: u64;
+  public readonly aof_rewrite_ok: Bool;
+  public readonly aof_worker_done: Bool;
+  public readonly aof_installing: u64;
+  public readonly aof_rewrite_percentage: u64;
+  public readonly aof_rewrite_min_size: u64;
+  public readonly aof_rewrite_key_delay: i64;
+  public readonly clients: u64;
+  public readonly stopping: Bool;
+  public readonly random: u64;
   invariant selected(meta): meta.database < 16_u64;
 }
 
@@ -481,3 +481,209 @@ public fn restore_access_database(journal: &Option<AccessJournal>, keys: &Concur
 public fn sequence_database(sequence: &WriteSequence, database: u64) -> result: unit writes(sequence.database) contract {
   requires database < 16_u64;
 } doc "Selects the database identity for subsequent captures within an outer execution unit; it changes neither the global sequence nor the already encoded effect selection.";
+
+public fn meta_client_seed(meta: &Meta) -> seed: u64 writes(meta.random) doc "Takes the client random seed and advances the shared generator under its existing hold.";
+
+public fn meta_client_opened(meta: &Meta) -> result: unit writes(meta.clients) doc "Counts an accepted client.";
+
+public fn meta_client_closed(meta: &Meta) -> result: unit writes(meta.clients) doc "Counts a closed client.";
+
+public fn meta_stop(meta: &Meta) -> result: unit writes(meta.stopping) doc "Stops the writer after clients have drained.";
+
+public fn aof_rewrite_thresholds(meta: &Meta, percentage: u64, minimum: u64) -> result: unit writes(meta.aof_rewrite_percentage), writes(meta.aof_rewrite_min_size) doc "Initializes the automatic rewrite thresholds.";
+
+public fn meta_rewrite_abort(meta: &Meta, reason: RewriteAbortReason) -> result: unit writes(meta.rewrite) doc "The held metadata form of rewrite_abort, preserving its capture accounting.";
+
+public fn meta_rewrite_charge(meta: &Meta, bytes: u64) -> result: Bool writes(meta.rewrite) doc "The held metadata form of rewrite_charge, preserving its capture accounting.";
+
+public fn meta_rewrite_try_charge(meta: &Meta, bytes: u64) -> result: Bool writes(meta.rewrite) doc "The held metadata form of rewrite_try_charge, preserving its capture accounting.";
+
+public fn meta_rewrite_refund(meta: &Meta, bytes: u64) -> result: unit writes(meta.rewrite.used) doc "Releases a completed allocation charge without changing the retained peak.";
+
+public fn aof_pending_capacity(meta: &Meta, capacity: u64) -> result: unit writes(meta.aof_pending_capacity) doc "Publishes the newly allocated writer buffer capacity.";
+
+public fn aof_pending(meta: &Meta, capacity: u64, length: u64) -> result: unit writes(meta.aof_pending_capacity), writes(meta.aof_pending_length) doc "Publishes the retained buffer capacity and length after its update.";
+
+public fn aof_loaded_sizes(meta: &Meta, current: u64, incremental: u64, base: u64) -> result: unit writes(meta.aof_current_size), writes(meta.aof_incr_size), writes(meta.aof_synced_size), writes(meta.aof_base_size) doc "Publishes the authoritative startup sizes after replay.";
+
+public fn aof_rewrite_cancel_request(meta: &Meta) -> result: unit writes(meta.aof_rewrite_requested), writes(meta.aof_rewrite_in_progress), writes(meta.aof_rewrite_reply) doc "Cancels and refuses a pending manual rewrite during shutdown.";
+
+public fn aof_rewrite_take_request(meta: &Meta) -> requested: Bool writes(meta.aof_rewrite_requested) doc "Consumes the manual rewrite request under the writer hold.";
+
+public fn aof_rewrite_started(meta: &Meta) -> result: unit writes(meta.aof_rewrite_in_progress) doc "Publishes the writer decision to start an attempt.";
+
+public fn aof_rewrite_restore_block(meta: &Meta, blocked: Bool) -> result: unit writes(meta.aof_rewrite_retry_blocked) doc "Restores the previous automatic-rewrite block after successful recovery.";
+
+public fn aof_rewrite_cleanup_failed(meta: &Meta) -> result: unit writes(meta.rewrite) doc "Counts and aborts a failed journal cleanup step only during a running attempt.";
+
+public fn aof_rewrite_journal_removed(meta: &Meta, removed: Bool) -> result: unit writes(meta.aof_rewrite_journal_leftover), writes(meta.rewrite) doc "Publishes the cleanup observation and records a failed attempt cleanup.";
+
+public fn aof_rewrite_journal_take(meta: &Meta) -> block: Option<Box<Slots<u8>>> writes(meta.rewrite.journal) doc "Dequeues one staged chunk; its charge stays live until release.";
+
+public fn aof_rewrite_journal_appended(meta: &Meta, appended: u64, images: u64, effects: u64, complete: Bool) -> result: unit writes(meta.rewrite) doc "Counts the successful journal prefix and refuses an incomplete append.";
+
+public fn aof_rewrite_scan_step(meta: &Meta, observed: u64) -> result: unit writes(meta.rewrite.scan_steps), writes(meta.rewrite.scan_peak) doc "Records a completed scan step and its observed heap increase.";
+
+public fn aof_truncated(meta: &Meta, removed: u64, reverted: u64) -> result: unit writes(meta.aof_current_size), writes(meta.aof_incr_size), writes(meta.aof_synced_size) doc "Publishes successful truncation of an unfinished block.";
+
+public fn aof_sync_failed(meta: &Meta, error: std::io::IoError) -> result: unit writes(meta.aof_sync_error) doc "Latches a counted active-file sync failure without clearing prior append state.";
+
+public fn aof_synced(meta: &Meta, written: u64) -> result: unit writes(meta.aof_synced_size) doc "Records the incremental offset covered by this sync, preserving the saved sync error.";
+
+public fn aof_rotated(meta: &Meta) -> result: unit writes(meta.aof_incr_size), writes(meta.aof_synced_size) doc "Resets incremental offsets after published handle rotation.";
+
+public fn aof_rewrite_complete(meta: &Meta, accepted: Bool, manual: Bool, started: Bool) -> result: unit reads(meta.rewrite.scan_peak), reads(meta.rewrite.cut), writes(meta.aof_sync_error), writes(meta.aof_rewrite_in_progress), writes(meta.aof_rewrite_ok), writes(meta.aof_rewrite_retry_blocked), writes(meta.aof_rewrite_scan_peak), writes(meta.aof_rewrite_cut), writes(meta.rewrite.used), writes(meta.rewrite.running), writes(meta.rewrite.active), writes(meta.rewrite.aborted), writes(meta.rewrite.rotating), writes(meta.aof_rewrite_reply) doc "Ends an attempt after worker and journal cleanup; only durable acceptance clears saved sync failure.";
+
+public fn aof_take_collecting(meta: &Meta, pending: &Box<Slots<u8>>, force: Bool) -> result: unit writes(meta.log), writes(meta.aof_pending_capacity), writes(meta.aof_pending_length), writes(pending) doc "Exchanges collecting bytes only once retained bytes drain, or combines both for forced shutdown.";
+
+public fn aof_base_installed(meta: &Meta, size: u64, closed_size: u64) -> result: unit writes(meta.aof_current_size), writes(meta.aof_base_size) doc "Publishes the installed base size while preserving post-cut incremental bytes.";
+
+public fn aof_rewrite_reset(meta: &Meta) -> result: unit writes(meta.rewrite) doc "Starts admission with a fresh inactive capture after prior cleanup.";
+
+public fn aof_rewrite_admitted(meta: &Meta, reserve: u64, fixed: u64, capacity: u64, manual: Bool) -> result: unit reads(meta.commit_seq), writes(meta.rewrite.limit), writes(meta.rewrite.fixed), writes(meta.rewrite.used), writes(meta.rewrite.peak), writes(meta.aof_rewrite_reserve), writes(meta.aof_rewrite_scan_peak), writes(meta.aof_rewrite_cut), writes(meta.rewrite.journal), writes(meta.rewrite.start), writes(meta.rewrite.active), writes(meta.aof_worker_done), writes(meta.aof_rewrites), writes(meta.aof_rewrite_retry_blocked), writes(meta.aof_rewrite_reply) doc "Publishes reserve and allocates the charged journal directory only after admission.";
+
+public fn aof_rewrite_scan_done(meta: &Meta) -> result: unit writes(meta.rewrite.scan_done) doc "Hands completed dataset scanning to the sole writer for the cut.";
+
+public fn aof_rewrite_worker_done(meta: &Meta) -> result: unit writes(meta.aof_worker_done) doc "Publishes worker completion after its file owners close.";
+
+public fn aof_rewrite_cut(meta: &Meta, pending: &Box<Slots<u8>>) -> cut: Bool reads(meta.rewrite.scan_done), reads(meta.commit_seq), writes(meta.rewrite.end), writes(meta.rewrite.cut), writes(meta.rewrite.active), writes(meta.rewrite.rotating), writes(meta.log), writes(meta.aof_database), writes(meta.aof_pending_capacity), writes(meta.aof_pending_length), writes(pending) doc "Freezes capture and seals collecting bytes through S1 in the existing metadata hold.";
+
+public fn aof_rewrite_cut_done(meta: &Meta, switched: Bool) -> result: unit writes(meta.rewrite) doc "Publishes the rotation outcome and aborts a failed switch before worker wakeup.";
+
+public fn aof_installing(meta: &Meta, installing: u64) -> result: unit writes(meta.aof_installing) doc "Publishes installation exclusion under the existing shutdown-and-metadata hold.";
+
+public fn aof_rewrite_journal_detach(meta: &Meta) -> journal: Option<Box<Ring<Box<Slots<u8>>>>> writes(meta.rewrite.journal) doc "Detaches staged owners for bounded release outside metadata holds.";
+
+public fn aof_append_result(meta: &Meta, progress: u64, drained: Bool, error: Option<std::io::IoError>, partial: Bool) -> result: unit writes(meta.rewrite), writes(meta.aof_current_size), writes(meta.aof_incr_size), writes(meta.aof_append_error), writes(meta.aof_append_partial) doc "Records append outcome and the acknowledged file prefix before retained-buffer updates.";
+
+public fn memory_peak_record(meta: &Meta, used: u64) -> peak: u64 writes(meta.memory_peak) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_candidate_new(key: Box<Array<u8>>, score: u64, database: u64) -> candidate: EvictionCandidate pure contract {
+  requires database < 16_u64;
+} doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_search_stop(meta: &Meta) -> result: unit writes(meta.eviction_searching) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_search_begin(meta: &Meta, start: u64) -> result: unit writes(meta.eviction_cursor), writes(meta.eviction_start), writes(meta.eviction_searching), writes(meta.eviction_wrapped) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_search_advance(meta: &Meta, next: u64) -> exhausted: Bool reads(meta.eviction_start), writes(meta.eviction_cursor), writes(meta.eviction_wrapped) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_policy_prepare(meta: &Meta, policy: u64) -> result: unit writes(meta.due.eligibility_changed), writes(meta.eviction_pool), writes(meta.eviction_policy), writes(meta.eviction_searches), writes(meta.eviction_exhausted) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_search_load(meta: &Meta, database: u64) -> result: unit reads(meta.eviction_cursors), reads(meta.eviction_starts), reads(meta.eviction_searches), reads(meta.eviction_wraps), writes(meta.eviction_cursor), writes(meta.eviction_start), writes(meta.eviction_searching), writes(meta.eviction_wrapped) contract {
+  requires database < 16_u64;
+} doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_search_save(meta: &Meta, database: u64, exhausted: Bool) -> result: unit reads(meta.eviction_cursor), reads(meta.eviction_start), reads(meta.eviction_searching), reads(meta.eviction_wrapped), writes(meta.eviction_cursors), writes(meta.eviction_starts), writes(meta.eviction_searches), writes(meta.eviction_wraps), writes(meta.eviction_exhausted) contract {
+  requires database < 16_u64;
+} doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_rotate(meta: &Meta, database: u64) -> result: unit writes(meta.eviction_database) contract {
+  requires database < 16_u64;
+} doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_record_removal(meta: &Meta, lapsed: Bool) -> result: unit writes(meta.evicted_keys), writes(meta.expired_keys) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_pool_add_meta(meta: &Meta, candidate: EvictionCandidate) -> result: unit writes(meta.eviction_pool) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn eviction_pool_take_meta(meta: &Meta) -> key: Option<EvictionCandidate> writes(meta.eviction_pool) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn aof_rewrite_request(meta: &Meta) -> result: unit writes(meta.aof_rewrite_in_progress), writes(meta.aof_rewrite_requested) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn aof_rewrite_reply_consumed(meta: &Meta) -> result: unit writes(meta.aof_rewrite_reply) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn aof_rewrite_percentage_set(meta: &Meta, value: u64) -> result: unit writes(meta.aof_rewrite_percentage) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn aof_rewrite_minimum_set(meta: &Meta, value: u64) -> result: unit writes(meta.aof_rewrite_min_size) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn aof_rewrite_delay_set(meta: &Meta, value: i64) -> result: unit writes(meta.aof_rewrite_key_delay) doc "Applies this metadata transition inside its declaring module under the caller's existing atomic hold.";
+
+public fn command_set_meta_due_log<T0, T1, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &T0, work: &T1, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, plan: &T0, work: &T1, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(args), reads(key), reads(env), writes(meta.due), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_getdel_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, kind: u64, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, kind: u64, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_getex_meta_due_log<T0, T1, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &T0, work: &T1, input: &[u8], key_span: Span, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(key), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, plan: &T0, work: &T1, input: &[u8], key_span: Span, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(key), reads(env), writes(meta.due), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_mset_lapse_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, key: &[u8], budget: &LogBudget) -> appended: u64 reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, key: &[u8], budget: &LogBudget) -> appended: u64 reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_mset_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_incr_log_log<T0, fn apply(log: &Box<Slots<u8>>, removed: Bool, counted: &T0, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(counted), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, removed: Bool, counted: &T0, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(counted), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_changed_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(args), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_incrbyfloat_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, summed: &T0, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(summed), reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, summed: &T0, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(summed), reads(input), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_hincrbyfloat_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, client: &pkg::protocol::Client, floating: &T0, input: &[u8], key_span: Span, field_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, client: &pkg::protocol::Client, floating: &T0, input: &[u8], key_span: Span, field_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_zadd_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, plan: &T0, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, plan: &T0, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_zrem_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_zpop_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_held_flush_due<fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(due), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.due), writes(sequence), writes(keys), writes(log), writes(client), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_held_randomkey_random<fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 writes(sequence), writes(keys), writes(random), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 writes(meta.random), writes(sequence), writes(keys), writes(log), writes(client), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_held_entries_run_due<fn apply(sequence: &WriteSequence, effect_budget: &LogBudget, journal: &Option<AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<AttemptUndo>, fallback: &Bool, due: &ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+}>(meta: &Meta, sequence: &WriteSequence, effect_budget: &LogBudget, journal: &Option<AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<AttemptUndo>, fallback: &Bool, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(meta.due), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+} doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_set_members_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_spop_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_smove_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_set_operands_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(removed), reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(removed), reads(input), reads(args), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_held_scan_log<fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.log), writes(sequence), writes(keys), writes(client), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_held_randomkey_random_log<fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 writes(sequence), writes(keys), writes(random), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, logged: Bool, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 writes(meta.random), writes(meta.log), writes(sequence), writes(keys), writes(client), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_zremrange_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_expire_meta_due_log<T0, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &T0, outcome: u64, lapsed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, plan: &T0, outcome: u64, lapsed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(meta.due), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_ttl_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, key: &[u8], budget: &LogBudget) -> appended: u64 reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, key: &[u8], budget: &LogBudget) -> appended: u64 reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_persist_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, expiry: &T0, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(expiry), reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, expiry: &T0, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(expiry), reads(input), reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_transfer_meta_due_log<T0, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(env), writes(meta.due), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_record_effects_log<fn apply(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(effects), reads(sequence.effects_first_db), reads(sequence.effects_selected), writes(log), writes(budget)>(meta: &Meta, effects: &Box<Slots<u8>>, appended: u64, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(effects), reads(sequence.effects_first_db), reads(sequence.effects_selected), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_lmove_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_database_transfer_meta_due_log<T0, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget) contract {
+  requires target_db < 16_u64;
+}>(meta: &Meta, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(meta.due), writes(meta.log), writes(budget) contract {
+  requires target_db < 16_u64;
+} doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_queue_map_expiry_due<fn apply(keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, database: u64, env: &KeyEnv) -> result: unit reads(keys), reads(env), writes(due) contract {
+  requires database < 16_u64;
+}>(meta: &Meta, keys: &ConcurrentHashMap<Entry>, database: u64, env: &KeyEnv) -> result: unit reads(keys), reads(env), writes(meta.due) contract {
+  requires database < 16_u64;
+} doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_clear_database_expiry_due<fn apply(due: &ExpiryQueue, database: u64) -> result: unit writes(due)>(meta: &Meta, database: u64) -> result: unit writes(meta.due) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_database_transfer_meta_due<T0, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget) contract {
+  requires target_db < 16_u64;
+}>(meta: &Meta, log: &Box<Slots<u8>>, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(meta.due), writes(log), writes(budget) contract {
+  requires target_db < 16_u64;
+} doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_log_removal_log<fn apply(log: &Box<Slots<u8>>, key: &[u8], budget: &LogBudget) -> result: unit reads(key), writes(log), writes(budget)>(meta: &Meta, key: &[u8], budget: &LogBudget) -> result: unit reads(key), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_held_flush_due_log<fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(due), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.due), writes(meta.log), writes(sequence), writes(keys), writes(client), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_log_command_log<fn apply(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> result: unit reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> result: unit reads(input), reads(args), writes(meta.log), writes(budget) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";
+
+public fn command_attempt_due_commit_due<fn apply(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(staged), writes(target)>(meta: &Meta, staged: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(meta.due), writes(staged) doc "Invokes this command transition under the existing Meta hold; only the declared metadata parts are writable.";

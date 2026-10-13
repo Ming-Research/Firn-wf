@@ -105,7 +105,7 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
     if selected {
       let charged = False();
       atomic m = &store^.meta {
-        set charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: 589872_u64);
+        set charged = pkg::store::meta_rewrite_charge(meta: m, bytes: 589872_u64);
       }
       if charged {
       } else {
@@ -144,7 +144,7 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
               let charge = new_bytes +sat 48_u64;
               let room = False();
               atomic expanded = &store^.meta {
-                set room = pkg::store::rewrite_charge(capture: &expanded^.rewrite, bytes: charge);
+                set room = pkg::store::meta_rewrite_charge(meta: expanded, bytes: charge);
               }
               if room {
                 set allocated = allocated +sat charge;
@@ -158,7 +158,7 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
                 let old_bytes = old_input +sat old_span_bytes;
                 let released = old_bytes +sat 48_u64;
                 atomic grown = &store^.meta {
-                  set grown^.rewrite.used = grown^.rewrite.used -sat released;
+                  pkg::store::meta_rewrite_refund(meta: grown, bytes: released);
                 }
                 set allocated = allocated -sat released;
               } else {
@@ -249,7 +249,7 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
           aof_rw_release::<Box<Slots<u8>>>(value: move input);
           aof_rw_release::<Box<Slots<Span>>>(value: move args);
           atomic released = &store^.meta {
-            set released^.rewrite.used = released^.rewrite.used -sat allocated;
+            pkg::store::meta_rewrite_refund(meta: released, bytes: allocated);
           }
           match std::fs::close_read(factory: factory, file: move file) {
             Ok(value: closed) => {
@@ -264,8 +264,8 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
         Err(error: problem) => {
           atomic unopened = &store^.meta {
             let reason_boundary_3 = pkg::store::RewriteAbortReason::Boundary();
-            pkg::store::rewrite_abort(capture: &unopened^.rewrite, reason: reason_boundary_3);
-            set unopened^.rewrite.used = unopened^.rewrite.used -sat 589872_u64;
+            pkg::store::meta_rewrite_abort(meta: unopened, reason: reason_boundary_3);
+            pkg::store::meta_rewrite_refund(meta: unopened, bytes: 589872_u64);
           }
         }
       }

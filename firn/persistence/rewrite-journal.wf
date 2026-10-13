@@ -41,11 +41,7 @@ fn aof_rw_journal_listed(manifest: &AofManifest, name: &[u8]) -> listed: Bool re
 
 fn aof_rw_journal_close_failed(store: &Keyspace) -> result: unit reads(store) waits {
   atomic m = &store^.meta {
-    if m^.rewrite.running {
-      set m^.rewrite.cleanup_failed = m^.rewrite.cleanup_failed +sat 1_u64;
-      let reason = pkg::store::RewriteAbortReason::JournalIo();
-      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason);
-    }
+    pkg::store::aof_rewrite_cleanup_failed(meta: m);
   }
   return unit;
 }
@@ -88,13 +84,7 @@ fn aof_rw_journal_remove(store: &Keyspace, factory: &HandleFactory, writable: &s
     }
   }
   atomic m = &store^.meta {
-    set m^.aof_rewrite_journal_leftover = bnot(removed);
-    if removed {
-    } else if m^.rewrite.running {
-      set m^.rewrite.cleanup_failed = m^.rewrite.cleanup_failed +sat 1_u64;
-      let reason = pkg::store::RewriteAbortReason::JournalIo();
-      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason);
-    }
+    pkg::store::aof_rewrite_journal_removed(meta: m, removed: removed);
   }
   return removed;
 }
@@ -221,16 +211,7 @@ fn aof_rw_journal_drain(store: &Keyspace, factory: &HandleFactory, file: &WriteF
     }
     let block = None<Box<Slots<u8>>>();
     atomic m = &store^.meta {
-      match m^.rewrite.journal {
-        Some(value: chunks) => {
-          if chunks^.inner.len > 0_u64 {
-            let taken = take_front(window: &chunks^.inner);
-            set block = Some<Box<Slots<u8>>>(value: move taken);
-          }
-        }
-        None() => {
-        }
-      }
+      set block = pkg::store::aof_rewrite_journal_take(meta: m);
     }
     match move block {
       Some(value: bytes) => {
@@ -242,18 +223,11 @@ fn aof_rw_journal_drain(store: &Keyspace, factory: &HandleFactory, file: &WriteF
         }
         let complete = appended == length;
         atomic counted = &store^.meta {
-          set counted^.rewrite.journal_bytes = counted^.rewrite.journal_bytes +sat appended;
-          set counted^.rewrite.journal_images = decoder^.images;
-          set counted^.rewrite.journal_effects = decoder^.effects;
-          if complete {
-          } else {
-            let reason = pkg::store::RewriteAbortReason::JournalIo();
-            pkg::store::rewrite_abort(capture: &counted^.rewrite, reason: reason);
-          }
+          pkg::store::aof_rewrite_journal_appended(meta: counted, appended: appended, images: decoder^.images, effects: decoder^.effects, complete: complete);
         }
         aof_rw_release::<Box<Slots<u8>>>(value: move bytes);
         atomic released = &store^.meta {
-          set released^.rewrite.used = released^.rewrite.used -sat 65560_u64;
+          pkg::store::meta_rewrite_refund(meta: released, bytes: 65560_u64);
         }
         if complete {
         } else {
@@ -279,7 +253,7 @@ fn aof_rw_journal_read(store: &Keyspace, factory: &HandleFactory, journal: &Read
     set last = frozen^.rewrite.end;
     set limit = frozen^.rewrite.limit;
     set expected = frozen^.rewrite.journal_bytes;
-    set charged = pkg::store::rewrite_charge(capture: &frozen^.rewrite, bytes: 65560_u64);
+    set charged = pkg::store::meta_rewrite_charge(meta: frozen, bytes: 65560_u64);
   }
   if charged {
   } else {
@@ -349,7 +323,7 @@ fn aof_rw_journal_read(store: &Keyspace, factory: &HandleFactory, journal: &Read
   }
   aof_rw_release::<Box<Slots<u8>>>(value: move buffer);
   atomic released = &store^.meta {
-    set released^.rewrite.used = released^.rewrite.used -sat 65560_u64;
+    pkg::store::meta_rewrite_refund(meta: released, bytes: 65560_u64);
   }
   if accepted {
     return Ok<u64, unit>(value: size);

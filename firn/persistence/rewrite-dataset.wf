@@ -61,7 +61,7 @@ fn aof_rw_database(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, 
         let heap_before = std::process::heap_in_use(meter: meter);
         let keys = key_set_new(capacity: 0_u64);
         let created = key_set_bytes(keys: &keys);
-        let fresh = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: created);
+        let fresh = pkg::store::meta_rewrite_charge(meta: m, bytes: created);
         if fresh {
           set step_charge = created;
           let room = m^.rewrite.limit -sat m^.rewrite.used;
@@ -70,11 +70,10 @@ fn aof_rw_database(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, 
           let step = map_scan_within::<Entry>(map: table, cursor: cursor, count: hint, limit: limit, keys: &keys);
           let after = key_set_bytes(keys: &keys);
           let heap_after = std::process::heap_in_use(meter: meter);
-          set m^.rewrite.scan_steps = m^.rewrite.scan_steps +sat 1_u64;
           let observed_heap = heap_after -sat heap_before;
-          set m^.rewrite.scan_peak = imax(m^.rewrite.scan_peak, observed_heap);
+          pkg::store::aof_rewrite_scan_step(meta: m, observed: observed_heap);
           let retained = after - before;
-          let charged = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: retained);
+          let charged = pkg::store::meta_rewrite_charge(meta: m, bytes: retained);
           if charged {
             set step_charge = step_charge +sat retained;
           }
@@ -89,7 +88,7 @@ fn aof_rw_database(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, 
                   set okay = True();
                 } else {
                   let reason_reserve_1 = pkg::store::RewriteAbortReason::Reserve();
-                  pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_reserve_1);
+                  pkg::store::meta_rewrite_abort(meta: m, reason: reason_reserve_1);
                 }
               }
             }
@@ -100,7 +99,7 @@ fn aof_rw_database(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, 
                   set progressed = True();
                   set next_cursor = reached;
                 } else {
-                  let scratch = pkg::store::rewrite_charge(capture: &m^.rewrite, bytes: aof_rw_step_buffer);
+                  let scratch = pkg::store::meta_rewrite_charge(meta: m, bytes: aof_rw_step_buffer);
                   if scratch {
                     set step_charge = step_charge +sat aof_rw_step_buffer;
                     let buffer = box_slots_new::<u8>(capacity: 65536_u64);
@@ -118,7 +117,7 @@ fn aof_rw_database(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, 
                       } else if m^.rewrite.active {
                         let length = key_set_read_key(keys: &keys, index: index, out: &probe[0_u64..0_u64]);
                         let key_allocation = length +sat 16_u64;
-                        let key_room = pkg::store::rewrite_try_charge(capture: &m^.rewrite, bytes: key_allocation);
+                        let key_room = pkg::store::meta_rewrite_try_charge(meta: m, bytes: key_allocation);
                         if key_room {
                           set step_charge = step_charge +sat key_allocation;
                           let copied = box_array_filled::<u8>(count: length, value: 0_u8);
@@ -138,11 +137,11 @@ fn aof_rw_database(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, 
                           let future = stamp > m^.commit_seq;
                           if future {
                             let reason_sequence_invalid_2 = pkg::store::RewriteAbortReason::SequenceInvalid();
-                            pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_sequence_invalid_2);
+                            pkg::store::meta_rewrite_abort(meta: m, reason: reason_sequence_invalid_2);
                           } else {
                             let with_key = measure.bytes +sat length;
                             let bytes = with_key +sat 256_u64;
-                            let room_for_image = pkg::store::rewrite_try_charge(capture: &m^.rewrite, bytes: bytes);
+                            let room_for_image = pkg::store::meta_rewrite_try_charge(meta: m, bytes: bytes);
                             if room_for_image {
                               set step_charge = step_charge +sat bytes;
                               let no = False();
@@ -154,7 +153,7 @@ fn aof_rw_database(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, 
                                 let doubled = buffer.inner.cap *sat 2_u64;
                                 let target = imax(doubled, wanted);
                                 let growth = target +sat 24_u64;
-                                set fits = pkg::store::rewrite_try_charge(capture: &m^.rewrite, bytes: growth);
+                                set fits = pkg::store::meta_rewrite_try_charge(meta: m, bytes: growth);
                                 if fits {
                                   set step_charge = step_charge +sat growth;
                                 } else {
@@ -184,7 +183,7 @@ fn aof_rw_database(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, 
                         let most = m^.rewrite.limit -sat m^.rewrite.fixed;
                         if shortfall > most {
                           let reason_reserve_5 = pkg::store::RewriteAbortReason::Reserve();
-                          pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_reserve_5);
+                          pkg::store::meta_rewrite_abort(meta: m, reason: reason_reserve_5);
                         } else {
                           set waiting = True();
                         }
@@ -229,9 +228,9 @@ fn aof_rw_database(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, 
       if okay {
       } else {
         let reason_cancelled_4 = pkg::store::RewriteAbortReason::Cancelled();
-        pkg::store::rewrite_abort(capture: &released^.rewrite, reason: reason_cancelled_4);
+        pkg::store::meta_rewrite_abort(meta: released, reason: reason_cancelled_4);
       }
-      set released^.rewrite.used = released^.rewrite.used -sat step_charge;
+      pkg::store::meta_rewrite_refund(meta: released, bytes: step_charge);
     }
     if okay {
     } else {

@@ -63,7 +63,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
   let pending = box_slots_new::<u8>(capacity: 0_u64);
   atomic pending_meta = &store.meta {
     set pending = box_slots_new::<u8>(capacity: 65536_u64);
-    set pending_meta^.aof_pending_capacity = pending.inner.cap;
+    pkg::store::aof_pending_capacity(meta: pending_meta, capacity: pending.inner.cap);
   }
   let last_sync = std::time::now(clock: &clock);
   let last_append = last_sync;
@@ -89,11 +89,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
       let cancelled = aof_rw_cancelled(store: &store);
       if cancelled {
         atomic m = &store.meta {
-          if m^.aof_rewrite_requested {
-            set m^.aof_rewrite_requested = False();
-            set m^.aof_rewrite_in_progress = False();
-            set m^.aof_rewrite_reply = 2_u64;
-          }
+          pkg::store::aof_rewrite_cancel_request(meta: m);
         }
       } else {
         let rewrite = False();
@@ -101,8 +97,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
         let recovery = False();
         let blocked = False();
         atomic m = &store.meta {
-          set manual = m^.aof_rewrite_requested;
-          set m^.aof_rewrite_requested = False();
+          set manual = pkg::store::aof_rewrite_take_request(meta: m);
           set rewrite = manual;
           set blocked = m^.aof_rewrite_retry_blocked;
           let saved = False();
@@ -123,7 +118,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
             set rewrite = aof_rw_growth(current_size: m^.aof_current_size, base_size: m^.aof_base_size, percentage: m^.aof_rewrite_percentage, minimum: m^.aof_rewrite_min_size);
           }
           if rewrite {
-            set m^.aof_rewrite_in_progress = True();
+            pkg::store::aof_rewrite_started(meta: m);
           }
         }
         if rewrite {
@@ -133,7 +128,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
           if recovery {
             atomic m = &store.meta {
               if m^.aof_rewrite_ok {
-                set m^.aof_rewrite_retry_blocked = blocked;
+                pkg::store::aof_rewrite_restore_block(meta: m, blocked: blocked);
               }
             }
           }

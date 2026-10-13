@@ -503,7 +503,7 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   }
   let text = box_slots_new::<u8>(capacity: 0_u64);
   atomic m = &store^.meta {
-    set m^.memory_peak = imax(m^.memory_peak, used);
+    let peak = pkg::store::memory_peak_record(meta: m, used: used);
     set text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: &keys, logged: store^.logging, persistence: m, client: client, time: time);
   }
   info_finish(client: client, text: &text);

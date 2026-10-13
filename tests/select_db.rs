@@ -2,6 +2,7 @@
 //! src/object.c, src/aof.c, src/script.c and tests/unit/{keyspace,scripting,
 //! multi}.tcl. These cases belong to board item firn-scope-select-db.
 //! Recorded Redis 7.2.16 replies and the rewrite base: https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856.
+//! Supplemental replies, rewrite suffix and eviction files: https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843.
 //! Each case below identifies its recorded batch and missing fixture context.
 //! SCAN cursors and dictionary order are deliberately checked on their own
 //! server; deterministic replies and controlled incremental AOFs are exact.
@@ -10,8 +11,11 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 const DEADLINE: &str = "99999999999000";
-// Raw command-format base from the recorded aof-mixed-databases-rewrite batch.
-const REDIS_7216_REWRITE_BASE: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$7\r\nfifteen\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\ncopy\r\n$5\r\nseven\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$6\r\nscript\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n7\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$5\r\nseven\r\n*3\r\n$9\r\nPEXPIREAT\r\n$4\r\nsame\r\n$14\r\n99999999999000\r\n*3\r\n$3\r\nSET\r\n$11\r\nscript-only\r\n$1\r\ns\r\n*2\r\n$6\r\nSELECT\r\n$2\r\n15\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$4\r\nzero\r\n";
+// Raw command-format base from the recorded aof-rewrite-equal-context-suffix-reset batch.
+const REDIS_7216_REWRITE_BASE: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$7\r\nfifteen\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$6\r\nscript\r\n*3\r\n$3\r\nSET\r\n$4\r\ncopy\r\n$5\r\nseven\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n7\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$5\r\nseven\r\n*3\r\n$9\r\nPEXPIREAT\r\n$4\r\nsame\r\n$14\r\n99999999999000\r\n*3\r\n$3\r\nSET\r\n$11\r\nscript-only\r\n$1\r\ns\r\n*2\r\n$6\r\nSELECT\r\n$2\r\n15\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$4\r\nzero\r\n";
+// The first 59 bytes precede restart; the remaining SELECT/DEL follow restart.
+const REDIS_7216_REWRITE_SUFFIX_PREFIX: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n7\r\n*3\r\n$3\r\nSET\r\n$6\r\nsuffix\r\n$5\r\nafter\r\n";
+const REDIS_7216_REWRITE_SUFFIX: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n7\r\n*3\r\n$3\r\nSET\r\n$6\r\nsuffix\r\n$5\r\nafter\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n7\r\n*2\r\n$3\r\nDEL\r\n$6\r\nsuffix\r\n";
 
 const DB_RANGE: &str = "-ERR DB index is out of range\r\n";
 const INTEGER: &str = "-ERR value is not an integer or out of range\r\n";
@@ -168,9 +172,9 @@ fn all_sixteen_databases_are_isolated_and_selection_is_connection_local() {
 
 /// db.c parses database ids as signed int before range checking or looking up
 /// a key. SWAPDB supplies its own parse errors, in first/second-id order.
-/// Oracle recording: database-errors-resp2/resp3 records every error below. The final
-/// SET/SELECT/GET selection-retention check is not in the recording.
-/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
+/// Oracle recording: database-errors-retain-selection-resp2/resp3 records every error and
+/// the final SET/SELECT/GET selection-retention check in the same command history.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843).
 #[test]
 fn database_command_errors_match_redis_integer_rules_and_precedence() {
     for protocol in [2, 3] {
@@ -280,9 +284,10 @@ fn move_and_copy_cross_database_values_and_absolute_expiries() {
 
 /// A swap changes the contents visible through handles held by existing
 /// peers. The exchanged deadline must not later delete the old db's value.
-/// Oracle recording: Related SWAPDB replies appear in the mixed-database AOF batches; this two-
-/// connection swap fixture is absent from the recording.
-/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
+/// Oracle recording: swapdb-success-values-resp2/resp3 records these selected-database values
+/// on one connection. Existing handles on two simultaneous connections remain source-grounded;
+/// the recording selects between commands instead of exercising both cached handles.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843).
 #[test]
 fn swapdb_exchanges_contents_seen_by_existing_connections() {
     for protocol in [2, 3] {
@@ -337,9 +342,11 @@ fn scan(client: &mut TcpStream, pattern: &str, kind: Option<&str>) -> BTreeSet<S
 
 /// Enumeration and INFO use the selected database; FLUSHDB affects exactly
 /// that database and FLUSHALL empties every database without changing SELECT.
-/// Oracle recording: Related commands appear in other batches; this enumeration, INFO and
-/// successful FLUSH fixture is absent from the recording.
-/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
+/// Oracle recording: enumeration-info-flush-success-resp2/resp3 records the deterministic
+/// replies, unordered KEYS sets, INFO key counts and successful FLUSH variants. Nonempty SCAN
+/// records only cursor zero: complete COUNT 1 traversal remains source-grounded and follows
+/// each server's own cursors; neither those cursors nor dictionary order are fixed by this test.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843).
 #[test]
 fn database_enumeration_info_and_flush_have_database_scope() {
     for protocol in [2, 3] {
@@ -507,9 +514,11 @@ fn scripts_start_in_the_callers_database_and_select_only_the_script_client() {
 /// An impossible limit exhausts every eligible key regardless of the
 /// requesting client's database; a volatile policy preserves permanent keys.
 /// Each database's eviction DEL must persist in that database's AOF context.
-/// Oracle recording: This allkeys-random/volatile-ttl admission, eviction statistics and restart
-/// fixture is absent from the recording.
-/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
+/// Oracle recording: global-database-eviction-allkeys-random/volatile-ttl-restart records this
+/// command history, evicted_keys counts, restart replies and incremental files. Eviction order
+/// varies, so exact per-(db,key) SET/DEL records are compared without fixing cross-key order.
+/// Other INFO stats and eviction scheduling are not claimed as recorded constants.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843).
 #[test]
 fn eviction_searches_all_databases_with_global_policy_and_statistics() {
     for policy in ["allkeys-random", "volatile-ttl"] {
@@ -542,6 +551,36 @@ fn eviction_searches_all_databases_with_global_policy_and_statistics() {
         select(&mut client, 4);
         check(&mut client, &["EXISTS", "permanent"], if policy == "volatile-ttl" { ":1\r\n" } else { ":0\r\n" });
         stop(client, child);
+        // The recorded AOF was captured after a restart with read-only
+        // commands; it retains the first writer's deterministic seed prefix.
+        let mut seeded = Vec::new();
+        for db in ["0", "7", "15"] {
+            seeded.extend(resp(&["SELECT", db]));
+            seeded.extend(resp(&["SET", "victim", &value, "PXAT", DEADLINE]));
+        }
+        seeded.extend(resp(&["SELECT", "4"]));
+        seeded.extend(resp(&["SET", "permanent", &value]));
+        let bytes = std::fs::read(aof_incremental_path(program.working_directory(), "eviction.aof")).unwrap();
+        assert!(bytes.starts_with(&seeded), "recorded eviction seed prefix is exact");
+        let mut database = None;
+        for record in file_records(&bytes) {
+            if record[0] == b"SELECT" {
+                assert_ne!(database.as_ref(), Some(&record[1]), "eviction SELECT only changes emitted database context");
+                database = Some(record[1].clone());
+            }
+        }
+        // Compare exact per-key SET/DEL records without fixing the random
+        // cross-key deletion order observed in this one recording.
+        let mut expected = seeded;
+        for db in ["0", "7", "15"] {
+            expected.extend(resp(&["SELECT", db]));
+            expected.extend(resp(&["DEL", "victim"]));
+        }
+        if policy == "allkeys-random" {
+            expected.extend(resp(&["SELECT", "4"]));
+            expected.extend(resp(&["DEL", "permanent"]));
+        }
+        assert_eq!(rewrite_key_records(&bytes), rewrite_key_records(&expected), "recorded eviction effects retain their database, payload and per-key order");
     }
 }
 
@@ -662,7 +701,7 @@ fn rewrite_key_records(bytes: &[u8]) -> BTreeMap<(Vec<u8>, Vec<u8>), Vec<Vec<u8>
 /// CI checks the comparison machinery against representative wrong results:
 /// independent-key order may differ, but data, expiry and RESP framing may not.
 /// The input is the raw Redis base recorded in
-/// [this oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
+/// [this oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843).
 #[test]
 fn rewrite_oracle_comparison_preserves_per_key_records_and_rejects_wrong_results() {
     let expected = rewrite_key_records(REDIS_7216_REWRITE_BASE);
@@ -697,11 +736,12 @@ fn rewrite_oracle_comparison_preserves_per_key_records_and_rejects_wrong_results
 /// FLUSHDB must replay once in their original databases. Rewriting must
 /// retain every nonempty db and absolute TTL, and its post-rewrite suffix
 /// must begin with a new SELECT context.
-/// Oracle recording: aof-mixed-databases-restart/rewrite records seed/restart replies and the raw
-/// rewritten base. Pre-restart verification, DEL suffix and its subsequent verification,
-/// incremental bytes, rewrite status and manifest are absent. The equal-context suffix-reset
-/// mutation below also needs recording; it preserves the recorded rewritten dataset.
-/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
+/// Oracle recording: aof-rewrite-equal-context-suffix-reset records the unchanged-dataset
+/// SET before rewrite, raw base, suffix SET, restart, suffix DEL and subsequent dataset checks.
+/// The first suffix checkpoint is the complete 59-byte SELECT/SET prefix; its final 107 bytes also include the
+/// fresh post-restart SELECT/DEL context. The seed increment, pre-restart verification, rewrite
+/// status and manifest assertions remain source-grounded; those bytes/states were not recorded.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843).
 #[test]
 fn several_databases_survive_aof_restart_rewrite_and_post_rewrite_suffix() {
     let program = CompiledProgram::from_environment();
@@ -750,9 +790,9 @@ fn several_databases_survive_aof_restart_rewrite_and_post_rewrite_suffix() {
     stop(client, child);
     let suffix_name = manifest.lines().find(|line| line.ends_with("type i")).unwrap().split_whitespace().nth(1).unwrap();
     let suffix = std::fs::read(directory.join(suffix_name)).unwrap();
-    let mut expected = resp(&["SELECT", "7"]);
-    expected.extend(resp(&["SET", "suffix", "after"]));
-    assert_eq!(suffix, expected);
+    // This checkpoint precedes the recorded restart and DEL; only their
+    // preceding complete SELECT/SET records belong in this file yet.
+    assert_eq!(suffix.as_slice(), REDIS_7216_REWRITE_SUFFIX_PREFIX);
     let (child, mut client, _) = start(&program, b"0", Some(b"appendonly.aof"));
     // The suffix adds one key to database seven; check the base before removing it.
     select(&mut client, 7);
@@ -760,6 +800,7 @@ fn several_databases_survive_aof_restart_rewrite_and_post_rewrite_suffix() {
     check(&mut client, &["DEL", "suffix"], ":1\r\n");
     check_persisted_databases(&mut client);
     stop(client, child);
+    assert_eq!(std::fs::read(directory.join(suffix_name)).unwrap(), REDIS_7216_REWRITE_SUFFIX, "recorded suffix includes the fresh post-restart database context");
 }
 
 /// AOF loading uses a private connection; SELECT in a completed MULTI

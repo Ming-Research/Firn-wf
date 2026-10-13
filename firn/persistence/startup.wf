@@ -166,10 +166,7 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
     }
   }
   atomic m = &store^.meta {
-    set m^.aof_current_size = current_size;
-    set m^.aof_incr_size = incr_size;
-    set m^.aof_synced_size = incr_size;
-    set m^.aof_base_size = base_size;
+    pkg::store::aof_loaded_sizes(meta: m, current: current_size, incremental: incr_size, base: base_size);
   }
   return True();
 }

@@ -1539,10 +1539,10 @@ fn held_arity(kind: u64) -> arity: i64 pure {
 fn held_run(sequence: &pkg::store::WriteSequence, effect_budget: &pkg::store::LogBudget, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
   doc "Runs a command held_kind names, its arity already checked, by its parts inside a statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the caller's record of what it changed. journal is the attempt environment's first-refresh undo log, or None for EXEC; the client carries the read's memory settings, refreshed after its own CONFIG SET. time is the statement's: its check is the instant the script or the transaction began, and its calendar time is frozen with it.";
   if kind == 164_u64 {
-    return held_flush(sequence: sequence, keys: keys, due: &meta^.due, log: effects, logged: logged, input: input, args: args, client: client, budget: effect_budget);
+    return pkg::store::command_held_flush_due::<fn held_flush>(meta: meta, sequence: sequence, keys: keys, log: effects, logged: logged, input: input, args: args, client: client, budget: effect_budget);
   }
   if kind == 165_u64 {
-    return held_flush(sequence: sequence, keys: keys, due: &meta^.due, log: effects, logged: logged, input: input, args: args, client: client, budget: effect_budget);
+    return pkg::store::command_held_flush_due::<fn held_flush>(meta: meta, sequence: sequence, keys: keys, log: effects, logged: logged, input: input, args: args, client: client, budget: effect_budget);
   }
   if kind == 168_u64 {
     return held_scan(sequence: sequence, keys: keys, log: effects, logged: logged, input: input, args: args, client: client, now: time^.check, budget: effect_budget);
@@ -1552,7 +1552,7 @@ fn held_run(sequence: &pkg::store::WriteSequence, effect_budget: &pkg::store::Lo
     return 0_u64;
   }
   if kind == 170_u64 {
-    return held_randomkey(sequence: sequence, keys: keys, random: &meta^.random, log: effects, logged: logged, client: client, now: time^.check, budget: effect_budget);
+    return pkg::store::command_held_randomkey_random::<fn held_randomkey>(meta: meta, sequence: sequence, keys: keys, log: effects, logged: logged, client: client, now: time^.check, budget: effect_budget);
   }
   if kind == 21_u64 {
     let size = dbsize_body(keys: keys);
@@ -1574,7 +1574,7 @@ fn held_run(sequence: &pkg::store::WriteSequence, effect_budget: &pkg::store::Lo
   let slots = &keys^[command_keys];
   let undo = None<pkg::store::AttemptUndo>();
   let fallback = False();
-  return held_entries_run(sequence: sequence, effect_budget: effect_budget, journal: journal, kind: kind, keys: slots, declared: &command_keys, undo: &undo, fallback: &fallback, due: &meta^.due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+  return pkg::store::command_held_entries_run_due::<fn held_entries_run>(meta: meta, sequence: sequence, effect_budget: effect_budget, journal: journal, kind: kind, keys: slots, declared: &command_keys, undo: &undo, fallback: &fallback, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
 }
 
 fn held_entries_run(sequence: &pkg::store::WriteSequence, effect_budget: &pkg::store::LogBudget, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {

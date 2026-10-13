@@ -292,9 +292,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let client = client_new(capacity: 16384_u64);
   set client.meter = Some<std::process::MemoryMeter>(value: move meter);
   atomic m = &store.meta {
-    set client.random = m^.random;
-    let stepped = m^.random *wrap 6364136223846793005_u64;
-    set m^.random = stepped +wrap 1442695040888963407_u64;
+    set client.random = pkg::store::meta_client_seed(meta: m);
   }
   let args = box_slots_new::<Span>(capacity: 16_u64);
   let input = input_new(capacity: 16384_u64);
@@ -459,7 +457,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   close_receive(factory: &factory, receive: move closing_receive);
   close_send(factory: &factory, send: move closing_send);
   atomic m = &store.meta {
-    set m^.clients = m^.clients -wrap 1_u64;
+    pkg::store::meta_client_closed(meta: m);
   }
   return unit;
 }
@@ -1020,8 +1018,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   let startup = read_time(wall: &wall_clock);
   let root = keyspace_new(seed: seed, logging: quiet, password: move password_text, timeout: idle, started: startup.time.unix_ms);
   atomic m = &root.meta {
-    set m^.aof_rewrite_percentage = options.rewrite_percentage;
-    set m^.aof_rewrite_min_size = options.rewrite_min_size;
+    pkg::store::aof_rewrite_thresholds(meta: m, percentage: options.rewrite_percentage, minimum: options.rewrite_min_size);
   }
   let logging = False();
   let failed = False();
@@ -1100,7 +1097,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
               let serving_settings = settings_copy(settings: &settings);
               let id = accepted +wrap 1_u64;
               atomic m = &keyspace.meta {
-                set m^.clients = m^.clients +wrap 1_u64;
+                pkg::store::meta_client_opened(meta: m);
               }
               let required = False();
               atomic v = &keyspace.server {
@@ -1129,7 +1126,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   }
   let wake = None<CancelSource>();
   atomic m = &keyspace.meta, v = &keyspace.server when m^.aof_installing == 0_u64 {
-    set m^.stopping = True();
+    pkg::store::meta_stop(meta: m);
     set v^.shutdown = True();
     let source = std::time::cancel_share(source: &v^.wake);
     set wake = Some<CancelSource>(value: move source);

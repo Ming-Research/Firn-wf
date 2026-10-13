@@ -141,7 +141,7 @@ fn run_object(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     let lapsed = object_body(sequence: &sequence, capture_key: key, slot: slot, client: client, kind: kind);
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      let appended = mset_lapse_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, key: key, budget: &log_budget);
+      let appended = pkg::store::command_mset_lapse_meta_log::<fn mset_lapse_meta>(meta: m, logged: store^.logging, lapsed: lapsed, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }

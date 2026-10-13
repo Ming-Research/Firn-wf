@@ -29,3 +29,23 @@ jobs:
 
       - name: Check that the duplicated directory retains the original map identity
         run: build/shared-handles-witness
+
+      - name: Isolate TYPE-11 and compile its prescribed readonly writer form
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          type11_natural="$RUNNER_TEMP/type11-natural"
+          type11_accepted="$RUNNER_TEMP/type11-accepted"
+          cp -R research/experiments/select-db/type-invariant-writable-field "$type11_natural"
+          cp research/experiments/select-db/type-invariant-writable-field.wf "$type11_natural/client/client.wf"
+          if "build/whitefoot/${witness_release}/whitefootc" --graph "$type11_natural/modules.wfg" --check-modules > "$RUNNER_TEMP/type11-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/type11-diagnostic.txt"
+            echo 'Expected TYPE-11 for the unrelated public writable field'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/type11-diagnostic.txt"
+          grep -F 'error[TYPE-11]: TypeInvariantWritableField' "$RUNNER_TEMP/type11-diagnostic.txt"
+          cp -R "$type11_natural" "$type11_accepted"
+          sed -i 's/public count: u64;/public readonly count: u64;/' "$type11_accepted/state/module.wfm"
+          sed -i 's/set state\^\.count = value;/pkg::state::write_count(state: state, value: value);/' "$type11_accepted/client/client.wf"
+          "build/whitefoot/${witness_release}/whitefootc" --graph "$type11_accepted/modules.wfg" --entry witness -o build/type11-accepted
+          build/type11-accepted

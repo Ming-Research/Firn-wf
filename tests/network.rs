@@ -6,10 +6,12 @@
 //! [aof.c](https://github.com/redis/redis/blob/7.2.16/src/aof.c)
 //! (`feedAppendOnlyFile`): the writer starts without a selected database;
 //! MULTI/EXEC have database -1, so SELECT precedes the first enclosed effect.
-//! The [database oracle recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856)
-//! contains command replies and one rewritten base, not incremental AOF
-//! bytes or these legacy fixtures. It does not re-record the expectations
-//! below, whose earlier Redis 7.0.15 provenance is retained where applicable.
+//! The [Redis 7.2.16 recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843)
+//! records the direct-command, transaction and script propagation cases and
+//! the value-type replay case's global-flush prefix as raw replies and
+//! incremental AOF bytes. Each case names its recorded batch below. Other
+//! fixtures retain their earlier provenance; this run does not re-record
+//! handwritten replay files, injected failures or expiry timing cases.
 
 #![cfg(target_os = "linux")]
 
@@ -27,6 +29,9 @@ use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 use support::{CompiledProgram, ProgramChild, fixture_directory};
+
+// Complete raw legacy-direct-propagation-forms recording; see the case below.
+const REDIS_7216_DIRECT_PROPAGATION_AOF: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$6\r\nmset:k\r\n$3\r\nold\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$6\r\nmset:k\r\n*3\r\n$4\r\nMSET\r\n$6\r\nmset:k\r\n$3\r\nnew\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$3\r\nSET\r\n$4\r\nread\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$4\r\nread\r\n*3\r\n$3\r\nSET\r\n$2\r\ngd\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\ngd\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\na\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\nb\r\n*3\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.5\r\n*4\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.6\r\n$7\r\nKEEPTTL\r\n*3\r\n$3\r\nSET\r\n$2\r\nge\r\n$1\r\nv\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nge\r\n$14\r\n99999999999999\r\n*2\r\n$7\r\nPERSIST\r\n$2\r\nge\r\n*5\r\n$3\r\nSET\r\n$2\r\nat\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$14\r\n99999999999000\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nat\r\n$14\r\n99999999998000\r\n*3\r\n$5\r\nSETNX\r\n$2\r\nnx\r\n$1\r\nv\r\n*3\r\n$6\r\nAPPEND\r\n$2\r\nap\r\n$1\r\nx\r\n*4\r\n$8\r\nSETRANGE\r\n$2\r\nap\r\n$1\r\n3\r\n$1\r\ny\r\n*3\r\n$6\r\nINCRBY\r\n$2\r\nib\r\n$1\r\n5\r\n*2\r\n$4\r\nDECR\r\n$2\r\nib\r\n*5\r\n$3\r\nSET\r\n$2\r\nzz\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\naa\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\nlive\r\n$1\r\nv\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nzz\r\n*2\r\n$3\r\nDEL\r\n$2\r\naa\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$6\r\nMSETNX\r\n$2\r\nm1\r\n$1\r\na\r\n$2\r\nm2\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$2\r\nm1\r\n$2\r\nm3\r\n*3\r\n$4\r\nCOPY\r\n$2\r\nm3\r\n$2\r\nm4\r\n*2\r\n$6\r\nUNLINK\r\n$2\r\nm4\r\n*5\r\n$3\r\nSET\r\n$2\r\ny2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\ny1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny2\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny1\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$3\r\nSET\r\n$2\r\nx2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx2\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n*1\r\n$4\r\nEXEC\r\n";
 
 /// Connects to a program that is still starting.
 ///
@@ -1054,21 +1059,23 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes_with_lists_a
     }
 }
 
-/// [PRE-2] firn records its writes in its append-only file as Redis 7.0.15
-/// propagates them, which a replay does not show where two forms replay to the
-/// same state: a key `MSET` or `GET` finds expired is recorded as its `DEL`
-/// before the command, and so is each key `MSETNX` finds expired before its
-/// first live one, and each key `DEL` or `EXISTS` finds expired, once, in the
-/// order named; `GETDEL` is recorded as `DEL`,
-/// `GETSET` as `SET`, `INCRBYFLOAT` as `SET` with `KEEPTTL`, `GETEX` as
-/// `PEXPIREAT` or `PERSIST`, `EXAT` as `PXAT` and `EXPIREAT` as `PEXPIREAT`,
-/// both in milliseconds, a `PEXPIREAT` its LT refused not at all, and the
-/// other commands as they were sent. The expected file is redis-server
-/// 7.0.15's for the same requests, with Redis 7.2.16's initial `SELECT 0`, but
-/// without the `MULTI` and `EXEC` it brackets one command's records in. The expiring
-/// context, which records the same `DEL` when it removes an expired key
-/// first, could change the file only by removing `zz` or `aa` between their
-/// `SET` and `MSETNX`, a window of microseconds.
+/// [PRE-2] firn records its writes as Redis 7.2.16 propagates them, even
+/// when two forms replay to the same state. Lazy expiry records DEL; GETDEL
+/// becomes DEL, GETSET becomes SET, INCRBYFLOAT becomes SET with KEEPTTL,
+/// GETEX becomes PEXPIREAT or PERSIST, and absolute expiries use milliseconds.
+/// A command with multiple effects encloses them in MULTI and EXEC: here
+/// MSET, MSETNX, DEL and EXISTS each produce such a group. The replies and
+/// complete incremental file are the raw `legacy-direct-propagation-forms`
+/// batch in the [Redis recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843).
+/// The test pipelines the same ordered commands; the recording does not
+/// establish identical transport timing. With active expiry enabled, a sweep
+/// between an already-expired SET and its later lookup can move a DEL out of
+/// that command's group or change its order. The exact-byte assertion retains
+/// the recorded lazy-expiry requirement. Until board item firn-aof-effect-groups,
+/// Firn omits the four MULTI/EXEC pairs for MSET, MSETNX, DEL and EXISTS,
+/// a pre-existing difference outside this database change. The assertion removes
+/// exactly those 116 framing bytes from the recorded constant and compares
+/// every remaining byte; all command replies and other comparisons stay exact.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_its_writes_as_redis_propagates_them() {
@@ -1133,13 +1140,24 @@ fn firn_records_its_writes_as_redis_propagates_them() {
     assert!(output.status.success(), "firn: {:?}", output.status);
     let file =
         std::fs::read(aof_incremental_path(fixture.path(), "forms.aof")).expect("read firn's file");
-    assert_eq!(
-        String::from_utf8_lossy(&file),
-        String::from_utf8_lossy(
-            b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$6\r\nmset:k\r\n$3\r\nold\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$6\r\nmset:k\r\n*3\r\n$4\r\nMSET\r\n$6\r\nmset:k\r\n$3\r\nnew\r\n*5\r\n$3\r\nSET\r\n$4\r\nread\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$4\r\nread\r\n*3\r\n$3\r\nSET\r\n$2\r\ngd\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\ngd\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\na\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\nb\r\n*3\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.5\r\n*4\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.6\r\n$7\r\nKEEPTTL\r\n*3\r\n$3\r\nSET\r\n$2\r\nge\r\n$1\r\nv\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nge\r\n$14\r\n99999999999999\r\n*2\r\n$7\r\nPERSIST\r\n$2\r\nge\r\n*5\r\n$3\r\nSET\r\n$2\r\nat\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$14\r\n99999999999000\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nat\r\n$14\r\n99999999998000\r\n*3\r\n$5\r\nSETNX\r\n$2\r\nnx\r\n$1\r\nv\r\n*3\r\n$6\r\nAPPEND\r\n$2\r\nap\r\n$1\r\nx\r\n*4\r\n$8\r\nSETRANGE\r\n$2\r\nap\r\n$1\r\n3\r\n$1\r\ny\r\n*3\r\n$6\r\nINCRBY\r\n$2\r\nib\r\n$1\r\n5\r\n*2\r\n$4\r\nDECR\r\n$2\r\nib\r\n*5\r\n$3\r\nSET\r\n$2\r\nzz\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\naa\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\nlive\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\nzz\r\n*2\r\n$3\r\nDEL\r\n$2\r\naa\r\n*5\r\n$6\r\nMSETNX\r\n$2\r\nm1\r\n$1\r\na\r\n$2\r\nm2\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$2\r\nm1\r\n$2\r\nm3\r\n*3\r\n$4\r\nCOPY\r\n$2\r\nm3\r\n$2\r\nm4\r\n*2\r\n$6\r\nUNLINK\r\n$2\r\nm4\r\n*5\r\n$3\r\nSET\r\n$2\r\ny2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\ny1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny2\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx2\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n"
-        ),
-        "firn's append-only file"
-    );
+    let mut expected = REDIS_7216_DIRECT_PROPAGATION_AOF.to_vec();
+    for effects in [
+        b"*2\r\n$3\r\nDEL\r\n$6\r\nmset:k\r\n*3\r\n$4\r\nMSET\r\n$6\r\nmset:k\r\n$3\r\nnew\r\n".as_slice(),
+        b"*2\r\n$3\r\nDEL\r\n$2\r\nzz\r\n*2\r\n$3\r\nDEL\r\n$2\r\naa\r\n".as_slice(),
+        b"*2\r\n$3\r\nDEL\r\n$2\r\ny2\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny1\r\n".as_slice(),
+        b"*2\r\n$3\r\nDEL\r\n$2\r\nx2\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n".as_slice(),
+    ] {
+        let mut grouped = resp(&["MULTI"]);
+        grouped.extend_from_slice(effects);
+        grouped.extend(resp(&["EXEC"]));
+        let positions: Vec<_> = expected.windows(grouped.len()).enumerate()
+            .filter_map(|(at, bytes)| (bytes == grouped.as_slice()).then_some(at)).collect();
+        assert_eq!(positions.len(), 1, "each recorded effect group occurs exactly once");
+        let at = positions[0];
+        expected.splice(at..at + grouped.len(), effects.iter().copied());
+    }
+    assert_eq!(REDIS_7216_DIRECT_PROPAGATION_AOF.len() - expected.len(), 116);
+    assert_eq!(file, expected, "firn's append-only file");
 }
 
 /// [PRE-2] firn applies append-only blocks only after their EXEC, including
@@ -2828,8 +2846,11 @@ fn firn_carries_requests_and_replies_larger_than_its_windows() {
 /// others. A string set before FLUSHALL and a list pushed before FLUSHDB stay
 /// absent, since the file records both commands, and FUNCTION FLUSH after
 /// them, as Redis does, and a FLUSHALL of the keyspace still empty before
-/// them: the file's first bytes are those redis-server 7.0.15 appends for the
-/// same requests, with Redis 7.2.16's initial SELECT included. A key the expiring context
+/// them: the first six replies and the complete prefix match the raw
+/// `legacy-value-type-global-flush-prefix` batch in the
+/// [Redis 7.2.16 recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843).
+/// That batch ends at FUNCTION FLUSH; it does not record this case's later
+/// value-type changes, random pop, expiry delay or restart. A key the expiring context
 /// removed is recorded as removed, as Redis propagates it, so a `SET` with NX
 /// that found it absent holds its value after the restart, where a replay
 /// keeping the expired key would refuse it. INFO reports the file as kept;
@@ -3256,6 +3277,9 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
 /// orders. Memory settings and automatic rewrite thresholds join glob results.
 /// Redis's *o*t matches only port and timeout among these parameters: the
 /// final t must end the name, so neither automatic rewrite threshold matches.
+/// The databases=16 field matches `immutable-sixteen-databases-config` in the
+/// [Redis 7.2.16 recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843);
+/// that CONFIG GET databases batch does not record these full glob replies.
 /// set-max-listpack-entries and set-max-listpack-value, with their Redis
 /// 7.2.16 defaults 128 and 64, join every pattern that reaches s.
 #[cfg(target_os = "linux")]
@@ -4312,11 +4336,13 @@ fn firn_answers_client_info_as_redis_does() {
     assert_eq!(status, 0);
 }
 
-/// firn records a transaction's writes as Redis 7.0.15 propagates them: a
-/// transaction of two writes bracketed in MULTI and EXEC, one of one write as
-/// that write alone, and one that only reads not at all; a restart replays
-/// the file to the same keys. The expected file is redis-server 7.0.15's for
-/// the same requests, with Redis 7.2.16's initial SELECT 0 included.
+/// firn records a transaction's writes as Redis 7.2.16 propagates them: two
+/// writes are bracketed in MULTI and EXEC, one write stands alone, and a
+/// read-only transaction adds nothing. The initial SELECT follows MULTI.
+/// The first run's replies and complete increment match the raw
+/// `legacy-transaction-propagation` batch in the
+/// [Redis recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843).
+/// The restart checks below are not part of that recording.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_transactions_as_redis_propagates_them() {
@@ -4364,8 +4390,8 @@ fn firn_records_transactions_as_redis_propagates_them() {
     let file = std::fs::read(aof_incremental_path(fixture.path(), "transactions.aof"))
         .expect("read firn's file");
     assert_eq!(
-        String::from_utf8_lossy(&file),
-        "*1\r\n$5\r\nMULTI\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
+        file.as_slice(),
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
     );
     let port_lease = support::lease_port();
     let port = port_lease.port();
@@ -7561,11 +7587,12 @@ fn firn_draws_random_keys_uniformly_as_redis_does() {
     assert_eq!(status, 0);
 }
 
-/// firn records a script's writes as Redis 7.0.15 propagates them: a script
-/// of two writes bracketed in MULTI and EXEC, one of one write as that write
-/// alone, and one that only reads not at all; a restart replays the file to
-/// the same keys. The expected file is redis-server 7.0.15's for the same
-/// scripts, with Redis 7.2.16's initial SELECT inside MULTI included.
+/// firn records a script's writes as Redis 7.2.16 propagates them: two writes
+/// are bracketed in MULTI and EXEC, one write stands alone, and a read-only
+/// script adds nothing. The initial SELECT follows MULTI. The first run's
+/// replies and complete increment match the raw `legacy-script-propagation`
+/// batch in the [Redis recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843).
+/// The restart checks below are not part of that recording.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_scripts_as_redis_propagates_them() {
@@ -7599,8 +7626,8 @@ fn firn_records_scripts_as_redis_propagates_them() {
     let file = std::fs::read(aof_incremental_path(fixture.path(), "scripts.aof"))
         .expect("read firn's file");
     assert_eq!(
-        String::from_utf8_lossy(&file),
-        "*1\r\n$5\r\nMULTI\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
+        file.as_slice(),
+        b"*1\r\n$5\r\nMULTI\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
     );
     let port_lease = support::lease_port();
     let port = port_lease.port();

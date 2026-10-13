@@ -190,7 +190,7 @@ fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     pkg::store::database_context(meta: m, database: store^.database);
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    let appended = held_flush(sequence: &sequence, keys: t, due: &m^.due, log: &m^.log, logged: store^.logging, input: input, args: args, client: client, budget: &log_budget);
+    let appended = pkg::store::command_held_flush_due_log::<fn held_flush>(meta: m, sequence: &sequence, keys: t, logged: store^.logging, input: input, args: args, client: client, budget: &log_budget);
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   return unit;
@@ -242,7 +242,7 @@ fn run_function(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
       pkg::store::database_context(meta: m, database: store^.database);
       let sequence = pkg::store::sequence_new(meta: m, loading: loading);
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: loading);
-      log_command(log: &m^.log, input: input, args: args, budget: &log_budget);
+      pkg::store::command_log_command_log::<fn log_command>(meta: m, input: input, args: args, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -1125,13 +1125,13 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       set v^.memory.maxmemory_eviction_tenacity = memory_values[5_u64];
     }
     if rewrite_given[0_u64] == 1_u64 {
-      set m^.aof_rewrite_percentage = rewrite_values[0_u64];
+      pkg::store::aof_rewrite_percentage_set(meta: m, value: rewrite_values[0_u64]);
     }
     if rewrite_given[1_u64] == 1_u64 {
-      set m^.aof_rewrite_min_size = rewrite_values[1_u64];
+      pkg::store::aof_rewrite_minimum_set(meta: m, value: rewrite_values[1_u64]);
     }
     if delay_given {
-      set m^.aof_rewrite_key_delay = new_delay;
+      pkg::store::aof_rewrite_delay_set(meta: m, value: new_delay);
     }
     for @slots (slot in 0_u64..11_u64) {
       if encodings_given[slot] == 1_u64 {
