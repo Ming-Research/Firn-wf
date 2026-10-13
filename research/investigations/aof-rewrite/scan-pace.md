@@ -3,7 +3,9 @@
 Status: the scan-within implementation was introduced with Whitefoot
 wf-8ffb6d93241f (specification v0.133). The later continuous-write sample
 below finished scanning but failed during switch validation. The proposed
-boundary-state fix has not yet run in CI or in a performance comparison.
+boundary-state fix passes the gate (run
+[38383983743](https://github.com/Ming-Research/Firn-wf/actions/runs/38383983743)
+on cf1492d); its writer cost has not yet been compared on the 14900K.
 
 ## Question
 
@@ -177,13 +179,15 @@ exceptional fallback can still exhaust the rotation reserve. CI correctness,
 the old-revision failure control and a 14900K comparison (including added
 ordinary-append parsing cost and latency) remain unverified.
 
-**Regression coverage prepared for CI.** The long-history continuous-write
+**Regression coverage.** The long-history continuous-write
 case keeps more than 128 MiB of overwritten SET history at maxmemory zero
 (R = 16,777,216 bytes), writes through an observed S1, requires rewrite
 success, and compares live and restarted INCR counts, APPEND bytes and RPUSH
-order against acknowledged requests. The old full-history reader is expected
-to exhaust rotation reserve while those writes accumulate; that before-fix
-failure has not yet been run. The existing post-cut abort case now first
+order against acknowledged requests. Run against main's full-history reader
+(control run [38383712698](https://github.com/Ming-Research/Firn-wf/actions/runs/38383712698),
+network job, main plus only the test files), the case failed as predicted:
+aof_last_bgrewrite_status err, abort reason rotation_reserve, cut 1,
+scan_done 1, rewrite peak and used 8,922,432 bytes. The existing post-cut abort case now first
 forces an EFBIG append failure with the existing Linux file-limit fixture,
 restores the limit and waits for append recovery. Its unknown boundary needs
 the exceptional reread; at maxmemory 64 MiB (R = 3,355,443 bytes), writes
