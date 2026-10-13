@@ -1,0 +1,120 @@
+alias ExitStatus = std::process::ExitStatus;
+
+nocopy struct Entry {
+  count: u64;
+}
+
+nocopy struct WriteSequence {
+  database: u64;
+  count: u64;
+}
+
+nocopy struct ExpiryQueue {
+  database: u64;
+  count: u64;
+}
+
+nocopy struct Meta {
+  due: ExpiryQueue;
+  database: u64;
+}
+
+struct LogBudget {
+  count: u64;
+}
+
+nocopy struct AccessJournal {
+  count: u64;
+}
+
+nocopy struct AttemptUndo {
+  count: u64;
+}
+
+struct KeyEnv {
+  salt: u64;
+}
+
+struct Time {
+  check: u64;
+}
+
+struct Span {
+  start: u64;
+  length: u64;
+}
+
+nocopy struct Client {
+  count: u64;
+}
+
+fn sequence_new() -> made: WriteSequence pure {
+  return WriteSequence(database: 0_u64, count: 0_u64);
+}
+
+fn due_new() -> made: ExpiryQueue pure {
+  return ExpiryQueue(database: 0_u64, count: 0_u64);
+}
+
+fn meta_new() -> made: Meta pure {
+  let pending = due_new();
+  return Meta(due: move pending, database: 0_u64);
+}
+
+fn sequence_touch(sequence: &WriteSequence) -> result: unit writes(sequence.count) {
+  set sequence^.count = 0_u64;
+  return unit;
+}
+
+fn due_touch(due: &ExpiryQueue) -> result: unit writes(due.count) {
+  set due^.count = 0_u64;
+  return unit;
+}
+
+fn command_held_entries_run_due<fn apply(keys: &Slots<u64, 4>) -> appended: u64 writes(keys) contract {
+  ensures keys^.len == entry(keys)^.len;
+}>(keys: &Slots<u64, 4>) -> appended: u64 writes(keys) contract {
+  ensures keys^.len == entry(keys)^.len;
+} {
+  return apply(keys: keys);
+}
+
+fn held_entries_run(keys: &Slots<u64, 4>) -> appended: u64 writes(keys) contract {
+  ensures keys^.len == entry(keys)^.len;
+} {
+  for @entries (index in 0_u64..keys^.len) {
+    if index < keys^.len {
+      set keys^[index] = 0_u64;
+    }
+  }
+  return 0_u64;
+}
+
+fn main() -> status: ExitStatus pure {
+  let sequence = sequence_new();
+  let effect_budget = LogBudget(count: 0_u64);
+  let journal = None<AccessJournal>();
+  let undo = None<AttemptUndo>();
+  let fallback = False();
+  let meta = meta_new();
+  let due = due_new();
+  let effects = box_slots_new::<u8>(capacity: 1_u64);
+  place_back(window: &effects.inner, value: 7_u8);
+  let args = box_slots_new::<Span>(capacity: 1_u64);
+  let span = Span(start: 0_u64, length: 1_u64);
+  place_back(window: &args.inner, value: span);
+  let client = Client(count: 0_u64);
+  let env = KeyEnv(salt: 0_u64);
+  let time = Time(check: 0_u64);
+  let logged = False();
+  let kind = 1_u64;
+  let bytes = array_filled::<u8, 1>(value: 107_u8);
+  let input = &bytes[0_u64..1_u64];
+  let declared = key_set_new(capacity: 1_u64);
+  key_set_insert(keys: &declared, key: input);
+  let window = slots_new::<u64, 4>();
+  place_back(window: &window, value: 7_u64);
+  let keys = &window;
+  command_held_entries_run_due::<fn held_entries_run>(keys: keys);
+  return std::process::exit_status(code: 0_u8);
+}

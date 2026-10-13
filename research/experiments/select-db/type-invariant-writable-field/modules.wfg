@@ -1,0 +1,4 @@
+pkg::state: [];
+pkg::client: [pkg::state, std::process];
+
+entry witness = pkg::client::main;

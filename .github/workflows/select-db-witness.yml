@@ -1,0 +1,129 @@
+# Temporary CI caller for firn-scope-select-db. Remove before the PR is ready
+# once the pinned directory, index and contract forms are validated. Keep the
+# witnesses as regression instruments for the database design and language requests.
+name: select-db-witness
+
+on:
+  push:
+    branches: [claude/select-db]
+
+jobs:
+  shared-handles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Compile the shared-handle directory witness and show its stack ledger
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          "build/whitefoot/${witness_release}/whitefootc" --stack-ledger research/experiments/select-db/shared-handles-witness.wf -o build/shared-handles-witness
+
+      - name: Check that the duplicated directory retains the original map identity
+        run: build/shared-handles-witness
+
+      - name: Record same-type shared-map helper alias rejection
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          if "build/whitefoot/${witness_release}/whitefootc" --check research/experiments/select-db/shared-map-alias-witness.wf > "$RUNNER_TEMP/shared-map-alias-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+            echo 'Expected EFF-5 at the clear_both helper boundary'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+          grep -E 'error\[EFF-5\]: OverlappingCallEffects[[:space:]]*$' "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+          grep -F 'clear_both(first: db0, second: db1);' "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+          grep -E '^[[:space:]]*first: db0\^[[:space:]]*$' "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+          grep -E '^[[:space:]]*second: db1\^[[:space:]]*$' "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+
+      - name: Record selected-reference correlation rejection
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          if "build/whitefoot/${witness_release}/whitefootc" --check research/experiments/select-db/selected-reference-alias-witness.wf > "$RUNNER_TEMP/selected-reference-alias-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/selected-reference-alias-diagnostic.txt"
+            echo 'Expected EFF-5 at the write_pair selected-reference boundary'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/selected-reference-alias-diagnostic.txt"
+          grep -E 'error\[EFF-5\]: OverlappingCallEffects[[:space:]]*$' "$RUNNER_TEMP/selected-reference-alias-diagnostic.txt"
+          grep -F 'write_pair(source: source, destination: destination);' "$RUNNER_TEMP/selected-reference-alias-diagnostic.txt"
+
+      - name: Isolate TYPE-11 and compile its prescribed readonly writer form
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          type11_natural="$RUNNER_TEMP/type11-natural"
+          type11_accepted="$RUNNER_TEMP/type11-accepted"
+          cp -R research/experiments/select-db/type-invariant-writable-field "$type11_natural"
+          cp research/experiments/select-db/type-invariant-writable-field.wf "$type11_natural/client/client.wf"
+          if "build/whitefoot/${witness_release}/whitefootc" --graph "$type11_natural/modules.wfg" --check-modules > "$RUNNER_TEMP/type11-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/type11-diagnostic.txt"
+            echo 'Expected TYPE-11 for the unrelated public writable field'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/type11-diagnostic.txt"
+          grep -F 'error[TYPE-11]: TypeInvariantWritableField' "$RUNNER_TEMP/type11-diagnostic.txt"
+          cp -R "$type11_natural" "$type11_accepted"
+          sed -i 's/public count: u64;/public readonly count: u64;/' "$type11_accepted/state/module.wfm"
+          sed -i 's/set state\^\.count = value;/pkg::state::write_count(state: state, value: value);/' "$type11_accepted/client/client.wf"
+          "build/whitefoot/${witness_release}/whitefootc" --graph "$type11_accepted/modules.wfg" --entry witness -o build/type11-accepted
+          build/type11-accepted
+
+      - name: Isolate the missing nested invariant and verify its explicit outer form
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          if "build/whitefoot/${witness_release}/whitefootc" --check research/experiments/select-db/nested-type-invariant.wf > "$RUNNER_TEMP/nested-invariant-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/nested-invariant-diagnostic.txt"
+            echo 'Expected FN-8 at the Inner parameter call'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/nested-invariant-diagnostic.txt"
+          grep -F 'error[FN-8]: UndischargedCallRequirement' "$RUNNER_TEMP/nested-invariant-diagnostic.txt"
+          grep -F 'outer^.payload.database' "$RUNNER_TEMP/nested-invariant-diagnostic.txt"
+          sed '/^  payload: Inner;$/a\  invariant payload_selected(outer): outer.payload.database < 16_u64;' research/experiments/select-db/nested-type-invariant.wf > "$RUNNER_TEMP/nested-invariant-accepted.wf"
+          "build/whitefoot/${witness_release}/whitefootc" "$RUNNER_TEMP/nested-invariant-accepted.wf" -o build/nested-invariant-accepted
+          build/nested-invariant-accepted
+
+      - name: Compile and run the fixed-array database-index witness
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          "build/whitefoot/${witness_release}/whitefootc" research/experiments/select-db/bounded-database-index.wf -o build/bounded-database-index
+          build/bounded-database-index
+
+      # This is a diagnostic reduction, not a conformance exception: FN-9 here
+      # reproduces the reported compiler gap; success means the server failure
+      # needs a more specific reduction. Other diagnostics fail the probe.
+      - name: Record the function-parameter postcondition reduction
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          if "build/whitefoot/${witness_release}/whitefootc" --check research/experiments/select-db/function-parameter-postcondition.wf > "$RUNNER_TEMP/function-postcondition-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/function-postcondition-diagnostic.txt"
+            "build/whitefoot/${witness_release}/whitefootc" research/experiments/select-db/function-parameter-postcondition.wf -o build/function-parameter-postcondition
+            build/function-parameter-postcondition
+          else
+            cat "$RUNNER_TEMP/function-postcondition-diagnostic.txt"
+            grep -F 'error[FN-9]: UndischargedPostcondition' "$RUNNER_TEMP/function-postcondition-diagnostic.txt"
+            grep -F 'return apply(window: window);' "$RUNNER_TEMP/function-postcondition-diagnostic.txt"
+            grep -E 'concrete_function:.*forward' "$RUNNER_TEMP/function-postcondition-diagnostic.txt"
+          fi
+
+      - name: Record the cross-module function-parameter reduction
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          if "build/whitefoot/${witness_release}/whitefootc" --graph research/experiments/select-db/function-parameter-postcondition/modules.wfg --check-modules > "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt"
+            "build/whitefoot/${witness_release}/whitefootc" --graph research/experiments/select-db/function-parameter-postcondition/modules.wfg --entry witness -o build/function-parameter-postcondition-graph
+            build/function-parameter-postcondition-graph
+          else
+            cat "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt"
+            grep -F 'error[FN-9]: UndischargedPostcondition' "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt"
+            grep -F 'return apply(window: window);' "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt"
+            grep -E 'concrete_function:.*forward' "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt"
+          fi

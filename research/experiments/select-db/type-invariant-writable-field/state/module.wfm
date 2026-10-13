@@ -1,0 +1,9 @@
+public struct State {
+  public readonly database: u64;
+  public count: u64;
+  invariant selected(state): state.database < 16_u64;
+}
+
+public fn new() -> state: State pure doc "Constructs a valid database-zero state.";
+
+public fn write_count(state: &State, value: u64) -> result: unit writes(state.count) doc "Declaring-module writer used by the accepted readonly form.";

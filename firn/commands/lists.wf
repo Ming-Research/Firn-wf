@@ -225,6 +225,7 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -321,6 +322,7 @@ fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -636,6 +638,7 @@ fn run_lset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -759,6 +762,7 @@ fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -870,6 +874,7 @@ fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -978,6 +983,7 @@ fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -1247,6 +1253,7 @@ fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
       give move active;
     } else {

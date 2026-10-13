@@ -1,0 +1,18 @@
+alias State = pkg::state::State;
+alias ExitStatus = std::process::ExitStatus;
+
+fn write_count(state: &State, value: u64) -> result: unit writes(state.count) {
+  doc "Natural client writer: the invariant reads only state.database, never state.count. The sibling module fixture declares public struct State { public readonly database: u64; public count: u64; invariant selected(state): state.database < 16_u64; }. TYPE-11 rejects count today. Accepted form: declare public readonly count, and replace this assignment with pkg::state::write_count(state: state, value: value); the declaring-module writer has writes(state.count) and proves selected at its exit. No invariant or range check changes. Whitefoot has no comments (FORM-4), so this doc records both forms.";
+  set state^.count = value;
+  return unit;
+}
+
+fn main() -> status: ExitStatus pure {
+  doc "Minimal client implementation for the type-invariant-writable-field module fixture. CI copies this exact file into its client module. A standalone source bundle cannot declare public fields (MOD-6); putting the natural declaration here would reject for that earlier rule instead of isolating TYPE-11.";
+  let state = pkg::state::new();
+  write_count(state: &state, value: 7_u64);
+  if state.count != 7_u64 {
+    return std::process::exit_status(code: 1_u8);
+  }
+  return std::process::exit_status(code: 0_u8);
+}

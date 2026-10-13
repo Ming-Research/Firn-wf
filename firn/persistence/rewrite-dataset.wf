@@ -4,7 +4,7 @@ alias Keyspace = pkg::store::Keyspace;
 alias HandleFactory = std::io::HandleFactory;
 alias WriteFile = std::fs::WriteFile;
 
-const aof_rw_select: Array<u8, 23> = "*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n";
+const aof_rw_select: Array<u8, 6> = "SELECT";
 
 const aof_rw_scan_most: u64 = 64_u64;
 
@@ -15,6 +15,16 @@ const aof_rw_step_buffer: u64 = 65560_u64;
 const aof_rw_delay_slice: u64 = 100000000_u64;
 
 fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, clock: &Clock, meter: &std::process::MemoryMeter) -> result: Result<u64, unit> reads(store), writes(factory), writes(file), writes(clock), writes(meter) waits {
+  let size = 0_u64;
+  for (database in 0_u64..16_u64) {
+    let selected = pkg::store::keyspace_database(store: store, database: database);
+    let written = propagate aof_rw_database(store: &selected, factory: factory, file: file, clock: clock, meter: meter);
+    set size = size +sat written;
+  }
+  return Ok<u64, unit>(value: size);
+}
+
+fn aof_rw_database(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, clock: &Clock, meter: &std::process::MemoryMeter) -> result: Result<u64, unit> reads(store), writes(factory), writes(file), writes(clock), writes(meter) waits {
   doc "One whole-map-and-Meta statement per step observes membership, complete owned payload, absolute expiry and last_write. Each step scans with map_scan_within, its limit the reserve left after the step's 64-KiB output buffer, and charges the KeySet's bytes as key_set_bytes reports them, the growth across the call in either result, so no scan allocation precedes its charge or exceeds R. Key copies, images and buffer growth are charged before allocation without aborting. A step that does not fit is discarded unwritten with its cursor kept: a step of several positions is retried at count hint 1 at once; a one-position step, or a first position map_scan_within refuses, waits outside every hold and retries while its need so far fits R less admission's fixed charge (the KeySet need also less a fresh KeySet's bytes and the step buffer, which a retry holds again), and otherwise aborts with reserve. The count hint, about that many keys per step with whole positions kept together as the pinned runtime applies it, starts at 64, halves after a step emitting more than 64 KiB and doubles back after one emitting at most 32 KiB. Steps run back to back until about 1 ms has passed since the last wait, then pause outside every hold, so the scan yields its driver once per slice. A nonzero rdb-key-save-delay, read at each step, scans one position per step; a positive one sleeps its microseconds per key in cancellable slices of at most 100 ms, a negative -n one microsecond per n keys, each rounded up to whole milliseconds by the driver's timer.";
   let cursor = 0_u64;
   let size = 0_u64;
@@ -97,7 +107,10 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
                     let probe = array_filled::<u8, 0>(value: 0_u8);
                     if selected {
                     } else {
-                      pkg::store::log_append_plain(log: &buffer, bytes: &aof_rw_select[0_u64..23_u64]);
+                      let budget = pkg::store::log_budget_new();
+                      pkg::store::log_count(log: &buffer, count: 2_u64, room: 64_u64, budget: &budget);
+                      pkg::store::log_word(log: &buffer, word: &aof_rw_select[0_u64..6_u64], budget: &budget);
+                      pkg::store::log_decimal(log: &buffer, value: store^.database, budget: &budget);
                       set selecting = True();
                     }
                     for (index in 0_u64..keys.len) {
@@ -133,7 +146,7 @@ fn aof_rw_dataset(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, c
                             if room_for_image {
                               set step_charge = step_charge +sat bytes;
                               let no = False();
-                              let image = pkg::store::rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: no);
+                              let image = pkg::store::rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: no, database: store^.database);
                               let written = image.inner.len;
                               let wanted = buffer.inner.len +sat written;
                               let fits = True();
@@ -312,27 +325,6 @@ struct AofReconcile {
   remaining: u64;
   previous: u64;
   end: u64;
-}
-
-fn aof_rw_select_empty(factory: &HandleFactory, file: &WriteFile) -> result: Result<u64, unit> writes(factory), writes(file) waits {
-  doc "Select database zero before journal output when the scan emitted no image; no scratch owner is needed.";
-  let offset = 0_u64;
-  loop {
-    if offset >= 23_u64 {
-      return Ok<u64, unit>(value: offset);
-    }
-    match std::fs::append_once(factory: factory, file: file, source: &aof_rw_select[0_u64..23_u64], start: offset, end: 23_u64) {
-      Ok(value: next) => {
-        if next <= offset {
-          return Err<u64, unit>(error: unit);
-        }
-        set offset = next;
-      }
-      Err(error: problem) => {
-        return Err<u64, unit>(error: unit);
-      }
-    }
-  }
 }
 
 fn aof_rw_reconcile(factory: &HandleFactory, file: &WriteFile, block: &[u8], decoder: &AofReconcile) -> result: Result<u64, pkg::store::RewriteAbortReason> reads(block), writes(factory), writes(file), writes(decoder) waits {

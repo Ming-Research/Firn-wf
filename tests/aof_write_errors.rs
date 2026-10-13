@@ -6,6 +6,14 @@
 //! The MISCONF suffix is strerror(aof_last_write_errno) (server.c:4346-4355):
 //! the text below is glibc's on Linux x86-64 in the C locale. A short write is
 //! described as ENOSPC whatever the host returned (aof.c:1163-1184).
+//!
+//! The [Redis 7.2.16 recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843)
+//! records the raw healthy seed replies and complete incremental bytes in
+//! `legacy-write-error-seed-readable`, `legacy-write-error-seed-events` and
+//! `legacy-write-error-seed-before`. The constants below preserve those bytes,
+//! including initial SELECT 0; file limits remain relative to their lengths.
+//! That run injects no write failures and does not re-record fault replies,
+//! rollback, recovery, rewrite-under-failure or restart behavior.
 
 use super::*;
 use std::path::Path;
@@ -14,6 +22,13 @@ const MISCONF: &str = "-MISCONF Errors writing to the AOF file: ";
 const EXEC_MISCONF: &str = "-EXECABORT Transaction discarded because of: MISCONF Errors writing to the AOF file: ";
 const PREVIOUS_ERRORS: &str = "-EXECABORT Transaction discarded because of previous errors.\r\n";
 const POLL_LIMIT: Duration = Duration::from_secs(10);
+
+// Raw legacy-write-error-seed-readable increment from the recording above.
+const READABLE_SEED: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$8\r\nreadable\r\n$1\r\nv\r\n";
+// Raw legacy-write-error-seed-events increment from the recording above.
+const EVENTS_SEED: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$5\r\nRPUSH\r\n$6\r\nevents\r\n$6\r\nbefore\r\n";
+// Raw legacy-write-error-seed-before increment from the recording above.
+const BEFORE_SEED: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$6\r\nbefore\r\n$1\r\nb\r\n";
 /// glibc strerror(EFBIG). `fault` sets RLIMIT_FSIZE to the file's current
 /// length, so write(2) fails before writing a byte; aofWrite returns -1
 /// (aof.c:1031-1033) and flushAppendOnlyFile keeps that errno (aof.c:1157-1162).
@@ -119,7 +134,7 @@ fn stop(client: &mut TcpStream, child: ProgramChild) {
 
 fn seed(client: &mut TcpStream, path: &Path) -> Vec<u8> {
     assert_eq!(memory_request(client, &["SET", "readable", "v"]), "+OK\r\n");
-    let bytes = resp(&["SET", "readable", "v"]);
+    let bytes = READABLE_SEED.to_vec();
     wait_bytes(path, &bytes);
     // Appended bytes can reach the file before Meta publishes the empty
     // retained buffer, while the original healthy status still reads ok.
@@ -289,7 +304,7 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
         let (child, mut client, _) = start(&program, native);
         let path = incremental(&program);
         assert_eq!(memory_request(&mut client, &["RPUSH", "events", "before"]), ":1\r\n");
-        let mut expected = resp(&["RPUSH", "events", "before"]);
+        let mut expected = EVENTS_SEED.to_vec();
         wait_bytes(&path, &expected);
         wait_empty_healthy_buffer(&mut client);
         let old = file_limit(&child, expected.len() as u64 + 7);
@@ -343,7 +358,8 @@ fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
         let padding = "p".repeat(1 << 20);
         assert_eq!(memory_request(&mut client, &["SET", "padding", padding.as_str()]), "+OK\r\n");
         assert_eq!(memory_request(&mut client, &["DEL", "padding"]), ":1\r\n");
-        let mut expected = resp(&args);
+        let mut expected = resp(&["SELECT", "0"]);
+        expected.extend(resp(&args));
         expected.extend(resp(&["SET", "padding", padding.as_str()]));
         expected.extend(resp(&["DEL", "padding"]));
         wait_bytes(&path, &expected);
@@ -370,7 +386,7 @@ fn aof_short_append_reports_no_space_on_both_routes() {
         let (child, mut client, _) = start(&program, native);
         let path = incremental(&program);
         assert_eq!(memory_request(&mut client, &["SET", "before", "b"]), "+OK\r\n");
-        let expected = resp(&["SET", "before", "b"]);
+        let expected = BEFORE_SEED.to_vec();
         wait_bytes(&path, &expected);
         wait_empty_healthy_buffer(&mut client);
         let old = file_limit(&child, expected.len() as u64 + 7);

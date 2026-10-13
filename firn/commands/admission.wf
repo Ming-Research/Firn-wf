@@ -44,10 +44,19 @@ fn aof_refuse(meta: &pkg::store::Meta, client: &Client) -> refused: Bool reads(m
 }
 
 fn admission_writes(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> marked: Bool reads(input), reads(args) {
-  doc "The held-command WRITE flags plus the implemented network-only FUNCTION FLUSH flag (Redis 7.0.15 src/commands.c:3506 and commands/function-flush.json); legacy EVAL/EVALSHA are MAY_REPLICATE, not WRITE, and check disk health at their first script write.";
-  if kind == 182_u64 {
-    let sub = arg(args: args, index: 1_u64);
-    return name_is(input: input, start: sub.start, length: sub.length, word: &word_flush[0_u64..5_u64]);
+  doc "The held-command WRITE flags plus MOVE, SWAPDB and the implemented network-only FUNCTION FLUSH flag (Redis 7.0.15 src/commands.c:3506 and commands/function-flush.json); legacy EVAL/EVALSHA are MAY_REPLICATE, not WRITE, and check disk health at their first script write.";
+  if kind >= 182_u64 {
+    if kind == 182_u64 {
+      let sub = arg(args: args, index: 1_u64);
+      return name_is(input: input, start: sub.start, length: sub.length, word: &word_flush[0_u64..5_u64]);
+    }
+    if kind == 190_u64 {
+      return True();
+    }
+    if kind == 191_u64 {
+      return True();
+    }
+    return False();
   }
   return command_writes(kind: kind);
 }
@@ -156,6 +165,12 @@ fn admission_arity(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> arity: i
   }
   if kind == 188_u64 {
     return -2_i64;
+  }
+  if kind == 190_u64 {
+    return held_arity(kind: kind);
+  }
+  if kind == 191_u64 {
+    return held_arity(kind: kind);
   }
   return 1_i64;
 }

@@ -1054,6 +1054,7 @@ fn run_zremrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {

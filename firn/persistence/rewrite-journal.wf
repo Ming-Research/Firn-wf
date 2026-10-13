@@ -336,18 +336,6 @@ fn aof_rw_journal_read(store: &Keyspace, factory: &HandleFactory, journal: &Read
       break @reading;
     }
     set offset = offset +sat got;
-    if size == 0_u64 {
-      match aof_rw_select_empty(factory: factory, file: file) {
-        Ok(value: selected) => {
-          set size = selected;
-        }
-        Err(error: problem) => {
-          let reason = pkg::store::RewriteAbortReason::BaseIo();
-          aof_rw_abort(store: store, reason: reason);
-          break @reading;
-        }
-      }
-    }
     match aof_rw_reconcile(factory: factory, file: file, block: &buffer.inner[0_u64..got], decoder: &decoder) {
       Ok(value: appended) => {
         set size = size +sat appended;

@@ -89,7 +89,9 @@ const info_cluster: Array<u8, 30> = "# Cluster\r\ncluster_enabled:0\r\n";
 
 const info_keyspace: Array<u8, 12> = "# Keyspace\r\n";
 
-const info_db0: Array<u8, 9> = "db0:keys=";
+const info_db: Array<u8, 2> = "db";
+
+const info_db_keys: Array<u8, 6> = ":keys=";
 
 const info_db0_tail: Array<u8, 2> = "\r\n";
 
@@ -240,7 +242,7 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
   return chosen;
 }
 
-fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
+fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: &Array<u64, 16>, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(keys), reads(persistence), reads(client), reads(time) {
   doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed. Redis 7.0.15 server.c:5628-5650 defines combined append/sync health, active sizes and buffer length; the buffer length includes collecting and retained bytes. Synchronous syncing has no BIO jobs or postponed syncs, so those counts are zero.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
@@ -410,10 +412,14 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         text_word(text: &text, word: &info_cluster[0_u64..30_u64]);
       } else {
         text_word(text: &text, word: &info_keyspace[0_u64..12_u64]);
-        if keys > 0_u64 {
-          text_word(text: &text, word: &info_db0[0_u64..9_u64]);
-          text_number(text: &text, value: keys);
-          text_word(text: &text, word: &info_db0_tail[0_u64..2_u64]);
+        for (database in 0_u64..16_u64) {
+          if keys^[database] > 0_u64 {
+            text_word(text: &text, word: &info_db[0_u64..2_u64]);
+            text_number(text: &text, value: database);
+            text_word(text: &text, word: &info_db_keys[0_u64..6_u64]);
+            text_number(text: &text, value: keys^[database]);
+            text_word(text: &text, word: &info_db0_tail[0_u64..2_u64]);
+          }
         }
       }
     }
@@ -430,7 +436,7 @@ fn info_finish(client: &Client, text: &Box<Slots<u8>>) -> result: unit reads(tex
 }
 
 fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 in Redis's form, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; Redis 7.0.15 genRedisInfoString reports raw heap, its observed peak, and AOF exclusion separately. RSS is read on demand through resident_bytes and omitted if the host supplies None. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. The cached-script count reads the registry in a separate short statement. Every other field is one whose value is fixed for firn: Redis's version 7.2.16, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
+  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 in Redis's form, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; Redis 7.0.15 genRedisInfoString reports raw heap, its observed peak, and AOF exclusion separately. RSS is read on demand through resident_bytes and omitted if the host supplies None. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted for all sixteen databases in one atomic statement that holds their tables whole, as DBSIZE counts them. The cached-script count reads the registry in a separate short statement. Every other field is one whose value is fixed for firn: Redis's version 7.2.16, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
   let chosen = info_plan(input: input, args: args);
   let cached_scripts = 0_u64;
   let used = 0_u64;
@@ -474,16 +480,31 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       set memory_policy = memory_state^.memory.maxmemory_policy;
     }
   }
-  let keys = 0_u64;
+  let keys = array_filled::<u64, 16>(value: 0_u64);
   if chosen[12_u64] == 1_u64 {
-    atomic t = &store^.keys {
-      set keys = map_count::<Entry>(map: t);
+    atomic db0 = &store^.databases.db0, db1 = &store^.databases.db1, db2 = &store^.databases.db2, db3 = &store^.databases.db3, db4 = &store^.databases.db4, db5 = &store^.databases.db5, db6 = &store^.databases.db6, db7 = &store^.databases.db7, db8 = &store^.databases.db8, db9 = &store^.databases.db9, db10 = &store^.databases.db10, db11 = &store^.databases.db11, db12 = &store^.databases.db12, db13 = &store^.databases.db13, db14 = &store^.databases.db14, db15 = &store^.databases.db15 {
+      set keys[0_u64] = map_count::<Entry>(map: db0);
+      set keys[1_u64] = map_count::<Entry>(map: db1);
+      set keys[2_u64] = map_count::<Entry>(map: db2);
+      set keys[3_u64] = map_count::<Entry>(map: db3);
+      set keys[4_u64] = map_count::<Entry>(map: db4);
+      set keys[5_u64] = map_count::<Entry>(map: db5);
+      set keys[6_u64] = map_count::<Entry>(map: db6);
+      set keys[7_u64] = map_count::<Entry>(map: db7);
+      set keys[8_u64] = map_count::<Entry>(map: db8);
+      set keys[9_u64] = map_count::<Entry>(map: db9);
+      set keys[10_u64] = map_count::<Entry>(map: db10);
+      set keys[11_u64] = map_count::<Entry>(map: db11);
+      set keys[12_u64] = map_count::<Entry>(map: db12);
+      set keys[13_u64] = map_count::<Entry>(map: db13);
+      set keys[14_u64] = map_count::<Entry>(map: db14);
+      set keys[15_u64] = map_count::<Entry>(map: db15);
     }
   }
   let text = box_slots_new::<u8>(capacity: 0_u64);
   atomic m = &store^.meta {
     set m^.memory_peak = imax(m^.memory_peak, used);
-    set text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
+    set text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: &keys, logged: store^.logging, persistence: m, client: client, time: time);
   }
   info_finish(client: client, text: &text);
   return unit;

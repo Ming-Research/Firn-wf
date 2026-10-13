@@ -53,12 +53,10 @@ source tree would have them.
 It skips every test and block tagged `external:skip`: replication,
 persistence, configuration files, server logs, process signals and the like,
 which need a local server process. It then uses one test client. `run.sh`
-passes these flags: three of the options the suite's `tests/README.md` lists
+passes these flags: two of the options the suite's `tests/README.md` lists
 for a server configured differently from Redis, then two that keep a run
 going:
 
-- `--singledb`: use database 0 only and never `SELECT`; it also skips the
-  tests tagged `singledb:skip`. firn has one database.
 - `--ignore-encoding`: skip the assertions on Redis's internal encodings of a
   value, read with `OBJECT ENCODING`.
 - `--ignore-digest`: skip the comparisons of `DEBUG DIGEST` and
@@ -66,6 +64,12 @@ going:
 - `--durable`: an error inside a test fails that test instead of ending the
   run.
 - `--timeout 120`, described under [Hangs](#hangs).
+
+The maintained Redis 7.2.16 runner uses all sixteen databases, including the
+suite's ordinary `SELECT 9` setup and tests tagged `singledb:skip`. It does
+not pass `--singledb`. The dated Redis 7.0.15 measurements and framework
+probes below used that flag when firn supplied only database zero; their
+recorded counts and commands remain evidence for those runs.
 
 ### One unit at a time
 

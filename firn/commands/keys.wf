@@ -374,6 +374,7 @@ fn run_del(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -437,6 +438,7 @@ fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let logged = store^.logging;
   atomic slots = &store^.keys[keys], m = &store^.meta {
     let sequence = if logged {
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -492,6 +494,7 @@ fn run_type(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = if logged {
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -832,6 +835,7 @@ fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     if aof_refuse(meta: m, client: client) {
       return unit;
     }
+    pkg::store::database_context(meta: m, database: store^.database);
     let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set outcome = expire_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
@@ -901,6 +905,7 @@ fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let logged = store^.logging;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = if logged {
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -930,6 +935,7 @@ fn run_persist(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -986,6 +992,7 @@ struct TransferWork {
 
 struct CopyPlan {
   replace: Bool;
+  database: u64;
   error: u64;
 }
 
@@ -1073,10 +1080,11 @@ fn rename_finish(client: &Client, outcome: u64, fresh: Bool) -> result: unit wri
   return unit;
 }
 
-fn copy_parse(input: &[u8], args: &Box<Slots<Span>>) -> plan: CopyPlan reads(input), reads(args) {
-  doc "COPY's options in their sent order, then the same-key check, before any lookup: REPLACE and DB 0, case insensitive up to a zero byte. Errors are 1 invalid integer, 2 outside int range, 3 unavailable database, 4 syntax, 5 equal source and destination.";
+fn copy_parse(input: &[u8], args: &Box<Slots<Span>>, database: u64) -> plan: CopyPlan reads(input), reads(args) {
+  doc "COPY's options in their sent order, then the same-key-and-database check, before any lookup: REPLACE and DB 0 through 15, case insensitive up to a zero byte. Errors are 1 invalid integer, 2 outside int range, 3 unavailable database, 4 syntax, 5 equal source and destination.";
   let count = args^.inner.len;
   let replace = False();
+  let destination = database;
   let index = 3_u64;
   loop @options {
     if index >= count {
@@ -1087,27 +1095,18 @@ fn copy_parse(input: &[u8], args: &Box<Slots<Span>>) -> plan: CopyPlan reads(inp
     let following = index +wrap 1_u64;
     let more = following < count;
     let named_database = code == code_db;
-    let database = band(named_database, more);
+    let has_database_argument = band(named_database, more);
     if code == code_replace {
       set replace = True();
-    } else if database {
-      let amount = arg(args: args, index: following);
-      let number = read_integer(input: input, start: amount.start, length: amount.length);
-      if number.state != 1_u64 {
-        return CopyPlan(replace: replace, error: 1_u64);
+    } else if has_database_argument {
+      let parsed = database_plan(input: input, args: args, index: following);
+      if parsed.error != 0_u64 {
+        return CopyPlan(replace: replace, database: destination, error: parsed.error);
       }
-      let above = number.value > 2147483647_i64;
-      let below = number.value < -2147483648_i64;
-      let outside = bor(above, below);
-      if outside {
-        return CopyPlan(replace: replace, error: 2_u64);
-      }
-      if number.value != 0_i64 {
-        return CopyPlan(replace: replace, error: 3_u64);
-      }
+      set destination = parsed.database;
       set index = following;
     } else {
-      return CopyPlan(replace: replace, error: 4_u64);
+      return CopyPlan(replace: replace, database: destination, error: 4_u64);
     }
     set index = index +wrap 1_u64;
   }
@@ -1116,10 +1115,12 @@ fn copy_parse(input: &[u8], args: &Box<Slots<Span>>) -> plan: CopyPlan reads(inp
   let target_place = key_bounds(input: input, args: args, index: 2_u64);
   let target_key = &input^[target_place.start..target_place.end];
   let same = windows_order(left: source_key, right: target_key);
-  if same == 0_i32 {
-    return CopyPlan(replace: replace, error: 5_u64);
+  let same_name = same == 0_i32;
+  let same_database = destination == database;
+  if band(same_name, same_database) {
+    return CopyPlan(replace: replace, database: destination, error: 5_u64);
   }
-  return CopyPlan(replace: replace, error: 0_u64);
+  return CopyPlan(replace: replace, database: destination, error: 0_u64);
 }
 
 fn copy_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_keys: &KeySet, slots: &Entries<Entry>, source: u64, target: u64, client: &Client, replace: Bool) -> work: TransferWork reads(access_keys), writes(sequence), writes(journal), writes(slots), writes(client) contract {
@@ -1185,6 +1186,7 @@ fn run_rename(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     if aof_refuse(meta: m, client: client) {
       return unit;
     }
+    pkg::store::database_context(meta: m, database: store^.database);
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = rename_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: pair.source, target: pair.target, client: client, fresh: fresh);
@@ -1208,9 +1210,14 @@ fn copy_refused(client: &Client, plan: &CopyPlan) -> rejected: Bool reads(plan),
 fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
   doc "COPY by copy_parse and rename_parse, copy_body, transfer_meta and copy_finish, in one statement on both named entries and the metadata; parse errors reach neither entry.";
   let journal = None<pkg::store::AccessJournal>();
-  let plan = copy_parse(input: input, args: args);
+  let plan = copy_parse(input: input, args: args, database: store^.database);
   let rejected = copy_refused(client: client, plan: &plan);
   if rejected {
+    return unit;
+  }
+  if plan.database != store^.database {
+    let copying = True();
+    run_database_transfer(store: store, input: input, args: args, client: client, env: env, time: time, destination: plan.database, copying: copying, replace: plan.replace);
     return unit;
   }
   let keys = key_set_new(capacity: 2_u64);
@@ -1222,6 +1229,7 @@ fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if aof_refuse(meta: m, client: client) {
       return unit;
     }
+    pkg::store::database_context(meta: m, database: store^.database);
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = copy_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);

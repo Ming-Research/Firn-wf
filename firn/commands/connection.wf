@@ -63,7 +63,9 @@ const client_info_name: Array<u8, 6> = " name=";
 
 const client_info_age: Array<u8, 5> = " age=";
 
-const client_info_fixed: Array<u8, 93> = " idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|info user=default redir=-1 resp=";
+const client_info_database: Array<u8, 19> = " idle=0 flags=N db=";
+
+const client_info_fixed: Array<u8, 73> = " sub=0 psub=0 ssub=0 multi=-1 cmd=client|info user=default redir=-1 resp=";
 
 const client_info_end: Array<u8, 1> = "\n";
 
@@ -311,7 +313,7 @@ fn run_quit(client: &Client) -> result: unit writes(client) {
   return unit;
 }
 
-fn run_client(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
+fn run_client(database: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
   doc "CLIENT ID, CLIENT GETNAME, CLIENT SETNAME name and CLIENT INFO answer as Redis does: the connection's id; its name, or the null bulk string when it has none; OK once SETNAME has given or removed the name; and the connection's line of facts, as run_client_info writes it. Each given the wrong number of arguments is answered as Redis answers it, and then a connection that must authenticate first is answered NOAUTH. Any other subcommand, CLIENT SETINFO among them, which Redis 7.0 does not have, is answered as Redis answers an unknown one, its name echoed to 128 bytes.";
   let count = args^.inner.len;
   let sub = arg(args: args, index: 1_u64);
@@ -328,7 +330,7 @@ fn run_client(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result:
     if stopped {
       return unit;
     }
-    run_client_info(client: client);
+    run_client_info(database: database, client: client);
     return unit;
   }
   if identifying {
@@ -385,8 +387,8 @@ fn run_client(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result:
   return unit;
 }
 
-fn run_client_info(client: &Client) -> result: unit writes(client) {
-  doc "CLIENT INFO: the connection's line of facts in Redis 7.0.15's form, name=value pairs in Redis's order separated by spaces and ended by a line feed, as text, a bulk string under RESP2 and a verbatim string under RESP3. The fields carry real values where firn has them: the id, the name, the whole seconds since the server began serving the connection, counted on the calendar clock as Redis counts a client's age, negative when the clock was set back, and the protocol. Every other field it gives is fixed for firn: idle 0, since the connection's last interaction is the read that brought this command; the flag N and multi -1, no transaction, publish and subscribe or tracking being open while CLIENT runs; database 0, firn's one; no subscriptions; the command client|info; the user default, firn's one; and no tracking redirection. Fields firn cannot measure, the peer's and its own address, which Whitefoot's socket address does not show, the descriptor, the events and the sizes of Redis's buffers, are left out.";
+fn run_client_info(database: u64, client: &Client) -> result: unit writes(client) {
+  doc "CLIENT INFO: the connection's line of facts in Redis 7.0.15's form, name=value pairs in Redis's order separated by spaces and ended by a line feed, as text, a bulk string under RESP2 and a verbatim string under RESP3. The fields carry real values where firn has them: the id, the name, the whole seconds since the server began serving the connection, counted on the calendar clock as Redis counts a client's age, negative when the clock was set back, the selected database, and the protocol. Every other field it gives is fixed for firn: idle 0, since the connection's last interaction is the read that brought this command; the flag N and multi -1, no transaction, publish and subscribe or tracking being open while CLIENT runs; no subscriptions; the command client|info; the user default, firn's one; and no tracking redirection. Fields firn cannot measure, the peer's and its own address, which Whitefoot's socket address does not show, the descriptor, the events and the sizes of Redis's buffers, are left out.";
   let text = box_slots_new::<u8>(capacity: 256_u64);
   text_word(text: &text, word: &client_info_id[0_u64..3_u64]);
   text_number(text: &text, value: client^.id);
@@ -406,7 +408,9 @@ fn run_client_info(client: &Client) -> result: unit writes(client) {
     let age = current -wrap since;
     text_number(text: &text, value: age);
   }
-  text_word(text: &text, word: &client_info_fixed[0_u64..93_u64]);
+  text_word(text: &text, word: &client_info_database[0_u64..19_u64]);
+  text_number(text: &text, value: database);
+  text_word(text: &text, word: &client_info_fixed[0_u64..73_u64]);
   text_number(text: &text, value: client^.resp);
   text_word(text: &text, word: &client_info_end[0_u64..1_u64]);
   let length = text.inner.len;
@@ -415,23 +419,32 @@ fn run_client_info(client: &Client) -> result: unit writes(client) {
   return unit;
 }
 
-fn select_plan(input: &[u8], args: &Box<Slots<Span>>) -> error: u64 reads(input), reads(args) {
-  doc "SELECT's parsing and one-database body: 0 selects database zero, 1 is not an integer, 2 exceeds signed 32 bits, 3 names an unavailable database. No key or metadata changes are needed.";
-  let index = arg(args: args, index: 1_u64);
-  let number = read_integer(input: input, start: index.start, length: index.length);
+struct DatabasePlan {
+  database: u64;
+  error: u64;
+}
+
+fn database_plan(input: &[u8], args: &Box<Slots<Span>>, index: u64) -> plan: DatabasePlan reads(input), reads(args) contract {
+  ensures plan.database < 16_u64;
+} {
+  doc "Redis 7.2.16 getIntFromObjectOrReply followed by selectDb: malformed signed integer, signed-int overflow, then logical database range. A refused plan keeps a valid inert database number.";
+  let argument = arg(args: args, index: index);
+  let number = read_integer(input: input, start: argument.start, length: argument.length);
   if number.state != 1_u64 {
-    return 1_u64;
+    return DatabasePlan(database: 0_u64, error: 1_u64);
   }
-  let below = number.value < -2147483648_i64;
-  let above = number.value > 2147483647_i64;
-  let outside = bor(below, above);
-  if outside {
-    return 2_u64;
+  let below_int = number.value < -2147483648_i64;
+  let above_int = number.value > 2147483647_i64;
+  if bor(below_int, above_int) {
+    return DatabasePlan(database: 0_u64, error: 2_u64);
   }
-  if number.value != 0_i64 {
-    return 3_u64;
+  let below_database = number.value < 0_i64;
+  let above_database = number.value >= 16_i64;
+  if bor(below_database, above_database) {
+    return DatabasePlan(database: 0_u64, error: 3_u64);
   }
-  return 0_u64;
+  let database = cvt::<i64, u64>(number.value);
+  return DatabasePlan(database: database, error: 0_u64);
 }
 
 fn select_finish(client: &Client, error: u64) -> result: unit writes(client) {
@@ -448,10 +461,12 @@ fn select_finish(client: &Client, error: u64) -> result: unit writes(client) {
   return unit;
 }
 
-fn run_select(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
-  doc "SELECT index through select_plan and select_finish, with no key or metadata work: firn has one database, so selecting zero leaves the connection as it was.";
-  let error = select_plan(input: input, args: args);
-  select_finish(client: client, error: error);
+fn run_select(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store.databases), reads(input), reads(args), writes(store.keys), writes(store.database), writes(client) {
+  let plan = database_plan(input: input, args: args, index: 1_u64);
+  if plan.error == 0_u64 {
+    pkg::store::keyspace_select(store: store, database: plan.database);
+  }
+  select_finish(client: client, error: plan.error);
   return unit;
 }
 
