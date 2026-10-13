@@ -255,6 +255,7 @@ jobs:
             echo "missing:$missing"
             exit 1
           fi
+          sh research/experiments/redis-bench/redis-bench.sh invocation-selftest
           sh research/experiments/redis-bench/redis-bench.sh placement-selftest
           mkdir -p "$OUT"
           {
@@ -293,6 +294,7 @@ jobs:
       - name: Build each revision's firn with its pinned compiler
         if: ${{ inputs.mode != 'workloads' || inputs.workload_images }}
         run: |
+          set -o pipefail
           images=
           kept="$RUNNER_TEMP/images-run"
           for pair in $REVISIONS; do
@@ -305,7 +307,37 @@ jobs:
             if [ -f "$kept/$name" ]; then
               cp "$kept/$name" "$OUT/$name"
               chmod +x "$OUT/$name"
-              grep "^revision,$name," "$kept/revisions.csv" | sed 's/$/,kept from run ${{ inputs.images_run }}/' | tee -a "$OUT/revisions.csv"
+              # Old artifacts did not record invocation. Resolve their recorded
+              # source commit first, then inspect its source entry, never ancestry.
+              python3 - "$kept/revisions.csv" "$name" '${{ inputs.images_run }}' <<'PY' | tee -a "$OUT/revisions.csv"
+          import csv
+          import io
+          import subprocess
+          import sys
+          path, name, run = sys.argv[1:]
+          with open(path, newline="") as source:
+              rows = [r for r in csv.reader(source) if len(r) > 1 and r[:2] == ["revision", name]]
+          if len(rows) != 1:
+              raise SystemExit(f"expected exactly one kept revision record for {name}, found {len(rows)}")
+          row = rows[0]
+          if len(row) < 4 or not row[2] or not row[3]:
+              raise SystemExit(f"invalid kept revision record for {name}: missing commit or pin")
+          if len(row) < 5 or row[4].startswith("kept from run "):
+              if subprocess.run(["git", "cat-file", "-e", row[2] + "^{commit}"], stderr=subprocess.DEVNULL).returncode:
+                  raise SystemExit(f"kept image {name}: recorded source commit {row[2]} is unavailable")
+              entry = subprocess.check_output(["git", "ls-tree", "--name-only", row[2], "--", "firn/server/config.wf"], text=True).strip()
+              invocation = "config" if entry == "firn/server/config.wf" else "positional"
+              provenance = row[4:]
+          else:
+              invocation = row[4]
+              if invocation not in ("config", "positional"):
+                  raise SystemExit(f"kept image {name}: invalid invocation {invocation!r}")
+              provenance = row[5:]
+          record = row[:4] + [invocation, "; ".join(provenance + ["kept from run " + run])]
+          out = io.StringIO(newline="")
+          csv.writer(out).writerow(record)
+          print(out.getvalue(), end="")
+          PY
               images="$images $name=$OUT/$name"
               continue
             fi
@@ -316,7 +348,9 @@ jobs:
             rm -rf "$tree"
             git worktree add --detach "$tree" "${pair#*=}"
             git -C "$tree" submodule update --init
-            echo "revision,$name,$(git -C "$tree" rev-parse HEAD),$(cat "$tree/whitefoot.pin")" | tee -a "$OUT/revisions.csv"
+            invocation=positional
+            if [ -f "$tree/firn/server/config.wf" ]; then invocation=config; fi
+            echo "revision,$name,$(git -C "$tree" rev-parse HEAD),$(cat "$tree/whitefoot.pin"),$invocation" | tee -a "$OUT/revisions.csv"
             # A tree's own pin names the LLVM major its compiler needs: a
             # hosted runner installs it, the self-hosted machine must have
             # it. A tree whose kit predates the target pins a release built
@@ -428,8 +462,10 @@ jobs:
             make compiler
             export FIRN_BASELINE="$OUT/base"
             echo "firn: $(git rev-parse HEAD)" | tee -a "$OUT/host.txt"
-            if [ "$MODE" = workloads ] && [ -z "$WORKLOAD_IMAGES" ]; then
-              echo "revision,firn,$(git rev-parse HEAD),$(cat whitefoot.pin)" | tee "$OUT/revisions.csv"
+            if [ "$MODE" = scale ] || [ -z "$WORKLOAD_IMAGES" ]; then
+              invocation=positional
+              if [ -f firn/server/config.wf ]; then invocation=config; fi
+              echo "revision,firn,$(git rev-parse HEAD),$(cat whitefoot.pin),$invocation" | tee -a "$OUT/revisions.csv"
             fi
             run_session "$MODE" 2>&1 | tee "$OUT/$MODE.txt"
           fi
