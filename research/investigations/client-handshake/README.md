@@ -13,8 +13,9 @@ The instrument is the std-only Rust `firn-workload` client in
 [`research/experiments/redis-bench/workload/`](../../experiments/redis-bench/workload/),
 run by [`redis-bench.sh workloads`](../../experiments/redis-bench/redis-bench.sh).
 The existing client supplies the worker assignment, complete-reply counting,
-exact one-microsecond latency bins and CSV format. This record contains no
-measurements yet.
+exact one-microsecond latency bins and CSV format. Measurements are in
+[the rerun with the owner's
+placement](#rerun-with-the-owners-placement-2026-10-13) below.
 
 ## Workloads
 

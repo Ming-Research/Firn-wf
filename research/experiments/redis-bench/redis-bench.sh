@@ -1400,14 +1400,18 @@ if [ "$MODE" = workloads ]; then
         [ -z "$workload_cpu" ] || cat /proc/stat >"$OUT/workload-stat-before"
     }
     workload_end() {
-        [ -z "$workload_cpu" ] || {
-            cat /proc/stat >"$OUT/workload-stat-after"
+        # Every step exits on failure, so that a missing or malformed work
+        # file never leaves a short row in workload-limited.csv.
+        if [ -n "$workload_cpu" ]; then
+            cat /proc/stat >"$OUT/workload-stat-after" || exit 1
             cpu_busy "$OUT/workload-stat-before" "$OUT/workload-stat-after" \
-                "$SERVER_CPUS" "$CLIENT_CPUS" >"$OUT/workload-busy"
-            busy=$(client_limited "$OUT/workload-busy" | cut -d, -f1)
-            echo "$1,$pass,$n,$workload,$2,$busy,$(work_limited "$OUT/workload-work")" >>"$OUT/workload-limited.csv"
-            awk -v key="$1,$pass,$n,$workload,$2" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu"
-        }
+                "$SERVER_CPUS" "$CLIENT_CPUS" >"$OUT/workload-busy" || exit 1
+            limited=$(client_limited "$OUT/workload-busy") || exit 1
+            busy=${limited%%,*}
+            work=$(work_limited "$OUT/workload-work") || exit 1
+            echo "$1,$pass,$n,$workload,$2,$busy,$work" >>"$OUT/workload-limited.csv"
+            awk -v key="$1,$pass,$n,$workload,$2" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu" || exit 1
+        fi
     }
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,refused_sets,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections,keys_at_start,keys_at_end' >"$OUT/evict-zipf.csv"
     echo 'line,pass,cpus,workload,connections,keys,value_size,seed,warmup_seconds,sample_ms,maxmemory' >"$OUT/session-limits-settings.csv"
