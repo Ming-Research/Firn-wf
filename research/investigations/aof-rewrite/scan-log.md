@@ -759,7 +759,9 @@ abort makes this strict case complete successfully and fail its err assertion.
 `reconciled_scan_post_cut_backlog_charges_rotation_reserve` builds a long
 old increment from overwritten 32-KiB values, then waits until INFO confirms the
 atomic S1 cut while the old manifest is still selected. Repeated 16-KiB writes keep live
-memory bounded while the streaming boundary reader still visits history.
+memory bounded while the streaming boundary reader still visits history
+(since the boundary-state change in [scan-pace](scan-pace.md), only after an
+append failure whose outcome is unknown).
 With maxmemory at 64 MiB, the rotation budget must abort before publication;
 subsequent commands and a restart must retain the acknowledged value and
 counter. Removing LogBudget charging leaves the excluded backlog unbounded
