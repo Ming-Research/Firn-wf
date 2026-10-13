@@ -3229,7 +3229,7 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
 
 /// firn answers CONFIG GET for the parameters it reports as Redis 7.0 does,
 /// matching an argument that holds [, * or ? as Redis's stringmatchlen
-/// matches a pattern, in either case: * reaches all 30, the encoding
+/// matches a pattern, in either case: * reaches all 34, the encoding
 /// parameters and their aliases among them, each with Redis's default; an
 /// argument naming a parameter and a pattern reaching it answer it once,
 /// spelled as the first argument spells it; a class with a range, ? and a
@@ -3245,6 +3245,8 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
 /// final t must end the name, so neither automatic rewrite threshold matches.
 /// set-max-listpack-entries and set-max-listpack-value, with their Redis
 /// 7.2.16 defaults 128 and 64, join every pattern that reaches s.
+/// busy-reply-threshold and lua-time-limit join the patterns reaching their
+/// names with Redis 7.2.16's shared default of 5000 milliseconds.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_matches_config_get_patterns_as_redis_does() {
@@ -3292,11 +3294,13 @@ fn firn_matches_config_get_patterns_as_redis_does() {
     let zset_fields = "$25\r\nzset-max-listpack-entries\r\n$3\r\n128\r\n$23\r\nzset-max-listpack-value\r\n$2\r\n64\r\n$24\r\nzset-max-ziplist-entries\r\n$3\r\n128\r\n$22\r\nzset-max-ziplist-value\r\n$2\r\n64\r\n";
     let memory_fields = "$9\r\nmaxmemory\r\n$1\r\n0\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n$17\r\nmaxmemory-samples\r\n$1\r\n5\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$14\r\nlfu-decay-time\r\n$1\r\n1\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n";
     let rewrite_fields = "$27\r\nauto-aof-rewrite-percentage\r\n$3\r\n100\r\n$25\r\nauto-aof-rewrite-min-size\r\n$8\r\n67108864\r\n";
+    let busy_threshold_field = "$20\r\nbusy-reply-threshold\r\n$4\r\n5000\r\n";
+    let lua_time_limit_field = "$14\r\nlua-time-limit\r\n$4\r\n5000\r\n";
     let expected = format!(
-        "*64\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}\
+        "*68\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}{busy_threshold_field}{lua_time_limit_field}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n{rewrite_fields}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n{rewrite_fields}\
-         *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\
+         *6\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{busy_threshold_field}\
          *2\r\n{port_field}\
          *4\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n\
          *22\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
@@ -4877,8 +4881,8 @@ fn firn_runs_scripts_as_redis_7_2_16_does() {
     assert_eq!(status, 0);
 }
 
-/// firn's SCRIPT KILL stops a script that has written nothing at the end of
-/// its current attempt and answers it Redis 7.0.15's error, naming the
+/// firn's SCRIPT KILL stops a script that accepted no WRITE command at an
+/// interpreter budget pulse and answers it Redis 7.2.16's error, naming the
 /// script's SHA1 and the line it ran, and SCRIPT KILL answers NOTBUSY when no
 /// script runs and Redis's arity error for an argument. SCRIPT KILL needs
 /// only the scripts' pool, so it is answered while the script holds the
@@ -4928,6 +4932,269 @@ fn firn_kills_a_looping_script_as_redis_does() {
     drop(other);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
+}
+
+/// Redis 7.2.16 server.c's slowevalerr, shared by ordinary commands and
+/// shutdownCommand without NOSAVE while a script has exceeded its threshold.
+const SCRIPT_BUSY_REPLY: &str = "-BUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.\r\n";
+
+/// Proves the busy precondition through the protocol rather than assuming a
+/// start delay was enough. A PING preceding EVAL may answer PONG; a PING
+/// behind EVAL must eventually answer BUSY. Socket and child bounds also
+/// fail a server that never makes the control connection runnable.
+fn wait_for_script_busy(client: &mut TcpStream, child: &support::ProgramMonitor, port: u16) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        child.assert_running(port);
+        let reply = memory_request(client, &["PING"]);
+        if reply == SCRIPT_BUSY_REPLY {
+            return;
+        }
+        assert_eq!(reply, "+PONG\r\n", "PING before the script becomes busy");
+        assert!(Instant::now() < deadline, "the script never became busy");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// config.c in Redis 7.2.16 gives the two names one value, initially 5000
+/// milliseconds. Zero leaves an ordinary peer queued behind an infinite
+/// read-only script until the existing below-threshold KILL control ends it.
+/// Initial PONGs may precede EVAL; once PING stays queued, KILL is retried
+/// only on NOTBUSY until the script has actually started.
+#[test]
+fn firn_script_busy_threshold_aliases_and_zero_match_redis() {
+    for drivers in ["2"] {
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
+        let text = port.to_string();
+        let child = firn().spawn_on_route_with(
+            true, &[("WF_DRIVERS", drivers)], &[text.as_bytes(), b"0"],
+        ).with_port(&port_lease);
+        let mut looping = connect_when_ready(port, &child);
+        let mut other = connect_when_ready(port, &child);
+        for name in ["busy-reply-threshold", "lua-time-limit"] {
+            assert_eq!(memory_request(&mut other, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, "5000"]));
+        }
+        for (value, reason) in [
+            ("-1", "argument must be between 0 and 9223372036854775807 inclusive"),
+            ("9223372036854775808", "argument couldn't be parsed into an integer"),
+        ] {
+            assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "busy-reply-threshold", value]),
+                format!("-ERR CONFIG SET failed (possibly related to argument 'busy-reply-threshold') - {reason}\r\n"));
+        }
+        assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "busy-reply-threshold", "10", "lua-time-limit", "20"]),
+            "+OK\r\n");
+        assert_eq!(memory_request(&mut other, &["CONFIG", "GET", "busy-reply-threshold"]).as_bytes(), resp(&["busy-reply-threshold", "20"]));
+        assert_eq!(memory_request(&mut other, &["CONFIG", "GET", "lua-time-limit"]).as_bytes(), resp(&["lua-time-limit", "20"]));
+        assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "lua-time-limit", "30", "busy-reply-threshold", "40"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut other, &["CONFIG", "GET", "busy-reply-threshold"]).as_bytes(), resp(&["busy-reply-threshold", "40"]));
+        assert_eq!(memory_request(&mut other, &["CONFIG", "GET", "lua-time-limit"]).as_bytes(), resp(&["lua-time-limit", "40"]));
+        assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "busy-reply-threshold", "10", "BUSY-REPLY-THRESHOLD", "30"]),
+            "-ERR CONFIG SET failed (possibly related to argument 'BUSY-REPLY-THRESHOLD') - duplicate parameter\r\n");
+        assert_eq!(memory_request(&mut other, &["CONFIG", "GET", "lua-time-limit"]).as_bytes(), resp(&["lua-time-limit", "40"]));
+        assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "lfu-log-factor", "12", "busy-reply-threshold", "-1"]),
+            "-ERR CONFIG SET failed (possibly related to argument 'busy-reply-threshold') - argument must be between 0 and 9223372036854775807 inclusive\r\n");
+        assert_eq!(memory_request(&mut other, &["CONFIG", "GET", "lfu-log-factor"]).as_bytes(), resp(&["lfu-log-factor", "10"]));
+        assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "lua-time-limit", "9223372036854775807"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut other, &["CONFIG", "GET", "LUA-TIME-LIMIT"]).as_bytes(), resp(&["LUA-TIME-LIMIT", "9223372036854775807"]));
+        assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "busy-reply-threshold", "10"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut other, &["CONFIG", "GET", "lua-time-limit"]).as_bytes(), resp(&["lua-time-limit", "10"]));
+        assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "lua-time-limit", "0"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut other, &["CONFIG", "GET", "busy-reply-threshold"]).as_bytes(), resp(&["busy-reply-threshold", "0"]));
+        let mut pending = connect_when_ready(port, &child);
+        let sha = "694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7";
+        looping.write_all(&resp(&["EVAL", "while true do end", "0"]))
+            .expect("start an infinite script with busy replies disabled");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            pending.write_all(&resp(&["PING"])).expect("queue PING at threshold zero");
+            if silent_for(&mut pending, Duration::from_millis(100)).expect("threshold-zero PING stays queued") {
+                break;
+            }
+            assert_eq!(whole_reply(&mut pending, "PING preceding threshold-zero script"), "+PONG\r\n",
+                "threshold zero must not answer BUSY");
+            assert!(Instant::now() < deadline, "the threshold-zero script never held its peer command");
+        }
+        loop {
+            let reply = memory_request(&mut other, &["SCRIPT", "KILL"]);
+            if reply == "+OK\r\n" {
+                break;
+            }
+            assert_eq!(reply, "-NOTBUSY No scripts in execution right now.\r\n");
+            assert!(Instant::now() < deadline, "threshold-zero script never started");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        expect_replies(&mut looping,
+            format!("-ERR Script killed by user with SCRIPT KILL... script: {sha}, on @user_script:1.\r\n").as_bytes(),
+            "the killed threshold-zero script");
+        expect_replies(&mut pending, b"+PONG\r\n", "queued PING after threshold-zero script ends");
+        other.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop threshold fixture");
+        shutdown_finished(child);
+        expect_closed(&mut looping, "threshold fixture's script peer");
+        expect_closed(&mut other, "threshold fixture's control peer");
+        expect_closed(&mut pending, "threshold fixture's queued peer");
+    }
+}
+
+/// server.c's busy gate admits the ALLOW_BUSY commands listed in Redis
+/// 7.2.16's command JSON, within firn's supported forms. A busy GET, PING
+/// or SCRIPT FLUSH must not acquire the keyspace. Lua's pcall cannot catch the user kill (script_lua.c's
+/// instruction hook), and script.c answers NOTBUSY once the caller ended.
+#[test]
+fn firn_busy_script_controls_and_uncatchable_kill_match_redis() {
+    busy_script_controls_and_uncatchable_kill("2");
+}
+
+/// The same production path, retained for enabling when Whitefoot guarantees
+/// timer and control progress while one driver is inside an atomic statement.
+#[test]
+#[ignore = "Whitefoot single-driver progress gap: firn-req-single-driver-progress"]
+fn firn_busy_script_controls_on_one_driver() {
+    busy_script_controls_and_uncatchable_kill("1");
+    busy_no_effect_write_is_unkillable_but_shutdown_nosave_exits("1");
+}
+
+fn busy_script_controls_and_uncatchable_kill(drivers: &str) {
+    const SCRIPT: &str = "pcall(function() while true do end end); return 'caught'";
+    const SHA: &str = "8f5c220adcd80eece7b370aa522324912bb413c1";
+    {
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
+        let text = port.to_string();
+        let child = firn().spawn_on_route_with(
+            true, &[("WF_DRIVERS", drivers)],
+            &[text.as_bytes(), b"0", b"--requirepass", b"secret"],
+        ).with_port(&port_lease);
+        let mut looping = connect_when_ready(port, &child);
+        let mut other = connect_when_ready(port, &child);
+        let mut quitting = connect_when_ready(port, &child);
+        for client in [&mut looping, &mut other, &mut quitting] {
+            assert_eq!(memory_request(client, &["AUTH", "secret"]), "+OK\r\n");
+        }
+        assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "busy-reply-threshold", "10"]), "+OK\r\n");
+        let cached = memory_request(&mut other, &["SCRIPT", "LOAD", "return 42"]);
+        let cached = cached.strip_prefix("$40\r\n").unwrap().strip_suffix("\r\n").unwrap();
+        let id = memory_request(&mut other, &["CLIENT", "ID"]);
+        let id = id.strip_prefix(':').unwrap().strip_suffix("\r\n").unwrap();
+        assert_eq!(memory_request(&mut other, &["SCRIPT", "KILL"]), "-NOTBUSY No scripts in execution right now.\r\n");
+        looping.write_all(&resp(&["EVAL", SCRIPT, "0"])).expect("start the protected looping script");
+        wait_for_script_busy(&mut other, &child, port);
+        for args in [&["PING"][..], &["GET", "busy-missing"], &["SCRIPT", "FLUSH"], &["CONFIG", "GET", "lua-time-limit"], &["CONFIG", "SET", "lua-time-limit", "0"]] {
+            assert_eq!(memory_request(&mut other, args), SCRIPT_BUSY_REPLY, "WF_DRIVERS={drivers}: {args:?}");
+        }
+        assert_eq!(memory_request(&mut other, &["AUTH", "secret"]), "+OK\r\n");
+        let hello = format!("*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:{id}\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n");
+        assert_eq!(memory_request(&mut other, &["HELLO", "2"]), hello);
+        assert_eq!(memory_request(&mut other, &["MULTI"]), "+OK\r\n");
+        // WATCH outside MULTI and UNWATCH are not yet supported by firn.
+        // Its supported WATCH refusal still precedes busy command rejection.
+        assert_eq!(memory_request(&mut other, &["WATCH", "busy-missing"]), "-ERR WATCH inside MULTI is not allowed\r\n");
+        assert_eq!(memory_request(&mut other, &["GET", "busy-missing"]), SCRIPT_BUSY_REPLY);
+        assert_eq!(memory_request(&mut other, &["DISCARD"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut other, &["RESET"]), "+RESET\r\n");
+        assert_eq!(memory_request(&mut other, &["AUTH", "secret"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut quitting, &["QUIT"]), "+OK\r\n");
+        expect_closed(&mut quitting, "QUIT during a busy script");
+        assert_eq!(memory_request(&mut other, &["SCRIPT", "KILL"]), "+OK\r\n");
+        expect_replies(&mut looping,
+            format!("-ERR Script killed by user with SCRIPT KILL... script: {SHA}, on @user_script:1.\r\n").as_bytes(),
+            "the kill must escape Lua pcall");
+        assert_eq!(memory_request(&mut other, &["SCRIPT", "KILL"]), "-NOTBUSY No scripts in execution right now.\r\n");
+        assert_eq!(memory_request(&mut other, &["GET", "busy-missing"]), "$-1\r\n");
+        assert_eq!(memory_request(&mut other, &["EVALSHA", cached, "0"]), ":42\r\n", "BUSY FLUSH must preserve registered sources");
+        assert_eq!(memory_request(&mut other, &["SCRIPT", "FLUSH"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut other, &["EVALSHA", cached, "0"]), "-NOSCRIPT No matching script. Please use EVAL.\r\n");
+        other.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop killed-script fixture");
+        shutdown_finished(child);
+        expect_closed(&mut looping, "killed script peer at shutdown");
+        expect_closed(&mut other, "kill control peer at shutdown");
+    }
+}
+
+/// script.c sets WRITE_DIRTY on an admitted write even if DEL removes no
+/// key. Its exact UNKILLABLE reply must leave the script running; db.c then
+/// refuses ordinary SHUTDOWN with BUSY and accepts SHUTDOWN NOSAVE, which
+/// closes every peer and exits successfully without a script result.
+#[test]
+fn firn_busy_no_effect_write_is_unkillable_but_shutdown_nosave_exits() {
+    busy_no_effect_write_is_unkillable_but_shutdown_nosave_exits("2");
+}
+
+fn busy_no_effect_write_is_unkillable_but_shutdown_nosave_exits(drivers: &str) {
+    const UNKILLABLE: &str = "-UNKILLABLE Sorry the script already executed write commands against the dataset. You can either wait the script termination or kill the server in a hard way using the SHUTDOWN NOSAVE command.\r\n";
+    {
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
+        let text = port.to_string();
+        let child = firn().spawn_on_route_with(
+            true, &[("WF_DRIVERS", drivers)], &[text.as_bytes(), b"0"],
+        ).with_port(&port_lease);
+        let mut looping = connect_when_ready(port, &child);
+        let mut other = connect_when_ready(port, &child);
+        assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "lua-time-limit", "10"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut other, &["EXISTS", "busy-missing"]), ":0\r\n");
+        looping.write_all(&resp(&["EVAL", "redis.call('DEL', KEYS[1]); while true do end", "1", "busy-missing"]))
+            .expect("start the script after a no-effect write");
+        wait_for_script_busy(&mut other, &child, port);
+        assert_eq!(memory_request(&mut other, &["SCRIPT", "KILL"]), UNKILLABLE);
+        assert_eq!(memory_request(&mut other, &["PING"]), SCRIPT_BUSY_REPLY, "UNKILLABLE must not end the script");
+        assert_eq!(memory_request(&mut other, &["SHUTDOWN", "NOSAVE", "SAVE"]), "-ERR syntax error\r\n");
+        assert_eq!(memory_request(&mut other, &["SHUTDOWN", "unknown"]), "-ERR syntax error\r\n");
+        assert_eq!(memory_request(&mut other, &["SHUTDOWN", "ABORT"]), "-ERR No shutdown in progress.\r\n");
+        assert_eq!(memory_request(&mut other, &["SHUTDOWN"]), SCRIPT_BUSY_REPLY);
+        assert_eq!(memory_request(&mut other, &["SHUTDOWN", "SAVE"]), SCRIPT_BUSY_REPLY);
+        assert!(silent_for(&mut looping, Duration::from_millis(30)).expect("UNKILLABLE caller remains active"));
+        other.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("abort the writing infinite script by shutdown");
+        shutdown_finished(child);
+        expect_closed(&mut looping, "writing script's peer at shutdown");
+        expect_closed(&mut other, "shutdown caller's peer");
+    }
+}
+
+/// Redis 7.2.16 server.c accumulates propagation until the outer execution
+/// unit returns (alsoPropagate / postExecutionUnitOperations). Shutdown of
+/// an infinite writing script therefore keeps earlier acknowledged commands,
+/// but none of the script's unfinished effects may appear after AOF replay.
+/// This checks the persisted state, not just that the process can exit.
+#[test]
+fn firn_busy_shutdown_nosave_preserves_completed_aof_and_discards_script_effects() {
+    let program = CompiledProgram::from_environment();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let name = b"busy-shutdown.aof";
+    let child = program.spawn_on_route_with(
+        true, &[("WF_DRIVERS", "2")], &[text.as_bytes(), b"0", name],
+    ).with_port(&port_lease);
+    let mut looping = connect_when_ready(port, &child);
+    let mut other = connect_when_ready(port, &child);
+    assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "busy-reply-threshold", "10"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut other, &["SET", "acknowledged", "before-script"]), "+OK\r\n");
+    looping.write_all(&resp(&[
+        "EVAL", "redis.call('SET', KEYS[1], 'x'); redis.call('SET', KEYS[2], 'y'); while true do end",
+        "2", "incomplete-one", "incomplete-two",
+    ])).expect("start an infinite script with unpublished effects");
+    wait_for_script_busy(&mut other, &child, port);
+    assert_eq!(memory_request(&mut other, &["SCRIPT", "KILL"]),
+        "-UNKILLABLE Sorry the script already executed write commands against the dataset. You can either wait the script termination or kill the server in a hard way using the SHUTDOWN NOSAVE command.\r\n");
+    other.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("force shutdown with AOF and an incomplete script");
+    shutdown_finished(child);
+    expect_closed(&mut looping, "incomplete writing caller must close without a result");
+    expect_closed(&mut other, "forced shutdown caller");
+    drop(looping);
+    drop(other);
+
+    let child = program.spawn_on_route_with(
+        true, &[("WF_DRIVERS", "2")], &[text.as_bytes(), b"0", name],
+    ).with_port(&port_lease);
+    let mut replay = connect_when_ready(port, &child);
+    assert_eq!(memory_request(&mut replay, &["GET", "acknowledged"]), "$13\r\nbefore-script\r\n",
+        "forced shutdown must retain the acknowledged command");
+    assert_eq!(memory_request(&mut replay, &["MGET", "incomplete-one", "incomplete-two"]), "*2\r\n$-1\r\n$-1\r\n",
+        "an unfinished script must not publish even its first AOF effect");
+    replay.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop replay fixture");
+    shutdown_finished(child);
+    expect_closed(&mut replay, "replay peer");
 }
 
 /// SCRIPT FLUSH waits for a running EVALSHA, including between attempts,

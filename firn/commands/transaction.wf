@@ -306,8 +306,54 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
   return unit;
 }
 
+const script_busy_error: Array<u8, 86> = "BUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.";
+
+const script_busy_execabort: Array<u8, 130> = "EXECABORT Transaction discarded because of: BUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.";
+
+fn command_allows_busy(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> result: Bool reads(input), reads(args) {
+  doc "Redis 7.2.16 ALLOW_BUSY flags among firn's supported commands: AUTH, HELLO, QUIT, RESET, MULTI, DISCARD, WATCH, SHUTDOWN and SCRIPT KILL. EXEC is deliberately excluded so its rejection discards the transaction.";
+  let authentication = kind == 177_u64;
+  let greeting = kind == 178_u64;
+  let quitting = kind == 179_u64;
+  let resetting = kind == 189_u64;
+  let multi = kind == 185_u64;
+  let discard = kind == 187_u64;
+  let watch = kind == 188_u64;
+  let shutdown = kind == 183_u64;
+  let access = bor(authentication, greeting);
+  let leaving = bor(quitting, resetting);
+  let transactions = bor(multi, discard);
+  let controls = bor(watch, shutdown);
+  let connection = bor(access, leaving);
+  let server = bor(transactions, controls);
+  if bor(connection, server) {
+    return True();
+  }
+  if kind == 174_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    let code = name_code(input: input, start: sub.start, length: sub.length);
+    return code == 1280067915_u64;
+  }
+  return False();
+}
+
+fn script_admission_ready(running: u64, busy: u64, stopping: Bool) -> result: Bool pure {
+  doc "A disallowed command waits below the busy threshold while a script is active, then observes either completion or BUSY. Force-stop keeps BUSY latched until the server exits.";
+  let finished = running == 0_u64;
+  let timedout = busy > 0_u64;
+  let notified = bor(timedout, stopping);
+  return bor(finished, notified);
+}
+
 fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock, transaction: &Transaction) -> result: Bool reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock), writes(transaction) waits {
-  doc "Returns true only for a successful SHUTDOWN, after recording the request and firing its receive wake generation, so the caller fires the separate shutdown source before doing anything else. Returns false for other commands and refusals. Redis 7.0.15 processCommand admission resolves command and arity, authentication and NO_MULTI before performEvictions, except that inside a transaction a name command_kind does not identify is admitted and queued for EXEC to refuse, as a Redis command firn does not run must be, since Redis would queue it and a client stopping at an immediate error would stay inside the transaction; After eviction/OOM, active AOF failure refuses WRITE and PING, dirties an open queue, and aborts a writing EXEC with its explicit MISCONF cause (Redis 7.0.15 server.c:3881-3905,4324-4353); queueing uses that admission snapshot, as Redis's processCommand reads the status once before queueMultiCommand, while EXEC and each mutation recheck health under their own Meta hold. EXEC uses queued DENYOOM and WRITE flags, while all other MULTI queueing is denied under OOM except DISCARD, QUIT and RESET. Answers one command a connection sent, keeping its transaction as Redis 7.0.15's MULTI, EXEC and DISCARD do: MULTI opens one and answers OK, or is refused inside one; inside one, EXEC runs it as run_exec does, DISCARD drops it and answers OK, WATCH is refused, QUIT is answered as outside, and every other command is queued or refused as queue_or_refuse decides; outside one, EXEC and DISCARD are refused and every other command is answered as execute answers it. MULTI, EXEC and DISCARD take no argument. As Redis rejects a command before running it, an EXEC with arguments, or from a connection that must authenticate first, discards any transaction and answers EXECABORT with the reason, inside a transaction or not; MULTI and DISCARD so are answered Redis's arity error or NOAUTH, marking an open transaction, and so is WATCH inside one before it is refused.";
+  doc "Returns true only for a successful SHUTDOWN, after recording the request and firing its receive wake generation, so the caller fires the separate shutdown source before doing anything else. Returns false for other commands and refusals. Redis 7.0.15 processCommand admission resolves command and arity, authentication and NO_MULTI before performEvictions, except that inside a transaction a name command_kind does not identify is admitted and queued for EXEC to refuse, as a Redis command firn does not run must be, since Redis would queue it and a client stopping at an immediate error would stay inside the transaction; After eviction/OOM, active AOF failure refuses WRITE and PING, dirties an open queue, and aborts a writing EXEC with its explicit MISCONF cause (Redis 7.0.15 server.c:3881-3905,4324-4353); queueing uses that admission snapshot, as Redis's processCommand reads the status once before queueMultiCommand, while EXEC and each mutation recheck health under their own Meta hold. EXEC uses queued DENYOOM and WRITE flags, while all other MULTI queueing is denied under OOM except DISCARD, QUIT and RESET. Answers one command a connection sent, keeping its transaction as Redis 7.0.15's MULTI, EXEC and DISCARD do: MULTI opens one and answers OK, or is refused inside one; inside one, EXEC runs it as run_exec does, DISCARD drops it and answers OK, WATCH is refused, QUIT is answered as outside, and every other command is queued or refused as queue_or_refuse decides; outside one, EXEC and DISCARD are refused and every other command is answered as execute answers it. MULTI, EXEC and DISCARD take no argument. As Redis rejects a command before running it, an EXEC with arguments, or from a connection that must authenticate first, discards any transaction and answers EXECABORT with the reason, inside a transaction or not; MULTI and DISCARD so are answered Redis's arity error or NOAUTH, marking an open transaction, and so is WATCH inside one before it is refused. Redis 7.2.16 busy admission follows existence, arity, authentication, NO_MULTI and disk-error checks, before queueing. While busy, eviction is suppressed and disk checks read the jointly published ServerState health rather than script-held Meta. An entry pool observation also protects preflight error replies from post-command peak recording; only a valid disallowed command waiting below the threshold makes another guarded observation.";
+  set client^.script_busy = False();
+  let scripts_running = False();
+  atomic admission_pool = &store^.scripts {
+    let timedout = admission_pool^.busy > 0_u64;
+    set client^.script_busy = bor(timedout, admission_pool^.stopping);
+    set scripts_running = admission_pool^.running > 0_u64;
+  }
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let code = name_code(input: input, start: name.start, length: name.length);
@@ -393,9 +439,22 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       }
     }
   }
+  let allows_busy = command_allows_busy(kind: kind, input: input, args: args);
+  let below_threshold = bnot(client^.script_busy);
+  let disallowed = bnot(allows_busy);
+  let active_wait = band(scripts_running, below_threshold);
+  if band(active_wait, disallowed) {
+    atomic waiting_pool = &store^.scripts when script_admission_ready(running: waiting_pool^.running, busy: waiting_pool^.busy, stopping: waiting_pool^.stopping) {
+      let timedout = waiting_pool^.busy > 0_u64;
+      set client^.script_busy = bor(timedout, waiting_pool^.stopping);
+    }
+  }
   prepare_access(client: client, time: time);
   set client^.now = time^.check;
-  let oom = evict_before(store: store, client: client, clock: clock);
+  let oom = False();
+  if bnot(client^.script_busy) {
+    set oom = evict_before(store: store, client: client, clock: clock);
+  }
   set client^.pre_command_oom = oom;
   let denyoom = command_denyoom(kind: kind);
   if exec {
@@ -431,21 +490,50 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   let disk_sensitive = band(logged, refusable);
   if disk_sensitive {
     let failed = False();
-    atomic disk_meta = &store^.meta {
-      set failed = pkg::store::aof_failed(meta: disk_meta);
-      if failed {
-        let text = pkg::store::aof_error_text(meta: disk_meta);
-        pkg::protocol::reply_aof_error(client: client, execabort: exec, text: &text);
-        if exec {
-          transaction_reset(transaction: transaction);
-        } else if transaction^.open {
-          set transaction^.dirty = True();
+    let text = pkg::protocol::AofErrorText::Absent();
+    if client^.script_busy {
+      atomic disk_health = &store^.server {
+        set text = disk_health^.aof_error;
+      }
+      match text {
+        Absent() => {
+        }
+        Host(error: unused_host_error) => {
+          set failed = True();
+        }
+        ShortWrite() => {
+          set failed = True();
+        }
+      }
+    } else {
+      atomic disk_meta = &store^.meta {
+        set failed = pkg::store::aof_failed(meta: disk_meta);
+        if failed {
+          set text = pkg::store::aof_error_text(meta: disk_meta);
         }
       }
     }
     if failed {
+      pkg::protocol::reply_aof_error(client: client, execabort: exec, text: &text);
+      if exec {
+        transaction_reset(transaction: transaction);
+      } else if transaction^.open {
+        set transaction^.dirty = True();
+      }
       return False();
     }
+  }
+  if band(client^.script_busy, disallowed) {
+    if exec {
+      reply_error(client: client, word: &script_busy_execabort[0_u64..130_u64]);
+      transaction_reset(transaction: transaction);
+    } else {
+      reply_error(client: client, word: &script_busy_error[0_u64..86_u64]);
+      if transaction^.open {
+        set transaction^.dirty = True();
+      }
+    }
+    return False();
   }
   if resetting {
     transaction_reset(transaction: transaction);

@@ -50,10 +50,18 @@ fn raise_memory_peak(store: &Keyspace, client: &Client, used: u64) -> result: un
 }
 
 fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(store), writes(client) waits {
-  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading. The peak only rises, so a reading at or below the peak this client last saw recorded cannot change it and takes no Meta statement; a higher one takes this short statement, which does not cover command execution, and remembers the peak it leaves. The body repeats raise_memory_peak on purpose: calling it here ran unlimited 2-core SET at 0.964 of main on the i9-14900K (research/investigations/memory-limit/README.md, admission without Meta).";
+  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading. Busy-script replies and closing clients defer this recording. A new peak takes a guarded pool-and-Meta statement: it skips Meta after a timeout, and otherwise keeps the pool held until publication so a new script cannot acquire Meta between that decision and recording. The peak only rises, so a reading at or below the peak this client last saw recorded cannot change it and takes no Meta statement; a higher one takes this short statement, which does not cover command execution, and remembers the peak it leaves. The body repeats raise_memory_peak on purpose: calling it here ran unlimited 2-core SET at 0.964 of main on the i9-14900K (research/investigations/memory-limit/README.md, admission without Meta).";
+  if bor(client^.script_busy, client^.closing) {
+    return unit;
+  }
   let used = heap_read(client: client);
   if used > client^.seen_peak {
-    atomic meta = &store^.meta {
+    atomic peak_pool = &store^.scripts, meta = &store^.meta when script_admission_ready(running: peak_pool^.running, busy: peak_pool^.busy, stopping: peak_pool^.stopping) {
+      let timed_out = peak_pool^.busy > 0_u64;
+      if bor(timed_out, peak_pool^.stopping) {
+        set client^.script_busy = True();
+        return unit;
+      }
       set meta^.memory_peak = imax(meta^.memory_peak, used);
       set client^.seen_peak = meta^.memory_peak;
     }

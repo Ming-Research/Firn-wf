@@ -14,15 +14,26 @@ public struct Registered {
   public source: Box<Slots<u8>>;
 }
 
+public struct Active {
+  public id: u64;
+  public decision: DecisionCell;
+  public force_stop: DecisionCell;
+  public busy: Bool;
+}
+
 public struct EnginePool {
-  doc "The one engine scripts run on and the SHA1-to-source registry. A script takes the engine in a short statement that waits while out is 1, keeps it outside the pool's statements while one of its attempts runs, and puts it back after the attempt, so that scripts use the engine in turn and see the state earlier ones left in it, as Redis's scripts share one Lua state; idle holds it while no script has it. running counts the scripts in progress, which SCRIPT KILL answers by, and kills the kills requested, which a script compares, between its attempts, with the count it saw when it first took the engine.";
+  doc "The single shared engine and source registry, with one active record per invocation from first checkout through its last retry. An invocation retains its write-or-kill decision across attempts. current identifies the sole invocation allowed to claim Written; registration, current changes and all-or-nothing KILL share this pool's short atomic statement. busy counts active invocations whose real deadline expired; their cancellable timers publish here without taking dataset metadata. stopping keeps admission closed after forced shutdown even when the final active record is removed.";
   public idle: Box<Slots<PooledEngine>>;
   public out: u64;
   public registry: Box<Slots<Registered>>;
   public source_bytes: u64;
   public generation: u64;
   public running: u64;
-  public kills: u64;
+  public active: Box<Slots<Active>>;
+  public current: Option<u64>;
+  public next_id: u64;
+  public busy: u64;
+  public stopping: Bool;
 }
 
 public fn new_pool() -> pool: EnginePool pure doc "A pool with no engine yet, the engine made when first taken.";

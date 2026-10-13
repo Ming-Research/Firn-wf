@@ -12,18 +12,24 @@ Source inspection on 2026-10-13 used Firn
 `2421fe57403ccfe265c225411794f821cb7fcc1f` and the unchanged Whitefoot pin
 `wf-af7665be672d`, resolving to
 `af7665be672d29912d878dd5da8c3932bb6f296c` (specification v0.146).
-The [witness](../../experiments/script-busy-progress/witness.wf) and
-[temporary dispatch workflow](../../../.github/workflows/script-busy-progress.yml)
-have not been compiled or run. The failure below is a source-inferred trace,
-not an observed timeout or compiler diagnostic. Production scripting,
-configuration, documentation and the suite ratchet remain unchanged.
+The owner reported the [CI witness run](https://github.com/Ming-Research/Firn-wf/actions/runs/38399206461):
+with `WF_DRIVERS=1`, the future-deadline control returned status 0 in about
+one second, while the expired-deadline sample hit its five-second external
+timeout. The owner filed P0 Whitefoot request `firn-req-single-driver-progress`
+for progress of other contexts beside a long computing atomic statement on
+one driver. This worktree could not independently retrieve the run through
+GitHub's API; these outcomes are the owner's supplied CI evidence.
+The [witness](../../experiments/script-busy-progress/witness.wf) remains as
+the semantic reproducer. Its temporary workflow has been removed after this
+result; it is not part of Firn's gate.
 
-The required next result is a supported ordinary source form covering this
-boundary, or a Whitefoot fix. Requiring extra drivers, adding unrelated
-periodic deadlines, or releasing the dataset between Lua commands would
-conceal the missing behavior. Firn's existing expiry sleep may mask the
-isolated trace; this investigation does not claim that every Firn execution
-currently hits it.
+The owner authorized implementing the ordinary multi-driver execution path
+while Whitefoot closes that request. Firn adds no driver-count branch,
+unrelated polling context, spin-yield or released dataset hold. Network
+coverage uses at least two drivers and retains an ignored one-driver case
+named for the request, ready to enable when the fix lands. Firn's existing
+expiry sleep may mask the isolated trace; this investigation does not claim
+that every one-driver Firn execution currently hits it.
 
 ## What the pin already supports
 
@@ -43,8 +49,9 @@ claiming any others. If that claim observes Written, stop none. Otherwise
 the current invocation cannot write, and no other invocation can acquire the
 engine while the pool remains held, so claiming the remaining cells is safe.
 Registration, removal and current-owner changes must use the same pool hold.
-This is an implementation argument, not an implemented change or a claim
-about a future pool with concurrent interpreters.
+The draft implementation follows this argument; its compilation and network
+acceptance remain unverified. It makes no claim about a future pool with
+concurrent interpreters.
 
 The pin also supports deadline handoff while a script retains its statement.
 Its [bounded-waits decision](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/design/compiler/waiting-contexts/bounded-waits.md)
@@ -64,7 +71,7 @@ driver adopts its wait and registers the timer before running the next
 queued context. Merely spawning a timer beside an immediately entered
 unbounded statement does not establish this ordering.
 
-## Source-inferred expired-deadline trace
+## Expired-deadline trace reproduced in CI
 
 The remaining case is a deadline already reached at submission, possible
 after a host scheduling delay even when the configured threshold is positive.
@@ -97,8 +104,8 @@ ordinary form or existing guarantee that closes the trace.
 
 ## CI comparison and acceptance
 
-Dispatch `script-busy-progress.yml` on the work branch. It downloads the
-project's pin and compiles only the witness. The witness subtracts the
+The retired dispatch workflow downloaded the project's pin and compiled
+only the witness. The witness subtracts the
 executable's argv[0] from args_count (status 6 refuses a missing argv[0]).
 User argument count modulo 64 selects
 the number of finite warmup waits; counts below 64 use an already-reached
@@ -111,12 +118,12 @@ and joining the child. This prevents a delayed, already-expired control timer
 from passing merely because the parent stopped a worker that had not begun.
 Other statuses fail the observation.
 
-The first sample is a pending-deadline control, then the expired-deadline case
+The recorded first sample is a pending-deadline control, then the expired-deadline case
 with 63 warmup waits. Only if that sample succeeds does the workflow sweep
 the other 63 fairness phases. Each invocation has a five-second **external**
 timeout; putting a watchdog inside the Whitefoot process would add the very
 deadline whose absence matters. JSON records exits and timeouts as artifacts.
-The workflow fails on a timeout; it does not turn the missing progress into
+The workflow failed on a timeout; it did not turn the missing progress into
 an accepted expected outcome. No timing/performance claim follows from this
 hosted-runner bound.
 
@@ -127,9 +134,9 @@ evidence to investigate, not proof of this starvation trace. Acceptance of
 a supported form or fix requires every fairness phase to return status 0
 with one driver, without releasing the held value early or adding an unrelated
 timer. Then the real network cases must pass before BUSY is claimed implemented.
-Keep the witness while the language boundary remains open; retire the
-temporary workflow after evidence is retained and the ordinary gate covers
-the chosen Firn implementation.
+Keep the witness while the language boundary remains open. The temporary
+workflow is retired; the real ignored network case retains the acceptance
+check for Firn when Whitefoot resolves the request.
 
 ## Redis 7.2.16 obligations retained for implementation
 
@@ -154,14 +161,19 @@ The verified reference source establishes these requirements:
   no success reply even after script writes.
 - `server.c:4393-4403`: NOSAVE still flushes and fsyncs the AOF. Firn's
   existing orderly writer also forces append and sync after clients leave.
-  Whether unfinished-script effects remain absent from Redis's AOF is an
-  inference from pending propagation (`server.c:3399-3407`), still requiring
-  a reference restart case. Do not append them as though the script completed
-  before that oracle comparison.
+  Unfinished-script effects remain unpublished in the draft, following
+  pending propagation (`server.c:3399-3407`). The new network restart case
+  checks earlier completed writes survive but two writes from the interrupted
+  script do not replay. An actual reference restart comparison is still
+  unverified; this source-based expectation must not be reported as an
+  observed oracle result.
 
-The intended generic command cost remains one read of a shared busy flag;
-invocation enumeration, clock reads and kill arbitration belong off that
-path. No hot-path code or measurement was changed in this investigation.
+The normal admission path now makes one short pool observation of busy and
+running state. It reads no clock, enumerates no invocation and starts no
+timer. Only a valid disallowed command that observes an active script below
+its threshold enters a second, guarded pool statement; timer publication or
+script completion wakes it. This is a source-level cost account, not a
+14900K measurement.
 
 These Redis test titles are absent from the current passing ratchet and are
 implementation candidates, not newly observed passes:
@@ -187,6 +199,62 @@ FUNCTION modes, so EVAL support alone does not establish every occurrence.
 the missing BUSY reply. Neither that exclusion nor `passing.tsv` changes
 until the corresponding CI evidence exists.
 
+## Multi-driver implementation and remaining validation
+
+The implementation retains the single shared engine. Each invocation owns
+its DecisionCell and a separate forced-stop cell, registered from first
+engine checkout until final completion. Interpreter execution resumes in
+slices of at most 1000 Halo safepoints and checks both cells at outcome
+boundaries; this is interpreter interrupt handling, not a runtime yield or
+an extra polling context. Read-only attempt budgets still grow across
+retries, and accepted-write history survives them. One cancellable timer, started immediately before the first prepared
+attempt takes its dataset hold, publishes BUSY at the invocation deadline and is cancelled before its
+activation is joined at return.
+
+BUSY-safe admission bypasses eviction and peak publication. AOF health
+publication updates Meta and its refusal-text copy in ServerState together,
+so busy admission preserves disk-error precedence without entering held
+Meta. NOSAVE sets a sticky stopping state in the pool before terminating
+invocations; commands waking as the interpreter releases its holds still
+observe BUSY until shutdown. The short force-stop statement publishes server shutdown together with pool
+stopping before claiming the forced-stop verdicts. The interpreter also
+aborts active rewrite under its existing Meta hold before releasing modified
+keys. Thus a rebuild cannot capture an unfinished deletion between the
+interpreter exit and the requesting client's ordinary wake publication.
+The existing orderly writer flushes and syncs
+previous completed propagation, while incomplete script effects and
+sequence/capture scratch are discarded.
+
+Four enabled network cases use two drivers: configuration aliases and zero;
+read-only BUSY controls and uncatchable KILL; no-effect WRITE refusal and
+NOSAVE; and AOF restart after an interrupted writing script. The ignored
+one-driver case runs the same control and writer helpers and names
+`firn-req-single-driver-progress`. None has been compiled or run in this
+worktree; the primary session must push this draft and return CI results.
+The normal gate, AOF fault check and independent review are required before
+completion; the suite candidates above are not added to the passing list
+without their own CI evidence.
+
+The deadline includes any wait to acquire that first attempt's dataset and
+Meta holds after preparation. Redis takes no such concurrent dataset holds,
+so its interpreter-start boundary has no corresponding waiting interval;
+this difference needs a contention witness and disposition before claiming
+identical timeout timing under concurrent commands. Moving a waiting spawn
+inside the atomic statement would be refused by SHARE-2, and is not used.
+
+An admission crossing remains a review question: a command can observe no
+running script before another connection checks out the engine and takes
+its keys or Meta. The already-admitted command can then wait behind the
+script, even after BUSY publication. Cold memory-peak publication now
+uses a guarded pool-and-Meta statement to close that local crossing, and
+SCRIPT FLUSH's own pool guard wakes on BUSY as well as completion. General
+admission-to-key or admission-to-disk-check crossings remain open. The guarded path covers commands that
+observe the running invocation, not a retroactive cancellation of acquired
+waits. No global command turn or unsupported runtime workaround is added.
+A deterministic network witness and the independent review must decide
+whether this is permitted ordering for an already-admitted command or needs
+further work; this draft makes no universal claim for that interleaving.
+
 ## Read-only review
 
 An independent gpt-6-astra reviewer inspected the complete three-file draft
@@ -196,5 +264,50 @@ gpt-6.1-sol reviewer could not start on two attempts because it was at capacity.
 The review found and rechecked two repairs: the future control now observes
 Written before stopping the worker, and argument selection subtracts argv[0].
 There were no remaining findings within that scope. Pin validation, witness
-compilation/execution and project gates remain unverified; the proposed
-cross-project request has not been filed from this worktree.
+compilation/execution and project gates were unverified at that review.
+The later CI result and owner-filed request are recorded above. This earlier
+review does not cover the production implementation added afterward.
+
+## Current draft review and stop reason
+
+An independent gpt-6.1-sol reviewer at high effort reviewed the complete
+tracked diff from `ea5108f96b2ee412a1152c94ea328023b5b35559` plus the new
+interpreter control file, changed sections and direct consumers, project
+checklist, design ancestors, pinned language and Redis reference source.
+A focused follow-up reviewed the peak and FLUSH repairs. Review operations
+were reads, searches and Git inspection only. The primary inspected the
+findings and fixes in their source context. No compiler, test, gate or
+performance run occurred in this worktree.
+
+Checklist dispositions: A1, C1, T1, T2, D1, G1, G2, DC1 and DC3 pass within
+source scope; R1 is not applicable; C2, T3 and G3 are unverified. DC2 and
+DC4 remain findings for the unresolved admission crossing; DC4 also lacks
+runtime acceptance and exact contention-timing evidence. The KILL
+all-or-nothing argument and timer cancellation/join ordering were examined,
+but multiple active invocations and first-write races have no dynamic
+acceptance evidence yet.
+
+Fixed findings: the forced-exit/rewrite race now publishes shutdown before
+forced-stop claims and aborts rewrite under Meta; UNKILLABLE uses the exact
+191-byte reference text; WRITE_DIRTY descriptions now agree with sticky
+invocation history; configuration glob expectations include both new names.
+The peak cold path uses a pool-and-Meta guard, so timeout skips Meta before
+its first use and a new script cannot cross its nonbusy publication. FLUSH
+wakes on BUSY and leaves registry/generation untouched when refusing it.
+Focused source review found no further issue in these repairs. Their
+compilation, lock behavior and regression results remain unverified.
+
+Two findings remain: F1 (P1), a command already admitted before script
+registration may block at eviction, disk admission or its key operation
+without a BUSY wake; and F3 (P2), the deadline includes initial hold
+acquisition, unlike Redis's interpreter-start timing. The primary session
+must choose and record their disposition and obtain CI evidence; this
+worktree does not claim the requested BUSY milestone complete. No global
+admission turn, interruptible-wait workaround or driver-count path was
+introduced. Board MCP tools are unavailable in this session, so these
+additional dispositions have not been filed from this worktree. The
+owner-filed single-driver request remains the only confirmed filed gap.
+
+All edits are uncommitted. Whitefoot pin, submodule revisions, gate targets,
+ratchet lists and approval logs are unchanged. The temporary witness
+workflow is removed; its witness remains under experiments, cited above.

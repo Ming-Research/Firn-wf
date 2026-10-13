@@ -1,7 +1,9 @@
 public struct ScriptMemory {
-  doc "Redis 7.0.15 scriptVerifyWriteCommandAllow/scriptVerifyOOM/scriptCall state: OOM captured before EVAL, and whether an accepted WRITE-flagged command ran in this attempt, even when it changed no value. write_dirty also suppresses later active-AOF health checks after the first accepted write (script.c:349-386,547-557); separate from the effects flag used for retry safety.";
+  doc "Redis 7.0.15 scriptVerifyWriteCommandAllow/scriptVerifyOOM/scriptCall state: OOM captured before EVAL, and whether an accepted WRITE-flagged command ran in this invocation, even when it changed no value. write_dirty also suppresses later active-AOF health checks after the first accepted write (script.c:349-386,547-557); separate from the effects flag used for retry safety. decision is shared across every attempt of this invocation and arbitrates the first accepted write against KILL. interrupted makes a losing write claim stop the host without producing a Lua error that pcall could catch.";
   public pre_command_oom: Bool;
   public write_dirty: Bool;
+  public decision: DecisionCell;
+  public interrupted: Bool;
 }
 
 public enum ScriptCommandResult {
@@ -22,3 +24,7 @@ public interface ScriptCommands {
 public fn eval<interface ScriptCommands>(store: &pkg::store::Keyspace, input: &[u8], args: &Box<Slots<pkg::protocol::Span>>, client: &pkg::protocol::Client, keys_env: &pkg::bytes::KeyEnv, time: &pkg::store::Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(keys_env), reads(time), writes(client), writes(clock) waits doc "EVAL script numkeys [key ...] [arg ...] or EVALSHA sha1 numkeys [key ...] [arg ...]: compiles or finds the script, takes the pool's one engine, waiting while another script has it, runs the script in attempts, initially holding the immutable declared entry set and metadata, abandoning an out-of-declaration attempt and retrying under a whole-keyspace and metadata hold, writes its result to the client in the client's protocol, and returns the engine after each attempt, the pool's short statements outside the script's.";
 
 public fn script(store: &pkg::store::Keyspace, input: &[u8], args: &Box<Slots<pkg::protocol::Span>>, client: &pkg::protocol::Client) -> r: unit reads(store), reads(input), reads(args), writes(client) waits doc "SCRIPT LOAD, EXISTS and FLUSH, checked and answered as Redis 7.0.15 does.";
+
+public fn busy(store: &pkg::store::Keyspace) -> result: Bool reads(store) waits doc "Whether an active invocation has passed its busy-reply threshold or forced shutdown has closed admission, without taking the dataset or Meta.";
+
+public fn force_stop(store: &pkg::store::Keyspace) -> result: unit reads(store) waits doc "Closes script admission and requests every currently registered invocation to leave its interpreter, including Written invocations. SHUTDOWN NOSAVE uses this separately from SCRIPT KILL; unfinished effects are not appended.";

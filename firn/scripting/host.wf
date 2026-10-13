@@ -15,6 +15,7 @@ struct HeldState {
 
 struct Env {
   memory: ScriptMemory;
+  force_stop: DecisionCell;
   held: HeldState;
   resp: u8;
   error: Bool;

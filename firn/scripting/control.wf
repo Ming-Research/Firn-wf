@@ -1,0 +1,134 @@
+alias Keyspace = pkg::store::Keyspace;
+alias EnginePool = pkg::script_pool::EnginePool;
+alias Active = pkg::script_pool::Active;
+
+fn decision_killed(cell: &DecisionCell) -> result: Bool reads(cell) {
+  let state = decision_cell_read(cell: cell);
+  let killed = Killed();
+  return state == killed;
+}
+
+fn register_active(pool: &EnginePool, decision: &DecisionCell, stop_cell: &DecisionCell) -> result: u64 reads(decision), reads(stop_cell), writes(pool) {
+  let identifier = pool^.next_id;
+  set pool^.next_id = pool^.next_id +wrap 1_u64;
+  if pool^.active.inner.len == pool^.active.inner.cap {
+    let room = pool^.active.inner.cap +sat 1_u64;
+    let twice = pool^.active.inner.cap +sat pool^.active.inner.cap;
+    let target = imax(room, twice);
+    grow(cell: &pool^.active, capacity: target);
+  }
+  if pool^.active.inner.len < pool^.active.inner.cap {
+    let verdict = decision_cell_share(cell: decision);
+    let stopping = decision_cell_share(cell: stop_cell);
+    let no = False();
+    let active = Active(id: identifier, decision: move verdict, force_stop: move stopping, busy: no);
+    place_back(window: &pool^.active.inner, value: move active);
+  }
+  set pool^.running = pool^.running +sat 1_u64;
+  return identifier;
+}
+
+fn script_ends(store: &Keyspace, invocation: Option<u64>) -> r: unit reads(store) waits {
+  match invocation {
+    Some(value: identifier) => {
+      atomic p = &store^.scripts {
+        for (index in 0_u64..p^.active.inner.len) {
+          if p^.active.inner[index].id == identifier {
+            let active = remove_at(window: &p^.active.inner, index: index);
+            if active.busy {
+              set p^.busy = p^.busy -sat 1_u64;
+            }
+            set p^.running = p^.running -sat 1_u64;
+            break;
+          }
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn busy_timer(pool: Shared<EnginePool>, identifier: u64, deadline: std::time::Instant, cancel: std::time::CancelWatch) -> result: unit pure waits {
+  match std::time::sleep_until(deadline: deadline, cancel: &cancel) {
+    Ok(..) => {
+      atomic p = &pool {
+        for (index in 0_u64..p^.active.inner.len) {
+          if p^.active.inner[index].id == identifier {
+            if bnot(p^.active.inner[index].busy) {
+              set p^.active.inner[index].busy = True();
+              set p^.busy = p^.busy +sat 1_u64;
+            }
+            break;
+          }
+        }
+      }
+    }
+    Err(..) => {
+    }
+  }
+  return unit;
+}
+
+fn busy(store: &Keyspace) -> result: Bool reads(store) waits {
+  let active_busy = False();
+  atomic p = &store^.scripts {
+    let timed_out = p^.busy > 0_u64;
+    set active_busy = bor(p^.stopping, timed_out);
+  }
+  return active_busy;
+}
+
+fn force_stop(store: &Keyspace) -> result: unit reads(store) waits {
+  doc "Publishes shutdown and closes admission before any interpreter can observe its stop verdict and release modified keys. The requester subsequently performs the ordinary shutdown wake and AOF drain.";
+  atomic p = &store^.scripts, state = &store^.server {
+    set state^.shutdown = True();
+    set p^.stopping = True();
+    for (index in 0_u64..p^.active.inner.len) {
+      let stopped = claim_killed(cell: &p^.active.inner[index].force_stop);
+    }
+  }
+  return unit;
+}
+
+fn kill_running(pool: &EnginePool) -> result: u8 reads(pool) {
+  doc "Called only while holding the pool. Read every sticky invocation verdict before making any claim, then claim the current engine owner's verdict first: only that invocation can race to Written. A Written winner refuses the entire request without killing another invocation. Once current is Killed, registration and current changes remain excluded by the hold, so every remaining Open verdict can be killed together.";
+  if pool^.running == 0_u64 {
+    return 0_u8;
+  }
+  let written = Written();
+  for (index in 0_u64..pool^.active.inner.len) {
+    let state = decision_cell_read(cell: &pool^.active.inner[index].decision);
+    if state == written {
+      return 2_u8;
+    }
+  }
+  let current = pool^.current;
+  match current {
+    Some(value: identifier) => {
+      for (index in 0_u64..pool^.active.inner.len) {
+        if pool^.active.inner[index].id == identifier {
+          let state = claim_killed(cell: &pool^.active.inner[index].decision);
+          if state == written {
+            return 2_u8;
+          }
+          break;
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  for (index in 0_u64..pool^.active.inner.len) {
+    let state = claim_killed(cell: &pool^.active.inner[index].decision);
+  }
+  return 1_u8;
+}
+
+fn flush_ready(running: u64, busy: u64, stopping: Bool) -> result: Bool pure {
+  let idle = running == 0_u64;
+  let timed_out = busy > 0_u64;
+  let notified = bor(timed_out, stopping);
+  return bor(idle, notified);
+}

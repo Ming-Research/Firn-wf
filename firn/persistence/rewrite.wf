@@ -53,7 +53,7 @@ fn aof_rw_manifest(original: &AofManifest) -> made: AofManifest reads(original) 
 }
 
 fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> accepted: Bool reads(store), writes(factory), writes(log), writes(clock) waits {
-  doc "Flush is complete before entry. Use the boundary retained by startup and actual appends, reading historical bytes only when that state is unknown; if it ends inside an unfinished block, as a startup-retained MULTI leaves it, cut it before that block's first MULTI, whose writes base(S1) holds as live state, then sync it before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts. Rotation resets incremental size but preserves error status, as Redis 7.0.15 aof.c:790-852 does; the sealed file's successful sync marks its bytes synced, and the new file starts with nothing unsynced, as Redis 7.2.16 openNewIncrAofForAppend resets aof_last_incr_fsync_offset with aof_last_incr_size (aof.c:842-845). A successful sync of the sealed file clears no saved sync error: after a failed sync Linux leaves the pages whose writeback failed clean, so this sync can succeed without writing them; only a durable installation, in aof_rw_complete, clears it.";
+  doc "Flush is complete before entry. Use the boundary retained by startup and actual appends, reading historical bytes only when that state is unknown; if it ends inside an unfinished block, as a startup-retained MULTI leaves it, cut it before that block's first MULTI, whose writes base(S1) holds as live state, then sync it before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts. Rotation resets incremental size but preserves error status, as Redis 7.0.15 aof.c:790-852 does; the sealed file's successful sync marks its bytes synced, and the new file starts with nothing unsynced, as Redis 7.2.16 openNewIncrAofForAppend resets aof_last_incr_fsync_offset with aof_last_incr_size (aof.c:842-845). A successful sync of the sealed file clears no saved sync error: after a failed sync Linux leaves the pages whose writeback failed clean, so this sync can succeed without writing them; only a durable installation, in aof_rw_complete, clears it. Every saved append or sync health change publishes its refusal text in ServerState jointly with Meta; busy command admission reads that copy while a script holds Meta.";
   let boundary = aof_rw_boundary(store: store, factory: factory, log: log, clock: clock);
   if boundary.whole {
   } else {
@@ -89,8 +89,9 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
     Err(error: problem) => {
       let counted = aof_sync_counts(error: &problem);
       if counted {
-        atomic m = &store^.meta {
+        atomic m = &store^.meta, health = &store^.server {
           set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
+          set health^.aof_error = pkg::store::aof_error_text(meta: m);
         }
         let reason_writer_io_4 = pkg::store::RewriteAbortReason::WriterIo();
         aof_rw_abort(store: store, reason: reason_writer_io_4);
@@ -161,10 +162,11 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
 }
 
 fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool) -> result: unit reads(store) waits {
-  doc "Ends an attempt; accepted means its manifest was published and the directory synced. A durable installation clears a saved sync error in the same Meta statement that ends the attempt, so writes are admitted again only once the new base, written from memory and synced, and its manifest are on the device. Any sync error saved while the attempt ran aborted it, through aof_rw_flush or aof_rw_switch, so an accepted attempt clears only an error saved before it started, whose lost pages the new base replaces.";
-  atomic m = &store^.meta {
+  doc "Ends an attempt; accepted means its manifest was published and the directory synced. A durable installation clears a saved sync error in the same Meta statement that ends the attempt, so writes are admitted again only once the new base, written from memory and synced, and its manifest are on the device. Any sync error saved while the attempt ran aborted it, through aof_rw_flush or aof_rw_switch, so an accepted attempt clears only an error saved before it started, whose lost pages the new base replaces. Every saved append or sync health change publishes its refusal text in ServerState jointly with Meta; busy command admission reads that copy while a script holds Meta.";
+  atomic m = &store^.meta, health = &store^.server {
     if accepted {
       set m^.aof_sync_error = None<std::io::IoError>();
+      set health^.aof_error = pkg::store::aof_error_text(meta: m);
     }
     set m^.aof_rewrite_in_progress = False();
     set m^.aof_rewrite_ok = accepted;
@@ -283,7 +285,7 @@ fn aof_sync_counts(error: &std::io::IoError) -> counted: Bool reads(error) {
 }
 
 fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, force: Bool, healed: &Bool) -> failed: Bool reads(store), writes(factory), writes(log), writes(pending), writes(clock), writes(last_sync), writes(last_append), writes(healed) waits {
-  doc "Take collecting bytes only after retained bytes drain; shutdown instead combines both for its one forced attempt. Publish retained length/capacity with each exchange and append result. Returns true only when this call attempted an append that did not drain or a sync whose failure counts; a deferred retry attempts nothing and is not a failure. Failed appends retry every 100 ms without client writes, the cadence at which Redis 7.0.15's event loop, woken at least hz (10) times a second by serverCron, calls flushAppendOnlyFile from beforeSleep (server.c:1660-1666) while the buffer is retained. Outside shutdown a sync runs at most once a second, and only when nothing is retained and the active file's incremental size differs from its size at the last successful sync, as Redis 7.2.16 flushAppendOnlyFile reaches try_fsync only after a complete write or, with an empty buffer, when aof_last_incr_fsync_offset differs from aof_last_incr_size (aof.c:1071-1094,1236-1267); or when a sync error is saved, the deliberate idle retry that starts recovery. last_sync advances only when a sync is attempted, as aof_last_fsync does. A sync that succeeds, or fails with EINVAL, records the incremental size it covered. A sync that succeeds, or fails with EINVAL, never clears a saved sync error, because Linux leaves the pages whose writeback failed clean and the retried sync does not write them; when no append error or retained byte remains, it sets healed so that the writer starts the recovery rewrite, whose durable installation alone clears the error. A counted failure resets healed.";
+  doc "Take collecting bytes only after retained bytes drain; shutdown instead combines both for its one forced attempt. Publish retained length/capacity with each exchange and append result. Returns true only when this call attempted an append that did not drain or a sync whose failure counts; a deferred retry attempts nothing and is not a failure. Failed appends retry every 100 ms without client writes, the cadence at which Redis 7.0.15's event loop, woken at least hz (10) times a second by serverCron, calls flushAppendOnlyFile from beforeSleep (server.c:1660-1666) while the buffer is retained. Outside shutdown a sync runs at most once a second, and only when nothing is retained and the active file's incremental size differs from its size at the last successful sync, as Redis 7.2.16 flushAppendOnlyFile reaches try_fsync only after a complete write or, with an empty buffer, when aof_last_incr_fsync_offset differs from aof_last_incr_size (aof.c:1071-1094,1236-1267); or when a sync error is saved, the deliberate idle retry that starts recovery. last_sync advances only when a sync is attempted, as aof_last_fsync does. A sync that succeeds, or fails with EINVAL, records the incremental size it covered. A sync that succeeds, or fails with EINVAL, never clears a saved sync error, because Linux leaves the pages whose writeback failed clean and the retried sync does not write them; when no append error or retained byte remains, it sets healed so that the writer starts the recovery rewrite, whose durable installation alone clears the error. A counted failure resets healed. Every saved append or sync health change publishes its refusal text in ServerState jointly with Meta; busy command admission reads that copy while a script holds Meta.";
   let append_failed = False();
   atomic m = &store^.meta {
     if force {
@@ -351,8 +353,9 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
       Err(error: problem) => {
         let counted = aof_sync_counts(error: &problem);
         if counted {
-          atomic m = &store^.meta {
+          atomic m = &store^.meta, health = &store^.server {
             set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
+            set health^.aof_error = pkg::store::aof_error_text(meta: m);
           }
           set healed^ = False();
           let reason_writer_io_10 = pkg::store::RewriteAbortReason::WriterIo();
@@ -890,7 +893,7 @@ fn aof_rw_discard(store: &Keyspace, clock: &Clock) -> result: unit reads(store),
 }
 
 fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending: &Box<Slots<u8>>) -> drained: Bool reads(store), writes(factory), writes(log), writes(pending) waits {
-  doc "Redis 7.0.15 aof.c:1146-1230: roll back a failed partial append to its pre-flush incremental length. Successful rollback retains every byte; failed rollback accounts the accepted prefix and retains only its suffix. Keep the real terminal IoError and partial flag: MISCONF describes a zero-progress append's error, and a partial append is described as ENOSPC by its class. Only a complete nonempty append clears append failure. Advance syntax state after that complete append; successful rollback leaves the prior state unchanged. Every other failed append leaves it unknown because the host contract does not promise an unchanged file on Err.";
+  doc "Redis 7.0.15 aof.c:1146-1230: roll back a failed partial append to its pre-flush incremental length. Successful rollback retains every byte; failed rollback accounts the accepted prefix and retains only its suffix. Keep the real terminal IoError and partial flag: MISCONF describes a zero-progress append's error, and a partial append is described as ENOSPC by its class. Only a complete nonempty append clears append failure. Advance syntax state after that complete append; successful rollback leaves the prior state unchanged. Every other failed append leaves it unknown because the host contract does not promise an unchanged file on Err. Append health and its ServerState refusal copy are published in one statement; busy admission can read the copy without acquiring script-held Meta.";
   let length = pending^.inner.len;
   if length == 0_u64 {
     return True();
@@ -922,7 +925,7 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
   } else {
     set log^.boundary.whole = False();
   }
-  atomic m = &store^.meta {
+  atomic m = &store^.meta, health = &store^.server {
     if drained {
     } else {
       let reason_drain_25 = pkg::store::RewriteAbortReason::Drain();
@@ -944,6 +947,7 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
         }
       }
     }
+    set health^.aof_error = pkg::store::aof_error_text(meta: m);
     set m^.aof_pending_capacity = pending^.inner.cap;
     set m^.aof_pending_length = pending^.inner.len;
   }

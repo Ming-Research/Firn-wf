@@ -55,7 +55,7 @@ clients send on their own:
   with Redis's `KEYS`, `ARGV`, `redis` library and reply conversions, in
   either protocol. A compiled script is kept until `SCRIPT FLUSH`, as in
   Redis 7.0.15. `SCRIPT FLUSH` waits until no script is in progress before
-  clearing the registry. `redis.call` and `redis.pcall` run the commands
+  clearing the registry below the busy threshold; above it FLUSH answers BUSY without clearing sources. `redis.call` and `redis.pcall` run the commands
   written as parts, those `MULTI` runs, inside the script's statement,
   through Halo's resumable host call; any other command is answered with
   Redis's error for an unknown one, noting that firn may not run it from
@@ -116,7 +116,7 @@ network, in `EXEC` and through `redis.call` or `redis.pcall`.
 
 `CONFIG GET` takes Redis's glob patterns over firn's parameters:
 `appendfilename`, `appendonly`, `bind`, `databases`, `port`, `requirepass`,
-`save`, `timeout`, `auto-aof-rewrite-percentage` and `auto-aof-rewrite-min-size`,
+`save`, `timeout`, `busy-reply-threshold`, its alias `lua-time-limit`, `auto-aof-rewrite-percentage` and `auto-aof-rewrite-min-size`,
 and the parameters whose only effect in Redis is on its
 internal encodings, leaving every value as commands read it,
 `hash-max-listpack-entries`, `hash-max-listpack-value`,
@@ -142,6 +142,10 @@ for a request to apply it, one that waited with no limit included. A receive
 with no idle limit has no deadline; otherwise its deadline is the remaining
 idle interval. Each client retains a watch of the current receive wake
 generation; a changed limit replaces the generation and fires the old one.
+The two script threshold names share a nonnegative integer in milliseconds,
+default 5000 and maximum 9,223,372,036,854,775,807; zero disables BUSY
+publication. Both names may appear in one SET, with the last value winning;
+a repeated identical name is refused.
 A client's silence is counted from its last request or the replies to it,
 as Redis counts it from its last read or write. `appendfilename` and `databases` are refused as Redis
 refuses them. An `appendonly`, `port` or `bind` other than the one firn
@@ -189,8 +193,8 @@ transaction and resets the name, authentication and protocol to RESP2.
 A script without a shebang captures OOM at its start. A DENYOOM call is
 refused until it has accepted a WRITE-flagged command: `DEL` of a missing
 key counts, independently of whether it changes data or appends an effect.
-The OOM state survives script retries, with write acceptance restarted on
-each attempt. `EVAL` and `SCRIPT LOAD` explicitly reject **all** shebang
+The OOM state and accepted-write verdict survive script retries and
+declared-key fallback. `EVAL` and `SCRIPT LOAD` explicitly reject **all** shebang
 sources, including plain `#!lua` and the Redis flags `allow-oom`,
 `no-writes`, `allow-stale`, `no-cluster` and `allow-cross-slot-keys`.
 They are not executed with legacy semantics; no shebang flags are supported.
@@ -213,7 +217,23 @@ read current server settings. Scripts and EXEC use the same tracking command
 bodies. An unwritten script attempt abandoned for its step budget restores
 the first stamp of every key it refreshed and firn's LFU random state before
 releasing the keys; completed attempts and attempts that wrote retain them.
-SCRIPT KILL between attempts therefore leaves abandoned refreshes undone.
+SCRIPT KILL also restores read-only refreshes from the interrupted attempt.
+
+A script exceeding its threshold makes other clients receive Redis 7.2.16's
+`BUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.`
+The supported exceptions are AUTH, HELLO, QUIT, RESET, MULTI, DISCARD,
+WATCH's existing refusal inside MULTI, SCRIPT KILL and SHUTDOWN; PING, INFO,
+CONFIG, EXEC and SCRIPT FLUSH are refused. This does not add Redis's other
+ALLOW_BUSY commands that firn does not implement. SCRIPT KILL answers
+NOTBUSY with no active invocation. If any active invocation accepted a
+WRITE-flagged command, even DEL of a missing key, it answers UNKILLABLE
+and stops none; otherwise it stops all and answers OK. The killed caller
+receives Redis's killed-script error, which Lua pcall cannot catch. The
+write-or-kill verdict lasts across attempt retries and declared-key fallback.
+The ordinary implementation requires the runtime to make control contexts
+progress beside computation; the known one-driver gap remains Whitefoot
+request `firn-req-single-driver-progress`, with an ignored network case ready
+to enable after its fix. No driver-count special path is used.
 
 `CONFIG RESETSTAT` answers OK and zeroes connections accepted, evicted keys
 and active-expiry counts. It preserves `used_memory_peak`, the observed
@@ -225,8 +245,8 @@ connection closes, and firn stops accepting clients. The request cancels
 each client's receive through its wake generation, and the accept wait,
 expiry sleep and signal wait through a separate shared shutdown state.
 A command or batch already running still finishes before its client closes;
-cancellation does not
-interrupt scripts or the replies being sent. A send blocked on a client that does not read is abandoned
+host cancellation does not
+interrupt arbitrary script computation or the replies being sent. A send blocked on a client that does not read is abandoned
 at its next one-second deadline. Once every client has left, the append-only file's
 writer makes one forced attempt to append its remaining bytes and one sync
 attempt, then closes and firn exits with status 0. As in Redis 7.0.15's everysec
@@ -238,9 +258,13 @@ and keeps serving unless `FORCE` is also given. `NOW` changes nothing, firn
 having no replicas, and `ABORT` answers `ERR No shutdown in progress.`
 Options are read in either case up to a zero byte, and an unknown option,
 `SAVE` with `NOSAVE`, or `ABORT` with another option is a syntax error.
-Scripts cannot call `SHUTDOWN`, and a script that is running holds its
-client until it ends, so one that never ends keeps firn from stopping (the
-[board item `firn-bl-01-07`](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip) on busy scripts).
+Scripts cannot call `SHUTDOWN`. After the busy threshold, ordinary SHUTDOWN
+and SHUTDOWN SAVE answer BUSY. SHUTDOWN NOSAVE stops even a writing
+script at an interpreter safepoint, closes its caller without a script
+result, and exits with status 0. It discards the unfinished script's AOF
+effects, while flushing and syncing earlier completed commands through the
+ordinary writer drain, as Redis 7.2.16 does; NOSAVE does not disable AOF
+flushing. Argument syntax and ABORT are handled before the BUSY refusal.
 
 SIGTERM and SIGINT stop firn as `SHUTDOWN` does, with the same drain, the
 append-only file's last append and sync, and status 0, as Redis 7.0.15 shuts
