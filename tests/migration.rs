@@ -10,15 +10,6 @@ use std::process::{Command, Stdio};
 
 const DATABASES: &[u8] = &[0]; // Firn implements SELECT 0 only, and no streams.
 const TTL_MILLIS: i64 = 300_000;
-/// Beyond observed elapsed time, permit 250 ms for request sampling and
-/// millisecond clock rounding. A copied TTL must never exceed the source
-/// sampled immediately before it; missing or out-of-bounds TTLs fail.
-const TTL_TOLERANCE_MILLIS: i64 = 250;
-/// Round elapsed time upward and subtract one extra millisecond when setting
-/// a relative expiry. PEXPIRE installation latency is not known in advance;
-/// compare() checks the resulting sampled PTTL rather than promising an
-/// identical absolute deadline.
-const COPY_EXPIRY_MARGIN_MILLIS: i64 = 1;
 
 #[derive(Debug, PartialEq, Eq)]
 enum Reply {
@@ -219,10 +210,6 @@ fn full_value(client: &mut Client, key: &[u8], kind: &[u8]) -> Vec<Vec<u8>> {
     }
 }
 
-fn elapsed_millis(started: Instant) -> i64 {
-    i64::try_from(started.elapsed().as_nanos().div_ceil(1_000_000)).unwrap()
-}
-
 fn compare(source: &mut Client, destination: &mut Client) {
     for &database in DATABASES {
         source.select(database);
@@ -240,28 +227,21 @@ fn compare(source: &mut Client, destination: &mut Client) {
             let actual = full_value(destination, &key, &kind);
             assert!(actual == expected,
                 "database {database}, key {key:?}: complete exact bytes differ ({} source parts, {} destination parts)", expected.len(), actual.len());
-            let sampled = Instant::now();
-            let before = source.integer(&[b"PTTL", &key]);
-            let actual = destination.integer(&[b"PTTL", &key]);
-            let after = source.integer(&[b"PTTL", &key]);
-            if before == -1 {
-                assert_eq!(actual, -1, "database {database}, key {key:?}: persistent key gained TTL");
-                assert_eq!(after, -1);
-            } else {
-                assert!(before > 0 && actual > 0 && after > 0, "database {database}, key {key:?}: lost/expired TTL ({before}, {actual}, {after})");
-                let sampling = elapsed_millis(sampled);
-                assert!(actual <= before, "database {database}, key {key:?}: firn renewed TTL ({actual} > source {before})");
-                assert!(before - actual <= sampling + TTL_TOLERANCE_MILLIS,
-                    "database {database}, key {key:?}: firn shortened TTL by {} ms, exceeding sampling {sampling} ms + tolerance {TTL_TOLERANCE_MILLIS} ms", before - actual);
-                assert!(after <= before && before - after <= sampling + TTL_TOLERANCE_MILLIS,
-                    "source TTL sampling is not stable: {before} -> {after}");
-            }
+            let expected = source.integer(&[b"PEXPIRETIME", &key]);
+            let actual = destination.integer(&[b"PEXPIRETIME", &key]);
+            assert!(expected == -1 || expected > 0,
+                "database {database}, key {key:?}: source key disappeared/expired ({expected})");
+            assert!(actual == -1 || actual > 0,
+                "database {database}, key {key:?}: destination key disappeared/expired ({actual})");
+            assert_eq!(actual, expected,
+                "database {database}, key {key:?}: absolute expiry or persistence differs");
         }
     }
 }
 
 /// Firn has no MIGRATE, DUMP or RESTORE. Copy only with its existing per-type
-/// reads/writes, preserving raw bytes and applying PTTL after value transfer.
+/// reads/writes, preserving raw bytes and the source's absolute expiry with
+/// PEXPIRETIME/PEXPIREAT, so transfer latency cannot renew the key's lifetime.
 /// This is for a quiescent live source and an empty destination, not a
 /// concurrent-write snapshot or production migration command.
 fn online_copy(source: &mut Client, destination: &mut Client) {
@@ -283,9 +263,8 @@ fn online_copy(source: &mut Client, destination: &mut Client) {
                 // SCAN may repeat a key even without writes; copying it twice
                 // would duplicate lists. The key set comparison is separate.
                 if !seen.insert(key.clone()) { continue; }
-                let sampled = Instant::now();
-                let ttl = source.integer(&[b"PTTL", &key]);
-                assert!(ttl == -1 || ttl > 0, "source key disappeared during online copy: {key:?}");
+                let deadline = source.integer(&[b"PEXPIRETIME", &key]);
+                assert!(deadline == -1 || deadline > 0, "source key disappeared during online copy: {key:?}");
                 let Reply::Simple(kind) = source.request(&[b"TYPE", &key]) else { panic!("TYPE simple reply"); };
                 let value = full_value(source, &key, &kind);
                 match kind.as_slice() {
@@ -304,10 +283,8 @@ fn online_copy(source: &mut Client, destination: &mut Client) {
                     }
                     _ => panic!("unsupported type {kind:?}"),
                 }
-                if ttl > 0 {
-                    let remaining = ttl - elapsed_millis(sampled) - COPY_EXPIRY_MARGIN_MILLIS;
-                    assert!(remaining > 0, "key expires during transfer: {key:?}");
-                    assert_eq!(destination.integer(&[b"PEXPIRE", &key, remaining.to_string().as_bytes()]), 1);
+                if deadline > 0 {
+                    assert_eq!(destination.integer(&[b"PEXPIREAT", &key, deadline.to_string().as_bytes()]), 1);
                 }
             }
             if cursor == b"0" { break; }

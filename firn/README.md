@@ -660,26 +660,28 @@ appendfilename appendonly.aof
 4. Compare the database 0 key sets, `TYPE`, and complete values using `GET`,
    `LRANGE key 0 -1`, `HGETALL`, `SMEMBERS` and
    `ZRANGE key 0 -1 WITHSCORES`. Compare hash field/value pairs and set members
-   without relying on their iteration order. Check `PTTL` for every key:
-   permanent keys stay at `-1`, and expiring keys retain their absolute
-   deadlines, so time spent copying consumes their TTL. Resume clients on
-   firn only after checking the imported data.
+   without relying on their iteration order. Compare `PEXPIRETIME` for every
+   key: both servers must return `-1` for permanent keys or the same absolute
+   deadline in epoch milliseconds for expiring keys; `-2` means the key is
+   missing and fails the comparison. Time spent copying consumes the TTL.
+   Resume clients on firn only after checking the imported data.
 
 An alternative copies between two running servers using a client. The test
 helper enumerates database 0 with `SCAN`, reads each key's `TYPE` and full
 value with the commands above, then writes it with `SET`, `RPUSH`, `HSET`,
-`SADD` or `ZADD`. It samples `PTTL` before copying each key, subtracts the
-elapsed copy time and uses `PEXPIRE` for a positive remainder. The destination
-must be empty and application writes must remain paused: SCAN and the
-per-type reads do not provide a snapshot of concurrent changes. The helper
+`SADD` or `ZADD`. It reads `PEXPIRETIME` before the type and value reads,
+leaves permanent keys (`-1`) without an expiry, and installs a positive
+absolute deadline unchanged with `PEXPIREAT` after copying the value. The
+destination must be empty and application writes must remain paused: SCAN
+and the per-type reads do not provide a snapshot of concurrent changes. The helper
 is a test implementation, not a shipped migration utility. A production
 client would also need to handle keys expiring during transfer, retries and
-partial copies before allowing a cutover.
+partial copies before allowing a cutover. Source and destination clocks
+must be synchronized so that the same epoch deadline has the same meaning.
 
-Both cases compare exact value bytes and require firn's sampled remaining
-TTL to be no greater than Redis's, with loss bounded by the elapsed time
-between the two `PTTL` reads plus 250 ms. Sorted-set score text still has the
-known Redis 7.2 discrepancy noted above (for example, `0.1`); the cases cover
+Both cases compare exact value bytes and exact `PEXPIRETIME` results.
+Sorted-set score text still has the known Redis 7.2 discrepancy noted above
+(for example, `0.1`); the cases cover
 tied, negative and infinite scores but do not establish exact reply-text
 compatibility for every floating-point score.
 
