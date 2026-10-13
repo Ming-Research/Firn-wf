@@ -198,3 +198,34 @@ covered without removing or increasing the reserve. A new nested clean-EOF
 case checks that startup removes the latest MULTI but switch truncation still
 removes the first retained one. Existing unfinished-block, nested partial-tail,
 transaction-closes-block and failed-switch cases are unchanged.
+
+### Per-append boundary parse cost
+
+Carrying the boundary means each successful AOF append also runs the
+streaming parser over the appended bytes. The approval card set the
+criterion before measuring: on the i9-14900K with AOF on, SET and MSET
+throughput of the change against main stays within the range the twin of
+main shows. Runs used `redis-bench.yml` compare mode from
+`claude/bench-hybrid-placement`, with AOF everysec, automatic rewrite off,
+depth 16, 50 connections, clients on CPUs 16-31 and 6 interleaved passes.
+Builds were main (c6f6058), a twin of main and the change (b292f60). A
+2-pass probe ([38391181421](https://github.com/Ming-Research/Firn-wf/actions/runs/38391181421))
+confirmed that AOF was on in every line.
+
+| Cores | Test | main median (req/s) | change/main | twin/main | change per pass | twin per pass |
+|---|---|---|---|---|---|---|
+| 2 ([38391672715](https://github.com/Ming-Research/Firn-wf/actions/runs/38391672715)) | SET | 3,523,884 | 0.958 | 0.957 | 0.908-1.071 | 0.920-1.068 |
+| 2 | MSET | 953,236 | 0.970 | 1.021 | 0.933-1.022 | 0.944-1.081 |
+| 8 ([38392398506](https://github.com/Ming-Research/Firn-wf/actions/runs/38392398506)) | SET | 1,187,236 | 1.003 | 0.877 | 0.745-1.264 | 0.578-1.783 |
+| 8 | MSET | 862,453 | 0.989 | 0.954 | 0.914-1.034 | 0.812-1.193 |
+
+Each median ratio of the change lies inside the twin's per-pass range, so
+the per-append parse costs nothing these runs can resolve. With AOF on, the
+twin's own spread is wide: 4% at 2 cores, and more at 8 cores, where SET
+passes range from 0.58 to 1.78 of main. The comparison therefore bounds the
+cost only to that noise. It is not evidence of zero cost.
+
+These runs also show that with AOF on, main's SET at 8 P-cores (1.19M/s)
+is a third of its rate at 2 (3.52M/s). The single AOF writer or its fsync
+path limits throughput as cores rise. The change does not cause this, and
+it is recorded for the core-scaling work.
