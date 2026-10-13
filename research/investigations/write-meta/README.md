@@ -208,8 +208,9 @@ and others) keep the Meta form, because `due` is in Meta.
 needs the order Meta provides. Writing it did expose a language limitation.
 An atomic statement's targets are fixed syntax, so a statement cannot hold
 Meta only when a run-time condition (AOF on, an expiry option) holds. Each
-converted command is therefore two atomic statements around an ordinary `if`,
-one with the Meta target and one without. They share the body function but
+converted command was therefore first written as two atomic statements
+around an ordinary `if`, one with the Meta target and one without (the
+one-statement form below later replaced it). They share the body function but
 duplicate 4 to 30 lines of statement scaffolding per command, and drift
 between the two copies is the residual risk. The minimal witness is a
 conditional target,
@@ -532,6 +533,59 @@ recorded per run.
   source must be weighed against P1 with the owner.
 - *Reject (b)* if even arm N misses the criterion with AOF on: the limit is
   elsewhere (the writer, the rewrite scan of section 6, the allocator).
+
+### One-statement SET
+
+Question: does writing SET as one atomic statement that names its key and
+Meta, with every use of Meta under `if held`, cost anything against step 1's
+two statements when AOF is off? The pinned compiler acquires a named target
+at its first use on a path (Whitefoot's runtime line, from the
+specification's SHARE-3 and the lowering), so the AOF-off path should never
+hold Meta. Prior criterion, written in Whitefoot's research before measuring
+([Whitefoot#418](https://github.com/Ming-Research/Whitefoot/pull/418)):
+the one-statement SET's throughput ratio to the two-statement form falls
+within the twin's noise; a ratio below the twin's lower bound rejects it.
+
+Run [38367914126](https://github.com/Ming-Research/Firn-wf/actions/runs/38367914126),
+i9-14900K, Linux 7.0.0-38, release wf-d75f318d5631; server on P-cores
+0,2,4,6,8,10,12,14, clients on E-cores 16-31; AOF off; redis-benchmark
+depth 16; 6 interleaved passes of 10 s. Images: main 1d1657c (two
+statements), its twin, and Firn-wf#72 at 73db747. Ratios are per pass
+against main's run in the same pass.
+
+| test | image | median rps | per-pass ratio, median | range |
+|---|---|---|---|---|
+| SET | main | 21,542,344 | 1 | |
+| SET | twin | 21,655,571 | 1.001 | 0.994-1.025 |
+| SET | one statement | 21,330,337 | 0.9965 | 0.984-1.001 |
+| GET | main | 21,177,203 | 1 | |
+| GET | twin | 21,297,132 | 1.000 | 0.998-1.027 |
+| GET | one statement | 21,283,652 | 1.006 | 0.993-1.016 |
+
+The one-statement SET's median ratio, 0.9965, lies inside the twin's range,
+so the prediction holds at this resolution: no cost beyond the twin's noise.
+The six passes' mean ratio, 0.994 (standard deviation 0.007), sits at the
+twin's lower bound; a cost under 1% is not excluded by six passes. GET does
+not run this statement and serves as a second control.
+
+[Firn-wf#75](https://github.com/Ming-Research/Firn-wf/pull/75) writes the
+other 39 conditional holds in the same one-statement form, so no
+two-statement copy remains in firn. Run
+[38376297156](https://github.com/Ming-Research/Firn-wf/actions/runs/38376297156),
+with the setup above: main d3d25fa (two statements at 39 sites), its twin
+(identical image) and Firn-wf#75 at 576df40; MSET at 50 connections like
+SET and GET. The same prior criterion applies: each test's median per-pass
+ratio to main within the twin's range.
+
+| test | twin ratio, median (range) | one statement, median (range) | one statement, mean (sd) |
+|---|---|---|---|
+| SET | 1.005 (0.986-1.009) | 0.9962 (0.990-1.004) | 0.9965 (0.005) |
+| MSET | 1.021 (1.000-1.045) | 1.004 (0.959-1.020) | 0.998 (0.021) |
+| GET | 1.001 (0.978-1.003) | 0.9995 (0.988-1.008) | 0.999 (0.007) |
+
+Each median lies inside the twin's range, so the criterion holds for all
+three tests. One MSET pass (0.959) fell below the twin's lowest pass; MSET's
+spread is the widest for both twin and change at six passes.
 
 ## 5. Whitefoot gaps and witnesses
 

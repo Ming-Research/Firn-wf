@@ -120,6 +120,22 @@ fn fixture_keys(program: &CompiledProgram, count: usize) {
     std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
 }
 
+fn long_increment_history(program: &CompiledProgram) -> std::path::PathBuf {
+    fixture(program);
+    let increment = program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof");
+    let mut history = std::fs::OpenOptions::new().append(true).open(&increment).unwrap();
+    let obsolete = vec![b'o'; 32 * 1024];
+    let record = wire(&[b"SET", b"hot", &obsolete]);
+    for _ in 0..4096 { history.write_all(&record).unwrap(); }
+    history.write_all(&wire(&[b"SET", b"hot", b"seed"])).unwrap();
+    // Fixture history is already durable before the server starts, so its
+    // first switch sync measures ongoing appends rather than dirty setup.
+    history.sync_all().unwrap();
+    drop(history);
+    assert!(std::fs::metadata(&increment).unwrap().len() > 128 * 1024 * 1024);
+    increment
+}
+
 #[track_caller]
 fn start(program: &CompiledProgram) -> (ProgramChild, TcpStream, u16) {
     start_with_minimum(program, b"67108864")
@@ -904,20 +920,114 @@ fn reconciled_scan_pressure_after_s1_aborts_before_installation() {
 }
 
 #[test]
+fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects() {
+    let program = CompiledProgram::from_environment();
+    long_increment_history(&program);
+    // Keep the 128-MiB history from triggering an automatic rewrite. Default
+    // unlimited maxmemory retains R = 16 MiB, allowing ordinary switch I/O
+    // while the old history reread still produces enough backlog to exceed R.
+    let (child, mut control, port) = start_with_minimum(&program, b"4294967296");
+    assert_eq!(request(&mut control, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"100"]), Reply::Line(b"+OK".to_vec()));
+    let running = Arc::new(AtomicBool::new(true));
+    let worker_running = running.clone();
+    let monitor = child.monitor();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port, &monitor);
+        let mut count = 0_u64;
+        let mut appended = Vec::new();
+        let mut members = Vec::new();
+        let mut cut_count = None;
+        let mut last_value = vec![b'n'; 16 * 1024];
+        loop {
+            count += 1;
+            let marker = count.to_le_bytes();
+            last_value[..marker.len()].copy_from_slice(&marker);
+            // A small pipeline keeps the old reread's collecting buffer
+            // growing, while bounded values and staging avoid scan pressure.
+            let mut batch = Vec::new();
+            batch.extend(wire(&[b"SET", b"hot", &last_value]));
+            batch.extend(wire(&[b"INCR", b"history:counter"]));
+            batch.extend(wire(&[b"APPEND", b"history:text", &marker]));
+            batch.extend(wire(&[b"RPUSH", b"history:list", &marker]));
+            client.write_all(&batch).unwrap();
+            assert_eq!(read_reply(&mut client), Reply::Line(b"+OK".to_vec()));
+            assert_eq!(read_reply(&mut client), Reply::Line(format!(":{count}").into_bytes()));
+            assert_eq!(read_reply(&mut client), Reply::Line(format!(":{}", count * 8).into_bytes()));
+            assert_eq!(read_reply(&mut client), Reply::Line(format!(":{count}").into_bytes()));
+            appended.extend_from_slice(&marker);
+            members.push(Reply::Bulk(Some(marker.to_vec())));
+            let progress = rewrite_info(&mut client);
+            if progress["firn_aof_rewrite_cut"] == "1" && cut_count.is_none() { cut_count = Some(count); }
+            if count == 1 { ready_tx.send(()).unwrap(); }
+            // At least one whole acknowledged pipeline must follow an
+            // observed S1, even if the fast switch finished before sampling.
+            if !worker_running.load(Ordering::Acquire) && cut_count.is_none_or(|cut| count > cut) { break; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        (count, cut_count, last_value, appended, members)
+    });
+    ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    rewrite_start(&mut control);
+    scanned_keys(&program, &mut control);
+    assert_eq!(request(&mut control, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"0"]), Reply::Line(b"+OK".to_vec()));
+    let info = rewrite_wait(&mut control);
+    running.store(false, Ordering::Release);
+    let (count, cut_count, hot, appended, members) = worker.join().unwrap();
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok", "long history must not suspend ordinary draining at S1; the old full reread exhausts R with rotation_reserve: {info:?}");
+    let cut_count = cut_count.expect("the continuous writer must observe S1");
+    assert!(cut_count > 1 && count > cut_count, "writes must be acknowledged before rewrite admission and after an observed S1");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "");
+    assert_eq!(info["firn_aof_rewrite_cut"], "1");
+    assert_eq!(info["firn_aof_rewrite_reserve"], "16777216");
+    let peak: u64 = info["firn_aof_rewrite_peak"].parse().unwrap();
+    assert!(peak <= 16_777_216, "removing the reread must retain the reserve bound");
+    let check = |client: &mut TcpStream| {
+        assert_eq!(bulk(request(client, &[b"GET", b"hot"])), hot);
+        assert_eq!(bulk(request(client, &[b"GET", b"history:counter"])), count.to_string().into_bytes());
+        assert_eq!(bulk(request(client, &[b"GET", b"history:text"])), appended);
+        assert_eq!(array(request(client, &[b"LRANGE", b"history:list", b"0", b"-1"])), members);
+        assert_eq!(request(client, &[b"DBSIZE"]), Reply::Line(b":6004".to_vec()));
+    };
+    check(&mut control);
+    rewrite_stop(&mut control, child);
+    let (child, mut restored, _) = start(&program);
+    check(&mut restored);
+    rewrite_stop(&mut restored, child);
+}
+
+#[test]
 fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     let program = CompiledProgram::from_environment();
-    fixture(&program);
-    let increment = program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof");
-    let mut history = std::fs::OpenOptions::new().append(true).open(&increment).unwrap();
-    let obsolete = vec![b'o'; 32 * 1024];
-    let record = wire(&[b"SET", b"hot", &obsolete]);
-    for _ in 0..4096 { history.write_all(&record).unwrap(); }
-    history.write_all(&wire(&[b"SET", b"hot", b"seed"])).unwrap();
-    drop(history);
+    let increment = long_increment_history(&program);
     // The 128 MiB history exceeds the default minimum, and Redis starts an
     // automatic rewrite from it as from any grown AOF; raise the minimum so
     // this case's BGREWRITEAOF is the only rewrite.
-    let (child, mut client, _) = start_with_minimum(&program, b"4294967296");
+    let lease = support::lease_port();
+    let port = lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route_ignoring_xfsz(true, &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", b"4294967296"]).with_port(&lease);
+    let mut client = connect_when_ready(port, &child);
+    // A real failed append makes its boundary outcome unknown under the
+    // Whitefoot I/O contract. Successful recovery must retain that unknown
+    // state until the exceptional switch-time reread refreshes it. This
+    // host failure, rather than ordinary history, now keeps rotation busy.
+    let previous = aof_write_errors::file_limit(&child, std::fs::metadata(&increment).unwrap().len());
+    assert_eq!(request(&mut client, &[b"SET", b"hot", b"failed-append"]), Reply::Line(b"+OK".to_vec()));
+    let recovery_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let info = rewrite_info(&mut client);
+        if info["aof_last_write_status"] == "err" { break; }
+        assert!(Instant::now() < recovery_deadline, "file limit did not fail the ordinary append: {info:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    aof_write_errors::file_limit(&child, previous.soft);
+    loop {
+        let info = rewrite_info(&mut client);
+        if info["aof_last_write_status"] == "ok" && info["aof_buffer_length"] == "0" { break; }
+        assert!(Instant::now() < recovery_deadline, "ordinary append did not recover after restoring its file limit: {info:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"67108864"]);
     rewrite_start(&mut client);
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -1094,7 +1204,13 @@ fn reconciled_scan_discards_a_step_that_does_not_fit_and_retries_narrower() {
         bytes.extend(wire(&[b"SET", name, &value(index)]));
     }
     std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
-    let (child, mut client, _) = start(&program);
+    // The 100 MiB increment over an empty base exceeds the default minimum,
+    // and Redis starts an automatic rewrite from it as from any grown AOF
+    // (its startup baseline is the base file's size); when the writer's first
+    // check ran before this case's BGREWRITEAOF arrived, the request found
+    // that rewrite in progress. Raise the minimum so BGREWRITEAOF is the only
+    // rewrite.
+    let (child, mut client, _) = start_with_minimum(&program, b"4294967296");
     rewrite_start(&mut client);
     let info = rewrite_wait(&mut client);
     assert_eq!(info["aof_last_bgrewrite_status"], "ok", "a step too large for R must be narrowed, not abort: {info:?}");
