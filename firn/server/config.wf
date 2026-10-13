@@ -1,4 +1,5 @@
 alias Span = pkg::protocol::Span;
+alias IntegerConfig = pkg::commands::IntegerConfig;
 alias IoError = std::io::IoError;
 alias HandleFactory = std::io::HandleFactory;
 alias InputStream = std::io::InputStream;
@@ -20,11 +21,7 @@ const config_unbalanced: Array<u8, 39> = "Unbalanced quotes in configuration lin
 
 const config_bad_integer: Array<u8, 43> = "argument couldn't be parsed into an integer";
 
-const config_port_bounds: Array<u8, 46> = "argument must be between 0 and 65535 inclusive";
-
 const config_int_bounds: Array<u8, 51> = "argument must be between 0 and 2147483647 inclusive";
-
-const config_maxclients_bounds: Array<u8, 51> = "argument must be between 1 and 4294967295 inclusive";
 
 const config_name_maxclients: Array<u8, 10> = "MAXCLIENTS";
 
@@ -648,40 +645,42 @@ fn config_apply(options: &Options, input: &[u8], arguments: &Box<Slots<Span>>) -
     }
     return text_of(word: &config_dir_gap[0_u64..66_u64]);
   }
+  let port_setting = kind == 1_u64;
+  let timeout_setting = kind == 3_u64;
+  let maxclients_setting = kind == 12_u64;
+  let port_or_timeout = bor(port_setting, timeout_setting);
+  if bor(port_or_timeout, maxclients_setting) {
+    let setting = if port_setting {
+      give IntegerConfig::Port();
+    } else if timeout_setting {
+      give IntegerConfig::Timeout();
+    } else {
+      give IntegerConfig::Maxclients();
+    }
+    let parsed = pkg::commands::parse_integer_config(input: input, span: span, setting: setting);
+    if parsed.valid {
+      if port_setting {
+        set options^.port = parsed.value;
+      } else if timeout_setting {
+        set options^.idle = parsed.value;
+      } else {
+        set options^.maxclients = parsed.value;
+      }
+      return move empty;
+    }
+    return move parsed.error;
+  }
   let number = pkg::bytes::read_integer(input: input, start: span.start, length: span.length);
   if number.state == 0_u64 {
     return text_of(word: &config_bad_integer[0_u64..43_u64]);
   }
-  if kind == 12_u64 {
-    let low = number.value < 1_i64;
-    let high = number.value > 4294967295_i64;
-    if bor(low, high) {
-      return text_of(word: &config_maxclients_bounds[0_u64..51_u64]);
-    }
-    invariant positive_limit: number.value >= 1_i64;
-    invariant unsigned_limit: number.value <= 4294967295_i64;
-    set options^.maxclients = cvt::<i64, u64>(number.value);
-    return move empty;
-  }
-  let limit = if kind == 1_u64 {
-    give 65535_i64;
-  } else {
-    give 2147483647_i64;
-  }
   let low = number.value < 0_i64;
-  let high = number.value > limit;
+  let high = number.value > 2147483647_i64;
   if bor(low, high) {
-    if kind == 1_u64 {
-      return text_of(word: &config_port_bounds[0_u64..46_u64]);
-    }
     return text_of(word: &config_int_bounds[0_u64..51_u64]);
   }
   let unsigned = cvt::<i64, u64>(number.value);
-  if kind == 1_u64 {
-    set options^.port = unsigned;
-  } else if kind == 3_u64 {
-    set options^.idle = unsigned;
-  } else if kind == 8_u64 {
+  if kind == 8_u64 {
     set options^.rewrite_percentage = unsigned;
   }
   return move empty;

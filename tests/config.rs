@@ -40,6 +40,17 @@ fn config_value(client: &mut TcpStream, name: &str, value: &str, label: &str) {
     client.write_all(&resp(&["CONFIG", "GET", name])).expect("query startup setting");
     let expected = format!("*2\r\n${}\r\n{name}\r\n${}\r\n{value}\r\n", name.len(), value.len());
     expect_replies(client, expected.as_bytes(), &format!("{label}: CONFIG GET {name}"));
+    if name == "maxclients" {
+        maxclients_info_value(client, value, label);
+    }
+}
+
+fn maxclients_info_value(client: &mut TcpStream, value: &str, label: &str) {
+    client.write_all(&resp(&["INFO", "clients"]))
+        .expect("query the configured admission limit in INFO clients");
+    let info = bulk_reply(client, label);
+    assert_eq!(info_field(&info, "maxclients").as_deref(), Some(value),
+        "{label}: INFO clients must report maxclients {value}: {info:?}");
 }
 
 fn shutdown(client: &mut TcpStream, child: ProgramChild, label: &str) {
@@ -171,6 +182,24 @@ fn maxclients_live_lowering_keeps_existing_clients_and_rejects_the_next_connecti
 }
 
 #[test]
+fn maxclients_file_accepts_the_uint_upper_bound() {
+    let fixture = fixture_directory();
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    std::fs::write(fixture.path().join("maxclients.conf"),
+        "bind 127.0.0.1\nmaxclients 4294967295\n")
+        .expect("write shared upper-bound maxclients config");
+    for (label, binary) in servers() {
+        let child = start(&binary, fixture.path(),
+            &arguments(&["maxclients.conf", "--port", &port]), None).with_port(&lease);
+        let mut client = connect_when_ready(lease.port(), &child);
+        maxclients_ping(&mut client, label);
+        config_value(&mut client, "maxclients", "4294967295", label);
+        shutdown(&mut client, child, label);
+    }
+}
+
+#[test]
 fn maxclients_default_and_config_set_validation_match_redis() {
     let fixture = fixture_directory();
     let lease = support::lease_port();
@@ -184,6 +213,10 @@ fn maxclients_default_and_config_set_validation_match_redis() {
             &arguments(&["--port", &port, "--bind", "127.0.0.1"]), None).with_port(&lease);
         let mut client = connect_when_ready(lease.port(), &child);
         config_value(&mut client, "maxclients", "10000", label);
+        client.write_all(&resp(&["CONFIG", "SET", "maxclients", "4294967295"]))
+            .expect("set the valid UInt upper-bound maxclients value");
+        expect_replies(&mut client, b"+OK\r\n", label);
+        config_value(&mut client, "maxclients", "4294967295", label);
         client.write_all(&resp(&["CONFIG", "SET", "maxclients", "2"]))
             .expect("set a valid live maxclients value");
         expect_replies(&mut client, b"+OK\r\n", label);

@@ -956,20 +956,14 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
         set refused = which;
       }
     } else if which == 11_u64 {
-      let number = read_integer(input: input, start: value.start, length: value.length);
-      if number.state != 1_u64 {
-        reply_set_failed(client: client, which: which, reason: &text_not_parsed[0_u64..43_u64]);
+      let setting = IntegerConfig::Port();
+      let parsed = parse_integer_config(input: input, span: value, setting: setting);
+      if bnot(parsed.valid) {
+        let length = parsed.error.inner.len;
+        reply_set_failed(client: client, which: which, reason: &parsed.error.inner[0_u64..length]);
         return unit;
       }
-      let below = number.value < 0_i64;
-      let above = number.value > 65535_i64;
-      let outside = bor(below, above);
-      if outside {
-        reply_bounds(client: client, which: which, least: 0_i64, most: 65535_i64);
-        return unit;
-      }
-      let port = cvt.wrap::<i64, u64>(number.value);
-      if port != client^.settings.port {
+      if parsed.value != client^.settings.port {
         if unrefused {
           set refused = which;
         }
@@ -989,20 +983,15 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
         }
       }
     } else if which == 19_u64 {
-      let number = read_integer(input: input, start: value.start, length: value.length);
-      if number.state != 1_u64 {
-        reply_set_failed(client: client, which: which, reason: &text_not_parsed[0_u64..43_u64]);
-        return unit;
-      }
-      let below = number.value < 0_i64;
-      let above = number.value > 2147483647_i64;
-      let outside = bor(below, above);
-      if outside {
-        reply_bounds(client: client, which: which, least: 0_i64, most: 2147483647_i64);
+      let setting = IntegerConfig::Timeout();
+      let parsed = parse_integer_config(input: input, span: value, setting: setting);
+      if bnot(parsed.valid) {
+        let length = parsed.error.inner.len;
+        reply_set_failed(client: client, which: which, reason: &parsed.error.inner[0_u64..length]);
         return unit;
       }
       set timeout_given = True();
-      set new_timeout = cvt.wrap::<i64, u64>(number.value);
+      set new_timeout = parsed.value;
     } else if which == 30_u64 {
       let number = read_integer(input: input, start: value.start, length: value.length);
       if number.state != 1_u64 {
@@ -1045,21 +1034,15 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       set delay_given = True();
       set new_delay = number.value;
     } else if which == 33_u64 {
-      let number = read_integer(input: input, start: value.start, length: value.length);
-      if number.state != 1_u64 {
-        reply_set_failed(client: client, which: which, reason: &text_not_parsed[0_u64..43_u64]);
+      let setting = IntegerConfig::Maxclients();
+      let parsed = parse_integer_config(input: input, span: value, setting: setting);
+      if bnot(parsed.valid) {
+        let length = parsed.error.inner.len;
+        reply_set_failed(client: client, which: which, reason: &parsed.error.inner[0_u64..length]);
         return unit;
       }
-      let below = number.value < 1_i64;
-      let above = number.value > 4294967295_i64;
-      if bor(below, above) {
-        reply_bounds(client: client, which: which, least: 1_i64, most: 4294967295_i64);
-        return unit;
-      }
-      invariant positive_limit: number.value >= 1_i64;
-      invariant unsigned_limit: number.value <= 4294967295_i64;
       set maxclients_given = True();
-      set new_maxclients = cvt::<i64, u64>(number.value);
+      set new_maxclients = parsed.value;
     } else if memory_parameter {
       invariant memory_selector_lower: which >= 24_u64;
       invariant memory_selector_upper: which <= 29_u64;

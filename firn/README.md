@@ -389,7 +389,9 @@ An accepted connection that would exceed `maxclients` receives
 `-ERR max number of clients reached\r\n` and closes before any command is
 served. The reply is best effort: partial sends share one absolute deadline
 one second after the attempt starts. A send error, including expiry of that
-deadline, ends the attempt and closes the connection even if sending is incomplete.
+deadline, ends the attempt and closes the connection even if sending is
+incomplete. The host send contract permits zero progress, so this deadline
+alone establishes no strict return-time bound.
 `CONFIG SET maxclients` changes admission for subsequent connections;
 lowering it below the current count leaves every existing client connected.
 The pinned Whitefoot host APIs have no resource-limit facility, so firn

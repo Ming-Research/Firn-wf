@@ -3329,21 +3329,23 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
     assert_eq!(status, 0);
 }
 
-/// firn answers CONFIG GET for the parameters it reports as Redis 7.0 does,
+/// firn answers CONFIG GET for the parameters it reports as Redis does,
 /// matching an argument that holds [, * or ? as Redis's stringmatchlen
-/// matches a pattern, in either case: * reaches all 30, the encoding
-/// parameters and their aliases among them, each with Redis's default; an
-/// argument naming a parameter and a pattern reaching it answer it once,
+/// matches a pattern, in either case: * reaches all visible parameters, the
+/// encoding parameters and their aliases among them, each with Redis's default;
+/// an argument naming a parameter and a pattern reaching it answer it once,
 /// spelled as the first argument spells it; a class with a range, ? and a
 /// negated class match; the range [Z-a] holds nothing, because Redis swaps a
 /// reversed range's bounds before folding their case; a backslash outside a
 /// class folds case and inside one does not; a pattern stops at a zero byte;
 /// and an argument with none of the three bytes is a name, \Port among them.
 /// The options --timeout and --appendfilename set the values reported. Every
-/// reply holds what redis-server 7.0.15 answers for these parameters with the
-/// same settings, in firn's stable parameter order, one of Redis's possible
-/// orders. Memory settings, automatic rewrite thresholds and maxclients, with
-/// its default 10000, join glob results.
+/// older parameter expectation comes from redis-server 7.0.15 with the same
+/// settings, in firn's stable parameter order, one of Redis's possible orders.
+/// Memory settings and automatic rewrite thresholds join glob results.
+/// maxclients joins glob results with the default 10000 declared in Redis
+/// 7.2.16's config.c:3209. Firn reports that configured default unconditionally;
+/// Redis can lower it when the operating system's fd limit is too small.
 /// Redis's *o*t matches only port and timeout among these parameters: the
 /// final t must end the name, so neither automatic rewrite threshold matches.
 /// set-max-listpack-entries and set-max-listpack-value, with their Redis
