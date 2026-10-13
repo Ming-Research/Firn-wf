@@ -129,6 +129,19 @@ fn list_producer(kind: u64) -> result: Bool pure {
   return bor(changes_list, insert);
 }
 
+fn list_producer_one_key(kind: u64) -> result: Bool pure {
+  doc "The list producers whose append-only bytes change one key alone: LPUSH, RPUSH, LPUSHX, RPUSHX and LINSERT. RENAME, RENAMENX, COPY, LMOVE and RPOPLPUSH can change two keys.";
+  let push = kind == 60_u64;
+  let rpush = kind == 61_u64;
+  let pushx = kind == 62_u64;
+  let rpushx = kind == 63_u64;
+  let insert = kind == 72_u64;
+  let pushes = bor(push, rpush);
+  let existing = bor(pushx, rpushx);
+  let writes_list = bor(pushes, existing);
+  return bor(writes_list, insert);
+}
+
 fn blocking_hold_ready(meta: &Meta, hub: &Hub, server: &ServerState) -> ready: Bool reads(meta.aof_rewrite_in_progress), reads(hub.blocking_state), reads(server.memory.maxmemory) {
   doc "A limited-memory replay can need eviction and rewrite cleanup. Await an existing rewrite before entering the indivisible producer/service unit, so cleanup never needs Meta held by its waiter. This proposed scheduling cost affects list-service units only; it adds no GET/SET target.";
   if server^.memory.maxmemory == 0_u64 {

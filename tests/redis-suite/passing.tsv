@@ -283,8 +283,6 @@ unit/type/list	BLPOP with same key multiple times should work (issue #801)	1
 unit/type/list	BLPOP with variadic LPUSH	1
 unit/type/list	BLPOP, LPUSH + DEL + SET should not awake blocked client	1
 unit/type/list	BLPOP, LPUSH + DEL should not awake blocked client	1
-unit/type/list	BLPOP: with zero timeout should block indefinitely	1
-unit/type/list	BRPOP: with zero timeout should block indefinitely	1
 unit/type/list	BRPOPLPUSH inside a transaction	1
 unit/type/list	BRPOPLPUSH maintains order of elements after failure	1
 unit/type/list	BRPOPLPUSH with multiple blocked clients	1

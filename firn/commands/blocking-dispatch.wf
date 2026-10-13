@@ -5,7 +5,7 @@ alias Span = pkg::protocol::Span;
 alias Time = pkg::store::Time;
 
 fn run_list_producer(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
-  doc "Runs a list-producing command through the existing held command parts. Dataset changes, AOF publication, the producer's complete reply commitment and FIFO service of newly ready lists occur in that order under one keyspace, metadata, event-hub and server-state hold. Ordinary GET and SET retain their existing dispatch and targets.";
+  doc "Runs a list-producing command through the existing held command parts. Dataset changes, AOF publication, the producer's complete reply commitment and FIFO service of newly ready lists occur in that order under one keyspace, metadata, event-hub and server-state hold. Ordinary GET and SET retain their existing dispatch and targets. LPUSH, RPUSH, LPUSHX, RPUSHX and LINSERT change only their one key, so their statement keeps the one-key sequence their former dedicated paths took: during a rewrite a key already journaled in the window records only these appended bytes, not a further complete image of the list.";
   let journal = None<pkg::store::AccessJournal>();
   let effects = box_slots_new::<u8>(capacity: 64_u64);
   let stage = pkg::connection_events::stage_new();
@@ -17,7 +17,13 @@ fn run_list_producer(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots
       pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
       return unit;
     }
-    let sequence = pkg::store::sequence_new(meta: meta, loading: time^.loading);
+    let sequence = if list_producer_one_key(kind: kind) {
+      let one_key = pkg::store::sequence_new_key(meta: meta, loading: time^.loading);
+      give move one_key;
+    } else {
+      let several = pkg::store::sequence_new(meta: meta, loading: time^.loading);
+      give move several;
+    }
     let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
     let appended = held_run(sequence: &sequence, journal: &journal, kind: kind, keys: keys, meta: meta, effects: &effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
     let length = effects.inner.len;

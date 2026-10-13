@@ -428,12 +428,46 @@ server-side registration-removal boundary. The subsequent full-unit result
 remains required runtime evidence that the abandoned waiters no longer
 consume setup values; it does not claim every socket owner has joined.
 
-The separate concurrent rewrite network failure has not yet been attributed.
-Its first startup loads 16,000 SET records; its second startup loads files
-produced by rewrite plus concurrent INCR/APPEND/LPUSH. Replay precedes writer,
-event-hub workers and listening. During loading there are no blocked clients
-and maxmemory is zero, so the added producer's readiness guard is true and
-its waiter service is empty. Source inspection found no new startup wait
-cycle and does not prove the failure was harmless timing. Phase diagnostics
-retain the existing 20-second acceptance threshold; CI must distinguish first
-load, worker connections and restart before any production repair is claimed.
+## Concurrent rewrite restart
+
+Gate run 38463967822 on `40257cb` located the network failure of the
+exactly-once rewrite test: the first load of 16,000 SET records connected,
+the rewrite finished with status ok, and the restart then did not accept a
+connection within the existing 20-second limit. Before that restart the new
+base file held 1,057,150,053 bytes, while its dataset is about 9 MB of SET
+records, one string of at most 246,052 bytes and one list of at most 148,696
+one-byte elements.
+
+The cause is the shared producer path. LPUSH, RPUSH, LPUSHX, RPUSHX and
+LINSERT previously opened their statement with the one-key write sequence,
+which the AOF rewrite decision relies on: a later write to a key already
+journaled in the rewrite window journals only its own append-only bytes. The
+blocking-list change routed every list producer through one whole-map hold
+that opened the general sequence, so each push during the rewrite window
+journaled another complete image of the growing list, and the reconciled
+base grew with pushes times list length. Restart then replays that base
+before it listens. The fix keeps the whole-map hold and restores the one-key
+sequence for those five commands; RENAME, RENAMENX, COPY, LMOVE and
+RPOPLPUSH can change two keys and keep the general sequence, as their former
+paths did. A network case pushes 200 times onto a 20,032-element list inside
+a rewrite window and bounds the rewritten base at 12 MiB; one image per push
+would add about 28 MB to its 9 MB dataset.
+
+## Contaminated zero-timeout passes
+
+Two of the 26 rows added from run 38457609785, “BLPOP: with zero timeout
+should block indefinitely” and its BRPOP twin, passed there only because of
+the leaked WATCH-fixture waiters described above: their log lines precede the
+BLPOP block and the waiters lived until the later quicklist case, so the
+INFO barrier `wait_for_blocked_client` (blocked_clients non-zero) held
+before the test's own command. In Redis 7.2.16 the preceding
+“with non-integer timeout” case blocks on `blist1` with a 0.1-second
+timeout and its RPUSH serves that waiter, leaving `blist1` absent. Firn
+refuses finite timeouts until firn-req-extended-float, so the RPUSH leaves
+`foo` in `blist1`; the zero-timeout BLPOP then returns at once and never
+blocks. With the leaked waiters cleaned up, run 38463967822 shows the true
+outcome, “no blocked clients”. Neither is a failure to block or to count a
+blocked client; both follow from the deliberate timeout deferral, and their
+ratchet rows were added on contaminated evidence. Both rows are removed from
+`passing.tsv`; they return when firn-req-extended-float lets the preceding
+non-integer-timeout case serve its waiter.

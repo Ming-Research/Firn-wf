@@ -10279,6 +10279,58 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     rewrite_stop(&mut client, child);
 }
 
+/// A one-key list push on a key already journaled in the rewrite window
+/// journals only its own append-only bytes, as every one-key command does
+/// (design/firn/aof-rewrite.md). Journaling a complete list image per push
+/// instead makes the rewritten base grow with pushes times list length:
+/// here 200 pushes on a 20,000-element list would add about 28 MB to a base
+/// of about 9 MB, and restart replays all of it.
+#[test]
+fn firn_rewrite_journals_one_key_list_pushes_as_their_bytes() {
+    let program = CompiledProgram::from_environment();
+    rewrite_large_fixture(&program);
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let elements = 20000_i64;
+    let batch = vec!["x"; 64];
+    let mut length = 0_i64;
+    while length < elements {
+        let mut request = vec!["RPUSH", "pushed"];
+        request.extend_from_slice(&batch);
+        client.write_all(&resp(&request)).unwrap();
+        length += 64;
+        assert_eq!(integer_reply(&mut client, "list setup"), length);
+    }
+    rewrite_key_delay(&mut client, "100");
+    rewrite_start(&mut client);
+    let pushes = 200_i64;
+    for push in 1..=pushes {
+        client.write_all(&resp(&["LPUSH", "pushed", "x"])).unwrap();
+        assert_eq!(integer_reply(&mut client, "push during rewrite"), length + push);
+    }
+    assert_eq!(rewrite_info(&mut client)["aof_rewrite_in_progress"], "1", "every push must fall inside the rewrite window");
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+    rewrite_stop(&mut client, child);
+    let directory = program.working_directory().join("appendonlydir");
+    assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), rewrite_manifest(2, 2));
+    // 16,000 SETs of 512-byte values are about 8.9 MB and the list about
+    // 0.15 MB per complete image; 12 MiB admits the scanned dataset and a few
+    // images but not one image per push.
+    let base = std::fs::metadata(directory.join("appendonly.aof.2.base.aof")).unwrap().len();
+    assert!(base < 12 * 1024 * 1024, "rewritten base holds {base} bytes: list pushes journaled complete images");
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    client.write_all(&resp(&["LLEN", "pushed"])).unwrap();
+    assert_eq!(integer_reply(&mut client, "list length after restart"), length + pushes);
+    rewrite_stop(&mut client, child);
+}
+
 #[test]
 fn firn_shutdown_cancels_scan_before_rotation() {
     let program = CompiledProgram::from_environment();
