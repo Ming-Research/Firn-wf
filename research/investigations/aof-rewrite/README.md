@@ -4,6 +4,9 @@
 disk-journal direction, its bounded staging and S1 protocol, and validation
 criteria before implementation; [A time-sliced live scan within the
 reserve](scan-pace.md) records the scan's bound and pacing on the same ruling.
+[Publishing a rewrite while the current increment cannot be
+written](publish-during-append-error.md) proposes keeping a rewrite whose old
+increment refuses appends and installing base(S1) directly.
 
 The record below preserves the original closed-log replay investigation and
 its implementation history. The owner's subsequent service-first memory
