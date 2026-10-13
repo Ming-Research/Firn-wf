@@ -88,8 +88,9 @@ run used this relative-expiry method and sampled PTTL comparisons, so it
 does not establish exact deadline preservation.
 
 The current correction reads source `PEXPIRETIME`, installs the same deadline
-with `PEXPIREAT`, and compares exact deadlines in both paths. It awaits new
-CI; no local build or test was run for these edits. The planned cutover path
+with `PEXPIREAT`, and compares exact deadlines in both paths. Gate
+[run 38421126714](https://github.com/Ming-Research/Firn-wf/actions/runs/38421126714)
+at 8e68f37 passed both cases with exact deadlines. The planned cutover path
 is the command-only AOF import, because the existing loader and multipart
 layout provide the mechanism without adding firn commands or shipping a
 separate copy utility. The
