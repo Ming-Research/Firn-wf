@@ -41,7 +41,6 @@ jobs:
           ledger_release=$(sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$/\1/p' whitefoot.pin)
           ledger_compiler="$PWD/build/whitefoot/$ledger_release/whitefootc"
           export WHITEFOOT_LANGUAGE="$PWD/build/whitefoot/$ledger_release/language"
-          "$ledger_compiler" --help
           ledger_log="$PWD/build/lock-ledger.log"
           if "$ledger_compiler" --lock-ledger --graph "$PWD/firn/modules.wfg" --entry firn --cache "$PWD/build/firn-cache" -o "$PWD/build/firn" >"$ledger_log" 2>&1; then
             for ledger_function in run_exec run_auth run_hello; do
