@@ -47,7 +47,8 @@ binding DeadlineOrder : PriorityOrder<Deadline, Empty> {
 fn queue_push<T: drop>(queue: &Box<Ring<T>>, value: T) -> result: unit writes(queue) {
   doc "Appends to the process-bounded queue, doubling its capacity when full. Like connection identities, live queue elements remain fewer than 2^64.";
   if queue^.inner.len >= queue^.inner.cap {
-    let doubled = queue^.inner.cap *sat 2_u64;
+    let current = queue^.inner.cap;
+    let doubled = current +sat current;
     let capacity = imax(doubled, 8_u64);
     set queue^ = std::collections::deque::deque_rebase::<T, extent>(values: move queue^, capacity: capacity);
   }
@@ -59,7 +60,8 @@ fn queue_push<T: drop>(queue: &Box<Ring<T>>, value: T) -> result: unit writes(qu
 
 fn slots_push<T: drop>(values: &Box<Slots<T>>, value: T) -> result: unit writes(values) {
   if values^.inner.len >= values^.inner.cap {
-    let doubled = values^.inner.cap *sat 2_u64;
+    let current = values^.inner.cap;
+    let doubled = current +sat current;
     let capacity = imax(doubled, 8_u64);
     grow(cell: values, capacity: capacity);
   }
