@@ -34,7 +34,7 @@ FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' 
 # The Redis suite runs as this many run.sh shards side by side.
 SUITE_SHARDS ?= 2
 
-.PHONY: check firn firn-test test redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync
+.PHONY: check firn firn-test test list-ceiling redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync
 
 # The gate's targets: check.yml runs each in a job of its own, which
 # gate-sync requires.
@@ -59,8 +59,20 @@ firn-test: $(BUILD)/firn-test
 $(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 	$(WHITEFOOTC) --par --par-call-grain off --graph $(FIRN_GRAPH) --entry firn --cache $(BUILD)/firn-test-cache -o $@
 
-test: firn-test
+test: firn-test list-ceiling
 	FIRN=$(BUILD)/firn-test cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked
+
+# Direct Whitefoot fixtures exercise the real private list command bodies at
+# an eight-element ceiling, without a production test hook or a giant network
+# dataset. The assembler copies sources only into this disposable build tree.
+LIST_CEILING_SOURCES := $(ROOT)/tests/list_ceiling.py $(ROOT)/tests/list_ceiling.wf
+
+$(BUILD)/list-ceiling/check: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES) $(LIST_CEILING_SOURCES)
+	$(PY) -B $(ROOT)/tests/list_ceiling.py --out $(BUILD)/list-ceiling
+	$(WHITEFOOTC) --graph $(BUILD)/list-ceiling/firn/modules.wfg --entry list_ceiling -o $@
+
+list-ceiling: $(BUILD)/list-ceiling/check
+	$(BUILD)/list-ceiling/check
 
 # Redis's released suite runs against the cached server build, split into
 # shards that run side by side and merge into one run. Every listed pass must

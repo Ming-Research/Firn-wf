@@ -99,6 +99,17 @@ clients send on their own:
   log to write it to; every other `DEBUG` subcommand is answered as an
   unknown one.
 
+Lists intentionally hold at most 4294967296 (2^32) elements, unlike Redis
+7.2.16 on 64-bit. `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LINSERT`, `LMOVE`
+and `RPOPLPUSH` reject an addition beyond that limit with
+`ERR list would exceed the maximum of 4294967296 elements`, before changing
+any entry, including access metadata. A multi-element push is rejected as a
+whole. A move checks its destination before popping its source; a rotation
+within the same list needs no extra room. `LINSERT` still returns -1 for an absent
+pivot, since that command would add nothing. The shared command bodies apply
+the same rule on the network, in transactions, in scripts and during AOF
+replay.
+
 `SCAN` takes one map scan step per request; its unsigned decimal cursor is
 zero when the scan ends, and a nonzero cursor can accompany an empty batch.
 `MATCH` and `KEYS` patterns are binary and case-sensitive; `TYPE` names are
