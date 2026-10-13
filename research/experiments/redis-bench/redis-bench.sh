@@ -1397,6 +1397,10 @@ if [ "$MODE" = workloads ]; then
                             --threads "$CLIENT_THREADS" --connections "$conns" \
                             --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
                         echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
+                        # Cumulative script-engine timing since this server
+                        # started (firn only; other servers report nothing).
+                        redis-cli -p "$PORT" INFO memory | tr -d '\r' | sed -n 's/^firn_script_//p' |
+                            sed "s/^/$line,$pass,$n,$workload,$conns,/; s/:/,/" >>"$OUT/workload-script-time.csv" || true
                     done
                     # Profile only after every measured run on this server, so
                     # no measured run follows an unmeasured one here.
