@@ -50,7 +50,7 @@ fn raise_memory_peak(store: &Keyspace, client: &Client, used: u64) -> result: un
 }
 
 fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(store), writes(client) waits {
-  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading. The peak only rises, so a reading at or below the peak this client last saw recorded cannot change it and takes no Meta statement; a higher one takes this short statement, which does not cover command execution, and remembers the peak it leaves.";
+  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading. The peak only rises, so a reading at or below the peak this client last saw recorded cannot change it and takes no Meta statement; a higher one takes this short statement, which does not cover command execution, and remembers the peak it leaves. The body repeats raise_memory_peak on purpose: calling it here ran unlimited 2-core SET at 0.964 of main on the i9-14900K (research/investigations/memory-limit/README.md, admission without Meta).";
   let used = heap_read(client: client);
   if used > client^.seen_peak {
     atomic meta = &store^.meta {
