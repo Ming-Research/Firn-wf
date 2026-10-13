@@ -130,53 +130,7 @@ def no_fill(body):
 
 mask = {"replay": masked_replay(), "rewrite-boundary": masked_boundary}
 variants = {
-    "v0_unchanged": {},
-    "a0_false_canary": {"replay": lambda source: append_function(source, CANARY, "diagnostic_canary")},
-    "a1_masked_control": mask,
-    "a2_masked_canary": {"replay": masked_replay(CANARY, "diagnostic_canary"), "rewrite-boundary": masked_boundary},
-    "a3_masked_probe": {"replay": masked_replay(PROBE, "scanner_probe"), "rewrite-boundary": masked_boundary},
-    "a4_masked_probe_control": {
-        "replay": masked_replay(replace_exact(PROBE, "  return event.next;\n", "  return end;\n", "probe control return"), "scanner_probe"),
-        "rewrite-boundary": masked_boundary,
-    },
-    "b0_assert_next_at_call": {
-        "replay": lambda source: record_replace(CALL, CALL + "    invariant scanner_next: event.next <= held;\n", "assert next at call")(masked_replay()(source)),
-        "rewrite-boundary": masked_boundary,
-    },
-    "b1_assert_header_at_call": {
-        "replay": lambda source: record_replace(CALL, CALL + "    invariant scanner_header: reader^.syntax.line.len < 1023_u64;\n", "assert header at call")(masked_replay()(source)),
-        "rewrite-boundary": masked_boundary,
-    },
-    "c1_eof_local": {"replay": record_replace(CALL, "    let ended = reader^.eof;\n" + replace_exact(CALL, "eof: reader^.eof", "eof: ended", "local EOF actual"), "local EOF binding")},
-    "c2_inline_input": {"replay": record_edit(lambda body: replace_exact(
-        replace_exact(body, INPUT, "", "remove input binding"), CALL,
-        replace_exact(CALL, "input: input", "input: &reader^.bytes.inner[0_u64..held]", "inline input actual"), "inline input call"))},
-    "c3_detached_input": {"replay": record_replace(INPUT,
-        "    let diagnostic_bytes = box_array_filled::<u8>(count: held, value: 0_u8);\n"
-        "    for (copy_index in 0_u64..held) {\n"
-        "      set diagnostic_bytes.inner[copy_index] = reader^.bytes.inner[copy_index];\n"
-        "    }\n"
-        "    let input = &diagnostic_bytes.inner[0_u64..held];\n", "detach input backing")},
-    "c4_syntax_alias": {"replay": record_replace(CALL, "    let syntax_ref = &reader^.syntax;\n" + replace_exact(CALL, "syntax: &reader^.syntax", "syntax: syntax_ref", "alias syntax actual"), "alias syntax binding")},
-    "c5_detached_syntax": {"replay": record_replace(CALL,
-        "    let local_syntax = aof_syntax_new(position: 0_u64, valid: 0_u64);\n"
-        "    swap(first: &local_syntax, second: &reader^.syntax);\n" +
-        replace_exact(CALL, "syntax: &reader^.syntax", "syntax: &local_syntax", "detached syntax actual") +
-        "    swap(first: &local_syntax, second: &reader^.syntax);\n", "detach syntax backing")},
-    "c6_no_fill": {"replay": record_edit(no_fill)},
-    "c7_no_fill_match": {"replay": record_replace(FILL_MATCH,
-        "      let fill_outcome = aof_fill(store: store, factory: factory, file: file, reader: reader, clock: clock, rewriting: rewriting);\n", "remove fill outcome join")},
-    "c8_reverse_header": {"replay": record_replace(HEADER,
-        "    invariant probe_bound: reader^.syntax.probe <= 5_u64,\n"
-        "    invariant header_room: reader^.syntax.line.len < 1023_u64,\n"
-        "    invariant capacity: reader^.held <= reader^.bytes.inner.len,\n"
-        "    invariant window: reader^.cursor <= reader^.held\n", "reverse invariant order")},
-    # An earlier TYPE-11 call-precondition error makes c9 inconclusive about
-    # whether the later window fact is lost; inspect the diagnostic location.
-    "c9_no_probe_header": {"replay": record_replace(
-        "    invariant header_room: reader^.syntax.line.len < 1023_u64,\n"
-        "    invariant probe_bound: reader^.syntax.probe <= 5_u64\n",
-        "    invariant header_room: reader^.syntax.line.len < 1023_u64\n", "remove probe loop clause")},
+  "v0_unchanged": {},
 }
 files = {
     "replay": "firn/persistence/replay.wf",
@@ -222,15 +176,6 @@ probe_block = """        if syntax^.index == 0_u64 {
 min2 = "        let taken = imin(available, syntax^.remaining);\n        let next = at + taken;\n"
 min2_if = "        let taken = available;\n        if syntax^.remaining < available {\n          set taken = syntax^.remaining;\n        }\n        let next = at + taken;\n"
 scanner_edits = {
-    "k1_no_probe_copy": lambda s: s.replace(probe_block, ""),
-    "k2_explicit_min_phase2": lambda s: s.replace(min2, min2_if),
-    "k3_no_copy_loop_keep_probe": lambda s: s.replace("""          for (index in 0_u64..count) {
-            let source = at + index;
-            let target = syntax^.probe + index;
-            set syntax^.word[target] = input^[source];
-          }
-""", ""),
-    "k4_next_after_copy": lambda s: s.replace(min2, "        let taken = imin(available, syntax^.remaining);\n").replace("        set at = next;\n        continue @scan;", "        set at = at + taken;\n        continue @scan;", 1),
     "s1_scanner_sorts_first": lambda s: s,
 }
 
