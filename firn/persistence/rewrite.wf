@@ -886,7 +886,7 @@ fn aof_rw_discard(store: &Keyspace, clock: &Clock) -> result: unit reads(store),
 }
 
 fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pending: &Box<Slots<u8>>) -> drained: Bool reads(store), writes(factory), writes(file), writes(pending) waits {
-  doc "Redis 7.0.15 aof.c:1146-1230: roll back a failed partial append to its pre-flush incremental length. Successful rollback retains every byte; failed rollback accounts the accepted prefix and retains only its suffix. Keep the real terminal IoError and partial flag: MISCONF describes a zero-progress append's error, and a partial append's ENOSPC text awaits firn-req-enospc-text. Only a complete nonempty append clears append failure.";
+  doc "Redis 7.0.15 aof.c:1146-1230: roll back a failed partial append to its pre-flush incremental length. Successful rollback retains every byte; failed rollback accounts the accepted prefix and retains only its suffix. Keep the real terminal IoError and partial flag: MISCONF describes a zero-progress append's error, and a partial append is described as ENOSPC by its class. Only a complete nonempty append clears append failure.";
   let length = pending^.inner.len;
   if length == 0_u64 {
     return True();

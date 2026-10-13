@@ -502,9 +502,9 @@ host's description of the error, `strerror`'s C-locale text on Linux, such as
 (`server.c:3881-3905,4324-4355`). A failed append is described when nothing
 of it was written; otherwise the sync error is. After a short write Redis
 reports `No space left on device` whatever the host returned
-(`aof.c:1163-1184`); firn leaves that suffix empty until Whitefoot can name
-the host's ENOSPC (board item `firn-req-enospc-text`), as it does when the
-host cannot describe an error.
+(`aof.c:1163-1184`); firn describes the short write by the host's text for the
+no-space class, which leaves the suffix empty only when the host cannot
+describe an error.
 The command that exposed the failure can already have succeeded, since replies
 do not wait for everysec durability. Partial appends attempt rollback to the
 pre-flush incremental size, retaining all bytes on successful rollback and only
