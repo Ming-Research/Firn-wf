@@ -106,6 +106,13 @@ trying an unmerged Whitefoot change, upgrading Whitefoot and recording a
 Whitefoot gap; a change to them is made in
 [Whitefoot-kit](https://github.com/Ming-Research/Whitefoot-kit).
 
+Before writing Whitefoot code, read the kit's
+[README.md](whitefoot-kit/README.md) and its writing guide
+[docs/writing.md](whitefoot-kit/docs/writing.md). Where the guide does not
+cover a form, or a compiler diagnostic does not lead to the accepted form,
+file a request into Whitefoot-kit on the status board with the source
+written, the compiler output and the form finally accepted.
+
 ## Reports
 
 A completion report also names any `whitefoot.pin` or submodule moved and any
