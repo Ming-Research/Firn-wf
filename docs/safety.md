@@ -48,8 +48,11 @@ and [Firn's engine and attempts](../firn/scripting/entry.wf#L84).
 [`research/experiments/safety-witnesses/`][witnesses]: **10 rejected/accepted
 pairs** for four lifetime faults, two bounds faults, two data races and two
 hold-and-wait forms. Its gate checks the expected rejection rule/location and
-builds each accepted correction. The [recorded passing run][witness-run] used
-Whitefoot `d75f318d5631`, an earlier pin; accepted executables were **not run**.
+builds each accepted correction. The [recorded passing run][witness-run]
+executed head `380cf742`; the later commit `a3253ee` (the linked tree) changed
+only a comment in one accepted witness and the experiment README, and gate run
+38424251158 passed on `a3253ee`. That run used Whitefoot `d75f318d5631`, an
+earlier pin; accepted executables were **not run**.
 These are specific source-admission examples, not a complete proof of Firn or
 of the current compiler/runtime. The rules above are cited at Firn's current
 pin.
@@ -153,7 +156,7 @@ No line counts are assigned to these external tools/libraries or the OS.
 [effects]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1616-L1635
 [errors]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1638-L1658
 [parallel]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2168-L2261
-[wait]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2270-L2290
+[wait]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2268-L2287
 [shared]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2321-L2360
 [host]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2363-L3216
 [tcb]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/README.md#L52-L56

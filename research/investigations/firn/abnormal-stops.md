@@ -249,19 +249,12 @@ comparison separately records **947** lines versus **659**, for two explicitly
 named historical revisions ([PRIOR-BUNDLE.md:52–58][compute-census]); those
 are not whole-TCB counts either.
 
-To obtain the pin's current count, do not substitute all C files in the
-repository: that includes probes, tests and other platforms. Instead,
-resolve the actual target's staged and compiled runtime source set from
-[whitefootc.rs:86–190][driver] and [runtime.rs][runtime] at the pinned commit;
-count each participating `.c` and included runtime header once with
-`git show <commit>:<path> | wc -l`. State that this is physical lines including
-comments/blanks; report headers separately. `concurrent_map.c` is included
-by `keyed_table.c`, so a translation-unit-only count misses it, while counting
-preprocessed output plus original sources double-counts it
-([runtime.rs:78–85][runtime]). Record target, build flags and exact file list.
-This is a reproducible counting method, **not a measured TCB size**; generated
-LLVM, `ordinary_values.ll`, LLVM/libc and the OS remain outside a C-source
-total ([runtime.rs:4–11][runtime]).
+The measured census at the pin (file list, method, line counts and
+exclusions) is owned by [docs/safety.md](../../../docs/safety.md#trusted-base-and-source-sizes);
+this record does not repeat the numbers. Do not substitute all C files in the
+repository for it: that includes probes, tests and other platforms.
+`concurrent_map.c` is included by `keyed_table.c`, so a translation-unit-only
+count misses it ([runtime.rs:78–85][runtime]).
 
 ## 5. Gaps, uncertainty and disposition
 
@@ -293,9 +286,10 @@ total ([runtime.rs:4–11][runtime]).
   machine-site count. Redis allocation equivalence is policy-level, not a
   claim that identical inputs exhaust both implementations simultaneously.
 
-Disposition: findings remain recorded here for `firn-safety-showcase`; no existing code,
-pin, submodule, board item or approval record was changed, and no Whitefoot
-request was filed. The wf-board MCP tools were unavailable in this session.
+Disposition: the accept-error defect is board item
+`firn-accept-error-keeps-serving`, with fix PR Firn-wf#104. The
+unknown-command-in-AOF finding is a step of board item `firn-bl-01-10` (AOF
+loading rules), not yet confirmed by a run. No Whitefoot request was filed.
 
 [wf]: https://github.com/Ming-Research/Whitefoot/tree/af7665be672d29912d878dd5da8c3932bb6f296c
 [scope]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L7-L21
@@ -305,7 +299,7 @@ request was filed. The wf-board MCP tools were unavailable in this session.
 [effects]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1616-L1618
 [errors]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1638-L1658
 [programs]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1677-L1681
-[waiting]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2270-L2292
+[waiting]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2268-L2287
 [sharing]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2296-L2357
 [host]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2618-L3216
 [wf-readme]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/README.md#L26-L56
