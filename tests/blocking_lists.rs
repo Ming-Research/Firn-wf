@@ -253,6 +253,9 @@ fn blocking_lists_fractional_timeouts_require_oracle_and_whitefoot_gap_resolutio
 fn blocking_lists_waiter_pipeline_resumes_after_unblock() { run("waiter-pipeline"); }
 
 #[test]
+fn blocking_lists_completion_reuse_between_serial_waits() { run("completion-reuse"); }
+
+#[test]
 fn blocking_lists_producer_pipeline_cannot_overtake_existing_waiter() { run("producer-pipeline"); }
 
 #[test]

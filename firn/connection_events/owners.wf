@@ -326,6 +326,32 @@ fn put_record(hub: &Hub, record: Record) -> result: unit writes(hub.records) {
   return unit;
 }
 
+fn block_resume_store(hub: &Hub, id: u64, resume: BlockResume) -> result: unit writes(hub.records) {
+  match take_record(hub: hub, id: id) {
+    Some(value: record) => {
+      set record.resume = Some<BlockResume>(value: resume);
+      put_record(hub: hub, record: move record);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn block_resume_take(hub: &Hub, id: u64) -> resumed: Option<BlockResume> writes(hub.records) {
+  match take_record(hub: hub, id: id) {
+    Some(value: record) => {
+      let saved = record.resume;
+      set record.resume = None<BlockResume>();
+      put_record(hub: hub, record: move record);
+      return saved;
+    }
+    None() => {
+      return None<BlockResume>();
+    }
+  }
+}
+
 fn wake_timer(hub: &Hub) -> result: unit writes(hub.wake), writes(hub.committed) {
   let previous = std::time::cancel_source();
   swap(first: &previous, second: &hub^.wake);

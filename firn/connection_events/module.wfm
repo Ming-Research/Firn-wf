@@ -62,13 +62,16 @@ public struct RegistryCounts {
 }
 
 public struct BlockedList {
-  doc "One suspended original list command. The registration generation is never reused within fewer than 2^64 waits per process. deadline is absolute Unix milliseconds, zero for forever. Names are distinct while args preserve original order and duplicates. The command owner retains its session; client is private reply and execution scratch for a committed retry.";
+  doc "One suspended original list command. The registration generation is never reused within fewer than 2^64 waits per process. deadline is absolute Unix milliseconds, zero for forever. Names are distinct while args preserve original order and duplicates. The command owner retains its Client; this record owns only request identity, protocol and scalar execution continuation. Database identity is implicitly zero in the single-keyspace server.";
   public generation: u64;
   public deadline: u64;
   public kind: u64;
   public input: Box<Slots<u8>>;
   public args: Box<Slots<Span>>;
-  public client: Client;
+  public connection: u64;
+  public resp: u64;
+  public random: u64;
+  public seen_peak: u64;
   public names: Box<Slots<Key>>;
 }
 
@@ -85,6 +88,13 @@ public struct BlockingState {
   timed: u64;
 }
 
+public struct BlockResume {
+  doc "One completed wait's scalar continuation, committed with its reply and taken exactly once by its suspended command owner before another command. No session object or host handle crosses this completion slot.";
+  public generation: u64;
+  public random: u64;
+  public seen_peak: u64;
+}
+
 public struct Record {
   client_id: u64;
   connection: Connection;
@@ -94,6 +104,7 @@ public struct Record {
   shards: Box<Slots<Key>>;
   pending: u64;
   soft: Option<u64>;
+  resume: Option<BlockResume>;
 }
 
 public struct Delivery {
@@ -154,9 +165,11 @@ public fn block_front(hub: &Hub, key: &Key) -> id: Option<u64> reads(hub), reads
 
 public fn block_key_count(hub: &Hub, key: &Key) -> count: u64 reads(hub), reads(key) doc "Captures the FIFO retry budget for one ready key; reblocked requests cannot run twice in that pass.";
 
-public fn blocking_counts(hub: &Hub) -> counts: BlockingCounts reads(hub.blocking_state) doc "Counts live suspended clients, distinct registered source keys and finite deadlines. These list waits do not request wake-on-key-deletion, so total_blocking_keys_on_nokey is zero. The host-free observation state changes with the registrations and lets guards observe membership without reading the execution scratch's memory meter.";
+public fn blocking_counts(hub: &Hub) -> counts: BlockingCounts reads(hub.blocking_state) doc "Counts live suspended clients, distinct registered source keys and finite deadlines. These list waits do not request wake-on-key-deletion, so total_blocking_keys_on_nokey is zero. The narrow observation state changes with registrations and lets guards observe only membership and counts.";
 
-public fn block_wait(hub: &Shared<Hub>, connection: &Connection) -> live: Bool reads(hub), reads(connection) waits doc "Suspends the command owner until its committed list reply or cancellation. The independent receiver continues to observe EOF and the output owner can still deliver RESP3 pushes.";
+public fn block_complete(hub: &Hub, request: BlockedList, client: &Client, time: u64) -> result: unit writes(hub), writes(client) doc "Commits a served request's temporary reply Client and scalar continuation under the same data/hub hold as its effects. Completion is retained only while its connection record remains live, including after output pressure checks. The request is consumed; a reblocked attempt instead retains its updated scalar state. time is Unix seconds.";
+
+public fn block_wait(hub: &Shared<Hub>, connection: &Connection) -> resumed: Option<BlockResume> reads(hub), reads(connection) waits doc "Suspends the command owner until its committed list reply or cancellation, then consumes the one completion state; None means cancellation or a removed registration. The owner restores random and merges seen_peak before another command. Independent receive and output owners remain active.";
 
 public fn block_unblock(hub: &Hub, client_id: u64, failed: Bool, time: u64) -> changed: Bool writes(hub) doc "CLIENT UNBLOCK under the hub: removes all memberships and commits Redis's timeout null-array or UNBLOCKED error in the same hold before letting the command owner resume. time is Unix seconds for output accounting.";
 

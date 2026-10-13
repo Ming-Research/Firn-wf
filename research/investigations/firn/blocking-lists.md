@@ -54,12 +54,13 @@ private reply buffer; receipt order across different sockets is not promised.
 The existing pub/sub hub now owns blocked requests as well. First suspension
 promotes only that connection to independent receive, command and output
 owners. Its original command owner retains authentication, pipeline and MULTI
-state. The stored request owns arguments and a private execution/reply Client;
-it does not borrow the parser's input. The owned `blocked` flag causes only
+state and its original Client. The stored request owns arguments and a small
+execution continuation; it does not borrow the parser's input or retain a
+second Client. Actual service creates a temporary execution/reply adapter. The owned `blocked` flag causes only
 suspended command owners to perform the guarded hub wait. After completion,
-buffered pipeline commands resume without another network read, with fresh
-time and settings. A RESP3 subscriber continues receiving pushes while
-blocked; RESP2 subscriber admission retains Redis's existing command ban.
+buffered pipeline commands resume without another network read, restoring
+updated random/peak state before parsing, with fresh time and settings. A
+RESP3 subscriber continues receiving pushes while blocked; RESP2 subscriber admission retains Redis's existing command ban.
 
 Registration removal and reply commitment are one hub statement. Timeout,
 CLIENT UNBLOCK and ready service compete for that same pending request.
@@ -69,8 +70,8 @@ a monotonically allocated u64 generation, never reused within the supported
 process bound of fewer than 2^64 waits. Finite timers use an indexed heap;
 completion removes the entry rather than retaining an abandoned deadline.
 
-A host-free projection contains only registration ids and counts for guarded
-waits; the guard never observes the stored Client's MemoryMeter handle.
+A narrow projection contains only registration ids and counts for guarded
+waits; the guard does not observe execution scratch or completion state.
 Blocked clients are exempt from configured idle timeout. Pub/sub output
 limits still depend on actual subscription membership, so blocking alone
 does not activate them. Existing independent output owners isolate slow peers.
@@ -80,6 +81,110 @@ CLIENT UNBLOCK uses the existing network-client-id index, not a registry scan.
 Its promoted requester commits the confirmation before releasing the hub,
 so the released target cannot publish ahead of that confirmation. Unlike
 PING, this control observes and changes another connection's pending state.
+
+## Request and continuation ownership
+
+The request-only design is proposed on ownership and lifetime grounds, not
+as a substitute for Whitefoot's heap support. Redis 7.2.16 keeps its client
+in place and reprocesses it (`blocked.c`, `handleClientsBlockedOnKey`,
+`unblockClientOnKey` and `processUnblockedClients`); Firn's original command
+owner likewise remains the owner of its session and parser. The previous `blocking_snapshot` was
+not a complete session copy: it created `client_new(128)` and copied id,
+registration id, protocol, random, authentication/lock flags, static settings
+and a meter share. Several copied fields were never used while serving.
+
+The following audit covers all 38 Client fields transitively reached by
+`blocking_try`, `evict_held`, access tracking, persistence refusal and reply
+commit, plus timeout/CLIENT UNBLOCK. R/W describes service use, not default
+initialization by `client_new`.
+
+| Client fields | Actual service use | Required owner and lifetime |
+|---|---|---|
+| `bytes`, `at` | R/W by reply writers, AOF error text and `reply_frame`; commit clears `at`. | Temporary serving reply workspace, copied to the hub's immutable output frame before it is released. There is no reply while pending. |
+| `now` | Fresh write; expiry/classification/access/eviction read. | Temporary service time; never the initial wait's time. |
+| `state`, `number`, `low`, `high` | R/W pop/move result, count and direction scratch. Move direction is reparsed from original argv. | Temporary serving adapter. |
+| `list_ready` | R/W successful move's readiness; drained into producer queue. | Temporary effects staging, merged before the producer hold exits. |
+| `random` | R/W eviction selection and LFU increments. | Connection execution continuation: transfer scalar to pending request, update on every retry, return to suspended owner on completion. |
+| `access_ms` | Fresh write by `prepare_access`; LRU/LFU read. | Temporary service clock snapshot. |
+| `memory_policy`, `maxmemory`, `maxmemory_samples`, `maxmemory_tenacity`, `lfu_log_factor`, `lfu_decay_time` | Fresh writes from held ServerState; eviction/access read. | Temporary current admission configuration, not copied startup configuration or the producer's possibly older per-read snapshot. |
+| `meter` | Heap observation and map-reserve release write the handle. | Temporary execution capability shared from producer; it measures the entire process, not this client. |
+| `pubsub_id` | Registry/output recipient lookup. | Pending request's connection id; existing hub Record owns lifecycle. This is not public CLIENT ID. |
+| `resp` | Reply commitment and timeout/null selection read. | Pending request's reply protocol. HELLO cannot execute on that connection until its blocked command completes. |
+| `seen_peak` | R/W finite-memory admission's monotone optimization cache. | Scalar continuation; merge with original owner's cache by maximum on completion. Authoritative peak remains Meta-owned. |
+| `unix_us` | Previously written but not read in this chain; output receives local seconds separately. | Original owner; removed the redundant temporary assignment. |
+| `id`, `authenticated`, `locked`, `settings` | Previously copied but not read. Static settings are not the mutable memory settings above. | Suspended owner; CLIENT UNBLOCK identity already lives in the existing hub client-id index. |
+| `items`, `scores`, `key_metadata`, `key_lookups`, `keys` | Not read or written by this service chain. | Original owner's general scratch. Existing Client-based bodies still require a temporary adapter whose unused scratch is default-initialized. |
+| `blocked`, `pre_command_oom`, `sub`, `psub`, `ssub`, `name`, `closing`, `since_us` | Not read or written by this service chain. | Existing owner/session and hub membership. Original `blocked` controls suspension; copied/default subscriber counters or names are not authoritative INFO data. |
+
+Supporting implementations are `commands/blocking-runtime.wf`,
+`commands/lists.wf` (pop/move), `commands/eviction.wf`,
+`commands/access.wf`, `commands/admission.wf`, `store/store.wf`
+(`access_settings`), `protocol/protocol.wf` (reply encoders) and
+`connection_events/frames.wf` (`commit`, `reply_frame`). Firn currently
+accepts only database zero (`commands/connection.wf`, SELECT), so the
+request's database is implicit. Multiple database or ACL support would
+reopen execution context requirements.
+
+Pinned Whitefoot PRE-2 and `std::process::meter_share` specify observations
+of the same execution process. Every network producer has a share from the
+startup meter; replay runs before there can be network waiters. Actual
+retry therefore obtains a short-lived share from that producer's Client,
+loads the target connection's random/peak scalars, and refreshes time and
+memory settings from the same held ServerState. It neither attributes heap
+bytes to the producer nor substitutes its random stream or cached settings.
+Eviction and persistence admission remain unchanged. The meter is not
+retained in the pending map because no service runs during that lifetime.
+
+Failed retries put updated random/peak scalars back in the same generation's
+request. Successful/error retries commit the reply and a `BlockResume`
+scalar result in the existing live connection Record under the same joint
+keys/Meta/hub hold. Timeout/UNBLOCK create a short-lived reply adapter with
+the request's protocol, identity and continuation, reuse the shared
+`reply_nil_array`/`reply_error` encoders, and commit under the hub; they do
+not run eviction or retain a meter. Pressure checks run before storing
+completion, so a removed Record is never recreated. EOF/shutdown/removal drops pending and completed
+state. The command owner atomically takes and clears its completion before
+parsing any pipeline suffix and restores random plus the maximum peak cache.
+It cannot register its next generation before that take; no asynchronous
+service retains a request after releasing the hub, so a late completion
+cannot overwrite a later wait. Pending removal and completion publication
+are invisible to other owners until the same statement exits.
+
+The previous snapshot advanced its private random state during LFU or
+eviction but dropped it on final completion; the original owner resumed its
+pre-wait stream. This violated Firn's per-connection continuation ownership,
+although no Redis PRNG parity or externally measured failure is claimed.
+The previous scratch also started peak cache at zero. Returning its maximum
+preserves the optimization without changing the authoritative Meta peak.
+
+The old suspended adapter retained a 128-byte reply window, 16 Key slots,
+16 f64 slots, 16 u64 metadata slots and deep-copied static settings alongside
+the actual connection Client. Request-only storage avoids this duplicate
+waiting-lifetime workspace. The scalar completion slot adds fixed storage to
+every promoted Record, including subscribers that never block; it adds no
+field to the ordinary connection Client. Per-attempt adapters still allocate
+general scratch on each retry and terminal timeout/UNBLOCK; this trade has
+not been timed and can change actual maxmemory observations. Completion
+continues using the shared protocol writers, as required by the
+[protocol decision](../../../design/firn/protocol-versions.md), rather than
+duplicating RESP selection and null/error bytes in the hub. Reusable adapters
+or a broad narrow-context API split are separate future choices requiring evidence. Ordinary GET/SET
+handlers and shared targets remain untouched; they do not inspect pending
+requests or completion slots.
+
+`completion-reuse` in the network oracle fixture pipelines a successful
+BLPOP, a second wait canceled by CLIENT UNBLOCK ERROR, and PING, then starts
+a third successful wait on the same connection. One and four drivers check
+serial completion handoff, reply-before-pipeline order and a fresh wait that
+stays pending until its own push. Missing or misrouted completion can close
+or prematurely resume the owner, skip a reply, or emit output before the next
+push. Exactly-once slot clearing is established by source inspection; the
+case alone cannot detect omission of clearing on take because registration
+also clears any stale completion. This is coverage for the new handoff
+protocol, not a claimed failure on the old implementation's private PRNG
+loss; no deterministic network PRNG probe or test-specific execution path is
+introduced. Runtime random-continuation evidence remains unverified. All
+fixed bytes remain ORACLE-pending until Redis 7.2.16 CI recording.
 
 ## Admission cost
 
@@ -183,18 +288,18 @@ server builds, then code generation reports
 `TargetLayout(Unrepresentable(RuntimeSizedAllocation))` without a source
 location. The pub/sub base `6b3bc20` builds. No compiler ran locally.
 
-The strongest source-derived culprit is the new
+The source-derived culprit in that revision was
 `hash_map_new::<u64, BlockedList, extent>` in `connection_events/owners.wf`.
-Its bucket is `HashMapSlot<u64, BlockedList>`, which stores the blocked
-request's entire Client, including `Option<std::process::MemoryMeter>`.
+In that revision its bucket was `HashMapSlot<u64, BlockedList>`, storing a
+second execution Client, including `Option<std::process::MemoryMeter>`.
 The pinned compiler represents an opaque host value as 32 bytes aligned to
 16 (`compiler/src/target.rs:1730–1734`); enum and struct layout retain the
 largest field alignment. The standard HashMap allocates its buckets with
 `box_slots_new`, so the bucket's 16-byte alignment reaches
 `runtime_capacity_layout`. The x86-64 Linux target declares ordinary heap
 alignment of only 8 (`target.rs:99–105`); its check at 1248–1251 produces
-exactly the reported failure. The base Client already contains the meter,
-but the new registry places that Client in ordinary heap element storage.
+exactly the reported failure. The base Client already contained the meter,
+but that revision's new registry put the Client in ordinary heap element storage.
 The error label names an allocation category; the specific problem here is
 alignment, not a value whose size is unknown where fixed storage is required.
 
@@ -225,14 +330,19 @@ is not an inline allocation bound, and the base already uses that ceiling.
 Other new ordinary heap elements (keys, spans, ids and deadline records) have
 alignment at most 8. Adding WallClock changes Keyspace's inline alignment,
 but does not introduce another new ordinary heap element allocation in this
-diff. These exclusions and the culprit are static deductions; witness CI
-must confirm the isolated failures.
+diff. These exclusions and attribution were initially static deductions. The owner
+subsequently supplied [witness CI run 38455091065](https://github.com/Ming-Research/Firn-wf/actions/runs/38455091065):
+all six witnesses checked successfully; MemoryMeter in Box, nonempty/empty
+Slots and HashMap failed code generation with RuntimeSizedAllocation, while
+by-value MemoryMeter and u64 Slots compiled. The owner filed
+`firn-req-heap-overaligned` at P0; Firn does not claim to fix that legal-form
+support gap by choosing different ownership.
 
 The following minimal instruments live under
 `research/experiments/blocking-lists/` and are compiled, never executed, by
 the temporary `blocking-layout-witness.yml` workflow:
 
-| Witness | Prediction from the pin, not an executed result |
+| Witness | Owner-supplied result from run 38455091065 |
 |---|---|
 | `u64-slots-control.wf` | Source check and code generation succeed. |
 | `memory-meter-value-control.wf` | By-value Option<MemoryMeter> succeeds without an ordinary heap allocation. |
@@ -248,7 +358,11 @@ the diagnostic spelling; local investigation read the exact pinned Git
 commit because no downloaded release language directory was present.
 Expected failures keep the temporary job red after all attempts; this job is
 an instrument for filing and verifying the Whitefoot gap, not compatibility
-acceptance. Remove it before the branch is marked ready. Retain the witnesses
-until their corresponding Whitefoot regression coverage and Firn build have
-verified the fix. No production code, design decision or pin changes for this
-investigation.
+acceptance. It stays until the gap is resolved or Firn's independently chosen
+ownership design no longer needs the unsupported allocation. Keep it during
+this request-only change until CI qualifies the resulting server. The six
+witnesses stay as evidence for the Whitefoot request even if this server no
+longer needs heap-resident meter storage. The earlier layout investigation
+changed no production representation or pin; the separate proposed ownership
+change above is grounded in request/session lifetimes and scalar continuity,
+not target qualification. No compiler was run locally.

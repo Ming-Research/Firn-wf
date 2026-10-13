@@ -103,12 +103,13 @@ fn block_deadline_remove(hub: &Hub, id: u64, generation: u64) -> result: unit wr
 }
 
 fn block_install(hub: &Hub, request: BlockedList) -> result: unit writes(hub) {
-  let id = request.client.pubsub_id;
+  let id = request.connection;
   let registered = connection_live(hub: hub, id: id);
   if bnot(registered) {
     return unit;
   }
   let previous = block_take(hub: hub, id: id);
+  let stale_resume = block_resume_take(hub: hub, id: id);
   if request.generation == 0_u64 {
     set request.generation = hub^.next_wait;
     set hub^.next_wait = hub^.next_wait +wrap 1_u64;
@@ -203,25 +204,41 @@ fn block_wait_ready(hub: &Hub, id: u64, cancelled: Bool) -> ready: Bool reads(hu
   return bor(completed, stopping);
 }
 
-fn block_wait(hub: &Shared<Hub>, connection: &Connection) -> live: Bool reads(hub), reads(connection) waits {
+fn block_complete(hub: &Hub, request: BlockedList, client: &Client, time: u64) -> result: unit writes(hub), writes(client) {
+  let id = request.connection;
+  let resume = BlockResume(generation: request.generation, random: client^.random, seen_peak: client^.seen_peak);
+  let stage = stage_new();
+  commit(hub: hub, client: client, stage: &stage, time: time);
+  block_resume_store(hub: hub, id: id, resume: resume);
+  return unit;
+}
+
+fn block_wait(hub: &Shared<Hub>, connection: &Connection) -> resumed: Option<BlockResume> reads(hub), reads(connection) waits {
   let watch = std::time::cancel_watch(source: &connection^.stop);
   let cancelled = std::time::cancel_state(watch: &watch);
   atomic held = &hub^, stopped = &cancelled when block_wait_ready(hub: held, id: connection^.id, cancelled: stopped^.fired) {
-    let registered = connection_live(hub: held, id: connection^.id);
-    let running = bnot(stopped^.fired);
-    return band(registered, running);
+    if stopped^.fired {
+      return None<BlockResume>();
+    }
+    if held^.stopping {
+      return None<BlockResume>();
+    }
+    return block_resume_take(hub: held, id: connection^.id);
   }
 }
 
 fn block_reply(hub: &Hub, request: BlockedList, failed: Bool, time: u64) -> result: unit writes(hub) {
-  let BlockedList(client: client, ..) = move request;
+  let client = pkg::protocol::client_new(capacity: 128_u64);
+  set client.pubsub_id = request.connection;
+  set client.resp = request.resp;
+  set client.random = request.random;
+  set client.seen_peak = request.seen_peak;
   if failed {
     pkg::protocol::reply_error(client: &client, word: &unblock_error[0_u64..45_u64]);
   } else {
     pkg::protocol::reply_nil_array(client: &client);
   }
-  let stage = stage_new();
-  commit(hub: hub, client: &client, stage: &stage, time: time);
+  block_complete(hub: hub, request: move request, client: &client, time: time);
   return unit;
 }
 
