@@ -2,7 +2,9 @@
 
 These ten pairs are original, small transcriptions of faulty patterns reported
 in Redis-family servers: four use-after-free cases, two buffer overruns, two
-data races and two lock/wait deadlocks. They implement board item
+data races and two hold-and-wait forms behind reported deadlocks (Whitefoot
+cannot express the original lock protocols, so these pairs show that their
+closest forms are rejected). They implement board item
 `firn-safety-showcase`'s bug witnesses. No upstream implementation is copied.
 They do not change firn or reproduce complete server commands.
 
@@ -86,9 +88,10 @@ from integer overflow; two deleted entries with COUNT one suffice to expose
 the error. The fixed version's loop invariants prove the shared limit without
 discarding deleted IDs solely to appease the checker.
 
-The ZTTL example represents one expiring sorted-set member and follows the
-bug description supplied for this task; the PR page could not be retrieved
-in this session. `SharedRead` represents read authority, not an implementation
+The ZTTL example represents one expiring sorted-set member. Garnet #1642
+describes the fault: ZTTL reads through Tsavorite's shared-lock Read path,
+and the sorted-set layer then deletes expired members, mutating the shared
+structure under that shared lock. `SharedRead` represents read authority, not an implementation
 promise that Whitefoot uses a reader/writer lock. The script-timeout example
 has no timing assertion: either flag value can be observed legally after
 the repair, but a reference into the parent cannot be passed to a spawn.
@@ -166,8 +169,7 @@ invocation logs already written and cannot count as completed coverage.
 The runner removes an earlier JSON report before starting new attempts, so
 interruption cannot leave that report appearing to describe the current run.
 Each completed invocation reports its elapsed time.
-The first pair is the smallest sample before subsequent pairs run; these
-times describe validation cost, not server performance.
+These times describe validation cost, not server performance.
 
 After CI, cite its exact revision and artifact when reporting verified
 coverage. If the natural faulty form compiles, keep its minimal source and
