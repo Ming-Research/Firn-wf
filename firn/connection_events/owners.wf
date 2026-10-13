@@ -261,6 +261,7 @@ fn dispatch(hub: Shared<Hub>) -> result: unit pure waits {
           Send(connection: target, frame: bytes) => {
             atomic inbox = &target.output {
               if inbox^.closed {
+                let dropped = move bytes;
               } else {
                 queue_push::<Frame>(queue: &inbox^.frames, value: move bytes);
               }
