@@ -529,8 +529,10 @@ collecting bytes plus bytes retained by the writer, excluding already appended
 bytes awaiting sync (`server.c:5596-5650`). `aof_pending_bio_fsync` and
 `aof_delayed_fsync` are zero: firn's sole writer performs sync itself, with no
 background BIO queue or append postponement behind a background sync. The firn-only field
-`firn_aof_rewrite_commit_seq` is the actual dataset statement sequence, also when
-AOF is disabled, following the [reported-facts rule](../design/firn/reported-facts.md).
+`firn_aof_rewrite_commit_seq` is the actual dataset statement sequence while
+AOF is enabled. With AOF disabled a command that queues no expiry holds only
+its keys and takes no sequence, so the field is left out, following the
+[reported-facts rule](../design/firn/reported-facts.md).
 It starts at zero after loading, advances once for an atomic statement that
 changes the dataset, and is shared by every write in an `EXEC` or script
 attempt. Expiry and eviction removals count; reads and access refreshes do

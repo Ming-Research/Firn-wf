@@ -8,6 +8,7 @@ mod aof_write_errors;
 mod aof_sync_fault;
 mod rewrite_sequence;
 mod rewrite_scan;
+mod write_meta;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -7463,7 +7464,8 @@ fn firn_script_declared_names_and_global_fallback_preserve_replies() {
     let program = CompiledProgram::from_environment();
     let port = free_port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
+    // AOF on: the rewrite sequence the fallback checks read is reported only while a file is kept.
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"declared-names.aof"]);
     let mut client = connect_when_ready(port);
     let names = "local a,b,c=KEYS[1],KEYS[2],KEYS[3]; KEYS[1]='outside'; \
         redis.call('INCR',a); redis.call('INCR',b); redis.call('INCR',c); \
