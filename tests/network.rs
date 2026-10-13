@@ -210,7 +210,8 @@ fn whole_reply(stream: &mut TcpStream, what: &str) -> String {
 #[cfg(target_os = "linux")]
 #[test]
 fn whole_reply_consumes_resp3_children_before_the_next_reply() {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind reader fixture");
+    let port_lease = support::lease_port();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port_lease.port())).expect("bind reader fixture");
     let mut reader = bounded_stream(TcpStream::connect(listener.local_addr().unwrap()).unwrap());
     let (mut writer, _) = listener.accept().expect("accept reader fixture");
     let first = "%2\r\n$6\r\nserver\r\n$5\r\nredis\r\n+data\r\n*3\r\n=7\r\ntxt:one\r\n~2\r\n:1\r\n_\r\n!3\r\nERR\r\n";
