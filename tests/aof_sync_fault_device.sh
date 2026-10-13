@@ -5,7 +5,7 @@
 # `setup` before the cases and `teardown` after them, whatever they did.
 #
 # usage: aof_sync_fault_device.sh setup MOUNT OWNER
-#        aof_sync_fault_device.sh fail | heal | remount | reset
+#        aof_sync_fault_device.sh fail | heal | remount | reset | fill | unfill
 #        aof_sync_fault_device.sh check-writeback MOUNT
 #        aof_sync_fault_device.sh teardown MOUNT
 #
@@ -30,6 +30,10 @@
 #            mount, give the mount to the OWNER `setup` was given), so that
 #            a case whose metadata was lost cannot break the next; each case
 #            calls it before it starts
+#   fill     allocates the remaining blocks to a disposable file until the
+#            kernel returns ENOSPC; the rewrite cases stop the rewrite worker
+#            first, then observe ENOSPC on its temporary file after resuming
+#   unfill   removes that file, leaving the server's files alone
 #   check-writeback MOUNT
 #            the self-check of the writeback setting: creates a file on
 #            MOUNT, fails the device for 40 s with no fsync, heals, remounts
@@ -148,6 +152,36 @@ reset() {
     mkfs.ext4 -q -F -O ^has_journal "$device"
     mount -o errors=continue "$device" "$target"
     chown "$owner" "$target"
+}
+
+# Real allocation, not a sparse file or RLIMIT_FSIZE (which returns EFBIG).
+# Keep the allocation durable so a later remount tests the server's files,
+# without a filesystem-wide write failure losing unrelated metadata.
+fill() {
+    python3 -I - "$(mount_point)/rewrite-fault-filler" <<'EOF'
+import errno, os, sys
+
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+offset = 0
+try:
+    for chunk in (1024 * 1024, 4096):
+        while True:
+            try:
+                os.posix_fallocate(fd, offset, chunk)
+                offset += chunk
+            except OSError as error:
+                if error.errno != errno.ENOSPC:
+                    raise
+                break
+    os.fsync(fd)
+    print(f"rewrite-fault fill: allocated {offset} bytes; final allocation failed with ENOSPC")
+finally:
+    os.close(fd)
+EOF
+}
+
+unfill() {
+    rm -f "$(mount_point)/rewrite-fault-filler"
 }
 
 # Shows that no periodic writeback reaches the failing device: a file made
@@ -297,6 +331,8 @@ case $action in
     heal) [ $# -eq 0 ] || usage; heal ;;
     remount) [ $# -eq 0 ] || usage; remount ;;
     reset) [ $# -eq 0 ] || usage; reset ;;
+    fill) [ $# -eq 0 ] || usage; fill ;;
+    unfill) [ $# -eq 0 ] || usage; unfill ;;
     check-writeback) [ $# -eq 1 ] || usage; check_writeback "$1" ;;
     teardown) [ $# -eq 1 ] || usage; teardown "$1" ;;
     *) usage ;;
