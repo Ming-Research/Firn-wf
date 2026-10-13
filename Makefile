@@ -60,7 +60,9 @@ $(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 	$(WHITEFOOTC) --par --par-call-grain off --graph $(FIRN_GRAPH) --entry firn --cache $(BUILD)/firn-test-cache -o $@
 
 test: firn-test
-	FIRN=$(BUILD)/firn-test cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked
+	@redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) && \
+	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
+	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked
 
 # Redis's released suite runs against the cached server build, split into
 # shards that run side by side and merge into one run. Every listed pass must

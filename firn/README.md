@@ -626,6 +626,63 @@ See the [reconciled-scan protocol](../research/investigations/aof-rewrite/scan-l
 `WF_DRIVERS` sets how many threads serve the connections, one per CPU by
 default.
 
+## Moving data from Redis
+
+The migration cases in `tests/migration.rs` cover Redis **7.2.16** and firn's
+five supported types in **database 0 only**. Their results are pending CI
+([method and limits](../research/investigations/firn/migration.md)). firn
+has no other databases, streams, RDB reader, `MIGRATE`, `DUMP` or `RESTORE`.
+Do not import an AOF containing other databases or unsupported types.
+
+For a planned cutover, use the command-only AOF path. Configure the source
+Redis with these settings before generating the file:
+
+```conf
+appendonly yes
+aof-use-rdb-preamble no
+appenddirname appendonlydir
+appendfilename appendonly.aof
+```
+
+1. Pause application writes. Send `BGREWRITEAOF` and poll `INFO persistence`
+   until `aof_rewrite_in_progress:0` and `aof_last_bgrewrite_status:ok`.
+2. Stop Redis cleanly with `SHUTDOWN NOSAVE`, which flushes its AOF. Copy
+   its complete `appendonlydir` (the manifest, base `.aof` and all incremental
+   files) into a fresh firn working directory. Keep filenames unchanged and
+   retain the source copy for rollback; copying a directory while Redis is
+   writing or replacing its manifest is not a consistent snapshot.
+3. Start firn from that working directory with the matching prefix:
+
+   ```sh
+   /absolute/path/to/firn --port 6380 --appendonly yes --appendfilename appendonly.aof
+   ```
+
+4. Compare the database 0 key sets, `TYPE`, and complete values using `GET`,
+   `LRANGE key 0 -1`, `HGETALL`, `SMEMBERS` and
+   `ZRANGE key 0 -1 WITHSCORES`. Compare hash field/value pairs and set members
+   without relying on their iteration order. Check `PTTL` for every key:
+   permanent keys stay at `-1`, and expiring keys retain their absolute
+   deadlines, so time spent copying consumes their TTL. Resume clients on
+   firn only after checking the imported data.
+
+An alternative copies between two running servers using a client. The test
+helper enumerates database 0 with `SCAN`, reads each key's `TYPE` and full
+value with the commands above, then writes it with `SET`, `RPUSH`, `HSET`,
+`SADD` or `ZADD`. It samples `PTTL` before copying each key, subtracts the
+elapsed copy time and uses `PEXPIRE` for a positive remainder. The destination
+must be empty and application writes must remain paused: SCAN and the
+per-type reads do not provide a snapshot of concurrent changes. The helper
+is a test implementation, not a shipped migration utility. A production
+client would also need to handle keys expiring during transfer, retries and
+partial copies before allowing a cutover.
+
+Both cases compare exact value bytes and require firn's sampled remaining
+TTL to be no greater than Redis's, with loss bounded by the elapsed time
+between the two `PTTL` reads plus 250 ms. Sorted-set score text still has the
+known Redis 7.2 discrepancy noted above (for example, `0.1`); the cases cover
+tied, negative and infinite scores but do not establish exact reply-text
+compatibility for every floating-point score.
+
 ## Layout
 
 `modules.wfg` registers the modules, each a directory:

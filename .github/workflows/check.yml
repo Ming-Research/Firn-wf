@@ -89,6 +89,8 @@ jobs:
     name: network tests
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,6 +109,25 @@ jobs:
 
       - name: Select the Rust toolchain
         run: rustup default stable && cargo --version
+
+      # The migration cases need the same pinned oracle as aof-sync-fault;
+      # make test also resolves it through reference.sh outside this workflow.
+      - name: Restore the Redis build
+        id: redis-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build the reference Redis, the migration oracle
+        run: tests/redis-suite/reference.sh
+
+      - name: Save the Redis build
+        if: ${{ steps.redis-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
       - name: Build firn for the network cases and run them
         run: make test
