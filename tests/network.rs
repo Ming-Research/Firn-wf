@@ -4613,7 +4613,7 @@ fn firn_keeps_a_script_error_reply_on_one_line() {
 /// keys-argv-writable, removed-globals, error-message-newline,
 /// set-repl-no-argument, redis-version) and its table of double texts,
 /// deps/halo-wf/research/experiments/redis-double-text/redis-7.2.16.tsv, for
-/// 2^62, the double after it, 1e23, -0 and -inf; the RESP3 doubles follow
+/// 2^62, the double after it, their negatives, 1e23, -0 and -inf; the RESP3 doubles follow
 /// addReplyDouble in Redis 7.2.16's networking.c, and set_repl's flag error
 /// its luaRedisSetReplCommand in script_lua.c.
 #[cfg(target_os = "linux")]
@@ -4628,7 +4628,7 @@ fn firn_runs_scripts_as_redis_7_2_16_does() {
     for request in [
         vec![
             "EVAL",
-            "local z=0 local v={0.1,1/3,1e17,2^62,2^62+1024,2^63,-z,5e-324,1e-7,1e23,1e100,0/0,1/0,-1/0} local o={} for i=1,#v do o[i]=redis.call('ECHO',v[i]) end return o",
+            "local z=0 local v={0.1,1/3,1e17,2^62,2^62+1024,-2^62,-2^62-1024,2^63,-z,5e-324,1e-7,1e23,1e100,0/0,1/0,-1/0} local o={} for i=1,#v do o[i]=redis.call('ECHO',v[i]) end return o",
             "0",
         ],
         vec![
@@ -4640,7 +4640,7 @@ fn firn_runs_scripts_as_redis_7_2_16_does() {
         vec!["GET", "n"],
         vec![
             "EVAL",
-            "local z=0 return {{double=0.1},{double=1/3},{double=1e17},{double=2^62},{double=2^62+1024},{double=2^63},{double=-z},{double=1e-7},{double=1e23},{double=0/0},{double=1/0},{double=-1/0},{double=3}}",
+            "local z=0 return {{double=0.1},{double=1/3},{double=1e17},{double=2^62},{double=2^62+1024},{double=-2^62},{double=-2^62-1024},{double=2^63},{double=-z},{double=1e-7},{double=1e23},{double=0/0},{double=1/0},{double=-1/0},{double=3}}",
             "0",
         ],
         vec![
@@ -4687,6 +4687,16 @@ fn firn_runs_scripts_as_redis_7_2_16_does() {
         ],
         vec![
             "EVAL",
+            "local ok,e=pcall(redis.set_repl,redis.REPL_SLAVE) return e",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local ok,e=pcall(redis.set_repl,redis.REPL_REPLICA) return e",
+            "0",
+        ],
+        vec![
+            "EVAL",
             "return {redis.REDIS_VERSION,redis.REDIS_VERSION_NUM,type(redis.REDIS_VERSION),type(redis.REDIS_VERSION_NUM)}",
             "0",
         ],
@@ -4723,6 +4733,8 @@ fn firn_runs_scripts_as_redis_7_2_16_does() {
         "100000000000000000",
         "4611686018427387904",
         "4611686018427389000",
+        "-4611686018427387904",
+        "-4611686018427389000",
         "9223372036854776000",
         "0",
         "5e-324",
@@ -4741,6 +4753,8 @@ fn firn_runs_scripts_as_redis_7_2_16_does() {
         "100000000000000000",
         "4611686018427387904",
         "4611686018427389000",
+        "-4611686018427387904",
+        "-4611686018427389000",
         "9223372036854776000",
         "-0",
         "1e-7",
@@ -4787,9 +4801,11 @@ fn firn_runs_scripts_as_redis_7_2_16_does() {
         "ERR Invalid replication flags. Use REPL_AOF, REPL_REPLICA, REPL_ALL or REPL_NONE.",
     ));
     expected.push_str("*5\r\n:0\r\n:1\r\n:2\r\n:2\r\n:3\r\n");
-    expected.push_str(&bulk(
-        "ERR firn does not support redis.set_repl flags without REPL_AOF",
-    ));
+    for _ in 0..3 {
+        expected.push_str(&bulk(
+            "ERR firn does not support redis.set_repl flags without REPL_AOF",
+        ));
+    }
     expected.push_str("*4\r\n$6\r\n7.2.16\r\n:459280\r\n$6\r\nstring\r\n$6\r\nnumber\r\n");
     expected.push_str(hello3);
     expected.push_str("*5\r\n,0.1\r\n,nan\r\n,-0\r\n,4611686018427387904\r\n,-inf\r\n");

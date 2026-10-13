@@ -6,7 +6,7 @@ alias Engine = halo::embed::Engine;
 alias Span = pkg::protocol::Span;
 
 fn install_host(engine: &Engine) -> r: unit writes(engine) {
-  doc "Installs the redis table Redis 7.2.16's scriptingInit and luaRegisterRedisAPI (script_lua.c) give scripts, the functions firn implements, the log levels, the replication flags and the version Redis reports, then protects the environment (see protect).";
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Installs the redis table Redis 7.2.16's scriptingInit and luaRegisterRedisAPI (script_lua.c) give scripts, the functions firn implements, the log levels, the replication flags and the version Redis reports, then protects the environment (see protect).";
   let vm = &engine^.vm;
   let redis = halo::heap::new_table(heap: &vm^.heap, asize: 0_u32, hsize: 32_u32);
   let k_4096 = literal(vm: vm, text: &env_text_0[0_u64..4_u64]);
@@ -67,6 +67,7 @@ fn install_host(engine: &Engine) -> r: unit writes(engine) {
 }
 
 fn push_value(out: &Box<Slots<Value>>, value: Value) -> r: unit writes(out) {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Appends value to out, doubling its capacity first when it is full.";
   let cap = out^.inner.cap;
   if out^.inner.len == cap {
     let twice = cap +sat cap;
@@ -82,7 +83,7 @@ fn push_value(out: &Box<Slots<Value>>, value: Value) -> r: unit writes(out) {
 }
 
 fn protect_reachable(engine: &Engine, root: Value, seen: Value) -> r: unit writes(engine) {
-  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Marks root and every table reachable from it through table values and metatables read-only, through Halo's embedding interface, as Redis 7.2.16's luaSetTableProtectionRecursively (script_lua.c) does. Each table is expanded once, after it is recorded in seen, a host table whose keys are the tables already marked, which ends cycles such as _G._G and is shared between walks. Keys are not followed, as Redis follows only values. set_read_only and table_set refuse only a table that is not live, which a table just reached through table_next is, so their results are not inspected.";
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Marks root and every table reachable from it through table values and metatables read-only, through Halo's embedding interface, as Redis 7.2.16's luaSetTableProtectionRecursively (script_lua.c) does. Each table is expanded once, after it is recorded in seen, a host table whose keys are the tables already marked, which ends cycles such as _G._G and is shared between walks. Keys are not followed, as Redis follows only values. Each table's traversal records the keys table_next returned in a fresh host table and stops at the first repeat, so the walk ends after at most one step per stored key even when a table's hash invariants are broken, as when the collector has freed a key still in use, which table_next's contract does not exclude; the walk has no way to report the repeat, and the table is left with its values unvisited. set_read_only and table_set refuse only a table that is not live, which a table just reached through table_next is, so their results are not inspected.";
   let pending = box_slots_new::<Value>(capacity: 16_u64);
   push_value(out: &pending, value: root);
   let yes = Value::True();
@@ -98,6 +99,7 @@ fn protect_reachable(engine: &Engine, root: Value, seen: Value) -> r: unit write
     let recorded = halo::embed::table_set(engine: engine, table: seen, key: t, value: yes);
     let marked_read_only = halo::embed::set_read_only(engine: engine, table: t);
     let key = Value::Nil();
+    let returned = halo::embed::new_table(engine: engine, asize: 0_u32, hsize: 0_u32);
     loop {
       match halo::embed::table_next(engine: engine, table: t, key: key) {
         Err(..) => {
@@ -110,6 +112,11 @@ fn protect_reachable(engine: &Engine, root: Value, seen: Value) -> r: unit write
             }
             Some(value: pair) => {
               set key = pair.key;
+              let repeated = halo::embed::table_get(engine: engine, table: returned, key: key);
+              if halo::embed::truthy(value: repeated) {
+                break;
+              }
+              let returned_now = halo::embed::table_set(engine: engine, table: returned, key: key, value: yes);
               let tag = halo::embed::kind(value: pair.val);
               if tag == 4_u8 {
                 push_value(out: &pending, value: pair.val);
@@ -129,7 +136,7 @@ fn protect_reachable(engine: &Engine, root: Value, seen: Value) -> r: unit write
 }
 
 fn protect(engine: &Engine) -> r: unit writes(engine) {
-  doc "Protects the script environment as Redis 7.2.16's scriptingInit does (CVE-2025-46818 included), through Halo's embedding interface: the globals get a metatable whose __index raises Redis's error for an undeclared name, then the globals and every table reachable from them, metatables included, become read-only, then so do the metatables of the basic types, of which only strings have one, and the tables reachable from them. Runs once, when the engine is made and before any script has set KEYS or ARGV, which prepare installs afresh for each call through set_global, so they stay writable as in Redis.";
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Protects the script environment as Redis 7.2.16's scriptingInit does (CVE-2025-46818 included), through Halo's embedding interface: the globals get a metatable whose __index raises Redis's error for an undeclared name, then the globals and every table reachable from them, metatables included, become read-only, then so do the metatables of the basic types, of which only strings have one, and the tables reachable from them. Runs once, when the engine is made and before any script has set KEYS or ARGV, which prepare installs afresh for each call through set_global, so they stay writable as in Redis.";
   let rejecting = halo::embed::new_table(engine: engine, asize: 0_u32, hsize: 1_u32);
   let index = halo::embed::intern(engine: engine, bytes: &env_text_12[0_u64..7_u64]);
   let callback = Value::Builtin(id: 4101_u32);

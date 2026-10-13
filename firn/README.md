@@ -45,8 +45,9 @@ clients send on their own:
   `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count, `ZREMRANGEBYRANK`,
   `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores read as Redis reads
   them and written as Redis 7.0.15 writes them, in C's `%.17g`, which
-  differs from the shortest form of Redis 7.2.16 for some values, such as
-  0.1 (board item firn-score-text-72);
+  differs from Redis 7.2.16's text, which comes from Grisu2 (`fpconv_dtoa`)
+  without an exact fallback and so is not always the shortest, for some
+  values, such as 0.1 (board item firn-score-text-72);
 - scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
   `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
   has written nothing, running Lua 5.1 scripts on the Halo engine
