@@ -116,7 +116,8 @@ fn aof_syntax_next(syntax: &AofSyntax, input: &[u8], start: u64, end: u64, eof: 
   loop @scan (
     invariant lower: at >= start,
     invariant upper: at <= end,
-    invariant header_room: syntax^.line.len < 1023_u64
+    invariant header_room: syntax^.line.len < 1023_u64,
+    invariant probe_bound: syntax^.probe <= 5_u64
   ) {
     if syntax^.phase == 2_u64 {
       if syntax^.remaining == 0_u64 {

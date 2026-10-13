@@ -45,7 +45,8 @@ fn aof_boundary_appended(boundary: &AofBoundary, pending: &Box<Slots<u8>>) -> re
   let eof = True();
   loop @events (
     invariant input_bound: consumed <= length,
-    invariant header_room: syntax.line.len < 1023_u64
+    invariant header_room: syntax.line.len < 1023_u64,
+    invariant probe_bound: syntax.probe <= 5_u64
   ) {
     let event = aof_syntax_next(syntax: &syntax, input: input, start: consumed, end: length, eof: eof);
     set consumed = event.next;
@@ -125,7 +126,12 @@ fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog,
           let valid = 0_u64;
           let rewriting = True();
           let retain = False();
-          loop @records {
+          loop @records (
+            invariant window: reader.cursor <= reader.held,
+            invariant capacity: reader.held <= reader.bytes.inner.len,
+            invariant header_room: reader.syntax.line.len < 1023_u64,
+            invariant probe_bound: reader.syntax.probe <= 5_u64
+          ) {
             let record = match aof_record(store: store, factory: factory, file: &file, reader: &reader, clock: clock, rewriting: rewriting, retain: retain) {
               Ok(value: parsed) => {
                 give move parsed;

@@ -17,6 +17,7 @@ struct AofReader {
   invariant window(reader): reader.cursor <= reader.held;
   invariant capacity(reader): reader.held <= reader.bytes.inner.len;
   invariant header_room(reader): reader.syntax.line.len < 1023_u64;
+  invariant probe_bound(reader): reader.syntax.probe <= 5_u64;
 }
 
 struct AofRecord {
@@ -70,7 +71,12 @@ fn aof_fill(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: 
 fn aof_record(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: &AofReader, clock: &Clock, rewriting: Bool, retain: Bool) -> result: Result<AofRecord, u8> reads(store), writes(factory), writes(file), writes(reader), writes(clock) waits {
   doc "Drive the shared pure syntax machine from file chunks. Startup keeps argument-header positions for later payload reads; boundary validation retains only fixed parser state.";
   let args = box_slots_new::<Span>(capacity: 0_u64);
-  loop @events {
+  loop @events (
+    invariant window: reader^.cursor <= reader^.held,
+    invariant capacity: reader^.held <= reader^.bytes.inner.len,
+    invariant header_room: reader^.syntax.line.len < 1023_u64,
+    invariant probe_bound: reader^.syntax.probe <= 5_u64
+  ) {
     if reader^.eof {
     } else if reader^.cursor == reader^.held {
       match aof_fill(store: store, factory: factory, file: file, reader: reader, clock: clock, rewriting: rewriting) {
@@ -188,7 +194,12 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
       let valid = 0_u64;
       let rewriting = False();
       let retain = True();
-      loop @records {
+      loop @records (
+        invariant window: reader.cursor <= reader.held,
+        invariant capacity: reader.held <= reader.bytes.inner.len,
+        invariant header_room: reader.syntax.line.len < 1023_u64,
+        invariant probe_bound: reader.syntax.probe <= 5_u64
+      ) {
         let record = match aof_record(store: store, factory: factory, file: &file, reader: &reader, clock: clock, rewriting: rewriting, retain: retain) {
           Ok(value: parsed) => {
             give move parsed;
