@@ -241,12 +241,19 @@ fn publish(hub: &Hub, shard: Bool, input: &[u8], args: &Box<Slots<Span>>, client
 }
 
 const channels_word: Array<u8, 8> = "CHANNELS";
+
 const numsub_word: Array<u8, 6> = "NUMSUB";
+
 const numpat_word: Array<u8, 6> = "NUMPAT";
+
 const shardchannels_word: Array<u8, 13> = "SHARDCHANNELS";
+
 const shardnumsub_word: Array<u8, 11> = "SHARDNUMSUB";
+
 const syntax_prefix: Array<u8, 58> = "-ERR unknown subcommand or wrong number of arguments for '";
+
 const syntax_suffix: Array<u8, 21> = "'. Try PUBSUB HELP.\r\n";
+
 const deny_shard: Array<u8, 55> = "ERR SSUBSCRIBE isn't allowed for a DENY BLOCKING client";
 
 fn list_channels(map: &HashMap<Key, Box<Slots<u64>>, extent>, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(map), reads(input), reads(args), writes(client) {

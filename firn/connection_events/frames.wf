@@ -5,14 +5,23 @@ alias wire_decimal = pkg::protocol::frame_decimal;
 alias wire_bulk = pkg::protocol::frame_bulk_input;
 
 const crlf: Array<u8, 2> = "\r\n";
+
 const message_word: Array<u8, 7> = "message";
+
 const pmessage_word: Array<u8, 8> = "pmessage";
+
 const smessage_word: Array<u8, 8> = "smessage";
+
 const subscribe_word: Array<u8, 9> = "subscribe";
+
 const unsubscribe_word: Array<u8, 11> = "unsubscribe";
+
 const psubscribe_word: Array<u8, 10> = "psubscribe";
+
 const punsubscribe_word: Array<u8, 12> = "punsubscribe";
+
 const ssubscribe_word: Array<u8, 10> = "ssubscribe";
+
 const sunsubscribe_word: Array<u8, 12> = "sunsubscribe";
 
 fn wire_key(buffer: &Box<Slots<u8>>, key: &Key) -> result: unit reads(key), writes(buffer) {
