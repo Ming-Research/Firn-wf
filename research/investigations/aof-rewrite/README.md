@@ -281,6 +281,11 @@ and passes over a subsequent EXEC outside a block.
 
 ## Validation still needed
 
+The [rewrite fault investigation](rewrite-faults.md) adds paired Redis
+7.2.16 and Firn cases for process kills, temporary-base ENOSPC/EIO and a
+current-increment append error. Its implementation and observation limits
+are recorded there; the new cases' results remain pending CI.
+
 The network cases cover the disabled-AOF refusal, independent appendfilenames
 sharing a directory, interrupted directory states, host refusals before
 publication, concurrent writes, shutdown and successful installation. They
