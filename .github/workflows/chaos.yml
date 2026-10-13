@@ -96,9 +96,17 @@ jobs:
       CHAOS_SEED: ${{ inputs.seed }}
       CHAOS_CLIENTS: '32'
       CHAOS_FIRN_APPEND_BEFORE_REPLY: ${{ inputs.firn_append_before_reply }}
-      CHAOS_OUT: ${{ runner.temp }}/chaos-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.server }}
-      REDIS_COMPAT_CACHE: ${{ runner.environment == 'github-hosted' && format('{0}/build/redis-compat-cache', github.workspace) || '' }}
     steps:
+      # The runner context is not available in job-level env, so the
+      # runner-dependent paths are set here for every later step.
+      - name: Set the runner's paths
+        run: |
+          echo "CHAOS_OUT=$RUNNER_TEMP/chaos-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$CHAOS_SERVER" >>"$GITHUB_ENV"
+          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+            echo "REDIS_COMPAT_CACHE=$GITHUB_WORKSPACE/build/redis-compat-cache" >>"$GITHUB_ENV"
+          else
+            echo "REDIS_COMPAT_CACHE=" >>"$GITHUB_ENV"
+          fi
       - name: Start the infrastructure report
         run: |
           mkdir "$CHAOS_OUT"
