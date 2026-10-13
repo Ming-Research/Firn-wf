@@ -30,7 +30,9 @@ fn aof_boundary_empty() -> made: AofBoundary pure {
   return AofBoundary(whole: whole, unfinished: unfinished, reverted: 0_u64, size: 0_u64);
 }
 
-fn aof_boundary_appended(boundary: &AofBoundary, pending: &Box<Slots<u8>>) -> result: unit writes(boundary), writes(pending) {
+fn aof_boundary_appended(boundary: &AofBoundary, pending: &Box<Slots<u8>>) -> result: unit writes(boundary), writes(pending) contract {
+  ensures pending^.inner.len == entry(pending)^.inner.len;
+} {
   doc "Advance only after the entire private buffer was appended. Ordinary AOF producers emit complete RESP commands, including transaction wrappers; inspect them with the existing syntax stream, whose RESP path neither changes the bytes nor allocates argument slots. Startup alone accepts inline input through replay. Unexpected syntax makes the state unknown for the ordinary disk reader; no queued effect counts as written. The scalar decoder and empty argument-box header fit the existing fixed writer overhead.";
   if boundary^.whole {
   } else {
