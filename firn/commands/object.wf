@@ -129,18 +129,19 @@ fn run_object(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let place = key_bounds(input: input, args: args, index: 2_u64);
   let key = &input^[place.start..place.end];
   set client^.now = time^.check;
-  if store^.logging {
-    atomic slot = &store^.keys[key], m = &store^.meta {
-      let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+  atomic slot = &store^.keys[key], m = &store^.meta {
+    let sequence = if store^.logging {
+      let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      give move active;
+    } else {
+      let inert = pkg::store::sequence_inert();
+      give move inert;
+    }
+    let lapsed = object_body(sequence: &sequence, capture_key: key, slot: slot, client: client, kind: kind);
+    if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      let lapsed = object_body(sequence: &sequence, capture_key: key, slot: slot, client: client, kind: kind);
       let appended = mset_lapse_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
-    }
-  } else {
-    atomic slot = &store^.keys[key] {
-      let sequence = pkg::store::sequence_inert();
-      let lapsed = object_body(sequence: &sequence, capture_key: key, slot: slot, client: client, kind: kind);
     }
   }
   return unit;
