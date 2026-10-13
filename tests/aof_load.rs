@@ -104,7 +104,7 @@ fn unknown_container_subcommands_stop_replay_including_unfinished_transactions()
     // its AOF diagnostic prints the container name, not the subcommand.
     let program = CompiledProgram::from_environment();
     let binary = redis();
-    for container in ["FUNCTION", "CONFIG"] {
+    for container in ["FUNCTION", "CONFIG", "OBJECT", "CLIENT"] {
         for transaction in [false, true] {
             let mut content = Vec::new();
             if transaction { content.extend(resp(&["MULTI"])); }
@@ -369,6 +369,43 @@ fn exec_without_multi_logs_an_error_and_keeps_loading() {
             "== CRITICAL == This server is sending an error to its AOF-loading-client: 'EXEC without MULTI' after processing the command 'exec'".to_string()
         } else {
             format!("Firn AOF replay error reading the append only file {NAME}.1.incr.aof: -ERR EXEC without MULTI")
+        });
+    }
+}
+
+#[test]
+fn nested_multi_logs_an_error_and_keeps_loading() {
+    // Redis 7.2.16 src/aof.c:1553-1562 queues the inner MULTI.
+    // src/multi.c:112-119,230-243 reports its error at EXEC and runs both SETs.
+    // EXEC changes cmd but not lastcmd (src/multi.c:196-200), so the log
+    // names 'exec' and uses the raw error (src/networking.c:562-565,613-615).
+    let content = [resp(&["SET", "before", "1"]), resp(&["MULTI"]),
+        resp(&["SET", "a", "1"]), resp(&["MULTI"]),
+        resp(&["SET", "b", "2"]), resp(&["EXEC"]),
+        resp(&["SET", "after", "3"])].concat();
+    let program = CompiledProgram::from_environment();
+    let binary = redis();
+    for oracle in [false, true] {
+        if oracle && binary.is_none() { continue; }
+        let fixture = fixture_directory();
+        let path = aof_incremental_fixture(fixture.path(), NAME);
+        std::fs::write(&path, &content).unwrap();
+        let lease = support::lease_port();
+        let child = replay_child(&program, if oracle { binary.as_deref() } else { None },
+            fixture.path(), &lease);
+        let mut client = connect_when_ready(lease.port(), &child);
+        assert_eq!(memory_request(&mut client, &["GET", "before"]), "$1\r\n1\r\n");
+        assert_eq!(memory_request(&mut client, &["GET", "a"]), "$1\r\n1\r\n");
+        assert_eq!(memory_request(&mut client, &["GET", "b"]), "$1\r\n2\r\n");
+        assert_eq!(memory_request(&mut client, &["GET", "after"]), "$1\r\n3\r\n");
+        assert_eq!(std::fs::read(&path).unwrap(), content, "nested MULTI does not truncate");
+        client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "nested MULTI continuation: {output:?}");
+        assert_log_line(&output, &if oracle {
+            "== CRITICAL == This server is sending an error to its AOF-loading-client: 'MULTI calls can not be nested' after processing the command 'exec'".to_string()
+        } else {
+            format!("Firn AOF replay error reading the append only file {NAME}.1.incr.aof: -ERR MULTI calls can not be nested")
         });
     }
 }
