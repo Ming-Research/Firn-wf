@@ -4,7 +4,7 @@ name: temporary field facts
 
 on:
   push:
-    branches: ["claude/aof-load-rules"]
+    branches: ["tmp/field-facts"]
 
 permissions:
   contents: read
