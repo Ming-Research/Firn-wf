@@ -550,7 +550,7 @@ fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.
 }
 
 fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) {
-  doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_described selects the error the refusal describes.";
+  doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_text selects what the refusal describes.";
   let failed = False();
   match meta^.aof_append_error {
     Some(..) => {
@@ -569,17 +569,24 @@ fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(m
   return failed;
 }
 
-fn aof_error_described(meta: &Meta) -> described: Option<std::io::IoError> reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error) {
-  doc "Redis 7.0.15 server.c:4329-4340 tests the write status before the fsync status, and aof.c:1157-1184 sets aof_last_write_errno to the write's errno, or to ENOSPC after a short write. The ENOSPC case yields None until std can name that host code (firn-req-enospc-text).";
+fn aof_error_text(meta: &Meta) -> text: pkg::protocol::AofErrorText reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error) {
+  doc "Redis 7.0.15 server.c:4329-4340 tests the write status before the fsync status, and aof.c:1157-1184 sets aof_last_write_errno to the write's errno, or to ENOSPC after a short write.";
   match meta^.aof_append_error {
     Some(value: problem) => {
       if meta^.aof_append_partial {
-        return None<std::io::IoError>();
+        return pkg::protocol::AofErrorText::ShortWrite();
       }
-      return Some<std::io::IoError>(value: problem^);
+      return pkg::protocol::AofErrorText::Host(error: problem^);
     }
     None() => {
     }
   }
-  return meta^.aof_sync_error;
+  match meta^.aof_sync_error {
+    Some(value: problem) => {
+      return pkg::protocol::AofErrorText::Host(error: problem^);
+    }
+    None() => {
+    }
+  }
+  return pkg::protocol::AofErrorText::Absent();
 }

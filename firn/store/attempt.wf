@@ -260,8 +260,8 @@ fn attempt_due_new() -> due: ExpiryQueue pure {
   let queue = priority_queue_new::<Due, ceiling>();
   let entries = box_slots_new::<Due>(capacity: 0_u64);
   let staged = Some<Box<Slots<Due>>>(value: move entries);
-  let unchanged = False();
-  return ExpiryQueue(queue: move queue, eligibility_changed: unchanged, staged: move staged);
+  let steady = False();
+  return ExpiryQueue(queue: move queue, eligibility_changed: steady, staged: move staged);
 }
 
 fn attempt_due_commit(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(staged), writes(target) {
