@@ -1,0 +1,76 @@
+alias ExitStatus = std::process::ExitStatus;
+alias exit_status = std::process::exit_status;
+
+struct Syntax {
+  line: Slots<u8, 1023>;
+  position: u64;
+  probe: u64;
+}
+
+struct Reader {
+  bytes: Box<Array<u8>>;
+  cursor: u64;
+  held: u64;
+  position: u64;
+  eof: Bool;
+  syntax: Syntax;
+}
+
+struct Event {
+  next: u64;
+  state: u64;
+}
+
+fn f(syntax: &Syntax, input: &[u8], start: u64, end: u64) -> event: Event reads(input), writes(syntax) contract {
+  requires start <= end;
+  requires end <= input^.len;
+  ensures syntax^.line.len < 1023_u64;
+  ensures syntax^.probe <= 5_u64;
+  ensures event.next >= start;
+  ensures event.next <= end;
+} {
+  let length = input^.len;
+  set syntax^.line = slots_new::<u8, 1023>();
+  set syntax^.probe = 0_u64;
+  set syntax^.position = syntax^.position +wrap 1_u64;
+  return Event(next: end, state: 1_u64);
+}
+
+fn probe(reader: &Reader) -> result: unit writes(reader) contract {
+  requires reader^.cursor <= reader^.held;
+  requires reader^.held <= reader^.bytes.inner.len;
+  requires reader^.syntax.line.len < 1023_u64;
+  requires reader^.syntax.probe <= 5_u64;
+} {
+  let iterations = 0_u64;
+  loop @events (
+    invariant window: reader^.cursor <= reader^.held,
+    invariant capacity: reader^.held <= reader^.bytes.inner.len
+  ) {
+    let cursor = reader^.cursor;
+    let held = reader^.held;
+    let input = &reader^.bytes.inner[0_u64..held];
+    let event = f(syntax: &reader^.syntax, input: input, start: cursor, end: held);
+    let next = event.next;
+    set reader^.cursor = next;
+    set reader^.held = held;
+    if event.state == 1_u64 {
+    } else {
+      return unit;
+    }
+    set iterations = iterations +wrap 1_u64;
+    if iterations == 2_u64 {
+      return unit;
+    }
+  }
+}
+
+fn main() -> status: ExitStatus pure {
+  let bytes = box_array_filled::<u8>(count: 4_u64, value: 0_u8);
+  let line = slots_new::<u8, 1023>();
+  let syntax = Syntax(line: move line, position: 0_u64, probe: 0_u64);
+  let eof = False();
+  let state = Reader(bytes: move bytes, cursor: 0_u64, held: 4_u64, position: 0_u64, eof: eof, syntax: move syntax);
+  probe(reader: &state);
+  return exit_status(code: 0_u8);
+}

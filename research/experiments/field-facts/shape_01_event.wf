@@ -1,0 +1,40 @@
+alias ExitStatus = std::process::ExitStatus;
+alias exit_status = std::process::exit_status;
+
+struct Reader {
+  cursor: u64;
+  held: u64;
+}
+
+struct Event {
+  next: u64;
+  state: u64;
+}
+
+fn f(bound: u64) -> event: Event pure contract {
+  ensures event.next <= bound;
+} {
+  return Event(next: bound, state: 1_u64);
+}
+
+fn probe(reader: &Reader) -> result: unit writes(reader) contract {
+  requires reader^.cursor <= reader^.held;
+} {
+  for (
+    iteration in 0_u64..2_u64,
+    invariant window: reader^.cursor <= reader^.held
+  ) {
+    let held = reader^.held;
+    let event = f(bound: held);
+    let next = event.next;
+    set reader^.cursor = next;
+    set reader^.held = held;
+  }
+  return unit;
+}
+
+fn main() -> status: ExitStatus pure {
+  let state = Reader(cursor: 0_u64, held: 1_u64);
+  probe(reader: &state);
+  return exit_status(code: 0_u8);
+}
