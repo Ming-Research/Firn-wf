@@ -205,8 +205,8 @@ Each workload is the selected consumers' own command forms, as the
   86400` alone, and `GET` of a stored session alone.
 
 The settings are as follows:
-- Every workload runs against redis-server 7.0.15 and firn, with the
-  append-only file off, and on with fsync every second.
+- The original five consumer workloads run against the pinned redis-server
+  7.2.16 and firn, with the append-only file off, and on with fsync every second.
 - It runs on 1 and 2 server CPUs, with 50 connections at pipeline depth 1,
   since these clients send one command or one transaction and wait.
 - Each line has 3 interleaved passes of 10 seconds after a probe of 2 passes
@@ -255,6 +255,131 @@ Measured requests keep the planned 100,000-key range. The client also takes
 `--port`, `--workload`, `--connections`, `--threads`, `--keys`, `--value-size`
 and either `--seconds` or a total `--requests`; fill emits no timing row,
 and any protocol, I/O or Redis error fails the run.
+
+Opt in to `rewrite-during` with `redis-bench.yml` inputs `mode=workloads`,
+`tests=rewrite-during`, `runner=14900k`, `seconds=5`, `passes=2`, and
+`connections=50`, and `cpus=1` for one server core. Set
+`workload_images=true` to compare Redis and every image in `revisions`
+(including twins); otherwise the lines are Redis and
+this checkout's firn. This workload uses AOF on only, a fresh server for
+each connection count, and no perf pass. Equivalently, set
+`WORKLOADS=rewrite-during` for the script's `workloads` mode.
+
+The Rust client fills exactly 1,000,000 nonexpiring keys with 64-byte values,
+disables automatic AOF rewrites, sets `maxmemory` before loading (default 0,
+unlimited) and `maxmemory-policy noeviction`, warms up for 5 seconds,
+then sends continuous uniform depth-one SETs to the same keys. It samples
+completed requests at the three phase boundaries: a before phase of
+`seconds`, a during phase from issuing BGREWRITEAOF until INFO persistence
+confirms idle, unscheduled completion with `aof_rewrites` advanced by one
+and `aof_last_bgrewrite_status:ok`, and an after phase of `seconds`.
+The start reply is checked on a separate connection while INFO sampling
+and SETs continue. The request and completion polling share a 120-second
+absolute deadline; an error reply, failed rewrite, timeout or additional
+rewrite fails the run. Default sampling is every 10 ms, so the during
+interval includes request/polling overhead and can overestimate a very
+short rewrite. Boundary counters count completed SETs, including requests
+issued in the previous phase; they do not provide phase-specific latency.
+`workload_options` can override `--keys`, `--value-size`,
+`--warmup-seconds`, `--sample-ms`, and `--maxmemory BYTES`; the pass is the
+random seed. For example, `workload_options='--maxmemory 1073741824'` sets
+a 1 GiB limit on both Redis and firn before loading. The limit must leave
+room for the dataset and rewrite: no keys are evicted, and an OOM reply
+fails the run. `--maxmemory` in `WORKLOAD_OPTIONS` requires that every
+selected workload is `rewrite-during`; memory workloads retain their
+harness-selected limits. The configured limit and noeviction policy are
+printed to stderr.
+
+On success or failure, the client also prints an INFO snapshot to stderr:
+all reported `aof_*` and `firn_aof_rewrite_*` fields, including
+`aof_last_bgrewrite_status`, `aof_rewrite_in_progress`, `aof_rewrites`,
+`firn_aof_rewrite_reserve`, `firn_aof_rewrite_scan_peak`,
+`firn_aof_rewrite_cut`, and `firn_aof_rewrite_commit_seq`, plus
+`used_memory`, `maxmemory` and `maxmemory_policy`. Firn-only fields are
+absent on Redis. This records the latest attempt's reserve and whether it
+crossed S1; scan peak is only the observed heap increase during KeySet
+creation and a map scan, not the journal or total rewrite peak
+([field definitions](../../../firn/README.md)). A failed
+status alone does not prove reserve exhaustion. If INFO cannot be read,
+the diagnostic error is printed; an existing workload failure is preserved.
+When the harness requests a CSV capture, a capture failure also fails an
+otherwise successful run.
+
+`rewrite-during-info.csv` holds `line,pass,cpus,connections,field,value`.
+After the measurement ends, the client saves every reported
+`firn_aof_rewrite_*` field and `aof_last_bgrewrite_status` from that INFO
+snapshot. The harness sets `REWRITE_INFO_OUT` to a temporary field/value
+CSV, appends the run identifiers, prints the rows to the job log and removes
+the temporary file. It saves these rows before propagating a workload
+failure, including a rewrite ending with `err`. Missing fields produce no
+rows or fabricated defaults; Redis contributes only its last status.
+Future firn rewrite fields are included automatically, and empty values
+(such as the abort reason on success) are retained. The workflow uploads
+the CSV even when measurement fails.
+
+`rewrite-during.csv` holds
+`line,pass,cpus,workload,connections,keys,value_size,seed,before_rate,during_rate,after_rate,during_seconds,aof_last_rewrite_time_sec,aof_last_bgrewrite_status,rewrite_completed`.
+Rates are completed SETs per second. `during_seconds` is the sampled client
+interval; `aof_last_rewrite_time_sec` is the server's integer-seconds
+duration from INFO persistence, reported as `unavailable` when absent or
+not yet recorded. Firn on main currently omits that duration field, so its
+wall interval is kept separately and is never substituted for server time.
+Successful rows report `ok,1`; failures exit without a successful row.
+These observations are kept separately from `workloads.csv`.
+
+Opt in to the cache rewrite comparison with `redis-bench.yml` inputs
+`mode=workloads`, `tests=evict-zipf-rewrite`, `runner=14900k`, `cpus=1`,
+`connections=50`, `seconds=5`, `passes=2`, and `profile=false` for a probe.
+The named lines are `reference-aof-cache-rewrite`, `firn-aof-cache-rewrite`
+and `firn-no-aof-cache-control`. The reference is the pinned Redis 7.2.16
+build. With `workload_images=true`, Redis keeps its AOF rewrite line and
+each image in `revisions`, including every twin, gets an AOF rewrite line
+and a no-AOF control line, named `image-<name>-aof-cache-rewrite` and
+`image-<name>-no-aof-cache-control`. Each line starts a fresh server; order
+reverses on even passes. The pass number seeds the same Zipf distribution
+on every line. No perf pass runs for this workload.
+
+The defaults are 1,000,000 keys, 64-byte values and Zipf exponent 0.99.
+The client sets `maxmemory-policy allkeys-lru`, fills the dataset without
+a limit, then sets a limit of **empty server memory plus
+half the dataset increment**, measured independently on each server:
+`prefill_used_memory + (filled_used_memory - prefill_used_memory) / 2`.
+The integer division rounds down. This is not half the server's total
+filled memory. `workload_options` shares the cache's `--keys`,
+`--value-size`, `--zipf-s`, `--warmup-seconds` and `--sample-ms` knobs;
+the harness owns the limit and does not accept `--maxmemory` for this mode.
+
+Both cache rewrite and no-AOF control disable automatic AOF rewrites with
+`auto-aof-rewrite-percentage 0`. After prefill and the configured warm-up,
+the AOF lines run Zipf cache-aside traffic and send exactly one BGREWRITEAOF
+halfway through the nominal `seconds` measurement. A separate control
+connection checks its reply while traffic and INFO persistence sampling
+continue. The measurement lasts at least the nominal window and, if
+necessary, extends until successful rewrite completion. An explicit
+failure stops it promptly. The rewrite request and completion polling have
+a 120-second cap from the request. The client requires idle, unscheduled
+completion, one added `aof_rewrites`, and `aof_last_bgrewrite_status:ok`.
+The no-AOF control sends no rewrite and uses the nominal measurement
+window; actual elapsed time includes draining in-flight requests, so the
+AOF and control durations can differ.
+
+`evict-zipf-rewrite.csv` retains all columns of `evict-zipf.csv`, including
+hit rate and refused SET count, and appends `rewrite_duration_seconds`,
+`rewrite_status` and `rewrite_abort_reason`. The duration is the client
+interval from sending BGREWRITEAOF to INFO observing completion, on the
+same basis for Redis and firn; it includes polling overhead. It is blank
+for a control or when completion was not observed. Status is `ok` for
+success, `err` for an observed failed rewrite, `timeout`, `request_error`
+or `protocol_error` for other failures, and `not_requested` for the
+no-AOF control. Firn's reported abort reason is CSV quoted; Redis or a
+successful rewrite normally contributes an empty reason. The row is
+saved even on terminal rewrite failure before the harness propagates the
+nonzero client exit. Such failure rows retain the last successfully sampled
+memory values and leave `keys_at_end` blank rather than issuing a final
+DBSIZE request. Setup errors or independent traffic-worker failures can
+terminate before a complete row is available. Successful rates also enter
+`workloads.csv`; failed rows remain only in the full cache CSV. The workflow
+uploads both CSVs even when measurement fails.
 
 **Compare mode and AOF.** `redis-bench.yml` mode `compare` measures the
 images `revisions` names, interleaved, with a `-twin` as the noise control.

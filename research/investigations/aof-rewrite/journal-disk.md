@@ -151,7 +151,7 @@ rejects the implementation. CI must also run the existing Redis ratchet.
 On the idle 14900K through CI, first time a small useful sample, then repeat
 the supplied rewrite-during workload at R = 16 MiB. Compare interleaved
 same-source before/after runs with a base twin as noise control, and Redis
-7.0.15 under identical data, connections, CPU, AOF and fsync settings. Record
+7.2.16 under identical data, connections, CPU, AOF and fsync settings. Record
 revisions, settings, journal bytes, completion, rewrite duration, throughput
 and latency during rewrite, plus requested heap and RSS separately. A correct
 completion with disk journal larger than R is the intended result; recurring

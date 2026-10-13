@@ -54,18 +54,18 @@ pub(super) fn get_hit(wire: &[u8], expected: &[u8]) -> Result<bool> {
     Ok(true)
 }
 
-struct Control {
+pub(super) struct Control {
     socket: TcpStream,
 }
 
 impl Control {
-    fn new(port: u16) -> Result<Self> { Ok(Self { socket: connect(port)? }) }
+    pub(super) fn new(port: u16) -> Result<Self> { Ok(Self { socket: connect(port)? }) }
 
     fn call(&mut self, args: &[&[u8]]) -> Result<Vec<u8>> {
         self.call_before(args, None)
     }
 
-    fn call_before(&mut self, args: &[&[u8]], deadline: Option<Instant>) -> Result<Vec<u8>> {
+    pub(super) fn call_before(&mut self, args: &[&[u8]], deadline: Option<Instant>) -> Result<Vec<u8>> {
         let remaining = || -> Result<Duration> {
             match deadline {
                 Some(end) => end.checked_duration_since(Instant::now()).filter(|d| !d.is_zero())
@@ -97,7 +97,7 @@ impl Control {
         Ok(())
     }
 
-    fn config(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+    pub(super) fn config(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         self.ok(&[b"CONFIG", b"SET", key, value])
     }
 
@@ -110,12 +110,14 @@ impl Control {
         parse_dbsize(&self.call(&[b"DBSIZE"])?)
     }
 
-    /// Firn replays AOF files into private keyspaces in the process heap during
-    /// rewrite; Redis rewrites in a fork child. A fill reaching the automatic
-    /// rewrite minimum (64 MiB) can therefore inflate firn's half-dataset limit:
-    /// the 14900K probe (Firn-wf run 37996029478) read 390 MB with AOF versus
-    /// 226 MB without. Wait for rewrite quiescence, then discard the first of
-    /// two memory readings 200 ms apart before selecting filled_used_memory.
+    /// The original closed-log rewrite replayed AOF files into private
+    /// keyspaces in firn's process heap; Redis rewrote in a fork child. A fill
+    /// reaching the automatic rewrite minimum (64 MiB) inflated firn's memory
+    /// reading in the 14900K probe (Firn-wf run 37996029478): 390 MB with AOF
+    /// versus 226 MB without. Older compared images still need this wait, which
+    /// excludes active rewrite allocations from the cache limit. Wait for
+    /// quiescence, then discard the first of two memory readings 200 ms apart
+    /// before selecting filled_used_memory.
     fn filled_memory(&mut self) -> Result<u64> {
         let deadline = Instant::now() + Duration::from_secs(120);
         loop {
@@ -130,7 +132,7 @@ impl Control {
 }
 
 // Control::call has already validated RESP framing before these parsers run.
-fn info_body(wire: &[u8]) -> Result<&str> {
+pub(super) fn info_body(wire: &[u8]) -> Result<&str> {
     if wire.first() != Some(&b'$') || wire == b"$-1\r\n" { return Err("INFO is not a bulk string".into()); }
     let start = wire.windows(2).position(|w| w == b"\r\n").ok_or("missing INFO header")? + 2;
     Ok(std::str::from_utf8(&wire[start..wire.len() - 2])?)
@@ -180,6 +182,211 @@ impl Memory {
     }
 }
 
+/// A terminal outcome is retained in the CSV even when the run exits nonzero.
+/// Unknown completion times stay empty; the cap is not a rewrite duration.
+struct RewriteOutcome {
+    duration: Option<Duration>,
+    status: &'static str,
+    abort_reason: String,
+}
+
+impl RewriteOutcome {
+    fn csv(&self) -> String {
+        format!("{},{},\"{}\"", self.duration.map(|d| format!("{:.9}", d.as_secs_f64())).unwrap_or_default(),
+            self.status, self.abort_reason.replace('"', "\"\""))
+    }
+
+    fn failed(&self) -> bool { !matches!(self.status, "ok" | "not_requested") }
+}
+
+fn write_result(row: &str, outcome: Option<&RewriteOutcome>, out: &mut impl Write) -> Result<()> {
+    if let Some(outcome) = outcome {
+        writeln!(out, "{row},{}", outcome.csv())?;
+        out.flush()?;
+        if outcome.failed() { return Err(format!("cache rewrite ended with {}", outcome.status).into()); }
+    } else { writeln!(out, "{row}")?; }
+    Ok(())
+}
+
+pub(super) struct RewriteWindow {
+    control: Control,
+    requester: Option<Control>,
+    request: Option<thread::JoinHandle<Result<()>>>,
+    sent: Arc<std::sync::OnceLock<Instant>>,
+    baseline: u64,
+    nominal: Duration,
+    bound: Duration,
+    deadline: Option<Instant>,
+    acknowledged: bool,
+    observed: Option<(Instant, bool)>,
+    abort_reason: String,
+    outcome: Option<RewriteOutcome>,
+    final_checked: bool,
+}
+
+impl RewriteWindow {
+    fn persistence(control: &mut Control, deadline: Instant) -> Result<(rewrite::Persistence, String)> {
+        let wire = control.call_before(&[b"INFO", b"persistence"], Some(deadline))?;
+        let info = info_body(&wire)?;
+        let reason = info.lines().filter_map(|line| line.split_once(':'))
+            .find_map(|(key, value)| (key == "firn_aof_rewrite_abort_reason").then(|| value.to_string()))
+            .unwrap_or_default();
+        Ok((rewrite::Persistence::parse(info)?, reason))
+    }
+
+    fn configure(control: &mut Control, rewrite: bool) -> Result<()> {
+        control.config(b"auto-aof-rewrite-percentage", b"0")?;
+        let (p, _) = Self::persistence(control, Instant::now() + TIMEOUT)?;
+        if p.enabled != rewrite || !p.idle() {
+            return Err("cache rewrite mode needs enabled, idle AOF; its control needs disabled, idle AOF".into());
+        }
+        Ok(())
+    }
+
+    fn new(port: u16, nominal: Duration, request_rewrite: bool) -> Result<Self> {
+        let mut control = Control::new(port)?;
+        let (p, _) = Self::persistence(&mut control, Instant::now() + TIMEOUT)?;
+        if p.enabled != request_rewrite || !p.idle() {
+            return Err("cache AOF state changed during setup".into());
+        }
+        if request_rewrite && p.rewrites == u64::MAX {
+            return Err("cache rewrite count cannot advance without overflow".into());
+        }
+        Ok(Self { control, requester: if request_rewrite { Some(Control::new(port)?) } else { None },
+            request: None, sent: Arc::new(std::sync::OnceLock::new()), baseline: p.rewrites,
+            nominal, bound: Duration::from_secs(120), deadline: None, acknowledged: false,
+            observed: None, abort_reason: String::new(),
+            final_checked: false,
+            outcome: (!request_rewrite).then(|| RewriteOutcome { duration: None,
+                status: "not_requested", abort_reason: String::new() }) })
+    }
+
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        if self.outcome.is_none() { self.deadline } else { None }
+    }
+
+    pub(super) fn pause(&self, begin: Instant, sample: Duration) -> Duration {
+        if self.outcome.as_ref().is_some_and(|o| o.failed() || begin.elapsed() >= self.nominal) {
+            return sample;
+        }
+        let next = if let Some(deadline) = self.deadline() { deadline }
+            else if self.outcome.is_none() { begin + self.nominal / 2 }
+            else { begin + self.nominal };
+        sample.min(next.saturating_duration_since(Instant::now()))
+    }
+
+    pub(super) fn fail(&mut self, error: impl std::fmt::Display) {
+        eprintln!("cache rewrite: {error}");
+        let status = if self.deadline().is_some_and(|d| Instant::now() >= d) { "timeout" } else { "protocol_error" };
+        self.finish(status, None);
+    }
+
+    fn finish(&mut self, status: &'static str, at: Option<Instant>) {
+        self.outcome = Some(RewriteOutcome { duration: at.and_then(|at|
+            self.sent.get().and_then(|sent| at.checked_duration_since(*sent))),
+            status, abort_reason: self.abort_reason.clone() });
+    }
+
+    fn poll(&mut self) -> Result<()> {
+        let deadline = self.deadline.unwrap();
+        if Instant::now() >= deadline {
+            self.finish("timeout", None);
+            return Ok(());
+        }
+        let mut request_error = None;
+        if self.request.as_ref().is_some_and(|h| h.is_finished()) {
+            match self.request.take().unwrap().join().unwrap_or_else(|_| Err("cache rewrite requester panicked".into())) {
+                Ok(()) => self.acknowledged = true,
+                Err(error) => request_error = Some(error),
+            }
+        }
+        // Poll even after a rejected request to retain firn's admission reason.
+        let (p, reason) = Self::persistence(&mut self.control, deadline)?;
+        self.abort_reason = reason;
+        if let Some(error) = request_error {
+            eprintln!("cache BGREWRITEAOF: {error}");
+            self.finish("request_error", None);
+            return Ok(());
+        }
+        if !p.enabled || p.rewrites < self.baseline || p.rewrites > self.baseline.saturating_add(1) {
+            return Err("cache rewrite AOF state or rewrite count changed unexpectedly".into());
+        }
+        if p.idle() && p.rewrites == self.baseline + 1 {
+            if self.observed.is_some_and(|(_, ok)| ok != p.last_ok) {
+                return Err("cache rewrite status changed after completion".into());
+            }
+            self.observed.get_or_insert((Instant::now(), p.last_ok));
+        } else if self.observed.is_some() {
+            return Err("cache rewrite became active after completion".into());
+        }
+        if self.acknowledged {
+            if let Some((at, ok)) = self.observed { self.finish(if ok { "ok" } else { "err" }, Some(at)); }
+        }
+        Ok(())
+    }
+
+    pub(super) fn tick(&mut self, begin: Instant) -> bool {
+        if self.outcome.is_none() {
+            if self.deadline.is_none() && begin.elapsed() >= self.nominal / 2 {
+                let started = (|| -> Result<()> {
+                    let (p, reason) = Self::persistence(&mut self.control, Instant::now() + TIMEOUT)?;
+                    self.abort_reason = reason;
+                    if !p.enabled || !p.idle() || p.rewrites != self.baseline {
+                        return Err("cache rewrite state changed before the trigger".into());
+                    }
+                    let deadline = Instant::now() + self.bound;
+                    self.deadline = Some(deadline);
+                    let mut requester = self.requester.take().ok_or("cache rewrite already requested")?;
+                    let sent = self.sent.clone();
+                    self.request = Some(thread::spawn(move || {
+                        sent.set(Instant::now()).unwrap();
+                        rewrite::rewrite_started(&requester.call_before(&[b"BGREWRITEAOF"], Some(deadline))?)
+                    }));
+                    Ok(())
+                })();
+                if let Err(error) = started { self.fail(error); }
+            }
+            if self.outcome.is_none() && self.deadline.is_some() {
+                if let Err(error) = self.poll() { self.fail(error); }
+            }
+        }
+        if !self.final_checked && begin.elapsed() >= self.nominal
+            && self.outcome.as_ref().is_some_and(|o| !o.failed()) {
+            self.final_checked = true;
+            let checked = (|| -> Result<()> {
+                let (p, reason) = Self::persistence(&mut self.control, Instant::now() + TIMEOUT)?;
+                self.abort_reason = reason;
+                let requested = self.outcome.as_ref().unwrap().status == "ok";
+                if p.enabled != requested || !p.idle()
+                    || p.rewrites != self.baseline + u64::from(requested)
+                    || (requested && !p.last_ok) {
+                    return Err("cache AOF state changed after the measured rewrite or in the no-AOF control".into());
+                }
+                Ok(())
+            })();
+            if let Err(error) = checked { self.fail(error); }
+        }
+        // Errors end traffic explicitly; successful and no-AOF runs retain the
+        // whole nominal window, extending it if the rewrite takes longer.
+        self.outcome.as_ref().is_some_and(|o| o.failed() || begin.elapsed() >= self.nominal)
+    }
+
+    fn finish_request(&mut self) {
+        if let Some(request) = self.request.take() {
+            // Every operation uses the original absolute deadline.
+            if let Err(error) = request.join().unwrap_or_else(|_| Err("cache rewrite requester panicked".into())) {
+                eprintln!("cache BGREWRITEAOF: {error}");
+            }
+        }
+    }
+
+    pub(super) fn failed(&self) -> bool { self.outcome.as_ref().is_some_and(RewriteOutcome::failed) }
+}
+
+impl Drop for RewriteWindow {
+    fn drop(&mut self) { self.finish_request(); }
+}
+
 pub(super) struct Monitor {
     control: Control,
     first: Memory,
@@ -211,7 +418,12 @@ impl Monitor {
     }
 
     pub(super) fn sample(&mut self) -> Result<()> {
-        self.last = self.control.info()?;
+        self.sample_before(None)
+    }
+
+    pub(super) fn sample_before(&mut self, deadline: Option<Instant>) -> Result<()> {
+        let wire = self.control.call_before(&[b"INFO"], deadline)?;
+        self.last = Memory::parse(info_body(&wire)?)?;
         let now = Instant::now();
         self.max_gap = self.max_gap.max(now.duration_since(self.last_sample));
         self.last_sample = now;
@@ -247,9 +459,11 @@ fn warmup(opts: &Options, zipf: Option<Arc<Zipf>>) -> Result<()> {
 pub(super) fn run(opts: &Options) -> Result<()> {
     let zipf = Arc::new(Zipf::new(opts.keys, opts.zipf_s, opts.seed)?);
     let mut control = Control::new(opts.port)?;
+    let controlled = opts.workload != "evict-zipf";
+    if controlled { RewriteWindow::configure(&mut control, opts.workload == "evict-zipf-rewrite")?; }
     control.config(b"maxmemory", b"0")?;
     control.config(b"maxmemory-policy", b"allkeys-lru")?;
-    // Redis 7.0.15 defaults, explicit so both servers use the same settings.
+    // Redis 7.2.16 defaults, explicit so both servers use the same settings.
     control.config(b"maxmemory-samples", b"5")?;
     control.config(b"maxmemory-eviction-tenacity", b"10")?;
     let before = control.info()?.used;
@@ -258,10 +472,14 @@ pub(super) fn run(opts: &Options) -> Result<()> {
     let limit = half_dataset_limit(before, filled)?;
     control.config(b"maxmemory", limit.to_string().as_bytes())?;
     warmup(opts, Some(zipf.clone()))?;
+    let mut window = if controlled { Some(RewriteWindow::new(opts.port, opts.seconds.unwrap(),
+        opts.workload == "evict-zipf-rewrite")?) } else { None };
     let mut monitor = Monitor::new(control);
-    let measured = measure(opts, Some(zipf), Some(&mut monitor))?;
-    let keys_at_end = monitor.control.dbsize()?;
-    if measured.writers != opts.connections {
+    let measured = measure_controlled(opts, Some(zipf), Some(&mut monitor), window.as_mut())?;
+    if let Some(w) = window.as_mut() { w.finish_request(); }
+    let failed = window.as_ref().is_some_and(RewriteWindow::failed);
+    let keys_at_end = if failed { String::new() } else { monitor.control.dbsize()?.to_string() };
+    if !failed && measured.writers != opts.connections {
         return Err("not every connection completed a miss SET attempt; increase the run duration or dataset".into());
     }
     if monitor.first.limit != limit || monitor.last.limit != limit {
@@ -271,7 +489,7 @@ pub(super) fn run(opts: &Options) -> Result<()> {
     let lifetime_excess = monitor.last.peak.saturating_sub(limit);
     // The shell copies the leading seven columns to workloads.csv; the full
     // row goes to evict-zipf.csv under its own explicit header.
-    println!("{},{},{},{},{},{},{:.3},{},{},{},{},{:.9},{},{},{},{},{},{},{},{},{:.9},{},{},{:.9},{},{:.3},{},{},{},{}",
+    let row = format!("{},{},{},{},{},{},{:.3},{},{},{},{},{:.9},{},{},{},{},{},{},{},{},{:.9},{},{},{:.9},{},{:.3},{},{},{},{}",
         measured.csv(opts), opts.keys, opts.zipf_s, opts.value.len(), opts.seed,
         opts.warmup.as_secs_f64(), opts.sample_interval.as_secs_f64() * 1000.0,
         measured.count, measured.hits, measured.count - measured.hits, measured.refused_sets,
@@ -281,7 +499,10 @@ pub(super) fn run(opts: &Options) -> Result<()> {
         monitor.sampled_max, sampled_excess, sampled_excess as f64 / limit as f64,
         monitor.samples, monitor.max_gap.as_secs_f64() * 1000.0, monitor.last.excluded, measured.writers,
         monitor.keys_at_start, keys_at_end);
-    Ok(())
+    if let Some(w) = &window {
+        let outcome = w.outcome.as_ref().ok_or("cache rewrite measurement has no terminal status")?;
+        write_result(&row, Some(outcome), &mut io::stdout().lock())
+    } else { write_result(&row, None, &mut io::stdout().lock()) }
 }
 
 pub(super) fn session_limit(opts: &Options) -> Result<()> {
@@ -311,6 +532,241 @@ pub(super) fn session_limit(opts: &Options) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn persistence_body(enabled: bool, active: bool, rewrites: u64, status: &str, reason: &str) -> String {
+        format!("aof_enabled:{}\r\naof_rewrite_in_progress:{}\r\naof_rewrite_scheduled:0\r\naof_rewrites:{rewrites}\r\naof_last_bgrewrite_status:{status}\r\nfirn_aof_rewrite_abort_reason:{reason}\r\n",
+            u8::from(enabled), u8::from(active))
+    }
+
+    #[test]
+    fn cache_rewrite_modes_require_time_and_keep_cache_defaults() {
+        for mode in ["evict-zipf-rewrite", "evict-zipf-control"] {
+            let args = ["--port", "6379", "--workload", mode, "--seconds", "1"];
+            let opts = Options::parse_args(args.into_iter().map(str::to_string), 2).unwrap();
+            assert_eq!((opts.keys, opts.value.len(), opts.connections), (1_000_000, 64, 50));
+            assert!(Options::parse_args(["--port", "6379", "--workload", mode, "--requests", "2"]
+                .into_iter().map(str::to_string), 2).is_err());
+        }
+    }
+
+    #[test]
+    fn cache_rewrite_configuration_disables_automatic_rewrites_and_checks_aof() {
+        use std::net::TcpListener;
+        for (requested, enabled, active, accepted) in [
+            (true, true, false, true), (false, false, false, true),
+            (true, false, false, false), (false, true, false, false),
+            (true, true, true, false),
+        ] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+                super::super::tests::expect_command(&mut socket, &[b"CONFIG", b"SET", b"auto-aof-rewrite-percentage", b"0"]);
+                socket.write_all(b"+OK\r\n").unwrap();
+                super::super::tests::expect_command(&mut socket, &[b"INFO", b"persistence"]);
+                let body = persistence_body(enabled, active, 0, "ok", "");
+                write!(socket, "${}\r\n{body}\r\n", body.len()).unwrap();
+            });
+            assert_eq!(RewriteWindow::configure(&mut Control::new(port).unwrap(), requested).is_ok(), accepted);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn expired_cache_rewrite_deadline_stops_without_more_requests_or_invented_duration() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut info, _) = listener.accept().unwrap();
+            info.set_read_timeout(Some(TIMEOUT)).unwrap();
+            super::super::tests::expect_command(&mut info, &[b"INFO", b"persistence"]);
+            let body = persistence_body(true, false, 0, "ok", "");
+            write!(info, "${}\r\n{body}\r\n", body.len()).unwrap();
+            let (mut request, _) = listener.accept().unwrap();
+            request.set_read_timeout(Some(TIMEOUT)).unwrap();
+            assert_eq!(info.read(&mut [0]).unwrap(), 0, "an expired cap must not poll again");
+            assert_eq!(request.read(&mut [0]).unwrap(), 0, "an expired cap must not issue a request");
+        });
+        let nominal = Duration::from_secs(1);
+        let mut window = RewriteWindow::new(port, nominal, true).unwrap();
+        // Enter the state of an outstanding request whose absolute deadline
+        // already passed. No wall-clock wait or scheduler race is needed to
+        // verify the same cap branch used by an unfinished server rewrite.
+        let sent = Instant::now() - Duration::from_secs(121);
+        window.sent.set(sent).unwrap();
+        window.deadline = Some(sent + Duration::from_secs(120));
+        assert!(window.tick(sent));
+        let outcome = window.outcome.as_ref().unwrap();
+        assert_eq!(outcome.status, "timeout");
+        assert!(outcome.duration.is_none());
+        assert_eq!(outcome.csv(), ",timeout,\"\"");
+        assert_eq!(window.pause(sent, Duration::from_millis(10)), Duration::from_millis(10));
+        // An expired stored deadline no longer classifies unrelated errors
+        // after successful completion as rewrite timeouts.
+        window.outcome = Some(RewriteOutcome { duration: Some(nominal), status: "ok", abort_reason: String::new() });
+        window.fail("final verification failed after the rewrite completed");
+        assert_eq!(window.outcome.as_ref().unwrap().status, "protocol_error");
+        drop(window);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn cache_rewrite_records_one_request_completion_failure_and_control_with_counts() {
+        use std::net::TcpListener;
+        use std::sync::atomic::AtomicU64;
+        for finish in ["ok", "err", "control", "extra", "rejected"] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let rewriting = finish != "control";
+            let triggered = Arc::new(AtomicU64::new(0));
+            let counts = Arc::new(AtomicU64::new(0));
+            let traffic_ready = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+            let started = Arc::new(AtomicBool::new(false));
+            let (server_triggered, server_counts, server_started) = (triggered.clone(), counts.clone(), started.clone());
+            let nominal = Duration::from_millis(20);
+            let server = thread::spawn(move || {
+                let (mut info, _) = listener.accept().unwrap();
+                info.set_read_timeout(Some(TIMEOUT)).unwrap();
+                let ready = traffic_ready.clone();
+                let persistence = thread::spawn(move || {
+                    let mut expected = Vec::new();
+                    command(&mut expected, &[b"INFO", b"persistence"]);
+                    let mut polls = 0;
+                    let mut active_polls = 0;
+                    loop {
+                        let mut wire = vec![0; expected.len()];
+                        match info.read_exact(&mut wire) {
+                            Ok(()) => (),
+                            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                            Err(e) => panic!("{e}"),
+                        }
+                        assert_eq!(wire, expected);
+                        if polls > 0 {
+                            // The pretrigger check (or control's final check)
+                            // waits for a real hit and refused miss SET. Setup's
+                            // first INFO must not wait for unstarted traffic.
+                            let (lock, wake) = &*ready;
+                            let (arrived, _) = wake.wait_timeout_while(lock.lock().unwrap(), TIMEOUT,
+                                |arrived| !*arrived).unwrap();
+                            assert!(*arrived, "traffic did not complete a hit and a refused miss");
+                        }
+                        polls += 1;
+                        let begun = server_started.load(Ordering::Relaxed);
+                        if begun { active_polls += 1; }
+                        let done = active_polls >= 2;
+                        if active_polls == 2 {
+                            // Keep traffic alive past its nominal window. There
+                            // is no short success deadline: delayed scheduling
+                            // cannot turn a valid response into a test timeout.
+                            thread::sleep(nominal);
+                        }
+                        let body = persistence_body(rewriting, begun && !done,
+                            if finish == "extra" && done { 2 } else { u64::from(begun) },
+                            if done && finish == "err" { "err" } else { "ok" },
+                            if done && finish == "err" { "reserve,\"full\"" } else if finish == "rejected" { "admission" } else { "" });
+                        if let Err(e) = write!(info, "${}\r\n{body}\r\n", body.len()) {
+                            if matches!(e.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) { break; }
+                            panic!("{e}");
+                        }
+                    }
+                });
+                let request = if rewriting {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+                    let started = started.clone();
+                    Some(thread::spawn(move || {
+                        super::super::tests::expect_command(&mut socket, &[b"BGREWRITEAOF"]);
+                        server_triggered.fetch_add(1, Ordering::Relaxed);
+                        started.store(true, Ordering::Relaxed);
+                        socket.write_all(if finish == "rejected" { b"-ERR rejected\r\n" }
+                            else { b"+Background append only file rewriting started\r\n" }).unwrap();
+                        // Any second request on this connection fails this assertion.
+                        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+                    }))
+                } else { None };
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+                let mut get = Vec::new();
+                command(&mut get, &[b"GET", b"key:0"]);
+                loop {
+                    let mut wire = vec![0; get.len()];
+                    match socket.read_exact(&mut wire) {
+                        Ok(()) => (),
+                        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                        Err(e) => panic!("{e}"),
+                    }
+                    assert_eq!(wire, get, "control and traffic connections must send only cache commands");
+                    let count = server_counts.load(Ordering::Relaxed);
+                    if count % 2 == 0 {
+                        socket.write_all(b"$1\r\nx\r\n").unwrap();
+                    } else {
+                        socket.write_all(b"$-1\r\n").unwrap();
+                        super::super::tests::expect_command(&mut socket, &[b"SET", b"key:0", b"x"]);
+                        socket.write_all(OOM_REPLY).unwrap();
+                    }
+                    if server_counts.fetch_add(1, Ordering::Relaxed) == 1 {
+                        let (ready, wake) = &*traffic_ready;
+                        *ready.lock().unwrap() = true;
+                        wake.notify_all();
+                    }
+                }
+                if let Some(request) = request { request.join().unwrap(); }
+                persistence.join().unwrap();
+            });
+            let mut opts = super::super::tests::options(port, if rewriting { "evict-zipf-rewrite" } else { "evict-zipf-control" });
+            opts.connections = 1;
+            opts.threads = 1;
+            opts.seconds = Some(nominal);
+            opts.requests = None;
+            opts.sample_interval = Duration::from_millis(1);
+            let mut window = RewriteWindow::new(port, opts.seconds.unwrap(), rewriting).unwrap();
+            window.bound = TIMEOUT;
+            let measured = measure_controlled(&opts, Some(Arc::new(Zipf::new(1, 0.99, 1).unwrap())),
+                None, Some(&mut window)).unwrap();
+            window.finish_request();
+            let outcome = window.outcome.take().unwrap();
+            drop(window);
+            server.join().unwrap();
+            assert_eq!(triggered.load(Ordering::Relaxed), u64::from(rewriting));
+            let count = counts.load(Ordering::Relaxed);
+            assert_eq!(measured.count, count);
+            assert_eq!(measured.hits, count.div_ceil(2));
+            assert_eq!(measured.refused_sets, count / 2);
+            assert_eq!(measured.writers, 1);
+            assert!(count >= 2);
+            assert_eq!(outcome.status, match finish { "control" => "not_requested", "extra" => "protocol_error", "rejected" => "request_error", other => other });
+            if matches!(finish, "ok" | "err") {
+                assert!(outcome.duration.is_some());
+                assert!(measured.seconds > opts.seconds.unwrap().as_secs_f64(), "traffic must extend past the nominal window");
+            } else { assert!(outcome.duration.is_none()); }
+            if finish == "err" {
+                assert_eq!(outcome.abort_reason, "reserve,\"full\"");
+                assert!(outcome.csv().ends_with(",err,\"reserve,\"\"full\"\"\""));
+            }
+            if finish == "rejected" { assert_eq!(outcome.abort_reason, "admission"); }
+            // Exercise the production output-before-error path with the full
+            // 36-field cache prefix. The memory columns are dummy values here;
+            // traffic counts come from the measured fake-server exchange.
+            let mut cache_columns = vec!["0".to_string(); 29];
+            cache_columns[6] = measured.count.to_string();
+            cache_columns[7] = measured.hits.to_string();
+            cache_columns[8] = (measured.count - measured.hits).to_string();
+            cache_columns[9] = measured.refused_sets.to_string();
+            let row = format!("{},{}", measured.csv(&opts), cache_columns.join(","));
+            let mut output = Vec::new();
+            let result = write_result(&row, Some(&outcome), &mut output);
+            assert_eq!(result.is_err(), outcome.failed());
+            let output = String::from_utf8(output).unwrap();
+            assert_eq!(output, format!("{row},{}\n", outcome.csv()));
+            let columns: Vec<_> = output.split(',').collect();
+            assert_eq!(columns[14], measured.hits.to_string());
+            assert_eq!(columns[16], measured.refused_sets.to_string());
+            assert_eq!(columns[37], outcome.status);
+            if finish == "err" { assert!(output.ends_with(",err,\"reserve,\"\"full\"\"\"\n")); }
+        }
+    }
 
     #[test]
     fn finite_zipf_weights_and_permutation() {

@@ -13,7 +13,10 @@
 #   mode workloads  this checkout's firn and Redis, without and with AOF,
 #                   on consumer command forms or opt-in memory-limit workloads;
 #                   with workload_images, instead the image each revision
-#                   builds and Redis, interleaved, without AOF
+#                   builds and Redis, interleaved, without AOF;
+#                   rewrite-during uses AOF only in either configuration;
+#                   evict-zipf-rewrite adds AOF cache rewrite lines and firn
+#                   no-AOF controls (each image and twin when selected)
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
 #
@@ -49,7 +52,7 @@ on:
         type: string
         default: ""
       cpus:
-        description: Server CPU counts
+        description: Server CPU counts; set cpus=1 for rewrite-during on one server core
         type: string
         default: "1 2"
       server_cpus:
@@ -73,7 +76,7 @@ on:
         type: boolean
         default: false
       tests:
-        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits"
+        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf evict-zipf-rewrite (AOF cache rewrite + no-AOF control; status/duration CSV on failure) session-set-limits session-get-limits rewrite-during (AOF only; before/during/after rates, 120 s bound, INFO sidecar CSV even on failure)"
         type: string
         default: ""
       depths:
@@ -85,7 +88,7 @@ on:
         type: string
         default: "2"
       seconds:
-        description: Seconds per measured run; probe with 5 first
+        description: "Measured seconds (each before/after phase for rewrite-during; cache rewrite may extend until completion, capped at 120 s after trigger); probe with 5 first"
         type: string
         default: "5"
       connections:
@@ -93,7 +96,7 @@ on:
         type: string
         default: "50"
       workload_options:
-        description: "Memory workloads only: space-separated --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Empty keeps workload defaults; seed is the pass."
+        description: "Memory/rewrite workloads only: space-separated --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Rewrite-during alone also accepts --maxmemory BYTES (default 0, noeviction). Empty keeps defaults; seed is the pass (zipf-s for cache workloads)."
         type: string
         default: ""
       workload_images:
