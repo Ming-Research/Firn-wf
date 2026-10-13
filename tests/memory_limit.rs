@@ -576,10 +576,11 @@ fn admission_without_aof_compares_the_heap_with_the_limit() {
 #[test]
 fn admission_with_aof_refuses_writes_over_the_limit() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"admission.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"admission.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let value = "w".repeat(VALUE_BYTES);
     let measured = info(&mut client, "memory");
     let counted = number(&measured, "used_memory").saturating_sub(number(&measured, "mem_not_counted_for_evict"));
