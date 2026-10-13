@@ -255,8 +255,8 @@ such a command requires a retry with the complete hold set. A transaction's
 queued commands can be inspected in advance, but initial correctness can
 use all maps for cross-database execution. The fixed set is known before the
 statement; no dynamic nested target acquisition is assumed. Compilation of
-the helper interfaces over multiple held maps is unverified, especially the
-alias-proof issue in the capability section.
+the helper interfaces over multiple held maps is blocked by the later pin's
+alias-proof limitation [recorded below](#missing-capability-natural-cross-map-helper-boundaries).
 
 Eviction uses a server-wide limit and considers candidates from all databases,
 including when the allocating command is on db 0. Preserve database identity
@@ -828,7 +828,7 @@ complete programs or claimed accepted compiler runs.
 | Queued output and EOF | [Network interface](https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/lib/std/net/module.wfm): separate owned receive/send halves, cancellable host calls, explicit partial transfer endpoints, EOF and consuming closes. |
 | Many recipients | SHARE-1 `Frozen<T>` and `frozen_share` retain immutable data without a lock; ordinary shared queue state protects envelopes. A Frozen body contains no live socket/shared-state handle. |
 | Queues, ordered timers, reusable ids | [Library inventory](https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/lib/std/modules.wfg), deque, priority queue, hash map and slab interfaces. Slab retires exhausted generations rather than wrapping them. |
-| Multiple database maps | SHARE-2 admits multiple whole-map targets, and TYPE-9/OP-11 admits swapping two held maps. The maps' permanent handles can be known before the atomic header. General multi-map helper alias proofs remain a witness obligation below. |
+| Multiple database maps | SHARE-2 admits multiple whole-map targets, and TYPE-9/OP-11 admits swapping two held maps. The maps' permanent handles can be known before the atomic header. Later CI demonstrated the general multi-writer helper alias-proof limitation [below](#missing-capability-natural-cross-map-helper-boundaries); read-only calls do not require map separation. |
 | Memory evidence | [Process interface](https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/lib/std/process/module.wfm): actual drivers, `heap_in_use` and resident bytes; heap requested bytes are not Redis allocator-usable bytes. |
 
 There is no channel or select module in the inventory, but the required
@@ -947,7 +947,7 @@ part waits for the host facility/contract decision. A periodic wake to poll
 the wall clock is not proposed as a workaround. Ordinary stable-clock tests
 can proceed independently; they do not settle the stronger contract.
 
-### Unverified capability: natural cross-map helper boundaries
+### Missing capability: natural cross-map helper boundaries
 
 The specification does not infer distinct shared object identities merely
 from different source handles or database integers. The natural MOVE helper
@@ -969,13 +969,114 @@ fn move_between(left: Shared<ConcurrentHashMap<u64>>, right: Shared<ConcurrentHa
 
 This deliberately isolates the boundary, not full MOVE behavior. Built-in
 swap permits exact aliasing, while an ordinary two-write helper call needs
-EFF-5 disjointness; caller knowledge that database numbers differ may not
-establish handle identity. Compile the natural full witness before selecting
-an interface. This is a **suspected proof/interface gap**, not a demonstrated
-diagnostic. If rejected, supply the diagnostic and the distinct-database
-construction to Whitefoot; do not silently inline the helper or add a runtime
-alias check to bypass it. The same concern applies to helpers receiving many
-whole-map views for EXEC and eviction.
+EFF-5 disjointness. At the later pin
+`af7665be672d29912d878dd5da8c3932bb6f296c`, the owner reported
+[CI run 38416798793](https://github.com/Ming-Research/Firn-wf/actions/runs/38416798793)
+on Firn `44d4dce` rejecting the whole-map script's `answer_call` with
+`error[EFF-5]: OverlappingCallEffects`, `first: db0^`, `second: db1^`.
+This confirms the originally suspected boundary limitation. The reduced
+witnesses below are not yet compiled; only the production diagnostic is
+observed.
+
+The rejection is sound and required by that pin's SHARE-2: two handles can
+retain one object, and no rule proves that two handles name two objects.
+Atomic target states whose types unify are compared as one root under OWN-7.
+Different directory fields separate handle storage, not the state they
+retain. `shared_map_new` creates distinct objects semantically, but exports
+no usable allocation-separation fact; readonly fields do not add one.
+EFF-5 requires separation for writes supplied through different arguments,
+including write/read pairs. Its sole alias-permitting operation is built-in
+swap. Acquisition of the atomic targets is legal: aliased objects are held
+once, and sequential accesses in the block are atomic. The unsupported part
+is passing several potentially aliased views across a general helper boundary
+whose effects require them to be disjoint.
+
+The writing guide intends writers to list all required targets in one atomic
+statement and permits direct state accesses and helpers over one view. It
+offers no accepted proof form for a helper receiving several distinct
+same-type maps. `apart` certifies counted-loop element separation, not shared
+allocation identities. Contracts have no shared-identity predicate; Shared
+handles and references have no equality operation. A single aggregate of
+borrowed views is forbidden by TYPE-8/REF-3, and sixteen map states inside
+one ordinary struct are forbidden by TYPE-9. Passing handles to helpers that
+acquire their own targets inside the existing atomic statement violates
+SHARE-2's ban on nested atomic statements.
+
+The sweep at `44d4dce` found three acquisition-to-helper calls with sixteen
+map writes. Their ordinary forwarding boundaries are listed separately;
+different formal reference roots do not themselves recreate the atomic
+target collision, but the outer caller must first establish separation.
+
+| Operation | Atomic acquisition | Call requiring separation |
+| --- | --- | --- |
+| Whole-map script attempt | `firn/scripting/entry.wf:489` | `answer_call` at line 531; observed CI rejection |
+| EXEC | `firn/commands/transaction.wf:249` | `held_databases_run` at line 289; predicted same rejection |
+| FLUSHALL | `firn/commands/databases.wf:522` | `held_databases_run` at line 529; predicted same rejection |
+
+The sixteen-write forwarding chain is `answer_call` to `ScriptCommands::call`
+at `firn/scripting/entry.wf:279`, whose interface is
+`firn/scripting/module.wfm:15`; `FirnCommands` binds it to `script_command`
+at `firn/commands/script.wf:2228`. That implementation forwards to
+`held_databases_run` at line 2153, which forwards to `held_databases_body`
+at `firn/commands/databases.wf:240`. All these boundaries declare writes
+to db0 through db15. None passes an additional cached-map argument alongside
+those sixteen views.
+
+| Related operation | Call site | Additional obligation |
+| --- | --- | --- |
+| Network MOVE and cross-database COPY | `firn/commands/databases.wf:166`, inside atomic line 159 | `database_transfer_body` receives two entry targets from same-type map handles. Different database numbers do not prove different allocations; different key byte sequences also have no usable key-identity proof at this boundary. |
+| Network SWAPDB | `firn/commands/databases.wf:218`, inside atomic line 210 | `held_database_swap` writes two whole-map views. The unequal-number branch is not a handle-separation certificate. |
+| SWAPDB inside EXEC/scripts | `firn/commands/databases.wf:430` | Independently selected `left` and `right` references join into path unions under REF-1. A future allocation proof must also preserve their distinct-selection relationship. |
+| MOVE/COPY inside EXEC/scripts | `firn/commands/databases.wf:509` | Selected source/target references have the same correlation obligation, followed by entry projection. |
+
+The inner `held_database_swap` to `database_swap_body` call at
+`firn/commands/databases.wf:196` uses separate formal roots. Its built-in
+swap may alias, but that does not exempt either surrounding helper call
+from EFF-5. The held dispatcher's one-map call at line 515 needs no
+cross-map proof.
+
+Eviction's atomic acquisition at `firn/commands/eviction.wf:495` calls
+`eviction_sample_all` at line 496 with sixteen map reads; EFF-5 admits
+read/read overlap. Its writes to Meta have a different state type.
+INFO's acquisition at `firn/commands/info.wf:485` uses sixteen separate
+read-only `map_count` calls at lines 486 through 501. Neither is a predicted
+instance of this error.
+
+The [shared-map witness](../../experiments/select-db/shared-map-alias-witness.wf)
+reduces the confirmed problem to two fresh map allocations, stable directory
+fields and one two-write helper call. Its expected diagnostic is EFF-5 at
+`clear_both`, comparing db0 and db1; the expectation is not fabricated
+compiler output. The existing [two-map witness](../../experiments/select-db/two-map-witness.wf)
+keeps the MOVE/SWAPDB forms. The [selected-reference witness](../../experiments/select-db/selected-reference-alias-witness.wf)
+uses two ordinary scalar references, already separate at its function entry,
+and reverses their order in one branch. Both resulting views remain distinct
+semantically, but REF-1 unions lose their correlation. Its expected EFF-5
+is a source prediction, to be recorded in CI separately from shared-handle
+aliasing.
+
+Expected diagnostic fields for the shared-map reduction, not captured output:
+
+```text
+error[EFF-5]: OverlappingCallEffects
+source: clear_both(first: db0, second: db1);
+first: db0^
+second: db1^
+mechanical_fix: pass places that do not overlap, or pass the shared place through one argument only
+```
+
+| Option | Cost and disposition |
+| --- | --- |
+| Add a sound Whitefoot allocation-separation capability that survives handle retention and selection | Recommended direction for the language request. A certified family or allocation-provenance contract must establish distinct identities at construction, retain them through sharing/readonly directories and preserve selected-member facts. It must reject an uncertified aliased-handle call. Zero runtime identity checks and an unchanged cached ordinary path are acceptance requirements, not established properties of an implementation. No such facility is present at this pin. |
+| Add an explicitly alias-aware helper boundary | A broader language change: references, effect substitution, fact invalidation and optimization must remain sound when arguments may overlap. It would need conservative alias handling inside callees, instead of treating all their writable formal roots as exclusive. No such boundary is present at this pin; its proof and generated-code costs are undetermined. |
+| Inline the operations or split helper calls into one-view transitions | Simple cases are accepted today and need no identity comparison, but this hides the natural helper gap and duplicates/restructures command composition. Splitting atomic statements additionally changes EXEC/script isolation. Not applied. |
+| Give every map a distinct nominal value type | Different state types prove separation, but merely wrapping handles does not change their shared state type. Sixteen map value types destroy the uniform cached handle interface, require conversion/specialization machinery, and cannot exchange whole maps with same-type built-in swap. Not applied; it changes the chosen representation. |
+| Collapse databases into one namespace or one shared lock | Adds ordinary key transformation or shared coordination and changes the concurrency design; sixteen ConcurrentHashMap fields in one aggregate are not a legal form. Not applied. |
+| Test handle identity at runtime | There is no identity-query/equality form for these handles at this pin, and adding such a check would violate the task's no-runtime-check requirement. Not applied. |
+
+Firn sources, interfaces and Redis expectations are unchanged for this
+finding. Multi-writer database implementation waits for the Whitefoot
+capability; the witness workflow records the two expected rejection sites
+without weakening Firn's compile gate. No performance measurement is claimed.
 
 These are request-ready findings, not filed board requests. No wf-board tools
 are exposed in this session, so this study does not claim a board update or

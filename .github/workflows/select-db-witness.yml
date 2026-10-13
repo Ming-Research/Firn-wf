@@ -30,6 +30,32 @@ jobs:
       - name: Check that the duplicated directory retains the original map identity
         run: build/shared-handles-witness
 
+      - name: Record same-type shared-map helper alias rejection
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          if "build/whitefoot/${witness_release}/whitefootc" --check research/experiments/select-db/shared-map-alias-witness.wf > "$RUNNER_TEMP/shared-map-alias-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+            echo 'Expected EFF-5 at the clear_both helper boundary'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+          grep -E 'error\[EFF-5\]: OverlappingCallEffects[[:space:]]*$' "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+          grep -F 'clear_both(first: db0, second: db1);' "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+          grep -E '^[[:space:]]*first: db0\^[[:space:]]*$' "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+          grep -E '^[[:space:]]*second: db1\^[[:space:]]*$' "$RUNNER_TEMP/shared-map-alias-diagnostic.txt"
+
+      - name: Record selected-reference correlation rejection
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          if "build/whitefoot/${witness_release}/whitefootc" --check research/experiments/select-db/selected-reference-alias-witness.wf > "$RUNNER_TEMP/selected-reference-alias-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/selected-reference-alias-diagnostic.txt"
+            echo 'Expected EFF-5 at the write_pair selected-reference boundary'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/selected-reference-alias-diagnostic.txt"
+          grep -E 'error\[EFF-5\]: OverlappingCallEffects[[:space:]]*$' "$RUNNER_TEMP/selected-reference-alias-diagnostic.txt"
+          grep -F 'write_pair(source: source, destination: destination);' "$RUNNER_TEMP/selected-reference-alias-diagnostic.txt"
+
       - name: Isolate TYPE-11 and compile its prescribed readonly writer form
         run: |
           witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
