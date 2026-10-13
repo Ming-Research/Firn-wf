@@ -1,0 +1,2034 @@
+[
+ {
+  "name": "blocking-mc-s01-blpop-timeout--0.001-resp2",
+  "scenario": 1,
+  "resp": 2,
+  "purpose": "BLPOP with timeout operand -0.001",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BLPOP",
+     "l",
+     "-0.001"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-blpop-timeout--0.0005-resp2",
+  "scenario": 1,
+  "resp": 2,
+  "purpose": "BLPOP with timeout operand -0.0005",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BLPOP",
+     "l",
+     "-0.0005"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-blpop-timeout--0.0015-resp2",
+  "scenario": 1,
+  "resp": 2,
+  "purpose": "BLPOP with timeout operand -0.0015",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BLPOP",
+     "l",
+     "-0.0015"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-blpop-timeout--0.002-resp2",
+  "scenario": 1,
+  "resp": 2,
+  "purpose": "BLPOP with timeout operand -0.002",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BLPOP",
+     "l",
+     "-0.002"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-blpop-timeout--0.001-resp3",
+  "scenario": 1,
+  "resp": 3,
+  "purpose": "BLPOP with timeout operand -0.001",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BLPOP",
+     "l",
+     "-0.001"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-blpop-timeout--0.0005-resp3",
+  "scenario": 1,
+  "resp": 3,
+  "purpose": "BLPOP with timeout operand -0.0005",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BLPOP",
+     "l",
+     "-0.0005"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-blpop-timeout--0.0015-resp3",
+  "scenario": 1,
+  "resp": 3,
+  "purpose": "BLPOP with timeout operand -0.0015",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BLPOP",
+     "l",
+     "-0.0015"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-blpop-timeout--0.002-resp3",
+  "scenario": 1,
+  "resp": 3,
+  "purpose": "BLPOP with timeout operand -0.002",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BLPOP",
+     "l",
+     "-0.002"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-brpop-timeout--0.001-resp2",
+  "scenario": 1,
+  "resp": 2,
+  "purpose": "BRPOP with timeout operand -0.001",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BRPOP",
+     "l",
+     "-0.001"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-brpop-timeout--0.0005-resp2",
+  "scenario": 1,
+  "resp": 2,
+  "purpose": "BRPOP with timeout operand -0.0005",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BRPOP",
+     "l",
+     "-0.0005"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-brpop-timeout--0.0015-resp2",
+  "scenario": 1,
+  "resp": 2,
+  "purpose": "BRPOP with timeout operand -0.0015",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BRPOP",
+     "l",
+     "-0.0015"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-brpop-timeout--0.002-resp2",
+  "scenario": 1,
+  "resp": 2,
+  "purpose": "BRPOP with timeout operand -0.002",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BRPOP",
+     "l",
+     "-0.002"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-brpop-timeout--0.001-resp3",
+  "scenario": 1,
+  "resp": 3,
+  "purpose": "BRPOP with timeout operand -0.001",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BRPOP",
+     "l",
+     "-0.001"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-brpop-timeout--0.0005-resp3",
+  "scenario": 1,
+  "resp": 3,
+  "purpose": "BRPOP with timeout operand -0.0005",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BRPOP",
+     "l",
+     "-0.0005"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-brpop-timeout--0.0015-resp3",
+  "scenario": 1,
+  "resp": 3,
+  "purpose": "BRPOP with timeout operand -0.0015",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BRPOP",
+     "l",
+     "-0.0015"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ },
+ {
+  "name": "blocking-mc-s01-brpop-timeout--0.002-resp3",
+  "scenario": 1,
+  "resp": 3,
+  "purpose": "BRPOP with timeout operand -0.002",
+  "notes": "Positive timeout reads have no blocked-count barrier; elapsed is diagnostic and no tight scheduling assertion is made.",
+  "operations": [
+   {
+    "op": "open",
+    "client": "P"
+   },
+   {
+    "op": "open",
+    "client": "A"
+   },
+   {
+    "op": "send",
+    "client": "A",
+    "argv": [
+     "BRPOP",
+     "l",
+     "-0.002"
+    ]
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "1",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "quiet",
+    "client": "A",
+    "ms": 100
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "RPUSH",
+     "l",
+     "x"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "read",
+    "client": "A",
+    "count": 1,
+    "timeout_ms": 5000
+   },
+   {
+    "op": "poll_info",
+    "client": "P",
+    "field": "blocked_clients",
+    "equals": "0",
+    "record_fields": [
+     "blocked_clients",
+     "total_blocking_keys",
+     "total_blocking_keys_on_nokey"
+    ],
+    "timeout_ms": 5000
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "TYPE",
+     "l"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "LRANGE",
+     "l",
+     "0",
+     "-1"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   },
+   {
+    "op": "send",
+    "client": "P",
+    "argv": [
+     "PING"
+    ]
+   },
+   {
+    "op": "read",
+    "client": "P",
+    "count": 1
+   }
+  ]
+ }
+]
