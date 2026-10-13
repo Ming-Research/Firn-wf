@@ -36,37 +36,56 @@ def enc(args):
         b += b"$%d\r\n%s\r\n" % (len(a), a)
     return b
 
-def run(server, batch, port):
-    d = tempfile.mkdtemp()
-    args = [server, "--port", str(port), "--save", "", "--dir", d]
-    if batch.get("rewrite_aof"):
-        args += ["--appendonly", "yes", "--aof-use-rdb-preamble", "no"]
-    for k, v in batch.get("config", []):
-        args += ["--" + k, v]
+def start(server, args, port, resp):
     p = subprocess.Popen(args, stdout=subprocess.DEVNULL)
-    for _ in range(100):
+    for _ in range(200):
         try:
             s = socket.create_connection(("127.0.0.1", port)); break
         except OSError:
             time.sleep(0.05)
     f = s.makefile("rb")
-    res = {"name": batch["name"], "resp": batch.get("resp", 2), "replies": []}
-    if batch.get("resp", 2) == 3:
+    while True:
+        s.sendall(enc(["PING"]))
+        if not read_reply(f).startswith(b"-LOADING"):
+            break
+        time.sleep(0.05)
+    if resp == 3:
         s.sendall(enc(["HELLO", "3"])); read_reply(f)
+    return p, s, f
+
+def rewrite(s, f, d):
+    s.sendall(enc(["BGREWRITEAOF"])); read_reply(f)
+    for _ in range(400):
+        s.sendall(enc(["INFO", "persistence"])); info = read_reply(f).decode()
+        if "aof_rewrite_in_progress:0" in info and "aof_rewrite_scheduled:0" in info:
+            break
+        time.sleep(0.05)
+    time.sleep(0.2)
+    bases = sorted(glob.glob(os.path.join(d, "appendonlydir", "*.base.aof")))
+    return open(bases[-1], "rb").read().decode("latin-1") if bases else None
+
+def run(server, batch, port):
+    d = tempfile.mkdtemp()
+    args = [server, "--port", str(port), "--save", "", "--dir", d]
+    if batch.get("rewrite_aof") or batch.get("appendonly"):
+        args += ["--appendonly", "yes", "--aof-use-rdb-preamble", "no", "--auto-aof-rewrite-percentage", "0"]
+    for k, v in batch.get("config", []):
+        args += ["--" + k, v]
+    resp = batch.get("resp", 2)
+    p, s, f = start(server, args, port, resp)
+    res = {"name": batch["name"], "resp": resp, "replies": []}
     for c in batch["commands"]:
+        if c == ["__RESTART__"]:
+            s.sendall(enc(["SHUTDOWN"])); s.close(); p.wait()
+            p, s, f = start(server, args, port, resp)
+            res["replies"].append({"cmd": c, "reply": ""}); continue
+        if c == ["__REWRITE__"]:
+            res["replies"].append({"cmd": c, "reply": rewrite(s, f, d) or ""}); continue
         s.sendall(enc(c))
         r = read_reply(f)
         res["replies"].append({"cmd": c, "reply": r.decode("latin-1")})
     if batch.get("rewrite_aof"):
-        s.sendall(enc(["BGREWRITEAOF"])); read_reply(f)
-        for _ in range(200):
-            s.sendall(enc(["INFO", "persistence"])); info = read_reply(f).decode()
-            if "aof_rewrite_in_progress:0" in info and "aof_rewrite_scheduled:0" in info:
-                break
-            time.sleep(0.05)
-        time.sleep(0.2)
-        bases = sorted(glob.glob(os.path.join(d, "appendonlydir", "*.base.aof")))
-        res["aof_base"] = open(bases[-1], "rb").read().decode("latin-1") if bases else None
+        res["aof_base"] = rewrite(s, f, d)
     p.terminate(); p.wait()
     return res
 
