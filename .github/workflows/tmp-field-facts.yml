@@ -60,9 +60,8 @@ jobs:
             set +e
             "$compiler" --graph "$d/firn/modules.wfg" --entry firn -o "$RUNNER_TEMP/$name.bin" > "$RUNNER_TEMP/$name.log" 2>&1
             status=$?
-            set -e
             echo "VARIANT $name exit $status"
-            grep -A3 "error\[" "$RUNNER_TEMP/$name.log" | head -20
+            tail -n 25 "$RUNNER_TEMP/$name.log"
           done
 
       - name: Compile every module-graph witness entry
@@ -80,7 +79,6 @@ jobs:
               set +e
               "$compiler" --graph "$graph" --entry "$entry" -o "$out/$(echo "$graph" | tr / _)-$entry" 2>&1
               status=$?
-              set -e
               echo "::endgroup::"
               printf '%s\t%s\t%s\n' "$graph" "$entry" "$status" | tee -a "$RUNNER_TEMP/graph-summary.tsv"
             done
