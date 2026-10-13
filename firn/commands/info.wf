@@ -31,7 +31,7 @@ const info_server_tail: Array<u8, 41> = "\r\nhz:10\r\nconfigured_hz:10\r\nconfig
 
 const info_clients_head: Array<u8, 29> = "# Clients\r\nconnected_clients:";
 
-const info_clients_tail: Array<u8, 92> = "\r\ncluster_connections:0\r\nblocked_clients:0\r\ntracking_clients:0\r\nclients_in_timeout_table:0\r\n";
+const info_clients_tail: Array<u8, 147> = "\r\ncluster_connections:0\r\nblocked_clients:0\r\ntracking_clients:0\r\nclients_in_timeout_table:0\r\ntotal_blocking_keys:0\r\ntotal_blocking_keys_on_nokey:0\r\n";
 
 const info_memory_head: Array<u8, 35> = "# Memory\r\nnumber_of_cached_scripts:";
 
@@ -241,7 +241,7 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 13> re
 }
 
 fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 13>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
-  doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed. Redis 7.0.15 server.c:5628-5650 defines combined append/sync health, active sizes and buffer length; the buffer length includes collecting and retained bytes. Synchronous syncing has no BIO jobs or postponed syncs, so those counts are zero.";
+  doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed. Redis 7.0.15 server.c:5628-5650 defines combined append/sync health, active sizes and buffer length; the buffer length includes collecting and retained bytes. Synchronous syncing has no BIO jobs or postponed syncs, so those counts are zero. firn has no blocking commands, so total_blocking_keys and total_blocking_keys_on_nokey are always 0 until firn-scope-blocking-lists makes them nonzero.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
   for @sections (which in 0_u64..13_u64) {
@@ -266,7 +266,7 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
       } else if which == 1_u64 {
         text_word(text: &text, word: &info_clients_head[0_u64..29_u64]);
         text_number(text: &text, value: clients);
-        text_word(text: &text, word: &info_clients_tail[0_u64..92_u64]);
+        text_word(text: &text, word: &info_clients_tail[0_u64..147_u64]);
       } else if which == 2_u64 {
         text_word(text: &text, word: &info_memory_head[0_u64..35_u64]);
         text_number(text: &text, value: cached_scripts);

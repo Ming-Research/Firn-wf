@@ -4042,6 +4042,8 @@ fn firn_answers_connection_commands_as_redis_does() {
         ("tcp_port", text.as_str()),
         ("uptime_in_days", "0"),
         ("connected_clients", "2"),
+        ("total_blocking_keys", "0"),
+        ("total_blocking_keys_on_nokey", "0"),
         ("loading", "0"),
         ("aof_enabled", "0"),
         ("aof_rewrite_in_progress", "0"),
