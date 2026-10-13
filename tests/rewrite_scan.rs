@@ -1094,7 +1094,13 @@ fn reconciled_scan_discards_a_step_that_does_not_fit_and_retries_narrower() {
         bytes.extend(wire(&[b"SET", name, &value(index)]));
     }
     std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
-    let (child, mut client, _) = start(&program);
+    // The 100 MiB increment over an empty base exceeds the default minimum,
+    // and Redis starts an automatic rewrite from it as from any grown AOF
+    // (its startup baseline is the base file's size); when the writer's first
+    // check ran before this case's BGREWRITEAOF arrived, the request found
+    // that rewrite in progress. Raise the minimum so BGREWRITEAOF is the only
+    // rewrite.
+    let (child, mut client, _) = start_with_minimum(&program, b"4294967296");
     rewrite_start(&mut client);
     let info = rewrite_wait(&mut client);
     assert_eq!(info["aof_last_bgrewrite_status"], "ok", "a step too large for R must be narrowed, not abort: {info:?}");
