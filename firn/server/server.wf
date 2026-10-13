@@ -409,7 +409,8 @@ fn address_v6(text: &Box<Slots<u8>>, groups: &Array<u16, 8>) -> result: unit rea
           let five_long = best_len == 5_u64;
           let five_word = groups^[5_u64] == 65535_u16;
           let five = band(five_long, five_word);
-          set embedded = bor(six, bor(seven, five));
+          let late = bor(seven, five);
+          set embedded = bor(six, late);
         }
       }
       if embedded {

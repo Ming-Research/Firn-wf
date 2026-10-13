@@ -588,7 +588,8 @@ fn put_clients(store: &Keyspace, client: &Client, text: &Box<Slots<u8>>, filtere
       if index < table^.records.inner.len {
         let record = &table^.records.inner[index];
         let matched = record^.id == wanted;
-        let selected = bor(bnot(filtered), matched);
+        let unfiltered = bnot(filtered);
+            let selected = bor(unfiltered, matched);
         if selected {
           if record^.id == client^.id {
             put_own_line(text: text, client: client, command: &word_client_list[0_u64..11_u64]);
@@ -631,9 +632,11 @@ fn run_client_list(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
     let slave = name_is(input: input, start: kind.start, length: kind.length, word: &word_slave[0_u64..5_u64]);
     let pubsub = name_is(input: input, start: kind.start, length: kind.length, word: &word_pubsub[0_u64..6_u64]);
     let replicas = bor(replica, slave);
-    let others = bor(master, bor(replicas, pubsub));
+    let fanned = bor(replicas, pubsub);
+    let others = bor(master, fanned);
     if normal {
-      put_clients(store: store, client: client, text: &text, filtered: False(), wanted: 0_u64);
+      let unfilteredall = False();
+      put_clients(store: store, client: client, text: &text, filtered: unfilteredall, wanted: 0_u64);
     } else if others {
     } else {
       reply_word(client: client, word: &text_unknown_type[0_u64..26_u64]);
@@ -650,13 +653,15 @@ fn run_client_list(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
         return unit;
       }
       let wanted = cvt.wrap::<i64, u64>(number.value);
-      put_clients(store: store, client: client, text: &text, filtered: True(), wanted: wanted);
+      let byid = True();
+      put_clients(store: store, client: client, text: &text, filtered: byid, wanted: wanted);
     }
   } else if count != 2_u64 {
     reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
     return unit;
   } else {
-    put_clients(store: store, client: client, text: &text, filtered: False(), wanted: 0_u64);
+    let everyone = False();
+    put_clients(store: store, client: client, text: &text, filtered: everyone, wanted: 0_u64);
   }
   let length = text.inner.len;
   let window = &text.inner[0_u64..length];
