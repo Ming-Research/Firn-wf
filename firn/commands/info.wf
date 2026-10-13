@@ -322,8 +322,10 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         } else {
           text_word(text: &text, word: &info_rw_ok[0_u64..2_u64]);
         }
-        text_word(text: &text, word: &info_rw_sequence[0_u64..30_u64]);
-        text_number(text: &text, value: persistence^.commit_seq);
+        if logged {
+          text_word(text: &text, word: &info_rw_sequence[0_u64..30_u64]);
+          text_number(text: &text, value: persistence^.commit_seq);
+        }
         text_word(text: &text, word: &info_rw_cut[0_u64..23_u64]);
         let cut = persistence^.aof_rewrite_cut;
         if persistence^.aof_rewrite_in_progress {
