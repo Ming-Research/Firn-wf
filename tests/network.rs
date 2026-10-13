@@ -8,6 +8,7 @@ mod aof_write_errors;
 mod aof_sync_fault;
 mod rewrite_sequence;
 mod rewrite_scan;
+mod rewrite_faults;
 mod write_meta;
 
 use std::io::{Read, Write};
