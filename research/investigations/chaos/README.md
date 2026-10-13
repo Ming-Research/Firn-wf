@@ -484,14 +484,14 @@ seed 2, and `firn_append_before_reply=absent`. These results are reported from
 the owner's CI observations; no workload or test was run locally.
 
 Firn completed 29 epochs and all 29 SIGKILL restarts, with nine combined
-write/flush EIO windows. It reported 36 lost acknowledged writes: 33 labelled
+write/flush EIO windows. It reported 39 lost acknowledged writes: 36 labelled
 known and three labelled `firn-loss-attribution-unverified-still-fails`.
 Those three complete replies followed signal send by approximately 68, 135,
 and 82 microseconds. One example records `ack_completed_ns=21102997559`
 and `sigkill_at_ns=21102929443`, a signed offset of `+68116 ns`. The original
 classifier's unsigned subtraction produced `ack_age_ns=None`, treating a
 post-send completion as invalid without considering asynchronous signal
-delivery. All 36 losses are consistent with the known pre-#97
+delivery. All 39 losses are consistent with the known pre-#97
 acknowledgment-before-append mechanism in the owner's reported observation;
 post-send completion alone does not establish another defect. This is a
 retrospective mechanism interpretation, not proof that the old artifacts
@@ -499,7 +499,7 @@ satisfy the new classifier predicate: `a454c8b` did not record a structured
 reap timestamp, and the three original unverified labels remain unchanged.
 Automatic known attribution requires the new same-kill reap evidence; the
 extension still needs its own run. It is not proof of the AOF writer's
-precise cause. All 36 remain failures of zero-loss acceptance.
+precise cause. All 39 remain failures of zero-loss acceptance.
 
 The scheduler executed ten full and twenty incremental checks. Its reported
 `check_fraction=0.0048` is 0.48% of wall time, below the 10% budget for this
