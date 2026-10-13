@@ -1,4 +1,3 @@
-alias no_handle = halo::heap::no_handle;
 alias HostOutcome = halo::vm::HostOutcome;
 alias num_of = halo::value::num_of;
 alias Value = halo::value::Value;
@@ -7,8 +6,9 @@ alias Engine = halo::embed::Engine;
 alias Span = pkg::protocol::Span;
 
 fn install_host(engine: &Engine) -> r: unit writes(engine) {
+  doc "Installs the redis table Redis 7.2.16's scriptingInit and luaRegisterRedisAPI (script_lua.c) give scripts, the functions firn implements, the log levels, the replication flags and the version Redis reports, then protects the environment (see protect).";
   let vm = &engine^.vm;
-  let redis = halo::heap::new_table(heap: &vm^.heap, asize: 0_u32, hsize: 16_u32);
+  let redis = halo::heap::new_table(heap: &vm^.heap, asize: 0_u32, hsize: 32_u32);
   let k_4096 = literal(vm: vm, text: &env_text_0[0_u64..4_u64]);
   let v_4096 = Value::Builtin(id: 4096_u32);
   raw(vm: vm, table: redis, key: k_4096, value: v_4096);
@@ -30,6 +30,9 @@ fn install_host(engine: &Engine) -> r: unit writes(engine) {
   let k_4103 = literal(vm: vm, text: &env_text_6[0_u64..7_u64]);
   let v_4103 = Value::Builtin(id: 4103_u32);
   raw(vm: vm, table: redis, key: k_4103, value: v_4103);
+  let k_4104 = literal(vm: vm, text: &env_set_repl[0_u64..8_u64]);
+  let v_4104 = Value::Builtin(id: 4104_u32);
+  raw(vm: vm, table: redis, key: k_4104, value: v_4104);
   let level_0 = literal(vm: vm, text: &env_text_7[0_u64..9_u64]);
   let number_0 = num(x: 0.0_f64);
   raw(vm: vm, table: redis, key: level_0, value: number_0);
@@ -42,66 +45,111 @@ fn install_host(engine: &Engine) -> r: unit writes(engine) {
   let level_3 = literal(vm: vm, text: &env_text_10[0_u64..11_u64]);
   let number_3 = num(x: 3.0_f64);
   raw(vm: vm, table: redis, key: level_3, value: number_3);
+  let repl_none = literal(vm: vm, text: &env_repl_none[0_u64..9_u64]);
+  raw(vm: vm, table: redis, key: repl_none, value: number_0);
+  let repl_aof = literal(vm: vm, text: &env_repl_aof[0_u64..8_u64]);
+  raw(vm: vm, table: redis, key: repl_aof, value: number_1);
+  let repl_slave = literal(vm: vm, text: &env_repl_slave[0_u64..10_u64]);
+  raw(vm: vm, table: redis, key: repl_slave, value: number_2);
+  let repl_replica = literal(vm: vm, text: &env_repl_replica[0_u64..12_u64]);
+  raw(vm: vm, table: redis, key: repl_replica, value: number_2);
+  let repl_all = literal(vm: vm, text: &env_repl_all[0_u64..8_u64]);
+  raw(vm: vm, table: redis, key: repl_all, value: number_3);
+  let version_key = literal(vm: vm, text: &env_version_name[0_u64..13_u64]);
+  let version = literal(vm: vm, text: &env_version_text[0_u64..6_u64]);
+  raw(vm: vm, table: redis, key: version_key, value: version);
+  let version_num_key = literal(vm: vm, text: &env_version_num_name[0_u64..17_u64]);
+  let version_num = num(x: 459280.0_f64);
+  raw(vm: vm, table: redis, key: version_num_key, value: version_num);
   let result = halo::embed::set_global(engine: engine, name: &env_text_11[0_u64..5_u64], value: redis);
-  set vm = &engine^.vm;
-  let meta = halo::heap::new_table(heap: &vm^.heap, asize: 0_u32, hsize: 1_u32);
-  let index = literal(vm: vm, text: &env_text_12[0_u64..7_u64]);
-  let callback = Value::Builtin(id: 4101_u32);
-  raw(vm: vm, table: meta, key: index, value: callback);
-  match halo::value::tab_of(v: meta) {
-    Handle(h: mh) => {
-      let g = cvt::<u32, u64>(vm^.globals);
-      if g < vm^.heap.tables.inner.len {
-        set vm^.heap.tables.inner[g].payload.meta = mh;
-      }
-    }
-    NoHandle() => {
-    }
-  }
-  let globals = Value::Tab(h: vm^.globals);
-  protect_table(vm: vm, table: globals);
+  protect(engine: engine);
   return unit;
 }
 
-fn protect_table(vm: &Vm, table: Value) -> r: unit writes(vm) {
-  doc "Redis 7 protects globals and the tables reachable through them. Mark before walking so cycles are finite; KEYS/ARGV are installed later and remain script-local mutable tables.";
-  match halo::value::tab_of(v: table) {
-    Handle(h: handle) => {
-      let h = cvt::<u32, u64>(handle);
-      if h < vm^.heap.tables.inner.len {
-        if vm^.heap.tables.inner[h].payload.read_only {
-          return unit;
+fn push_value(out: &Box<Slots<Value>>, value: Value) -> r: unit writes(out) {
+  let cap = out^.inner.cap;
+  if out^.inner.len == cap {
+    let twice = cap +sat cap;
+    let target = imax(twice, 16_u64);
+    if target > cap {
+      grow(cell: out, capacity: target);
+    }
+  }
+  if out^.inner.len < out^.inner.cap {
+    place_back(window: &out^.inner, value: value);
+  }
+  return unit;
+}
+
+fn protect_reachable(engine: &Engine, root: Value, seen: Value) -> r: unit writes(engine) {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Marks root and every table reachable from it through table values and metatables read-only, through Halo's embedding interface, as Redis 7.2.16's luaSetTableProtectionRecursively (script_lua.c) does. Each table is expanded once, after it is recorded in seen, a host table whose keys are the tables already marked, which ends cycles such as _G._G and is shared between walks. Keys are not followed, as Redis follows only values. set_read_only and table_set refuse only a table that is not live, which a table just reached through table_next is, so their results are not inspected.";
+  let pending = box_slots_new::<Value>(capacity: 16_u64);
+  push_value(out: &pending, value: root);
+  let yes = Value::True();
+  loop {
+    if pending.inner.len == 0_u64 {
+      break;
+    }
+    let t = take_back(window: &pending.inner);
+    let marked = halo::embed::table_get(engine: engine, table: seen, key: t);
+    if halo::embed::truthy(value: marked) {
+      continue;
+    }
+    let recorded = halo::embed::table_set(engine: engine, table: seen, key: t, value: yes);
+    let marked_read_only = halo::embed::set_read_only(engine: engine, table: t);
+    let key = Value::Nil();
+    loop {
+      match halo::embed::table_next(engine: engine, table: t, key: key) {
+        Err(..) => {
+          break;
         }
-        set vm^.heap.tables.inner[h].payload.read_only = True();
-        let key = Value::Nil();
-        loop {
-          match halo::heap::table_next(heap: &vm^.heap, t: table, key: key) {
-            Ok(value: found) => {
-              match found {
-                Some(value: pair) => {
-                  set key = pair.key;
-                  protect_table(vm: vm, table: pair.val);
-                }
-                None() => {
-                  break;
-                }
-              }
-            }
-            Err(..) => {
+        Ok(value: next) => {
+          match next {
+            None() => {
               break;
             }
-          }
-        }
-        if h < vm^.heap.tables.inner.len {
-          let metatable = vm^.heap.tables.inner[h].payload.meta;
-          if metatable != no_handle {
-            let meta_value = Value::Tab(h: metatable);
-            protect_table(vm: vm, table: meta_value);
+            Some(value: pair) => {
+              set key = pair.key;
+              let tag = halo::embed::kind(value: pair.val);
+              if tag == 4_u8 {
+                push_value(out: &pending, value: pair.val);
+              }
+            }
           }
         }
       }
     }
-    NoHandle() => {
+    let meta = halo::embed::metatable_of(engine: engine, value: t);
+    let meta_tag = halo::embed::kind(value: meta);
+    if meta_tag == 4_u8 {
+      push_value(out: &pending, value: meta);
+    }
+  }
+  return unit;
+}
+
+fn protect(engine: &Engine) -> r: unit writes(engine) {
+  doc "Protects the script environment as Redis 7.2.16's scriptingInit does (CVE-2025-46818 included), through Halo's embedding interface: the globals get a metatable whose __index raises Redis's error for an undeclared name, then the globals and every table reachable from them, metatables included, become read-only, then so do the metatables of the basic types, of which only strings have one, and the tables reachable from them. Runs once, when the engine is made and before any script has set KEYS or ARGV, which prepare installs afresh for each call through set_global, so they stay writable as in Redis.";
+  let rejecting = halo::embed::new_table(engine: engine, asize: 0_u32, hsize: 1_u32);
+  let index = halo::embed::intern(engine: engine, bytes: &env_text_12[0_u64..7_u64]);
+  let callback = Value::Builtin(id: 4101_u32);
+  let indexed = halo::embed::table_set(engine: engine, table: rejecting, key: index, value: callback);
+  let globals = Value::Tab(h: engine^.vm.globals);
+  let installed = halo::embed::set_metatable(engine: engine, table: globals, meta: rejecting);
+  let seen = halo::embed::new_table(engine: engine, asize: 0_u32, hsize: 0_u32);
+  protect_reachable(engine: engine, root: globals, seen: seen);
+  let nil = Value::Nil();
+  let samples = array_filled::<Value, 5>(value: nil);
+  set samples[1_u64] = Value::False();
+  set samples[2_u64] = num(x: 0.0_f64);
+  set samples[3_u64] = index;
+  set samples[4_u64] = callback;
+  for (i in 0_u64..5_u64) {
+    let sample = samples[i];
+    let meta = halo::embed::metatable_of(engine: engine, value: sample);
+    let tag = halo::embed::kind(value: meta);
+    if tag == 4_u8 {
+      protect_reachable(engine: engine, root: meta, seen: seen);
     }
   }
   return unit;
@@ -290,6 +338,24 @@ const env_text_14: Array<u8, 4> = "ARGV";
 const env_text_15: Array<u8, 4> = "ERR ";
 
 const env_text_16: Array<u8, 3> = "err";
+
+const env_set_repl: Array<u8, 8> = "set_repl";
+
+const env_repl_none: Array<u8, 9> = "REPL_NONE";
+
+const env_repl_aof: Array<u8, 8> = "REPL_AOF";
+
+const env_repl_slave: Array<u8, 10> = "REPL_SLAVE";
+
+const env_repl_replica: Array<u8, 12> = "REPL_REPLICA";
+
+const env_repl_all: Array<u8, 8> = "REPL_ALL";
+
+const env_version_name: Array<u8, 13> = "REDIS_VERSION";
+
+const env_version_text: Array<u8, 6> = "7.2.16";
+
+const env_version_num_name: Array<u8, 17> = "REDIS_VERSION_NUM";
 
 fn config_snapshot(vm: &Vm) -> saved: Box<Slots<Array<u64, 9>>> reads(vm) {
   doc "Cjson setters are engine-visible effects even before a keyspace write. Snapshot settings so an abandoned attempt leaves the engine's Lua environment as it found it.";

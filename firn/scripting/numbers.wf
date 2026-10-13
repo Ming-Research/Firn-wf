@@ -1,0 +1,117 @@
+alias Value = halo::value::Value;
+alias Vm = halo::vm::Vm;
+alias Client = pkg::protocol::Client;
+
+fn whole_integer(x: f64) -> r: Option<i64> pure {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Redis 7.2.16's double2ll (util.h): an integral value no larger in magnitude than LLONG_MAX/2, which is 2^62 as a double, as its integer, otherwise None. NaN gives None and negative zero gives 0, as in Redis.";
+  if flt(x, -4.611686018427388e18_f64) {
+    return None<i64>();
+  }
+  if fgt(x, 4.611686018427388e18_f64) {
+    return None<i64>();
+  }
+  let whole = ftrunc(x);
+  if fne(whole, x) {
+    return None<i64>();
+  }
+  if cvt.defined::<f64, i64>(whole) {
+    let integer = cvt::<f64, i64>(whole);
+    return Some<i64>(value: integer);
+  }
+  return None<i64>();
+}
+
+fn append_integer(out: &Box<Slots<u8>>, value: i64) -> r: unit writes(out) {
+  doc "Appends an integer in decimal, with a minus sign when negative, as ll2string writes it.";
+  if value < 0_i64 {
+    push(out: out, byte: 45_u8);
+  }
+  let magnitude = 0_u64;
+  if value < 0_i64 {
+    let above = value + 1_i64;
+    let negated = 0_i64 - above;
+    let positive = cvt::<i64, u64>(negated);
+    set magnitude = positive + 1_u64;
+  } else {
+    set magnitude = cvt::<i64, u64>(value);
+  }
+  decimal(out: out, n: magnitude);
+  return unit;
+}
+
+fn fpconv_text(out: &Box<Slots<u8>>, x: f64) -> r: unit writes(out) {
+  doc "Appends fpconv_dtoa's text of x, which Redis 7.2.16 links from deps/fpconv, written by Halo-wf's port of it: the minus of a set sign bit first, a NaN's included, then Grisu2's digits, which read back exactly but are not always the shortest (1e23 is 99999999999999990000000).";
+  let bytes = array_filled::<u8, 32>(value: 0_u8);
+  let count = fpconv::dtoa::format_double(value: x, out: &bytes[0_u64..32_u64]);
+  text_bytes(out: out, bytes: &bytes[0_u64..count]);
+  return unit;
+}
+
+fn append_argument_text(out: &Box<Slots<u8>>, x: f64) -> r: unit writes(out) {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). The text a Lua number becomes as a redis.call or redis.pcall argument, after Redis 7.2.16's luaArgsToRedisArgv (script_lua.c): an integer when double2ll accepts it, otherwise fpconv_dtoa's text with no other rule, so negative zero is 0, a NaN keeps its sign (0/0 is -nan on x86-64) and an infinity is inf or -inf.";
+  match whole_integer(x: x) {
+    Some(value: integer) => {
+      append_integer(out: out, value: integer);
+      return unit;
+    }
+    None() => {
+    }
+  }
+  fpconv_text(out: out, x: x);
+  return unit;
+}
+
+fn append_double_text(out: &Box<Slots<u8>>, x: f64) -> r: unit writes(out) {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). A double reply's text, after Redis 7.2.16's d2string (util.c), which writes three cases itself before its integer rule and fpconv_dtoa: nan for every NaN whatever its sign, inf or -inf for an infinity, and 0 or -0 for a zero by its sign. Any other value is written as a command argument's text.";
+  if fne(x, x) {
+    text_bytes(out: out, bytes: &numbers_nan[0_u64..3_u64]);
+    return unit;
+  }
+  let zero = feq(x, 0.0_f64);
+  let magnitude = fabs(x);
+  let infinite = fgt(magnitude, 1.7976931348623157e308_f64);
+  if bor(zero, infinite) {
+    let bits = reinterpret::<f64, u64>(x);
+    let sign = ishr.wrap(bits, 63_u32);
+    if sign == 1_u64 {
+      push(out: out, byte: 45_u8);
+    }
+    if zero {
+      push(out: out, byte: 48_u8);
+    } else {
+      text_bytes(out: out, bytes: &numbers_inf[0_u64..3_u64]);
+    }
+    return unit;
+  }
+  append_argument_text(out: out, x: x);
+  return unit;
+}
+
+fn argument_text(vm: &Vm, x: f64) -> r: Value writes(vm) {
+  doc "A Lua number's text as a command argument (see append_argument_text), as a string of the engine.";
+  let bytes = box_slots_new::<u8>(capacity: 32_u64);
+  append_argument_text(out: &bytes, x: x);
+  let length = bytes.inner.len;
+  return literal(vm: vm, text: &bytes.inner[0_u64..length]);
+}
+
+fn reply_double(client: &Client, x: f64) -> r: unit writes(client) {
+  doc "Writes a script's double reply as Redis 7.2.16's addReplyDouble (networking.c) writes one, with d2string's text (see append_double_text): under RESP3 a double, a comma, the text and CR LF; under RESP2 a bulk string.";
+  let text = box_slots_new::<u8>(capacity: 32_u64);
+  append_double_text(out: &text, x: x);
+  let n = text.inner.len;
+  if client^.resp == 3_u64 {
+    pkg::protocol::reply_byte(client: client, value: 44_u8);
+    pkg::protocol::reply_word(client: client, word: &text.inner[0_u64..n]);
+    pkg::protocol::reply_word(client: client, word: &numbers_crlf[0_u64..2_u64]);
+    return unit;
+  }
+  pkg::protocol::reply_bulk_input(client: client, input: &text.inner[0_u64..n], start: 0_u64, length: n);
+  return unit;
+}
+
+const numbers_nan: Array<u8, 3> = "nan";
+
+const numbers_inf: Array<u8, 3> = "inf";
+
+const numbers_crlf: Array<u8, 2> = "\r\n";
