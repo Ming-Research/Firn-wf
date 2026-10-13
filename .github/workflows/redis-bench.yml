@@ -485,9 +485,9 @@ jobs:
   # symlinks. Each release's firn-install-receipt binds its verified archive to
   # the final executable bytes (plus apphost/runtime for the Garnet wrapper).
   install:
-    name: install the baseline competitors (14900K)
+    name: install the baseline competitors (${{ inputs.runner }})
     if: ${{ inputs.mode == 'install-competitors' }}
-    runs-on: [self-hosted, 14900k]
+    runs-on: ${{ inputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     env:
       VALKEY_VERSION: '9.1.2'
