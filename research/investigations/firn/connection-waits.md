@@ -1144,9 +1144,15 @@ after subscription and zero after removal on the other socket. All three
 channels are checked and each live delivery is read. A final PING catches
 leaked removed deliveries. Each of the twelve combinations runs 100 rounds;
 there is no sleep, polling-to-pass or intervening registry query hiding the
-confirmation boundary. These observations would reject a real reordered
-implementation; they are not a claim that the previous server violates
-that boundary or that the missing-barrier suite fails at a known frequency.
+confirmation boundary. The case is a concurrency witness, not a proven
+detector: it rejects a server whose registry is still unchanged when the
+other socket's publication runs, but a server that queued the confirmation
+early and finished the registry change before that publication arrived
+would still pass, and no CI run of a deliberately reordered server is
+recorded. The ordering itself rests on the registry change preceding the
+confirmation in the same held section. Nor is this a claim that the previous
+server violates that boundary or that the missing-barrier suite fails at a
+known frequency.
 
 RESET already removes all three indexes under the hub before its reply is
 formed. Its four-driver witness repeats 100 rounds per starting protocol,
