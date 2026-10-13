@@ -3465,7 +3465,8 @@ fn firn_listens_again_on_its_port_after_a_restart() {
 /// is set authenticates it, so that a password set afterwards leaves it in.
 /// A connection accepted while no password is set has authenticated too, and
 /// stays in once it sets one. The expected bytes are redis-server 7.0.15's
-/// with the same password, the connection's id aside.
+/// with the same password, the connection's id aside; HELLO's version follows
+/// Redis 7.2.16 networking.c:helloCommand and version.h's REDIS_VERSION.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_requires_its_password_as_redis_does() {
@@ -3564,10 +3565,11 @@ fn firn_requires_its_password_as_redis_does() {
     let mut batch = resp(&["HELLO", "2", "AUTH", "default", "secret"]);
     batch.extend(resp(&["PING"]));
     client.write_all(&batch).expect("authenticate with HELLO");
-    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
+    // Redis 7.2.16 networking.c:helloCommand writes this map, including
+    // version.h's REDIS_VERSION (7.2.16), as RESP2 pairs or a RESP3 map.
     expect_replies(
         &mut client,
-        b"*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:2\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n+PONG\r\n",
+        b"*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:2\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n+PONG\r\n",
         "HELLO with AUTH",
     );
     drop(client);
@@ -3755,7 +3757,9 @@ fn firn_requires_its_password_as_redis_does() {
 /// and QUIT answers OK and closes the connection, leaving the request after it
 /// unanswered. The expected bytes are redis-server 7.0.15's, started with one
 /// database, but for the ids and the keyspace line, which leaves out the
-/// expires and avg_ttl firn does not count.
+/// expires and avg_ttl firn does not count, and the version in HELLO and
+/// INFO, which follows Redis 7.2.16 networking.c:helloCommand and
+/// server.c:genRedisInfoString, both reading version.h's REDIS_VERSION.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_connection_commands_as_redis_does() {
@@ -3805,9 +3809,11 @@ fn firn_answers_connection_commands_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the connection batch");
-    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
-    let hello = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
-    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    // Redis 7.2.16 networking.c:helloCommand writes this map, including
+    // version.h's REDIS_VERSION (7.2.16), as RESP2 pairs or a RESP3 map.
+    let hello = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    // Redis 7.2.16 networking.c:helloCommand with version.h's REDIS_VERSION.
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
         ":1\r\n$-1\r\n+OK\r\n$6\r\nconn-1\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$6\r\nconn-1\r\n+OK\r\n$-1\r\n-ERR unknown subcommand 'SETINFO'. Try CLIENT HELP.\r\n-ERR wrong number of arguments for 'client|id' command\r\n-ERR wrong number of arguments for 'client' command\r\n{hello}{hello3}-NOPROTO unsupported protocol version\r\n-ERR Protocol version is not an integer or out of range\r\n{hello}$9\r\nvia-hello\r\n-ERR Syntax error in HELLO option 'FOO'\r\n{hello}$8\r\nvia-zero\r\n{hello}-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n+OK\r\n+OK\r\n-ERR DB index is out of range\r\n-ERR value is not an integer or out of range\r\n-ERR value is out of range, value must between -2147483648 and 2147483647\r\n*0\r\n:0\r\n-ERR wrong number of arguments for 'command|count' command\r\n-ERR unknown subcommand 'DOCS'. Try COMMAND HELP.\r\n-ERR wrong number of arguments for 'time' command\r\n$12\r\n# Keyspace\r\n\r\n"
     );
@@ -3898,8 +3904,9 @@ fn firn_answers_connection_commands_as_redis_does() {
     let info = bulk_reply(&mut client, "INFO");
     assert_eq!(info_sections(&info, "INFO"), &defaults[..]);
     for (field, value) in [
-        // Redis 7.2.16 reports its own version in INFO; firn still reports 7.0.15 (board item firn-host-72-diffs).
-        ("redis_version", "7.0.15"),
+        // Redis 7.2.16 server.c:genRedisInfoString writes redis_version from
+        // version.h's REDIS_VERSION (7.2.16).
+        ("redis_version", "7.2.16"),
         ("redis_git_sha1", "00000000"),
         ("tcp_port", text.as_str()),
         ("uptime_in_days", "0"),
@@ -4052,11 +4059,10 @@ fn firn_keeps_transactions_as_redis_does() {
 /// HRANDFIELD WITHVALUES but not in ZPOPMIN without one; and INFO's text as a
 /// verbatim string. The expected bytes follow redis-server 7.2.16's reply
 /// writers (addReplyNull, addReplyNullArray, addReplyMapLen, addReplySetLen,
-/// addReplyDouble, addReplyVerbatim) for the same requests, but for the
-/// version HELLO reports, which firn still gives as 7.0.15 (board item
-/// firn-host-72-diffs), and ZRANK and ZREVRANK WITHSCORE, which Redis 7.2
-/// adds, answer the rank and the score as a double, or the null, as Redis
-/// 7.2.16's zrankGenericCommand writes them; before firn read WITHSCORE, both
+/// addReplyDouble, addReplyVerbatim) for the same requests. ZRANK and
+/// ZREVRANK WITHSCORE, which Redis 7.2 adds, answer the rank and the score
+/// as a double, or the null, as Redis 7.2.16's zrankGenericCommand writes
+/// them; before firn read WITHSCORE, both
 /// were arity errors.
 #[cfg(target_os = "linux")]
 #[test]
@@ -4100,9 +4106,11 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the RESP3 batch");
-    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
-    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
-    let hello2 = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    // Redis 7.2.16 networking.c:helloCommand writes this map, including
+    // version.h's REDIS_VERSION (7.2.16), as RESP2 pairs or a RESP3 map.
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    // Redis 7.2.16 networking.c:helloCommand with version.h's REDIS_VERSION.
+    let hello2 = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
         "{hello3}_\r\n+OK\r\n*2\r\n$1\r\nv\r\n_\r\n_\r\n:1\r\n%1\r\n$1\r\nf\r\n$1\r\nv\r\n%0\r\n*1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n:1\r\n~1\r\n$1\r\na\r\n~0\r\n~1\r\n$1\r\na\r\n:3\r\n,1.5\r\n_\r\n*2\r\n:0\r\n,1.5\r\n_\r\n*1\r\n*2\r\n$1\r\na\r\n,1.5\r\n*2\r\n$1\r\na\r\n,1.5\r\n*1\r\n*2\r\n$1\r\nb\r\n,2\r\n%1\r\n$10\r\nappendonly\r\n$2\r\nno\r\n=34\r\ntxt:# Cluster\r\ncluster_enabled:0\r\n\r\n~1\r\n$1\r\na\r\n{hello2}$-1\r\n*0\r\n"
     );
@@ -4210,7 +4218,9 @@ fn firn_answers_zrank_withscore_as_redis_does() {
 /// redis-server 7.0.15's but for the fields firn leaves out, the addresses,
 /// descriptor, events and buffer sizes, and for the age, 0 or 1 as the second
 /// may turn between the connection and the command, and at least 2 after
-/// more than two seconds, though no more than firn has run.
+/// more than two seconds, though no more than firn has run. The HELLO
+/// version follows Redis 7.2.16 networking.c:helloCommand and
+/// version.h's REDIS_VERSION.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_client_info_as_redis_does() {
@@ -4241,8 +4251,9 @@ fn firn_answers_client_info_as_redis_does() {
     };
     let first = line("", 2);
     let second = line("conn-1", 3);
-    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
-    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    // Redis 7.2.16 networking.c:helloCommand writes this map, including
+    // version.h's REDIS_VERSION (7.2.16), as RESP2 pairs or a RESP3 map.
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
         "${}\r\n{first}\r\n+OK\r\n-ERR wrong number of arguments for 'client|info' command\r\n{hello3}={}\r\ntxt:{second}\r\n",
         first.len(),
@@ -4385,7 +4396,8 @@ fn firn_records_transactions_as_redis_propagates_them() {
 /// SHA1 when EVALSHA ran it too, and returned by redis.pcall, Lua's pcall
 /// returning an error table's err field as Redis's replacement does, and the
 /// reply read in the script's protocol whatever the client's. The expected
-/// bytes are redis-server 7.0.15's.
+/// bytes are redis-server 7.0.15's, apart from HELLO's version, which follows
+/// Redis 7.2.16 networking.c:helloCommand and version.h's REDIS_VERSION.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_runs_scripts_as_redis_does() {
@@ -4553,8 +4565,9 @@ fn firn_runs_scripts_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the scripting batch");
-    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
-    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    // Redis 7.2.16 networking.c:helloCommand writes this map, including
+    // version.h's REDIS_VERSION (7.2.16), as RESP2 pairs or a RESP3 map.
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     // redis-server 7.0.15 writes a result that contains itself to these
     // depths before its stack-limit error; a map's last level refuses both
     // its key and its value.
@@ -4772,8 +4785,9 @@ fn firn_runs_scripts_as_redis_7_2_16_does() {
     let undeclared = |name: &str| {
         format!("user_script:1: Script attempted to access nonexistent global variable '{name}'")
     };
-    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
-    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    // Redis 7.2.16 networking.c:helloCommand writes this map, including
+    // version.h's REDIS_VERSION (7.2.16), as RESP2 pairs or a RESP3 map.
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let mut expected = String::new();
     expected.push_str(&array(&[
         "0.1",
