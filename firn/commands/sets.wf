@@ -1670,8 +1670,8 @@ fn spop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, 
         set appended = appended +wrap 1_u64;
         for @members (
           index in first..end,
-          invariant log_extent: log^.inner.len >= log_initial_length,
-          invariant group_offset: budget^.group_start <= log^.inner.len
+          invariant member_log_extent: log^.inner.len >= log_initial_length,
+          invariant member_group_offset: budget^.group_start <= log^.inner.len
         ) {
           log_text(log: log, text: &members^[index].bytes, budget: budget);
         }
