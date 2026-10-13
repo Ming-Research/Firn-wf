@@ -40,10 +40,13 @@ clients send on their own:
 - sorted sets: `ZADD` with `NX`, `XX`, `GT`, `LT`, `CH` and `INCR`,
   `ZINCRBY`, `ZRANGE` with `BYSCORE`, `BYLEX`, `REV`, `LIMIT` and
   `WITHSCORES`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`,
-  `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZCOUNT`, `ZLEXCOUNT`, `ZRANK`, `ZREVRANK`,
-  `ZSCORE`, `ZMSCORE`, `ZCARD`, `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count,
-  `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores
-  read and written as Redis 7.0.15 reads and writes them;
+  `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZCOUNT`, `ZLEXCOUNT`, `ZRANK` and
+  `ZREVRANK` with Redis 7.2's `WITHSCORE`, `ZSCORE`, `ZMSCORE`, `ZCARD`,
+  `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count, `ZREMRANGEBYRANK`,
+  `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores read as Redis reads
+  them and written as Redis 7.0.15 writes them, in C's `%.17g`, which
+  differs from the shortest form of Redis 7.2.16 for some values, such as
+  0.1 (board item firn-score-text-72);
 - scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
   `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
   has written nothing, running Lua 5.1 scripts on the Halo engine
@@ -111,6 +114,7 @@ and the parameters whose only effect in Redis is on its
 internal encodings, leaving every value as commands read it,
 `hash-max-listpack-entries`, `hash-max-listpack-value`,
 `list-compress-depth`, `list-max-listpack-size`, `set-max-intset-entries`,
+`set-max-listpack-entries`, `set-max-listpack-value`, which Redis 7.2 adds,
 `stream-node-max-bytes`, `stream-node-max-entries`,
 `zset-max-listpack-entries` and `zset-max-listpack-value`, with their aliases
 `hash-max-ziplist-entries`, `hash-max-ziplist-value`, `list-max-ziplist-size`,
@@ -216,9 +220,12 @@ expiry sleep and signal wait through a separate shared shutdown state.
 A command or batch already running still finishes before its client closes;
 cancellation does not
 interrupt scripts or the replies being sent. A send blocked on a client that does not read is abandoned
-at its next one-second deadline. Once every client has left, the append-only file's writer appends
-its last bytes, syncs and closes, and firn exits with status 0, as Redis
-does even when that sync fails. No snapshot is written: the `save` schedule
+at its next one-second deadline. Once every client has left, the append-only file's
+writer makes one forced attempt to append its remaining bytes and one sync
+attempt, then closes and firn exits with status 0. As in Redis 7.0.15's everysec
+shutdown (`server.c:4239-4247,4301-4308`), failed appends or syncs do not retry
+forever: retained bytes are abandoned and acknowledged changes may be lost.
+No snapshot is written: the `save` schedule
 is empty, and `SAVE` answers `ERR Errors trying to SHUTDOWN. Check logs.`
 and keeps serving unless `FORCE` is also given. `NOW` changes nothing, firn
 having no replicas, and `ABORT` answers `ERR No shutdown in progress.`
@@ -276,8 +283,9 @@ true of firn for the others it gives. It leaves out what firn cannot report:
 the peer's and its own address, which Whitefoot's socket address does not
 show, the descriptor, the events and the sizes of Redis's buffers.
 
-`HELLO` and `INFO` report the server as `redis` version 7.0.15, the version
-whose replies firn follows.
+`HELLO` and `INFO` report the server as `redis` version 7.0.15, though the
+reference firn follows is Redis 7.2.16, whose own reports give 7.2.16: the
+version is a known difference, tracked on board item firn-host-72-diffs.
 
 `HINCRBYFLOAT` computes in the long double of Redis on x86-64 Linux, x87's
 80-bit extended format, and answers as that Redis does. Redis built where
@@ -347,7 +355,9 @@ directory. A listed file that is missing or malformed stops firn with status
 4 before it listens. Only the last file may have an incomplete tail cut,
 as with `aof-load-truncated yes`; an incomplete earlier file stops startup.
 Listed history files are removed after loading only after syncing appendonlydir;
-a failed sync leaves them listed and on disk. Unlisted files are kept.
+a failed sync leaves them listed and on disk. Unlisted files are kept except
+this dataset's temporary journal `temp-F.journal`, whose cleanup is attempted
+as described below.
 An old single file `F` in the working directory is upgraded by persisting a
 manifest and moving `F` into `appendonlydir`. Interrupted upgrades resume;
 when both copies exist and the manifest names `F`, the directory copy wins.
@@ -358,12 +368,19 @@ With append-only persistence enabled, `BGREWRITEAOF` answers started after
 S0 admission. The worker scans the live map in separate statements while
 mutations journal a changed key's complete image at its first write in the
 rewrite and, for a command on that one key afterwards, the command's AOF
-bytes. The writer seals the old increment
-and rotates once at S1, then the worker reconciles the scan with ordered
-DEL-plus-reconstruction images. Installation selects base(S1) and only the
-increment containing later writes, before removing old files.
+bytes. Statements stage complete records in bounded memory; the sole AOF
+writer drains them outside atomic statements into `temp-F.journal`. The
+writer seals the old increment and rotates once at S1 after draining the
+frozen journal, then the worker reads the journal in bounded chunks to
+reconcile the scan with ordered DEL-plus-reconstruction images and subsequent
+effects. Installation selects
+base(S1) and only the increment containing later writes, before removing old
+files.
 
-R is five percent of maxmemory, or 16 MiB when maxmemory is zero. Admission
+R is five percent of maxmemory, or 16 MiB when maxmemory is zero. It covers
+rewrite memory, including staging, in-flight chunks and readback, while the
+temporary journal can exceed R on disk. A full staging queue aborts the
+rewrite without waiting for disk or blocking ordinary writes. Admission
 also requires max(R, 1 MiB) of service headroom. Capture overflow, oversized
 images, flush, exhaustion, shutdown and I/O failure abort the attempt; client
 commands and ordinary AOF appends continue. Aborts report `err`. Any
@@ -373,24 +390,76 @@ a delay of up to an hour. A key is copied whole in one hold when the scan
 reaches it or a write changes it during a rewrite, so a large key pauses
 other clients for the copy. The rewrite holds about two copies of a key, so a
 key above about half the reserve (8 MiB without maxmemory) aborts every
-rewrite. EXEC and scripts still copy every key they change. The fixed journal
-directory permits at most 8188 chunks. If startup left the file inside an
-unfinished MULTI, the rewrite cuts the sealed file before that MULTI; the new
-base holds the live writes appended after it, as Redis's rewrite does.
+rewrite. EXEC and scripts still copy every key they change. The fixed staging
+directory permits at most 8188 queued chunks, further limited by R. If startup
+left the file inside an unfinished MULTI, the rewrite cuts the sealed file
+before that MULTI; the new base holds the live writes appended after it, as
+Redis's rewrite does.
 
-The scan currently uses count hint 1 and charges the returned KeySet before
-copying payloads. This permits one scan step's allocation before charging,
-under board item `firn-gap-scan-bound`; count is a hint, and collisions can
-return multiple keys. It is not the strict reserve guarantee. The exact
-long-key regression remains ignored for that gap. File calls still have no
-bounded cancellation contract, so prompt cleanup under stalled I/O is
-unverified.
+When a sync of the append-only file fails, firn refuses writes and `PING`
+with Redis's `MISCONF` reply, still answers reads, and INFO reports
+`aof_last_write_status:err`, as Redis does. firn then keeps syncing once a
+second even while idle, which Redis does not. A sync that succeeds again
+does not end the failure, because Linux does not write again the pages
+whose writeback failed: it starts a rewrite of the dataset from memory, and firn accepts writes again only once
+that rewrite's new base, incremental file and manifest are installed and the
+directory synced. Meanwhile INFO shows `aof_rewrite_in_progress:1` with
+`aof_last_write_status:err`. A recovery rewrite that cannot start or fails
+reports `aof_last_bgrewrite_status:err`, stops automatic rewrites as any
+failed attempt does, and is tried again after the next successful sync;
+recovery rewrites run even while automatic rewrites are stopped. An idle
+Redis 7.2.16 instead keeps refusing writes until it is restarted.
 
-The temporary base is `temp-F.base` beside `temp-F.manifest`, so servers
-sharing `appendonlydir` with distinct appendfilenames use distinct temporary
-base names. Those names can still collide with another dataset's upgraded
-base: if its appendfilename is literally `temp-F.base`, rewriting `F` can
-truncate that dataset's base. Do not share a directory with that overlap.
+Each scan step calls `map_scan_within` with a limit of the reserve left
+after the step's 64-KiB output buffer, and charges the bytes its KeySet then
+retains as `key_set_bytes` reports them, so the scan never allocates beyond
+R. Key copies, images and output-buffer growth are charged before they are
+allocated. A step that does not fit is discarded unwritten and its cursor
+kept. A step of several scan positions is retried at once one position at a
+time. A one-position step waits outside every hold and retries while its
+need so far could fit R less the fixed storage admission charged; for a
+position whose keys alone do not fit the limit, that need also counts a
+fresh KeySet's bytes and the step buffer. A step that could never fit, such as a
+key longer than about R less 64 KiB and that fixed storage, aborts the
+rewrite with `reserve`. The count hint asks for about that many keys per
+step, whole scan positions kept together, which the specification leaves to
+the runtime: it
+starts at 64, halves after a step writes more than 64 KiB and doubles back
+after one that writes at most 32 KiB. Steps run back to back until about a
+millisecond has passed since the scan last waited, then it sleeps briefly,
+yielding its thread to clients once per slice rather than once per key.
+File calls still have no bounded cancellation contract, so prompt cleanup
+under stalled I/O is unverified.
+
+`rdb-key-save-delay`, Redis's hidden testing parameter, is answered by
+`CONFIG GET` only to its whole name, never to a pattern, and `CONFIG SET`
+accepts integers from `-2147483648` through `2147483647`, default `0`. Any
+nonzero value makes the scan take one position per step. A positive value
+then sleeps that many microseconds per key, as Redis's rewrite sleeps after
+each key; a negative value `-n` sleeps one microsecond per `n` keys, where
+Redis sleeps one microsecond after each key with probability `1/n`. The
+driver's timer rounds each sleep up to whole milliseconds, so a delay below
+1000 microseconds still costs about a millisecond. Redis's forked rewrite
+keeps the value it started with; firn's scan reads it at each step, and a
+sleep in progress, taken in slices of at most 100 ms, ends early when
+CONFIG SET changes the value or when shutdown or an abort cancels the
+rewrite, where Redis kills its rewrite child.
+
+The temporary base `temp-F.base` and journal `temp-F.journal` sit beside
+`temp-F.manifest`, so servers sharing `appendonlydir` with distinct
+appendfilenames use distinct temporary names. The journal is never named by
+a rewrite manifest and needs no fsync: the completed base is synced before
+publication. Journal handles are closed and removal is attempted after
+success or abort, including flush, shutdown and early I/O failures. Startup
+attempts removal of an unlisted leftover after loading the authoritative
+manifest and serves even if that cleanup fails; INFO reports the failure.
+Before opening or truncating the next journal, a rewrite must remove any
+unlisted old name. A failed removal refuses that rewrite with `journal_io`
+and leaves the old file unchanged. A manifest-listed name is protected.
+Those names can still collide with another dataset's upgraded base: an
+appendfilename literally `temp-F.base` or `temp-F.journal` in another dataset
+can overlap a temporary name used while rewriting `F`. Do not share a
+directory with that overlap.
 Whitefoot does not yet offer exclusive file creation to refuse the collision;
 Redis's `temp-F.incr` has the same class of collision. The remaining work is
 exclusive creation for temporary append-only files, board item
@@ -419,8 +488,47 @@ current percentage and min-size in decimal, min-size in bytes, and includes
 both in glob matches. Setting the percentage to `0` disables automatic rewrites
 without cancelling a rewrite already in progress.
 
-`INFO persistence` reports rewrite progress, attempts, last status, current
-active-file bytes and the rewrite baseline. The firn-only field
+With AOF enabled, a failed append or sync refuses Redis WRITE-flagged commands
+and PING with `-MISCONF Errors writing to the AOF file: ` followed by the
+host's description of the error, `strerror`'s C-locale text on Linux, such as
+`File too large`; GET, INFO and other reads remain available
+(`server.c:3881-3905,4324-4355`). A failed append is described when nothing
+of it was written; otherwise the sync error is. After a short write Redis
+reports `No space left on device` whatever the host returned
+(`aof.c:1163-1184`); firn leaves that suffix empty until Whitefoot can name
+the host's ENOSPC (board item `firn-req-enospc-text`), as it does when the
+host cannot describe an error.
+The command that exposed the failure can already have succeeded, since replies
+do not wait for everysec durability. Partial appends attempt rollback to the
+pre-flush incremental size, retaining all bytes on successful rollback and only
+the unwritten suffix otherwise (`aof.c:1146-1230`). Failed appends retry every
+100 ms, Redis's idle cadence at its default hz of 10; Redis also retries on
+every event-loop iteration that client traffic causes (`server.c:1660-1666`),
+which firn does not, so under traffic firn can recover up to 100 ms later.
+Like Redis 7.2.16, firn syncs at most once a second and only after new bytes
+were appended completely since its last sync, so an idle server issues no
+sync and a device that fails while firn is idle shows only at the sync after
+the next write (`aof.c:1071-1094,1236-1267`); a saved sync failure is the
+exception, retried once a second while idle as described above.
+A successful append clears an append failure, and only a rewrite whose
+installation is durable clears a sync failure; ordinary rewrite rotation resets neither
+(`aof.c:790-852`).
+
+A refused queued write or PING dirties MULTI. EXEC with a queued WRITE command
+is discarded with EXECABORT and the MISCONF text while failure remains; read-only
+EXEC runs. Legacy EVAL/EVALSHA can read, but their first write gets MISCONF through
+redis.call's raised error or redis.pcall's error table. After an accepted WRITE
+command, subsequent script writes skip that check (`multi.c:85-87,105-109,
+136-140,170-178,229-233`; `script.c:349-386,547-557`).
+
+`INFO persistence` reports rewrite progress, attempts, last rewrite status, current
+active-file bytes and the rewrite baseline. `aof_last_write_status` is `ok` only
+when both append and sync errors are clear, otherwise `err`, independently of
+`aof_last_bgrewrite_status`. With AOF enabled, `aof_buffer_length` reports the
+collecting bytes plus bytes retained by the writer, excluding already appended
+bytes awaiting sync (`server.c:5596-5650`). `aof_pending_bio_fsync` and
+`aof_delayed_fsync` are zero: firn's sole writer performs sync itself, with no
+background BIO queue or append postponement behind a background sync. The firn-only field
 `firn_aof_rewrite_commit_seq` is the actual dataset statement sequence, also when
 AOF is disabled, following the [reported-facts rule](../design/firn/reported-facts.md).
 It starts at zero after loading, advances once for an atomic statement that
@@ -435,13 +543,59 @@ support now orders capture and the S1 end cut.
 
 `firn_aof_rewrite_reserve` and `firn_aof_rewrite_scan_peak` report the
 admitted allowance and the largest PRE-2 heap increase observed across
-KeySet creation and one map_scan call in the most recent attempt. The latter
-supports the ignored quiescent long-key regression independently of the
+KeySet creation and one map_scan_within call in the most recent attempt. The
+latter supports the quiescent long-key regression independently of the
 reservation ledger. Other contexts can affect this process-wide sample; it
 is neither total rewrite peak nor RSS. `firn_aof_rewrite_cut` is 1 once the
 latest admitted attempt has crossed S1 (also retained after completion),
 and 0 otherwise; it lets the backlog regression begin writes after capture
 has stopped.
+
+`firn_aof_rewrite_journal_leftover` reports the last cleanup observation of
+the unlisted temporary journal: 1 after removal failed, and 0 after absence
+or successful removal was observed. It survives rewrite admissions, including
+a startup observation made before any rewrite attempt. It is not a continuous
+check of the current filesystem.
+
+The following additional `INFO persistence` fields describe the current or
+most recently completed attempt. They reset when admission is attempted,
+including a refused admission; counters start at zero before the first attempt.
+
+- `firn_aof_rewrite_abort_reason` is empty until failure and on success.
+  The first cause is latched under Meta before cleanup, and later failures
+  cannot replace it. Values are `reserve` (a rewrite buffer or boundary
+  reserve charge), `capture` (statement capture allowance), `journal_slots`
+  (missing staging queue),
+  `journal_backlog` (insufficient staging slots or memory), `journal_io`
+  (temporary-journal host I/O), `flush`,
+  `sequence_exhausted`, `memory_pressure`, `cancelled`, `base_io`, `writer_io`,
+  `drain` (incremental append did not drain), `boundary` (sealed-file reading
+  or validation), `install_io` (manifest publication or base installation),
+  `rotation_reserve` (collecting-buffer growth), `sequence_invalid`
+  (a scanned stamp beyond the commit sequence), `journal_invalid` (invalid
+  framing or effect-byte range), and `admission` (insufficient reserve or
+  service headroom).
+- `firn_aof_rewrite_used` and `firn_aof_rewrite_peak` are reserve ledger
+  bytes, not heap or RSS measurements. While running they show current use
+  and its peak; on failure both freeze at the first failure, before refunds.
+  Successful completion reports zero used and retains the attempt's peak.
+- `firn_aof_rewrite_journal_images` and
+  `firn_aof_rewrite_journal_effects` count complete records successfully
+  appended to the journal file as replacement images or statement AOF bytes,
+  respectively. These asynchronous counts can lag committed writes while
+  their records remain staged. A multi-key statement's image unit counts
+  once, regardless of how many keys it holds; scan output does not count.
+  Counts survive cleanup on failure and success.
+- `firn_aof_rewrite_cleanup_failed` counts each journal close or removal
+  step that returned failure during this attempt, including cleanup after
+  an early error. It preserves the first abort cause and resets on admission.
+  Startup cleanup leaves this count at zero and reports failed removal
+  through `firn_aof_rewrite_journal_leftover` instead.
+- `firn_aof_rewrite_scan_steps` counts completed map_scan_within calls,
+  including the final empty step, steps refused for want of reserve, steps
+  discarded to retry one position, and steps whose subsequent copying fails.
+  `firn_aof_rewrite_scan_done` is 1 after the scan finishes writing its base,
+  otherwise 0. It does not claim that rotation or installation succeeded.
 
 Failure before rotation leaves the original manifest authoritative. After
 rotation it leaves the manifest naming the old base and all increments
@@ -449,8 +603,8 @@ replayable. If manifest rename succeeds but
 directory sync fails, the new manifest stays in force, all files and history
 entries are retained, and `aof_last_bgrewrite_status` reports `err`.
 `SHUTDOWN` accepted before installation cancels the rebuild at its next step;
-once installation starts, shutdown waits for it to finish. Shutdown drains
-the incremental file after clients leave and joins the rebuild before exiting.
+once installation starts, shutdown waits for it to finish. Shutdown makes its
+final append and sync attempts after clients leave and joins the rebuild before exiting.
 See the [reconciled-scan protocol](../research/investigations/aof-rewrite/scan-log.md).
 
 `WF_DRIVERS` sets how many threads serve the connections, one per CPU by

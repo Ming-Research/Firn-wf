@@ -14,15 +14,16 @@ alias reply_error = pkg::protocol::reply_error;
 fn value_reply(vm: &Vm, value: Value, client: &Client, mode: u8) -> r: unit reads(vm), writes(client) {
   let bytes = box_slots_new::<u8>(capacity: 0_u64);
   value_bytes(vm: vm, v: value, out: &bytes);
+  if mode == 1_u8 {
+    let printed = True();
+    reply_error_text(client: client, text: &bytes, formatted: printed);
+    return unit;
+  }
   let n = bytes.inner.len;
   if mode == 3_u8 {
     for (i in 0_u64..n) {
       let b = bytes.inner[i];
-      let cr = b == 13_u8;
-      let lf = b == 10_u8;
-      if bor(cr, lf) {
-        set bytes.inner[i] = 32_u8;
-      }
+      set bytes.inner[i] = pkg::protocol::echoed(byte: b);
     }
   }
   let bulk = mode == 0_u8;
@@ -40,11 +41,7 @@ fn value_reply(vm: &Vm, value: Value, client: &Client, mode: u8) -> r: unit read
   if bor(bulk, big) {
     reply_bulk_input(client: client, input: &bytes.inner[0_u64..n], start: 0_u64, length: n);
   } else {
-    if mode == 1_u8 {
-      reply_byte(client: client, value: 45_u8);
-    } else {
-      reply_byte(client: client, value: 43_u8);
-    }
+    reply_byte(client: client, value: 43_u8);
     let end = n;
     for (i in 0_u64..n) {
       if bytes.inner[i] == 0_u8 {
@@ -52,35 +49,11 @@ fn value_reply(vm: &Vm, value: Value, client: &Client, mode: u8) -> r: unit read
         break;
       }
     }
-    if mode == 1_u8 {
-      loop {
-        if end == 0_u64 {
-          break;
-        }
-        let last = end - 1_u64;
-        if last < bytes.inner.len {
-          let b = bytes.inner[last];
-          let cr = b == 13_u8;
-          let lf = b == 10_u8;
-          if bor(cr, lf) {
-            set end = last;
-          } else {
-            break;
-          }
-        } else {
-          break;
-        }
-      }
-    }
     for (i in 0_u64..end) {
       if i < bytes.inner.len {
         let b = bytes.inner[i];
-        let lf = b == 10_u8;
-        let cr = b == 13_u8;
-        if bor(lf, cr) {
-          set b = 32_u8;
-        }
-        reply_byte(client: client, value: b);
+        let shown = pkg::protocol::echoed(byte: b);
+        reply_byte(client: client, value: shown);
       }
     }
     reply_word(client: client, word: &replies_text_0[0_u64..2_u64]);

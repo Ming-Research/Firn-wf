@@ -121,6 +121,10 @@ jobs:
       # directory, which the runner empties, so that the next run on the
       # self-hosted machine can stop what a cancelled one left.
       SESSION_FILE: ${{ inputs.runner == '14900k' && '~/.cache/firn-redis-bench/session' || '' }}
+      # Where the reference Redis is built and kept. The self-hosted machine
+      # keeps the default, under its home directory; a hosted runner caches
+      # this directory.
+      REDIS_COMPAT_CACHE: ${{ inputs.runner == '14900k' && '' || format('{0}/build/redis-compat-cache', github.workspace) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -131,52 +135,40 @@ jobs:
 
       # The self-hosted machine keeps its tools installed and gives a job no
       # passwordless sudo.
-      - name: Install the pinned release's LLVM, Redis's tools and perf
+      - name: Install the pinned release's LLVM and perf
         if: ${{ runner.environment == 'github-hosted' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends redis-server redis-tools
           make toolchain
           sudo apt-get install -y --no-install-recommends linux-tools-common \
             linux-tools-generic "linux-tools-$(uname -r)" || true
 
-      # firn's reference is Redis 7.0.15 (AGENTS.md). A host whose Redis is
-      # another version, as the reinstalled self-hosted machine's packaged
-      # 8.0.5 is, builds 7.0.15 once from the release tarball, checked against
-      # redis/redis-hashes, into a cache the machine keeps, and puts it ahead
-      # of the packaged one on PATH for every later step.
-      - name: Put the reference Redis 7.0.15 first on PATH
+      - name: Restore the Redis build
+        id: redis-cache
+        if: ${{ runner.environment == 'github-hosted' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      # firn's reference is Redis 7.2.16 (AGENTS.md). Every host, whatever
+      # Redis it packages (Ubuntu's is 7.0.15, the reinstalled self-hosted
+      # machine's 8.0.5), builds 7.2.16 once from the release archive that
+      # tests/redis-suite/reference.sh pins by SHA-256, into a cache it keeps,
+      # and puts its redis-server, redis-cli and redis-benchmark ahead of the
+      # packaged ones on PATH for every later step.
+      - name: Put the reference Redis 7.2.16 first on PATH
         run: |
-          if redis-server --version 2>/dev/null | grep -q ' v=7\.0\.15 '; then
-            exit 0
-          fi
-          prefix="$HOME/.cache/firn-redis-7.0.15"
-          # The cache is complete only when every tool the measurement runs is
-          # there and is 7.0.15; an interrupted install never reaches prefix,
-          # because it is installed beside it and moved into place whole.
-          complete() {
-            "$1/bin/redis-server" --version 2>/dev/null | grep -q ' v=7\.0\.15 ' &&
-              "$1/bin/redis-benchmark" --version 2>/dev/null | grep -q '^redis-benchmark 7\.0\.15' &&
-              "$1/bin/redis-cli" --version 2>/dev/null | grep -q '^redis-cli 7\.0\.15'
-          }
-          if ! complete "$prefix"; then
-            work="$RUNNER_TEMP/redis-7.0.15-build"
-            rm -rf "$work" "$prefix.new"
-            mkdir -p "$work"
-            curl -fsSL -o "$work/redis-7.0.15.tar.gz" https://download.redis.io/releases/redis-7.0.15.tar.gz
-            echo "98066f5363504b26c34dd20fbcc3c957990d764cdf42576c836fc021073f4341  $work/redis-7.0.15.tar.gz" | sha256sum -c -
-            tar -xzf "$work/redis-7.0.15.tar.gz" -C "$work"
-            compiler=cc
-            command -v cc >/dev/null || compiler=clang
-            make -C "$work/redis-7.0.15" -j"$(nproc)" CC="$compiler"
-            make -C "$work/redis-7.0.15" PREFIX="$prefix.new" install
-            complete "$prefix.new"
-            rm -rf "$prefix"
-            mv "$prefix.new" "$prefix"
-          fi
-          complete "$prefix"
-          "$prefix/bin/redis-server" --version
-          echo "$prefix/bin" >> "$GITHUB_PATH"
+          bin=$(tests/redis-suite/reference.sh)
+          "$bin/redis-server" --version
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Save the Redis build
+        if: ${{ runner.environment == 'github-hosted' && steps.redis-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
       - name: Check the host's tools
         run: |

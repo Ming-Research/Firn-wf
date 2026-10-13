@@ -6,6 +6,8 @@ Decision: A transaction queues at most 1 GiB of arguments, and as many arguments
 
 Decision: A connection's transaction is kept apart from its client record and passed with it to each command, because EXEC reads the queued commands while their replies are written into the client record, instead of keeping the queue inside the client record.
 
+Decision: A persistence-refused WRITE command or PING dirties an open MULTI, and EXEC aggregates queued WRITE flags and discards a writing queue with EXECABORT plus the shared MISCONF text before its ordinary dirty-queue check, rechecking under the execution's Meta hold, because Redis 7.0.15 server.c:3568-3576,3735-3740,3881-3905 and multi.c:85-87,105-109,136-140,170-178,229-233 order admission this way, instead of executing writes from a previously healthy queue or denying read-only EXEC; accepted queued PING does not make EXEC a WRITE command and members do not repeat ordinary admission inside EXEC ([investigation](../../research/investigations/aof-write-errors/README.md#question-and-reference)).
+
 Rejected:
 - Queueing every known command and running those without parts outside the statement: rejected because such a transaction is no longer atomic, which is what the selected consumers rely on.
 - Refusing a command without parts, or a name firn does not identify, when it is sent: rejected because a client that stops at the error never reaches EXEC and stays inside the transaction ([run 37461272313](https://github.com/Ming-Research/Firn-wf/actions/runs/37461272313), [run 37904672454](https://github.com/Ming-Research/Firn-wf/actions/runs/37904672454)).

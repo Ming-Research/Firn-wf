@@ -699,7 +699,7 @@ fn client_new(capacity: u64) -> made: Client pure contract {
   let settings = settings_empty();
   let key_lookups = box_slots_new::<u64>(capacity: 0_u64);
   let meter = None<std::process::MemoryMeter>();
-  return Client(bytes: move bytes, at: 0_u64, now: 0_u64, state: 0_u64, number: 0_u64, low: 0_i64, high: 0_i64, items: move items, scores: move scores, key_metadata: move key_metadata, key_lookups: move key_lookups, keys: keys, random: 0_u64, access_ms: 0_u64, memory_policy: 7_u64, maxmemory: 0_u64, maxmemory_samples: 5_u64, maxmemory_tenacity: 10_u64, pre_command_oom: unlocked, meter: move meter, lfu_log_factor: 10_u64, lfu_decay_time: 1_u64, id: 0_u64, name: move name, authenticated: trusted, locked: unlocked, closing: open, resp: 2_u64, unix_us: 0_u64, since_us: 0_u64, settings: move settings);
+  return Client(bytes: move bytes, at: 0_u64, now: 0_u64, state: 0_u64, number: 0_u64, low: 0_i64, high: 0_i64, items: move items, scores: move scores, key_metadata: move key_metadata, key_lookups: move key_lookups, keys: keys, random: 0_u64, access_ms: 0_u64, memory_policy: 7_u64, maxmemory: 0_u64, maxmemory_samples: 5_u64, maxmemory_tenacity: 10_u64, pre_command_oom: unlocked, meter: move meter, lfu_log_factor: 10_u64, lfu_decay_time: 1_u64, id: 0_u64, name: move name, authenticated: trusted, locked: unlocked, closing: open, resp: 2_u64, unix_us: 0_u64, since_us: 0_u64, settings: move settings, seen_peak: 0_u64);
 }
 
 fn empty_text() -> made: Bytes pure {
@@ -1156,6 +1156,66 @@ fn reply_error(client: &Client, word: &[u8]) -> result: unit reads(word), writes
   reply_byte(client: client, value: 45_u8);
   reply_word(client: client, word: word);
   reply_word(client: client, word: &reply_crlf[0_u64..2_u64]);
+  return unit;
+}
+
+const text_aof_error: Array<u8, 40> = "MISCONF Errors writing to the AOF file: ";
+
+const text_aof_execabort: Array<u8, 44> = "EXECABORT Transaction discarded because of: ";
+
+fn reply_aof_error(client: &Client, execabort: Bool, error: &Option<std::io::IoError>) -> result: unit reads(error), writes(client) {
+  doc "One reply writer for all active-AOF refusals: Redis 7.0.15 server.c:4350-4353's prefix followed by the host's description of the saved IoError, strerror(aof_last_write_errno), optionally wrapped by EXECABORT as server.c:3568-3576 and multi.c:136-140 do. None writes the prefix alone: a short write's ENOSPC description (aof.c:1184) awaits board item firn-req-enospc-text. A description the host reports unavailable is also left empty.";
+  reply_byte(client: client, value: 45_u8);
+  if execabort {
+    reply_word(client: client, word: &text_aof_execabort[0_u64..44_u64]);
+  }
+  reply_word(client: client, word: &text_aof_error[0_u64..40_u64]);
+  match error^ {
+    Some(value: problem) => {
+      reply_io_description(client: client, error: problem);
+    }
+    None() => {
+    }
+  }
+  reply_word(client: client, word: &reply_crlf[0_u64..2_u64]);
+  return unit;
+}
+
+fn reply_io_description(client: &Client, error: &std::io::IoError) -> result: unit reads(error), writes(client) {
+  doc "Copies the host's description of error after at, without truncation. A window too small is grown by the length the host reports and the copy retried once; the host's description of one error does not change between the two calls, so a second refusal, like an unavailable description, writes nothing.";
+  let required = 0_u64;
+  let start = client^.at;
+  let end = client^.bytes.inner.len;
+  if start <= end {
+    match std::io::error_copy_description(error: error, destination: &client^.bytes.inner[0_u64..end], start: start, end: end) {
+      Ok(value: next) => {
+        set client^.at = next;
+        return unit;
+      }
+      Err(error: refused) => {
+        match refused {
+          DescriptionTooSmall(required: length) => {
+            set required = length;
+          }
+          DescriptionUnavailable() => {
+            return unit;
+          }
+        }
+      }
+    }
+  }
+  reply_room(client: client, needed: required);
+  let retry_start = client^.at;
+  let retry_end = client^.bytes.inner.len;
+  if retry_start <= retry_end {
+    match std::io::error_copy_description(error: error, destination: &client^.bytes.inner[0_u64..retry_end], start: retry_start, end: retry_end) {
+      Ok(value: next) => {
+        set client^.at = next;
+      }
+      Err(..) => {
+      }
+    }
+  }
   return unit;
 }
 

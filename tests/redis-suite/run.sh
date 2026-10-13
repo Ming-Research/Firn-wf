@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the test suite of Redis 7.0.15 against one server in the suite's
+# Runs the test suite of Redis 7.2.16 against one server in the suite's
 # external mode, one unit at a time, then summarizes the outcome with
 # summarize.py. research/experiments/redis-compat/README.md describes the
 # method and the historical results.
@@ -8,18 +8,25 @@
 #        run.sh --out DIR [options] firn FIRN_EXECUTABLE
 #        run.sh --out DIR [options] external HOST PORT
 #
-#   redis     starts the installed redis-server, which must be 7.0.15, anew
-#             for every unit on a free port, without persistence and with
-#             any further arguments given
+#   redis     starts the reference redis-server, Redis 7.2.16 built by
+#             reference.sh, anew for every unit on a free port, without
+#             persistence and with any further arguments given
 #   firn      starts the given firn executable anew for every unit on a free
 #             port, as `firn PORT 0 - 0`
 #   external  runs every unit against a server that is already running
 #
 # options:
 #   --out DIR        run directory, created if missing; it receives a copy of
-#                    the suite, every unit's output, tests.tsv, units.tsv and
-#                    summary.txt
+#                    the suite, every unit's output, tests.tsv, units.tsv,
+#                    summary.txt, suite-units.txt (every unit the suite lists)
+#                    and shard-units.txt (the units this run was to run)
 #   --units "U ..."  units to run, by default every unit the suite lists
+#   --shard I/N      runs only shard I of N (1 <= I <= N) of those units, as
+#                    ratchet.py assign splits them by the times in
+#                    unit-seconds.tsv, and takes its ports from the I-th of N
+#                    equal parts of the range below the ephemeral ports, so
+#                    that shards run side by side, each with an --out of its
+#                    own (run-shards.sh does this and merges them)
 #   --timeout SEC    seconds a test may go without progress before the suite
 #                    stops the unit, default 120
 #   --retries N      times a unit is run again past a test that timed out,
@@ -36,16 +43,18 @@
 #                    not a measure of compatibility
 #   -- ARG ...       further runtest arguments, such as --tags -needs:debug
 #
-# REDIS_COMPAT_CACHE names the directory that keeps the Redis source archive,
-# ${XDG_CACHE_HOME:-$HOME/.cache}/whitefoot-redis-compat by default; the
-# archive is fetched when missing and checked against its SHA-256 every run.
+# The suite's sources are the Redis 7.2.16 release archive, and redis-server,
+# redis-cli and redis-benchmark are built from that archive: reference.sh
+# fetches the archive, checks its SHA-256, builds the tools and caches both.
+# They stand first on PATH for this script, the suite and the servers it
+# starts. REDIS_COMPAT_CACHE names the cache directory,
+# ${XDG_CACHE_HOME:-$HOME/.cache}/whitefoot-redis-compat by default.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-version=7.0.15
-sha256=98066f5363504b26c34dd20fbcc3c957990d764cdf42576c836fc021073f4341
-url=https://download.redis.io/releases/redis-$version.tar.gz
-cache=${REDIS_COMPAT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/whitefoot-redis-compat}
+build_reference=$here/reference.sh
+version=$("$build_reference" version)
+sha256=$("$build_reference" sha256)
 # Seconds a whole unit may take, a backstop behind the suite's own timeout.
 unit_limit=3600
 
@@ -54,11 +63,12 @@ usage() {
     exit 2
 }
 
-out= units= timeout=120 retries=5 reference= tolerant=0 known=
+out= units= timeout=120 retries=5 reference= tolerant=0 known= shard=
 while [ $# -gt 0 ]; do
     case $1 in
         --out) out=${2:?}; shift 2 ;;
         --units) units=${2:?}; shift 2 ;;
+        --shard) shard=${2:?}; shift 2 ;;
         --timeout) timeout=${2:?}; shift 2 ;;
         --retries) retries=${2:?}; shift 2 ;;
         --reference) reference=$(realpath "${2:?}"); shift 2 ;;
@@ -69,6 +79,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -n "$out" ] && [ $# -ge 1 ] || usage
+shard_index=1 shard_count=1
+if [ -n "$shard" ]; then
+    [[ $shard =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] || usage
+    shard_index=${BASH_REMATCH[1]} shard_count=${BASH_REMATCH[2]}
+    [ "$shard_index" -le "$shard_count" ] || usage
+fi
 target=$1
 shift
 host=127.0.0.1 port= firn=
@@ -99,6 +115,8 @@ if [ $# -gt 0 ]; then
     extra=("$@")
 fi
 
+archive=$("$build_reference" archive)
+PATH=$("$build_reference" bin):$PATH
 if [ "$target" = redis ]; then
     installed=$(redis-server --version | sed -n 's/^Redis server v=\([^ ]*\).*/\1/p')
     if [ "$installed" != "$version" ]; then
@@ -106,28 +124,17 @@ if [ "$target" = redis ]; then
         exit 1
     fi
 fi
-command -v redis-cli > /dev/null || { echo "run.sh: redis-cli is needed" >&2; exit 1; }
 
-mkdir -p "$cache" "$out"
+mkdir -p "$out"
 out=$(cd "$out" && pwd)
-archive=$cache/redis-$version.tar.gz
-if [ ! -f "$archive" ]; then
-    curl -fsSL -o "$archive.part" "$url"
-    mv "$archive.part" "$archive"
-fi
-if ! echo "$sha256  $archive" | sha256sum --check --status; then
-    echo "run.sh: $archive does not have the SHA-256 $sha256" >&2
-    exit 1
-fi
 suite=$out/redis-$version
 rm -rf "$suite" "$out/logs" "$out/servers" "$out/hung" "$out/data"
 tar -xzf "$archive" -C "$out"
 # Tests that run the suite's own client tools look for them in src/, as in a
-# built source tree; the installed 7.0.15 tools stand in for them.
+# built source tree; the 7.2.16 tools built from the same archive stand in
+# for them.
 for tool in redis-cli redis-benchmark; do
-    if command -v "$tool" > /dev/null; then
-        ln -s "$(command -v "$tool")" "$suite/src/$tool"
-    fi
+    ln -s "$(command -v "$tool")" "$suite/src/$tool"
 done
 if [ "$tolerant" = 1 ]; then
     # The six calls of run_external_server_test become calls that may fail;
@@ -147,7 +154,12 @@ if [ "$tolerant" = 1 ]; then
 fi
 mkdir -p "$out/logs" "$out/servers" "$out/hung" "$out/data"
 cd "$suite"
-[ -n "$units" ] || units=$(./runtest --list-tests)
+./runtest --list-tests > "$out/suite-units.txt"
+[ -n "$units" ] || units=$(cat "$out/suite-units.txt")
+if [ -n "$shard" ]; then
+    units=$(printf '%s\n' $units | python3 -B "$here/ratchet.py" assign --costs "$here/unit-seconds.tsv" --shard "$shard")
+fi
+printf '%s\n' $units > "$out/shard-units.txt"
 
 flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeout")
 {
@@ -160,7 +172,8 @@ flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeou
               echo "server arguments: PORT 0 - 0" ;;
         external) echo "server: $host:$port" ;;
     esac
-    echo "runtest arguments: --host $host --port PORT --single UNIT --baseport FREE ${flags[*]} --skipfile HUNG ${extra[*]}"
+    echo "runtest arguments: --host $host --port PORT --single UNIT --baseport FREE --portcount 1000 ${flags[*]} --skipfile HUNG ${extra[*]}"
+    echo "shard: ${shard:-none}"
     if [ "$tolerant" = 1 ]; then
         echo "framework: tolerant (FLUSHALL, FUNCTION FLUSH and the overrides' CONFIG GET, CONFIG SET and INFO may fail)"
     else
@@ -185,10 +198,23 @@ if [ "$ephemeral_low" -le 11000 ]; then
     exit 1
 fi
 
-# Prints a loopback port below the ephemeral range that nothing listens on.
+# A shard takes its ports from its own part of the range below the ephemeral
+# ports, so shards running side by side start their servers on ports of
+# their own. The suite's port search also binds port+10000 for an instant as
+# its cluster-bus probe, which can land in another shard's part; a collision
+# there makes the search skip the port or start_server retry.
+port_low=$((10000 + (shard_index - 1) * (ephemeral_low - 10000) / shard_count))
+port_high=$((10000 + shard_index * (ephemeral_low - 10000) / shard_count))
+if [ $((port_high - port_low)) -lt 3000 ]; then
+    echo "run.sh: shard $shard_index of $shard_count has only ports $port_low to $((port_high - 1))" >&2
+    exit 1
+fi
+
+# Prints a loopback port from this run's range that nothing listens on and
+# that leaves the given number of ports above it in the range.
 free_port() {
     local candidate
-    for candidate in $(shuf -i "10000-$((ephemeral_low - 1))" -n 100); do
+    for candidate in $(shuf -i "$port_low-$((port_high - 1 - ${1:-0}))" -n 100); do
         if ! (exec 3<> "/dev/tcp/127.0.0.1/$candidate") 2> /dev/null; then
             echo "$candidate"
             return 0
@@ -275,13 +301,15 @@ for unit in $units; do
         [ "$target" = external ] || start_server "$out/servers/$unit.$attempt.log"
         # The suite listens for its own test client on the port below its
         # base port, and its check for a busy port misses one that another
-        # process holds on 127.0.0.1, so the port is chosen here.
-        control=$(free_port)
+        # process holds on 127.0.0.1, so the port is chosen here. The ports
+        # the suite's own servers take, 1000 from its base port, stay within
+        # this run's range.
+        control=$(free_port 1100)
         # timeout runs the suite in a process group of its own, which the
         # cleanup above stops whole if this script is stopped.
         rc=0
         TERM=dumb timeout -k 10 "$unit_limit" ./runtest --host "$host" --port "$port" \
-            --single "$unit" --baseport "$((control + 32))" "${flags[@]}" --skipfile "$hung" \
+            --single "$unit" --baseport "$((control + 32))" --portcount 1000 "${flags[@]}" --skipfile "$hung" \
             "${extra[@]}" > "$log" 2>&1 &
         unit_pid=$!
         wait "$unit_pid" || rc=$?
