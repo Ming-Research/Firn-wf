@@ -5,8 +5,8 @@ mod append_history;
 mod chaos_check;
 mod support;
 
-use chaos_check::{Event, Findings, KEYS, Kind, Outcome, State};
-use std::collections::HashSet;
+use chaos_check::{Event, Findings, KEYS, Kind, LostWrite, Outcome, State};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
@@ -1191,12 +1191,226 @@ fn matches_validated_snapshot(previous: &str, current: &State) -> bool {
     previous == format!("{current:?}")
 }
 
+const KNOWN_ACK_WINDOW_NS: u128 = 10_000_000;
+const KNOWN_ACK_LOSS: &str = "known-acknowledgment-before-append-#97-still-fails";
+const UNVERIFIED_ACK_LOSS: &str = "firn-loss-attribution-unverified-still-fails";
+const OVERLAPPING_EIO_LOSS: &str = "post-eio-loss-attribution-ambiguous-still-fails";
+const OUTSIDE_ACK_WINDOW_LOSS: &str = "loss-outside-nominal-10ms-window-investigate-still-fails";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EioWindow {
+    epoch: usize,
+    active_ns: u128,
+    healed_ns: Option<u128>,
+}
+#[derive(Debug, Eq, PartialEq)]
+enum EioEvidence {
+    NoOverlap,
+    Overlap(Vec<EioWindow>),
+    Unverified(&'static str),
+}
+#[derive(Debug)]
+struct LossAttribution {
+    label: &'static str,
+    invoked_ns: Option<u128>,
+    ack_completed_ns: Option<u128>,
+    sigkill_at_ns: Option<u128>,
+    ack_age_ns: Option<u128>,
+    eio_overlap: EioEvidence,
+    interpretation: &'static str,
+}
+
+/// Pair actual activation/healing records by epoch. An open interval remains
+/// active through the observed kill; a prior healed interval is not a veto.
+fn eio_overlap(faults: &[FaultRecord], invoked_ns: u128, sigkill_ns: u128) -> EioEvidence {
+    let mut active = HashMap::new();
+    let mut windows = Vec::new();
+    let mut last_time = None;
+    for fault in faults {
+        if !matches!(
+            fault.kind,
+            "combined write/flush EIO active" | "combined write/flush EIO healed"
+        ) {
+            continue;
+        }
+        if last_time.is_some_and(|previous| previous > fault.at_ns) {
+            return EioEvidence::Unverified("EIO timestamps are not monotonic");
+        }
+        last_time = Some(fault.at_ns);
+        if fault.at_ns > sigkill_ns {
+            continue;
+        }
+        match fault.kind {
+            "combined write/flush EIO active" => {
+                if active.insert(fault.epoch, fault.at_ns).is_some() {
+                    return EioEvidence::Unverified("duplicate EIO activation before healing");
+                }
+            }
+            "combined write/flush EIO healed" => {
+                let Some(start) = active.remove(&fault.epoch) else {
+                    return EioEvidence::Unverified("EIO healing has no preceding activation");
+                };
+                windows.push(EioWindow {
+                    epoch: fault.epoch,
+                    active_ns: start,
+                    healed_ns: Some(fault.at_ns),
+                });
+            }
+            _ => unreachable!(),
+        }
+    }
+    windows.extend(active.into_iter().map(|(epoch, start)| EioWindow {
+        epoch,
+        active_ns: start,
+        healed_ns: None,
+    }));
+    // Active intervals are half-open: a heal completed at invocation time
+    // has already ended the failure; activation at kill time still overlaps.
+    windows.retain(|window| {
+        window.active_ns <= sigkill_ns && window.healed_ns.is_none_or(|end| end > invoked_ns)
+    });
+    windows.sort_by_key(|window| (window.active_ns, window.epoch));
+    if windows.is_empty() {
+        EioEvidence::NoOverlap
+    } else {
+        EioEvidence::Overlap(windows)
+    }
+}
+
+fn classify_lost_write(
+    server: &str,
+    fix: &str,
+    lost: &LostWrite,
+    events: &[Event],
+    origin: Instant,
+    faults: &[FaultRecord],
+) -> LossAttribution {
+    let sigkill_at_ns = faults
+        .iter()
+        .filter(|fault| fault.kind == "SIGKILL sent")
+        .map(|fault| fault.at_ns)
+        .max();
+    let mut attribution = LossAttribution {
+        label: UNVERIFIED_ACK_LOSS,
+        invoked_ns: None,
+        ack_completed_ns: None,
+        sigkill_at_ns,
+        ack_age_ns: None,
+        eio_overlap: EioEvidence::Unverified(
+            "missing or invalid acknowledged event/signal metadata",
+        ),
+        interpretation: "attribution unverified; an acknowledged write is still lost",
+    };
+    let mut matches = events.iter().filter(|event| event.token == lost.token);
+    if let Some(event) = matches.next() {
+        attribution.invoked_ns = event
+            .invoked
+            .checked_duration_since(origin)
+            .map(|d| d.as_nanos());
+        attribution.ack_completed_ns = event
+            .completed
+            .checked_duration_since(origin)
+            .map(|d| d.as_nanos());
+        if matches.next().is_none()
+            && event.key == lost.key
+            && event.key < KEYS
+            && event.token.len() == 16
+            && event.token.is_ascii()
+            && matches!(event.outcome,Outcome::Applied {length,counter} if length>0 && length%16==0 && counter.is_some()==has_incr(event.kind))
+            && event.invoked <= event.completed
+        {
+            if let (Some(invoked), Some(completed), Some(killed)) = (
+                attribution.invoked_ns,
+                attribution.ack_completed_ns,
+                attribution.sigkill_at_ns,
+            ) {
+                if let Some(age) = killed.checked_sub(completed) {
+                    attribution.ack_age_ns = Some(age);
+                    attribution.eio_overlap = eio_overlap(faults, invoked, killed);
+                }
+            }
+        }
+    }
+    // Policy labels describe competitors without changing the loss finding.
+    match server {
+        "redis" | "valkey" => {
+            attribution.label = "observation-under-everysec-not-always-sync";
+            attribution.interpretation = "lost acknowledgment observed under the everysec policy";
+            return attribution;
+        }
+        "garnet" => {
+            attribution.label = "aof-commit-semantics-unverified";
+            attribution.interpretation =
+                "lost acknowledgment; installed Garnet commit semantics remain unverified";
+            return attribution;
+        }
+        "firn" => {}
+        _ => {
+            attribution.label = "lost-acknowledged-write";
+            return attribution;
+        }
+    }
+    if fix == "unknown" {
+        attribution.label = "firn-fix-status-unknown-still-fails";
+        attribution.interpretation = "fix status is unverified; no known-cause attribution";
+    } else if attribution.ack_age_ns.is_none()
+        || matches!(attribution.eio_overlap, EioEvidence::Unverified(_))
+    {
+        // No inferred age, missing request, reversed time, or malformed fault
+        // record can establish the known acknowledgment-before-append window.
+    } else if fix == "present" {
+        attribution.label = "lost-acknowledged-write";
+        attribution.interpretation =
+            "append-before-reply fix reported present; investigate this loss";
+    } else if fix != "absent" {
+        attribution.interpretation = "invalid fix-status metadata; attribution unverified";
+    } else if matches!(attribution.eio_overlap, EioEvidence::Overlap(_)) {
+        attribution.label = OVERLAPPING_EIO_LOSS;
+        attribution.interpretation = "EIO overlapped the request-to-kill interval; cannot attribute solely to acknowledgment-before-append";
+    } else if attribution
+        .ack_age_ns
+        .is_some_and(|age| age <= KNOWN_ACK_WINDOW_NS)
+    {
+        attribution.label = KNOWN_ACK_LOSS;
+        attribution.interpretation = "consistent with the known pre-fix nominal 10ms window; still fails acceptance, not proof of sole cause";
+    } else {
+        attribution.label = OUTSIDE_ACK_WINDOW_LOSS;
+        attribution.interpretation =
+            "outside the nominal 10ms window; investigate, not proof of a separate firn defect";
+    }
+    attribution
+}
+
+fn report_lost_write(
+    shared: &Shared,
+    epoch: usize,
+    finding: &LostWrite,
+    attribution: &LossAttribution,
+) {
+    // Attribution is diagnostic only: every first-observed lost acknowledgment
+    // increments the same failure count, including a known pre-fix window.
+    unique_problem(
+        shared,
+        format!("LOST-{epoch}-{finding}"),
+        &format!(
+            "LOST epoch={epoch} class={} {finding} invoked_ns={:?} ack_completed_ns={:?} sigkill_at_ns={:?} ack_age_ns={:?} nominal_ack_window_ns={} EIO_overlap={:?} interpretation={}",
+            attribution.label,
+            attribution.invoked_ns,
+            attribution.ack_completed_ns,
+            attribution.sigkill_at_ns,
+            attribution.ack_age_ns,
+            KNOWN_ACK_WINDOW_NS,
+            attribution.eio_overlap,
+            attribution.interpretation
+        ),
+    );
+}
+
 fn checkpoint(
     c: &Config,
     shared: &Shared,
     port: u16,
     epochs: std::ops::RangeInclusive<usize>,
-    ever_disk: bool,
 ) -> usize {
     let begin = Instant::now();
     let mut failures = 0;
@@ -1229,22 +1443,17 @@ fn checkpoint(
         } else if lost.is_empty() && inconsistent.is_empty() {
             fs::write(&baseline, serialized).expect("archive first independently validated state");
         }
-        let loss_class = match c.server.as_str() {
-            "firn" if c.fix == "absent" && !ever_disk => {
-                "known-acknowledgment-before-append-#97-still-fails"
-            }
-            "firn" if c.fix == "unknown" => "firn-fix-status-unknown-still-fails",
-            "redis" | "valkey" => "observation-under-everysec-not-always-sync",
-            "garnet" => "aof-commit-semantics-unverified",
-            _ => "lost-acknowledged-write",
-        };
         for finding in lost {
-            failures += 1;
-            unique_problem(
-                shared,
-                format!("LOST-{epoch}-{finding}"),
-                &format!("LOST epoch={epoch} class={loss_class} {finding}"),
+            let attribution = classify_lost_write(
+                &c.server,
+                &c.fix,
+                &finding,
+                &events,
+                shared.origin,
+                &locked(&shared.fault_coverage).faults,
             );
+            failures += 1;
+            report_lost_write(shared, epoch, &finding, &attribution);
         }
         for finding in inconsistent {
             failures += 1;
@@ -1463,7 +1672,7 @@ fn execute(c: &Config, shared: &Shared) -> String {
         )
         .expect("archive disk attribution");
         if c.server == "dragonfly" {
-            checkpoint(c, shared, lease.port(), epoch..=epoch, disks > 0);
+            checkpoint(c, shared, lease.port(), epoch..=epoch);
             kill(
                 child.take().unwrap(),
                 shared,
@@ -1483,7 +1692,7 @@ fn execute(c: &Config, shared: &Shared) -> String {
             Err(failure) => return record_startup_failure(shared, failure),
         });
         if c.server != "dragonfly" {
-            checkpoint(c, shared, lease.port(), 1..=epoch, disks > 0);
+            checkpoint(c, shared, lease.port(), 1..=epoch);
         }
         locked(&shared.fault_coverage).epochs_completed += 1;
         note(
@@ -1498,7 +1707,7 @@ fn execute(c: &Config, shared: &Shared) -> String {
         }
     }
     if c.server != "dragonfly" {
-        checkpoint(c, shared, lease.port(), 1..=epoch, disks > 0);
+        checkpoint(c, shared, lease.port(), 1..=epoch);
     }
     let gaps = locked(&shared.fault_coverage).smoke_gaps(c.seconds, device.enabled);
     for gap in gaps {
@@ -2054,4 +2263,300 @@ fn ack_publication_keeps_latest_completion_when_an_older_reply_is_published_last
         Some(now + Duration::from_millis(2)),
         "late publication must not move the latest completion backwards"
     );
+}
+
+#[test]
+fn loss_attribution_uses_ack_age_and_actual_eio_overlap_instead_of_ever_failed_disk() {
+    let origin = Instant::now();
+    let killed = 10_000_000_000_u128;
+    let event = Event {
+        key: 0,
+        token: "0000000000000001".into(),
+        kind: Kind::Append,
+        invoked: origin + Duration::from_nanos(9_999_000_000),
+        completed: origin + Duration::from_nanos(9_999_500_000),
+        outcome: Outcome::Applied {
+            length: 16,
+            counter: None,
+        },
+    };
+    let lost = LostWrite {
+        key: event.key,
+        token: event.token.clone(),
+    };
+    let kill = FaultRecord {
+        kind: "SIGKILL sent",
+        epoch: 6,
+        at_ns: killed,
+    };
+    let past = vec![
+        FaultRecord {
+            kind: "combined write/flush EIO active",
+            epoch: 3,
+            at_ns: 5_000_000_000,
+        },
+        FaultRecord {
+            kind: "combined write/flush EIO healed",
+            epoch: 3,
+            at_ns: 8_000_000_000,
+        },
+        kill.clone(),
+    ];
+    let classify = |event: &Event, faults: &[FaultRecord], fix: &str| {
+        classify_lost_write(
+            "firn",
+            fix,
+            &lost,
+            std::slice::from_ref(event),
+            origin,
+            faults,
+        )
+    };
+    let after_heal = classify(&event, &past, "absent");
+    assert_eq!(
+        after_heal.label, KNOWN_ACK_LOSS,
+        "old healed EIO must not veto a new request"
+    );
+    assert_eq!(after_heal.ack_age_ns, Some(500_000));
+    assert_eq!(after_heal.eio_overlap, EioEvidence::NoOverlap);
+    for current_epoch in [3, 4, 5, 6] {
+        let mut faults = past.clone();
+        faults.last_mut().unwrap().epoch = current_epoch;
+        assert_eq!(
+            classify(&event, &faults, "absent").label,
+            KNOWN_ACK_LOSS,
+            "attribution uses times, not lifetime numbers or cumulative EIO"
+        );
+    }
+    let during = vec![
+        FaultRecord {
+            kind: "combined write/flush EIO active",
+            epoch: 6,
+            at_ns: 9_998_000_000,
+        },
+        FaultRecord {
+            kind: "combined write/flush EIO healed",
+            epoch: 6,
+            at_ns: 9_999_750_000,
+        },
+        kill.clone(),
+    ];
+    assert_eq!(
+        classify(&event, &during, "absent").label,
+        OVERLAPPING_EIO_LOSS
+    );
+    assert!(
+        matches!(classify(&event,&during,"absent").eio_overlap,EioEvidence::Overlap(ref windows) if windows.len()==1)
+    );
+    let intervening = vec![
+        FaultRecord {
+            kind: "combined write/flush EIO active",
+            epoch: 6,
+            at_ns: 9_999_750_000,
+        },
+        kill.clone(),
+    ];
+    assert_eq!(
+        classify(&event, &intervening, "absent").label,
+        OVERLAPPING_EIO_LOSS,
+        "EIO after acknowledgment but before kill also vetoes sole known-cause attribution"
+    );
+    assert!(
+        matches!(classify(&event,&intervening,"absent").eio_overlap,EioEvidence::Overlap(ref windows) if windows[0].healed_ns.is_none())
+    );
+    let mut boundary = event.clone();
+    boundary.invoked = origin + Duration::from_nanos(9_980_000_000);
+    boundary.completed = origin + Duration::from_nanos(9_990_000_000);
+    assert_eq!(
+        classify(&boundary, &[kill.clone()], "absent").label,
+        KNOWN_ACK_LOSS,
+        "nominal 10ms boundary is inclusive"
+    );
+    boundary.completed -= Duration::from_nanos(1);
+    let outside = classify(&boundary, &[kill.clone()], "absent");
+    assert_eq!(outside.label, OUTSIDE_ACK_WINDOW_LOSS);
+    assert!(
+        outside
+            .interpretation
+            .contains("not proof of a separate firn defect")
+    );
+    assert_eq!(
+        classify(&event, &past, "present").label,
+        "lost-acknowledged-write"
+    );
+    assert_eq!(
+        classify(&event, &past, "unknown").label,
+        "firn-fix-status-unknown-still-fails"
+    );
+    let mut later = past.clone();
+    later.push(FaultRecord {
+        kind: "SIGKILL sent",
+        epoch: 7,
+        at_ns: killed + 1_000_000_000,
+    });
+    assert_eq!(
+        classify(&event, &later, "absent").label,
+        OUTSIDE_ACK_WINDOW_LOSS,
+        "a loss first observed later cannot use the source epoch's older close kill"
+    );
+}
+
+#[test]
+fn loss_attribution_missing_or_reversed_metadata_cannot_establish_a_known_window() {
+    let origin = Instant::now();
+    let event = Event {
+        key: 0,
+        token: "0000000000000001".into(),
+        kind: Kind::Append,
+        invoked: origin + Duration::from_nanos(10),
+        completed: origin + Duration::from_nanos(20),
+        outcome: Outcome::Applied {
+            length: 16,
+            counter: None,
+        },
+    };
+    let lost = LostWrite {
+        key: 0,
+        token: event.token.clone(),
+    };
+    let kill = FaultRecord {
+        kind: "SIGKILL sent",
+        epoch: 1,
+        at_ns: 30,
+    };
+    let classify = |events: &[Event], faults: &[FaultRecord]| {
+        classify_lost_write("firn", "absent", &lost, events, origin, faults)
+    };
+    assert_eq!(classify(&[], &[kill.clone()]).label, UNVERIFIED_ACK_LOSS);
+    assert_eq!(
+        classify(std::slice::from_ref(&event), &[]).label,
+        UNVERIFIED_ACK_LOSS
+    );
+    let mut after_kill = event.clone();
+    after_kill.completed = origin + Duration::from_nanos(31);
+    assert_eq!(
+        classify(&[after_kill], &[kill.clone()]).label,
+        UNVERIFIED_ACK_LOSS
+    );
+    let mut reversed = event.clone();
+    reversed.invoked = origin + Duration::from_nanos(21);
+    assert_eq!(
+        classify(&[reversed], &[kill.clone()]).label,
+        UNVERIFIED_ACK_LOSS
+    );
+    let mut unknown = event.clone();
+    unknown.outcome = Outcome::Unknown;
+    assert_eq!(
+        classify(&[unknown], &[kill.clone()]).label,
+        UNVERIFIED_ACK_LOSS
+    );
+    assert_eq!(
+        classify(&[event.clone(), event.clone()], &[kill.clone()]).label,
+        UNVERIFIED_ACK_LOSS
+    );
+    let malformed = vec![
+        FaultRecord {
+            kind: "combined write/flush EIO healed",
+            epoch: 1,
+            at_ns: 5,
+        },
+        kill.clone(),
+    ];
+    assert_eq!(
+        classify(std::slice::from_ref(&event), &malformed).label,
+        UNVERIFIED_ACK_LOSS
+    );
+    for (server, label) in [
+        ("redis", "observation-under-everysec-not-always-sync"),
+        ("valkey", "observation-under-everysec-not-always-sync"),
+        ("garnet", "aof-commit-semantics-unverified"),
+    ] {
+        assert_eq!(
+            classify_lost_write(
+                server,
+                "absent",
+                &lost,
+                std::slice::from_ref(&event),
+                origin,
+                &[kill.clone()]
+            )
+            .label,
+            label
+        );
+    }
+}
+
+#[test]
+fn six_known_window_losses_remain_six_failures_after_diagnostic_reclassification() {
+    let directory = support::fixture_directory();
+    let origin = Instant::now();
+    let shared = Shared::new(directory.path(), origin);
+    let gaps = [261_800_u64, 63_465, 503_733, 159_404, 256_673, 166_939];
+    let mut faults = Vec::new();
+    for (index, gap) in gaps.into_iter().enumerate() {
+        let epoch = index + 1;
+        let killed = epoch as u64 * 10_000_000_000;
+        if epoch % 3 == 0 {
+            faults.push(FaultRecord {
+                kind: "combined write/flush EIO active",
+                epoch,
+                at_ns: (killed - 5_000_000_000) as u128,
+            });
+            faults.push(FaultRecord {
+                kind: "combined write/flush EIO healed",
+                epoch,
+                at_ns: (killed - 2_000_000_000) as u128,
+            });
+        }
+        faults.push(FaultRecord {
+            kind: "SIGKILL sent",
+            epoch,
+            at_ns: killed as u128,
+        });
+        let event = Event {
+            key: 0,
+            token: format!("{epoch:016x}"),
+            kind: Kind::Append,
+            invoked: origin + Duration::from_nanos(killed - gap - 10_000),
+            completed: origin + Duration::from_nanos(killed - gap),
+            outcome: Outcome::Applied {
+                length: 16,
+                counter: None,
+            },
+        };
+        let empty = State {
+            logs: vec![String::new(); KEYS],
+            sets: vec![None; KEYS],
+            counters: vec![None; KEYS],
+        };
+        let findings = chaos_check::check(
+            std::slice::from_ref(&event),
+            &empty,
+            origin + Duration::from_nanos(killed + 1),
+        );
+        assert_eq!(
+            findings.lost.len(),
+            1,
+            "classification cannot erase checker evidence"
+        );
+        let attribution = classify_lost_write(
+            "firn",
+            "absent",
+            &findings.lost[0],
+            std::slice::from_ref(&event),
+            origin,
+            &faults,
+        );
+        assert_eq!(attribution.label, KNOWN_ACK_LOSS);
+        assert_eq!(attribution.ack_age_ns, Some(gap as u128));
+        report_lost_write(&shared, epoch, &findings.lost[0], &attribution);
+    }
+    assert_eq!(
+        shared.errors.load(Ordering::Relaxed),
+        6,
+        "known cause never converts acknowledged losses to acceptance"
+    );
+    let report = render_report(&shared, "failed", None);
+    assert!(report.contains("status=failed"));
+    assert!(report.contains("findings=6"));
 }

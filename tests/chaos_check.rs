@@ -44,9 +44,20 @@ pub struct State {
     pub counters: Vec<Option<i64>>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LostWrite {
+    pub key: usize,
+    pub token: String,
+}
+impl std::fmt::Display for LostWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "key {}: missing acknowledged token {}", self.key, self.token)
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Findings {
-    pub lost: Vec<String>,
+    pub lost: Vec<LostWrite>,
     pub inconsistent: Vec<String>,
 }
 
@@ -140,7 +151,7 @@ pub fn check(events: &[Event], state: &State, checkpoint: Instant) -> Findings {
         }
         for event in events.iter().filter(|event| event.key == key) {
             if matches!(event.outcome, Outcome::Applied { .. }) && !present.contains(event.token.as_str()) {
-                findings.lost.push(format!("key {key}: missing acknowledged token {}", event.token));
+                findings.lost.push(LostWrite { key, token: event.token.clone() });
             }
         }
         if state.sets[key] != expected_set {
@@ -210,7 +221,8 @@ mod self_tests {
         state.counters[0] = Some(1);
         let result = check(&events, &state, checkpoint);
         assert_eq!(result.lost.len(), 1, "an internally consistent surviving prefix still lost an acknowledgment");
-        assert!(result.lost[0].contains(&events[3].token));
+        assert_eq!(result.lost[0], LostWrite { key: events[3].key, token: events[3].token.clone() });
+        assert_eq!(result.lost[0].to_string(), format!("key {}: missing acknowledged token {}",events[3].key,events[3].token));
     }
 
     #[test]

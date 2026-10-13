@@ -26,8 +26,10 @@ therefore lose approximately the last 10 ms of acknowledged writes. A run
 explicitly identified as lacking that fix labels restart losses as the
 known acknowledgment-before-append failure, not a newly discovered defect.
 It still fails acceptance. Unknown fix status never silently assumes the
-fix is present. Losses during a storage-failure cycle are not attributed
-solely to that timing window.
+fix is present. Classification uses the lost request's timing and the
+actual fault intervals, not whether an EIO occurred anywhere earlier in
+the run. A request overlapping an active EIO interval is not attributed
+solely to the acknowledgment-before-append window.
 
 ## Workload and fault schedule
 
@@ -316,7 +318,117 @@ record. An otherwise identical no-EIO control shows whether EIO is needed
 to reproduce the observation. No causal attribution or Redis defect claim
 is made before those observations exist.
 
-### Follow-up corrections (awaiting CI)
+### Second hosted observation: loss attribution, 2026-10-13
+
+[Actions run 38442238079](https://github.com/Ming-Research/Firn-wf/actions/runs/38442238079)
+ran revision `842392bd55455a42a86526526e52572248123ace` with the same
+120-second duration, seed 1, 32 clients, and the fault device. Its firn
+artifact reports 13,307 acknowledged writes, 940 deliberate connection
+drops, six completed epochs and SIGKILL restarts, two combined write/flush
+EIO windows, six LOST findings, no INCONSISTENT finding, and `panic=None`.
+Both jobs passed 31 self-tests on that revision. No local build or server
+was used for this analysis, and the downloaded evidence was not modified.
+
+Each lost operation received a complete successful reply. The following
+intervals use the recorded invocation/completion times and the signal's
+`at_ns`, not the later log-write timestamp. The millisecond delta is signal
+time minus successful reply completion. Operation names include the journal
+APPEND performed inside each transaction.
+
+| Epoch / lost token | Operation | Reply completed (s) | SIGKILL sent (s) | Ack before kill (ms) | Relation to EIO | Firn artifact evidence |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| 1 / `0000010300000060` | MULTI/EXEC: APPEND + SET | 24.097894731 | 24.098156531 | 0.261800 | No earlier EIO | `epoch-1.tsv:389`; `history.log:3078,3079`; `findings.log:1` |
+| 2 / `000002180000005c` | MULTI/EXEC: APPEND + SET | 47.523677133 | 47.523740598 | 0.063465 | No earlier EIO | `epoch-2.tsv:2311`; `history.log:6067,6068`; `findings.log:2` |
+| 3 / `0000030b0000003c` | APPEND | 62.962842700 | 62.963346433 | 0.503733 | Invoked 1895.677448 ms after heal | `epoch-3.tsv:726`; `history.log:8027,8028`; `findings.log:3` |
+| 4 / `0000040f00000058` | APPEND | 85.350676784 | 85.350836188 | 0.159404 | New lifetime, no EIO in that lifetime; invoked 24,283.597030 ms after prior heal | `epoch-4.tsv:1416`; `history.log:10874,10875`; `findings.log:4` |
+| 5 / `0000050500000058` | MULTI/EXEC: APPEND + INCR | 107.776386814 | 107.776643487 | 0.256673 | New lifetime, no EIO in that lifetime; invoked 46,709.150520 ms after prior heal | `epoch-5.tsv:534`; `history.log:13720,13721`; `findings.log:5` |
+| 6 / `0000060900000030` | MULTI/EXEC: APPEND + INCR | 120.220815595 | 120.220982534 | 0.166939 | Invoked 2016.116280 ms after heal | `epoch-6.tsv:487`; `history.log:15301,15302`; `findings.log:6` |
+
+The loaded journal for each affected key is exactly one 16-byte token
+shorter than the acknowledged APPEND length: 12,240 instead of 12,256;
+12,128 instead of 12,144; 5,984 instead of 6,000; 10,848 instead of 10,864;
+11,296 instead of 11,312; and 4,288 instead of 4,304 bytes, respectively
+(`snapshot-1.txt` through `snapshot-6.txt`, each line 1). The last two
+transactions acknowledged INCR values 351 and 139, but restored counters
+are 350 and 138. The first two SETs restore the previous register token.
+The surviving state is consistent with losing the last complete operation,
+not a newly observed partial transaction.
+
+Firn did refuse writes after both recorded heals. These are observed
+protocol boundaries, not an exact timestamp of the internal recovery
+rewrite completing:
+
+| Epoch | EIO active / healed (s) | Last observed refusal completion (s) | First subsequent successful reply completion (s) | Success after heal (ms) | Evidence |
+| --- | --- | ---: | ---: | ---: | --- |
+| 3 | 58.016086126 / 61.067025844 | 61.975001402 | 62.211804620 | 1144.778776 | `report.txt:22`; `history.log:7930,7931` |
+| 6 | 115.150674337 / 118.204481189 | 118.230770053 | 118.469077228 | 264.596039 | `report.txt:22`; `history.log:15076,15077` |
+
+Requests invoked after heal include 115 refusals in epoch 3 and 30 in
+epoch 6. The actual errors are `MISCONF Errors writing to the AOF file:
+Input/output error`, plus `EXECABORT Transaction discarded because of
+previous errors` for a denied transaction; there is no `-ERR` reply.
+Both lost operations after an EIO window were invoked after successful
+writes had resumed. The 14 firn stdout/stderr files are empty, so the
+artifacts provide no additional AOF-writer or rewrite-installation trace.
+
+**Conclusion:** the six acknowledged losses are real and still fail
+acceptance. Every loss is within 0.504 ms of SIGKILL, outside active EIO,
+and consistent with the already known pre-fix acknowledgment-before-append
+mechanism. These artifacts do not reveal an older acknowledged write lost
+outside that nominal window or a separate disk-recovery defect. They also
+do not prove the precise AOF-writer cause, because its append/install
+events and the persistence bytes were not captured.
+
+The labels for epochs 3–6 are a classifier error. The old condition was
+`fix == "absent" && !ever_disk`, with callers passing cumulative
+`disks > 0`. It used **no millisecond threshold** and did not inspect the
+lost request or EIO interval. Once epoch 3 injected EIO, it disabled the
+known label for every later epoch, including the fresh, non-faulted
+lifetimes of epochs 4 and 5. A generic label therefore did not constitute
+evidence of another firn defect.
+
+The correction evaluates each lost acknowledged event against the current
+recorded SIGKILL and actual EIO intervals. An explicitly unfixed firn image
+may retain the known-mechanism label when its reply completed no more than
+10 ms before that signal and no active EIO overlapped the request-to-kill
+interval. A healed EIO before invocation is not a veto. Overlapping EIO,
+missing attribution evidence, a fixed/unknown image, or an older reply
+keeps a separate investigation or unverified label. Ten milliseconds is a
+conservative diagnostic criterion for consistency with the known mechanism,
+not a guaranteed upper bound on AOF-writer delay or proof that an older
+loss has a different cause. It never changes loss detection or turns a
+failed run into a pass. Repeated checks use the current signal, so a loss
+first observed only at a later restart cannot borrow its earlier signal's
+short interval.
+
+Redis again reported fsync EIO (`server-2.stdout:12`), then refused its
+third startup with a bad AOF (`server-3.stdout:8`). This time its report
+correctly records one `refused restart` finding, `panic=None`, and an
+unexecuted recovery check (`report.txt:24–31`). The damaged-record origin
+remains unverified as in the first observation; this repeat does not
+resolve the storage-versus-Redis attribution.
+
+The classifier correction carries structured lost-write keys/tokens rather
+than parsing diagnostic text. It logs invocation, acknowledgment, signal,
+age, nominal threshold, and EIO overlap evidence alongside each loss. The
+checker predicate and error count are unchanged. These new regression
+cases have not run on the corrected worktree:
+
+| Test | Wrong result it detects |
+| --- | --- |
+| `loss_attribution_uses_ack_age_and_actual_eio_overlap_instead_of_ever_failed_disk` | A healed earlier EIO vetoes a new near-kill write, an overlapping or intervening EIO is called the sole known cause, the 10 ms boundary is mishandled, or a later-observed loss borrows the source epoch's old kill. |
+| `loss_attribution_missing_or_reversed_metadata_cannot_establish_a_known_window` | Missing, duplicated, non-acknowledged, reversed, or malformed event/fault metadata establishes a known cause; competitor policy labels also remain covered. |
+| `six_known_window_losses_remain_six_failures_after_diagnostic_reclassification` | Reclassifying the six measured acknowledgment-age patterns erases checker losses or makes their six harness failures pass. |
+
+An independent read-only review covered all four changed files against the
+second hosted revision, including the structured-finding consumers, design
+commitments, and original artifacts. It found one stale test-status sentence,
+which was corrected to distinguish the seven already validated cases from
+the three new classifier cases. No static findings remain. Compilation,
+execution of these three cases, and a corrected runtime report remain
+unverified; the original artifacts are retained unchanged.
+
+### Follow-up corrections to the first run (validated by the second run)
 
 Expected startup failures now use a named readiness result and a structured
 server finding. A refused restart stops that server's workload, retains
@@ -343,8 +455,9 @@ Successful trigger logging occurs after the signal, so artifact I/O does
 not delay it. The measured count of signals within 10 ms of an acknowledgment
 is coverage evidence, not a scheduling guarantee or a change to acceptance.
 
-The following regression cases are added for CI and have **not run** on
-the corrected worktree:
+The following seven regression cases passed in each job of the second
+hosted run. The later per-loss classifier correction remains unexecuted
+until its own CI run:
 
 | Test | Wrong result it detects |
 | --- | --- |
@@ -358,8 +471,9 @@ the corrected worktree:
 
 These cases join the existing test targets; no gate target, compiler pin,
 submodule, production server, or approval log changes. The first hosted
-run validates the previous revision only, so another CI run is needed for
-the corrected readiness, reporting, and signal paths.
+run validates the original revision only; the second hosted run validates
+these corrected readiness, reporting, and signal paths, including the
+observed sub-millisecond signal adjacency and real refused-restart report.
 
 A fresh gpt-6.1-sol review covered the five-file follow-up against the
 hosted revision. It found and reinspected two local repairs: out-of-order
@@ -367,8 +481,10 @@ acknowledgment publication must retain the maximum completion time, and
 zero-count EIO coverage needs an explicit skip reason on short or aborted
 runs. No static findings remain. YAML parsing, all 14 current workflow
 shell blocks' `bash -n`, and `git diff --check` passed; no build, test, or
-server ran on the Mac. Current Rust compilation, regression execution,
-real refused-restart reporting, and actual signal adjacency remain for CI.
+server ran on the Mac. Rust compilation, regression execution,
+real refused-restart reporting, and actual signal adjacency remained for CI
+at that review; the second hosted observation supplies that evidence for
+its revision only.
 
 ### Initial implementation review, 2026-10-13 (before the hosted run)
 
@@ -398,8 +514,9 @@ evidence and design approval remain unverified.
 
 The 14 original chaos tests below passed in each job of the first hosted run.
 The existing durability negative test remains in the network gate, which
-these chaos artifacts do not establish. Follow-up cases are listed in the
-correction section above and remain unexecuted until CI. The pure tests
+these chaos artifacts do not establish. The seven first-run correction
+cases above passed in the second run; the three new classifier cases
+remain unexecuted until CI. The pure tests
 run without starting a database; shared process-support tests remain wired.
 
 | Test | Discriminating case |
