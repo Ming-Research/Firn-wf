@@ -24,7 +24,7 @@ jobs:
       - name: Download both released compilers through Whitefoot-kit
         run: |
           make compiler
-          printf '%s\n' 'release = wf-3adedae9bb1a' > "$RUNNER_TEMP/fnparam-formal.pin"
+          printf '%s\n' 'release = wf-8c5b07c360c9' > "$RUNNER_TEMP/fnparam-formal.pin"
           make compiler PIN="$RUNNER_TEMP/fnparam-formal.pin"
 
       # These checks emit no executable and need no LLVM installation.
@@ -34,7 +34,7 @@ jobs:
           python3 -B research/experiments/select-db/fn-param-postcondition-ladder/run.py \
             --cases research/experiments/select-db/fn-param-postcondition-ladder/cases.json \
             --compiler wf-af7665be672d af7665be672d29912d878dd5da8c3932bb6f296c build/whitefoot/wf-af7665be672d \
-            --compiler wf-3adedae9bb1a 3adedae9bb1a9028e0afd95d2776e5330db4abc1 build/whitefoot/wf-3adedae9bb1a \
+            --compiler wf-8c5b07c360c9 8c5b07c360c9f61bb6ea81cdbba51885f14f1013 build/whitefoot/wf-8c5b07c360c9 \
             --output "$RUNNER_TEMP/fnparam-ladder" \
             --timeout 60
 
