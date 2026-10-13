@@ -45,7 +45,7 @@
 //!
 //! The cases are ignored in `make check`, which has no such device; the
 //! `aof-sync-fault` job of .github/workflows/check.yml makes it and runs these
-//! two sync cases and the three rewrite cases below, one after the other,
+//! two sync cases and the four rewrite cases below, one after the other,
 //! through `make aof-sync-fault`, failing when the
 //! device cannot be made. They share the device, so they never run at once,
 //! and a case that fails while the device fails heals it for the next.
@@ -178,7 +178,11 @@ fn wait_status(client: &mut TcpStream, expected: &str) -> String {
 /// metadata statement that ends it, so a server that accepted writes again
 /// before its new files were installed would show both.
 fn wait_recovered(client: &mut TcpStream, route: &str) -> String {
-    let deadline = Instant::now() + POLL_LIMIT;
+    wait_recovered_within(client, route, POLL_LIMIT)
+}
+
+fn wait_recovered_within(client: &mut TcpStream, route: &str, limit: Duration) -> String {
+    let deadline = Instant::now() + limit;
     loop {
         let info = persistence(client);
         let healthy = info_field(&info, "aof_last_write_status").as_deref() == Some("ok");
@@ -843,6 +847,11 @@ const REWRITE_KEYS: usize = 512;
 const REWRITE_VALUE_BYTES: usize = 8192;
 const REWRITE_WAIT: Duration = Duration::from_secs(30);
 const WRITE_SYSCALLS: &str = "write,writev,pwrite64,pwritev,pwritev2";
+/// A directory sync: firn's std::fs::sync_directory calls fsync on the
+/// directory, Redis 7.2.16's fsyncFileDir calls redis_fsync, fdatasync on
+/// Linux (util.c:1100-1138, config.h:117). -P on the directory matches only
+/// calls on a descriptor of the directory itself, not on files inside it.
+const SYNC_SYSCALLS: &str = "fsync,fdatasync";
 
 /// One lifetime directory, reused at restart, and an independently checked
 /// reference binary. Both servers use commands, not an RDB base preamble.
@@ -937,7 +946,7 @@ struct RewriteTrace {
 }
 
 impl RewriteTrace {
-    fn attach(pid: u32, target: &Path, inject: bool, label: &str) -> Self {
+    fn attach(pid: u32, target: &Path, syscalls: &str, inject: bool, label: &str) -> Self {
         let log = std::env::temp_dir().join(format!(
             "firn-rewrite-fault-{label}-{pid}-{}.trace", std::process::id()));
         let mut command = Command::new("sudo");
@@ -945,9 +954,9 @@ impl RewriteTrace {
         // loses sudo access; --foreground preserves our separate group.
         command.args(["-n", "timeout", "--foreground", "--signal=KILL", "40s",
             "strace", "-f", "-qq", "-yy", "-s", "80", "-o"])
-            .arg(&log).arg("-e").arg(format!("trace={WRITE_SYSCALLS}"))
+            .arg(&log).arg("-e").arg(format!("trace={syscalls}"))
             .arg("-P").arg(target).arg("-p").arg(pid.to_string());
-        if inject { command.arg("-e").arg(format!("inject={WRITE_SYSCALLS}:error=EIO")); }
+        if inject { command.arg("-e").arg(format!("inject={syscalls}:error=EIO")); }
         command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let child = ProgramChild::spawn(&mut command).expect("attach strace to rewrite process");
         // Own privilege-aware cleanup immediately, including an attachment
@@ -1061,8 +1070,14 @@ fn rewrite_verify(client: &mut TcpStream, expected: &BTreeMap<String, String>, s
 /// No quoting is needed for this fixture's fixed filenames. Validate every
 /// active reference; unlisted temporary files left by a crash are permitted.
 fn rewrite_active_files(directory: &Path) -> BTreeMap<String, Vec<u8>> {
+    let manifest = std::fs::read_to_string(directory.join("appendonlydir/sync.aof.manifest")).unwrap();
+    rewrite_selection(directory, manifest)
+}
+
+/// What a restart would load if `manifest` were the one on the device: the
+/// manifest and the present bytes of every active file it names.
+fn rewrite_selection(directory: &Path, manifest: String) -> BTreeMap<String, Vec<u8>> {
     let directory = directory.join("appendonlydir");
-    let manifest = std::fs::read_to_string(directory.join("sync.aof.manifest")).unwrap();
     let mut files = BTreeMap::new();
     let mut bases = 0;
     let mut increment_sequence = 0;
@@ -1184,7 +1199,7 @@ fn rewrite_temporary_fault(enospc: bool) {
         let temporary_size = std::fs::metadata(&temporary).expect("paused rewrite still has its temporary base").len();
         assert!(temporary_size > 0 && temporary_size < (REWRITE_KEYS * REWRITE_VALUE_BYTES) as u64,
             "missed incomplete scan: temporary base already has {temporary_size} bytes");
-        let trace = RewriteTrace::attach(worker, &temporary, !enospc, scenario);
+        let trace = RewriteTrace::attach(worker, &temporary, WRITE_SYSCALLS, !enospc, scenario);
         let full = enospc.then(|| FullRewriteDisk(&device));
         if enospc { device.run("fill"); }
         drop(paused);
@@ -1242,7 +1257,7 @@ fn aof_rewrite_current_append_failure_observes_publication() {
         let before = std::fs::read(&current).unwrap();
         let old = rewrite_active_files(server.directory());
         let before_failure = expected.clone();
-        let trace = RewriteTrace::attach(child.id(), &current, true, "current-eio");
+        let trace = RewriteTrace::attach(child.id(), &current, WRITE_SYSCALLS, true, "current-eio");
         assert_eq!(info_field(&persistence(&mut client), "aof_rewrite_in_progress").as_deref(), Some("1"),
             "current append fault must happen during the rewrite");
         rewrite_increment(&mut client, &mut expected);
@@ -1282,5 +1297,112 @@ fn aof_rewrite_current_append_failure_observes_publication() {
         wait_status(&mut client, "ok");
         rewrite_restart(&device, &server, child, client, &expected);
         eprintln!("rewrite-fault observation: server={} case=current-eio repaired=yes restart=exact keys={}", server.label(), expected.len());
+    }
+}
+
+/// The highest incremental sequence an active row of `manifest` names.
+fn rewrite_last_increment(manifest: &str) -> u64 {
+    manifest.lines().filter(|line| line.ends_with(" type i"))
+        .map(|line| line.split_whitespace().nth(3).unwrap().parse().unwrap())
+        .max().expect("one current increment")
+}
+
+/// A rewrite's switch renames a manifest naming a new increment and then
+/// syncs the directory; here that directory sync fails with EIO (injected by
+/// strace on the directory alone, so the rename itself happened). A restart
+/// may then read either manifest: the old one, if the rename does not reach
+/// the device, or the renamed one. Redis 7.2.16 switches at BGREWRITEAOF
+/// (aof.c:2443-2446): persistAofManifest returns C_ERR after the rename
+/// (aof.c:572-588), openNewIncrAofForAppend keeps its old aof_fd and manifest
+/// and leaves the new file in place (aof.c:821-823,850-855), and the command
+/// fails; aof_last_write_status stays ok, so Redis keeps acknowledging writes,
+/// into the old increment. firn switches at S1, after its scan. It keeps the
+/// old manifest and handle too, and also saves the error as its sync error:
+/// writes are refused with MISCONF until a recovery rewrite's installation is
+/// durable, the deliberate difference design/firn/aof-rewrite.md records.
+///
+/// For both servers every acknowledged write must be in both selections, the
+/// old manifest with its files' present bytes and the renamed one with
+/// theirs, and in what a restart after a remount reads. A firn that adopted
+/// the new increment after the failed directory sync, as firn did before this
+/// case, acknowledges the write sent after the failure (the MISCONF assertion
+/// fails) and appends it to the new increment, which the old selection does
+/// not name.
+#[test]
+#[ignore = "needs the aof-sync-fault device, strace and pinned Redis oracle"]
+fn aof_rewrite_switch_directory_sync_failure_refuses_until_recovery() {
+    let device = Device::from_environment();
+    for redis in [true, false] {
+        device.run("reset");
+        let server = RewriteServer::new(&device, redis, "switch-dirsync");
+        let label = server.label().to_string();
+        let (child, mut client) = server.start();
+        let mut expected = rewrite_seed(&mut client);
+        let old_base = rewrite_base_name(server.directory());
+        let manifest_path = server.directory().join("appendonlydir/sync.aof.manifest");
+        let old_manifest = std::fs::read_to_string(&manifest_path).unwrap();
+        let last = rewrite_last_increment(&old_manifest);
+        let target = server.directory().join("appendonlydir").canonicalize().unwrap();
+        let trace = if redis {
+            let trace = RewriteTrace::attach(child.id(), &target, SYNC_SYSCALLS, true, "switch-dirsync");
+            assert_eq!(memory_request(&mut client, &["BGREWRITEAOF"]),
+                "-ERR Can't execute an AOF background rewriting. Please check the server logs for more information.\r\n",
+                "{label}: the switch's failed directory sync fails the command");
+            trace
+        } else {
+            let (_worker, _temporary) = rewrite_begin(&server, &child, &mut client);
+            // The scan still runs (20 ms a key), so S1 and its switch come
+            // after the tracer is attached.
+            let trace = RewriteTrace::attach(child.id(), &target, SYNC_SYSCALLS, true, "switch-dirsync");
+            assert_eq!(info_field(&persistence(&mut client), "aof_rewrite_in_progress").as_deref(), Some("1"),
+                "{label}: the switch must come after the tracer attached");
+            trace
+        };
+        let failed = rewrite_finished(&mut client);
+        trace.assert_fault("EIO", true);
+        assert_eq!(info_field(&failed, "aof_last_bgrewrite_status").as_deref(), Some("err"), "{label}: {failed}");
+        let renamed = std::fs::read_to_string(&manifest_path).unwrap();
+        assert_ne!(renamed, old_manifest, "{label}: the rename happened, only the directory sync failed");
+        assert_eq!(rewrite_last_increment(&renamed), last + 1, "{label}: the renamed manifest names the new increment: {renamed}");
+        assert_eq!(rewrite_base_name(server.directory()), old_base, "{label}: no base was installed");
+        let probe = if redis {
+            let value = expected["rewrite:counter"].parse::<u64>().unwrap() + 1;
+            let reply = memory_request(&mut client, &["INCR", "rewrite:counter"]);
+            assert_eq!(reply, format!(":{value}\r\n"), "{label}: Redis keeps acknowledging writes");
+            expected.insert("rewrite:counter".to_string(), value.to_string());
+            std::thread::sleep(SETTLE);
+            wait_status(&mut client, "ok");
+            reply
+        } else {
+            assert_eq!(info_field(&failed, "firn_aof_rewrite_abort_reason").as_deref(), Some("install_io"), "{label}: {failed}");
+            let info = wait_status(&mut client, "err");
+            assert_eq!(info_field(&info, "aof_last_write_status").as_deref(), Some("err"), "{label}: {info}");
+            let reply = memory_request(&mut client, &["SET", "rewrite:refused", "must-not-reappear"]);
+            assert_eq!(reply, format!("{MISCONF}Input/output error\r\n"),
+                "{label}: writes refused after the switch's failed directory sync");
+            assert_eq!(memory_request(&mut client, &["PING"]), format!("{MISCONF}Input/output error\r\n"), "{label}");
+            std::thread::sleep(SETTLE);
+            reply
+        };
+        eprintln!("rewrite-fault observation: server={label} case=switch-dirsync rewrite=err manifest=renamed write-after-failure={probe:?}");
+        rewrite_verify_old(&server, &rewrite_selection(server.directory(), old_manifest.clone()), &expected);
+        rewrite_verify_old(&server, &rewrite_selection(server.directory(), renamed.clone()), &expected);
+        eprintln!("rewrite-fault observation: server={label} case=switch-dirsync old-selection=exact renamed-selection=exact");
+        trace.detach();
+        if !redis {
+            // A recovery attempt that started while the tracer was attached
+            // failed its own switch the same way; with the tracer gone and no
+            // scan delay the next one completes.
+            assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "rdb-key-save-delay", "0"]), "+OK\r\n");
+            let recovered = wait_recovered_within(&mut client, &label, REWRITE_WAIT);
+            assert_eq!(info_field(&recovered, "aof_last_bgrewrite_status").as_deref(), Some("ok"), "{label}: {recovered}");
+            assert_ne!(rewrite_base_name(server.directory()), old_base, "{label}: recovery installed a new base");
+            eprintln!("rewrite-fault observation: server={label} case=switch-dirsync recovered=yes");
+        }
+        rewrite_increment(&mut client, &mut expected);
+        std::thread::sleep(SETTLE);
+        wait_status(&mut client, "ok");
+        rewrite_restart(&device, &server, child, client, &expected);
+        eprintln!("rewrite-fault observation: server={label} case=switch-dirsync restart=exact keys={}", expected.len());
     }
 }
