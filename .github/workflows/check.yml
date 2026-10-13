@@ -207,8 +207,8 @@ jobs:
           echo "FIRN_SYNC_FAULT_MOUNT=$mount" >> "$GITHUB_ENV"
 
       # The target fails without FIRN_SYNC_FAULT_MOUNT and REDIS_SERVER, set
-      # by the steps above, and without a case that passed.
-      - name: Run the sync-failure case
+      # by the steps above, and unless both of its cases ran and passed.
+      - name: Run the sync-failure cases
         run: make aof-sync-fault
 
       - name: Show the kernel's account of the device

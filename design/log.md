@@ -12,6 +12,14 @@ Owner-approved: On the shared status board on 2026-10-13, the owner chose option
 
 Summary: Redis 7.2.16 reports every short AOF write as ENOSPC. Whitefoot v0.136's error_copy_class_description gives the host's text for an error class, so firn's reply now equals Redis's word for word without naming a platform error number, which closes the gap the previous empty suffix recorded.
 
+## 2026-10-13 Recover from an AOF sync failure only through a durable rewrite, and sync only after new bytes
+
+Nodes: firn/append-only-file, firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A on card firn-q-sync-recover (after a failed sync, a retried sync that succeeds starts a rewrite of the AOF from memory, and only a durable installation clears the error and admits writes again, as implemented on PR #68 at head c183857) and option A on card firn-q-sync-schedule (sync once a second only after new bytes or while a sync error is saved, as Redis 7.2.16 does, instead of once a second while idle).
+
+Summary: Linux marks pages whose writeback failed clean, so a retried fsync succeeds without writing them; on the faulty-device job a write acknowledged during the failure and one acknowledged after firn's automatic recovery were both lost after a restart while firn loaded the file silently. firn now keeps refusing writes until a rewrite from memory is durably installed; recovery rewrites run whatever the automatic-rewrite block, and append errors keep the clear-on-complete-append rule. Syncing only after new bytes makes firn acknowledge a write after an idle-time device fault as Redis does, instead of refusing it because an idle sync failed first.
+
 ## 2026-10-12 Take Redis 7.2.16 as the gate's suite and the reference server
 
 Nodes: firn, firn/consumers
