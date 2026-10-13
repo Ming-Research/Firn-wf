@@ -121,7 +121,7 @@ on:
         type: string
         default: ""
       callers:
-        description: Give each profile sample its DWARF-unwound callers
+        description: "Give each profile sample its DWARF-unwound callers; in workloads mode also keep the compressed perf.data and write the children, script-engine and symbol-prefix reports"
         type: boolean
         default: false
 
@@ -441,3 +441,6 @@ jobs:
           path: |
             ${{ runner.temp }}/redis-bench/*.csv
             ${{ runner.temp }}/redis-bench/*.txt
+            ${{ runner.temp }}/redis-bench/*.tsv
+            ${{ runner.temp }}/redis-bench/*.zst
+            ${{ runner.temp }}/redis-bench/*.xz

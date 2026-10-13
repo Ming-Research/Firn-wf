@@ -94,7 +94,23 @@
 #                                 unmeasured, and keeps each flat profile as
 #                                 profile-<line>-<cpus>-<workload>-
 #                                 <connections>.txt; Redis lines are not
-#                                 profiled. Probe with
+#                                 profiled. With PERF_CALLERS set (the
+#                                 workflow's callers input) the recording is
+#                                 `perf record -g --call-graph dwarf,16384`
+#                                 on the server pid at a rate that keeps
+#                                 perf.data near 300 MB (at most
+#                                 PERF_FREQUENCY, at least 99 Hz), and the
+#                                 data is kept as perf-<name>.data.zst (or
+#                                 .xz) with three more reports:
+#                                 profile-<name>-children.txt (inclusive and
+#                                 self by symbol), profile-<name>-engine.txt
+#                                 (callers of wf_scripting.eval frames, the
+#                                 time a script holds the engine, and their
+#                                 inclusive share of all samples) and
+#                                 profile-<name>-prefix.tsv (self samples by
+#                                 symbol-prefix bucket, over all samples and
+#                                 over those under wf_scripting.eval).
+#                                 Probe with
 #                                 WORKLOAD_PASSES=2 WORKLOAD_SECONDS=5 first.
 #                                 With WORKLOAD_IMAGES set, the lines are
 #                                 Redis and each image IMAGES names, both
@@ -1256,6 +1272,74 @@ if [ "$MODE" = compare ]; then
     exit 0
 fi
 
+# Reports of a call-graph profile (workloads mode with PERF_CALLERS): $1 is the
+# profile's name, $2 its perf.data. Each report unwinds the DWARF stacks again,
+# so they are slow but run unmeasured.
+#   profile-<name>-children.txt  inclusive and self time by symbol
+#   profile-<name>-engine.txt    callers and callees of the frames that run a
+#                                script while holding the engine
+#                                (wf_scripting.eval...), then their inclusive
+#                                share of all samples
+#   profile-<name>-prefix.tsv    self samples by symbol-prefix bucket, over all
+#                                samples and over those whose callchain holds
+#                                a wf_scripting.eval frame
+graph_reports() {
+    "$PERF" report -i "$2" --stdio --children --sort symbol \
+        --percent-limit 0.5 -g none >"$OUT/profile-$1-children.txt" 2>/dev/null
+    {
+        "$PERF" report -i "$2" --stdio --no-children --sort parent,symbol \
+            -p 'wf_scripting\.eval' --percent-limit 0.2 -g caller,0.5,callee 2>/dev/null
+        echo
+        "$PERF" script -i "$2" -F ip,sym 2>/dev/null | awk '
+            function flush(   i) {
+                if (n == 0) return
+                total++
+                for (i = 1; i <= n; i++) if (syma[i] ~ /wf_scripting\.eval/) { inside++; break }
+                n = 0
+            }
+            /^[ \t]*$/ { flush(); next }
+            { n++; syma[n] = $2 }
+            END { flush()
+                  printf "inclusive share under wf_scripting.eval: %d of %d samples, %.1f%%\n",
+                      inside, total, total ? 100 * inside / total : 0 }'
+    } >"$OUT/profile-$1-engine.txt"
+    "$PERF" script -i "$2" -F ip,sym 2>/dev/null | awk '
+        function bucket(pip, s) {
+            if (pip ~ /^ffff/) return "kernel"
+            if (s == "halo.vm.collect_if_due") return "halo.vm.collect_if_due"
+            if (s ~ /^halo\..*collect/) return "halo.collect_other"
+            if (s ~ /^halo\.heap\.intern/) return "halo.heap.intern"
+            if (s ~ /^halo\.vm(\.|$)/) return "halo.vm"
+            if (s ~ /^halo\.heap(\.|$)/) return "halo.heap_rest"
+            if (s ~ /^halo\.embed(\.|$)/) return "halo.embed"
+            if (s ~ /^halo\.lib(\.|$)/) return "halo.lib"
+            if (s ~ /^(_int_(malloc|free|realloc)|malloc|calloc|realloc|free|cfree|__libc_(malloc|calloc|realloc|free)|_mid_memalign|aligned_alloc|posix_memalign|malloc_consolidate|systrim|sysmalloc|__?mem(cpy|move|set|cmp|chr|pcpy)|__?(mem(cpy|move|set|cmp|chr))_)/) return "libc_alloc_mem"
+            if (s ~ /^wf_scripting\./) return "wf_scripting"
+            if (s ~ /^wf_commands\./) return "wf_commands"
+            if (s ~ /^wf_server\./) return "wf_server"
+            if (s ~ /^wf_[^.]*$/) return "wf_runtime"
+            return "other"
+        }
+        function flush(   i, b, inside) {
+            if (n == 0) return
+            b = bucket(ipa[1], syma[1])
+            all[b]++; total++
+            for (i = 1; i <= n; i++) if (syma[i] ~ /wf_scripting\.eval/) { inside = 1; break }
+            if (inside) { eng[b]++; etotal++ }
+            names[b] = 1
+            n = 0
+        }
+        /^[ \t]*$/ { flush(); next }
+        { n++; ipa[n] = $1; syma[n] = $2 }
+        END { flush()
+              print "bucket\tall_samples\tall_percent\tunder_eval_samples\tunder_eval_percent_of_eval"
+              for (b in names)
+                  printf "%s\t%d\t%.2f\t%d\t%.2f\n", b, all[b], total ? 100 * all[b] / total : 0,
+                      eng[b], etotal ? 100 * eng[b] / etotal : 0
+              printf "TOTAL\t%d\t100.00\t%d\t100.00\n", total, etotal }' |
+        { IFS= read -r head; echo "$head"; sort; } >"$OUT/profile-$1-prefix.tsv"
+}
+
 # Consumer workloads, isolated so the session RSS is not a mixed keyspace.
 # Keep the client's exit status outside a pipeline or echo substitution: a
 # RESP error, including one nested in EXEC, must fail the measurement, except
@@ -1404,7 +1488,16 @@ if [ "$MODE" = workloads ]; then
                     if [ -n "$PERF" ] && [ -n "$profiled" ] && [ "$pass" -eq 1 ]; then
                         for conns in ${WORKLOAD_CONNECTIONS:-50}; do
                             name="$line-$n-$workload-$conns"
-                            "$PERF" record -F "${PERF_FREQUENCY:-4999}" -p "$server" \
+                            # With PERF_CALLERS each sample copies 16 KiB of stack,
+                            # so the rate falls with the recording's length and
+                            # the server CPUs to keep perf.data near 300 MB.
+                            freq=${PERF_FREQUENCY:-4999}
+                            if [ -n "${PERF_CALLERS:-}" ]; then
+                                budget=$((300000000 / (16500 * (${WORKLOAD_SECONDS:-10} + 2) * n)))
+                                [ "$budget" -lt 99 ] && budget=99
+                                [ "$budget" -lt "$freq" ] && freq=$budget
+                            fi
+                            "$PERF" record ${PERF_CALLERS:+-g --call-graph dwarf,16384} -F "$freq" -p "$server" \
                                 -o "$OUT/perf-$name.data" >/dev/null 2>&1 &
                             recorder=$!
                             sleep 1
@@ -1415,6 +1508,15 @@ if [ "$MODE" = workloads ]; then
                             wait "$recorder" || true
                             "$PERF" report -i "$OUT/perf-$name.data" --stdio --no-children \
                                 --sort dso,symbol --percent-limit 0.5 -g none >"$OUT/profile-$name.txt" 2>/dev/null
+                            if [ -n "${PERF_CALLERS:-}" ]; then
+                                graph_reports "$name" "$OUT/perf-$name.data"
+                                # Keep the data for a later perf report, compressed.
+                                if command -v zstd >/dev/null 2>&1; then
+                                    zstd -q -T0 -3 -f "$OUT/perf-$name.data" -o "$OUT/perf-$name.data.zst"
+                                elif command -v xz >/dev/null 2>&1; then
+                                    xz -T0 -3 -f -k "$OUT/perf-$name.data"
+                                fi
+                            fi
                             rm -f "$OUT/perf-$name.data"
                             echo "== profile $name"
                             grep -v '^#' "$OUT/profile-$name.txt" | grep -v '^$' | head -25

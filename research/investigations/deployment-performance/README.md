@@ -311,6 +311,15 @@ marks each sample with `line,pass,cpus,test,depth,client_busy_mean,client_limite
   number of server CPUs; empty gives one driver per server CPU.
 - `c2c`: with `profile`, also records `perf c2c` on each profiled test,
   showing the cache lines several cores contend for.
+- `callers`: gives each profile sample its DWARF-unwound callers
+  (`perf record -g --call-graph dwarf,16384`). In `workloads` mode it also
+  keeps each profile's `perf.data` compressed (zstd, else xz) at a sampling
+  rate that holds it near 300 MB, and writes `profile-<name>-children.txt`
+  (inclusive and self time by symbol), `profile-<name>-engine.txt` (the
+  callers under the frames that run a script while holding the engine, and
+  their inclusive share of all samples) and `profile-<name>-prefix.tsv` (self
+  samples by symbol-prefix bucket, overall and under those frames). The
+  input stays within the workflow's 25-input limit by reusing `callers`.
 - `sched_report`: sets `WF_SCHED_REPORT=2` on firn images, so each pass's
   kept server log ends with the runtime's per-driver scheduling counts.
 
