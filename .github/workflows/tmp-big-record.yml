@@ -30,3 +30,28 @@ jobs:
       - name: Show peak memory
         if: always()
         run: free -g
+
+  big-record-on-main:
+    # Control: the same case against firn built from main must fail.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Check out main's firn sources beside this branch's tests
+        run: git fetch --depth=1 origin main && git checkout FETCH_HEAD -- firn whitefoot.pin && git submodule update --init
+      - name: Download the pinned compiler
+        run: make compiler
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+      - name: Build main's firn
+        run: make firn-test
+      - name: Run the over-2 GiB record case against main's firn; it must fail
+        shell: bash
+        run: |
+          FIRN="$GITHUB_WORKSPACE/build/firn-test" cargo test --manifest-path tests/Cargo.toml --locked --test network aof_load::a_single_record_over_two_gib_loads_all_five_large_arguments -- --ignored --exact --nocapture 2>&1 | tee big.log
+          status=${PIPESTATUS[0]}
+          test "$status" -ne 0 && grep -q "test result: FAILED" big.log
