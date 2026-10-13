@@ -34,13 +34,18 @@ FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' 
 # The Redis suite runs as this many run.sh shards side by side.
 SUITE_SHARDS ?= 2
 
-.PHONY: check firn firn-test test redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync
+.PHONY: check firn firn-test test redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync safety-witnesses
 
 # The gate's targets: check.yml runs each in a job of its own, which
 # gate-sync requires.
-CHECK_TARGETS := compiler firn test redis-suite design-lint gate-sync
+CHECK_TARGETS := compiler firn test redis-suite design-lint gate-sync safety-witnesses
 
 check: $(CHECK_TARGETS)
+
+# Real server bug patterns: each faulty transcription must receive its named
+# source diagnostic and each corrected program must build with this pin.
+safety-witnesses: compiler $(PIN)
+	PY="$(PY)" sh $(ROOT)/research/experiments/safety-witnesses/check.sh --compiler "$(WHITEFOOTC)" --out "$(BUILD)/safety-witnesses"
 
 # The server as a developer runs it: an incremental cache keeps each module's
 # checked and compiled parts, so a rebuild compiles only what an edit changed.

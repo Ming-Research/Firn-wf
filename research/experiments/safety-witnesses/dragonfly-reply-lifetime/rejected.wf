@@ -1,0 +1,26 @@
+fn render_id() -> result: Box<Array<u8, 40>> pure {
+  doc "Dragonfly deferred stream-ID reply use-after-free: https://github.com/dragonflydb/dragonfly/pull/7874 . Retain a reference to temporary bytes until the reply scope flushes.";
+  let bytes = array_filled::<u8, 40>(value: 55_u8);
+  return box_new::<Array<u8, 40>>(value: bytes);
+}
+
+fn deferred_reply(enabled: Bool) -> result: u8 pure {
+  let fallback = array_filled::<u8, 40>(value: 0_u8);
+  let queued = if enabled {
+    let temporary = render_id();
+    give &temporary.inner;
+  } else {
+    give &fallback;
+  }
+  let first = queued^[0_u64];
+  return first;
+}
+
+fn main() -> status: std::process::ExitStatus pure {
+  let enabled = True();
+  let first = deferred_reply(enabled: enabled);
+  if first != 55_u8 {
+    return std::process::exit_status(code: 1_u8);
+  }
+  return std::process::exit_status(code: 0_u8);
+}
