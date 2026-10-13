@@ -481,9 +481,9 @@ jobs:
   # Preflight, pinned archives, sibling staging and executable receipts live
   # in the shared installer; CI uses its default ~/.local prefix, without sudo.
   install:
-    name: install the baseline competitors (14900K)
+    name: install the baseline competitors (${{ inputs.runner }})
     if: ${{ inputs.mode == 'install-competitors' }}
-    runs-on: [self-hosted, 14900k]
+    runs-on: ${{ inputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
