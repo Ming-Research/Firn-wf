@@ -6,11 +6,9 @@ data races and two lock/wait deadlocks. They implement board item
 `firn-safety-showcase`'s bug witnesses. No upstream implementation is copied.
 They do not change firn or reproduce complete server commands.
 
-**Validation status: nine pairs passed in the [latest CI run][garnet-op2].**
-The runner checked all ten pairs. Garnet's rejected program matched its
-expected diagnostic; its correction's direct field subtraction met the known
-gap described below and is now written with a local copy, pending CI. Do not
-cite this inventory as ten verified pairs until that run passes.
+**Validation status: all ten pairs passed in [CI][validation-run] at
+[the tested revision][validation-revision].** Each rejected program received
+its expected diagnostic and each correction built an executable.
 
 ## What the evidence means
 
@@ -189,3 +187,5 @@ before it can be classified as a source defect or a language/compiler gap.
 [atomic]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L2320-L2353
 [form]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L100
 [garnet-op2]: https://github.com/Ming-Research/Firn-wf/actions/runs/38403872458
+[validation-run]: https://github.com/Ming-Research/Firn-wf/actions/runs/38411761425
+[validation-revision]: https://github.com/Ming-Research/Firn-wf/commit/380cf742b3eecca84a0ff078574fe7137c2415c2
