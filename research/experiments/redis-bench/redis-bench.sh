@@ -60,6 +60,18 @@
 #                                 run records it as setting,maxmemory=<value>
 #                                 in its output and in host.txt. Unset or
 #                                 empty sets nothing
+#                                 with COMPARE_AOF=true every server starts
+#                                 with the append-only file on (firn's third
+#                                 argument, firn.aof, whose only policy is
+#                                 appendfsync everysec) in a fresh directory
+#                                 that stop removes, has its automatic
+#                                 rewrites switched off by CONFIG SET
+#                                 auto-aof-rewrite-percentage 0 (read back),
+#                                 and must report aof_enabled:1 in INFO
+#                                 persistence, printed as aof,<line>,
+#                                 aof_enabled=<n>, or the run fails; the run
+#                                 records setting,aof=true (false otherwise)
+#                                 in its output and in host.txt
 #   sh redis-bench.sh workloads   the deployment-performance investigation's
 #                                 std-only Rust client, built offline with
 #                                 cargo in release mode; Redis and firn, each
@@ -589,10 +601,25 @@ start() {
                 ) >"$OUT/server.log" 2>&1 &
             ;;
         image-*)
+            if [ "$MODE" = compare ] && [ "${COMPARE_AOF:-}" = true ]; then
+                # Each AOF server starts in a directory of its own, which stop
+                # removes, so no append-only file outlives or joins another run.
+                img=$(image_path "${1#image-}")
+                case $img in /*) ;; *) img="$PWD/$img" ;; esac
+                AOF_DIR="$OUT/aof-$PORT"
+                rm -rf "$AOF_DIR"
+                mkdir -p "$AOF_DIR"
+                (registered && cd "$AOF_DIR" && \
+                    WF_DRIVERS=${IMAGE_DRIVERS:-$(cpu_count "$SERVER_CPUS")} \
+                    exec taskset -c "$SERVER_CPUS" \
+                    "$img" "$PORT" 0 firn.aof "${IDLE:-0}" \
+                    ) >"$OUT/server.log" 2>&1 &
+            else
             (registered; WF_DRIVERS=${IMAGE_DRIVERS:-$(cpu_count "$SERVER_CPUS")} \
                 exec taskset -c "$SERVER_CPUS" \
                 "$(image_path "${1#image-}")" "$PORT" 0 - "${IDLE:-0}" \
                 ) >"$OUT/server.log" 2>&1 &
+            fi
             ;;
         baseline-*)
             (registered; WF_DRIVERS=${1#baseline-} exec taskset -c "$SERVER_CPUS" \
@@ -625,11 +652,40 @@ start() {
             exit 1
         fi
     fi
+    # Compare mode with COMPARE_AOF=true: the server must report AOF on, and its
+    # automatic rewrites are switched off so that the run measures the
+    # steady-state append path (appendfsync everysec is firn's only policy).
+    if [ "$MODE" = compare ] && [ "${COMPARE_AOF:-}" = true ]; then
+        enabled=$(redis-cli -p "$PORT" INFO persistence | tr -d '\r' | sed -n 's/^aof_enabled://p') || enabled=
+        echo "aof,$1,aof_enabled=$enabled"
+        if [ "$enabled" != 1 ]; then
+            stop
+            echo "$1: COMPARE_AOF=true but INFO persistence reads aof_enabled='$enabled', not 1" >&2
+            exit 1
+        fi
+        reply=$(redis-cli -p "$PORT" CONFIG SET auto-aof-rewrite-percentage 0) || reply=
+        if [ "$reply" != OK ]; then
+            stop
+            echo "$1: CONFIG SET auto-aof-rewrite-percentage 0 replied '$reply', not OK" >&2
+            exit 1
+        fi
+        reply=$(redis-cli -p "$PORT" CONFIG GET auto-aof-rewrite-percentage | sed -n 2p) || reply=
+        if [ "$reply" != 0 ]; then
+            stop
+            echo "$1: CONFIG GET auto-aof-rewrite-percentage read '$reply', not 0" >&2
+            exit 1
+        fi
+    fi
 }
 
+AOF_DIR=
 stop() {
     kill "$server"
     wait "$server" 2>/dev/null || true
+    if [ -n "$AOF_DIR" ]; then
+        rm -rf "$AOF_DIR"
+        AOF_DIR=
+    fi
 }
 
 fail() {
@@ -1010,6 +1066,17 @@ if [ "$MODE" = compare ]; then
         if [ -f "$OUT/host.txt" ]; then
             echo "setting,maxmemory=$COMPARE_MAXMEMORY" >>"$OUT/host.txt"
         fi
+    fi
+    case ${COMPARE_AOF:-} in
+        ''|true|false) ;;
+        *)
+            echo "COMPARE_AOF must be true, false or empty, not '$COMPARE_AOF'" >&2
+            exit 1
+            ;;
+    esac
+    echo "setting,aof=${COMPARE_AOF:-false}"
+    if [ -f "$OUT/host.txt" ]; then
+        echo "setting,aof=${COMPARE_AOF:-false}" >>"$OUT/host.txt"
     fi
     cpu_record=
     if [ -r /proc/stat ]; then

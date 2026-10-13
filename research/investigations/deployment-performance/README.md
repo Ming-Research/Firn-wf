@@ -256,6 +256,19 @@ Measured requests keep the planned 100,000-key range. The client also takes
 and either `--seconds` or a total `--requests`; fill emits no timing row,
 and any protocol, I/O or Redis error fails the run.
 
+**Compare mode and AOF.** `redis-bench.yml` mode `compare` measures the
+images `revisions` names, interleaved, with a `-twin` as the noise control.
+Its `aof` input (`COMPARE_AOF=true`, default false) starts every image with
+the append-only file on, as firn's third positional argument, `firn.aof`,
+turns it on, with appendfsync everysec (firn's only policy). Each start
+sets `auto-aof-rewrite-percentage` to 0 with `CONFIG SET`, read back by
+`CONFIG GET`, so that no rewrite runs and the cost measured is the
+steady-state append path. Each server starts in a fresh directory that is
+removed when it stops. The run prints `aof,<line>,aof_enabled=<n>` from
+INFO persistence at every start and fails unless it reads 1; it records
+`setting,aof=true` (`false` when off) in its output and in `host.txt`.
+Compare mode starts no Redis line.
+
 ### Results
 
 Run [37775047771](https://github.com/Ming-Research/Firn-wf/actions/runs/37775047771)
