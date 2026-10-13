@@ -69,7 +69,7 @@ fn aof_fill(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: 
 }
 
 fn aof_record(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: &AofReader, clock: &Clock, rewriting: Bool, retain: Bool) -> result: Result<AofRecord, u8> reads(store), writes(factory), writes(file), writes(reader), writes(clock) waits {
-  doc "Drive the shared pure syntax machine from file chunks. Startup keeps argument-header positions for later payload reads; boundary validation retains only fixed parser state.";
+  doc "Drive the shared pure syntax machine from file chunks. Startup keeps argument-header positions for later payload reads; boundary validation retains only fixed parser state. The window fields are read into locals and written back because the checker keeps no current-value record for fields (board item coord-wfbl-01-32).";
   let args = box_slots_new::<Span>(capacity: 0_u64);
   loop @events (
     invariant window: reader^.cursor <= reader^.held,
@@ -89,11 +89,15 @@ fn aof_record(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader
         }
       }
     }
+    let cursor = reader^.cursor;
     let held = reader^.held;
     let input = &reader^.bytes.inner[0_u64..held];
-    let event = aof_syntax_next(syntax: &reader^.syntax, input: input, start: reader^.cursor, end: held, eof: reader^.eof);
-    set reader^.cursor = event.next;
-    set reader^.position = reader^.syntax.position;
+    let event = aof_syntax_next(syntax: &reader^.syntax, input: input, start: cursor, end: held, eof: reader^.eof);
+    let next = event.next;
+    let position = reader^.syntax.position;
+    set reader^.cursor = next;
+    set reader^.held = held;
+    set reader^.position = position;
     if event.state == 1_u64 {
       if retain {
         pkg::protocol::push_arg(args: &args, start: event.start, length: event.length);
