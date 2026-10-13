@@ -286,16 +286,12 @@ fn read_time(wall: &WallClock) -> result: Reading reads(wall) {
   return Reading(time: time, unix_us: unix_us);
 }
 
-fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter, shutdown: CancelSource) -> result: unit pure waits {
-  doc "Serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: a receive has no deadline at zero and otherwise waits for the remaining idle interval. It keeps a watch of a receive wake generation across requests. A changed limit installs a fresh generation and fires the old one; shutdown fires the current generation. After cancellation or a deadline the client reads shutdown and the limit again, replacing a fired watch only while still running, and waits again unless stopping or expired. Active clients also re-read the state at most once a second while processing requests; these reads observe shutdown and close after held replies are sent. When command dispatch reports an accepted shutdown request, the receive generation has already been fired and the client context fires its separate shutdown source before another wait, without reading server state again. Sends keep their never-firing watch and retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
+fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, random: u64, meter: std::process::MemoryMeter, shutdown: CancelSource) -> result: unit pure waits {
+  doc "Serves one client, the id-th the server accepted, with the random seed acceptance drew from server state, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: a receive has no deadline at zero and otherwise waits for the remaining idle interval. It keeps a watch of a receive wake generation across requests. A changed limit installs a fresh generation and fires the old one; shutdown fires the current generation. After cancellation or a deadline the client reads shutdown and the limit again, replacing a fired watch only while still running, and waits again unless stopping or expired. Active clients also re-read the state at most once a second while processing requests; these reads observe shutdown and close after held replies are sent. When command dispatch reports an accepted shutdown request, the receive generation has already been fired and the client context fires its separate shutdown source before another wait, without reading server state again. Sends keep their never-firing watch and retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
   let env = KeyEnv();
   let client = client_new(capacity: 16384_u64);
   set client.meter = Some<std::process::MemoryMeter>(value: move meter);
-  atomic m = &store.meta {
-    set client.random = m^.random;
-    let stepped = m^.random *wrap 6364136223846793005_u64;
-    set m^.random = stepped +wrap 1442695040888963407_u64;
-  }
+  set client.random = random;
   let args = box_slots_new::<Span>(capacity: 16_u64);
   let input = input_new(capacity: 16384_u64);
   let transaction = transaction_new();
@@ -458,8 +454,8 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let TcpConnection(receive: closing_receive, send: closing_send) = move connection;
   close_receive(factory: &factory, receive: move closing_receive);
   close_send(factory: &factory, send: move closing_send);
-  atomic m = &store.meta {
-    set m^.clients = m^.clients -wrap 1_u64;
+  atomic v = &store.server {
+    set v^.clients = v^.clients -wrap 1_u64;
   }
   return unit;
 }
@@ -1099,18 +1095,20 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
               let serving_meter = std::process::meter_share(meter: &memory_meter);
               let serving_settings = settings_copy(settings: &settings);
               let id = accepted +wrap 1_u64;
-              atomic m = &keyspace.meta {
-                set m^.clients = m^.clients +wrap 1_u64;
-              }
               let required = False();
+              let random = 0_u64;
               atomic v = &keyspace.server {
                 set v^.connections = v^.connections +wrap 1_u64;
+                set v^.clients = v^.clients +wrap 1_u64;
+                set random = v^.connection_random;
+                let stepped = v^.connection_random *wrap 6364136223846793005_u64;
+                set v^.connection_random = stepped +wrap 1442695040888963407_u64;
                 let length = bytes_length(bytes: &v^.password);
                 set required = length > 0_u64;
               }
               set accepted = accepted +wrap 1_u64;
               let serving_shutdown = std::time::cancel_share(source: &shutdown);
-              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown);
+              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, random: random, meter: move serving_meter, shutdown: move serving_shutdown);
             }
             Err(error: problem) => {
               break @accepting;
@@ -1125,7 +1123,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
       }
     }
   }
-  atomic m = &keyspace.meta when m^.clients == 0_u64 {
+  atomic v = &keyspace.server when v^.clients == 0_u64 {
   }
   let wake = None<CancelSource>();
   atomic m = &keyspace.meta, v = &keyspace.server when m^.aof_installing == 0_u64 {

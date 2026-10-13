@@ -672,8 +672,8 @@ default.
   and the server's counts
   ([firn under the shared-state design](https://github.com/Ming-Research/Whitefoot/blob/648338c31240ba64ce13c314b1afca1749d44189/research/investigations/shared-state/DESIGN.md#firn-under-the-design)),
   and beside it a second shared state, the server's, with what `CONFIG SET`
-  changes, the count of accepted connections and the time the server
-  started;
+  changes, the counts of accepted and active connections, independent
+  connection random seeds and the time the server started;
 - `commands`: one file per kind of value, sorted sets' ranges in a second,
   the connection and server commands, and the dispatch;
 - `scripting`: `EVAL`, `EVALSHA` and `SCRIPT`, the Redis Lua environment

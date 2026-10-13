@@ -423,7 +423,7 @@ fn config_copy(store: &Keyspace) -> made: ConfigSnapshot reads(store) waits {
   atomic v = &store^.server, m = &store^.meta {
     let password = bytes_copy(bytes: &v^.password);
     let wake = std::time::cancel_share(source: &v^.wake);
-    let server = ServerState(password: move password, timeout: v^.timeout, busy_reply_threshold: v^.busy_reply_threshold, aof_error: v^.aof_error, wake: move wake, shutdown: v^.shutdown, encodings: v^.encodings, connections: v^.connections, started: v^.started, memory: v^.memory);
+    let server = ServerState(password: move password, timeout: v^.timeout, busy_reply_threshold: v^.busy_reply_threshold, aof_error: v^.aof_error, wake: move wake, shutdown: v^.shutdown, encodings: v^.encodings, connections: v^.connections, clients: v^.clients, connection_random: v^.connection_random, started: v^.started, memory: v^.memory);
     return ConfigSnapshot(server: move server, rewrite_percentage: m^.aof_rewrite_percentage, rewrite_min_size: m^.aof_rewrite_min_size, key_delay: m^.aof_rewrite_key_delay);
   }
 }

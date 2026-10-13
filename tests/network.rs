@@ -5124,6 +5124,36 @@ fn firn_busy_no_effect_write_is_unkillable_but_shutdown_nosave_exits() {
     busy_no_effect_write_is_unkillable_but_shutdown_nosave_exits("2");
 }
 
+/// Redis 7.2.16's busy event processing still accepts new clients and applies
+/// server.c's slowevalerr to their PING. Establish both existing peers before
+/// EVAL, then prove BUSY before connecting the third: acceptance and its first
+/// receive must not wait for the writing script's Meta hold to end.
+#[test]
+fn firn_new_client_answers_busy_while_a_writing_script_holds_meta() {
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = firn().spawn_on_route_with(
+        true, &[("WF_DRIVERS", "2")], &[text.as_bytes(), b"0"],
+    ).with_port(&port_lease);
+    let mut looping = connect_when_ready(port, &child);
+    let mut control = connect_when_ready(port, &child);
+    assert_eq!(memory_request(&mut looping, &["PING"]), "+PONG\r\n");
+    assert_eq!(memory_request(&mut control, &["CONFIG", "SET", "busy-reply-threshold", "10"]), "+OK\r\n");
+    looping.write_all(&resp(&[
+        "EVAL", "redis.call('SET', KEYS[1], 'script-value'); while true do end", "1", "busy-held",
+    ])).expect("start the writing script before accepting a new client");
+    wait_for_script_busy(&mut control, &child, port);
+    let mut late = connect_when_ready(port, &child);
+    assert_eq!(memory_request(&mut late, &["PING"]), SCRIPT_BUSY_REPLY,
+        "a client connected after BUSY must reach command admission");
+    control.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop the new-client BUSY fixture");
+    shutdown_finished(child);
+    expect_closed(&mut looping, "writing script peer after new-client BUSY");
+    expect_closed(&mut control, "new-client BUSY shutdown control peer");
+    expect_closed(&mut late, "new client after busy shutdown");
+}
+
 fn busy_no_effect_write_is_unkillable_but_shutdown_nosave_exits(drivers: &str) {
     const UNKILLABLE: &str = "-UNKILLABLE Sorry the script already executed write commands against the dataset. You can either wait the script termination or kill the server in a hard way using the SHUTDOWN NOSAVE command.\r\n";
     {

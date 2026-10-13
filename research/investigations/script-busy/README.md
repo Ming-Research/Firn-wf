@@ -627,3 +627,120 @@ compile, design lint, exact-revision gate and shutdown acceptance remain
 unverified. The owner-supplied candidate evidence supports the three added
 rows, but raw CI logs were not independently retrieved. The existing GET
 and new-connection issues remain open, with board filing unverified.
+
+
+## Connection lifecycle and AOF admission after the next gate
+
+The owner reported [the gate on the FUNCTION KILL repair](https://github.com/Ming-Research/Firn-wf/actions/runs/38414846567)
+at Firn `13161b8c760ff7867f97242961f9a8641d3243af`: the Redis suite ratchet
+passes; the pending-GET case received BUSY but failed its five-second NOSAVE
+exit check; the AOF case timed out reading PING. No local build or test was
+run for the following repair, and its CI result remains unverified.
+
+Two source-level dependencies are Firn defects fixable with the current pin:
+
+- Before this repair, accept waited on `keyspace.meta` to increment the
+  active-client count (`server/server.wf:1102` at the reported revision),
+  and `serve` waited on `store.meta` to obtain its random seed (`:294`).
+  A writing attempt retains that Meta indefinitely. Active-client accounting,
+  cleanup and per-connection seed allocation now use ServerState. Main waits
+  on its client count before setting Meta.stopping; RANDOMKEY and replay keep
+  their existing dataset random state. The new network case opens a third
+  connection only after BUSY is observed and requires its PING to answer the
+  exact BUSY text. Either former Meta wait would prevent that reply.
+- The reported AOF case opens both clients before EVAL and has already read
+  CONFIG and SET replies from the PING client. Connection initialization
+  therefore cannot explain that particular failure. A separate admission
+  race can: `commands/transaction.wf:355` originally observed no active
+  script; a script then registered and acquired Meta; the normal AOF health
+  check at `:511` waited on Meta before PING could answer. All admission
+  health reads now use the already jointly published ServerState.aof_error,
+  preserving Redis's disk-error-before-BUSY order. The four runtime health
+  publications in persistence/rewrite.wf retain the same Meta-plus-server
+  atomic statements. Actual mutations and EXEC still recheck held Meta.
+  The existing AOF BUSY case exercises this race; its failure does not prove
+  which source wait occurred without a stack or a trace.
+
+The NOSAVE dependency trace, at the reported revision, is:
+
+1. `commands/server.wf:1367` calls force_stop, whose
+   `scripting/control.wf:85` statement holds only the pool and ServerState,
+   publishes shutdown and claims each independent stop cell.
+2. `store/store.wf:449` in request_shutdown waits on Meta and its
+   aof_installing==0 guard before firing the receive wake. Interpreter
+   slices read the force cell at `scripting/entry.wf:534/626`; after a forced
+   outcome they discard unfinished propagation, leave the held keys-plus-Meta
+   statement, return the engine and cancel the invocation timer.
+3. The NOSAVE serve context then fires the separate shutdown cancellation;
+   other receive, accept, signal and expiry waits observe it. Each serve
+   context closes its handles and decrements the active-client count (now
+   under ServerState). Main waits for zero clients, then for installation to
+   finish, sets Meta.stopping and fires wake/cancellation again.
+4. The expiry context may already wait on Meta at `store/store.wf:205`,
+   even without TTL keys. The AOF writer, when enabled, reads Meta.stopping,
+   makes its final forced append/sync attempt and closes. Main's activation
+   joins all spawned serve, expiry, signal and writer contexts; a writer
+   also joins its rewrite work. The GET fixture has no AOF writer.
+
+Source inspection did not establish a circular dependency in that trace.
+The pinned compiler evaluates the peak guard using EnginePool before lazily
+acquiring Meta for its normal branch; it does not hold the pool while waiting
+for the infinite writer. The shutdown guard acquires Meta before ServerState,
+so it does not retain ServerState while waiting on the script. A normal
+single-Meta acquisition parks in the pinned runtime. A borrowed-hold resume
+spin and native-I/O servicing on a driver occupied by Lua remain runtime
+candidates, not observed CI stacks. Receiving GET's BUSY response does not
+show whether the later NOSAVE was dispatched or which cleanup wait stopped.
+The current evidence does not justify ignoring either reported case under
+an existing language request or increasing either deadline. Both assertions
+remain enabled and unchanged.
+
+Redis's [shutdown handler](https://github.com/redis/redis/blob/7.2.16/src/db.c#L1237)
+calls exit(0) after successful preparation, without joining client contexts.
+Its [shutdown preparation](https://github.com/redis/redis/blob/7.2.16/src/server.c#L4397)
+flushes the AOF and calls fsync even with NOSAVE. Firn retains that flush/sync
+obligation and adds no hard-exit substitute: the pinned process API offers
+ExitStatus on normal activation return, but absence of a direct exit alone
+has not proved that this failure requires a new language capability.
+
+
+### Source-level native-receive starvation candidate
+
+The pinned completion bridge contains an admissible two-driver starvation
+interleaving, not an observed stack from the failing gate:
+
+- Native rings are per-driver (`compiler/src/backend/completion/bridge.c:354–360`);
+  ordinary progress reaps only the current driver's ring (`:412–422`). A
+  driver executing an unbounded interpreter slice sequence remains inside
+  coro_resume (`:4596–4600`).
+- Another driver steals ready contexts but its borrowed service explicitly
+  handles timers and already-published terminal records only (`:4394–4447`),
+  without native ring entry. Pending network input on the occupied driver's
+  ring therefore need not become a ready context.
+- Service replacement requires an overdue deadline and no idle driver
+  (`:4730–4753`). At timeout zero Firn's receive has no deadline. After BUSY
+  publication, expiry and AOF timer contexts can instead be parked on Meta;
+  there need not be another overdue timer to trigger replacement.
+
+This could prevent the control peer's NOSAVE from reaching force_stop even
+though a different peer already received BUSY. It concerns progress on the
+occupied driver, related to `firn-req-single-driver-progress`; the request's
+reported one-driver witness does not independently validate this native-I/O
+case with an idle second driver. No new request has been filed from this
+session, which has no wf-board connector. A discriminating CI observation
+would identify whether the NOSAVE peer is still parked in native receive or
+has entered force_stop, and capture the occupied driver's stack. A native-I/O
+witness would park a socket receive, start a DecisionCell-stoppable infinite
+atomic computation, then have the external peer send the byte that lets the
+receive context claim Killed; a two-driver witness must account for which
+logical driver owns that receive before claiming a deterministic result.
+Neither extra polling contexts nor artificial deadlines are a Firn repair.
+
+
+A fresh read-only gpt-6.1-sol review covered these ten changed files against
+`13161b8c760ff7867f97242961f9a8641d3243af`, their direct consumers and the
+project/design checklists. It found no new source defect within the repair;
+compiler fidelity, runtime progress and all new-revision CI outcomes remain
+unverified. Root inspected the reviewed diff and the native service predicates.
+Git whitespace inspection passes. Neither pin nor submodule moved, no
+language request was filed, and no changes were committed in this session.

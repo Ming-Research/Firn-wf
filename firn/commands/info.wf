@@ -450,8 +450,8 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   }
   let clients = 0_u64;
   if chosen[1_u64] == 1_u64 {
-    atomic m = &store^.meta {
-      set clients = m^.clients;
+    atomic v = &store^.server {
+      set clients = v^.clients;
     }
   }
   let started = 0_u64;
