@@ -398,10 +398,10 @@ Redis's rewrite does.
 
 When a sync of the append-only file fails, firn refuses writes and `PING`
 with Redis's `MISCONF` reply, still answers reads, and INFO reports
-`aof_last_write_status:err`, as Redis does. firn keeps syncing once a second
-while idle. A sync that succeeds again does not end the failure, because
-Linux does not write again the pages whose writeback failed: it starts a
-rewrite of the dataset from memory, and firn accepts writes again only once
+`aof_last_write_status:err`, as Redis does. firn then keeps syncing once a
+second even while idle, which Redis does not. A sync that succeeds again
+does not end the failure, because Linux does not write again the pages
+whose writeback failed: it starts a rewrite of the dataset from memory, and firn accepts writes again only once
 that rewrite's new base, incremental file and manifest are installed and the
 directory synced. Meanwhile INFO shows `aof_rewrite_in_progress:1` with
 `aof_last_write_status:err`. A recovery rewrite that cannot start or fails
@@ -477,11 +477,15 @@ pre-flush incremental size, retaining all bytes on successful rollback and only
 the unwritten suffix otherwise (`aof.c:1146-1230`). Failed appends retry every
 100 ms, Redis's idle cadence at its default hz of 10; Redis also retries on
 every event-loop iteration that client traffic causes (`server.c:1660-1666`),
-which firn does not, so under traffic firn can recover up to 100 ms later. Failed syncs retry once per second while idle,
-deliberately differing from Redis's new-byte-dependent scheduling
-(`aof.c:1067-1089,1255-1261`).
-Only successful append and sync operations clear their respective failures;
-ordinary rewrite rotation does not reset them (`aof.c:790-852`).
+which firn does not, so under traffic firn can recover up to 100 ms later.
+Like Redis 7.2.16, firn syncs at most once a second and only after new bytes
+were appended completely since its last sync, so an idle server issues no
+sync and a device that fails while firn is idle shows only at the sync after
+the next write (`aof.c:1071-1094,1236-1267`); a saved sync failure is the
+exception, retried once a second while idle as described above.
+A successful append clears an append failure, and only a rewrite whose
+installation is durable clears a sync failure; ordinary rewrite rotation resets neither
+(`aof.c:790-852`).
 
 A refused queued write or PING dirties MULTI. EXEC with a queued WRITE command
 is discarded with EXECABORT and the MISCONF text while failure remains; read-only
