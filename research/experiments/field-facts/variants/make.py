@@ -206,3 +206,13 @@ for name, edits in prepared.items():
     for key, source in edits.items():
         (directory / files[key]).write_text(source)
     print(name, "ok")
+
+for name, first in (("s1_scanner_sorts_first", "scanner.wf"),):
+    directory = out / name
+    shutil.copytree(root / "firn", directory / "firn")
+    for entry in root.resolve().iterdir():
+        if entry.name not in ("firn", ".git", "build"):
+            (directory / entry.name).symlink_to(entry)
+    package = directory / "firn" / "persistence"
+    (package / first).rename(package / ("aaa-" + first))
+    print(name, "ok")
