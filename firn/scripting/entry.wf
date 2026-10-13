@@ -264,7 +264,9 @@ fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64,
   return unit;
 }
 
-fn answer_call<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(sequence), writes(engine), writes(env), writes(keys), writes(meta), writes(effects), writes(client) {
+fn answer_call<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(sequence), writes(engine), writes(env), writes(keys), writes(meta), writes(effects), writes(client) contract {
+  ensures meta^.log.inner.len >= entry(meta)^.log.inner.len;
+} {
   doc "Runs the command a script's redis.call or redis.pcall left pending, inside the script's statement, and continues the script with its reply: the arguments, numbers formatted as Redis formats them, are laid out as the network's input; the command runs through ScriptCommands with the client answering in the script's protocol, which redis.setresp selects, its records counted in the script's effects; its reply is converted to a Lua value from the bytes it wrote, which are then taken back; and an error reply is raised at redis.call, while redis.pcall returns it as its error table, as Redis 7.0.15's luaRedisGenericCommand does. budget is what the script's attempt has left.";
   let id = 0_u32;
   let argc = 0_u64;

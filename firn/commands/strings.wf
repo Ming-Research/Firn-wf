@@ -1635,7 +1635,10 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     }
     if blocked {
     } else {
-      for @stored (pair in 0_u64..pairs) {
+      for @stored (
+        pair in 0_u64..pairs,
+        invariant stored_group_offset: log_budget.group_start <= m^.log.inner.len
+      ) {
         if pair < client^.key_lookups.inner.len {
           let at = client^.key_lookups.inner[pair];
           if at < slots^.len {

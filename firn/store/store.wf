@@ -665,6 +665,7 @@ fn log_group_prefix(log: &Box<Slots<u8>>, budget: &LogBudget) -> result: unit wr
 fn log_group_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.rewrite) contract {
   ensures budget.group_start == 0_u64;
   ensures budget.records == 0_u64;
+  ensures budget.group_start <= meta^.log.inner.len;
 } {
   let budget = log_budget_begin(meta: meta, loading: loading);
   set budget.records = 0_u64;
@@ -694,6 +695,7 @@ fn log_append_plain(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(by
 fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.rewrite) contract {
   ensures budget.group_start == 0_u64;
   ensures budget.records == 3_u64;
+  ensures budget.group_start <= meta^.log.inner.len;
 } {
   let budget = log_budget_new();
   let serving = bnot(loading);

@@ -270,10 +270,16 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let appended = 0_u64;
     let first = 0_u64;
-    for @commands (index in 0_u64..commands) {
+    for @commands (
+      index in 0_u64..commands,
+      invariant transaction_group_offset: log_budget.group_start <= m^.log.inner.len
+    ) {
       let count = transaction^.counts.inner[index];
       clear_args(args: &args);
-      for @arguments (offset in 0_u64..count) {
+      for @arguments (
+        offset in 0_u64..count,
+        invariant argument_group_offset: log_budget.group_start <= m^.log.inner.len
+      ) {
         let position = first +wrap offset;
         if position < transaction^.spans.inner.len {
           let span = transaction^.spans.inner[position];

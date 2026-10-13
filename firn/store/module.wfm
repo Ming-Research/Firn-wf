@@ -427,6 +427,7 @@ public fn log_budget_new() -> budget: LogBudget pure contract {
 public fn log_group_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.rewrite) contract {
   ensures budget.group_start == 0_u64;
   ensures budget.records == 0_u64;
+  ensures budget.group_start <= meta^.log.inner.len;
 } doc "Starts the existing rotation budget with ordinary-command effect grouping enabled. The first effect writes directly into the collecting log; only the second moves that first effect to insert MULTI.";
 
 public fn log_group_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), writes(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite), writes(budget) contract {
@@ -442,4 +443,5 @@ public fn log_append_plain(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit r
 public fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.rewrite) contract {
   ensures budget.group_start == 0_u64;
   ensures budget.records == 3_u64;
+  ensures budget.group_start <= meta^.log.inner.len;
 } doc "Snapshots remaining R under the statement's Meta hold only while the writer rotates; service encoders charge collecting-buffer growth before allocation, and sequence_commit publishes overflow without failing the command.";
