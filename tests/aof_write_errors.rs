@@ -31,8 +31,8 @@ const ENOSPC_TEXT: &str = "No space left on device";
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct FileLimit {
-    soft: u64,
+pub(super) struct FileLimit {
+    pub(super) soft: u64,
     hard: u64,
 }
 
@@ -42,7 +42,7 @@ unsafe extern "C" {
 
 /// prlimit(2) on the child owned by this test, preserving its hard limit so
 /// raising the soft limit later needs no privilege. Linux RLIMIT_FSIZE is 1.
-fn file_limit(child: &ProgramChild, soft: u64) -> FileLimit {
+pub(super) fn file_limit(child: &ProgramChild, soft: u64) -> FileLimit {
     let mut previous = FileLimit { soft: 0, hard: 0 };
     let read = unsafe { prlimit64(child.id() as i32, 1, std::ptr::null(), &mut previous) };
     assert_eq!(read, 0, "read child file limit: {}", std::io::Error::last_os_error());

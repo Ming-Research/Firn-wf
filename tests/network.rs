@@ -10079,6 +10079,43 @@ fn firn_rewrite_cuts_before_both_retained_unmatched_multis() {
     }
 }
 
+/// A clean EOF inside nested MULTIs makes Redis's loader trim only the latest
+/// MULTI. The earlier unmatched MULTI remains in the retained bytes, so switch
+/// validation must still cut before that first MULTI rather than treating the
+/// startup-trimmed file as a complete command stream outside a block.
+#[test]
+fn firn_rewrite_cuts_first_retained_multi_after_nested_clean_eof() {
+    let program = CompiledProgram::from_environment();
+    let name = "appendonly.aof";
+    let path = aof_incremental_fixture(program.working_directory(), name);
+    let retained = [
+        resp(&["SET", "a", "1"]),
+        resp(&["MULTI"]),
+        resp(&["SET", "b", "2"]),
+    ].concat();
+    let nested = [resp(&["MULTI"]), resp(&["SET", "c", "3"])].concat();
+    std::fs::write(&path, [retained.clone(), nested].concat()).unwrap();
+    let lease = support::lease_port();
+    let port = lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&lease);
+    let mut client = connect_when_ready(port, &child);
+    multipart_values(&mut client, &[("a", Some("1")), ("b", None), ("c", None)]);
+    assert_eq!(std::fs::read(&path).unwrap(), retained, "startup trims the latest MULTI while the first remains unmatched");
+    // Keep a descriptor across history cleanup so publication cannot hide
+    // an incorrect boundary behind a newly reconstructed live base.
+    let mut sealed = std::fs::File::open(&path).unwrap();
+    client.write_all(&resp(&["INCR", "after"])).unwrap();
+    expect_replies(&mut client, b":1\r\n", "acknowledged write behind the remaining MULTI");
+    rewrite_start(&mut client);
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+    let mut sealed_bytes = Vec::new();
+    sealed.read_to_end(&mut sealed_bytes).unwrap();
+    assert_eq!(sealed_bytes, resp(&["SET", "a", "1"]), "the switch must cut before the first remaining MULTI, not the trimmed latest one");
+    rewrite_stop(&mut client, child);
+    multipart_load(&program, name, &[("a", Some("1")), ("b", None), ("c", None), ("after", Some("1"))]);
+}
+
 /// State after each durable rewrite step, from backgroundRewriteDoneHandler.
 /// Only manifest-listed history is collected; Redis leaves orphan temporary
 /// and renamed-but-unpublished bases alone. INCR distinguishes double replay.
