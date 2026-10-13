@@ -190,14 +190,43 @@ aof_last_bgrewrite_status err, abort reason rotation_reserve, cut 1,
 scan_done 1, rewrite peak and used 8,922,432 bytes. The existing post-cut abort case now first
 forces an EFBIG append failure with the existing Linux file-limit fixture,
 restores the limit and waits for append recovery. Its unknown boundary needs
-the exceptional reread; at maxmemory 64 MiB (R = 3,355,443 bytes), writes
-after S1 must still cause rotation_reserve,
+the exceptional reread. At maxmemory 64 MiB (R = 3,355,443 bytes), a
+transaction queued before rewrite admission repeats SET on the same
+16-KiB live value. Its independently encoded AOF effects exceed R. Only
+after observing S1 does the case send EXEC: the effects enter the
+collecting buffer under one Meta hold, so the writer cannot drain them
+between commands, and the required buffer capacity exceeds the entire
+reserve. The resulting rotation_reserve abort must
 leave the old manifest selected, and restore exactly. Thus ordinary history
 no longer implies an abort, while genuine collecting-buffer pressure remains
 covered without removing or increasing the reserve. A new nested clean-EOF
 case checks that startup removes the latest MULTI but switch truncation still
 removes the first retained one. Existing unfinished-block, nested partial-tail,
 transaction-closes-block and failed-switch cases are unchanged.
+
+The earlier version issued one 16-KiB SET and awaited its reply before
+issuing the next. After the reply-after-append change, each reply waits for
+the covering append, so that loop no longer guarantees cumulative
+collecting-buffer pressure. The reported gate
+[run 38405647742](https://github.com/Ming-Research/Firn-wf/actions/runs/38405647742)
+finished that rewrite successfully and failed the required `err` assertion;
+it did not demonstrate an over-reserve backlog being accepted. Prequeueing
+the transaction removes that dependence on producer/writer throughput and
+avoids transferring its multi-megabyte requests during the rotation window.
+The abort status and `rotation_reserve` expectations are retained. The
+exceptional history reread still supplies the observed post-cut window;
+the repaired fixture's timing and runtime outcome await CI. No local build
+or test was run for this adjustment.
+
+A separate read-only review checked this fixture and its documentation
+against the transaction append and rotation-budget paths. It found no
+defect within static scope: post-cut capture is inactive, EXEC cannot
+interleave its collecting append with the writer, and the complete
+effects exceed the asserted admitted allowance. It left CI execution and
+the interval between observing S1 and beginning EXEC unverified. A missed
+window still fails the retained abort assertions; the case never accepts
+`ok` as a substitute. The primary session observed `git diff --check`
+exit 0. Pins, submodules and approval logs were unchanged.
 
 ### Per-append boundary parse cost
 
