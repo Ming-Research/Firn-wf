@@ -22,7 +22,8 @@ fn run_aof_rewrite(store: &Keyspace, client: &Client) -> result: unit reads(stor
     set busy = bor(m^.aof_rewrite_in_progress, awaiting_reply);
     if busy {
     } else {
-      pkg::store::aof_rewrite_request(meta: m);
+      set m^.aof_rewrite_in_progress = True();
+      set m^.aof_rewrite_requested = True();
     }
   }
   if busy {
@@ -32,7 +33,7 @@ fn run_aof_rewrite(store: &Keyspace, client: &Client) -> result: unit reads(stor
   let outcome = 0_u64;
   atomic m = &store^.meta when m^.aof_rewrite_reply != 0_u64 {
     set outcome = m^.aof_rewrite_reply;
-    pkg::store::aof_rewrite_reply_consumed(meta: m);
+    set m^.aof_rewrite_reply = 0_u64;
   }
   if outcome == 1_u64 {
     pkg::protocol::reply_byte(client: client, value: 43_u8);

@@ -422,10 +422,11 @@ fn run_client_info(database: u64, client: &Client) -> result: unit writes(client
 struct DatabasePlan {
   database: u64;
   error: u64;
-  invariant valid(plan): plan.database < 16_u64;
 }
 
-fn database_plan(input: &[u8], args: &Box<Slots<Span>>, index: u64) -> plan: DatabasePlan reads(input), reads(args) {
+fn database_plan(input: &[u8], args: &Box<Slots<Span>>, index: u64) -> plan: DatabasePlan reads(input), reads(args) contract {
+  ensures plan.database < 16_u64;
+} {
   doc "Redis 7.2.16 getIntFromObjectOrReply followed by selectDb: malformed signed integer, signed-int overflow, then logical database range. A refused plan keeps a valid inert database number.";
   let argument = arg(args: args, index: index);
   let number = read_integer(input: input, start: argument.start, length: argument.length);

@@ -1,0 +1,7 @@
+public fn forward<fn apply(window: &Slots<u64, 4>) -> result: unit writes(window) contract {
+  requires window^.len > 0_u64;
+  ensures window^.len == entry(window)^.len;
+}>(window: &Slots<u64, 4>) -> result: unit writes(window) contract {
+  requires window^.len > 0_u64;
+  ensures window^.len == entry(window)^.len;
+} doc "Forwards a callback while preserving its published length contract. The dependent command module supplies the callback, as in firn's store adapter. Expected specification result: acceptance; this graph reduction has not yet been checked in CI.";

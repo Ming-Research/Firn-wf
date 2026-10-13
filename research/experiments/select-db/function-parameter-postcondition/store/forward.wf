@@ -1,0 +1,9 @@
+fn forward<fn apply(window: &Slots<u64, 4>) -> result: unit writes(window) contract {
+  requires window^.len > 0_u64;
+  ensures window^.len == entry(window)^.len;
+}>(window: &Slots<u64, 4>) -> result: unit writes(window) contract {
+  requires window^.len > 0_u64;
+  ensures window^.len == entry(window)^.len;
+} {
+  return apply(window: window);
+}

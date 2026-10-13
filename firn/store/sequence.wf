@@ -190,9 +190,7 @@ fn sequence_delete_at(sequence: &WriteSequence, slot: &Option<Entry>, keys: &Key
   return unit;
 }
 
-fn sequence_database(sequence: &WriteSequence, database: u64) -> result: unit writes(sequence.database) contract {
-  requires database < 16_u64;
-} {
+fn sequence_database(sequence: &WriteSequence, database: u64) -> result: unit writes(sequence.database) {
   set sequence^.database = database;
   return unit;
 }

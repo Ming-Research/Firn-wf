@@ -2,7 +2,10 @@
 
 ## Status, question and evidence
 
-This is a read-only design study, not an implementation or an approved design.
+The original sections are a read-only design study, not an implementation or
+an approved design. The later [database proof-boundary comparison](#database-proof-boundary)
+records the implementation choice and compiler evidence at its separately
+identified pin; it does not establish the performance acceptance result.
 It asks whether Firn can add Redis 7.2.16 blocking lists, pub/sub, WATCH and
 databases 0–15 without losing its concurrent keyed fast path. The database
 cost question is answered first below. Every mechanism described as proposed
@@ -305,6 +308,139 @@ and the AOF-on/off comparison below before enabling the feature. If a
 multi-map natural helper is rejected, stop that implementation and submit
 the witness; no pointer trick, command-by-command lock release or alternate
 spelling is proposed as a repair.
+
+### Database proof boundary
+
+The implementation comparison uses Firn revision `60d7105` and Whitefoot
+`af7665be672d29912d878dd5da8c3932bb6f296c`, rather than the original study's
+pin. The [pinned specification](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md)
+defines the proof obligations below. The comparison asks which complete
+representation proves each numeric database subscript in bounds without
+adding a runtime range check or an operation to ordinary db-0 GET/SET.
+The chosen representation is proposed in [the database design node](../../../design/firn/databases.md).
+
+| Design | Scope and proof obligations | Runtime work and language requirements |
+| --- | --- | --- |
+| Database bounds as struct invariants | Eleven structs carry fourteen clauses, including the journal's initialized length and Meta's nested expiry bound. The TYPE-11 response added ninety store declarations across two new implementation files: thirty-one generic command adapters and fifty-nine ordinary writers or wrappers. Keeping this design also needs facts at borrowed optional journals/keyspaces, optional eviction candidates, staged expiry records, expiry-queue elements and gathered container elements. These are at least five additional proof-boundary families, with repeated call sites, rather than one more missing clause. | No range check is required in the source design, but every protected field writer needs a declaring-module boundary. FN-8 permits affine contracts on function parameters; lack of contract syntax is not the obstacle. The existing held-entry adapter already declares its length postcondition, yet the reported CI call fails FN-9. Finishing requires resolving that compiler failure and the remaining invariant-transport limitations, or further proof machinery with an unestablished end point. |
+| Plain numbers with end-to-end parameter contracts | Removing struct invariants permits direct field writes, but retaining a bound requirement at every context setter and map selector pushes the same requirements through stored fields, scripts, transactions, expiry records and eviction candidates. A parser result contract alone does not supply a fact when a later function reads a public field. COPY with no DB option also inherits its current database rather than creating a fresh checked number. | Contracts themselves add no runtime work. Fully proving persistent identity validity this way still needs explicit container/optional-payload facts and broad caller contracts. Merely replacing each type invariant with a function requirement does not remove the difficult boundaries. |
+| Plain numbers with bounds only at numeric indexing, selected | Keep checked external database parsing and plain stored identities. The directory already has sixteen named fields, selected by finite branches, so it has no numeric array-index obligation. Give the journal an actual fixed-length array; bound its local subscript with one bitwise AND inside the existing Some arm. Eviction and INFO obtain their bounds from their existing arithmetic and counted loops. Remove the ninety store declarations and restore direct command/persistence field writers. | No new range check, shared target or ordinary keyed database lookup. One added AND per recorded script-access attempt; no AND when the journal is None. Existing eviction modulo operations and AOF selection comparisons remain. PRE-1, OP-13, MSR-1 and ENT-3 already describe every required construction and bound. CI still must confirm their implementation at this pin. |
+
+A closed enum with sixteen tag-only variants is a further structural option:
+its valid identities survive storage without a numeric type invariant. It
+would replace the database-bearing fields and parameters throughout command,
+expiry, script and persistence code, with a sixteen-arm numeric conversion
+where indexing or AOF formatting requires an ordinal. The specification has
+no enum-to-integer `cvt`; a match can return literals and publish the bound.
+This avoids identity provenance assumptions but adds conversion sites,
+including the AOF-on path, whose generated cost is not established. Caching
+both enum and integer would introduce another relation to maintain. It is
+not selected because the existing named-handle directory needs no ordinal
+conversion and the only stored-identity numeric index is in script journaling.
+
+The complete numeric database-subscript inventory at the comparison revision
+is fourteen source expressions:
+
+| Owner | Expressions | Local proof in the selected representation |
+| --- | ---: | --- |
+| `record_access` | Two: key-set length and key-set insertion | `let database = iand(recording^.database, 15_u64);` establishes `0 <= database <= 15` by ENT-3. Both index `Array<KeySet, 16>`, whose length is a standing fact. |
+| Eviction cursor load/save | Nine: four loads and five stores | The selected database is the existing `position % 16_u64`; its bound is local to the sampling loop. Direct field access keeps this fact at each subscript without forwarding it through Meta's type. |
+| Eviction exhaustion read | One | The same existing modulo result. |
+| INFO key counts | Two | The existing counted loop is `database in 0_u64..16_u64`; its argument is a fixed sixteen-element array. |
+
+Selecting any of the sixteen map handles is a branch over named fields,
+not an additional numeric subscript. Queue positions, entry positions and
+key-byte indices have independent existing storage bounds and are not
+database indices. The two new journal subscript proofs replace the old
+database and initialized-length type invariants; they do not relax any
+storage bound.
+
+The journal is built using its existing sixteen-step initialization loop.
+The loop proves `keys.len == 16`; the pin supplies the natural consuming
+conversion:
+
+```whitefoot
+fn slots_into_array<T, const n: u64>(values: Slots<T, n>)
+  -> result: Array<T, n> pure contract {
+  requires values.len == n;
+  ensures result.len == n;
+};
+```
+
+Thus `slots_into_array::<KeySet, 16>(values: move keys)` creates its fixed
+array without requiring a copyable KeySet, an element-list expression or
+sixteen hand-written fields. Construction happens only when creating a
+script journal. There is no new runtime length test, and the journal no
+longer retains the Slots length word. Exact frame layout and construction
+lowering remain compiler evidence, not a measured saving.
+
+The identity provenance is a separate source-correctness obligation. New
+connections, RESET and the AOF replay context start at literal zero.
+`database_plan` rejects malformed integers, values outside Redis's signed
+integer range and database numbers outside 0 through 15 before selection;
+its result contract publishes the bound even for inert error results. MOVE
+uses that parser, and SWAPDB parses both operands through it. COPY uses it
+for each explicit DB argument and otherwise keeps the connection's current
+identity. Queued and scripted SELECT reach the same parser; a script begins
+with the connection's identity, and EXEC writes its final identity back to
+the connection. AOF replay executes SELECT through the ordinary dispatcher.
+CONFIG exposes a fixed database count and rejects setting it; there is no
+second mutable database-count source. Rewrite enumerates literals 0 through
+15, and eviction obtains its identity with modulo 16. Expiry, candidate,
+undo and sequence records copy these identities; their consumers do not
+derive a new database from arbitrary key bytes.
+
+The selected design deliberately does not claim a whole-program type proof
+that every stored public `u64` is always below sixteen. A future writer could
+violate that application invariant; parser contracts alone cannot prevent
+it. The local AND guarantees safe journal indexing for every bit pattern;
+it is an identity operation for every valid recorded database and performs
+no validation branch. It does not normalize an invalid client SELECT into
+a valid one: client rejection remains before the stored identity changes.
+The explicit finite map-routing code also introduces no out-of-bounds memory
+access, but an invalid internal identity would be a logical error. Review
+of identity writers and the multi-database oracle cases remain necessary to
+guard that distinction.
+
+Compared with the forwarding design, ordinary GET/SET still address the
+same cached map entry and add no database comparison, directory access,
+shared target, bitwise operation or enum conversion. A journal passed as
+None takes its existing empty arm. AOF-enabled commands retain the database
+context assignments and SELECT emission comparison already required by the
+database implementation; removing wrappers adds no AOF framing operation
+and changes no expected bytes. The AND affects script journaling only.
+Source equivalence of the ordinary path is not the performance veto result:
+CI compilation and the predeclared AOF-off/on timing comparison remain due.
+
+Against the pre-database source at `c7e14fa`, live GET's entry statement is
+unchanged. Non-expiring AOF-off SET also keeps its entry statement and inert
+sequence branch; that token now has three additional u64 initializations
+(database zero and two no-effect sentinels), introduced by the database
+implementation before this proof-boundary change. Whether they survive
+lowering, or alter frame costs, is unverified. AOF-on or expiring SET copies
+the connection's database into Meta and its expiry context, snapshots the
+database in its sequence and log budget, and checks SELECT context when
+propagating. Sequence commit publishes the last emitted context. The first
+effect in a fresh database-zero incremental file includes SELECT zero;
+successive effects in the same database omit it. These are additional AOF
+context operations compared with the pre-database server, not work added by
+the selected proof representation. Lazy-expiry GET's removal step also tags
+its existing Meta-held work; its live-entry path does not. No elapsed-cost
+claim follows from the unchanged cached map access.
+
+The [writable-field witness](../../../research/experiments/select-db/type-invariant-writable-field.wf)
+and [nested-field witness](../../../research/experiments/select-db/nested-type-invariant.wf)
+remain evidence for the language requests even though this representation
+does not depend on them. The reported higher-order postcondition failure
+has a [standalone reduction](../../experiments/select-db/function-parameter-postcondition.wf)
+and [cross-module reduction](../../experiments/select-db/function-parameter-postcondition/modules.wfg):
+the specification admits the written contract, so silently deleting the
+adapter's guarantee would not explain the failure. The diagnostic CI probe
+records either FN-9 at the forwarding function's callback return or successful compilation and execution; the
+latter means a more specific reduction is needed. The [fixed-array witness](../../experiments/select-db/bounded-database-index.wf)
+must compile and run successfully. Borrowed enum payload and stored-element invariant transport
+are specification limitations predicted by inspection, not additional
+compiler failures observed in this comparison. No local build or test was
+run to turn those predictions into observations.
 
 ## WATCH and UNWATCH
 

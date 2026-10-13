@@ -75,8 +75,8 @@ fn raise_memory_peak(store: &Keyspace, client: &Client, used: u64) -> result: un
   doc "Raises the recorded heap peak to a reading. The peak only rises, so a reading at or below the peak this client last saw recorded cannot change it and takes no Meta statement; a higher one takes this short statement, which does not cover command execution, and remembers the peak it leaves.";
   if used > client^.seen_peak {
     atomic meta = &store^.meta {
-      let peak = pkg::store::memory_peak_record(meta: meta, used: used);
-      set client^.seen_peak = peak;
+      set meta^.memory_peak = imax(meta^.memory_peak, used);
+      set client^.seen_peak = meta^.memory_peak;
     }
   }
   return unit;
@@ -87,8 +87,8 @@ fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(s
   let used = heap_read(client: client);
   if used > client^.seen_peak {
     atomic meta = &store^.meta {
-      let peak = pkg::store::memory_peak_record(meta: meta, used: used);
-      set client^.seen_peak = peak;
+      set meta^.memory_peak = imax(meta^.memory_peak, used);
+      set client^.seen_peak = meta^.memory_peak;
     }
   }
   return unit;
@@ -97,7 +97,7 @@ fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(s
 fn memory_over(meta: &Meta, client: &Client, logged: Bool) -> over: Bool writes(meta), writes(client) {
   doc "Redis 7.0.15 getMaxmemoryState: raw used_memory minus excluded AOF capacity, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed. Pressure aborts retained rewrite work before the Meta-serialized installation commitment; after commitment eviction waits for publication and cleanup, as shutdown already does.";
   let used = heap_read(client: client);
-  let peak = pkg::store::memory_peak_record(meta: meta, used: used);
+  set meta^.memory_peak = imax(meta^.memory_peak, used);
   let excluded = memory_excluded(meta: meta, logged: logged);
   let counted = used -sat excluded;
   if meta^.aof_rewrite_in_progress {
@@ -106,7 +106,7 @@ fn memory_over(meta: &Meta, client: &Client, logged: Bool) -> over: Bool writes(
     if needed > client^.maxmemory {
       if meta^.aof_installing == 0_u64 {
         let reason_memory_pressure_1 = pkg::store::RewriteAbortReason::MemoryPressure();
-        pkg::store::meta_rewrite_abort(meta: meta, reason: reason_memory_pressure_1);
+        pkg::store::rewrite_abort(capture: &meta^.rewrite, reason: reason_memory_pressure_1);
       }
     }
   }
@@ -175,30 +175,92 @@ fn eviction_score(item: &Entry, client: &Client) -> score: u64 reads(item), read
   return access_idle(stamp: item^.access, client: client);
 }
 
+fn eviction_pool_add(pool: &Box<Slots<EvictionCandidate>>, candidate: EvictionCandidate) -> result: unit writes(pool) {
+  doc "Redis 7.0.15 evictionPoolPopulate's 16 best scores, represented without ordering: a full pool replaces only its least score with a better candidate. Names are owned; ghost names are removed when selected. No reference into the map escapes sampling.";
+  if pool^.inner.len < 16_u64 {
+    if pool^.inner.len < pool^.inner.cap {
+      place_back(window: &pool^.inner, value: move candidate);
+      return unit;
+    }
+  }
+  let worst = 0_u64;
+  let least = 18446744073709551615_u64;
+  let length = pool^.inner.len;
+  for (index in 0_u64..length) {
+    let score = pool^.inner[index].score;
+    if score < least {
+      set least = score;
+      set worst = index;
+    }
+  }
+  let better = candidate.score > least;
+  let placed = worst < pool^.inner.len;
+  if band(better, placed) {
+    set pool^.inner[worst] = move candidate;
+  } else {
+    let unused = move candidate;
+  }
+  return unit;
+}
+
+fn eviction_pool_take(pool: &Box<Slots<EvictionCandidate>>) -> key: Option<EvictionCandidate> writes(pool) {
+  let length = pool^.inner.len;
+  if length == 0_u64 {
+    return None<EvictionCandidate>();
+  }
+  let best = 0_u64;
+  let highest = 0_u64;
+  for (index in 0_u64..length) {
+    let score = pool^.inner[index].score;
+    if score >= highest {
+      set highest = score;
+      set best = index;
+    }
+  }
+  if pool^.inner.len > 0_u64 {
+    let candidate = take_back(window: &pool^.inner);
+    if best < pool^.inner.len {
+      swap(first: &candidate, second: &pool^.inner[best]);
+    }
+    return Some<EvictionCandidate>(value: move candidate);
+  }
+  return None<EvictionCandidate>();
+}
+
 struct EvictionSample {
   key: Option<EvictionCandidate>;
   exhausted: Bool;
 }
 
-fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client, database: u64) -> sample: EvictionSample reads(keys), writes(meta), writes(client) contract {
-  requires database < 16_u64;
-} {
+fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client, database: u64) -> sample: EvictionSample reads(keys), writes(meta), writes(client) {
   doc "Redis 7.0.15 performEvictions/evictionPoolPopulate, using map_scan from a random cursor and maxmemory-samples as its count. Meta owns the single shared pool and empty-search cursor; it is already held when deletion must log DEL. A failed batch continues around the map before declaring exhaustion. Empty searches retain their cursor across time slices and connections, so static sparse volatile keyspaces do not repeatedly restart and permanently avoid EVICT_FAIL. queue_due marks actual expiry creation or transfer in the same entry-and-Meta statement; consuming that flag restarts the absence scan, so EXPIRE behind the cursor cannot cause false EVICT_FAIL. Permanent writes and looping read-only scripts do not invalidate a volatile scan. Allkeys exhaustion uses live map_count rather than a scan spanning concurrent insertions; a nonempty map never certifies no allkeys candidates. Eligibility is checked again when the entry is deleted. map_scan count is a hint: consume the returned batch whole, selecting at most maxmemory-samples eligible keys by reservoir sampling.";
   let policy = client^.memory_policy;
   let count = map_count::<Entry>(map: keys);
   if count == 0_u64 {
-    pkg::store::eviction_search_stop(meta: meta);
+    set meta^.eviction_searching = False();
     let absent = None<EvictionCandidate>();
     let complete = True();
     return EvictionSample(key: move absent, exhausted: complete);
   }
   if bnot(meta^.eviction_searching) {
     set client^.random = next_random(state: client^.random);
-    pkg::store::eviction_search_begin(meta: meta, start: client^.random);
+    set meta^.eviction_start = client^.random;
+    set meta^.eviction_cursor = client^.random;
+    set meta^.eviction_wrapped = False();
+    set meta^.eviction_searching = True();
   }
   let gathered = key_set_new(capacity: 16_u64);
   let next = map_scan::<Entry>(map: keys, cursor: meta^.eviction_cursor, count: client^.maxmemory_samples, keys: &gathered);
-  let exhausted = pkg::store::eviction_search_advance(meta: meta, next: next);
+  let exhausted = False();
+  if meta^.eviction_wrapped {
+    let ended = next == 0_u64;
+    let reached = next >= meta^.eviction_start;
+    set exhausted = bor(ended, reached);
+  } else if next == 0_u64 {
+    set meta^.eviction_wrapped = True();
+    set exhausted = meta^.eviction_start == 0_u64;
+  }
+  set meta^.eviction_cursor = next;
   let volatile = eviction_volatile(policy: policy);
   let random = eviction_random(policy: policy);
   let candidates = box_slots_new::<EvictionCandidate>(capacity: 0_u64);
@@ -221,7 +283,7 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
             if position < client^.maxmemory_samples {
               let score = eviction_score(item: sampled, client: client);
               let owned = scanned_key(keys: &gathered, index: index);
-              let candidate = pkg::store::eviction_candidate_new(key: move owned, score: score, database: database);
+              let candidate = EvictionCandidate(key: move owned, score: score, database: database);
               if position < candidates.inner.len {
                 set candidates.inner[position] = move candidate;
               } else {
@@ -249,7 +311,7 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
   }
   let picked = None<EvictionCandidate>();
   if candidates.inner.len > 0_u64 {
-    pkg::store::eviction_search_stop(meta: meta);
+    set meta^.eviction_searching = False();
     if random {
       let position = eviction_draw(client: client, count: candidates.inner.len);
       if position < candidates.inner.len {
@@ -265,7 +327,7 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
           break;
         }
         let candidate = take_back(window: &candidates.inner);
-        pkg::store::eviction_pool_add_meta(meta: meta, candidate: move candidate);
+        eviction_pool_add(pool: &meta^.eviction_pool, candidate: move candidate);
       }
     }
   }
@@ -273,7 +335,7 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
     set exhausted = False();
   }
   if exhausted {
-    pkg::store::eviction_search_stop(meta: meta);
+    set meta^.eviction_searching = False();
   }
   if bnot(volatile) {
     set exhausted = False();
@@ -283,7 +345,17 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
 
 fn eviction_sample_all(db0: &ConcurrentHashMap<Entry>, db1: &ConcurrentHashMap<Entry>, db2: &ConcurrentHashMap<Entry>, db3: &ConcurrentHashMap<Entry>, db4: &ConcurrentHashMap<Entry>, db5: &ConcurrentHashMap<Entry>, db6: &ConcurrentHashMap<Entry>, db7: &ConcurrentHashMap<Entry>, db8: &ConcurrentHashMap<Entry>, db9: &ConcurrentHashMap<Entry>, db10: &ConcurrentHashMap<Entry>, db11: &ConcurrentHashMap<Entry>, db12: &ConcurrentHashMap<Entry>, db13: &ConcurrentHashMap<Entry>, db14: &ConcurrentHashMap<Entry>, db15: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client) -> sample: EvictionSample reads(db0), reads(db1), reads(db2), reads(db3), reads(db4), reads(db5), reads(db6), reads(db7), reads(db8), reads(db9), reads(db10), reads(db11), reads(db12), reads(db13), reads(db14), reads(db15), writes(meta), writes(client) {
   let policy = client^.memory_policy;
-  pkg::store::eviction_policy_prepare(meta: meta, policy: policy);
+  let reset = meta^.eviction_policy != policy;
+  if bor(reset, meta^.due.eligibility_changed) {
+    let inactive = False();
+    set meta^.eviction_searches = array_filled::<Bool, 16>(value: inactive);
+    set meta^.eviction_exhausted = array_filled::<Bool, 16>(value: inactive);
+    set meta^.due.eligibility_changed = False();
+  }
+  if reset {
+    set meta^.eviction_pool = box_slots_new::<EvictionCandidate>(capacity: 16_u64);
+    set meta^.eviction_policy = policy;
+  }
   let exhausted = True();
   let random = eviction_random(policy: policy);
   let volatile = eviction_volatile(policy: policy);
@@ -327,13 +399,21 @@ fn eviction_sample_all(db0: &ConcurrentHashMap<Entry>, db1: &ConcurrentHashMap<E
     } else if database == 15_u64 {
       set keys = db15;
     }
-    pkg::store::eviction_search_load(meta: meta, database: database);
+    set meta^.eviction_cursor = meta^.eviction_cursors[database];
+    set meta^.eviction_start = meta^.eviction_starts[database];
+    set meta^.eviction_searching = meta^.eviction_searches[database];
+    set meta^.eviction_wrapped = meta^.eviction_wraps[database];
     let sampled = eviction_sample(keys: keys, meta: meta, client: client, database: database);
-    pkg::store::eviction_search_save(meta: meta, database: database, exhausted: sampled.exhausted);
+    set meta^.eviction_cursors[database] = meta^.eviction_cursor;
+    set meta^.eviction_starts[database] = meta^.eviction_start;
+    set meta^.eviction_searches[database] = meta^.eviction_searching;
+    set meta^.eviction_wraps[database] = meta^.eviction_wrapped;
+    set meta^.eviction_exhausted[database] = sampled.exhausted;
     set exhausted = band(exhausted, sampled.exhausted);
     match move sampled.key {
       Some(value: picked) => {
-        pkg::store::eviction_rotate(meta: meta, database: database);
+        let next = database + 1_u64;
+        set meta^.eviction_database = next % 16_u64;
         let selected = Some<EvictionCandidate>(value: move picked);
         let incomplete = False();
         return EvictionSample(key: move selected, exhausted: incomplete);
@@ -344,7 +424,7 @@ fn eviction_sample_all(db0: &ConcurrentHashMap<Entry>, db1: &ConcurrentHashMap<E
   }
   let picked = None<EvictionCandidate>();
   if bnot(random) {
-    set picked = pkg::store::eviction_pool_take_meta(meta: meta);
+    set picked = eviction_pool_take(pool: &meta^.eviction_pool);
   }
   return EvictionSample(key: move picked, exhausted: exhausted);
 }
@@ -455,9 +535,13 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
             if eligible {
               pkg::store::sequence_delete_key(sequence: &sequence, slot: slot, key: name);
               if logged {
-                pkg::store::command_log_removal_log(meta: meta, key: name, budget: &log_budget);
+                pkg::store::log_removal(log: &meta^.log, key: name, budget: &log_budget);
               }
-              pkg::store::eviction_record_removal(meta: meta, lapsed: lapsed);
+              if lapsed {
+                set meta^.expired_keys = meta^.expired_keys +wrap 1_u64;
+              } else {
+                set meta^.evicted_keys = meta^.evicted_keys +wrap 1_u64;
+              }
               set removed = True();
             }
           }

@@ -540,14 +540,15 @@ fn access_journal_new() -> journal: AccessJournal pure {
     place_back(window: &keys, value: move empty);
   }
   let entries = box_slots_new::<AccessUndo>(capacity: 0_u64);
-  return AccessJournal(keys: move keys, entries: move entries, database: 0_u64);
+  let initialized = slots_into_array::<KeySet, 16>(values: move keys);
+  return AccessJournal(keys: move initialized, entries: move entries, database: 0_u64);
 }
 
 fn record_access(journal: &Option<AccessJournal>, key: &[u8], stamp: u32) -> result: unit reads(key), writes(journal) {
-  doc "Insertion-order indices identify duplicate keys without replacing their first stamp. The append grows before mutation; Whitefoot STOR-8 has no recoverable allocation failure, so no failed allocation can leave an unjournaled refresh.";
+  doc "Insertion-order indices identify duplicate keys without replacing their first stamp. Database tokens were validated before selection; AND bounds only the deduplication subscript and leaves the saved identity unchanged. None computes no subscript. The append grows before mutation; Whitefoot STOR-8 has no recoverable allocation failure, so no failed allocation can leave an unjournaled refresh.";
   match journal^ {
     Some(value: recording) => {
-      let database = recording^.database;
+      let database = iand(recording^.database, 15_u64);
       let prior = recording^.keys[database].len;
       let index = key_set_insert(keys: &recording^.keys[database], key: key);
       if index < prior {
@@ -676,17 +677,13 @@ fn aof_error_text(meta: &Meta) -> text: pkg::protocol::AofErrorText reads(meta.a
   return pkg::protocol::AofErrorText::Absent();
 }
 
-fn database_context(meta: &Meta, database: u64) -> result: unit writes(meta.database), writes(meta.due.database) contract {
-  requires database < 16_u64;
-} {
+fn database_context(meta: &Meta, database: u64) -> result: unit writes(meta.database), writes(meta.due.database) {
   set meta^.database = database;
   set meta^.due.database = database;
   return unit;
 }
 
-fn keyspace_select(store: &Keyspace, database: u64) -> result: unit reads(store.databases), writes(store.keys), writes(store.database) contract {
-  requires database < 16_u64;
-} {
+fn keyspace_select(store: &Keyspace, database: u64) -> result: unit reads(store.databases), writes(store.keys), writes(store.database) {
   if database == 0_u64 {
     set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db0);
   } else if database == 1_u64 {
@@ -724,9 +721,7 @@ fn keyspace_select(store: &Keyspace, database: u64) -> result: unit reads(store.
   return unit;
 }
 
-fn keyspace_database(store: &Keyspace, database: u64) -> made: Keyspace reads(store) contract {
-  requires database < 16_u64;
-} {
+fn keyspace_database(store: &Keyspace, database: u64) -> made: Keyspace reads(store) {
   let made = keyspace_share(store: store);
   keyspace_select(store: &made, database: database);
   return move made;
@@ -798,16 +793,12 @@ fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64,
   return unit;
 }
 
-fn expiry_context(due: &ExpiryQueue, database: u64) -> result: unit writes(due.database) contract {
-  requires database < 16_u64;
-} {
+fn expiry_context(due: &ExpiryQueue, database: u64) -> result: unit writes(due.database) {
   set due^.database = database;
   return unit;
 }
 
-fn access_journal_select(journal: &Option<AccessJournal>, database: u64) -> result: unit writes(journal) contract {
-  requires database < 16_u64;
-} {
+fn access_journal_select(journal: &Option<AccessJournal>, database: u64) -> result: unit writes(journal) {
   match journal^ {
     Some(value: recording) => {
       set recording^.database = database;
@@ -866,9 +857,7 @@ fn swap_database_metadata(meta: &Meta, left_db: u64, right_db: u64) -> result: u
   return unit;
 }
 
-fn queue_map_expiry(keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, database: u64, env: &KeyEnv) -> result: unit reads(keys), reads(env), writes(due) contract {
-  requires database < 16_u64;
-} {
+fn queue_map_expiry(keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, database: u64, env: &KeyEnv) -> result: unit reads(keys), reads(env), writes(due) {
   expiry_context(due: due, database: database);
   let cursor = 0_u64;
   loop {

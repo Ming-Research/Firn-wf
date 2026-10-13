@@ -272,10 +272,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let appended = 0_u64;
     let first = 0_u64;
-    for @commands (
-      index in 0_u64..commands,
-      invariant selected_database: database < 16_u64
-    ) {
+    for @commands (index in 0_u64..commands) {
       let count = transaction^.counts.inner[index];
       clear_args(args: &args);
       for @arguments (offset in 0_u64..count) {
@@ -295,7 +292,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
         reply_error(client: client, word: &text_foreign_abort[0_u64..92_u64]);
       }
     }
-    pkg::store::command_record_effects_log(meta: m, effects: &effects, appended: appended, sequence: &sequence, budget: &log_budget);
+    pkg::store::record_effects(log: &m^.log, effects: &effects, appended: appended, sequence: &sequence, budget: &log_budget);
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   pkg::store::keyspace_select(store: store, database: database);

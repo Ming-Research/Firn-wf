@@ -6,7 +6,9 @@ alias Span = pkg::protocol::Span;
 alias KeyEnv = pkg::bytes::KeyEnv;
 alias Time = pkg::store::Time;
 
-fn move_plan(input: &[u8], args: &Box<Slots<Span>>, database: u64) -> plan: DatabasePlan reads(input), reads(args) {
+fn move_plan(input: &[u8], args: &Box<Slots<Span>>, database: u64) -> plan: DatabasePlan reads(input), reads(args) contract {
+  ensures plan.database < 16_u64;
+} {
   let plan = database_plan(input: input, args: args, index: 2_u64);
   if plan.error != 0_u64 {
     return plan;
@@ -33,11 +35,12 @@ struct SwapPlan {
   left: u64;
   right: u64;
   error: u64;
-  invariant left_valid(plan): plan.left < 16_u64;
-  invariant right_valid(plan): plan.right < 16_u64;
 }
 
-fn swap_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: SwapPlan reads(input), reads(args) {
+fn swap_plan(input: &[u8], args: &Box<Slots<Span>>) -> plan: SwapPlan reads(input), reads(args) contract {
+  ensures plan.left < 16_u64;
+  ensures plan.right < 16_u64;
+} {
   let left = database_plan(input: input, args: args, index: 1_u64);
   if left.error == 1_u64 {
     return SwapPlan(left: 0_u64, right: 0_u64, error: 1_u64);
@@ -78,10 +81,7 @@ fn swap_refused(client: &Client, plan: &SwapPlan) -> refused: Bool reads(plan), 
   return True();
 }
 
-fn database_transfer_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, source: &Option<Entry>, target: &Option<Entry>, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, client: &Client, copying: Bool, replace: Bool) -> work: TransferWork reads(source_key), reads(target_key), writes(sequence), writes(journal), writes(source), writes(target), writes(client) contract {
-  requires source_db < 16_u64;
-  requires target_db < 16_u64;
-} {
+fn database_transfer_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, source: &Option<Entry>, target: &Option<Entry>, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, client: &Client, copying: Bool, replace: Bool) -> work: TransferWork reads(source_key), reads(target_key), writes(sequence), writes(journal), writes(source), writes(target), writes(client) {
   doc "MOVE and cross-database COPY over naturally separate held entries. Source lookup precedes destination lookup; both lazy expiries survive a zero reply. The payload and absolute expiry transfer together, while COPY retains its source.";
   let no = False();
   let work = TransferWork(outcome: rename_missing, at: 0_u64, source_expired: no, target_expired: no);
@@ -126,9 +126,7 @@ fn database_transfer_body(sequence: &pkg::store::WriteSequence, journal: &Option
   return work;
 }
 
-fn database_transfer_meta(due: &pkg::store::ExpiryQueue, log: &Box<Slots<u8>>, budget: &pkg::store::LogBudget, work: &TransferWork, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget) contract {
-  requires target_db < 16_u64;
-} {
+fn database_transfer_meta(due: &pkg::store::ExpiryQueue, log: &Box<Slots<u8>>, budget: &pkg::store::LogBudget, work: &TransferWork, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget) {
   set budget^.database = source_db;
   let appended = mset_lapse_meta(log: log, logged: logged, lapsed: work^.source_expired, key: source_key, budget: budget);
   set budget^.database = target_db;
@@ -146,9 +144,7 @@ fn database_transfer_meta(due: &pkg::store::ExpiryQueue, log: &Box<Slots<u8>>, b
   return appended;
 }
 
-fn run_database_transfer(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, destination: u64, copying: Bool, replace: Bool) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits contract {
-  requires destination < 16_u64;
-} {
+fn run_database_transfer(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, destination: u64, copying: Bool, replace: Bool) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
   let target_store = pkg::store::keyspace_database(store: store, database: destination);
   let source_place = key_bounds(input: input, args: args, index: 1_u64);
   let source_key = &input^[source_place.start..source_place.end];
@@ -168,7 +164,7 @@ fn run_database_transfer(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = database_transfer_body(sequence: &sequence, journal: &journal, source: source, target: target, source_key: source_key, target_key: target_key, source_db: store^.database, target_db: destination, client: client, copying: copying, replace: replace);
-    let appended = pkg::store::command_database_transfer_meta_due_log::<TransferWork, Box<Slots<Span>>, fn database_transfer_meta>(meta: m, budget: &budget, work: &work, source_key: source_key, target_key: target_key, source_db: store^.database, target_db: destination, logged: store^.logging, input: input, args: args, env: env);
+    let appended = database_transfer_meta(due: &m^.due, log: &m^.log, budget: &budget, work: &work, source_key: source_key, target_key: target_key, source_db: store^.database, target_db: destination, logged: store^.logging, input: input, args: args, env: env);
     set outcome = work.outcome;
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &budget);
   }
@@ -196,14 +192,11 @@ fn database_swap_body(sequence: &pkg::store::WriteSequence, source: &ConcurrentH
   return unit;
 }
 
-fn held_database_swap(sequence: &pkg::store::WriteSequence, source: &ConcurrentHashMap<Entry>, target: &ConcurrentHashMap<Entry>, meta: &Meta, left_db: u64, right_db: u64, env: &KeyEnv) -> result: unit reads(env), writes(sequence), writes(source), writes(target), writes(meta) contract {
-  requires left_db < 16_u64;
-  requires right_db < 16_u64;
-} {
+fn held_database_swap(sequence: &pkg::store::WriteSequence, source: &ConcurrentHashMap<Entry>, target: &ConcurrentHashMap<Entry>, meta: &Meta, left_db: u64, right_db: u64, env: &KeyEnv) -> result: unit reads(env), writes(sequence), writes(source), writes(target), writes(meta) {
   database_swap_body(sequence: sequence, source: source, target: target);
   pkg::store::swap_database_metadata(meta: meta, left_db: left_db, right_db: right_db);
-  pkg::store::command_queue_map_expiry_due(meta: meta, keys: source, database: left_db, env: env);
-  pkg::store::command_queue_map_expiry_due(meta: meta, keys: target, database: right_db, env: env);
+  pkg::store::queue_map_expiry(keys: source, due: &meta^.due, database: left_db, env: env);
+  pkg::store::queue_map_expiry(keys: target, due: &meta^.due, database: right_db, env: env);
   return unit;
 }
 
@@ -224,17 +217,14 @@ fn run_swapdb(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     if plan.left != plan.right {
       held_database_swap(sequence: &sequence, source: left, target: right, meta: m, left_db: plan.left, right_db: plan.right, env: env);
     }
-    let appended = pkg::store::command_mset_meta_log::<Box<Slots<Span>>, fn mset_meta>(meta: m, logged: store^.logging, input: input, args: args, budget: &budget);
+    let appended = mset_meta(log: &m^.log, logged: store^.logging, input: input, args: args, budget: &budget);
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &budget);
   }
   reply_ok(client: client);
   return unit;
 }
 
-fn held_databases_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, database: &u64, kind: u64, db0: &ConcurrentHashMap<Entry>, db1: &ConcurrentHashMap<Entry>, db2: &ConcurrentHashMap<Entry>, db3: &ConcurrentHashMap<Entry>, db4: &ConcurrentHashMap<Entry>, db5: &ConcurrentHashMap<Entry>, db6: &ConcurrentHashMap<Entry>, db7: &ConcurrentHashMap<Entry>, db8: &ConcurrentHashMap<Entry>, db9: &ConcurrentHashMap<Entry>, db10: &ConcurrentHashMap<Entry>, db11: &ConcurrentHashMap<Entry>, db12: &ConcurrentHashMap<Entry>, db13: &ConcurrentHashMap<Entry>, db14: &ConcurrentHashMap<Entry>, db15: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(database), writes(db0), writes(db1), writes(db2), writes(db3), writes(db4), writes(db5), writes(db6), writes(db7), writes(db8), writes(db9), writes(db10), writes(db11), writes(db12), writes(db13), writes(db14), writes(db15), writes(meta), writes(effects), writes(client) contract {
-  requires database^ < 16_u64;
-  ensures database^ < 16_u64;
-} {
+fn held_databases_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, database: &u64, kind: u64, db0: &ConcurrentHashMap<Entry>, db1: &ConcurrentHashMap<Entry>, db2: &ConcurrentHashMap<Entry>, db3: &ConcurrentHashMap<Entry>, db4: &ConcurrentHashMap<Entry>, db5: &ConcurrentHashMap<Entry>, db6: &ConcurrentHashMap<Entry>, db7: &ConcurrentHashMap<Entry>, db8: &ConcurrentHashMap<Entry>, db9: &ConcurrentHashMap<Entry>, db10: &ConcurrentHashMap<Entry>, db11: &ConcurrentHashMap<Entry>, db12: &ConcurrentHashMap<Entry>, db13: &ConcurrentHashMap<Entry>, db14: &ConcurrentHashMap<Entry>, db15: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(database), writes(db0), writes(db1), writes(db2), writes(db3), writes(db4), writes(db5), writes(db6), writes(db7), writes(db8), writes(db9), writes(db10), writes(db11), writes(db12), writes(db13), writes(db14), writes(db15), writes(meta), writes(effects), writes(client) {
   if kind == 163_u64 {
     let plan = database_plan(input: input, args: args, index: 1_u64);
     if plan.error == 0_u64 {
@@ -252,9 +242,7 @@ fn held_databases_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg
   return appended;
 }
 
-fn held_databases_body(sequence: &pkg::store::WriteSequence, effect_budget: &pkg::store::LogBudget, journal: &Option<pkg::store::AccessJournal>, database: u64, kind: u64, db0: &ConcurrentHashMap<Entry>, db1: &ConcurrentHashMap<Entry>, db2: &ConcurrentHashMap<Entry>, db3: &ConcurrentHashMap<Entry>, db4: &ConcurrentHashMap<Entry>, db5: &ConcurrentHashMap<Entry>, db6: &ConcurrentHashMap<Entry>, db7: &ConcurrentHashMap<Entry>, db8: &ConcurrentHashMap<Entry>, db9: &ConcurrentHashMap<Entry>, db10: &ConcurrentHashMap<Entry>, db11: &ConcurrentHashMap<Entry>, db12: &ConcurrentHashMap<Entry>, db13: &ConcurrentHashMap<Entry>, db14: &ConcurrentHashMap<Entry>, db15: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(effect_budget), writes(journal), writes(db0), writes(db1), writes(db2), writes(db3), writes(db4), writes(db5), writes(db6), writes(db7), writes(db8), writes(db9), writes(db10), writes(db11), writes(db12), writes(db13), writes(db14), writes(db15), writes(meta), writes(effects), writes(client) contract {
-  requires database < 16_u64;
-} {
+fn held_databases_body(sequence: &pkg::store::WriteSequence, effect_budget: &pkg::store::LogBudget, journal: &Option<pkg::store::AccessJournal>, database: u64, kind: u64, db0: &ConcurrentHashMap<Entry>, db1: &ConcurrentHashMap<Entry>, db2: &ConcurrentHashMap<Entry>, db3: &ConcurrentHashMap<Entry>, db4: &ConcurrentHashMap<Entry>, db5: &ConcurrentHashMap<Entry>, db6: &ConcurrentHashMap<Entry>, db7: &ConcurrentHashMap<Entry>, db8: &ConcurrentHashMap<Entry>, db9: &ConcurrentHashMap<Entry>, db10: &ConcurrentHashMap<Entry>, db11: &ConcurrentHashMap<Entry>, db12: &ConcurrentHashMap<Entry>, db13: &ConcurrentHashMap<Entry>, db14: &ConcurrentHashMap<Entry>, db15: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(effect_budget), writes(journal), writes(db0), writes(db1), writes(db2), writes(db3), writes(db4), writes(db5), writes(db6), writes(db7), writes(db8), writes(db9), writes(db10), writes(db11), writes(db12), writes(db13), writes(db14), writes(db15), writes(meta), writes(effects), writes(client) {
   let selected = db0;
   if database == 1_u64 {
     set selected = db1;
@@ -306,37 +294,37 @@ fn held_databases_body(sequence: &pkg::store::WriteSequence, effect_budget: &pkg
       return 0_u64;
     }
     flush_body(sequence: sequence, keys: db0);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 0_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 0_u64);
     flush_body(sequence: sequence, keys: db1);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 1_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 1_u64);
     flush_body(sequence: sequence, keys: db2);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 2_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 2_u64);
     flush_body(sequence: sequence, keys: db3);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 3_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 3_u64);
     flush_body(sequence: sequence, keys: db4);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 4_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 4_u64);
     flush_body(sequence: sequence, keys: db5);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 5_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 5_u64);
     flush_body(sequence: sequence, keys: db6);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 6_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 6_u64);
     flush_body(sequence: sequence, keys: db7);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 7_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 7_u64);
     flush_body(sequence: sequence, keys: db8);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 8_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 8_u64);
     flush_body(sequence: sequence, keys: db9);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 9_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 9_u64);
     flush_body(sequence: sequence, keys: db10);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 10_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 10_u64);
     flush_body(sequence: sequence, keys: db11);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 11_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 11_u64);
     flush_body(sequence: sequence, keys: db12);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 12_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 12_u64);
     flush_body(sequence: sequence, keys: db13);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 13_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 13_u64);
     flush_body(sequence: sequence, keys: db14);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 14_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 14_u64);
     flush_body(sequence: sequence, keys: db15);
-    pkg::store::command_clear_database_expiry_due(meta: meta, database: 15_u64);
+    pkg::store::clear_database_expiry(due: &meta^.due, database: 15_u64);
     let appended = mset_meta(log: effects, logged: logged, input: input, args: args, budget: effect_budget);
     reply_ok(client: client);
     return appended;
@@ -519,7 +507,7 @@ fn held_databases_body(sequence: &pkg::store::WriteSequence, effect_budget: &pkg
       }
       let target_key = &input^[target_place.start..target_place.end];
       let work = database_transfer_body(sequence: sequence, journal: journal, source: &selected^[source_key], target: &target^[target_key], source_key: source_key, target_key: target_key, source_db: database, target_db: destination, client: client, copying: copying, replace: replace);
-      let appended = pkg::store::command_database_transfer_meta_due::<TransferWork, Box<Slots<Span>>, fn database_transfer_meta>(meta: meta, log: effects, budget: effect_budget, work: &work, source_key: source_key, target_key: target_key, source_db: database, target_db: destination, logged: logged, input: input, args: args, env: env);
+      let appended = database_transfer_meta(due: &meta^.due, log: effects, budget: effect_budget, work: &work, source_key: source_key, target_key: target_key, source_db: database, target_db: destination, logged: logged, input: input, args: args, env: env);
       copy_finish(client: client, error: 0_u64, outcome: work.outcome);
       return appended;
     }
@@ -539,7 +527,7 @@ fn run_flushall(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let appended = held_databases_run(sequence: &sequence, journal: &journal, database: &database, kind: 164_u64, db0: db0, db1: db1, db2: db2, db3: db3, db4: db4, db5: db5, db6: db6, db7: db7, db8: db8, db9: db9, db10: db10, db11: db11, db12: db12, db13: db13, db14: db14, db15: db15, meta: m, effects: &effects, logged: store^.logging, input: input, args: args, client: client, env: env, time: time);
-    pkg::store::command_record_effects_log(meta: m, effects: &effects, appended: appended, sequence: &sequence, budget: &budget);
+    pkg::store::record_effects(log: &m^.log, effects: &effects, appended: appended, sequence: &sequence, budget: &budget);
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &budget);
   }
   return unit;

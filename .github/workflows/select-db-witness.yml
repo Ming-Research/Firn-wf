@@ -1,5 +1,5 @@
 # Temporary CI caller for firn-scope-select-db. Remove before the PR is ready
-# once the pinned directory and invariant forms are validated. Keep the
+# once the pinned directory, index and contract forms are validated. Keep the
 # witnesses as regression instruments for the database design and language requests.
 name: select-db-witness
 
@@ -64,3 +64,40 @@ jobs:
           sed '/^  payload: Inner;$/a\  invariant payload_selected(outer): outer.payload.database < 16_u64;' research/experiments/select-db/nested-type-invariant.wf > "$RUNNER_TEMP/nested-invariant-accepted.wf"
           "build/whitefoot/${witness_release}/whitefootc" "$RUNNER_TEMP/nested-invariant-accepted.wf" -o build/nested-invariant-accepted
           build/nested-invariant-accepted
+
+      - name: Compile and run the fixed-array database-index witness
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          "build/whitefoot/${witness_release}/whitefootc" research/experiments/select-db/bounded-database-index.wf -o build/bounded-database-index
+          build/bounded-database-index
+
+      # This is a diagnostic reduction, not a conformance exception: FN-9 here
+      # reproduces the reported compiler gap; success means the server failure
+      # needs a more specific reduction. Other diagnostics fail the probe.
+      - name: Record the function-parameter postcondition reduction
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          if "build/whitefoot/${witness_release}/whitefootc" --check research/experiments/select-db/function-parameter-postcondition.wf > "$RUNNER_TEMP/function-postcondition-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/function-postcondition-diagnostic.txt"
+            "build/whitefoot/${witness_release}/whitefootc" research/experiments/select-db/function-parameter-postcondition.wf -o build/function-parameter-postcondition
+            build/function-parameter-postcondition
+          else
+            cat "$RUNNER_TEMP/function-postcondition-diagnostic.txt"
+            grep -F 'error[FN-9]: UndischargedPostcondition' "$RUNNER_TEMP/function-postcondition-diagnostic.txt"
+            grep -F 'return apply(window: window);' "$RUNNER_TEMP/function-postcondition-diagnostic.txt"
+            grep -E 'concrete_function:.*forward' "$RUNNER_TEMP/function-postcondition-diagnostic.txt"
+          fi
+
+      - name: Record the cross-module function-parameter reduction
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          if "build/whitefoot/${witness_release}/whitefootc" --graph research/experiments/select-db/function-parameter-postcondition/modules.wfg --check-modules > "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt"
+            "build/whitefoot/${witness_release}/whitefootc" --graph research/experiments/select-db/function-parameter-postcondition/modules.wfg --entry witness -o build/function-parameter-postcondition-graph
+            build/function-parameter-postcondition-graph
+          else
+            cat "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt"
+            grep -F 'error[FN-9]: UndischargedPostcondition' "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt"
+            grep -F 'return apply(window: window);' "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt"
+            grep -E 'concrete_function:.*forward' "$RUNNER_TEMP/function-postcondition-graph-diagnostic.txt"
+          fi

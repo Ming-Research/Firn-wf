@@ -1,0 +1,4 @@
+pkg::store: [];
+pkg::command: [pkg::store, std::process];
+
+entry witness = pkg::command::main;

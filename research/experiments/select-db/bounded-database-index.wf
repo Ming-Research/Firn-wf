@@ -1,0 +1,56 @@
+alias ExitStatus = std::process::ExitStatus;
+
+struct Journal {
+  keys: Array<KeySet, 16>;
+  database: u64;
+}
+
+fn journal_new(database: u64) -> journal: Journal pure {
+  let keys = slots_new::<KeySet, 16>();
+  for (
+    index in 0_u64..16_u64,
+    invariant initialized: keys.len == index
+  ) {
+    let empty = key_set_new(capacity: 0_u64);
+    place_back(window: &keys, value: move empty);
+  }
+  let initialized = slots_into_array::<KeySet, 16>(values: move keys);
+  return Journal(keys: move initialized, database: database);
+}
+
+fn record(journal: &Option<Journal>, key: &[u8]) -> result: unit reads(key), writes(journal) {
+  doc "Accepted database-index boundary: the fixed array's extent and the integer AND's bound need no struct invariant, including through a borrowed Option payload. Firn validates external database tokens before selection; this witness independently exercises total bounded indexing with an arbitrary scalar. None remains the ordinary command path and does not compute the index.";
+  match journal^ {
+    Some(value: recording) => {
+      let database = iand(recording^.database, 15_u64);
+      let inserted = key_set_insert(keys: &recording^.keys[database], key: key);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn main() -> status: ExitStatus pure {
+  let journal = journal_new(database: 31_u64);
+  let enabled = Some<Journal>(value: move journal);
+  let disabled = None<Journal>();
+  let key = array_filled::<u8, 1>(value: 97_u8);
+  record(journal: &disabled, key: &key[0_u64..1_u64]);
+  record(journal: &enabled, key: &key[0_u64..1_u64]);
+  record(journal: &enabled, key: &key[0_u64..1_u64]);
+  match enabled {
+    Some(value: recording) => {
+      if recording^.keys[15_u64].len != 1_u64 {
+        return std::process::exit_status(code: 1_u8);
+      }
+      if recording^.keys[0_u64].len != 0_u64 {
+        return std::process::exit_status(code: 2_u8);
+      }
+    }
+    None() => {
+      return std::process::exit_status(code: 3_u8);
+    }
+  }
+  return std::process::exit_status(code: 0_u8);
+}

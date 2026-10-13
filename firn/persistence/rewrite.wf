@@ -17,7 +17,7 @@ fn aof_rw_cancelled(store: &Keyspace) -> cancelled: Bool reads(store) waits {
     let stopping = bor(m^.stopping, cancelled);
     if stopping {
       let reason_cancelled_1 = pkg::store::RewriteAbortReason::Cancelled();
-      pkg::store::meta_rewrite_abort(meta: m, reason: reason_cancelled_1);
+      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_cancelled_1);
     }
     set cancelled = bor(stopping, m^.rewrite.aborted);
   }
@@ -68,7 +68,11 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
         set log^.boundary.size = boundary.reverted;
         let removed = boundary.size -sat boundary.reverted;
         atomic m = &store^.meta {
-          pkg::store::aof_truncated(meta: m, removed: removed, reverted: boundary.reverted);
+          set m^.aof_current_size = m^.aof_current_size -sat removed;
+          set m^.aof_incr_size = boundary.reverted;
+          if m^.aof_synced_size > boundary.reverted {
+            set m^.aof_synced_size = boundary.reverted;
+          }
         }
       }
       Err(error: problem) => {
@@ -86,7 +90,7 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
       let counted = aof_sync_counts(error: &problem);
       if counted {
         atomic m = &store^.meta {
-          pkg::store::aof_sync_failed(meta: m, error: problem);
+          set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
         }
         let reason_writer_io_4 = pkg::store::RewriteAbortReason::WriterIo();
         aof_rw_abort(store: store, reason: reason_writer_io_4);
@@ -95,7 +99,7 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
     }
   }
   atomic sealed_meta = &store^.meta {
-    pkg::store::aof_synced(meta: sealed_meta, written: sealed_meta^.aof_incr_size);
+    set sealed_meta^.aof_synced_size = sealed_meta^.aof_incr_size;
   }
   let aborted = aof_rw_cancelled(store: store);
   if aborted {
@@ -131,7 +135,8 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
         swap(first: &log^.file, second: &opened);
         set log^.boundary = aof_boundary_empty();
         atomic m = &store^.meta {
-          pkg::store::aof_rotated(meta: m);
+          set m^.aof_incr_size = 0_u64;
+          set m^.aof_synced_size = 0_u64;
         }
         match std::fs::close_write(factory: factory, file: move opened) {
           Ok(value: closed) => {
@@ -158,7 +163,25 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
 fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool) -> result: unit reads(store) waits {
   doc "Ends an attempt; accepted means its manifest was published and the directory synced. A durable installation clears a saved sync error in the same Meta statement that ends the attempt, so writes are admitted again only once the new base, written from memory and synced, and its manifest are on the device. Any sync error saved while the attempt ran aborted it, through aof_rw_flush or aof_rw_switch, so an accepted attempt clears only an error saved before it started, whose lost pages the new base replaces.";
   atomic m = &store^.meta {
-    pkg::store::aof_rewrite_complete(meta: m, accepted: accepted, manual: manual, started: started);
+    if accepted {
+      set m^.aof_sync_error = None<std::io::IoError>();
+    }
+    set m^.aof_rewrite_in_progress = False();
+    set m^.aof_rewrite_ok = accepted;
+    set m^.aof_rewrite_retry_blocked = bnot(accepted);
+    set m^.aof_rewrite_scan_peak = m^.rewrite.scan_peak;
+    set m^.aof_rewrite_cut = m^.rewrite.cut;
+    set m^.rewrite.used = 0_u64;
+    set m^.rewrite.running = False();
+    set m^.rewrite.active = False();
+    set m^.rewrite.aborted = False();
+    set m^.rewrite.rotating = False();
+    if manual {
+      if started {
+      } else {
+        set m^.aof_rewrite_reply = 2_u64;
+      }
+    }
   }
   return unit;
 }
@@ -263,7 +286,19 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
   doc "Take collecting bytes only after retained bytes drain; shutdown instead combines both for its one forced attempt. Publish retained length/capacity with each exchange and append result. Returns true only when this call attempted an append that did not drain or a sync whose failure counts; a deferred retry attempts nothing and is not a failure. Failed appends retry every 100 ms without client writes, the cadence at which Redis 7.0.15's event loop, woken at least hz (10) times a second by serverCron, calls flushAppendOnlyFile from beforeSleep (server.c:1660-1666) while the buffer is retained. Outside shutdown a sync runs at most once a second, and only when nothing is retained and the active file's incremental size differs from its size at the last successful sync, as Redis 7.2.16 flushAppendOnlyFile reaches try_fsync only after a complete write or, with an empty buffer, when aof_last_incr_fsync_offset differs from aof_last_incr_size (aof.c:1071-1094,1236-1267); or when a sync error is saved, the deliberate idle retry that starts recovery. last_sync advances only when a sync is attempted, as aof_last_fsync does. A sync that succeeds, or fails with EINVAL, records the incremental size it covered. A sync that succeeds, or fails with EINVAL, never clears a saved sync error, because Linux leaves the pages whose writeback failed clean and the retried sync does not write them; when no append error or retained byte remains, it sets healed so that the writer starts the recovery rewrite, whose durable installation alone clears the error. A counted failure resets healed.";
   let append_failed = False();
   atomic m = &store^.meta {
-    pkg::store::aof_take_collecting(meta: m, pending: pending, force: force);
+    if force {
+      if pending^.inner.len == 0_u64 {
+        swap(first: &m^.log, second: pending);
+      } else {
+        let length = m^.log.inner.len;
+        pkg::store::log_append_plain(log: pending, bytes: &m^.log.inner[0_u64..length]);
+        set m^.log = box_slots_new::<u8>(capacity: 65536_u64);
+      }
+    } else if pending^.inner.len == 0_u64 {
+      swap(first: &m^.log, second: pending);
+    }
+    set m^.aof_pending_capacity = pending^.inner.cap;
+    set m^.aof_pending_length = pending^.inner.len;
     match m^.aof_append_error {
       Some(..) => {
         set append_failed = True();
@@ -310,14 +345,14 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
     match std::fs::sync_file(factory: factory, file: &log^.file) {
       Ok(value: synced) => {
         atomic m = &store^.meta {
-          pkg::store::aof_synced(meta: m, written: written);
+          set m^.aof_synced_size = written;
         }
       }
       Err(error: problem) => {
         let counted = aof_sync_counts(error: &problem);
         if counted {
           atomic m = &store^.meta {
-            pkg::store::aof_sync_failed(meta: m, error: problem);
+            set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
           }
           set healed^ = False();
           let reason_writer_io_10 = pkg::store::RewriteAbortReason::WriterIo();
@@ -325,7 +360,7 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
           return True();
         }
         atomic m = &store^.meta {
-          pkg::store::aof_synced(meta: m, written: written);
+          set m^.aof_synced_size = written;
         }
       }
     }
@@ -428,7 +463,9 @@ fn aof_rw_install(store: &Keyspace, factory: &HandleFactory, writable: &std::fs:
   if persisted.published {
     set manifest^ = move candidate;
     atomic m = &store^.meta {
-      pkg::store::aof_base_installed(meta: m, size: size, closed_size: closed_size);
+      let incremental = m^.aof_current_size -sat closed_size;
+      set m^.aof_current_size = size +wrap incremental;
+      set m^.aof_base_size = m^.aof_current_size;
     }
     if persisted.durable {
       aof_history(factory: factory, writable: writable, prefix: prefix, manifest: manifest);
@@ -500,7 +537,7 @@ fn aof_rw_sleep(clock: &Clock, nanoseconds: u64) -> result: unit writes(clock) w
 
 fn aof_rw_abort(store: &Keyspace, reason: pkg::store::RewriteAbortReason) -> result: unit reads(store) waits {
   atomic m = &store^.meta {
-    pkg::store::meta_rewrite_abort(meta: m, reason: reason);
+    pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason);
   }
   return unit;
 }
@@ -509,7 +546,8 @@ fn aof_rw_admit(store: &Keyspace, meter: &std::process::MemoryMeter, manual: Boo
   doc "S0 is one Meta-and-settings statement. R is floor(maxmemory/20), or 16 MiB without maxmemory; require R plus max(R,1 MiB) service headroom. The charged fixed directory is at most 64 KiB.";
   let admitted = False();
   atomic m = &store^.meta, v = &store^.server {
-    pkg::store::aof_rewrite_reset(meta: m);
+    set m^.rewrite = pkg::store::rewrite_capture_new();
+    set m^.rewrite.running = True();
     let exhausted = m^.aof_rewrite_seq_exhausted;
     let stopping = bor(m^.stopping, v^.shutdown);
     let refused = bor(exhausted, stopping);
@@ -544,9 +582,25 @@ fn aof_rw_admit(store: &Keyspace, meter: &std::process::MemoryMeter, manual: Boo
       } else if stopping {
         set reason = pkg::store::RewriteAbortReason::Cancelled();
       }
-      pkg::store::meta_rewrite_abort(meta: m, reason: reason);
+      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason);
     } else {
-      pkg::store::aof_rewrite_admitted(meta: m, reserve: reserve, fixed: fixed, capacity: capacity, manual: manual);
+      set m^.rewrite.limit = reserve;
+      set m^.rewrite.fixed = fixed;
+      set m^.rewrite.used = fixed;
+      set m^.rewrite.peak = fixed;
+      set m^.aof_rewrite_reserve = reserve;
+      set m^.aof_rewrite_scan_peak = 0_u64;
+      set m^.aof_rewrite_cut = False();
+      let journal = box_ring_new::<Box<Slots<u8>>>(capacity: capacity);
+      set m^.rewrite.journal = Some<Box<Ring<Box<Slots<u8>>>>>(value: move journal);
+      set m^.rewrite.start = m^.commit_seq;
+      set m^.rewrite.active = True();
+      set m^.aof_worker_done = False();
+      set m^.aof_rewrites = m^.aof_rewrites +wrap 1_u64;
+      set m^.aof_rewrite_retry_blocked = False();
+      if manual {
+        set m^.aof_rewrite_reply = 1_u64;
+      }
       set admitted = True();
     }
   }
@@ -561,7 +615,7 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, journ
     Ok(value: scanned) => {
       set size = scanned;
       atomic m = &store.meta {
-        pkg::store::aof_rewrite_scan_done(meta: m);
+        set m^.rewrite.scan_done = True();
       }
       atomic cut = &store.meta when cut^.rewrite.cut_done {
         let live = bnot(cut^.rewrite.aborted);
@@ -609,7 +663,7 @@ fn aof_rw_worker(store: Keyspace, factory: HandleFactory, file: WriteFile, journ
     }
   }
   atomic done = &store.meta {
-    pkg::store::aof_rewrite_worker_done(meta: done);
+    set done^.aof_worker_done = True();
   }
   return AofScanResult(size: size, accepted: accepted);
 }
@@ -623,7 +677,20 @@ fn aof_rw_cut(store: &Keyspace, pending: &Box<Slots<u8>>) -> accepted: Bool read
   doc "The sole writer enters only after its prior private partial append drained. Disable capture, freeze the journal and exchange collecting bytes through S1 with the empty private buffer in one Meta statement. Later commands collect separately with invalidated AOF selection, so the new incremental stream selects its first effect database; no ordinary flush may swap those bytes before this sealed prefix drains.";
   let cut = False();
   atomic m = &store^.meta {
-    set cut = pkg::store::aof_rewrite_cut(meta: m, pending: pending);
+    let ready = band(m^.rewrite.active, m^.rewrite.scan_done);
+    let empty = pending^.inner.len == 0_u64;
+    let allowed = band(ready, empty);
+    if allowed {
+      set m^.rewrite.end = m^.commit_seq;
+      set m^.rewrite.cut = True();
+      set m^.rewrite.active = False();
+      set m^.rewrite.rotating = True();
+      swap(first: pending, second: &m^.log);
+      set m^.aof_database = 16_u64;
+      set m^.aof_pending_capacity = pending^.inner.cap;
+      set m^.aof_pending_length = pending^.inner.len;
+      set cut = True();
+    }
   }
   return cut;
 }
@@ -635,9 +702,10 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
   let healed_during = False();
   if log.manifest.base_sequence == 9223372036854775807_i64 {
     atomic exhausted = &store^.meta {
-      pkg::store::aof_rewrite_reset(meta: exhausted);
+      set exhausted^.rewrite = pkg::store::rewrite_capture_new();
+      set exhausted^.rewrite.running = True();
       let reason_sequence_exhausted_18 = pkg::store::RewriteAbortReason::SequenceExhausted();
-      pkg::store::meta_rewrite_abort(meta: exhausted, reason: reason_sequence_exhausted_18);
+      pkg::store::rewrite_abort(capture: &exhausted^.rewrite, reason: reason_sequence_exhausted_18);
     }
     aof_rw_complete(store: store, accepted: no, manual: manual, started: no);
     return move log;
@@ -682,7 +750,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
               set cut_done = m^.rewrite.cut_done;
               if stopping {
                 let reason_cancelled_20 = pkg::store::RewriteAbortReason::Cancelled();
-                pkg::store::meta_rewrite_abort(meta: m, reason: reason_cancelled_20);
+                pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_cancelled_20);
               }
               set aborted = m^.rewrite.aborted;
             }
@@ -713,7 +781,14 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
                 }
               }
               atomic outcome = &store^.meta {
-                pkg::store::aof_rewrite_cut_done(meta: outcome, switched: switched);
+                set outcome^.rewrite.rotated = switched;
+                set outcome^.rewrite.cut_done = True();
+                set outcome^.rewrite.rotating = False();
+                if switched {
+                } else {
+                  let reason_boundary_21 = pkg::store::RewriteAbortReason::Boundary();
+                  pkg::store::rewrite_abort(capture: &outcome^.rewrite, reason: reason_boundary_21);
+                }
               }
             }
             let journal_drained = aof_rw_journal_drain(store: store, factory: factory, file: &journal_write, decoder: &journal_count, maximum: 16_u64);
@@ -753,9 +828,9 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
               let refused = bor(stopping, install_meta^.rewrite.aborted);
               if refused {
                 let reason_cancelled_23 = pkg::store::RewriteAbortReason::Cancelled();
-                pkg::store::meta_rewrite_abort(meta: install_meta, reason: reason_cancelled_23);
+                pkg::store::rewrite_abort(capture: &install_meta^.rewrite, reason: reason_cancelled_23);
               } else {
-                pkg::store::aof_installing(meta: install_meta, installing: 1_u64);
+                set install_meta^.aof_installing = 1_u64;
                 set install = True();
               }
             }
@@ -764,7 +839,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
               let prefix_bytes = &log.prefix.inner[0_u64..prefix_length];
               set accepted = aof_rw_install(store: store, factory: factory, writable: &log.writable, prefix: prefix_bytes, manifest: &log.manifest, temporary: temp_name, size: size, closed_size: closed_size);
               atomic installed = &store^.meta {
-                pkg::store::aof_installing(meta: installed, installing: 0_u64);
+                set installed^.aof_installing = 0_u64;
               }
             }
           }
@@ -793,7 +868,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
 fn aof_rw_discard(store: &Keyspace, clock: &Clock) -> result: unit reads(store), writes(clock) waits {
   let journal = None<Box<Ring<Box<Slots<u8>>>>>();
   atomic m = &store^.meta {
-    set journal = pkg::store::aof_rewrite_journal_detach(meta: m);
+    swap(first: &journal, second: &m^.rewrite.journal);
   }
   match move journal {
     Some(value: chunks) => {
@@ -804,7 +879,7 @@ fn aof_rw_discard(store: &Keyspace, clock: &Clock) -> result: unit reads(store),
         let released = take_front(window: &chunks.inner);
         aof_rw_release::<Box<Slots<u8>>>(value: move released);
         atomic refunded = &store^.meta {
-          pkg::store::meta_rewrite_refund(meta: refunded, bytes: 65560_u64);
+          set refunded^.rewrite.used = refunded^.rewrite.used -sat 65560_u64;
         }
         aof_rw_pause(clock: clock);
       }
@@ -849,10 +924,20 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
     set log^.boundary.whole = False();
   }
   atomic m = &store^.meta {
-    pkg::store::aof_append_result(meta: m, progress: progress, drained: drained, error: appended.error, partial: partial);
     if drained {
+    } else {
+      let reason_drain_25 = pkg::store::RewriteAbortReason::Drain();
+      pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_drain_25);
+    }
+    set m^.aof_current_size = m^.aof_current_size +wrap progress;
+    set m^.aof_incr_size = m^.aof_incr_size +wrap progress;
+    if drained {
+      set m^.aof_append_error = None<std::io::IoError>();
+      set m^.aof_append_partial = False();
       set pending^ = box_slots_new::<u8>(capacity: 65536_u64);
     } else {
+      set m^.aof_append_error = appended.error;
+      set m^.aof_append_partial = partial;
       if progress > 0_u64 {
         if progress <= length {
           let suffix = aof_copy(input: &pending^.inner[progress..length]);
@@ -860,7 +945,8 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
         }
       }
     }
-    pkg::store::aof_pending(meta: m, capacity: pending^.inner.cap, length: pending^.inner.len);
+    set m^.aof_pending_capacity = pending^.inner.cap;
+    set m^.aof_pending_length = pending^.inner.len;
   }
   return drained;
 }
