@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Carry the AOF transaction boundary instead of rereading history
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-rw-boundary-state, which asked to approve PR #78's design change at head 17138bd: at the rewrite's file switch, the AOF writer uses the transaction-boundary state it carries from the startup parse and advances with every append, instead of rereading the whole old incremental file; the PR merges after the 14900K measures the per-append parse cost within the twin's noise.
+
+Summary: On the 14900K a rewrite under 50 writing connections scanned the keyspace and then aborted with rotation_reserve, because the single AOF writer reread about 525 MB of incremental file at the switch while new writes filled the capture buffer past its 16 MiB reserve; Redis 7.2.16 does not reread at its switch. The writer now keeps the file length, parse position and first unclosed MULTI from the startup parse, advances them with the same parser after each successful append, and uses them at the switch; it invalidates the state and falls back to the reserve-charged, cancellable reread only when the boundary is uncertain (a failed append without rollback, a failed truncation, an unexpected form, or an unreplayed file opened at startup). Rereading the whole history at every switch is rejected because of that abort ([scan-pace](../research/investigations/aof-rewrite/scan-pace.md)). The capture decision's wording now matches where the writer checks for an abort.
+
 ## 2026-10-13 Write a conditional Meta hold as one statement
 
 Nodes: firn/command-parts
