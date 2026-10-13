@@ -82,6 +82,10 @@ def run(server, batch, port):
             s.sendall(enc(["SHUTDOWN"])); s.close(); p.wait()
             p, s, f = start(server, args, port, resp)
             res["replies"].append({"cmd": c, "reply": ""}); continue
+        if c == ["__AOF__"]:
+            time.sleep(1.2)
+            incr = sorted(glob.glob(os.path.join(d, "appendonlydir", "*.incr.aof")), key=lambda x: int(x.split(".")[-3]))
+            res["replies"].append({"cmd": c, "reply": open(incr[-1], "rb").read().decode("latin-1") if incr else ""}); continue
         if c == ["__REWRITE__"]:
             res["replies"].append({"cmd": c, "reply": rewrite(s, f, d) or ""}); continue
         s.sendall(enc(c))
