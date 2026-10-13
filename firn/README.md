@@ -275,7 +275,7 @@ values for the port, the calendar time, the uptime, the clients connected,
 whether the append-only file is kept, the connections accepted and the keys
 held, which it counts holding the table whole, as `DBSIZE` does. The other fields it reports have values
 that are fixed and true of firn: Redis's
-version 7.0.15, no git revision, `redis_git_sha1` being 00000000 as in
+version 7.2.16, no git revision, `redis_git_sha1` being 00000000 as in
 Redis's builds from a release, standalone mode, 64 bits, its active
 expiry's 10 runs a second, no configuration file,
 function, replica, background save, fork, module, publish
@@ -304,9 +304,8 @@ The other `CLIENT` subcommands of Redis 7.2.16 (`CACHING`, `GETREDIR`,
 `UNBLOCK` and `UNPAUSE`) are answered as unknown subcommands, and no `CLIENT`
 subcommand runs inside `MULTI`, where `EXEC` refuses the transaction.
 
-`HELLO` and `INFO` report the server as `redis` version 7.0.15, though the
-reference firn follows is Redis 7.2.16, whose own reports give 7.2.16: the
-version is a known difference, tracked on board item firn-host-72-diffs.
+`HELLO` and `INFO` report the server as `redis` version 7.2.16, the
+reference firn follows.
 
 `HINCRBYFLOAT` computes in the long double of Redis on x86-64 Linux, x87's
 80-bit extended format, and answers as that Redis does. Redis built where

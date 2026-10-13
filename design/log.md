@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Write a conditional Meta hold as one statement
+
+Nodes: firn/command-parts
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-one-stmt-design, which asked to approve PR #72's design change at head 0be3c57 (option A, in English: approve; merge #72, then write the other 39 sites as one statement and measure the whole change once on the 14900K).
+
+Summary: A command that holds Meta only on some runs (AOF kept, or an expiry it may queue) is written as one atomic statement naming its keys and Meta, with every use of Meta under the run-time condition, instead of two statements around that condition. The pinned compiler acquires a named target at its first use on a path, so the path that never uses Meta never holds it; SET so written measured within the twin's noise at six passes on 8 P-cores with AOF off ([write-meta](../research/investigations/write-meta/README.md#one-statement-set)). The specification only permits holding less than a statement names, so the form rests on the compiler's behaviour, which Whitefoot's lock ledger (Whitefoot#421) is to check at each site; the owner kept the language without a conditional target.
+
 ## 2026-10-13 Describe a short AOF append by the host's no-space text
 
 Nodes: firn/append-only-file
