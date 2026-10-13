@@ -442,4 +442,4 @@ Results: the case passed for both servers in the aof-sync-fault job of
 The same case without the firn change failed in
 [run 38470344113](https://github.com/Ming-Research/Firn-wf/actions/runs/38470344113)
 after the trace showed the injected EIO on the directory's `fdatasync`,
-so it detects the acknowledged write.
+because firn never reported `aof_last_write_status:err` and kept admitting writes.
