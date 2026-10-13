@@ -5,8 +5,10 @@ set -eu
 exec "${PY:-python3}" - "$0" "$@" <<'PY'
 import argparse
 import collections
+import contextlib
 import csv
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -43,13 +45,14 @@ def rejection(result, case, source):
     at = record.get("at", {})
     require(isinstance(at, dict) and at.get("file") == str(source),
             "diagnostic does not name the rejected witness")
-    require(case["source"] in record.get("source", ""),
+    marked_source = record.get("source", "")
+    require(isinstance(marked_source, str) and case["source"] in marked_source,
             "diagnostic does not mark the intended faulty operation")
     return record
 
 
 def acceptance(result, output):
-    require(result.returncode == 0, "corrected program failed to compile")
+    require(result.returncode == 0, f"corrected program failed to compile (exit={result.returncode})")
     require(output.is_file() and os.access(output, os.X_OK),
             "compiler reported success without producing an executable")
 
@@ -82,7 +85,7 @@ def self_test():
         refuses("faulty program accepted", lambda: rejection(result(0), case, source))
         refuses("compiler signal", lambda: rejection(result(-9), case, source))
         for field, wrong in (("rule", "GRAM-4"), ("kind", "UnrelatedError"),
-                             ("category", "Internal"), ("source", "return unit;"),
+                             ("category", "Internal"), ("source", "return unit;"), ("source", None),
                              ("at", {"file": "unrelated.wf"})):
             changed = dict(record, **{field: wrong})
             refuses(f"wrong {field}", lambda: rejection(result(diagnostic=changed), case, source))
@@ -95,7 +98,72 @@ def self_test():
         output.chmod(0o700)
         acceptance(result(0), output)
         refuses("corrected program rejected", lambda: acceptance(result(1), output))
-    print("harness self-test: wrong acceptance, wrong diagnostic, tool failure and missing input/output detected", flush=True)
+        # Exercise traversal and reporting with injected outcomes, without a
+        # compiler: failures must not suppress either variant or later cases.
+        names = ("accepted-fails", "wrong-rejection", "timed-out", "spawn-error",
+                 "missing-source", "short-source", "missing-directory", "later-pass")
+        cases = [dict(case, case=name, **{"class": "bounds"}) for name in names]
+        for name in names:
+            if name == "missing-directory":
+                continue
+            directory = root / name
+            directory.mkdir()
+            for variant in ("rejected", "accepted"):
+                (directory / f"{variant}.wf").write_text(case["source"] + "\n" * 20)
+        (root / "missing-source" / "rejected.wf").unlink()
+        (root / "short-source" / "rejected.wf").write_text(case["source"] + "\n")
+        calls = []
+
+        def injected(command, **options):
+            source = Path(command[3])
+            calls.append((source.parent.name, source.stem))
+            if source.parent.name == "timed-out" and source.stem == "rejected":
+                raise subprocess.TimeoutExpired(command, 120, output=b"timeout stdout", stderr=b"timeout stderr")
+            if source.parent.name == "spawn-error" and source.stem == "rejected":
+                raise OSError("injected process startup failure")
+            if source.stem == "rejected":
+                diagnostic = dict(record, at={"file": str(source)})
+                if source.parent.name == "wrong-rejection":
+                    diagnostic["rule"] = "GRAM-4"
+                return subprocess.CompletedProcess(command, 1, "rejected stdout", json.dumps(diagnostic))
+            if source.parent.name == "accepted-fails":
+                return subprocess.CompletedProcess(command, 1, "accepted failure stdout", "accepted compiler diagnostic")
+            executable = Path(command[-1])
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o700)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        captured = io.StringIO()
+        evidence = {"cases": []}
+        destination = root / "results"
+        destination.mkdir()
+        with contextlib.redirect_stderr(captured), contextlib.redirect_stdout(io.StringIO()):
+            evidence["cases"] = check_cases(cases, root, root / "fake-compiler", destination, injected)
+        for name in names:
+            if name != "missing-directory":
+                require((name, "accepted") in calls, f"harness skipped correction after failure: {name}")
+        missing = next(row for row in evidence["cases"] if row["case"] == "missing-directory")
+        require(missing["rejected"]["status"] == missing["accepted"]["status"] == "fail",
+                "missing directory did not record both failed attempts")
+        require(calls[-2:] == [("later-pass", "rejected"), ("later-pass", "accepted")],
+                "harness skipped later witnesses")
+        for expected in ("accepted failure stdout", "accepted compiler diagnostic", "rejected stdout",
+                         "timeout stdout", "timeout stderr", "injected process startup failure"):
+            require(expected in captured.getvalue(), f"harness omitted failure output: {expected}")
+        for suffix, expected in (("stdout", "timeout stdout"), ("stderr", "timeout stderr")):
+            require((destination / "timed-out" / f"rejected.{suffix}").read_text() == expected,
+                    f"harness did not retain timeout {suffix}")
+        require(evidence["cases"][-1]["status"] == "pass", "later valid pair did not pass")
+        require(sum(row["status"] == "fail" for row in evidence["cases"]) == 7,
+                "harness lost aggregated failures")
+        summary = root / "summary.md"
+        write_report(evidence, destination, summary)
+        saved = json.loads((destination / "results.json").read_text())
+        require(saved["failed"] == 7 and all(row["failures"] for row in saved["cases"][:-1]),
+                "JSON evidence omitted failure reasons")
+        for expected in ("accepted-fails", "wrong diagnostic rule", "timed-out", "missing witness", "20–80 lines"):
+            require(expected in summary.read_text(), f"CI summary omitted failure: {expected}")
+    print("harness self-test: precise verdicts, failure output, timeout output, continued attempts and aggregated evidence checked", flush=True)
 
 
 def inventory(root):
@@ -105,72 +173,117 @@ def inventory(root):
             "cases.tsv has the wrong columns")
     names = [case["case"] for case in cases]
     require(len(names) == len(set(names)), "duplicate witness in cases.tsv")
-    require(set(names) == {path.name for path in root.iterdir() if path.is_dir()},
-            "witness directories and cases.tsv differ")
+    directories = {path.name for path in root.iterdir() if path.is_dir()}
+    require(directories <= set(names), "witness directory is not listed in cases.tsv")
+    # Missing directories and files fail their individual variants below; they
+    # must not prevent the remaining manifest entries from being checked.
     counts = collections.Counter(case["class"] for case in cases)
     require(len(cases) >= 10 and set(counts) == {"use-after-free", "bounds", "data-race", "deadlock"}
             and min(counts.values()) >= 2, "need at least ten cases and two in each class")
     for case in cases:
         require(all(case.values()), f"incomplete expectation: {case}")
-        for variant in ("rejected", "accepted"):
-            source = root / case["case"] / f"{variant}.wf"
-            content = source_bytes(source)
-            require(20 <= len(content.splitlines()) <= 80, f"expected 20–80 lines: {source}")
-        require(case["source"] in (root / case["case"] / "rejected.wf").read_text(),
-                f"missing expected faulty operation: {case['case']}")
     return cases
 
 
-def compile_one(compiler, source, output, logs):
+def compile_one(compiler, source, output, invoke):
     # Delete a previous executable so a stale artifact cannot satisfy acceptance.
     output.unlink(missing_ok=True)
     command = [str(compiler), "--diagnostic-format", "json", str(source), "-o", str(output)]
-    start = time.monotonic()
-    try:
-        result = subprocess.run(command, text=True, capture_output=True, timeout=120)
-    except subprocess.TimeoutExpired as error:
-        # TimeoutExpired can carry bytes even when text=True was requested.
-        for suffix, captured in ((".stdout", error.stdout), (".stderr", error.stderr)):
-            text = captured.decode("utf-8", errors="replace") if isinstance(captured, bytes) else captured
-            logs.with_suffix(suffix).write_text(text or "")
-        raise
-    elapsed = time.monotonic() - start
-    logs.with_suffix(".stdout").write_text(result.stdout)
-    logs.with_suffix(".stderr").write_text(result.stderr)
-    print(f"{source.parent.name}/{source.name}: exit={result.returncode}, {elapsed:.2f}s", flush=True)
-    return result
+    return invoke(command, text=True, errors="replace", capture_output=True, timeout=120)
+
+
+def captured_text(value):
+    # TimeoutExpired can carry bytes even when text=True was requested.
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value or ""
+
+
+def check_cases(cases, root, compiler, out, invoke=subprocess.run):
+    rows = []
+    for case in cases:
+        name = case["case"]
+        destination = out / name
+        row = dict(case, status="incomplete", failures=[])
+        rows.append(row)
+        for variant in ("rejected", "accepted"):
+            source = root / name / f"{variant}.wf"
+            output = destination / variant
+            start = time.monotonic()
+            stdout = stderr = ""
+            attempt = {"status": "pass"}
+            row[variant] = attempt
+            try:
+                destination.mkdir(exist_ok=True)
+                content = source_bytes(source)
+                row[f"{variant}_sha256"] = hashlib.sha256(content).hexdigest()
+                require(20 <= len(content.splitlines()) <= 80, f"expected 20–80 lines: {source}")
+                if variant == "rejected":
+                    require(case["source"] in content.decode("utf-8"),
+                            f"missing expected faulty operation: {name}")
+                result = compile_one(compiler, source, output, invoke)
+                row[f"{variant}_exit"] = result.returncode
+                stdout, stderr = result.stdout, result.stderr
+                if variant == "rejected":
+                    row["diagnostic"] = rejection(result, case, source)
+                else:
+                    acceptance(result, output)
+            except (Failure, OSError, UnicodeError, subprocess.TimeoutExpired) as error:
+                attempt["status"] = "fail"
+                attempt["reason"] = str(error)
+                if isinstance(error, subprocess.TimeoutExpired):
+                    attempt["reason"] = f"compiler timed out after {error.timeout}s"
+                    stdout = captured_text(error.stdout)
+                    stderr = captured_text(error.stderr)
+            attempt["elapsed_seconds"] = round(time.monotonic() - start, 3)
+            try:
+                output.with_suffix(".stdout").write_text(stdout)
+                output.with_suffix(".stderr").write_text(stderr)
+            except OSError as error:
+                attempt["status"] = "fail"
+                earlier = attempt.get("reason")
+                attempt["reason"] = f"{earlier}; " if earlier else ""
+                attempt["reason"] += f"cannot save compiler output: {error}"
+            print(f"{name}/{variant}.wf: exit={row.get(f'{variant}_exit', 'unavailable')}, "
+                  f"{attempt['elapsed_seconds']:.3f}s", flush=True)
+            if attempt["status"] == "fail":
+                row["failures"].append(f"{variant}: {attempt['reason']}")
+                print(f"FAIL {name}/{variant}.wf: {attempt['reason']}", file=sys.stderr, flush=True)
+                for label, captured in (("stdout", stdout), ("stderr", stderr)):
+                    print(f"--- {name}/{variant}.wf {label} ---\n{captured or '(empty)'}",
+                          file=sys.stderr, flush=True)
+        row["status"] = "fail" if row["failures"] else "pass"
+        if row["status"] == "pass":
+            print(f"PASS {name}: {case['rule']} {case['kind']}; corrected executable built", flush=True)
+    return rows
+
+
+def write_report(evidence, out, summary=None):
+    rows = evidence["cases"]
+    evidence["passed"] = sum(row["status"] == "pass" for row in rows)
+    evidence["failed"] = len(rows) - evidence["passed"]
+    (out / "results.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    if summary:
+        lines = ["## Safety witnesses", "", f"{evidence['passed']} pairs passed; {evidence['failed']} pairs failed.", "",
+                 "| Witness | Rejected | Accepted | Failure reasons |", "| --- | --- | --- | --- |"]
+        for row in rows:
+            reason = "; ".join(row["failures"]).replace("|", "\\|").replace("\n", " ")
+            lines.append(f"| {row['case']} | {row['rejected']['status']} | {row['accepted']['status']} | {reason} |")
+        with Path(summary).open("a") as stream:
+            stream.write("\n".join(lines) + "\n")
 
 
 def run(root, compiler, out):
     cases = inventory(root)
     require(compiler.is_file() and os.access(compiler, os.X_OK), "compiler is missing or not executable")
     out.mkdir(parents=True, exist_ok=True)
+    (out / "results.json").unlink(missing_ok=True)
     repo = root.parents[2]
     evidence = {"pin": (repo / "whitefoot.pin").read_text().strip(),
                 "compiler_sha256": hashlib.sha256(compiler.read_bytes()).hexdigest(),
                 "cases": []}
-    try:
-        for case in cases:
-            name = case["case"]
-            destination = out / name
-            destination.mkdir(exist_ok=True)
-            rejected = root / name / "rejected.wf"
-            accepted = root / name / "accepted.wf"
-            row = dict(case, status="incomplete", rejected_sha256=hashlib.sha256(source_bytes(rejected)).hexdigest(),
-                       accepted_sha256=hashlib.sha256(source_bytes(accepted)).hexdigest())
-            evidence["cases"].append(row)
-            bad = compile_one(compiler, rejected, destination / "rejected", destination / "rejected")
-            row["rejected_exit"] = bad.returncode
-            diagnostic = rejection(bad, case, rejected)
-            row["diagnostic"] = diagnostic
-            good = compile_one(compiler, accepted, destination / "accepted", destination / "accepted")
-            row["accepted_exit"] = good.returncode
-            acceptance(good, destination / "accepted")
-            row["status"] = "pass"
-            print(f"PASS {name}: {case['rule']} {case['kind']}; corrected executable built", flush=True)
-    finally:
-        (out / "results.json").write_text(json.dumps(evidence, indent=2) + "\n")
-    print(f"safety witnesses: {len(cases)} pairs passed; evidence in {out}", flush=True)
+    evidence["cases"] = check_cases(cases, root, compiler, out)
+    write_report(evidence, out, os.environ.get("GITHUB_STEP_SUMMARY"))
+    print(f"safety witnesses: {evidence['passed']} pairs passed, {evidence['failed']} failed; evidence in {out}", flush=True)
+    require(evidence["failed"] == 0, f"{evidence['failed']} witness pairs failed; see all reasons in {out / 'results.json'}")
 
 
 root = Path(sys.argv.pop(1)).resolve().parent

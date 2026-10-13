@@ -6,11 +6,13 @@ data races and two lock/wait deadlocks. They implement board item
 `firn-safety-showcase`'s bug witnesses. No upstream implementation is copied.
 They do not change firn or reproduce complete server commands.
 
-**Validation status: awaiting the first CI run.** `rejected.wf` and
-`accepted.wf` name the intended outcomes, not observed compiler results.
-The diagnostics below are expectations from the pinned specification and
-checker source. Only a passing `make safety-witnesses` run establishes them.
-Do not cite this inventory alone as ten verified rejections.
+**Validation status: six pairs passed in the [first CI run][first-run] at
+[the tested revision][first-revision].** The four use-after-free pairs and
+both buffer-overrun pairs received their expected rejections and built their
+corrections. Garnet's rejected program matched its expected diagnostic, but
+its correction failed to compile; the old runner then stopped before the
+last three pairs. The revised runner remains pending CI. Do not cite this
+inventory as ten verified pairs.
 
 ## What the evidence means
 
@@ -53,7 +55,8 @@ named by [whitefoot.pin](../../../whitefoot.pin):
 Each rejected file is paired with the linked correction in its directory.
 The `error[RULE]: Kind` spelling below corresponds to the structured `rule`
 and `kind` fields checked by the runner, together with the precise source line
-in [cases.tsv](cases.tsv). All rows remain expectations until CI passes.
+in [cases.tsv](cases.tsv). Verified coverage is limited to the validation
+status above; the remaining outcomes are expectations.
 
 | Bug | Project and source | Class | Faulty pattern | Rejected witness | Expected compiler diagnostic | Accepted correction |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -130,6 +133,9 @@ compiler signal, wrong rule/kind/category/source location, unstructured tool
 failure, missing source, corrected-source failure, and missing executable
 must all fail. These injected results are harness checks, not Whitefoot
 evidence. `sh check.sh --self-test` runs only those checks, also in CI.
+Injected traversal checks also require failure output to be printed and both
+variants of later cases to be attempted after an earlier mismatch, timeout,
+startup error or missing input. They inspect the aggregate JSON and CI summary.
 
 For every row in `cases.tsv`, the runner requires both files, checks the
 20–80-line limit, invokes the pinned compiler separately with `-o` and JSON
@@ -140,11 +146,20 @@ executable. There must be at least ten pairs, at least two per class, and no
 unlisted case directory. A newly accepted faulty pattern therefore fails the
 gate rather than silently becoming a claimed success. An unrelated parse
 error cannot satisfy a reference, bounds, spawn or atomic-access expectation.
+The runner checks both variants independently, continues through every listed
+case, prints captured stdout and stderr for every failed attempt, and exits
+nonzero only after reporting all mismatches. Invalid global configuration,
+such as an unusable compiler or malformed manifest, fails before traversal.
 
 The job uploads `build/safety-witnesses/results.json` and each invocation's
 stdout/stderr, including failures. The JSON records the pin, compiler hash,
-both source hashes, the observed diagnostic and pair outcome; an interrupted
-pair stays incomplete. Each completed invocation reports its elapsed time.
+both source hashes, observed diagnostics, per-variant outcomes and failure
+reasons. A CI step summary lists every pair and its failures. The aggregate
+JSON is written after traversal; an interrupted run retains only the
+invocation logs already written and cannot count as completed coverage.
+The runner removes an earlier JSON report before starting new attempts, so
+interruption cannot leave that report appearing to describe the current run.
+Each completed invocation reports its elapsed time.
 The first pair is the smallest sample before subsequent pairs run; these
 times describe validation cost, not server performance.
 
@@ -154,7 +169,8 @@ report the possible Whitefoot gap under `firn-safety-showcase`; do not change
 the expected outcome, add an unrelated error or hide it with a runtime check.
 If a corrected form is rejected, inspect the diagnostic as a potential
 language/compiler gap before changing its spelling. No gap has yet been
-established because these programs have not yet been compiled.
+established; a correction's failed compilation needs its actual diagnostic
+before it can be classified as a source defect or a language/compiler gap.
 
 [spec]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md
 [scope]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L9-L21
@@ -164,3 +180,5 @@ established because these programs have not yet been compiled.
 [contexts]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L2268-L2344
 [atomic]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L2320-L2353
 [form]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L100
+[first-run]: https://github.com/Ming-Research/Firn-wf/actions/runs/38396436200
+[first-revision]: https://github.com/Ming-Research/Firn-wf/commit/6c8d976d8e89c774d851af85b5b76ebf71a93f1c
