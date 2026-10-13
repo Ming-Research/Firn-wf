@@ -29,6 +29,18 @@ const case_missing_reply: Array<u8, 5> = ":-1\r\n";
 
 const case_insert_input: Array<u8, 22> = "LINSERT k BEFORE A z\r\n";
 
+const case_nil_reply: Array<u8, 5> = "$-1\r\n";
+
+const case_wrong_reply: Array<u8, 68> = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+
+const case_eval_call_input: Array<u8, 47> = "EVAL return redis.call('RPUSH',KEYS[1],'z') 1 k";
+
+const case_eval_pcall_input: Array<u8, 112> = "EVAL local r=redis.pcall('RPUSH',KEYS[1],'z'); if type(r)~='table' then return 'not-table' end; return r.err 1 k";
+
+const case_eval_call_reply: Array<u8, 119> = "-ERR list would exceed the maximum of 8 elements script: f0dc111d1549375c24aedc24e3d2332ee84c43a5, on @user_script:1.\r\n";
+
+const case_eval_pcall_reply: Array<u8, 54> = "$47\r\nERR list would exceed the maximum of 8 elements\r\n";
+
 fn case_element(value: u8) -> made: Box<Slots<u8>> pure {
   let bytes = box_slots_new::<u8>(capacity: 1_u64);
   place_back(window: &bytes.inner, value: value);
@@ -429,11 +441,285 @@ fn case_move(from_head: Bool, to_head: Bool, same: Bool) -> passed: Bool pure wa
   return passed;
 }
 
-fn list_ceiling_main() -> status: CaseExitStatus pure waits {
-  doc "Failure status is a bit mask: 1 for push admission, 2 for permitted growth, 4 for LINSERT, 8 for distinct-key moves, and 16 for same-key rotations. All groups run even after a failure.";
+fn case_move_list(slot: &Option<Entry>, length: u64, first: u8, expires_at: u64, write_stamp: u64) -> same: Bool reads(slot) {
+  doc "Checks dataset contents, expiry and write stamp; normal lookup access refresh is allowed.";
+  match slot^ {
+    Some(value: held) => {
+      if held^.expires != expires_at {
+        return False();
+      }
+      if held^.last_write != write_stamp {
+        return False();
+      }
+      match held^.value {
+        Items(items: list) => {
+          if list^.inner.len != length {
+            return False();
+          }
+          for (index in 0_u64..length) {
+            if index < list^.inner.len {
+              let element = &list^.inner[index];
+              if element^.inner.len != 1_u64 {
+                return False();
+              }
+              let offset = cvt.wrap::<u64, u8>(index);
+              let expected = first +wrap offset;
+              if element^.inner[0_u64] != expected {
+                return False();
+              }
+            } else {
+              return False();
+            }
+          }
+          return True();
+        }
+        Text(bytes: stored) => {
+        }
+        Members(members: set_of) => {
+        }
+        Fields(fields: hash_of) => {
+        }
+        Ranked(ranked: sorted) => {
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  return False();
+}
+
+fn case_text_entry() -> made: Option<Entry> pure {
+  let payload = case_element(value: 'z'_u8);
+  let bytes = Bytes::Long(bytes: move payload);
+  let value = Value::Text(bytes: move bytes);
+  let held = Entry(value: move value, expires: 123_u64, access: 456_u32, last_write: 789_u64);
+  return Some<Entry>(value: move held);
+}
+
+fn case_text_original(slot: &Option<Entry>) -> same: Bool reads(slot) {
+  match slot^ {
+    Some(value: held) => {
+      if held^.expires != 123_u64 {
+        return False();
+      }
+      if held^.last_write != 789_u64 {
+        return False();
+      }
+      match held^.value {
+        Text(bytes: stored) => {
+          match stored^ {
+            Long(bytes: payload) => {
+              if payload^.inner.len == 1_u64 {
+                return payload^.inner[0_u64] == 'z'_u8;
+              }
+            }
+            Short(bytes: inline_bytes) => {
+            }
+          }
+        }
+        Items(items: list) => {
+        }
+        Members(members: set_of) => {
+        }
+        Fields(fields: hash_of) => {
+        }
+        Ranked(ranked: sorted) => {
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  return False();
+}
+
+fn case_move_lookup(from_head: Bool, to_head: Bool, scenario: u64) -> passed: Bool pure waits {
+  doc "All endpoint combinations, including RPOPLPUSH's RIGHT LEFT: absent source ignores a full destination; wrong destination type wins over capacity; an expired full destination becomes a new list without expiry.";
+  let map = shared_map_new::<Entry>(capacity: 2_u64);
+  let keys = key_set_new(capacity: 2_u64);
+  let source = key_set_insert(keys: &keys, key: &case_source[0_u64..1_u64]);
+  let destination = key_set_insert(keys: &keys, key: &case_destination[0_u64..1_u64]);
+  let client = pkg::protocol::client_new(capacity: 64_u64);
+  set client.now = 1_u64;
+  if scenario == 2_u64 {
+    set client.now = 124_u64;
+  }
+  let passed = True();
+  atomic slots = &map[keys] {
+    if source < slots^.len {
+      if scenario != 0_u64 {
+        set slots^[source] = case_entry(length: 8_u64, capacity: 8_u64);
+        if scenario == 2_u64 {
+          match slots^[source] {
+            Some(value: live_source) => {
+              set live_source^.expires = 1000_u64;
+            }
+            None() => {
+              set passed = False();
+            }
+          }
+        }
+      }
+    } else {
+      set passed = False();
+    }
+    if destination < slots^.len {
+      if scenario == 1_u64 {
+        set slots^[destination] = case_text_entry();
+      } else {
+        set slots^[destination] = case_entry(length: 8_u64, capacity: 8_u64);
+      }
+    } else {
+      set passed = False();
+    }
+    let sequence = pkg::store::sequence_inert();
+    let journal = None<pkg::store::AccessJournal>();
+    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: source, destination: destination, client: &client, from_head: from_head, to_head: to_head);
+    if work.source_expired {
+      set passed = False();
+    }
+    if scenario == 2_u64 {
+      if bnot(work.target_expired) {
+        set passed = False();
+      }
+      if bnot(work.changed) {
+        set passed = False();
+      }
+      let remaining_first = if from_head {
+        give 'B'_u8;
+      } else {
+        give 'A'_u8;
+      }
+      let moved_byte = if from_head {
+        give 'A'_u8;
+      } else {
+        give 'H'_u8;
+      }
+      if source < slots^.len {
+        let source_matches = case_move_list(slot: &slots^[source], length: 7_u64, first: remaining_first, expires_at: 1000_u64, write_stamp: 0_u64);
+        if bnot(source_matches) {
+          set passed = False();
+        }
+      } else {
+        set passed = False();
+      }
+      if destination < slots^.len {
+        let destination_matches = case_move_list(slot: &slots^[destination], length: 1_u64, first: moved_byte, expires_at: 0_u64, write_stamp: 0_u64);
+        if bnot(destination_matches) {
+          set passed = False();
+        }
+      } else {
+        set passed = False();
+      }
+    } else {
+      if bor(work.target_expired, work.changed) {
+        set passed = False();
+      }
+      if source < slots^.len {
+        if scenario == 0_u64 {
+          match slots^[source] {
+            Some(..) => {
+              set passed = False();
+            }
+            None() => {
+            }
+          }
+        } else {
+          let source_matches = case_move_list(slot: &slots^[source], length: 8_u64, first: 'A'_u8, expires_at: 123_u64, write_stamp: 789_u64);
+          if bnot(source_matches) {
+            set passed = False();
+          }
+        }
+      } else {
+        set passed = False();
+      }
+      if destination < slots^.len {
+        let destination_matches = if scenario == 0_u64 {
+          give case_original(slot: &slots^[destination], length: 8_u64);
+        } else {
+          give case_text_original(slot: &slots^[destination]);
+        }
+        if bnot(destination_matches) {
+          set passed = False();
+        }
+      } else {
+        set passed = False();
+      }
+    }
+  }
+  lmove_finish(client: &client);
+  let reply_matches = if scenario == 0_u64 {
+    give case_reply(client: &client, expected: &case_nil_reply[0_u64..5_u64]);
+  } else if scenario == 1_u64 {
+    give case_reply(client: &client, expected: &case_wrong_reply[0_u64..68_u64]);
+  } else if from_head {
+    give case_reply(client: &client, expected: &case_head_reply[0_u64..7_u64]);
+  } else {
+    give case_reply(client: &client, expected: &case_tail_reply[0_u64..7_u64]);
+  }
+  return band(passed, reply_matches);
+}
+
+fn case_eval(clock: &std::time::Clock, input: &[u8], script_length: u64, protected: Bool) -> passed: Bool reads(input), writes(clock) waits {
+  doc "Runs the actual EVAL interpreter and FirnCommands binding: redis.call raises the capacity error with script context, while redis.pcall returns an error table whose err field is the exact command error; both preserve the full list and its metadata.";
+  let password = pkg::bytes::bytes_new(input: &case_key[0_u64..1_u64], start: 0_u64, length: 0_u64);
+  let no = False();
+  let store = pkg::store::keyspace_new(seed: 1_u64, logging: no, password: move password, timeout: 0_u64, started: 0_u64);
+  let store_key = &case_key[0_u64..1_u64];
+  atomic slot = &store.keys[store_key] {
+    set slot^ = case_entry(length: 8_u64, capacity: 8_u64);
+  }
+  let args = box_slots_new::<Span>(capacity: 4_u64);
+  let command = Span(start: 0_u64, length: 4_u64);
+  let body = Span(start: 5_u64, length: script_length);
+  let number_at = script_length +sat 6_u64;
+  let number = Span(start: number_at, length: 1_u64);
+  let key_at = number_at +sat 2_u64;
+  let key = Span(start: key_at, length: 1_u64);
+  place_back(window: &args.inner, value: command);
+  place_back(window: &args.inner, value: body);
+  place_back(window: &args.inner, value: number);
+  place_back(window: &args.inner, value: key);
+  let client = pkg::protocol::client_new(capacity: 256_u64);
+  let env = pkg::bytes::KeyEnv();
+  let time = pkg::store::Time(unix_ms: 1_u64, check: 1_u64, loading: no);
+  pkg::scripting::eval::<FirnCommands>(store: &store, input: input, args: &args, client: &client, keys_env: &env, time: &time, clock: clock, by_sha: no);
+  let unchanged = False();
+  atomic slot = &store.keys[store_key] {
+    set unchanged = case_original(slot: slot, length: 8_u64);
+  }
+  let reply_matches = if protected {
+    give case_reply(client: &client, expected: &case_eval_pcall_reply[0_u64..54_u64]);
+  } else {
+    give case_reply(client: &client, expected: &case_eval_call_reply[0_u64..119_u64]);
+  }
+  return band(unchanged, reply_matches);
+}
+
+fn list_ceiling_main(inputs: std::process::Inputs) -> status: CaseExitStatus pure waits {
+  doc "Failure status is a bit mask: 1 for push admission, 2 for permitted growth, 4 for LINSERT, 8 for distinct-key moves, and 16 for same-key rotations. 32 for move lookup ordering, 64 for EVAL errors, and 128 for startup cleanup. All groups run even after a failure.";
+  let std::process::Inputs(cwd: directory, handles: factory, clock: clock, ..) = move inputs;
+  let std::fs::Directory(read: directory_read, write: directory_write) = move directory;
+  let closed_write = std::fs::close_directory_write(factory: &factory, directory: move directory_write);
+  let closed_read = std::fs::close_directory(factory: &factory, directory: move directory_read);
   let no = False();
   let yes = True();
   let failures = 0_u8;
+  match closed_write {
+    Ok(value: unused_write) => {
+    }
+    Err(error: write_problem) => {
+      set failures = ior(failures, 128_u8);
+    }
+  }
+  match closed_read {
+    Ok(value: unused_read) => {
+    }
+    Err(error: read_problem) => {
+      set failures = ior(failures, 128_u8);
+    }
+  }
   for (front_index in 0_u64..2_u64) {
     let front = front_index == 0_u64;
     for (existing_index in 0_u64..2_u64) {
@@ -481,11 +767,25 @@ fn list_ceiling_main() -> status: CaseExitStatus pure waits {
       if bnot(checked_case_17) {
         set failures = ior(failures, 8_u8);
       }
+      for (scenario in 0_u64..3_u64) {
+        let moved = case_move_lookup(from_head: front, to_head: to_head, scenario: scenario);
+        if bnot(moved) {
+          set failures = ior(failures, 32_u8);
+        }
+      }
       let checked_case_18 = case_move(from_head: front, to_head: to_head, same: yes);
       if bnot(checked_case_18) {
         set failures = ior(failures, 16_u8);
       }
     }
+  }
+  let call_passed = case_eval(clock: &clock, input: &case_eval_call_input[0_u64..47_u64], script_length: 38_u64, protected: no);
+  if bnot(call_passed) {
+    set failures = ior(failures, 64_u8);
+  }
+  let pcall_passed = case_eval(clock: &clock, input: &case_eval_pcall_input[0_u64..112_u64], script_length: 103_u64, protected: yes);
+  if bnot(pcall_passed) {
+    set failures = ior(failures, 64_u8);
   }
   return std::process::exit_status(code: failures);
 }
