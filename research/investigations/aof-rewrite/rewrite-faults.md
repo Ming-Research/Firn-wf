@@ -19,8 +19,8 @@ insufficient. Temporary files not named by the active manifest are allowed;
 they must not contribute recovered state.
 
 This investigation changes tests and their CI wiring, not Firn's behavior.
-The owner will decide how to treat the current-append difference after the
-two-server observation is available.
+The current-append policy remains an owner decision. The observations and
+recommendation below do not change the current implementation or design.
 
 ## Redis source expectations
 
@@ -119,6 +119,43 @@ server's retained acknowledged append is checked after repair.
 
 ## Results
 
+### Passing gate, 2026-10-13
+
+[Gate run 38426641490](https://github.com/Ming-Research/Firn-wf/actions/runs/38426641490)
+tested [revision c27b414](https://github.com/Ming-Research/Firn-wf/commit/c27b414414d04e249fe4630ce90e2253bb364a26).
+All four jobs passed, including the network and device jobs and gate-sync.
+The job logs identify the same checkout revision. The test-invocation
+durations below come from their libtest result lines, not whole-job timing.
+
+| Invocation | Result | Duration |
+| --- | --- | --- |
+| Ordinary network suite, excluding the crash module | 201 passed, zero failed, five ignored, three filtered out | 55.70 seconds |
+| Three crash cases, serially after the ordinary suite | Three passed, zero failed or ignored | 27.44 seconds |
+| Device cases: two existing sync cases and three rewrite cases | Five passed, zero failed or ignored | 106.39 seconds |
+
+All three crash scenarios now recovered the 4,036 expected keys, exact
+counter/list effects and no incomplete-command key, from both the copied old
+selection and the crash directory. This includes both sides of the atomic
+manifest switch on Redis and Firn's file adapter; early-scan kills also cover
+Firn's native ring. Both temporary-base fault scenarios recovered exactly
+513 expected keys on both servers, after verifying unchanged old active
+files and manifest and a healthy current append.
+
+The current-append case completed on both servers. Redis reported rewrite
+ok and published before append repair, with append err and 59 bytes retained;
+Firn reported rewrite err, retained the old base and 36 bytes, and named the
+first cause `drain`. Both refused the next SET, replayed the old selection
+alone, and recovered exactly 513 expected keys after repair, drain and
+crash/remount/restart. This is recovery after repair, not proof that buffered
+acknowledged writes survive a crash while append failure persists.
+
+The unchanged long-history scan case passed in the ordinary invocation,
+before the serialized crash cases ran. This is consistent with the extra
+parallel load hypothesis from the first gate, but does not prove it: stop
+coordination and scheduling were repaired together, and there was no
+interleaved load control or scheduler trace. Its original workload, reserve
+and completion/recovery assertions remain unchanged.
+
 ### First gate, 2026-10-13
 
 [Gate run 38424318643](https://github.com/Ming-Research/Firn-wf/actions/runs/38424318643)
@@ -155,25 +192,139 @@ changed no production source, pin or existing workload. The two traced-stop
 tests spent their ten-second waits repeatedly scanning `/proc` alongside the
 ordinary tests; all were in one parallel invocation. There is no shared
 heavy-test lock in this checkout. Separate required invocations now remove
-this new interference. The contention attribution remains a hypothesis until
-the unchanged regression passes in the isolated gate; no CPU or scheduler
-trace establishes it from the first log alone.
+this new interference. The unchanged regression subsequently passed in the
+passing gate above. That result supports, but does not prove, the contention
+attribution; no CPU or scheduler trace establishes it from these logs.
 
 The traced-stop repair leaves strace running until subject stops propagate,
 then requires a stable second all-thread stopped-state witness with strace
 stopped. It accepts only `T`, `t` or `Z`, keeps both rewrite-phase checks,
 and still kills and drains the complete group before recovery. The two
-failed cases are its before-fix evidence; the repaired cases await CI.
+failed cases are its before-fix evidence; all three repaired crash cases
+passed in run 38426641490.
 
 The separate read-only static review covered the original eight-file change,
 affected helpers and rewrite design nodes/ancestors. The current repair
-changes stop coordination, test scheduling and the exact diagnostic
-expectation; runtime validation of these repairs remains pending. No local
-build, test, check, device operation or measurement has run, and this repair
-has not been committed. Pins and production behavior remain unchanged.
+changed stop coordination, test scheduling and the exact diagnostic
+expectation; those repairs are revision c27b414 and passed the gate above.
+No local build, test, check, device operation or measurement ran. Pins and
+production behavior remained unchanged.
 
-Record each CI result with its revision, command, witnessed fault/phase,
-manifest selection before and after the fault, current-write and rewrite
-statuses, refused replies, recovery comparison and duration. Take the
-smallest new-case run first; use its duration and observed variation to
-choose any repeats. Do not add repeats simply to mark acceptance complete.
+## Current-append failure: user impact and policy assessment
+
+### What the observed difference means
+
+Firn leaves the old base and every manifest-selected increment authoritative.
+It preserves the running dataset and the bytes awaiting append; the failure
+does not replace the old selection with an incomplete new base. The tested
+durable prefix remains replayable, and after repair the retained acknowledged
+write drains and restart recovers all expected values. There is no compaction
+from the cancelled attempt. A later rewrite must succeed before the obsolete
+history can be reclaimed.
+
+Disk occupancy therefore remains at the uncompressed old history. While a
+known append error persists, client writes are refused; a continuously failed
+write syscall cannot itself keep growing its file. Disk growth requires
+successful partial or complete appends. Permitted internal expiry/eviction
+can add buffered bytes even while persistently failing appends prevent file
+growth; intermittent successful appends can put those bytes on disk.
+More importantly, after append repair client writes resume but the failed
+attempt has disabled ordinary automatic rewrites until a manual rewrite
+succeeds, under the [capture retry decision](../../../design/firn/aof-rewrite/capture.md).
+The AOF can then keep growing without automatic compaction. Sync-error
+recovery rewrites are an explicit exception to that automatic-retry block.
+
+Redis gains a completed compaction despite the independent current-append
+error: it can retire old history, reduce retained storage and recovery work,
+and, when enough space is reclaimed, potentially help an ENOSPC condition.
+Publication does not repair an EIO or make the retained current bytes durable.
+Redis still refuses writes and retries that buffer. The current increment
+remains active; publication does not discard its suffix. A crash before a
+post-fork acknowledged command is successfully appended can lose it, since
+the fork's base cannot contain it. This is the existing everysec/failed-append
+window, not additional loss caused by replacing the base; retaining the old
+base would not supply that unwritten command either. The new tests repaired
+the append before crashing and do not measure that crash-during-error window.
+[Current-increment retention](https://github.com/redis/redis/blob/7.2.16/src/aof.c#L458-L485),
+[failed-buffer retention](https://github.com/redis/redis/blob/7.2.16/src/aof.c#L1100-L1130),
+[publication and history cleanup](https://github.com/redis/redis/blob/7.2.16/src/aof.c#L2390-L2495).
+
+### Why Firn cancels
+
+The governing [rewrite decision](../../../design/firn/aof-rewrite.md) requires
+the sole writer to rotate at S1, then:
+
+> drains the frozen journal to disk and drains and syncs the ordinary AOF prefix before publishing the new increment while keeping all old files named
+
+Its reason is:
+
+> base(S1) must be paired only with commands after S1 to apply non-idempotent writes exactly once
+
+An append failure cannot satisfy that existing publication barrier. The
+implementation goes further: `aof_rw_drain` in `firn/persistence/rewrite.wf`
+immediately records Drain on a failed append, retaining the unwritten bytes.
+`aof_rw_cycle` subsequently reports WriterIo, but the
+[first-cause decision](../../../design/firn/aof-rewrite/capture.md) preserves
+Drain. That decision says diagnostics report "the first failure cause".
+
+No live design decision explicitly requires abandoning the scan at the first
+ordinary append error. The quoted barrier prohibits skipping the old-prefix
+drain in the current protocol; it does not distinguish cancelling from
+retaining the rewrite and waiting for repair. Immediate cancellation is the
+implementation's policy, not a safety theorem or an already settled permanent
+compatibility difference. The [append error decisions](../../../design/firn/append-only-file.md)
+require retaining failed bytes and state that "only a complete append clears
+its saved error"; they also permit periodic retries.
+
+### What matching Redis would require
+
+Simply deleting the Drain/WriterIo aborts would not permit safe publication.
+Firn's base represents S1, after the scan and journal reconciliation; Redis's
+forked base represents the admission cut, S0, and its current increment holds
+the commands after that cut. A failed Firn append from before S1 may already
+be represented in its replacement base. Writing those same commands into a
+post-S1 increment would duplicate INCR or list effects. Dropping them before
+the replacement is durably selected could instead lose acknowledged state.
+
+Keeping the scanned work until the old-prefix retry succeeds is compatible
+with the present barrier, but does not match Redis's publication while the
+append still fails. Matching that completion behavior requires an independent
+durable replacement protocol: freeze S1 and its journal, reconcile a complete
+base without requiring prior rotation, partition retained bytes at S1, and
+publish that base with only the post-S1 increment. Keep the old authoritative
+selection until the new one is complete; release any pending prefix already
+covered by the base only after the required durable publication. A partial
+append, failed rollback, incomplete transaction and a failure after manifest
+rename must each retain one correctly replayable selection.
+
+The affected code would be `aof_rw_drain`, `aof_rw_cut`, `aof_rw_cycle`,
+`aof_rw_worker`, `aof_rw_switch`, `aof_rw_install` and `aof_rw_complete` in
+`firn/persistence/rewrite.wf`; the journal handoff in `rewrite-journal.wf`;
+boundary handling in `rewrite-boundary.wf`; and pending-byte/recovery state
+in `firn/store/module.wfm` and `firn/persistence/persistence.wf`. The worker
+currently waits for completed rotation before reconciling. The owner would
+also need to decide when a durable replacement may clear an append error,
+replacing the current complete-append-only rule where appropriate.
+
+This must preserve Firn's separate sync-error recovery guarantee: a successful
+retry of fsync does not reconstruct pages lost to failed writeback; only a
+durably installed replacement can clear that saved error. Append EIO and
+sync EIO must remain distinct. A rewrite that misses damaged post-cut data
+cannot clear a sync error merely because its base and manifest were written.
+The protocol above is a direction for design and fault validation, not a
+proven implementation or an approved design-tree change.
+
+### Recommendation for the owner
+
+Recommend matching the useful completion behavior: a current-append error
+should not by itself discard a separately valid compaction result. The
+ordinary append failure does not establish that the scan or reconciliation
+is invalid, and healthy replacement storage can reclaim history and reduce
+dependence on the failing old file. Immediate cancellation also leaves the
+operator with disabled automatic compaction after append repair.
+
+Keep the present behavior until the owner approves and fault tests validate
+the replacement protocol. Match compaction progress without copying Redis's
+fork implementation or weakening Firn's sync-error recovery. Redis's behavior
+is not intrinsically an extra acknowledged-write-loss hazard, so safety alone
+does not justify keeping immediate cancellation as a permanent difference.
