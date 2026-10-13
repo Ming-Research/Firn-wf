@@ -540,7 +540,8 @@ Meta, with every use of Meta under `if held`, cost anything against step 1's
 two statements when AOF is off? The pinned compiler acquires a named target
 at its first use on a path (Whitefoot's runtime line, from the
 specification's SHARE-3 and the lowering), so the AOF-off path should never
-hold Meta. Prior criterion, written in Whitefoot's research before measuring:
+hold Meta. Prior criterion, written in Whitefoot's research before measuring
+([Whitefoot#418](https://github.com/Ming-Research/Whitefoot/pull/418)):
 the one-statement SET's throughput ratio to the two-statement form falls
 within the twin's noise; a ratio below the twin's lower bound rejects it.
 
