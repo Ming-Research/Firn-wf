@@ -1,0 +1,36 @@
+alias ExitStatus = std::process::ExitStatus;
+alias exit_status = std::process::exit_status;
+
+struct S {
+  a: u64;
+  b: u64;
+}
+
+fn f(bound: u64) -> next: u64 pure contract {
+  ensures next <= bound;
+} {
+  return bound;
+}
+
+fn probe(r: &S) -> result: unit writes(r) contract {
+  requires r^.a <= r^.b;
+} {
+  let a = r^.a;
+  let b = r^.b;
+  for (
+    iteration in 0_u64..2_u64,
+    invariant ordered: a <= b
+  ) {
+    let n = f(bound: b);
+    set a = n;
+  }
+  set r^.a = a;
+  set r^.b = b;
+  return unit;
+}
+
+fn main() -> status: ExitStatus pure {
+  let state = S(a: 0_u64, b: 1_u64);
+  probe(r: &state);
+  return exit_status(code: 0_u8);
+}

@@ -1,0 +1,28 @@
+alias ExitStatus = std::process::ExitStatus;
+alias exit_status = std::process::exit_status;
+
+struct S {
+  a: u64;
+  b: u64;
+}
+
+fn f(bound: u64) -> next: u64 pure contract {
+  ensures next <= bound;
+} {
+  return bound;
+}
+
+fn probe(r: &S) -> result: u64 writes(r) {
+  let b = r^.b;
+  let n = f(bound: b);
+  set r^.a = n;
+  set r^.b = b;
+  let difference = r^.b - r^.a;
+  return difference;
+}
+
+fn main() -> status: ExitStatus pure {
+  let state = S(a: 0_u64, b: 1_u64);
+  let difference = probe(r: &state);
+  return exit_status(code: 0_u8);
+}

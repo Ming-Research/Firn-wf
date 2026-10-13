@@ -1,0 +1,142 @@
+# Temporary observation workflow; remove before this branch becomes ready.
+# Compiler rejections and setup failures are recorded, never gating results.
+name: temporary field facts
+
+on:
+  push:
+    branches: ["claude/aof-load-rules"]
+
+permissions:
+  contents: read
+
+jobs:
+  witnesses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        id: checkout
+        continue-on-error: true
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        id: compiler
+        continue-on-error: true
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        id: toolchain
+        continue-on-error: true
+        run: make toolchain
+
+      - name: Show the host toolchain
+        id: versions
+        continue-on-error: true
+        shell: bash
+        run: |
+          results="$RUNNER_TEMP/field-facts"
+          mkdir -p "$results"
+          set +e
+          ld.lld --version > "$results/toolchain.log" 2>&1
+          lld_status=$?
+          /usr/bin/clang --version >> "$results/toolchain.log" 2>&1
+          clang_status=$?
+          cat "$results/toolchain.log"
+          if [ "$lld_status" -ne 0 ] || [ "$clang_status" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Compile every witness and preserve its full diagnostics
+        id: witnesses
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          COMPILER_OUTCOME: ${{ steps.compiler.outcome }}
+          TOOLCHAIN_OUTCOME: ${{ steps.toolchain.outcome }}
+          VERSIONS_OUTCOME: ${{ steps.versions.outcome }}
+        run: |
+          results="$RUNNER_TEMP/field-facts"
+          binaries="$RUNNER_TEMP/field-facts-binaries"
+          mkdir -p "$results" "$binaries"
+          setup=trusted
+          for outcome in "$CHECKOUT_OUTCOME" "$COMPILER_OUTCOME" "$TOOLCHAIN_OUTCOME" "$VERSIONS_OUTCOME"; do
+            if [ "$outcome" != success ]; then
+              setup=untrusted
+            fi
+          done
+          printf 'SOURCE_REVISION=%s\nCHECKOUT=%s\nCOMPILER_SETUP=%s\nTOOLCHAIN_SETUP=%s\nTOOLCHAIN_VERSIONS=%s\n' \
+            "$GITHUB_SHA" "$CHECKOUT_OUTCOME" "$COMPILER_OUTCOME" "$TOOLCHAIN_OUTCOME" "$VERSIONS_OUTCOME" > "$results/metadata.log"
+          release=
+          if [ -f whitefoot.pin ]; then
+            release=$(sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$/\1/p' whitefoot.pin)
+          fi
+          if [[ ! "$release" =~ ^wf-(exp-)?[0-9a-f]{12}$ ]]; then
+            setup=untrusted
+            printf 'SETUP_ERROR=whitefoot.pin is missing or does not name one release\n' >> "$results/metadata.log"
+            release=
+          fi
+          release_directory="$GITHUB_WORKSPACE/build/whitefoot/$release"
+          compiler="$release_directory/whitefootc"
+          printf 'RELEASE=%s\nCOMPILER=%s\n' "$release" "$compiler" >> "$results/metadata.log"
+          if [ -f "$release_directory/whitefoot-release.json" ]; then
+            cp "$release_directory/whitefoot-release.json" "$results/whitefoot-release.json"
+            cat "$results/whitefoot-release.json" >> "$results/metadata.log"
+            printf '\n' >> "$results/metadata.log"
+          else
+            setup=untrusted
+            printf 'SETUP_ERROR=release metadata is unavailable\n' >> "$results/metadata.log"
+          fi
+          if [ ! -x "$compiler" ]; then
+            setup=untrusted
+            printf 'SETUP_ERROR=compiler executable is unavailable\n' >> "$results/metadata.log"
+          fi
+          if [ "$setup" = untrusted ]; then
+            printf 'SETUP_ERROR=compiler outcomes are non-evidence until setup succeeds\n' >> "$results/metadata.log"
+          fi
+          printf 'SETUP=%s\n' "$setup" >> "$results/metadata.log"
+          cat "$results/metadata.log"
+          printf 'source\texit\tsetup\n' > "$results/summary.tsv"
+          shopt -s nullglob
+          sources=(research/experiments/field-facts/*.wf)
+          if [ "${#sources[@]}" -eq 0 ]; then
+            printf 'SETUP_ERROR=no field-facts witness files matched; no compiler was invoked\n' > "$results/no-witnesses.log"
+            cat "$results/no-witnesses.log"
+            printf 'NO_WITNESSES\tNOT_RUN\tuntrusted\n' >> "$results/summary.tsv"
+          fi
+          for source in "${sources[@]}"; do
+            witness=${source##*/}
+            witness=${witness%.wf}
+            log="$results/$witness.compiler.log"
+            printf 'WITNESS=%s\nSETUP=%s\n' "$source" "$setup"
+            if [ -x "$compiler" ]; then
+              if "$compiler" "$source" -o "$binaries/$witness" > "$log" 2>&1; then
+                status=0
+              else
+                status=$?
+              fi
+            else
+              status=NOT_RUN
+              printf 'SETUP_ERROR=compiler executable is unavailable; witness was not compiled\n' > "$log"
+            fi
+            cat "$log"
+            printf '\nEXIT=%s\n' "$status"
+            printf '%s\t%s\t%s\n' "$source" "$status" "$setup" >> "$results/summary.tsv"
+          done
+          cat "$results/summary.tsv"
+          exit 0
+
+      - name: Upload every witness diagnostic and its summary
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: field-facts-${{ github.sha }}
+          path: ${{ runner.temp }}/field-facts
+          if-no-files-found: warn
+
+      - name: Finish the observation job regardless of outcomes
+        if: always()
+        run: exit 0

@@ -1,0 +1,33 @@
+alias ExitStatus = std::process::ExitStatus;
+alias exit_status = std::process::exit_status;
+
+struct S {
+  a: u64;
+  b: u64;
+}
+
+fn g(r: &S) -> result: unit writes(r) contract {
+  ensures r^.a <= r^.b;
+} {
+  set r^.a = 0_u64;
+  set r^.b = 1_u64;
+  return unit;
+}
+
+fn require_order(r: &S) -> result: u64 reads(r) contract {
+  requires r^.a <= r^.b;
+} {
+  return r^.a;
+}
+
+fn probe(r: &S) -> result: unit writes(r) {
+  g(r: r);
+  let observed = require_order(r: r);
+  return unit;
+}
+
+fn main() -> status: ExitStatus pure {
+  let state = S(a: 10_u64, b: 0_u64);
+  probe(r: &state);
+  return exit_status(code: 0_u8);
+}
