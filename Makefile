@@ -59,10 +59,19 @@ firn-test: $(BUILD)/firn-test
 $(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 	$(WHITEFOOTC) --par --par-call-grain off --graph $(FIRN_GRAPH) --entry firn --cache $(BUILD)/firn-test-cache -o $@
 
+# Keep ptrace and process-stop experiments out of the ordinary suite's load:
+# its continuous-write rewrite cases must not compete with /proc stop polling.
+# Both selections are required; the serial selection must run all three cases.
 test: firn-test
 	@redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) && \
 	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
-	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked -- --show-output
+	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked -- --skip rewrite_faults:: --show-output
+	@redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) || exit $$?; \
+	log=$$(mktemp) || exit $$?; trap 'rm -f "$$log"' EXIT; \
+	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
+	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked --test network rewrite_faults:: -- \
+	  --test-threads=1 --nocapture >"$$log" 2>&1; status=$$?; cat "$$log"; \
+	[ $$status -eq 0 ] && grep -q '^test result: ok\. 3 passed' "$$log"
 
 # Redis's released suite runs against the cached server build, split into
 # shards that run side by side and merge into one run. Every listed pass must

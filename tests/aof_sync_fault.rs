@@ -1264,7 +1264,12 @@ fn aof_rewrite_current_append_failure_observes_publication() {
         assert_eq!(published, redis, "Redis publishes the completed child while append still fails; firn aborts: {outcome}");
         assert_eq!(info_field(&outcome, "aof_last_bgrewrite_status").as_deref(), Some(if redis { "ok" } else { "err" }), "{outcome}");
         if !redis {
-            assert_eq!(info_field(&outcome, "firn_aof_rewrite_abort_reason").as_deref(), Some("writer_io"), "{outcome}");
+            // The actual failed append latches `drain` inside aof_rw_drain,
+            // before aof_rw_flush returns failure to the rewrite loop.
+            // capture.md's first-cause rule keeps it when that outer loop
+            // subsequently reports `writer_io`, as the latched-append-error
+            // regression in aof_write_errors also requires.
+            assert_eq!(info_field(&outcome, "firn_aof_rewrite_abort_reason").as_deref(), Some("drain"), "{outcome}");
         }
         rewrite_active_files(server.directory());
         eprintln!("rewrite-fault observation: server={} case=current-eio rewrite={} append=err buffered={} published-before-append-repair={published} refused={refused:?}",

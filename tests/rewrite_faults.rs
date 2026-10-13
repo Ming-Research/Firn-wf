@@ -173,36 +173,99 @@ fn scan_records(server: Server, directory: &Path) -> usize {
 }
 
 // The group includes Redis's forked rewrite child and, for traced runs,
-// strace. Inspect all threads, since stopping only the leader is insufficient.
-fn group_tasks(group: u32) -> Vec<(u32, char)> {
+// strace. Keep process and thread IDs: SIGSTOP targets each subject process,
+// while the final stopped-state witness must account for every thread.
+#[derive(Debug)]
+struct GroupTask {
+    process: u32,
+    thread: u32,
+    state: char,
+}
+
+impl GroupTask {
+    fn stopped(&self) -> bool { matches!(self.state, 'T' | 't' | 'Z') }
+}
+
+fn group_tasks(group: u32) -> Vec<GroupTask> {
     let mut result = Vec::new();
     for process in std::fs::read_dir("/proc").unwrap().filter_map(Result::ok) {
-        if process.file_name().to_string_lossy().parse::<u32>().is_err() { continue; }
+        let Ok(pid) = process.file_name().to_string_lossy().parse::<u32>() else { continue; };
         let Ok(tasks) = std::fs::read_dir(process.path().join("task")) else { continue; };
         for task in tasks.filter_map(Result::ok) {
             let Ok(stat) = std::fs::read_to_string(task.path().join("stat")) else { continue; };
             let Some((_, fields)) = stat.rsplit_once(") ") else { continue; };
             let fields: Vec<_> = fields.split_whitespace().collect();
             if fields.get(2).and_then(|field| field.parse::<u32>().ok()) == Some(group) {
-                result.push((task.file_name().to_string_lossy().parse().unwrap(), fields[0].chars().next().unwrap()));
+                result.push(GroupTask {
+                    process: pid,
+                    thread: task.file_name().to_string_lossy().parse().unwrap(),
+                    state: fields[0].chars().next().unwrap(),
+                });
             }
         }
     }
     result
 }
 
-fn group_signal(child: &ProgramChild, signal: i32) {
+fn signal_pid(pid: i32, signal: i32) -> bool {
     unsafe extern "C" { fn kill(pid: i32, signal: i32) -> i32; }
-    assert_eq!(unsafe { kill(-(child.id() as i32), signal) }, 0, "signal process group: {}", std::io::Error::last_os_error());
+    if unsafe { kill(pid, signal) } == 0 { return true; }
+    let error = std::io::Error::last_os_error();
+    // A rewrite child may exit between reading /proc and signalling it.
+    assert_eq!(error.raw_os_error(), Some(3), "signal {signal} to {pid}: {error}"); // ESRCH
+    false
 }
 
-fn freeze(child: &ProgramChild) {
-    group_signal(child, 19); // SIGSTOP, including the forked writer.
+fn group_signal(child: &ProgramChild, signal: i32) {
+    assert!(signal_pid(-(child.id() as i32), signal), "subject process group disappeared");
+}
+
+fn freeze(child: &ProgramChild, traced: bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
+    let mut signalled = BTreeSet::new();
+    if !traced { group_signal(child, 19); } // SIGSTOP, including the forked writer.
     loop {
         let tasks = group_tasks(child.id());
         assert!(!tasks.is_empty(), "subject exited before crash point");
-        if tasks.iter().all(|(_, state)| matches!(state, 'T' | 't' | 'Z')) { return; }
+        if !traced {
+            if tasks.iter().all(GroupTask::stopped) { return; }
+        } else {
+            // ptrace(2), Group-stop: a traced SIGSTOP first stops only its
+            // recipient thread. The tracer must inject it before the other
+            // threads stop. Stopping the entire group here also stops strace,
+            // leaving sleeping siblings unable to finish that transition.
+            // https://man7.org/linux/man-pages/man2/ptrace.2.html
+            let subjects: Vec<_> = tasks.iter().filter(|task| task.process != child.id()).collect();
+            assert!(subjects.iter().any(|task| task.state != 'Z'), "traced subject exited before crash point");
+            for task in &subjects {
+                if task.state != 'Z' && signalled.insert(task.process) {
+                    signal_pid(task.process as i32, 19);
+                }
+            }
+            if subjects.iter().all(|task| task.stopped()) {
+                assert!(signal_pid(child.id() as i32, 19), "tracer exited before freeze");
+                loop {
+                    let held = group_tasks(child.id());
+                    if held.iter().any(|task| task.thread == child.id() && task.state == 'T') {
+                        // A 't' read while strace was alive may have been an
+                        // ordinary syscall stop that strace subsequently
+                        // resumed. Only this second scan, with strace itself
+                        // stopped, establishes a stable freeze of all threads.
+                        if held.iter().all(GroupTask::stopped) {
+                            assert!(held.iter().any(|task| task.process != child.id() && task.state != 'Z'), "traced subject exited during freeze");
+                            eprintln!("rewrite crash group frozen: {held:?}");
+                            return;
+                        }
+                        // Resume only strace, never the stopped subject. It
+                        // can now finish consuming the pending SIGSTOPs.
+                        assert!(signal_pid(child.id() as i32, 18), "tracer exited during freeze"); // SIGCONT
+                        break;
+                    }
+                    assert!(Instant::now() < deadline, "tracer did not stop: {held:?}");
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
         assert!(Instant::now() < deadline, "process group did not stop: {tasks:?}");
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -215,7 +278,7 @@ fn crash(child: ProgramChild) {
     assert!(!output.status.success(), "SIGKILL subject exited successfully");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let live: Vec<_> = group_tasks(group).into_iter().filter(|(_, state)| *state != 'Z').collect();
+        let live: Vec<_> = group_tasks(group).into_iter().filter(|task| task.state != 'Z').collect();
         if live.is_empty() { break; }
         assert!(Instant::now() < deadline, "rewrite descendants can still mutate AOF files: {live:?}");
         std::thread::sleep(Duration::from_millis(2));
@@ -306,7 +369,7 @@ fn run(server: Server, oracle: &Path, point: Point) {
         assert!(Instant::now() < deadline, "{server:?}: {point:?} never became observable");
         std::thread::sleep(Duration::from_millis(2));
     }
-    freeze(&child);
+    freeze(&child, traced);
     let selected = active_base(&manifest(directory.path()));
     match point {
         Point::EarlyScan => {

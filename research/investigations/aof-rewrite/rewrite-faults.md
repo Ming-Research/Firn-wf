@@ -48,7 +48,12 @@ state comes from command inputs and successful replies, not a dump of the
 server's own pre-crash state. Counters and lists distinguish duplicated replay
 from idempotent replacement. Check full values and key count after restart.
 
-The kill cases run in the ordinary network target. Device cases remain
+The kill cases run in the network target, after the ordinary suite, with
+one test thread. The ordinary invocation excludes only `rewrite_faults::`;
+the second invocation requires all three of that module's cases to pass.
+This separates ptrace and process-stop experiments from continuous-write
+rewrite regressions without changing their workloads or assertions.
+Device cases remain
 ignored there and run serially through `make aof-sync-fault`, in the existing
 root-enabled CI job. That target requires the mount, the pinned oracle and
 five passing cases: the two retained sync-failure cases and three rewrite
@@ -94,7 +99,12 @@ may lose, repeat or invent an effect.
 | Current increment EIO | Keep path-selected append injection active through rewrite completion; require retained bytes, unchanged current-file bytes and refusal of a new SET. | Compare base selection and rewrite status before repair: Redis is source-expected to publish with rewrite ok; Firn to abort with rewrite err. After repair, drain retained bytes and verify exact acknowledged values/counter and absence of the refused key after crash/remount/restart. |
 
 Every SIGKILL stops the complete server group, including Redis's child and
-all threads. The kill cases recheck their phase after stopping and require
+all threads. For traced runs, stop the subject processes while strace still
+handles their SIGSTOP delivery, then stop strace and recheck every thread.
+A raced observation resumes only the tracer to finish pending stop events.
+The [ptrace group-stop semantics](https://man7.org/linux/man-pages/man2/ptrace.2.html)
+require tracer delivery before a traced process's siblings all stop.
+The kill cases recheck their phase after stopping and require
 that no live group member can continue modifying files before restart.
 There is no observable partial state inside the atomic manifest rename;
 the cases cover its two sides. Rename-delay cases cover the file adapter,
@@ -109,17 +119,58 @@ server's retained acknowledged append is checked after repair.
 
 ## Results
 
-Pending CI. No build, test, check, fault-device operation or measurement has
-run locally, and no commit has been made. Compilation, phase observability,
-injection witnesses, per-server statuses and exact recovered values remain
-unverified. No runtime outcome or current-append policy decision is claimed.
+### First gate, 2026-10-13
 
-The separate read-only static review covered all eight changed files, the
-affected helpers, the project checklist and the rewrite design nodes and
-ancestors. It identified privilege-aware tracer cleanup as missing; the
-guard now exists before attachment polling and cleans up on failure. The
-kill cases also gained counter/list checks to distinguish duplicated replay.
-These repairs are statically reviewed; runtime evidence remains pending.
+[Gate run 38424318643](https://github.com/Ming-Research/Firn-wf/actions/runs/38424318643)
+tested [revision 1851bc1](https://github.com/Ming-Research/Firn-wf/commit/1851bc12643b6d4c32e457bb42d43833fc50cae8).
+Compilation succeeded. The network invocation reported 201 passed, three
+failed and five ignored in 64.24 seconds; the serial device invocation
+reported four passed and one failed in 103.65 seconds. These are test-invocation
+durations, not performance comparisons.
+
+| Scenario | Observed result on that revision |
+| --- | --- |
+| Early-scan kill | Passed on Redis and both Firn routes. Both the copied old selection and crash directory recovered all 4,036 expected keys, counter/list effects and no incomplete-command key. |
+| Complete base before manifest / after manifest switch | Both failed on Redis before the kill/restart check. Strace was stopped (`T`), some tracee threads were in ptrace-stop (`t`), and others remained sleeping (`S`). The assertion already accepted `t`; stopping strace prevented completion of SIGSTOP delivery to all siblings. These cases produced no Firn or recovery result. |
+| Temporary-base ENOSPC | Passed on Redis and Firn's file adapter: the trace attributed actual ENOSPC to the base write; rewrite error, healthy current append and unchanged old files/manifest were observed. Independent old-only replay and healed crash/remount/restart each recovered exactly 513 keys with expected values and counter. |
+| Temporary-base EIO | Passed on both servers through the same preservation and recovery checks, with EIO attributed to the injected temporary-base write. |
+| Current increment EIO | Redis published the new base with rewrite ok while append remained err and 59 bytes remained buffered; the next SET was refused. Old-only replay and repaired restart each recovered exactly 513 keys. Firn retained its old base and 36 buffered bytes, with rewrite err, append err, cut 0 and scan incomplete. Its abort reason was `drain`; the erroneous `writer_io` assertion prevented its recovery checks from running. |
+
+The first gate confirms that Redis need not repair its current append before
+publishing the new base in this scenario. It does not settle the owner's
+choice about Firn's intended difference. Firn's `drain` diagnostic follows
+the design's first-cause rule: the actual failed append records Drain before
+the outer rewrite loop reports WriterIo. The existing latched-append-error
+regression required `drain` and passed this run. The new expectation now
+requires exactly `drain`. Production behavior and the refusal, publication,
+retained-byte and recovery assertions remain unchanged.
+
+The unchanged long-history regression also failed during the network run.
+Its scan had finished and S1 had occurred, but it reported `reserve` with
+16,721,192 of 16,777,216 bytes used, leaving 56,024 bytes. The post-cut journal
+reader requires 65,560 bytes, which exceeds that remaining allowance by
+9,536 bytes. This is consistent with backlog pressure delaying reconciliation,
+not evidence of an old-history reread (`rotation_reserve`). The revision
+changed no production source, pin or existing workload. The two traced-stop
+tests spent their ten-second waits repeatedly scanning `/proc` alongside the
+ordinary tests; all were in one parallel invocation. There is no shared
+heavy-test lock in this checkout. Separate required invocations now remove
+this new interference. The contention attribution remains a hypothesis until
+the unchanged regression passes in the isolated gate; no CPU or scheduler
+trace establishes it from the first log alone.
+
+The traced-stop repair leaves strace running until subject stops propagate,
+then requires a stable second all-thread stopped-state witness with strace
+stopped. It accepts only `T`, `t` or `Z`, keeps both rewrite-phase checks,
+and still kills and drains the complete group before recovery. The two
+failed cases are its before-fix evidence; the repaired cases await CI.
+
+The separate read-only static review covered the original eight-file change,
+affected helpers and rewrite design nodes/ancestors. The current repair
+changes stop coordination, test scheduling and the exact diagnostic
+expectation; runtime validation of these repairs remains pending. No local
+build, test, check, device operation or measurement has run, and this repair
+has not been committed. Pins and production behavior remain unchanged.
 
 Record each CI result with its revision, command, witnessed fault/phase,
 manifest selection before and after the fault, current-write and rewrite
