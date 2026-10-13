@@ -24,8 +24,11 @@ jobs:
           ref: ${{ matrix.revision }}
           submodules: true
 
-      - name: Download the pinned compiler
-        run: make compiler
+      - name: Download a compiler with --lock-ledger
+        # wf-d75f318d5631, the pin, predates the flag (Whitefoot #421); the ledger only reads lock order.
+        run: |
+          echo 'release = wf-af7665be672d' > whitefoot.pin
+          make compiler
 
       - name: Install the pinned release's LLVM
         run: make toolchain
