@@ -4393,11 +4393,23 @@ fn script_client_matrix(transaction: bool, mut cases: impl FnMut(&mut TcpStream,
             .with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         if resp3 {
-            // Redis 7.2.16 networking.c:helloCommand, first connection. The
-            // recorder negotiated HELLO separately and omitted its reply;
-            // this greeting fixture retains its source-derived expectation.
-            script_client_reply(&mut client, false, &["HELLO", "3"],
-                b"%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n");
+            // Redis 7.2.16 networking.c:helloCommand. The connection id includes
+            // internal clients, so compare it with this connection's CLIENT ID.
+            // The recorder negotiated HELLO separately and omitted its reply;
+            // the other greeting fields retain their source-derived expectation.
+            let mut greeting = resp(&["HELLO", "3"]);
+            greeting.extend(resp(&["PING"]));
+            greeting.extend(resp(&["CLIENT", "ID"]));
+            client.write_all(&greeting).expect("send script-client greeting");
+            expect_replies(&mut client,
+                b"%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n",
+                "script-client HELLO prefix");
+            let greeting_id = integer_reply(&mut client, "script-client HELLO id");
+            assert!(greeting_id > 0, "script-client HELLO id: {greeting_id}");
+            expect_replies(&mut client,
+                b"$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n+PONG\r\n",
+                "script-client HELLO suffix and trailing PING");
+            assert_eq!(integer_reply(&mut client, "script-client CLIENT ID"), greeting_id);
         }
         cases(&mut client, transaction, resp3);
         drop(client);
