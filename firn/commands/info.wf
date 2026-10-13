@@ -628,8 +628,6 @@ const info_rw_reason_flush: Array<u8, 5> = "flush";
 
 const info_rw_reason_sequence_exhausted: Array<u8, 18> = "sequence_exhausted";
 
-const info_rw_reason_memory_pressure: Array<u8, 15> = "memory_pressure";
-
 const info_rw_reason_cancelled: Array<u8, 9> = "cancelled";
 
 const info_rw_reason_base_io: Array<u8, 7> = "base_io";
@@ -674,9 +672,6 @@ fn info_rewrite_reason(text: &Box<Slots<u8>>, reason: pkg::store::RewriteAbortRe
     }
     SequenceExhausted() => {
       text_word(text: text, word: &info_rw_reason_sequence_exhausted[0_u64..18_u64]);
-    }
-    MemoryPressure() => {
-      text_word(text: text, word: &info_rw_reason_memory_pressure[0_u64..15_u64]);
     }
     Cancelled() => {
       text_word(text: text, word: &info_rw_reason_cancelled[0_u64..9_u64]);

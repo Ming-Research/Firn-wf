@@ -879,12 +879,26 @@ fn reconciled_scan_streams_large_history_for_a_small_live_value() {
 }
 
 #[test]
-fn reconciled_scan_pressure_after_s1_aborts_before_installation() {
+fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
     let program = CompiledProgram::from_environment();
     fixture(&program);
     let (child, mut client, _) = start(&program);
+    client.write_all(&resp(&["INFO", "memory"])).unwrap();
+    let before = bulk_reply(&mut client, "AOF exclusion before rewrite");
+    let aof_capacity: u64 = info_field(&before, "mem_not_counted_for_evict").unwrap().parse().unwrap();
     paced_rewrite_start(&mut client);
     scanned_keys(&program, &mut client);
+    // No client mutation has appended bytes since startup and S1 is still
+    // ahead. Ordinary AOF capacity is unchanged, so this additional exclusion
+    // must be the live rewrite ledger rather than a collecting-buffer charge.
+    client.write_all(&resp(&["INFO", "all"])).unwrap();
+    let capturing = bulk_reply(&mut client, "rewrite memory exclusion");
+    assert_eq!(info_field(&capturing, "aof_rewrite_in_progress").as_deref(), Some("1"), "{capturing}");
+    assert_eq!(info_field(&capturing, "firn_aof_rewrite_cut").as_deref(), Some("0"), "{capturing}");
+    let rewrite_used: u64 = info_field(&capturing, "firn_aof_rewrite_used").unwrap().parse().unwrap();
+    let excluded: u64 = info_field(&capturing, "mem_not_counted_for_evict").unwrap().parse().unwrap();
+    assert!(rewrite_used > 0, "{capturing}");
+    assert_eq!(excluded, aof_capacity + rewrite_used, "rewrite allocations must be excluded exactly once: {capturing}");
     let payload = vec![b'p'; 32 * 1024];
     for _ in 0..200 {
         request(&mut client, &[b"SET", b"hot", &payload]);
@@ -901,17 +915,20 @@ fn reconciled_scan_pressure_after_s1_aborts_before_installation() {
         std::thread::sleep(Duration::from_micros(100));
     }
     // Lower the ordinary Redis limit while frozen images still await release.
-    // PING is admitted even under noeviction; it drives the normal pressure check.
+    // Service pressure still refuses DENYOOM under noeviction, but it must
+    // not cancel rewrite work whose bounded memory is outside maxmemory.
     assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"1"]), Reply::Line(b"+OK".to_vec()));
-    request(&mut client, &[b"PING"]);
+    assert_eq!(request(&mut client, &[b"PING"]), Reply::Line(b"+PONG".to_vec()));
+    assert_eq!(memory_request(&mut client, &["SET", "refused", "value"]),
+        "-OOM command not allowed when used memory > 'maxmemory'.\r\n");
     let info = rewrite_wait(&mut client);
-    assert_eq!(info["aof_last_bgrewrite_status"], "err", "post-S1 pressure must cancel retained work");
-    assert_eq!(info["firn_aof_rewrite_abort_reason"], "memory_pressure", "pressure must remain the first cause through cleanup");
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok", "post-S1 service pressure must leave the bounded rewrite intact: {info:?}");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "", "{info:?}");
+    assert_eq!(info["firn_aof_rewrite_used"], "0", "successful cleanup must release the rewrite charge");
     assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"0"]), Reply::Line(b"+OK".to_vec()));
     let text = std::fs::read_to_string(&manifest).unwrap();
-    assert!(text.contains("appendonly.aof.1.base.aof"));
-    assert!(text.contains("appendonly.aof.1.incr.aof"));
-    assert!(text.contains("appendonly.aof.2.incr.aof"));
+    assert_eq!(text, rewrite_manifest(2, 2), "successful rewrite must publish the new base");
+    assert_eq!(request(&mut client, &[b"GET", b"refused"]), Reply::Bulk(None));
     let expected = snapshot(&mut client);
     rewrite_stop(&mut client, child);
     let (child, mut restored, _) = start(&program);
