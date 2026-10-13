@@ -79,12 +79,6 @@ const state_list_range: u64 = 6_u64;
 
 const state_list_missing: u64 = 7_u64;
 
-const state_list_full: u64 = 8_u64;
-
-const text_list_limit: Array<u8, 36> = "ERR list would exceed the maximum of";
-
-const text_list_elements: Array<u8, 9> = " elements";
-
 const entry_none: u64 = 0_u64;
 
 const entry_lapsed: u64 = 1_u64;
@@ -112,72 +106,15 @@ binding ElementOut : DequeVisit<Box<Slots<u8>>, Client> {
   accept = element_out;
 }
 
-fn live_list_size(slot: &Option<Entry>, now: u64) -> size: Option<u64> reads(slot) {
-  doc "Returns the length of a live list, or none for an absent, expired or wrong-type entry, without refreshing access or changing data.";
-  match slot^ {
-    Some(value: held) => {
-      if expired(expires: held^.expires, now: now) {
-        return None<u64>();
-      }
-      match held^.value {
-        Items(items: list) => {
-          return Some<u64>(value: list^.inner.len);
-        }
-        Text(bytes: stored) => {
-        }
-        Members(members: set_of) => {
-        }
-        Fields(fields: hash_of) => {
-        }
-        Ranked(ranked: sorted) => {
-        }
-      }
-    }
-    None() => {
-    }
-  }
-  return None<u64>();
-}
-
-fn list_accepts(slot: &Option<Entry>, now: u64, wanted: u64) -> fits: Bool reads(slot) {
-  doc "Checks the entire addition before mutation. Absent, expired and wrong-type entries retain their ordinary command handling.";
-  let size = live_list_size(slot: slot, now: now);
-  match size {
-    Some(value: length) => {
-      if length <= ceiling {
-        let remaining = ceiling - length;
-        return wanted <= remaining;
-      }
-      return False();
-    }
-    None() => {
-      return True();
-    }
-  }
-}
-
-fn reply_list_limit(client: &Client) -> result: unit writes(client) {
-  doc "Names firn's intentional list limit in a RESP error; Redis 7.2.16 on 64-bit has no corresponding limit.";
-  pkg::protocol::reply_byte(client: client, value: '-'_u8);
-  pkg::protocol::reply_word(client: client, word: &text_list_limit[0_u64..36_u64]);
-  pkg::protocol::reply_byte(client: client, value: ' '_u8);
-  pkg::protocol::reply_decimal(client: client, value: ceiling);
-  pkg::protocol::reply_word(client: client, word: &text_list_elements[0_u64..9_u64]);
-  pkg::protocol::reply_byte(client: client, value: 13_u8);
-  pkg::protocol::reply_byte(client: client, value: 10_u8);
-  return unit;
-}
-
 fn list_room(list: &Box<Ring<Box<Slots<u8>>>>) -> result: unit writes(list) {
-  doc "Moves a full list to a new backing twice its capacity, at least eight elements and clamped to the ceiling; a list at the ceiling of 2^32 elements stays full.";
+  doc "Moves a full list to a new backing twice its capacity, at least eight elements; a list at the ceiling of 2^32 elements stays full.";
   let length = list^.inner.len;
   let capacity = list^.inner.cap;
   if length < capacity {
     return unit;
   }
   let doubled = capacity +wrap capacity;
-  let geometric = imax(doubled, 8_u64);
-  let target = imin(geometric, ceiling);
+  let target = imax(doubled, 8_u64);
   let fits = target <= ceiling;
   let enough = target >= length;
   let possible = band(fits, enough);
@@ -197,7 +134,7 @@ fn list_room(list: &Box<Ring<Box<Slots<u8>>>>) -> result: unit writes(list) {
 }
 
 fn push_element(list: &Box<Ring<Box<Slots<u8>>>>, element: Box<Slots<u8>>, front: Bool) -> result: unit writes(list) {
-  doc "Pushes one element onto the list at its head (front) or its tail, first moving a full list to a larger backing; command bodies must admit the complete addition before calling this helper.";
+  doc "Pushes one element onto the list at its head (front) or its tail, first moving a full list to a larger backing; one pushed onto a list at the ceiling of 2^32 elements is dropped.";
   list_room(list: list);
   if list^.inner.len < list^.inner.cap {
     if front {
@@ -965,7 +902,7 @@ fn insert_element(list: &Box<Ring<Box<Slots<u8>>>>, position: u64, element: Box<
 }
 
 fn insert_item(env: &Client, value: &Entry, input: &[u8], pivot: Span, element: Box<Slots<u8>>, after: Bool) -> kind: u64 reads(input), writes(env), writes(value) {
-  doc "Inserts element just before, or with after just after, the first element of a live list equal to the pivot, recording done and the list's new length in number, or records missing when no element equals the pivot; records wrong for another kind and expired for an expired entry. A matching pivot in a list at the ceiling records full without changing it; the element is released wherever it is not stored.";
+  doc "Inserts element just before, or with after just after, the first element of a live list equal to the pivot, recording done and the list's new length in number, or records missing when no element equals the pivot; records wrong for another kind and expired for an expired entry. The element is dropped wherever it is not stored, a list at the ceiling of 2^32 elements included.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     let dropped = move element;
@@ -988,11 +925,6 @@ fn insert_item(env: &Client, value: &Entry, input: &[u8], pivot: Span, element: 
       if found >= length {
         let dropped = move element;
         set env^.state = state_list_missing;
-        return 2_u64;
-      }
-      if length >= ceiling {
-        let dropped = move element;
-        set env^.state = state_list_full;
         return 2_u64;
       }
       let position = found;
@@ -1351,25 +1283,6 @@ fn push_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
 
 fn push_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, front: Bool, existing: Bool) -> work: ListWork reads(access_key), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "PUSH over its held entry; reports expired removal and whether the original command must be recorded.";
-  let wanted = client^.items.inner.len;
-  let fits = list_accepts(slot: slot, now: client^.now, wanted: wanted);
-  if bnot(fits) {
-    set client^.state = state_list_full;
-    let no = False();
-    return ListWork(removed: no, changed: no);
-  }
-  if bnot(existing) {
-    if wanted > ceiling {
-      let kind = list_kind(slot: slot, now: client^.now);
-      let absent = kind == entry_none;
-      let lapsed = kind == entry_lapsed;
-      if bor(absent, lapsed) {
-        set client^.state = state_list_full;
-        let no = False();
-        return ListWork(removed: no, changed: no);
-      }
-    }
-  }
   refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
   let changed = False();
@@ -1390,6 +1303,7 @@ fn push_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
     set create = False();
   }
   if create {
+    let wanted = client^.items.inner.len;
     let capacity = imax(wanted, 8_u64);
     if capacity <= ceiling {
       let list = deque_new::<Box<Slots<u8>>, ceiling>(capacity: capacity);
@@ -1416,10 +1330,6 @@ fn push_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
 fn push_finish(client: &Client) -> result: unit writes(client) {
   doc "PUSH reply after the shared body.";
   clear_items(client: client);
-  if client^.state == state_list_full {
-    reply_list_limit(client: client);
-    return unit;
-  }
   if client^.state == state_done {
     let length = cvt.wrap::<u64, i64>(client^.number);
     reply_integer(client: client, value: length);
@@ -1849,6 +1759,7 @@ fn linsert_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &
 
 fn linsert_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], slot: &Option<Entry>, client: &Client, input: &[u8], args: &Box<Slots<Span>>) -> work: ListWork reads(access_key), reads(input), reads(args), writes(sequence), writes(journal), writes(slot), writes(client) {
   doc "LINSERT over its held entry; reports expired removal and whether the original command must be recorded.";
+  refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   let removed = False();
   let changed = False();
   let value_span = arg(args: args, index: 4_u64);
@@ -1862,9 +1773,6 @@ fn linsert_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
     None() => {
       let dropped = move element;
     }
-  }
-  if client^.state != state_list_full {
-    refresh_access(journal: journal, key: access_key, slot: slot, client: client);
   }
   if client^.state == state_expired {
     pkg::store::sequence_delete_key(sequence: sequence, slot: slot, key: access_key);
@@ -1881,10 +1789,6 @@ fn linsert_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
 
 fn linsert_finish(client: &Client) -> result: unit writes(client) {
   doc "LINSERT reply after the shared body.";
-  if client^.state == state_list_full {
-    reply_list_limit(client: client);
-    return unit;
-  }
   if client^.state == state_done {
     let length = cvt.wrap::<u64, i64>(client^.number);
     reply_integer(client: client, value: length);
@@ -2052,26 +1956,6 @@ fn lmove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   let no = False();
   let work = ListMoveWork(source_expired: no, target_expired: no, changed: no);
   set client^.state = state_absent;
-  if source != destination {
-    if source < slots^.len {
-      let size = live_list_size(slot: &slots^[source], now: client^.now);
-      match size {
-        Some(value: length) => {
-          if length > 0_u64 {
-            if destination < slots^.len {
-              let fits = list_accepts(slot: &slots^[destination], now: client^.now, wanted: 1_u64);
-              if bnot(fits) {
-                set client^.state = state_list_full;
-                return work;
-              }
-            }
-          }
-        }
-        None() => {
-        }
-      }
-    }
-  }
   let found = entry_none;
   if source < slots^.len {
     refresh_access_at(journal: journal, slots: slots, access_keys: access_keys, index: source, client: client);
@@ -2147,10 +2031,6 @@ fn lmove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ListMoveWork, input: &[
 
 fn lmove_finish(client: &Client) -> result: unit writes(client) {
   doc "LMOVE and RPOPLPUSH reply after the shared body.";
-  if client^.state == state_list_full {
-    reply_list_limit(client: client);
-    return unit;
-  }
   if client^.state == state_done {
     return unit;
   }
