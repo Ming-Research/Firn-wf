@@ -251,9 +251,10 @@ SCRIPT FLUSH's own pool guard wakes on BUSY as well as completion. General
 admission-to-key or admission-to-disk-check crossings remain open. The guarded path covers commands that
 observe the running invocation, not a retroactive cancellation of acquired
 waits. No global command turn or unsupported runtime workaround is added.
-A deterministic network witness and the independent review must decide
-whether this is permitted ordering for an already-admitted command or needs
-further work; this draft makes no universal claim for that interleaving.
+The owner clarified that this ordering is not permitted: the command must
+finish before script execution or receive BUSY after the threshold. The
+follow-up below isolates the missing lock-or-BUSY behavior rather than
+adding a global turn or polling context.
 
 ## Read-only review
 
@@ -268,7 +269,7 @@ compilation/execution and project gates were unverified at that review.
 The later CI result and owner-filed request are recorded above. This earlier
 review does not cover the production implementation added afterward.
 
-## Current draft review and stop reason
+## Review of the implementation draft
 
 An independent gpt-6.1-sol reviewer at high effort reviewed the complete
 tracked diff from `ea5108f96b2ee412a1152c94ea328023b5b35559` plus the new
@@ -308,6 +309,164 @@ introduced. Board MCP tools are unavailable in this session, so these
 additional dispositions have not been filed from this worktree. The
 owner-filed single-driver request remains the only confirmed filed gap.
 
-All edits are uncommitted. Whitefoot pin, submodule revisions, gate targets,
-ratchet lists and approval logs are unchanged. The temporary witness
-workflow is removed; its witness remains under experiments, cited above.
+The owner committed that implementation as
+`9c25e9395e2520ad13aa46274e290a09f5adf826` and reported its gate running.
+Whitefoot pin and submodule revisions were unchanged. The earlier temporary
+progress workflow is removed; its witness remains under experiments, cited
+above. The following boundary investigation is a new, uncommitted delta.
+
+## F1/F3 follow-up: required forms and pinned limits
+
+### Question and scope
+
+Can the pinned language express both required behaviors without polling
+contexts: a command waiting on a script-held key finishes on BUSY instead
+of waiting forever, and the deadline starts after the first dataset hold is
+acquired, immediately before interpreter execution? The follow-up uses
+Firn `9c25e9395e2520ad13aa46274e290a09f5adf826` and unchanged Whitefoot
+`af7665be672d29912d878dd5da8c3932bb6f296c`. No production code is changed
+in this delta. No new witness has been compiled or run; the conclusions
+below are source-derived, separate from the earlier observed one-driver
+failure.
+
+### F1: BUSY cannot bypass an indexed target acquisition
+
+The complete [key-or-BUSY witness](../../experiments/script-busy-lock/witness.wf)
+uses at least two drivers. A writer takes key x, writes its value, publishes
+Written through a DecisionCell and continues computing while retaining the
+key. The starter submits a genuine future sleep and then checks Written,
+so it refuses a run in which the writer never began. It publishes an
+ordinary shared BUSY flag before entering the reader's guarded keyed
+statement. The reader's BUSY branch does not read or write the held key;
+the writer is stopped only after the reader returns. Thus even an already
+true BUSY condition must be able to finish without acquiring that key.
+This stronger, minimal condition avoids ambiguity about exactly when a
+protocol GET reaches its lock wait.
+
+The pin acquires the entry before inspecting that independent guard:
+
+- [Indexed and key-set targets are eager groups](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/lowering/builder/atomic.rs#L123).
+- [Eager acquisition precedes guard evaluation](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/lowering/builder/atomic.rs#L744).
+- [Guard notifications are registered only after acquisition and a false guard](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/lowering/builder/atomic.rs#L765).
+- [The emitted entry lock has no cancellation or other-object notification input](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/backend/emitter/shared.rs#L526).
+- [A map acquisition does not park its context](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/backend/keyed_table.c#L314).
+
+Accordingly, adding BUSY to a keyed guard alone cannot implement F1 on this
+pin. Replacing entries with a whole-map target merely to change acquisition
+would conceal poor compilation of the natural keyed form and is not used.
+The current specification permits coarse target holding, and WAIT-2's
+conditional progress premise does not cover an infinitely computing holder;
+this finding is a missing supported guarantee, not yet proof of a compiler
+violation of the existing specification. Inspection establishes that the
+requested guarded keyed form cannot select BUSY on this pin; it does not
+prove that no other ordinary composition could ever express the requirement.
+The Whitefoot request must first ask for such a supported form, or a change
+that supplies it.
+
+Whitefoot must provide a supported form whose guard/control alternative can
+complete while an unused keyed target remains held, including after an
+acquisition has already begun. No particular new API is prescribed. It must
+preserve ordinary key isolation and the single-point meaning of dataset
+state, without releasing the script's holds or requiring a polling helper.
+
+### F3: the held interpreter start cannot arm its owned timer
+
+The complete finite [interpreter-start witness](../../experiments/script-busy-lock/start-deadline.wf)
+first uses its held entry, samples the monotonic clock there, and attempts
+an expression-statement spawn of the existing owned cancellable timer.
+After the statement it cancels the timer before activation exit and its
+implicit join. This is the natural placement of the real start; it passes
+only owned timer inputs and no reference to the parent body.
+
+`now` is nonwaiting and is permitted in the body. However, the pin treats
+the timer spawn as a waiting call because its callee waits, and SHARE-2
+refuses it before spawn-specific checking:
+[checker](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/semantic/check/expressions/calls/user.rs#L254).
+The maintained conformance case
+[waiting spawn inside atomic](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/tests/conformance/cases/wait3-neg-inside-atomic.wf)
+expects SHARE-2. The new witness is predicted to fail for that rule; no
+actual diagnostic has been collected for it.
+
+Moving the timestamp to another ordinary shared target holds that target
+until the interpreter finishes; it does not publish the start to the timer.
+DecisionCell carries only a verdict, not the timestamp, and its reads are
+forbidden in guards by the maintained
+[decision-cell guard case](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/tests/conformance/cases/decision-cell-neg-guard-read.wf).
+The time interface has no nonwaiting alarm registration. Encoding time in
+verdict cells or adding a context that polls for it is not an accepted form.
+
+The required result is a supported way to arm an owned deadline from this
+held start without yielding its creator or releasing the dataset. Supporting
+this activation-scoped expression spawn is one candidate; a supported
+nonwaiting timer registration is another. Selection belongs to Whitefoot.
+
+### Before-run criteria and regression coverage
+
+The [temporary boundary workflow](../../../.github/workflows/script-busy-lock.yml)
+runs on the work branch or explicit dispatch. It compiles with lock-ledger
+output and preserves compile logs. The key witness requests four drivers
+and refuses an actual count below two. First its no-argument control must
+exit 0 after confirming the writer began, stopping it, joining it and
+checking the retained value. Only then does the reader sample run. The
+reader must exit 0 within the external five-second bound while the writer
+still owns x; a timeout fails acceptance. It has no internal watchdog that
+could accidentally release the key. A failure to compile, missing start
+(status 5) or control failure is not evidence of a lock-or-BUSY failure.
+
+The separate start job requires the natural timer form to compile and its
+finite program to exit 0 within five seconds. An unrelated diagnostic is
+not evidence for F3. A SHARE-2 diagnostic at the timer spawn confirms the
+reported rejection, but still fails desired acceptance; the workflow does
+not mark rejection or a hang as a pass. These bounds distinguish completion
+from failure and are not performance measurements. Retire the workflow
+once this evidence is retained and normal Firn coverage validates the
+supported replacement.
+
+The new network case caches an infinite script that writes its declared
+key, submits GET before the configured 1000 ms deadline (measured from
+before EVAL submission, a lower bound on the real deadline), and
+requires the exact Redis BUSY reply within a three-second socket bound.
+Initial old-value replies may precede script admission and are retried only
+inside that original interval. It then uses NOSAVE to stop the writer and
+checks the captured GET result after cleanup. This is real protocol
+coverage, but cannot prove when the server actually admitted GET or entered
+its indexed wait. It may pass the existing cold admission guard without
+exercising the crossing; it is not a deterministic proof that F1 is fixed.
+The semantic witness supplies the held-key/start observation instead.
+
+The source explanation is rejected if the exact key witness compiles and
+returns 0 with the holder still retained, and inspection explains how the
+busy alternative bypasses the lock. F3's conclusion is rejected if the
+natural held-start form compiles and satisfies its cancellation/join
+criteria, or Whitefoot identifies another supported ordinary form with the
+same timing and isolation. Only after those boundaries are settled may
+production F1/F3 be changed and accepted with the normal gate and relevant
+network and contention cases.
+
+Work stops here under the owner's no-workaround instruction. The two
+additional Whitefoot requests have not been filed from this worktree because
+board MCP tools are unavailable. The primary session must retain the CI
+artifacts and file the witness, acceptance and exact supported-form question
+into Whitefoot. No local compiler, suite, benchmark, commit or approval log
+was run or written; production, pin, submodules and ratchet lists remain
+unchanged in this follow-up.
+
+### Follow-up source review
+
+An independent gpt-6.1-sol reviewer at high effort inspected the full
+five-file delta from `9c25e9395e2520ad13aa46274e290a09f5adf826`, including
+the two untracked witnesses and temporary workflow, against pinned language
+and runtime sources, Redis source, the project checklist and relevant design
+ancestors. Operations were read-only. It found one reversed deadline-bound
+phrase, now corrected: pre-EVAL time plus the configured threshold is a
+lower bound on the real deadline. Final source inspection found no remaining
+finding within that scope.
+
+A1, C1, C2 (unchanged interfaces/contracts), static T2, D1, G2, DC1 and DC2
+pass; T1, R1, G1 and DC3 are not applicable. T3, G3 and DC4 remain
+unverified. Neither source witness, the GET case nor the new harness has
+been compiled or run, and the harness's rejection of wrong results/missing
+inputs has no executed fault-injection evidence. The reviewer confirmed
+that F1's probe tests the already-true BUSY alternative, not the later
+notification race, and that the network case cannot establish actual waiter
+admission. These limits remain part of the acceptance evidence.

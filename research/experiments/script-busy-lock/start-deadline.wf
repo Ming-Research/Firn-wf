@@ -1,0 +1,44 @@
+alias Inputs = std::process::Inputs;
+alias ExitStatus = std::process::ExitStatus;
+alias Instant = std::time::Instant;
+alias CancelWatch = std::time::CancelWatch;
+
+fn publish_busy(busy: Shared<Bool>, deadline: Instant, cancel: CancelWatch) -> result: unit pure waits {
+  let elapsed = std::time::sleep_until(deadline: deadline, cancel: &cancel);
+  match elapsed {
+    Ok(..) => {
+      atomic value = &busy {
+        set value^ = True();
+      }
+    }
+    Err(..) => {
+    }
+  }
+  std::time::close_cancel_watch(watch: move cancel);
+  return unit;
+}
+
+fn main(inputs: Inputs) -> status: ExitStatus pure waits {
+  doc "Firn's exact interpreter-start deadline: sample the clock after the key hold is acquired and start the owned cancellable timer without releasing that hold. The pinned compiler is predicted to reject the expression spawn with SHARE-2; this finite witness isolates that form from runtime progress.";
+  let Inputs(cwd: directory, handles: factory, clock: clock, ..) = move inputs;
+  let std::fs::Directory(read: readable, write: writable) = move directory;
+  std::fs::close_directory_write(factory: &factory, directory: move writable);
+  std::fs::close_directory(factory: &factory, directory: move readable);
+  let keys = shared_map_new::<u8>(capacity: 1_u64);
+  let name = array_filled::<u8, 1>(value: 107_u8);
+  let key = &name[0_u64..1_u64];
+  let no = False();
+  let busy = shared_new::<Bool>(value: no);
+  let cancel = std::time::cancel_source();
+  let watch = std::time::cancel_watch(source: &cancel);
+  atomic value = &keys[key] {
+    set value^ = Some<u8>(value: 1_u8);
+    let started = std::time::now(clock: &clock);
+    let deadline = std::time::instant_after(instant: started, nanoseconds: 5000000000_u64);
+    spawn publish_busy(busy: move busy, deadline: deadline, cancel: move watch);
+    set value^ = Some<u8>(value: 2_u8);
+  }
+  std::time::cancel_fire(source: &cancel);
+  std::time::close_cancel_source(source: move cancel);
+  return std::process::exit_status(code: 0_u8);
+}

@@ -1,0 +1,94 @@
+# Temporary instruments for firn-bl-01-07 F1/F3. Retire after the language
+# boundary is settled and its evidence is retained in the investigation.
+name: script busy lock and start witnesses
+
+on:
+  push:
+    branches: [claude/script-busy]
+  workflow_dispatch:
+
+jobs:
+  lock-or-busy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Download the pinned compiler
+        run: make compiler
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+      - name: Compile the guarded key witness and record lock acquisition
+        run: |
+          release=$(sed -n 's/^release = //p' whitefoot.pin)
+          "build/whitefoot/$release/whitefootc" --lock-ledger research/experiments/script-busy-lock/witness.wf -o build/script-busy-lock >build/script-busy-lock-compile.log 2>&1
+      - name: Require BUSY completion while the other context retains the key
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          results = []
+          output = Path('build/script-busy-lock.json')
+          for name, args in [('control', []), ('busy-with-held-key', ['reader'])]:
+              case = {'case': name, 'requested_drivers': 4}
+              try:
+                  run = subprocess.run(
+                      ['build/script-busy-lock', *args],
+                      env={**os.environ, 'WF_DRIVERS': '4'},
+                      capture_output=True, text=True, timeout=5,
+                  )
+                  case.update(exit_code=run.returncode, stdout=run.stdout, stderr=run.stderr)
+              except subprocess.TimeoutExpired:
+                  case['timeout_seconds'] = 5
+              results.append(case)
+              output.write_text(json.dumps(results, indent=2) + '\n')
+              print(json.dumps(case), flush=True)
+              if case.get('exit_code') != 0:
+                  raise SystemExit(f'{name} did not complete; inspect the captured evidence.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: script-busy-lock-${{ github.sha }}
+          path: |
+            build/script-busy-lock-compile.log
+            build/script-busy-lock.json
+
+  interpreter-start:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Download the pinned compiler
+        run: make compiler
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+      - name: Require the timer to start from the held interpreter boundary
+        run: |
+          release=$(sed -n 's/^release = //p' whitefoot.pin)
+          "build/whitefoot/$release/whitefootc" --lock-ledger research/experiments/script-busy-lock/start-deadline.wf -o build/script-start-deadline >build/script-start-deadline-compile.log 2>&1
+      - name: Require the owned timer to cancel and join after the statement
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          run = subprocess.run(
+              ['build/script-start-deadline'],
+              env={**os.environ, 'WF_DRIVERS': '4'},
+              capture_output=True, text=True, timeout=5,
+          )
+          print(run.stdout, end='')
+          print(run.stderr, end='')
+          raise SystemExit(run.returncode)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: script-start-deadline-${{ github.sha }}
+          path: build/script-start-deadline-compile.log

@@ -5151,6 +5151,64 @@ fn busy_no_effect_write_is_unkillable_but_shutdown_nosave_exits(drivers: &str) {
     }
 }
 
+/// A GET sent before the busy deadline must eventually receive Redis's BUSY,
+/// even though the script never releases the declared key it has written.
+/// The timestamp preceding EVALSHA bounds the earliest possible timer start;
+/// every GET is sent within that threshold. Initial reads of the old value
+/// may precede script admission and are retried within the same bound.
+///
+/// Protocol replies cannot prove when a GET entered its key wait or when the
+/// writer first acquired the key. This case proves before-threshold submission
+/// and eventual BUSY; it does not prove that GET had entered its guarded key
+/// wait before the timeout became visible. No finite Lua duration is assumed.
+#[test]
+fn firn_get_sent_before_busy_threshold_answers_busy_while_a_written_key_is_held() {
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = firn().spawn_on_route_with(
+        true, &[("WF_DRIVERS", "2")], &[text.as_bytes(), b"0"],
+    ).with_port(&port_lease);
+    let mut looping = connect_when_ready(port, &child);
+    let mut getting = connect_when_ready(port, &child);
+    let mut control = connect_when_ready(port, &child);
+    let threshold = Duration::from_millis(1000);
+    assert_eq!(memory_request(&mut control, &["CONFIG", "SET", "busy-reply-threshold", "1000"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut control, &["SET", "busy-held", "before"]), "+OK\r\n");
+    let source = "redis.call('SET', KEYS[1], 'script-value'); while true do end";
+    control.write_all(&resp(&["SCRIPT", "LOAD", source])).expect("cache the writing infinite script");
+    let sha = bulk_reply(&mut control, "the writing infinite script's SHA1");
+    assert_eq!(sha, "7c75b4dd56865afa1d2cb17a9a61cdd7d759d119");
+    getting.set_read_timeout(Some(Duration::from_secs(3))).expect("bound the pre-threshold GET reader");
+    let submitted = Instant::now();
+    looping.write_all(&resp(&["EVALSHA", &sha, "1", "busy-held"])).expect("start the script that holds its written key");
+    let outcome = loop {
+        if submitted.elapsed() >= threshold {
+            break Err("fixture never submitted a pending GET before the busy deadline".to_string());
+        }
+        getting.write_all(&resp(&["GET", "busy-held"])).expect("submit GET before the busy deadline");
+        if submitted.elapsed() >= threshold {
+            break Err("GET submission crossed the fixture's busy deadline".to_string());
+        }
+        let mut reading = getting.try_clone().expect("clone the bounded GET peer");
+        let reply = std::thread::spawn(move || whole_reply(&mut reading, "GET submitted before the busy deadline")).join();
+        match reply {
+            Ok(reply) if reply == SCRIPT_BUSY_REPLY => break Ok(reply),
+            Ok(reply) if reply == "$6\r\nbefore\r\n" => continue,
+            Ok(reply) => break Err(format!("GET answered unexpectedly: {reply:?}")),
+            Err(_) => break Err("GET failed to answer within its bounded socket wait".to_string()),
+        }
+    };
+    // Preserve cleanup on a missing/wrong GET response: assert the captured
+    // result only after NOSAVE closes the infinite writer and all its peers.
+    control.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("force cleanup after the pending GET observation");
+    shutdown_finished(child);
+    expect_closed(&mut looping, "writing script caller at forced cleanup");
+    expect_closed(&mut getting, "GET peer at forced cleanup");
+    expect_closed(&mut control, "GET regression control peer");
+    assert_eq!(outcome.expect("before-threshold GET regression"), SCRIPT_BUSY_REPLY);
+}
+
 /// Redis 7.2.16 server.c accumulates propagation until the outer execution
 /// unit returns (alsoPropagate / postExecutionUnitOperations). Shutdown of
 /// an infinite writing script therefore keeps earlier acknowledged commands,
