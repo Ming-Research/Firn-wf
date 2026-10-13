@@ -366,17 +366,15 @@ fn address_v6(text: &Box<Slots<u8>>, groups: &Array<u16, 8>) -> result: unit rea
       } else {
         set run_len = run_len +wrap 1_u64;
       }
-    } else {
-      if run_base != none {
-        if best_base == none {
-          set best_base = run_base;
-          set best_len = run_len;
-        } else if run_len > best_len {
-          set best_base = run_base;
-          set best_len = run_len;
-        }
-        set run_base = none;
+    } else if run_base != none {
+      if best_base == none {
+        set best_base = run_base;
+        set best_len = run_len;
+      } else if run_len > best_len {
+        set best_base = run_base;
+        set best_len = run_len;
       }
+      set run_base = none;
     }
   }
   if best_base != none {
