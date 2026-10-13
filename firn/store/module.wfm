@@ -88,7 +88,7 @@ public struct RewriteImage {
 }
 
 public struct RewriteCapture {
-  doc "running covers admission through worker and chunk cleanup; diagnostics survive it. active covers (start,end]; aborted prevents this attempt's installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result after journal draining. Staging chunks contain little-endian u64 sequence, byte count and kind (0 images, 1 effect), then owned RESP bytes in Meta commit order. journal_bytes counts successfully appended file bytes; image/effect counters count complete file records, not staged records. cleanup_failed counts failed journal close/remove operations in this attempt, including failures after the first abort cause.";
+  doc "running covers admission through worker and chunk cleanup; diagnostics survive it. active covers (start,end]; aborted prevents this attempt's installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result after journal draining. Staging chunks contain little-endian u64 sequence, byte count and kind (0 images, 1 effect), then owned RESP bytes in Meta commit order. journal_bytes counts successfully appended file bytes; image/effect counters count complete file records, not staged records. cleanup_failed counts failed journal close/remove operations in this attempt, including failures after the first abort cause. fixed is the part of used that admission charged for the attempt's whole life, so limit minus fixed bounds what any later charge can ever reach.";
   public running: Bool;
   public active: Bool;
   public aborted: Bool;
@@ -100,6 +100,7 @@ public struct RewriteCapture {
   public start: u64;
   public end: u64;
   public limit: u64;
+  public fixed: u64;
   public used: u64;
   public peak: u64;
   public scan_peak: u64;
@@ -162,7 +163,7 @@ public struct EvictionCandidate {
 }
 
 public struct Meta {
-  doc "What the keyspace keeps beside its keys: the queued expiries, the dataset statement sequence and capture-exhaustion state, the append-only file's collecting buffer, published retained length/capacity, saved append/sync IoErrors and partial-append marker, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the total active-file and current incremental byte counts and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion and automatic thresholds, the clients connected, whether the server is stopping, and the state SPOP draws from. aof_rewrite_journal_leftover records the latest failed removal of an unlisted temporary journal until a later removal or absence is observed; admission does not reset it and it is not a filesystem stat.";
+  doc "What the keyspace keeps beside its keys: the queued expiries, the dataset statement sequence and capture-exhaustion state, the append-only file's collecting buffer, published retained length/capacity, saved append/sync IoErrors and partial-append marker, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the total active-file and current incremental byte counts, the incremental byte count at its last successful sync, and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion, automatic thresholds and the rdb-key-save-delay testing delay the scan reads at each step, the clients connected, whether the server is stopping, and the state SPOP draws from. aof_rewrite_journal_leftover records the latest failed removal of an unlisted temporary journal until a later removal or absence is observed; admission does not reset it and it is not a filesystem stat.";
   public due: ExpiryQueue;
   public commit_seq: u64;
   public aof_rewrite_seq_exhausted: Bool;
@@ -189,6 +190,7 @@ public struct Meta {
   public eviction_wrapped: Bool;
   public aof_current_size: u64;
   public aof_incr_size: u64;
+  public aof_synced_size: u64;
   public aof_base_size: u64;
   public aof_rewrite_in_progress: Bool;
   public aof_rewrite_requested: Bool;
@@ -199,6 +201,7 @@ public struct Meta {
   public aof_installing: u64;
   public aof_rewrite_percentage: u64;
   public aof_rewrite_min_size: u64;
+  public aof_rewrite_key_delay: i64;
   public clients: u64;
   public stopping: Bool;
   public random: u64;
@@ -358,6 +361,8 @@ public fn rewrite_capture_new() -> capture: RewriteCapture pure doc "An inactive
 public fn rewrite_abort(capture: &RewriteCapture, reason: RewriteAbortReason) -> result: unit writes(capture) doc "For a running attempt, disables capture and latches the first failure reason, reserve use and peak under Meta before any cleanup. Later failures and ordinary writer activity outside an attempt preserve that snapshot; staging ownership remains until bounded sole-writer cleanup.";
 
 public fn rewrite_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes(capture) doc "Reserves bytes before allocation, or logically aborts this attempt without allocating when they exceed the remaining allowance. Includes peak reservation accounting.";
+
+public fn rewrite_try_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes(capture) doc "Reserves bytes before allocation when they fit the remaining allowance of a live attempt, with peak reservation accounting, and otherwise changes nothing, leaving the caller to retry smaller work or abort.";
 
 public fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) doc "Coalesces an actual changed key into the already-taken outer sequence: in an anchored one-key statement it only selects effect mode; otherwise it owns complete replacement bytes, charging scratch and allocation overlap; failure aborts capture at commit, never the client command.";
 

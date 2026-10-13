@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds and drives the block device that tests/aof_sync_fault.rs makes the
-# append-only file's sync fail on. Run as root (the case calls it through
+# append-only file's sync fail on. Run as root (the cases call it through
 # `sudo -n`); the `aof-sync-fault` job of .github/workflows/check.yml runs
-# `setup` before the case and `teardown` after it, whatever the case did.
+# `setup` before the cases and `teardown` after them, whatever they did.
 #
 # usage: aof_sync_fault_device.sh setup MOUNT OWNER
 #        aof_sync_fault_device.sh fail | heal | remount

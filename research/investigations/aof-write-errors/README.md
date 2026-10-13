@@ -41,6 +41,16 @@ until success even during shutdown, contradicting the documented bounded attempt
 
 ## Proposed design and alternatives
 
+Update, 2026-10-13: two of the sync rules below are superseded by
+[append-only-file](../../../design/firn/append-only-file.md). A retried sync
+that succeeds no longer clears a saved sync error; only a rewrite whose
+installation is durable does, because Linux marks the pages whose writeback
+failed clean and the retried sync does not write them (CI run 38324105320).
+The writer no longer syncs once a second while idle; it syncs only after new
+bytes or while a sync error is saved, as Redis 7.2.16 does (CI run
+38328422734). The text below and the 2026-10-11 validation record the
+earlier design.
+
 The proposed decisions belong to [append-only-file](../../../design/firn/append-only-file.md),
 [transactions](../../../design/firn/transactions.md),
 [scripts](../../../design/firn/scripts.md) and
