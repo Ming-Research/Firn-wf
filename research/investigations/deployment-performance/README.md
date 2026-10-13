@@ -296,6 +296,7 @@ measured sample and per server and client CPU, with 10 columns:
 of that CPU's ticks, over the client's run, that were neither idle nor
 iowait; `user` is the user and nice share and `system` the system, irq and
 softirq share (a thread spinning on `sched_yield` shows as system time).
+The workload client blocks in `poll` while it waits for the server, so its busy fraction reflects work, not waiting.
 A cell is client-limited when the mean `busy` over its client CPUs is above
 0.90: a client that busy cannot be shown to be slower than the server, so
 such a cell only requires firn not to fall behind. `compare-limited.csv`

@@ -1,12 +1,14 @@
 //! Depth-one consumer command forms for the deployment-performance investigation.
-//! Loopback RESP2; worker threads multiplex nonblocking connections using std only.
+//! Loopback RESP2; worker threads multiplex nonblocking connections and block in poll(2) between scans.
 mod limiter;
 mod eviction;
+mod wait;
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
+use std::os::fd::AsRawFd;
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -384,7 +386,7 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
     let mut hits = 0;
     loop {
         if cancelled.load(Ordering::Relaxed) { return Err("another worker failed".into()); }
-        let mut active = false;
+        let (mut active, mut progressed) = (false, false);
         for c in &mut connections {
             if c.replies == 0 {
                 if c.remaining == 0 || opts.seconds.is_some_and(|s| start.elapsed() >= s) { continue; }
@@ -407,11 +409,24 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
                 let us = c.started.elapsed().as_nanos().div_ceil(1000) as u64;
                 *histogram.entry(us).or_insert(0) += 1;
                 hits += u64::from(c.hit);
+                progressed = true;
             }
         }
         if !active { break; }
-        // No sleeping timer imposes a latency floor; idle scans yield to peers.
-        thread::yield_now();
+        // A completed request leaves its connection to start the next one on
+        // the next scan, so only a scan with no completion waits. The wait
+        // wakes on the first readable or writable socket, so it imposes no
+        // latency floor; it is capped so cancellation and each request's
+        // 30-second limit are still noticed.
+        if !progressed {
+            let mut interests = Vec::new();
+            let mut timeout = Duration::from_millis(50);
+            for c in connections.iter().filter(|c| c.replies > 0) {
+                interests.push(wait::Interest { fd: c.socket.as_raw_fd(), write: c.sent < c.out.len() });
+                timeout = timeout.min(TIMEOUT.saturating_sub(c.started.elapsed()));
+            }
+            wait::wait(&interests, timeout)?;
+        }
     }
     Ok((histogram, Instant::now(), hits, connections.iter().filter(|c| c.wrote).count(),
         connections.iter().map(|c| c.refused_sets).sum()))
