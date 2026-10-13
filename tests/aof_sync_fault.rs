@@ -584,30 +584,119 @@ fn fail_at_page_end(device: &Device, client: &mut TcpStream, incremental: &Path,
 fn answering(mut child: ProgramChild, port: u16, server: &str) -> Result<(ProgramChild, TcpStream), String> {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let deadline = Instant::now() + Duration::from_secs(20);
+    let mut client = None;
     loop {
         if child.try_wait().expect("poll the restarted server").is_some() {
-            let output = child.wait_with_output().expect("the exited server's output");
-            eprintln!("{server}: exited at restart with {}; stdout {:?}; stderr {:?}", output.status,
-                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-            return Err(output.status.to_string());
+            return Err(restart_exit(child, server));
         }
-        assert!(Instant::now() < deadline, "{server} neither answered nor exited after its restart");
-        if let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
-            let mut stream = bounded_stream(stream);
-            if stream.write_all(&resp(&["PING"])).is_ok() {
-                let mut line = Vec::new();
-                let mut byte = [0_u8; 1];
-                while !line.ends_with(b"\r\n") && matches!(stream.read(&mut byte), Ok(1)) {
-                    line.push(byte[0]);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(!remaining.is_zero(), "{server} neither answered nor exited after its restart{}",
+            child.monitor().diagnostic_block(Some(port)));
+        if client.is_none() {
+            match TcpStream::connect_timeout(&address, remaining) {
+                Ok(stream) => client = Some(bounded_stream(stream)),
+                Err(error) if retry_refused_connection(&error, deadline) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
                 }
-                // -LOADING, a reset or EOF: ask again until it answers or exits.
-                if line == b"+PONG\r\n" {
-                    return Ok((child, stream));
-                }
+                Err(error) => panic!("{server}: connect at restart failed: {error}{}",
+                    child.monitor().diagnostic_block(Some(port))),
             }
+        }
+        let stream = client.as_mut().expect("one restart connection");
+        let line = match restart_ping(stream, deadline) {
+            Ok(line) => line,
+            Err(error) => return restart_connection_failed(child, port, server, error, deadline),
+        };
+        if line == b"+PONG\r\n" {
+            return Ok((child, bounded_stream(client.take().expect("the answering connection"))));
+        }
+        assert!(line.starts_with(b"-LOADING "), "{server}: unexpected restart PING reply {:?}{}",
+            String::from_utf8_lossy(&line), child.monitor().diagnostic_block(Some(port)));
+        // Redis can answer LOADING while replaying. Keep its admitted socket
+        // and ask again, rather than spending another connection slot.
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn restart_io_timeout(deadline: Instant) -> std::io::Result<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        Err(std::io::Error::new(std::io::ErrorKind::TimedOut,
+            "restart PING exceeded the 20-second deadline"))
+    } else {
+        Ok(remaining.min(Duration::from_secs(10)))
+    }
+}
+
+fn restart_ping(stream: &mut TcpStream, deadline: Instant) -> std::io::Result<Vec<u8>> {
+    stream.set_write_timeout(Some(restart_io_timeout(deadline)?))?;
+    stream.write_all(&resp(&["PING"]))?;
+    let mut line = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !line.ends_with(b"\r\n") {
+        // A slow reply must not extend the absolute restart deadline one
+        // byte at a time, nor get a fresh timeout after a delayed connect.
+        stream.set_read_timeout(Some(restart_io_timeout(deadline)?))?;
+        stream.read_exact(&mut byte)?;
+        line.push(byte[0]);
+    }
+    Ok(line)
+}
+
+fn restart_exit(child: ProgramChild, server: &str) -> String {
+    let output = child.wait_with_output().expect("the exited server's output");
+    eprintln!("{server}: exited at restart with {}; stdout {:?}; stderr {:?}", output.status,
+        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    output.status.to_string()
+}
+
+/// Redis listens before replay and may then exit on a corrupt AOF. Observe
+/// that exit after a closed connection without making another connection.
+fn restart_connection_failed(
+    mut child: ProgramChild,
+    port: u16,
+    server: &str,
+    error: std::io::Error,
+    deadline: Instant,
+) -> Result<(ProgramChild, TcpStream), String> {
+    let closed = matches!(error.kind(), std::io::ErrorKind::UnexpectedEof
+        | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe);
+    loop {
+        if child.try_wait().expect("poll restart after connection failure").is_some() {
+            return Err(restart_exit(child, server));
+        }
+        if !closed || Instant::now() >= deadline {
+            panic!("{server}: restart PING failed: {error}{}",
+                child.monitor().diagnostic_block(Some(port)));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[test]
+fn restart_readiness_keeps_one_connection_while_loading() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("restart listener");
+    let port = listener.local_addr().expect("restart listener address").port();
+    let peer = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("one restart connection");
+        drop(listener);
+        let mut stream = bounded_stream(stream);
+        let ping = resp(&["PING"]);
+        let mut request = vec![0_u8; ping.len()];
+        for reply in [b"-LOADING Redis is loading the dataset in memory\r\n".as_slice(), b"+PONG\r\n"] {
+            stream.read_exact(&mut request).expect("PING on the same connection");
+            assert_eq!(request, ping);
+            stream.write_all(reply).expect("restart PING reply");
+        }
+    });
+    let child = ProgramChild::spawn(Command::new("/bin/sh").args(["-c", "exec sleep 30"])
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()))
+        .expect("spawn loading witness");
+    let (child, client) = answering(child, port, "loading witness").expect("PONG after LOADING");
+    drop(client);
+    drop(child);
+    peer.join().expect("single-connection loading witness");
 }
 
 /// Restarts a server on what reached the device and asks it KEPT.

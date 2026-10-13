@@ -28,26 +28,49 @@ fn connect_when_ready(port: u16, child: &support::ProgramMonitor) -> TcpStream {
 
 /// Connects to a program that is still starting, at the address it listens on.
 fn connect_to_when_ready(address: SocketAddr, child: &support::ProgramMonitor) -> TcpStream {
+    connect_to_when_ready_using(address, child, TcpStream::connect_timeout)
+}
+
+fn connect_to_when_ready_using(
+    address: SocketAddr,
+    child: &support::ProgramMonitor,
+    mut connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
+) -> TcpStream {
     let port = address.port();
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         child.assert_running(port);
-        match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "connect to program at {address} exceeded the 20-second deadline{}",
+            child.diagnostic_block(Some(port))
+        );
+        // Keep a bound even if the local listen backlog is full, but avoid
+        // imposing a short timeout on a handshake delayed by runner load.
+        match connect(&address, remaining) {
             Ok(stream) => {
                 child.assert_running(port);
                 return bounded_stream(stream);
             }
-            Err(error) if Instant::now() < deadline => {
-                let _ = error;
+            // Other errors, notably timeouts, can follow a completed
+            // handshake. Retrying would spend another accepted-client slot.
+            Err(error) if retry_refused_connection(&error, deadline) => {
                 child.assert_running(port);
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => {
-                child.assert_running(port);
-                panic!("the program never listened on {port}: {error}");
+                panic!(
+                    "connect to program at {address} failed: {error}{}",
+                    child.diagnostic_block(Some(port))
+                );
             }
         }
     }
+}
+
+fn retry_refused_connection(error: &std::io::Error, deadline: Instant) -> bool {
+    error.kind() == std::io::ErrorKind::ConnectionRefused && Instant::now() < deadline
 }
 
 fn bounded_stream(stream: TcpStream) -> TcpStream {
@@ -211,10 +234,27 @@ fn expect_replies(stream: &mut TcpStream, expected: &[u8], what: &str) {
         .read_exact(&mut returned)
         .unwrap_or_else(|error| panic!("{what}: {error}"));
     assert_eq!(
-        String::from_utf8_lossy(&returned),
-        String::from_utf8_lossy(expected),
+        returned.as_slice(),
+        expected,
         "{what}"
     );
+}
+
+#[test]
+fn reply_assertion_rejects_distinct_non_utf8_bytes() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reply regression listener");
+    let address = listener.local_addr().expect("reply listener address");
+    let mut stream = bounded_stream(TcpStream::connect(address).expect("reply regression connection"));
+    let (peer, _) = listener.accept().expect("reply regression peer");
+    let mut peer = bounded_stream(peer);
+    peer.write_all(b"\xff").expect("send the invalid UTF-8 byte");
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        expect_replies(&mut stream, b"\xfe", "different invalid UTF-8 bytes");
+    }));
+    let failure = outcome.expect_err("different bytes must fail even if their lossy text is equal");
+    let message = failure.downcast_ref::<String>().expect("formatted assertion failure");
+    assert!(message.contains("assertion `left == right` failed")
+        && message.contains("different invalid UTF-8 bytes"), "{message}");
 }
 
 /// [SHARE-1, SHARE-3] firn serves every client over one
