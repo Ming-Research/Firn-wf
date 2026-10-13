@@ -7,7 +7,7 @@ proved safe. Redis clients talk to firn over TCP as they would to Redis
 7.2.16, apart from the known differences that
 [firn/README.md](firn/README.md) records and the
 [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip)
-tracks, such as the version firn reports and the text of scores. It keeps
+tracks, such as the text of scores. It keeps
 strings, lists, sets, hashes and sorted sets in one shared keyspace, expires
 keys, and persists every change to an append-only file. It is named for firn,
 snow that has lasted a season: stored and compacted.
