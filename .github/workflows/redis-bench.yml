@@ -181,6 +181,17 @@ jobs:
       # tests/redis-suite/reference.sh pins by SHA-256, into a cache it keeps,
       # and puts its redis-server, redis-cli and redis-benchmark ahead of the
       # packaged ones on PATH for every later step.
+      # Dragonfly and Garnet are installed under the runner user's home by the
+      # install-competitors workflow. Each $GITHUB_PATH entry goes in front of
+      # the ones written before it, so this step runs before the reference
+      # Redis step: the reference stays first and nothing in this directory
+      # can shadow redis-server.
+      - name: Put the installed competitors on PATH
+        run: |
+          if [ -d "$HOME/.local/bin" ]; then
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+
       - name: Put the reference Redis 7.2.16 first on PATH
         run: |
           bin=$(tests/redis-suite/reference.sh)

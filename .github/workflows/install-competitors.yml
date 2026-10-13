@@ -1,0 +1,116 @@
+# Installs the latest stable Dragonfly and Garnet on the self-hosted 14900K,
+# for the redis-bench comparisons. Dispatched by hand when a newer release
+# should be measured; redis-bench.yml prints the versions each run uses.
+#
+# Everything goes under the runner user's home, with no sudo:
+#   ~/.local/opt/<name>-<version>/   the unpacked release
+#   ~/.local/bin/dragonfly           symlink, replaced on each run
+#   ~/.local/bin/garnet-server       symlink or wrapper target, likewise
+#
+# Dragonfly ships a Linux x86-64 tarball (dragonfly-x86_64.tar.gz). Garnet
+# ships linux-x64-based.tar.xz; no root is needed to unpack it. If it holds a
+# native GarnetServer executable that is used as is; if it holds only
+# GarnetServer.dll, the .NET runtime is installed under $HOME with
+# dotnet-install.sh and garnet-server is a wrapper script around it.
+name: install-competitors
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    runs-on: [self-hosted, 14900k]
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve the latest stable releases
+        run: |
+          latest() {
+            gh api "repos/$1/releases?per_page=30" \
+              --jq '[.[] | select(.prerelease == false and .draft == false)][0].tag_name'
+          }
+          DRAGONFLY_TAG=$(latest dragonflydb/dragonfly)
+          GARNET_TAG=$(latest microsoft/garnet)
+          [ -n "$DRAGONFLY_TAG" ] && [ -n "$GARNET_TAG" ]
+          echo "dragonfly: $DRAGONFLY_TAG"
+          echo "garnet: $GARNET_TAG"
+          echo "DRAGONFLY_TAG=$DRAGONFLY_TAG" >> "$GITHUB_ENV"
+          echo "GARNET_TAG=$GARNET_TAG" >> "$GITHUB_ENV"
+
+      # The digest is the SHA-256 GitHub records for the asset at upload.
+      - name: Install Dragonfly
+        run: |
+          set -eu
+          asset=dragonfly-x86_64.tar.gz
+          work=$(mktemp -d)
+          gh release download "$DRAGONFLY_TAG" --repo dragonflydb/dragonfly \
+            --pattern "$asset" --dir "$work"
+          want=$(gh api "repos/dragonflydb/dragonfly/releases/tags/$DRAGONFLY_TAG" \
+            --jq ".assets[] | select(.name == \"$asset\") | .digest" | sed 's/^sha256://')
+          got=$(sha256sum "$work/$asset" | cut -d' ' -f1)
+          echo "sha256 expected $want"
+          echo "sha256 got      $got"
+          [ -n "$want" ] && [ "$want" = "$got" ]
+          dest="$HOME/.local/opt/dragonfly-$DRAGONFLY_TAG"
+          rm -rf "$dest"
+          mkdir -p "$dest" "$HOME/.local/bin"
+          tar -xzf "$work/$asset" -C "$dest"
+          bin=$(find "$dest" -type f -name 'dragonfly*' -perm -u+x ! -name '*.debug' | head -1)
+          [ -n "$bin" ]
+          chmod +x "$bin"
+          ln -sfn "$bin" "$HOME/.local/bin/dragonfly"
+          rm -rf "$work"
+
+      - name: Install Garnet
+        run: |
+          set -eu
+          asset=linux-x64-based.tar.xz
+          work=$(mktemp -d)
+          gh release download "$GARNET_TAG" --repo microsoft/garnet \
+            --pattern "$asset" --dir "$work"
+          want=$(gh api "repos/microsoft/garnet/releases/tags/$GARNET_TAG" \
+            --jq ".assets[] | select(.name == \"$asset\") | .digest" | sed 's/^sha256://')
+          got=$(sha256sum "$work/$asset" | cut -d' ' -f1)
+          echo "sha256 expected $want"
+          echo "sha256 got      $got"
+          [ -n "$want" ] && [ "$want" = "$got" ]
+          dest="$HOME/.local/opt/garnet-$GARNET_TAG"
+          rm -rf "$dest"
+          mkdir -p "$dest" "$HOME/.local/bin"
+          tar -xJf "$work/$asset" -C "$dest"
+          echo "archive contents:"
+          find "$dest" -maxdepth 2 | head -40
+          native=$(find "$dest" -type f -name GarnetServer -perm -u+x | head -1)
+          if [ -n "$native" ]; then
+            ln -sfn "$native" "$HOME/.local/bin/garnet-server"
+          else
+            dll=$(find "$dest" -type f -name GarnetServer.dll | head -1)
+            [ -n "$dll" ]
+            dotnet_root="$HOME/.local/opt/dotnet"
+            # The runtime the build targets, from its runtimeconfig.json.
+            ver=$(grep -m1 '"version"' "${dll%.dll}.runtimeconfig.json" | sed 's/.*: *"\([0-9]*\.[0-9]*\).*/\1/')
+            echo "needs .NET runtime $ver"
+            curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$work/dotnet-install.sh"
+            sh "$work/dotnet-install.sh" --runtime dotnet --channel "$ver" --install-dir "$dotnet_root"
+            wrapper="$dest/garnet-server"
+            {
+              echo '#!/bin/sh'
+              echo "export DOTNET_ROOT=\"$dotnet_root\""
+              echo "exec \"$dotnet_root/dotnet\" \"$dll\" \"\$@\""
+            } > "$wrapper"
+            chmod +x "$wrapper"
+            ln -sfn "$wrapper" "$HOME/.local/bin/garnet-server"
+          fi
+          rm -rf "$work"
+
+      - name: Check that both run
+        run: |
+          set -eu
+          export PATH="$HOME/.local/bin:$PATH"
+          ls -l "$HOME/.local/bin/dragonfly" "$HOME/.local/bin/garnet-server"
+          dragonfly --version
+          garnet-server --version

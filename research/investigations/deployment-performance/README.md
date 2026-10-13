@@ -27,6 +27,12 @@ single-threaded client process per client CPU. "firn twin" is the same image
 measured again as `firn-base`; its distance from firn shows the noise, up to
 5%.
 
+Dragonfly and Garnet are installed on the 14900K by the dispatch-only
+`install-competitors.yml` workflow: the latest stable releases, unpacked
+under the runner user's home directory (`~/.local/opt`) and linked from
+`~/.local/bin`, without root. Each `redis-bench.yml` run prints the versions it
+used in its host record.
+
 The last column is the scale probe [37456575942](https://github.com/Ming-Research/Firn-wf/actions/runs/37456575942)
 of 2026-10-06. It measured Firn-wf 2c774fb9b, before RESP3, transactions,
 scripts and the command parts. That firn was built with Whitefoot release
