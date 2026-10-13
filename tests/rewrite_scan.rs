@@ -1028,31 +1028,46 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         assert!(Instant::now() < recovery_deadline, "ordinary append did not recover after restoring its file limit: {info:?}");
         std::thread::sleep(Duration::from_millis(10));
     }
-    request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"67108864"]);
+    let maxmemory = 64 * 1024 * 1024_u64;
+    let expected_reserve = maxmemory / 20;
+    assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"67108864"]), Reply::Line(b"+OK".to_vec()));
+    // A reply-after-append connection cannot build a backlog by issuing
+    // sequential SETs: each reply lets the writer drain before the next SET.
+    // Queue the bounded live value before the rewrite, then append all its
+    // repeated effects in one EXEC's keys-and-Meta hold after S1. The writer
+    // cannot interleave a drain with that append, whatever its wake cadence.
+    let value = vec![b'n'; 16 * 1024];
+    let effect = wire(&[b"SET", b"hot", &value]);
+    let writes = expected_reserve as usize / effect.len() + 1;
+    let effect_bytes = writes * effect.len();
+    assert!(writes > 1 && effect_bytes as u64 > expected_reserve);
+    let mut backlog = connect_when_ready(port, &child);
+    assert_eq!(request(&mut backlog, &[b"MULTI"]), Reply::Line(b"+OK".to_vec()));
+    let mut queued = Vec::with_capacity(effect_bytes);
+    for _ in 0..writes { queued.extend_from_slice(&effect); }
+    backlog.write_all(&queued).unwrap();
+    for _ in 0..writes {
+        assert_eq!(read_reply(&mut backlog), Reply::Line(b"+QUEUED".to_vec()));
+    }
     rewrite_start(&mut client);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let info = rewrite_info(&mut client);
         assert_eq!(info["aof_rewrite_in_progress"], "1", "must observe S1 before completion");
-        if info["firn_aof_rewrite_cut"] == "1" { break; }
+        if info["firn_aof_rewrite_cut"] == "1" {
+            let reserve: u64 = info["firn_aof_rewrite_reserve"].parse().unwrap();
+            assert_eq!(reserve, expected_reserve);
+            assert!(effect_bytes as u64 > reserve, "the complete effects alone must require collecting capacity beyond R");
+            break;
+        }
         assert!(Instant::now() < deadline, "S1 never sealed the old increment");
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_old_manifest(&program);
-    let value = vec![b'n'; 16 * 1024];
-    let mut writes = 0;
-    loop {
-        request(&mut client, &[b"SET", b"hot", &value]);
-        writes += 1;
-        let info = rewrite_info(&mut client);
-        if info["aof_rewrite_in_progress"] == "0" {
-            assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance");
-            assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
-            break;
-        }
-        assert!(Instant::now() < deadline, "post-cut backlog never aborted");
-    }
-    assert!(writes > 1);
+    assert_eq!(request(&mut backlog, &[b"EXEC"]), Reply::Array(vec![Reply::Line(b"+OK".to_vec()); writes]), "reserve exhaustion must leave every ordinary transaction effect intact");
+    let info = rewrite_wait(&mut client);
+    assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
     assert_old_manifest(&program);
     request(&mut client, &[b"INCR", b"after-backlog"]);
     rewrite_stop(&mut client, child);

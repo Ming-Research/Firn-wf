@@ -211,7 +211,8 @@ fn run_get(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     get_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
+    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
+    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
   }
   get_finish(client: client);
   return unit;
@@ -486,7 +487,8 @@ fn set_key(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       if touches {
         let appended = set_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, work: &work, input: input, args: args, key: key, env: env, budget: &log_budget);
       }
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   set_finish(client: client, plan: &plan, work: &work);
@@ -726,7 +728,8 @@ fn run_getdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let removed = client^.state == state_expired;
       let appended = getdel_meta(log: &m^.log, logged: logged, removed: removed, kind: kind, input: input, key_span: key_span, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   getdel_finish(client: client, kind: kind);
@@ -764,7 +767,8 @@ fn run_getex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     if held {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = getex_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, work: &work, input: input, key_span: key_span, key: key, env: env, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   getex_finish(client: client, plan: &plan, work: &work);
@@ -859,7 +863,8 @@ fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       let recorded = mset_meta(log: &m^.log, logged: logged, input: input, args: args, budget: &log_budget);
     }
     if logged {
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   reply_ok(client: client);
@@ -970,7 +975,8 @@ fn run_incr(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       if store^.logging {
         let appended = incr_log(log: &m^.log, removed: removed, counted: &counted, input: input, args: args, key: key, budget: &log_budget);
       }
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   incr_finish(client: client, counted: &counted);
@@ -1353,7 +1359,8 @@ fn run_append(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let changed = work.outcome == state_done;
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   string_write_finish(client: client, work: &work);
@@ -1392,7 +1399,8 @@ fn run_setrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let changed = work.outcome == state_done;
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   string_write_finish(client: client, work: &work);
@@ -1420,7 +1428,8 @@ fn run_strlen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     if logged {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: work.removed, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   strlen_finish(client: client, work: &work);
@@ -1453,7 +1462,8 @@ fn run_getrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let removed = client^.state == state_expired;
       let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: removed, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   getrange_finish(client: client, kind: kind);
@@ -1515,7 +1525,8 @@ fn run_mget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       }
     }
     if logged {
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   return unit;
@@ -1606,7 +1617,8 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       set stored = True();
     }
     if logged {
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   msetnx_finish(client: client, stored: stored);
@@ -1722,7 +1734,8 @@ fn run_incrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
     if logged {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = incrbyfloat_meta(log: &m^.log, logged: logged, removed: removed, summed: &summed, input: input, key_span: key_span, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   incrbyfloat_finish(client: client, summed: &summed);

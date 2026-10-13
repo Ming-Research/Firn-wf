@@ -100,22 +100,175 @@ fn send_all(send: &TcpSend, source: &[u8], length: u64, store: &Keyspace, clock:
   return Ok<unit, IoError>(value: unit);
 }
 
-fn flush(send: &TcpSend, client: &Client, store: &Keyspace, clock: &Clock, base: Instant) -> sent: Bool reads(store), writes(send), writes(client), writes(clock) waits {
-  doc "Sends the replies the client holds and empties them; false reports a connection that refused them.";
-  let written = client^.at;
-  let capacity = client^.bytes.inner.len;
-  let window = &client^.bytes.inner[0_u64..capacity];
-  let delivered = True();
-  if written <= capacity {
-    match send_all(send: send, source: window, length: written, store: store, clock: clock, base: base) {
-      Ok(value: done) => {
+fn aof_reply_ready(meta: &pkg::store::Meta, sequence: u64) -> ready: Bool reads(meta.log), reads(meta.aof_pending_length), reads(meta.aof_written_sequence), reads(meta.aof_failed_sequence), reads(meta.aof_append_error) {
+  doc "Below saturation, a successful covering append or a published append failure releases executed replies. At the intentionally saturated sequence, only draining both buffers or a current append failure is sufficient; an old maximum watermark cannot distinguish a later command.";
+  if sequence == 18446744073709551615_u64 {
+    match meta^.aof_append_error {
+      Some(..) => {
+        return True();
       }
-      Err(error: problem) => {
-        set delivered = False();
+      None() => {
+      }
+    }
+    let collecting_empty = meta^.log.inner.len == 0_u64;
+    let pending_empty = meta^.aof_pending_length == 0_u64;
+    return band(collecting_empty, pending_empty);
+  }
+  let written = meta^.aof_written_sequence >= sequence;
+  let failed = meta^.aof_failed_sequence >= sequence;
+  return bor(written, failed);
+}
+
+struct ReplyBoundary {
+  end: u64;
+  sequence: u64;
+}
+
+fn reply_boundary_add(boundaries: &Box<Slots<ReplyBoundary>>, end: u64, sequence: u64) -> added: Bool writes(boundaries) {
+  doc "Close the preceding nonempty reply run when a new command adds an AOF dependency. Retain a connection-local doubling window, as for its reply bytes; host allocation failure stops the program, and an unrepresentable extent refuses the connection rather than discarding a dependency.";
+  let length = boundaries^.inner.len;
+  if length > 0_u64 {
+    let last = length - 1_u64;
+    if boundaries^.inner[last].end == end {
+      return True();
+    }
+  }
+  if length == boundaries^.inner.cap {
+    let capacity = boundaries^.inner.cap;
+    let doubled = capacity +sat capacity;
+    let target = imax(doubled, 16_u64);
+    if target <= 4611686018427387904_u64 {
+      if target >= capacity {
+        grow(cell: boundaries, capacity: target);
       }
     }
   }
+  if boundaries^.inner.len < boundaries^.inner.cap {
+    let boundary = ReplyBoundary(end: end, sequence: sequence);
+    place_back(window: &boundaries^.inner, value: boundary);
+    return True();
+  }
+  return False();
+}
+
+fn send_reply_run(send: &TcpSend, source: &[u8], start: u64, end: u64, store: &Keyspace, clock: &Clock, base: Instant) -> delivered: Bool reads(source), reads(store), writes(send), writes(clock) waits contract {
+  requires start <= end;
+  requires end <= source^.len;
+} {
+  let run = &source^[start..end];
+  let length = end - start;
+  match send_all(send: send, source: run, length: length, store: store, clock: clock, base: base) {
+    Ok(value: done) => {
+      return True();
+    }
+    Err(error: problem) => {
+      return False();
+    }
+  }
+}
+
+fn flush(send: &TcpSend, client: &Client, boundaries: &Box<Slots<ReplyBoundary>>, store: &Keyspace, clock: &Clock, base: Instant) -> sent: Bool reads(store), writes(send), writes(client), writes(boundaries), writes(clock) waits {
+  doc "Send reply runs in connection order, waiting only for each run's command and preceding commands. Once its sequence is written or released by an append failure, coalesce following ready runs under that same Meta hold for one send. A batch with no AOF dependency sends without reading Meta. Validate extents before sending and empty the boundary window while retaining capacity. Append failure releases already-produced replies unchanged as Redis 7.2.16 does, without marking records written.";
+  let written = client^.at;
+  let capacity = client^.bytes.inner.len;
+  let sequence = client^.aof_sequence;
+  let delivered = False();
+  if written <= capacity {
+    let window = &client^.bytes.inner[0_u64..capacity];
+    if sequence == 0_u64 {
+      set delivered = send_reply_run(send: send, source: window, start: 0_u64, end: written, store: store, clock: clock, base: base);
+    } else {
+      let index = 0_u64;
+      let count = boundaries^.inner.len;
+      let start = 0_u64;
+      set delivered = True();
+      loop @runs (
+        invariant reply_cursor: start <= written,
+        invariant boundary_cursor: index <= count
+      ) {
+        if start >= written {
+          break @runs;
+        }
+        let end = written;
+        let run_sequence = sequence;
+        let final = True();
+        let next = index;
+        if index < count {
+          let boundary = boundaries^.inner[index];
+          set end = boundary.end;
+          set run_sequence = boundary.sequence;
+          set final = False();
+          set next = index + 1_u64;
+        }
+        let ordered = start <= end;
+        let contained = end <= written;
+        if band(ordered, contained) {
+        } else {
+          set delivered = False();
+          break @runs;
+        }
+        if run_sequence != 0_u64 {
+          atomic m = &store^.meta when aof_reply_ready(meta: m, sequence: run_sequence) {
+            loop @coalescing (
+              invariant reply_start: start <= end,
+              invariant reply_extent: end <= written,
+              invariant coalesced_cursor: next <= count
+            ) {
+              if final {
+                break @coalescing;
+              }
+              let following_end = written;
+              let following_sequence = sequence;
+              if next < count {
+                let following = boundaries^.inner[next];
+                set following_end = following.end;
+                set following_sequence = following.sequence;
+              }
+              let follows = end <= following_end;
+              let fits = following_end <= written;
+              if band(follows, fits) {
+              } else {
+                set delivered = False();
+                break @coalescing;
+              }
+              if aof_reply_ready(meta: m, sequence: following_sequence) {
+                set end = following_end;
+                if next < count {
+                  set next = next + 1_u64;
+                } else {
+                  set final = True();
+                }
+              } else {
+                break @coalescing;
+              }
+            }
+          }
+        }
+        if delivered {
+          let resumed = std::time::now(clock: clock);
+          set delivered = send_reply_run(send: send, source: window, start: start, end: end, store: store, clock: clock, base: resumed);
+        }
+        if delivered {
+        } else {
+          break @runs;
+        }
+        set start = end;
+        if final {
+          break @runs;
+        }
+        set index = next;
+      }
+    }
+  }
+  loop @clearing {
+    if boundaries^.inner.len > 0_u64 {
+      let removed = take_back(window: &boundaries^.inner);
+    } else {
+      break @clearing;
+    }
+  }
   set client^.at = 0_u64;
+  set client^.aof_sequence = 0_u64;
   return delivered;
 }
 
@@ -287,7 +440,7 @@ fn read_time(wall: &WallClock) -> result: Reading reads(wall) {
 }
 
 fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter, shutdown: CancelSource) -> result: unit pure waits {
-  doc "Serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: a receive has no deadline at zero and otherwise waits for the remaining idle interval. It keeps a watch of a receive wake generation across requests. A changed limit installs a fresh generation and fires the old one; shutdown fires the current generation. After cancellation or a deadline the client reads shutdown and the limit again, replacing a fired watch only while still running, and waits again unless stopping or expired. Active clients also re-read the state at most once a second while processing requests; these reads observe shutdown and close after held replies are sent. When command dispatch reports an accepted shutdown request, the receive generation has already been fired and the client context fires its separate shutdown source before another wait, without reading server state again. Sends keep their never-firing watch and retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
+  doc "Serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds in one reply batch, sending sooner once 16,384 bytes of replies are waiting. Connection-local boundaries record each change in AOF dependency: reads preceding a write need none, and reads between writes wait only for the preceding write. Sending coalesces consecutive runs whose dependencies are ready into one send, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: a receive has no deadline at zero and otherwise waits for the remaining idle interval. It keeps a watch of a receive wake generation across requests. A changed limit installs a fresh generation and fires the old one; shutdown fires the current generation. After cancellation or a deadline the client reads shutdown and the limit again, replacing a fired watch only while still running, and waits again unless stopping or expired. Active clients also re-read the state at most once a second while processing requests; these reads observe shutdown and close after held replies are sent. When command dispatch reports an accepted shutdown request, the receive generation has already been fired and the client context fires its separate shutdown source before another wait, without reading server state again. Sends keep their never-firing watch and retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
   let env = KeyEnv();
   let client = client_new(capacity: 16384_u64);
   set client.meter = Some<std::process::MemoryMeter>(value: move meter);
@@ -299,6 +452,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let args = box_slots_new::<Span>(capacity: 16_u64);
   let input = input_new(capacity: 16384_u64);
   let transaction = transaction_new();
+  let boundaries = box_slots_new::<ReplyBoundary>(capacity: 16_u64);
   set client.id = id;
   set client.authenticated = bnot(required);
   set client.locked = required;
@@ -416,7 +570,18 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
         break @commands;
       }
       if parsed.state == 1_u64 {
+        let reply_start = client.at;
+        let prior_sequence = client.aof_sequence;
         let requested = execute_client(store: &store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: &clock, transaction: &transaction);
+        if client.aof_sequence != prior_sequence {
+          if reply_start > 0_u64 {
+            let added = reply_boundary_add(boundaries: &boundaries, end: reply_start, sequence: prior_sequence);
+            if bnot(added) {
+              set broken = True();
+              break @commands;
+            }
+          }
+        }
         if requested {
           std::time::cancel_fire(source: &shutdown);
         }
@@ -432,7 +597,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       }
       set consumed = parsed.next;
       if client.at > 16384_u64 {
-        let delivered = flush(send: &connection.send, client: &client, store: &store, clock: &clock, base: woke);
+        let delivered = flush(send: &connection.send, client: &client, boundaries: &boundaries, store: &store, clock: &clock, base: woke);
         if delivered {
         } else {
           set broken = True();
@@ -441,7 +606,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       }
     }
     if client.at > 0_u64 {
-      let delivered = flush(send: &connection.send, client: &client, store: &store, clock: &clock, base: woke);
+      let delivered = flush(send: &connection.send, client: &client, boundaries: &boundaries, store: &store, clock: &clock, base: woke);
       if delivered {
       } else {
         set broken = True();

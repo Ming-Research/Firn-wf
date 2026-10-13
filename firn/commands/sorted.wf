@@ -525,7 +525,8 @@ fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = zadd_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, plan: &plan, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   zadd_finish(client: client, plan: &plan);
@@ -662,7 +663,8 @@ fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = zrem_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   zrem_finish(client: client);
@@ -918,7 +920,8 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = zpop_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   zpop_finish(client: client);
@@ -1002,7 +1005,8 @@ fn run_zcard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     zcard_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
+    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
+    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     set client^.number = 0_u64;
   }
   zcard_finish(client: client);
@@ -1100,7 +1104,8 @@ fn run_zscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     zscore_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
+    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
+    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
   }
   zscore_finish(client: client);
   return unit;
@@ -1207,7 +1212,8 @@ fn run_zmscore(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     zmscore_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
+    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
+    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
   }
   zmscore_finish(client: client, members: members);
   return unit;
@@ -1415,7 +1421,8 @@ fn run_zrank(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     zrank_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
+    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
+    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
   }
   zrank_finish(client: client);
   return unit;

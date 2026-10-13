@@ -6,8 +6,8 @@
 //! yes. These cases concern SIGKILL, which preserves the kernel page cache,
 //! rather than power loss. Firn currently has only the everysec sync policy
 //! (design/firn/append-only-file.md); there is no always variant to invoke.
-//! The no-lost-ack assertion is the requested acceptance criterion: firn's
-//! reply path does not wait for its 10 ms AOF writer, so it may fail today.
+//! The no-lost-ack assertion is the requested acceptance criterion for the
+//! reply-after-append barrier; the former 10 ms writer exposed this race.
 //! Even Redis everysec can postpone an append during a background fsync
 //! (src/aof.c:1096-1123); page-cache retention protects appended bytes only.
 
@@ -61,6 +61,224 @@ fn stop(child: ProgramChild, control: &mut TcpStream) {
     control.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("request orderly stop");
     shutdown_finished(child);
     assert_eq!(control.read(&mut [0]).unwrap(), 0, "shutdown closes control peer");
+}
+
+fn start_aof_route(
+    program: &CompiledProgram,
+    lease: &support::PortLease,
+    native: bool,
+) -> (ProgramChild, TcpStream) {
+    let port = lease.port().to_string();
+    let child = program.spawn_on_route_with(
+        native,
+        &[("WF_WORKERS", "4"), ("WF_DRIVERS", "2")],
+        &[port.as_bytes(), b"0", AOF_NAME.as_bytes(), b"0",
+          b"--auto-aof-rewrite-percentage", b"0"],
+    ).with_port(lease);
+    let control = peer(lease.port(), &child);
+    (child, control)
+}
+
+/// Inspect the file immediately after a reply, without polling INFO, sleeping,
+/// requesting a flush or stopping the server. Later pipelined commands may
+/// already be appended, but this acknowledged prefix must be complete.
+fn assert_appended_prefix(path: &std::path::Path, expected: &[u8], context: &str) {
+    let actual = std::fs::read(path).expect("read acknowledged AOF bytes");
+    assert!(actual.starts_with(expected),
+        "{context}: acknowledged AOF prefix is not written: expected={expected:?}, actual={actual:?}");
+}
+
+fn append_counts(client: &mut TcpStream) -> [u64; 3] {
+    client.write_all(&resp(&["INFO", "persistence"])).unwrap();
+    let info = bulk_reply(client, "append counters");
+    ["firn_aof_append_batches", "firn_aof_written_batches", "firn_aof_appended_commands"]
+        .map(|field| info_field(&info, field)
+            .unwrap_or_else(|| panic!("missing {field}: {info}"))
+            .parse().unwrap_or_else(|error| panic!("invalid {field}: {error}; {info}")))
+}
+
+/// Firn's attribution counters count complete outer AOF-producing executions,
+/// not keys or effect records. Redis 7.2.16 t_string.c and multi.c define the
+/// SET/MSET/EXEC replies and transaction effect block checked here. INFO is
+/// requested only after the file-prefix checks so it cannot hide an early reply.
+#[test]
+fn aof_append_counters_count_batches_and_outer_executions_on_both_routes() {
+    for native in [false, true] {
+        let program = CompiledProgram::from_environment();
+        let lease = support::lease_port();
+        let (child, mut client) = start_aof_route(&program, &lease, native);
+        let path = aof_incremental_path(program.working_directory(), AOF_NAME);
+        let mut expected_aof = Vec::new();
+        assert_eq!(append_counts(&mut client), [0, 0, 0], "native={native}: fresh counters");
+
+        for args in [&["SET", "count:first", "one"][..],
+            &["MSET", "count:second", "two", "count:third", "three"]] {
+            assert_eq!(memory_request(&mut client, args), "+OK\r\n");
+            expected_aof.extend(resp(args));
+            assert_appended_prefix(&path, &expected_aof, "sequential counted append");
+        }
+        assert_eq!(append_counts(&mut client), [2, 2, 2],
+            "native={native}: sequential SET and multi-key MSET each count once");
+        for (args, reply) in [(&["GET", "count:first"][..], "$3\r\none\r\n"),
+            (&["SETNX", "count:first", "ignored"], ":0\r\n"),
+            (&["DEL", "count:absent"], ":0\r\n")] {
+            assert_eq!(memory_request(&mut client, args), reply);
+        }
+        assert_eq!(append_counts(&mut client), [2, 2, 2],
+            "native={native}: reads and no-effect commands do not count");
+
+        let transaction: &[&[&str]] = &[
+            &["MULTI"], &["SET", "count:tx:first", "alpha"],
+            &["SET", "count:tx:second", "beta"], &["EXEC"],
+        ];
+        let requests: Vec<_> = transaction.iter().flat_map(|args| resp(args)).collect();
+        client.write_all(&requests).unwrap();
+        expect_replies(&mut client, b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n+OK\r\n",
+            "counter transaction replies");
+        for args in transaction {
+            expected_aof.extend(resp(args));
+        }
+        assert_appended_prefix(&path, &expected_aof, "counted EXEC complete effects");
+        let before = append_counts(&mut client);
+        assert_eq!(before, [3, 3, 3],
+            "native={native}: EXEC counts one outer execution, not its four records");
+
+        let writes = 16_u64;
+        let mut pipeline = Vec::new();
+        for index in 0..writes {
+            let key = format!("count:pipeline:{index}");
+            let record = resp(&["SET", &key, "value"]);
+            pipeline.extend(&record);
+            expected_aof.extend(record);
+        }
+        client.write_all(&pipeline).unwrap();
+        for _ in 0..writes {
+            assert_eq!(whole_reply(&mut client, "counter pipeline reply"), "+OK\r\n");
+        }
+        assert_appended_prefix(&path, &expected_aof, "counted pipeline complete effects");
+        let after = append_counts(&mut client);
+        let batches = after[1] - before[1];
+        assert_eq!(after[2] - before[2], writes, "native={native}: pipeline executions");
+        assert!((1..=writes).contains(&batches),
+            "native={native}: pipeline full batches must be 1..={writes}, got {batches}");
+        assert_eq!(after[0] - before[0], batches,
+            "native={native}: healthy append attempts equal complete batches");
+        assert_eq!(std::fs::read(&path).unwrap(), expected_aof,
+            "counter observations and no-effect commands produce no records");
+        stop(child, &mut client);
+    }
+}
+
+/// Redis 7.2.16 server.c:1723-1739 flushes before sending pending replies;
+/// t_string.c's SETNX refusal and db.c's absent DEL produce no propagation.
+/// The byte checks expose the old reply-before-10-ms-writer window. Reply
+/// ordering itself is a regression check for reads and no-record commands
+/// sharing a connection with writes held behind the new append barrier.
+#[test]
+fn aof_pipeline_replies_stay_in_order_after_their_covering_append() {
+    for native in [false, true] {
+        let program = CompiledProgram::from_environment();
+        let lease = support::lease_port();
+        let (child, mut client) = start_aof_route(&program, &lease, native);
+        let path = aof_incremental_path(program.working_directory(), AOF_NAME);
+        let mut expected_aof = Vec::new();
+        for round in 0..12 {
+            let key = format!("pipeline:{round}");
+            let other = format!("pipeline:other:{round}");
+            let absent = format!("pipeline:absent:{round}");
+            let commands: &[(&[&str], &str, bool)] = &[
+                (&["GET", &absent], "$-1\r\n", false),
+                (&["SET", &key, "first"], "+OK\r\n", true),
+                (&["GET", &key], "$5\r\nfirst\r\n", false),
+                (&["SETNX", &key, "ignored"], ":0\r\n", false),
+                (&["GET", &key], "$5\r\nfirst\r\n", false),
+                (&["MSET", &key, "second", &other, "third"], "+OK\r\n", true),
+                (&["GET", &key], "$6\r\nsecond\r\n", false),
+                (&["DEL", &absent], ":0\r\n", false),
+                (&["GET", &other], "$5\r\nthird\r\n", false),
+                (&["APPEND", &key, "!"], ":7\r\n", true),
+                (&["GET", &key], "$7\r\nsecond!\r\n", false),
+            ];
+            let requests: Vec<_> = commands.iter().flat_map(|(args, _, _)| resp(args)).collect();
+            client.write_all(&requests).expect("send interleaved AOF pipeline");
+            for (args, expected_reply, recorded) in commands {
+                let context = format!("native={native}, round={round}, {}", args.join(" "));
+                assert_eq!(whole_reply(&mut client, &context), *expected_reply, "{context}");
+                if *recorded {
+                    expected_aof.extend(resp(args));
+                    assert_appended_prefix(&path, &expected_aof, &context);
+                }
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), expected_aof,
+                "reads, refused SETNX and absent DEL add no AOF record");
+            // FUNCTION FLUSH records an effect even with no functions loaded:
+            // its reply needs an append token although no dataset key changed.
+            assert_eq!(memory_request(&mut client, &["FUNCTION", "FLUSH"]), "+OK\r\n");
+            expected_aof.extend(resp(&["FUNCTION", "FLUSH"]));
+            assert_eq!(std::fs::read(&path).unwrap(), expected_aof,
+                "FUNCTION FLUSH must be appended before its reply");
+        }
+        stop(child, &mut client);
+    }
+}
+
+/// Redis 7.2.16 server.c:3348-3380 brackets multiple propagated effects in
+/// MULTI/EXEC, including scripts. Checking those complete bytes immediately
+/// after EXEC/EVAL/EVALSHA detects an outer reply losing its effects' barrier
+/// token; replay alone or a check after orderly shutdown would hide the gap.
+#[test]
+fn aof_exec_and_script_replies_wait_for_all_effect_records_on_both_routes() {
+    for native in [false, true] {
+        let program = CompiledProgram::from_environment();
+        let lease = support::lease_port();
+        let (child, mut client) = start_aof_route(&program, &lease, native);
+        let path = aof_incremental_path(program.working_directory(), AOF_NAME);
+        let source = "redis.call('SET',KEYS[1],'alpha'); redis.call('SET',KEYS[2],'beta'); return redis.call('GET',KEYS[1])";
+        let sha = memory_request(&mut client, &["SCRIPT", "LOAD", source]);
+        let sha = sha.strip_prefix("$40\r\n").and_then(|s| s.strip_suffix("\r\n"))
+            .expect("SCRIPT LOAD returns a SHA1").to_owned();
+        let mut expected_aof = Vec::new();
+        for round in 0..6 {
+            let tx = format!("exec:{round}");
+            let commands: &[&[&str]] = &[
+                &["MULTI"], &["SET", &tx, "first"], &["APPEND", &tx, "!"],
+                &["GET", &tx], &["EXEC"],
+            ];
+            let requests: Vec<_> = commands.iter().flat_map(|args| resp(args)).collect();
+            client.write_all(&requests).expect("send AOF transaction");
+            expect_replies(&mut client,
+                b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n+OK\r\n:6\r\n$6\r\nfirst!\r\n",
+                "transaction reply order");
+            for args in [&["MULTI"][..], &["SET", &tx, "first"], &["APPEND", &tx, "!"], &["EXEC"]] {
+                expected_aof.extend(resp(args));
+            }
+            assert_appended_prefix(&path, &expected_aof, "EXEC complete effect block");
+
+            let first = format!("script:{round}:first");
+            let second = format!("script:{round}:second");
+            assert_eq!(memory_request(&mut client, &["EVALSHA", &sha, "2", &first, &second]),
+                "$5\r\nalpha\r\n");
+            for args in [&["MULTI"][..], &["SET", &first, "alpha"], &["SET", &second, "beta"], &["EXEC"]] {
+                expected_aof.extend(resp(args));
+            }
+            assert_appended_prefix(&path, &expected_aof, "declared EVALSHA complete effect block");
+
+            let fallback = "redis.call('SET','fallback:first','gamma'); redis.call('SET','fallback:second','delta'); return redis.call('GET','fallback:second')";
+            assert_eq!(memory_request(&mut client, &["EVAL", fallback, "0"]), "$5\r\ndelta\r\n");
+            for args in [
+                &["MULTI"][..], &["SET", "fallback:first", "gamma"],
+                &["SET", "fallback:second", "delta"], &["EXEC"],
+            ] {
+                expected_aof.extend(resp(args));
+            }
+            assert_appended_prefix(&path, &expected_aof, "fallback EVAL complete effect block");
+            assert_eq!(memory_request(&mut client, &["EVAL", "return redis.call('GET',KEYS[1])", "1", &first]),
+                "$5\r\nalpha\r\n");
+            assert_eq!(std::fs::read(&path).unwrap(), expected_aof,
+                "queued GET and read-only script add no AOF record");
+        }
+        stop(child, &mut client);
+    }
 }
 
 #[derive(Clone)]

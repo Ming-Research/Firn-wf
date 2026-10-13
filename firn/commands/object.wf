@@ -141,7 +141,8 @@ fn run_object(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = mset_lapse_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   return unit;

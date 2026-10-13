@@ -167,7 +167,8 @@ fn run_sadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = set_members_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   sadd_finish(client: client);
@@ -247,7 +248,8 @@ fn run_srem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = set_members_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   srem_finish(client: client);
@@ -373,7 +375,8 @@ fn run_spop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = spop_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   spop_finish(client: client);
@@ -422,7 +425,8 @@ fn run_scard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     let lapsed = scard_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
+    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
+    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
   }
   scard_finish(client: client);
   return unit;
@@ -478,7 +482,8 @@ fn run_smembers(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
     let lapsed = smembers_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
+    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
+    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
   }
   smembers_finish(client: client);
   return unit;
@@ -558,7 +563,8 @@ fn run_sismember(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client
     let lapsed = sismember_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
+    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
+    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
   }
   sismember_finish(client: client, many: many, count: count);
   return unit;
@@ -711,7 +717,8 @@ fn run_srandmember(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
     let lapsed = srandmember_body(journal: &journal, access_key: key, slot: slot, client: client);
   }
   if client^.state == state_expired {
-    remove_expired(store: store, key: key, now: client^.now);
+    let aof_sequence = remove_expired(store: store, key: key, now: client^.now);
+    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
   }
   srandmember_finish(client: client);
   return unit;
@@ -927,7 +934,8 @@ fn run_smove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = smove_meta(log: &m^.log, logged: store^.logging, work: &work, input: input, args: args, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   smove_finish(client: client);
@@ -1223,7 +1231,8 @@ fn run_combine(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &work.removed, changed: work.changed, input: input, args: args, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   set_combine_finish(client: client, storing: storing, members: &members);
@@ -1252,7 +1261,8 @@ fn run_sintercard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let changed = False();
       let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &removed, changed: changed, input: input, args: args, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   sintercard_finish(client: client);
