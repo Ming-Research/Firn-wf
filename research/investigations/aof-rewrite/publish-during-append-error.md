@@ -18,8 +18,9 @@ Both recover every acknowledged write after the disk is repaired.
 Can firn keep the scanned work and publish base(S1) while the old increment
 still refuses appends, so that the base and the files that follow it apply
 every acknowledged command exactly once at every crash point, the bytes
-retained for the failing file are discarded only after the new selection is
-durable, and firn's existing recovery after a failed sync is unchanged?
+retained for the failing file are discarded only once the new selection is
+published, new writes wait until it is durable, and firn's existing
+recovery after a failed sync is unchanged?
 
 ## What Redis 7.2.16 does
 
@@ -38,9 +39,11 @@ where the gate run above is cited.
    every old file (821), and points `aof_fd` at it (840). It leaves
    `aof_buf` untouched. The child writes the dataset as of the fork, S0.
 2. **Append failure.** With everysec, a failed or short `write(2)` in
-   `flushAppendOnlyFile` (1066–1260) keeps the unwritten bytes in `aof_buf`
-   (1206–1213, a partial write trimmed only when `ftruncate` fails),
-   records `aof_last_write_errno`, and sets `aof_last_write_status = C_ERR`
+   `flushAppendOnlyFile` (1066–1260) keeps the unwritten bytes in `aof_buf`.
+   A short write is first truncated away (`ftruncate` at 1176–1186); only
+   when that fails is the written prefix trimmed from the buffer
+   (`sdsrange`, 1207–1212). It records `aof_last_write_errno` and sets
+   `aof_last_write_status = C_ERR`
    (1204). Only a later complete write clears it (1215–1222). Retries run
    from `beforeSleep` on every event-loop iteration (server.c:1724) and once
    a second from `serverCron` while the status is err (server.c:1446–1456).
@@ -116,7 +119,9 @@ base name. "Old selection" is the current manifest: old base plus
 When P drains and `I_n` syncs before the base is complete, the existing
 rotation runs: publish old files plus `I_{n+1}`, adopt it, drain L into it,
 reconcile, install base(S1) plus `I_{n+1}`. Nothing below changes this path
-or its crash analysis in [scan-log.md](scan-log.md#cut-and-authoritative-files).
+or its crash analysis in [scan-log.md](scan-log.md#cut-and-authoritative-files),
+except the directory-sync rule of step 12, which the separate fix of the
+ordinary rotation (board item `firn-rw-switch-dirsync`, below) is to adopt.
 
 ### Append error before S1
 
@@ -131,19 +136,19 @@ or its crash analysis in [scan-log.md](scan-log.md#cut-and-authoritative-files).
 ### The cut with bytes retained
 
 3. When the scan is done the writer cuts even if P is not empty. In one Meta
-   statement it reads S1, disables capture, freezes the journal and appends
-   L's bytes to the end of P, leaving L empty for commands after S1. The
-   growth of P is charged to the reserve R through the rotation budget
-   before it is allocated; if it does not fit, the attempt aborts with
-   `rotation_reserve` and P keeps its order. Every byte in P is now from a
-   statement at or before S1; every later statement collects in L. This is
-   the single correspondence the existing cut already guarantees, extended
-   to bytes that were retained before the cut.
+   statement it reads S1, disables capture, freezes the journal, sets the
+   rotating state and appends L's bytes to the end of P, leaving a fresh L
+   for commands after S1. The growth of P's capacity is charged to the
+   reserve R before it is allocated, in the same ledger the rotation budget
+   uses; if it does not fit, the attempt aborts with `rotation_reserve` and
+   P keeps its order. Every byte in P is now from a statement at or before
+   S1; every later statement collects in L. This is the correspondence the
+   existing cut already guarantees, extended to bytes retained before the
+   cut.
 4. The writer tries to drain P once. If it drains, the normal path follows.
    Either way it drains the frozen journal completely to J and then marks
-   the cut done, so the worker may reconcile. The rewrite stays in its
-   rotating state, so post-S1 growth of L keeps consuming R through the
-   existing rotation budget.
+   the cut done, so the worker may reconcile without waiting for a
+   rotation.
 
 ### Waiting state W1 (cut, P retained, not rotated)
 
@@ -152,54 +157,104 @@ or its crash analysis in [scan-log.md](scan-log.md#cut-and-authoritative-files).
    against `I_n`. If P drains, the writer runs the existing switch (boundary
    check, sync `I_n`, publish old files plus `I_{n+1}`) and the attempt
    continues on the normal path.
-6. Clients stay refused because the append error is saved. L can grow only
-   from internal expiry or eviction and from statements committed between
-   the cut and the failed drain being published. Exhausting R aborts as
-   today.
+6. The rotating state lasts through W1, so every growth of L is charged to R
+   by the existing rotation budget, as the
+   [rotation-backlog decision](../../../design/firn/aof-rewrite/capture.md)
+   requires while the writer seals and rotates. Clients stay refused because
+   the append error is saved, so L grows only from internal expiry or
+   eviction and from statements committed between the cut and the failed
+   drain being published. Exhausting R aborts as today.
 
 ### Direct installation (base complete while still in W1)
 
 7. The worker reconciles J after S1, syncs and closes T, and reports a
    complete base. Installation commits under Meta with `aof_installing` as
-   today; shutdown or pressure that wins that hold refuses it.
+   today; shutdown or pressure that wins that hold refuses it. Because the
+   direct path never runs `aof_rw_switch`, it repeats that function's two
+   checks before any file operation: `aof_rw_cancelled` (rewrite.wf:104)
+   and the incremental-sequence exhaustion check (rewrite.wf:108–112),
+   which refuses the attempt with `sequence_exhausted`. It does not repeat
+   the switch's cut before an unfinished startup-retained MULTI
+   (rewrite.wf:56–86): that cut exists so `I_n` replays after it inside a
+   published selection, and here `I_n` becomes history, never replayed,
+   while base(S1) holds the live dataset, as the existing decision on that
+   cut already gives.
 8. Open `I_{n+1}` (truncated, unlisted).
 9. Rename T to B'.
 10. Build the manifest with B' as base, `I_{n+1}` as the only active
     increment, and the old base and `I_1..I_n` as history; write
     `temp-F.manifest`, sync it, rename it over `F.manifest` (the
     publication point), sync `appendonlydir`.
-11. Published and durable: in one Meta statement adopt `I_{n+1}` (incremental
-    and synced sizes zero, empty boundary), release P, clear the saved append
-    error and its partial flag, end the rotating state and record success.
-    Then close the old handle (a close failure is counted in
-    `firn_aof_rewrite_cleanup_failed`; it cannot undo the publication),
-    remove history, and drain L into `I_{n+1}` by the ordinary flush.
-12. Published but the directory sync failed: adopt `I_{n+1}`, release P and
-    clear the append error as in step 11, but save the directory sync's
-    error as the sync error, keep every history file and entry, and report
-    `aof_last_bgrewrite_status:err`. Writes stay refused with MISCONF and the
-    existing sync-error recovery rewrite re-establishes a durable selection.
-    The normal path does not need this, because there the old selection
-    already holds every acknowledged byte; here the old selection lacks P, so
-    a selection whose rename may not survive power loss must not take new
-    acknowledged writes.
-13. Not published (open, rename or manifest write failed): remove B' and
-    `I_{n+1}` when they exist, abort with `install_io`, end the rotating
-    state, and keep the old handle. The ordinary flush then drains P and
-    afterwards L to `I_n` in order once the disk is repaired, as the
-    existing pre-publication failure rule requires.
+11. Published: in one Meta statement adopt `I_{n+1}` (incremental and synced
+    sizes zero, empty boundary), release P, clear the saved append error
+    and its partial flag, and end the rotating state. When the directory
+    sync failed, the same statement saves that sync's error as the sync
+    error (step 12). Then close the old handle (a close failure is counted
+    in `firn_aof_rewrite_cleanup_failed`; it cannot undo the publication),
+    and drain L into `I_{n+1}` by the ordinary flush. Only a durable
+    publication removes history and records `aof_last_bgrewrite_status:ok`.
+12. The directory-sync rule. A published manifest whose directory sync
+    failed may not survive power loss, and the files it names then take
+    acknowledged writes that a lost rename would detach. So the failure is
+    saved as the sync error: writes stay refused with MISCONF, every history
+    file and entry is kept, `aof_last_bgrewrite_status` is err, and the
+    existing sync-error recovery rewrite (after the next successful sync)
+    re-establishes a durable selection whose installation clears it.
+    The ordinary rotation has the same exposure today and does not apply
+    this rule: `aof_rw_switch` (rewrite.wf:127–146) adopts `I_{n+1}` and
+    admits writes after a published but not durable manifest, and
+    `aof_persist_record` (manifest.wf:465–474) saves no sync error, so
+    writes acknowledged and synced into `I_{n+1}` can be lost on power loss
+    when the rename is lost. That is an existing gap, fixed separately
+    under board item `firn-rw-switch-dirsync`; the direct path uses the rule
+    that fix is to apply, so both publications of a new increment behave
+    alike.
+13. Not published (open, rename or manifest write failed): attempt to
+    remove B' and `I_{n+1}` when they exist, abort with `install_io`, end
+    the rotating state, and keep the old handle. The ordinary flush then
+    drains P and afterwards L to `I_n` in order once the disk is repaired,
+    as the existing pre-publication failure rule requires. A failed removal
+    is counted in `firn_aof_rewrite_cleanup_failed` and is harmless: neither
+    name is in any manifest, the next rotation opens `I_{n+1}` with
+    truncation and the next installation renames over B'.
 
 Abort in W1 for any other reason (shutdown, reserve, journal error) takes
 step 13's fall-back: the old handle, P then L in order. Shutdown's single
 forced append of P and L is unchanged.
+
+### Reserve accounting
+
+What R covers in W1, from reading `aof_rw_admit` (rewrite.wf:545–607) and
+the rotation budget (`log_budget_begin`, store.wf:544–550;
+`sequence_commit`, sequence.wf:109–125):
+
+- Admission excludes the capacities of L and P from the heap it counts
+  (`excluded`, rewrite.wf:561–562), so P's bytes retained before S0 are
+  outside both maxmemory's count and R, as all ordinary AOF bytes are.
+- The cut's copy of L into P grows P by at most L's length at the cut, and
+  the old L is freed after the copy. Step 3 charges that growth to R and
+  never refunds it before the attempt ends (`aof_rw_complete` resets the
+  ledger), so the copy cannot exceed R and the transient double copy is
+  bounded by R.
+- Growth of L after S1 is charged by the rotation budget while `rotating`
+  is set, which step 6 extends through W1. Its charges likewise remain
+  until the attempt ends.
+- W1 lasts until the base is complete, the prefix drains or the attempt
+  aborts; no timer bounds it, but R does: when L's growth exhausts R the
+  attempt aborts with `rotation_reserve` and step 13's fall-back applies.
+
+Unverified: no run has measured P's growth at the cut or L's growth in W1;
+the bound rests on the ledger reading above. The acceptance case's device
+job reports `firn_aof_rewrite_abort_reason`, so an unexpected
+`rotation_reserve` there would show the bound too tight.
 
 ### What is reported
 
 | Moment | `aof_rewrite_in_progress` | `aof_last_bgrewrite_status` | `aof_last_write_status` | `aof_buffer_length` | Writes |
 | --- | --- | --- | --- | --- | --- |
 | Fault during scan, and W1 | 1 | previous value | err | P plus L | MISCONF |
-| After durable direct installation | 0 | ok | ok, until an append to `I_{n+1}` fails | L | admitted |
-| After a published installation whose directory sync failed | 0 | err | err (saved sync error) | L | MISCONF until a recovery rewrite is durable |
+| After a durable direct installation | 0 | ok | ok, until an append to `I_{n+1}` fails | L | admitted |
+| After a published direct installation whose directory sync failed | 0 | err | err: the append error is cleared, the saved sync error remains | L | MISCONF until a recovery rewrite is durable |
 | After a refused or failed direct installation | 0 | err | err until P drains | P plus L | MISCONF until P drains |
 
 `firn_aof_rewrite_abort_reason` is empty after success. The Drain cause can no
@@ -231,8 +286,13 @@ were never written, which everysec and Redis also lose.
 | Manifest rename, before directory sync (process kill) | new | dataset(S1) | B' holds every statement through S1, P's included; `I_{n+1}` is empty |
 | The same, power loss | old or new | dataset(Q_d) or dataset(S1) | each selection is one of the rows above |
 | Directory sync, before P is released | new | dataset(S1) | P is never written to `I_{n+1}` |
+| Between releasing P and closing the old handle | new | as the row above | P is gone from memory but was never on the new files; nothing else changed |
+| Step 12: directory sync failed, writes refused awaiting recovery (process kill) | new | dataset(S1) then a prefix of L | as the next rows |
+| The same, power loss | old or new | dataset(Q_d) from the old, or dataset(S1) then a prefix of L from the new | refusal kept new client writes out of a selection whose rename may be lost |
 | L partly drained to `I_{n+1}` | new | dataset(S1) then a prefix of L | L holds only statements after S1 |
+| An append of L to `I_{n+1}` fails | new | dataset(S1) then the drained prefix of L | the ordinary append-error path: retained bytes, rollback, refusal, retry, all on `I_{n+1}` |
 | History removal partly done | new | as above | startup syncs the directory and removes listed history |
+| Step 13, removal of B' or `I_{n+1}` failed | old | as the first row | both names unlisted; reused by truncation or rename-over |
 | Failed direct installation, P and L draining to `I_n` after repair | old | dataset(Q) for the drained prefix | P precedes L on one handle |
 
 In every row the recovered state is the dataset after some prefix of the
@@ -265,13 +325,17 @@ is the same assumption the existing rotation and Redis's
   more manifest publications on the failing device; and when a failed
   rollback left a partial command at the end of `I_n`, a selection naming a
   later file after it stops startup with status 4 unless `I_n` is first
-  truncated, which the failing device may also refuse. Rejected.
+  truncated, which the failing device may also refuse. Rejected. The
+  startup claim is read from source, not run: the replay loop in
+  `firn/persistence/startup.wf` (143–146) refuses to start when a file that
+  must be cut is not the last listed one, as the design's loading decision
+  states.
 - **Rotate at S0, as Redis does.** The failing file would then be the
   post-S0 increment, as in Redis, but base(S1) paired with an increment from
   S0 applies scan-window writes twice; the tree already rejects rotation at
   S0.
 - **Release P at the cut, because base(S1) holds it.** An abort or a crash
-  before durable installation would then lose acknowledged commands from
+  before publication would then lose acknowledged commands from
   every selection. Rejected.
 - **Keep the append error after direct installation until a later append
   succeeds.** With L empty nothing is ever appended, so writes stay refused
@@ -299,11 +363,17 @@ The proposal is wrong if any of these fails:
    still aborts it (`aof_last_bgrewrite_status:err`), and recovery still
    needs a durable installation.
 3. `aof_rewrite_during_latched_append_error_reports_the_attempted_drain` in
-   `tests/aof_write_errors.rs` changes meaning: a rewrite admitted while the
-   append error is latched now publishes with `aof_last_bgrewrite_status:ok`.
-   Its retained bytes must include an INCR and an RPUSH, and after restart
-   each must appear once, which detects the double application Redis's
-   source predicts in the same situation. Renamed to say so.
+   `tests/aof_write_errors.rs` (331) changes meaning. It runs only firn: its
+   loop over `native in [false, true]` selects firn's file adapter and its
+   native ring (`spawn_on_route_ignoring_xfsz`), not Redis. A rewrite
+   admitted while the append error is latched must now publish with
+   `aof_last_bgrewrite_status:ok` on both routes. Its retained bytes must
+   include an INCR and an RPUSH, and after restart each must apply exactly
+   once. Renamed to say so. Redis's predicted double application when a
+   rewrite starts during a latched error is not asserted here; if wanted, it
+   is a separate observation in the `aof-sync-fault` job, which already
+   runs the pinned Redis, recording Redis's outcome as its latent
+   double application rather than requiring firn to match it.
 4. A new ordinary network case: with an append error latched, a directory
    at `appendonly.aof.2.base.aof` makes direct installation fail before
    publication; the attempt reports `install_io`, the old manifest is
@@ -325,8 +395,12 @@ In order; each step keeps the gate green.
 2. `firn/persistence/rewrite.wf` `aof_rw_drain`: stop recording Drain on a
    failed append. `aof_rw_cycle`: stop turning an append failure into
    WriterIo; `aof_rw_flush` already aborts on a counted sync failure.
-   Remove `RewriteAbortReason::Drain` and its INFO text in
-   `firn/commands/info.wf` once unused.
+   Remove `RewriteAbortReason::Drain` (`firn/store/module.wfm:27`) and every
+   place that names it: its record in `rewrite.wf:928`, the INFO text
+   `info_rw_reason_drain` and its match arm in `firn/commands/info.wf:639`
+   and `:690–691`, the `drain` entry in `firn/README.md:590`, the comment
+   and assertion in `tests/aof_sync_fault.rs:1267–1272`, and the doc
+   comment, name and assertion in `tests/aof_write_errors.rs:322–356`.
 3. `aof_rw_cut`: allow a nonempty private buffer, appending L to it under
    Meta with the growth charged to R before allocation, as the rotation
    budget charges collecting-buffer growth.
@@ -337,11 +411,13 @@ In order; each step keeps the gate green.
 5. `aof_rw_worker`: reconcile after `cut_done` when not aborted, without
    requiring `rotated`.
 6. A direct-installation function beside `aof_rw_install` in
-   `rewrite.wf` (sharing its rename and manifest code): steps 8–13. It needs
-   the directory sync's error from publication, so `AofPublication` in
-   `firn/persistence/manifest.wf` carries it. Its size accounting closes
-   the whole current size into history, so `aof_current_size` becomes the
-   base size.
+   `rewrite.wf` (sharing its rename and manifest code): steps 7–13,
+   including the repeated cancellation and incremental-sequence checks. It
+   needs the directory sync's error from publication, so `AofPublication`
+   in `firn/persistence/manifest.wf` carries it, which the
+   `firn-rw-switch-dirsync` fix of `aof_rw_switch` uses too. Its size
+   accounting closes the whole current size into history, so
+   `aof_current_size` becomes the base size.
 7. `aof_rw_complete`: unchanged; success clears the automatic-rewrite block
    as it does now.
 8. Tests as listed under acceptance; `docs` and `firn/README.md` where they
