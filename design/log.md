@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-12 Bound each AOF rewrite scan step by the reserve and pace it by time slice
+
+Nodes: firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A (approve) on card firn-q-approve-57-tree, which asked to approve PR #57's design-tree changes at head 27e7c34, carrying out the owner's earlier choice of option A on card firn-q-rw-pace; the ruling adds that the merge waits for a formal Whitefoot release fixing the 2-core MSET regression and a passing before-and-after comparison on the 14900K.
+
+Summary: Each live scan step calls map_scan_within with the reserve left after the step buffer as its limit and charges the growth key_set_bytes reports, so a step never exceeds R; copies and buffer growth are charged before allocation, and a one-position step that does not fit is discarded, waits outside every hold and retries while it could fit, or aborts with reserve when it never can. The scan runs steps back to back and yields about every millisecond, with a per-step key hint starting at 64 that halves or doubles by the bytes a step writes and falls back to one position when several do not fit, because a 100-microsecond sleep per one-key step cost about a millisecond per key and a million-key rewrite could not finish under write load. CONFIG answers Redis 7.0.15's hidden rdb-key-save-delay so cases can keep a rewrite in progress without a firn-only hook. The post-call charging limitation and its rejection entry are replaced by three rejected alternatives ([scan pacing](../research/investigations/aof-rewrite/scan-pace.md#design)).
+
 ## 2026-10-13 Recover from an AOF sync failure only through a durable rewrite, and sync only after new bytes
 
 Nodes: firn/append-only-file, firn/aof-rewrite/capture
