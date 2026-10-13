@@ -113,6 +113,10 @@ on:
         description: "Compare only: start every measured server with the append-only file on (appendfsync everysec), automatic rewrites off and a fresh directory per run, so the cost measured is the steady-state append path; the run fails unless INFO reports aof_enabled:1"
         type: boolean
         default: false
+      compare_reference:
+        description: "Compare only: also measure Redis 7.2.16 as the line named reference, with the append-only file on when aof is set"
+        type: boolean
+        default: false
       profile:
         description: "Record a perf profile of each image (compare), or rerun each firn line's first pass under perf (original consumer workloads only; memory/connection workloads have no perf pass)"
         type: boolean
@@ -366,6 +370,7 @@ jobs:
           COMPARE_SECONDS: ${{ inputs.seconds }}
           COMPARE_MAXMEMORY: ${{ inputs.maxmemory }}
           COMPARE_AOF: ${{ inputs.aof && 'true' || 'false' }}
+          COMPARE_REFERENCE: ${{ inputs.compare_reference && 'true' || 'false' }}
           PROFILE: ${{ inputs.profile }}
           COMPARE_PROFILE: ${{ inputs.profile_test }}
           PERF_ANNOTATE: ${{ inputs.annotate }}

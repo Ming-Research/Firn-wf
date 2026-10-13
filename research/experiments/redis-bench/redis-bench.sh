@@ -15,7 +15,8 @@
 #                                 /proc/stat, without building or starting any
 #                                 server
 #   sh redis-bench.sh suite       the correctness pass and the firn criteria:
-#                                 redis-benchmark's default suite on every line
+#                                 Redis 7.0's redis-benchmark default suite
+#                                 (SUITE_DEFAULT) on every line
 #   sh redis-bench.sh scale       the suite's lines on each server CPU count in
 #                                 SCALE (default 2 4 8 16), the client on the
 #                                 remaining physical performance cores, for
@@ -72,6 +73,14 @@
 #                                 aof_enabled=<n>, or the run fails; the run
 #                                 records setting,aof=true (false otherwise)
 #                                 in its output and in host.txt
+#                                 with COMPARE_REFERENCE=true Redis 7.2.16
+#                                 (redis-server, whose version is checked) is
+#                                 measured as one more line named reference,
+#                                 started after the images, with the append-only
+#                                 file on (appendfsync everysec, a fresh
+#                                 directory stop removes) when COMPARE_AOF=true;
+#                                 the run records setting,reference=true (false
+#                                 otherwise) in its output and in host.txt
 #   sh redis-bench.sh workloads   the deployment-performance investigation's
 #                                 std-only Rust client, built offline with
 #                                 cargo in release mode; Redis and firn, each
@@ -689,8 +698,16 @@ start() {
                 ) >"$OUT/server.log" 2>&1 &
             ;;
         reference-aof)
+            ref_dir=$OUT
+            if [ "$MODE" = compare ]; then
+                # As for the images, a directory of its own that stop removes.
+                AOF_DIR="$OUT/aof-$PORT"
+                rm -rf "$AOF_DIR"
+                mkdir -p "$AOF_DIR"
+                ref_dir=$AOF_DIR
+            fi
             (registered; exec taskset -c "$SERVER_CPUS" redis-server --port "$PORT" --save "" \
-                --appendonly yes --appendfsync everysec --dir "$OUT" \
+                --appendonly yes --appendfsync everysec --dir "$ref_dir" \
                 --timeout "${IDLE:-0}" --daemonize no \
                 ) >"$OUT/server.log" 2>&1 &
             ;;
@@ -806,6 +823,19 @@ start() {
 }
 
 AOF_DIR=
+# The start and verify argument of a compare line: the reference is Redis,
+# with the append-only file on when COMPARE_AOF=true; any other name is an image.
+compare_arg() {
+    if [ "$1" = reference ]; then
+        if [ "${COMPARE_AOF:-}" = true ]; then
+            echo reference-aof
+        else
+            echo reference
+        fi
+    else
+        echo "image-$1"
+    fi
+}
 stop() {
     kill "$server"
     wait "$server" 2>/dev/null || true
@@ -947,12 +977,17 @@ EOF
     fi
 }
 
-# The firn criteria: every test of the default suite completes on the line
-# with no error reply.
+# The firn criteria: every test of the suite completes on the line with no
+# error reply. The suite is redis-benchmark's default of Redis 7.0, named
+# explicitly: 7.2's default adds XADD, which firn lacks until its minimal
+# streams land (board item firn-scope-min-streams), so the default would fail
+# firn before anything is measured; XADD joins the list when they land. Its
+# 19 tests print 20 rows, LRANGE's LPUSH fill among them.
+SUITE_DEFAULT=ping_inline,ping_mbulk,set,get,incr,lpush,rpush,lpop,rpop,sadd,hset,spop,zadd,zpopmin,lrange_100,lrange_300,lrange_500,lrange_600,mset
 verify_suite() {
     start "$1"
     taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" -c 50 -n 20000 \
-        -r 100000 --threads "$CLIENT_THREADS" --csv >"$OUT/suite-$1.csv" \
+        -r 100000 --threads "$CLIENT_THREADS" -t "$SUITE_DEFAULT" --csv >"$OUT/suite-$1.csv" \
         2>"$OUT/suite-$1.err"
     stop
     tests=$(grep -c -v '^"test"' "$OUT/suite-$1.csv")
@@ -1208,6 +1243,24 @@ if [ "$MODE" = compare ]; then
     if [ -f "$OUT/host.txt" ]; then
         echo "setting,aof=${COMPARE_AOF:-false}" >>"$OUT/host.txt"
     fi
+    case ${COMPARE_REFERENCE:-} in
+        ''|true|false) ;;
+        *)
+            echo "COMPARE_REFERENCE must be true, false or empty, not '$COMPARE_REFERENCE'" >&2
+            exit 1
+            ;;
+    esac
+    echo "setting,reference=${COMPARE_REFERENCE:-false}"
+    if [ -f "$OUT/host.txt" ]; then
+        echo "setting,reference=${COMPARE_REFERENCE:-false}" >>"$OUT/host.txt"
+    fi
+    if [ "${COMPARE_REFERENCE:-}" = true ]; then
+        reference_version=$(redis-server --version)
+        case " $reference_version " in
+            *" v=7.2.16 "*) ;;
+            *) echo "COMPARE_REFERENCE requires Redis 7.2.16: $reference_version" >&2; exit 1 ;;
+        esac
+    fi
     cpu_record=
     if [ -r /proc/stat ]; then
         cpu_record="$OUT/compare-cpu.csv"
@@ -1223,12 +1276,15 @@ if [ "$MODE" = compare ]; then
         names="$names ${pair%%=*}"
         sha256sum "${pair#*=}" | sed "s/^/image,${pair%%=*},/"
     done
+    if [ "${COMPARE_REFERENCE:-}" = true ]; then
+        names="$names reference"
+    fi
     reversed=$(echo $names | tr ' ' '\n' | awk '{ a[NR] = $0 } END { for (i = NR; i > 0; i--) printf "%s ", a[i] }')
     echo 'line,pass,cpus,test,depth,requests,rps,server_cpu_us_per_request,p50_ms,p99_ms' >"$OUT/compare.csv"
     for n in ${COMPARE_CPUS:-1 2}; do
         placement_for_count "$n" "$((total - n < 1 ? 1 : total - n < 16 ? total - n : 16))" || continue
         for name in $names; do
-            verify "image-$name"
+            verify "$(compare_arg "$name")"
         done
         sizes="$OUT/compare-sizes-$n.txt"
         : >"$sizes"
@@ -1236,7 +1292,7 @@ if [ "$MODE" = compare ]; then
             for depth in $depths; do
                 fastest=0
                 for name in $names; do
-                    start "image-$name"
+                    start "$(compare_arg "$name")"
                     rate=$(compare_client "$test" "$depth" 1000000 | cut -d, -f1)
                     stop
                     fastest=$(awk -v a="$fastest" -v b="$rate" 'BEGIN { print (b > a ? b : a) }')
@@ -1251,7 +1307,7 @@ if [ "$MODE" = compare ]; then
                 order=$reversed
             fi
             for name in $order; do
-                start "image-$name"
+                start "$(compare_arg "$name")"
                 while read -r test depth requests; do
                     echo "$name,$pass,$n,$test,$depth,$requests,$(compare_client "$test" "$depth" "$requests")" |
                         tee -a "$OUT/compare.csv"
@@ -1275,7 +1331,7 @@ if [ "$MODE" = compare ]; then
                 requests=$(awk -v t="$ptest" -v d="$pdepth" '$1 == t && $2 == d { print $3 }' "$sizes")
                 test -n "$requests" || { echo "skip,profile,$ptest $pdepth not measured"; continue; }
                 for name in $names; do
-                    start "image-$name"
+                    start "$(compare_arg "$name")"
                     # With PERF_CALLERS set, each sample carries a DWARF-unwound
                     # stack, since firn keeps no frame pointers.
                     "$PERF" record ${PERF_CALLERS:+--call-graph dwarf,16384} -F "${PERF_FREQUENCY:-4999}" \
@@ -1302,7 +1358,7 @@ if [ "$MODE" = compare ]; then
                     # perf c2c's load and store samples, which name the cache
                     # lines several cores write and read in turn.
                     if [ -n "$PERF_C2C" ]; then
-                        start "image-$name"
+                        start "$(compare_arg "$name")"
                         "$PERF" c2c record -p "$server" -o "$OUT/c2c-$name-$n-$ptest.data" >/dev/null 2>&1 &
                         recorder=$!
                         sleep 1
