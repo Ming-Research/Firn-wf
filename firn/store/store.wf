@@ -829,6 +829,8 @@ fn clear_database_expiry(due: &ExpiryQueue, database: u64) -> result: unit write
     let record = priority_queue_pop::<DueOrder, ceiling>(queue: &due^.queue, env: &env);
     if record.database != database {
       let pushed = priority_queue_push::<DueOrder, ceiling>(queue: &replacement, value: move record, env: &env);
+    } else {
+      let dropped = move record;
     }
   }
   swap(first: &due^.queue, second: &replacement);
