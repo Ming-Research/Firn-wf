@@ -167,6 +167,56 @@ fn info_field(info: &str, name: &str) -> Option<String> {
         .find_map(|line| line.strip_prefix(&format!("{name}:")).map(str::to_owned))
 }
 
+/// INFO is a bulk string in RESP2 and a txt verbatim string in RESP3.
+fn info_reply(stream: &mut TcpStream, protocol: u8) -> String {
+    if protocol == 2 {
+        return bulk_reply(stream, "INFO field audit");
+    }
+    let header = reply_line(stream, "INFO verbatim header");
+    let length = header.strip_prefix('=')
+        .and_then(|rest| rest.strip_suffix("\r\n"))
+        .and_then(|digits| digits.parse::<usize>().ok())
+        .expect("INFO RESP3 verbatim length");
+    let mut body = vec![0; length + 2];
+    stream.read_exact(&mut body).expect("INFO verbatim body");
+    assert!(body.ends_with(b"\r\n"), "{body:?}");
+    body.truncate(length);
+    let body = String::from_utf8(body).expect("INFO UTF-8 text");
+    body.strip_prefix("txt:").expect("INFO txt verbatim tag").to_owned()
+}
+
+/// Unlike a field lookup, this checks every delimiter and duplicate, including
+/// empty sections. Omitting unmeasured fields still preserves Redis's framing.
+fn info_structure(info: &str) -> Vec<(&str, Vec<(&str, &str)>)> {
+    if info.is_empty() {
+        return Vec::new();
+    }
+    let body = info.strip_suffix("\r\n").expect("INFO final CR LF");
+    body.split("\r\n\r\n").map(|section| {
+        let mut lines = section.split("\r\n");
+        let name = lines.next().unwrap().strip_prefix("# ").expect("INFO section header");
+        assert!(!name.is_empty() && !name.contains(['\r', '\n']), "{name:?}");
+        let mut seen = std::collections::BTreeSet::new();
+        let fields = lines.map(|line| {
+            assert!(!line.contains(['\r', '\n']), "INFO line: {line:?}");
+            let (field, value) = line.split_once(':').expect("INFO name:value field");
+            assert!(!field.is_empty() && seen.insert(field), "duplicate INFO field: {field}");
+            (field, value)
+        }).collect();
+        (name, fields)
+    }).collect()
+}
+
+fn info_human_bytes(value: u64) -> String {
+    // Redis 7.2.16 server.c:bytesToHuman, also used by genRedisInfoString.
+    if value < 1024 || value >= 1_u64 << 60 {
+        return format!("{value}B");
+    }
+    let units = ["K", "M", "G", "T", "P"];
+    let unit = ((63 - value.leading_zeros()) / 10 - 1) as usize;
+    format!("{:.2}{}", value as f64 / (1_u64 << (10 * (unit + 1))) as f64, units[unit])
+}
+
 /// Reads one `TIME` reply as calendar milliseconds.
 #[cfg(target_os = "linux")]
 fn time_reply(stream: &mut TcpStream, what: &str) -> u64 {
@@ -3907,7 +3957,6 @@ fn firn_answers_connection_commands_as_redis_does() {
         // Redis 7.2.16 server.c:genRedisInfoString writes redis_version from
         // version.h's REDIS_VERSION (7.2.16).
         ("redis_version", "7.2.16"),
-        ("redis_git_sha1", "00000000"),
         ("tcp_port", text.as_str()),
         ("uptime_in_days", "0"),
         ("connected_clients", "2"),
@@ -4048,6 +4097,216 @@ fn firn_keeps_transactions_as_redis_does() {
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
+}
+
+// These section and field lists come from Redis 7.2.16 genRedisInfoString
+// and the INFO replies recorded by CI run 38396764389:
+// https://github.com/Ming-Research/Firn-wf/actions/runs/38396764389
+// Batch 0 is RESP2 without AOF; batch 1 is RESP3 with appendonly yes.
+// Machine-dependent values are checked by their Redis format and relationship.
+// Unmeasured fields are omitted under design/firn/reported-facts.md; CLIENT and
+// Clients field coverage belongs to the separate client-handshake work.
+const INFO_AUDIT_DEFAULT: &[&str] = &[
+    "Server", "Clients", "Memory", "Persistence", "Stats", "Replication",
+    "CPU", "Modules", "Errorstats", "Cluster", "Keyspace",
+];
+const INFO_AUDIT_ALL: &[&str] = &[
+    "Server", "Clients", "Memory", "Persistence", "Stats", "Replication",
+    "CPU", "Modules", "Commandstats", "Errorstats", "Latencystats", "Cluster", "Keyspace",
+];
+
+fn assert_info_field_audit(info: &str, expected_sections: &[&str], aof: bool, port: u16) {
+    let sections = info_structure(info);
+    assert_eq!(sections.iter().map(|(name, _)| *name).collect::<Vec<_>>(), expected_sections);
+    for (section, fields) in sections {
+        if section == "Clients" {
+            continue;
+        }
+        let names: Vec<_> = fields.iter().map(|(name, _)| *name).collect();
+        let csv = match section {
+            "Server" => "redis_version,redis_mode,arch_bits,process_supervised,tcp_port,server_time_usec,uptime_in_seconds,uptime_in_days,hz,configured_hz,lru_clock,config_file",
+            "Memory" => "used_memory,used_memory_human,used_memory_rss,used_memory_rss_human,used_memory_peak,used_memory_peak_human,number_of_cached_scripts,number_of_functions,number_of_libraries,used_memory_vm_functions,used_memory_functions,maxmemory,maxmemory_human,maxmemory_policy,mem_not_counted_for_evict,mem_replication_backlog,mem_total_replication_buffers,mem_clients_slaves,mem_cluster_links,mem_aof_buffer,active_defrag_running,lazyfree_pending_objects,lazyfreed_objects",
+            "Persistence" => "loading,async_loading,current_cow_peak,current_cow_size,current_cow_size_age,current_fork_perc,rdb_bgsave_in_progress,rdb_last_bgsave_status,rdb_last_bgsave_time_sec,rdb_current_bgsave_time_sec,rdb_saves,rdb_last_cow_size,rdb_last_load_keys_expired,rdb_last_load_keys_loaded,aof_enabled,aof_rewrite_in_progress,aof_rewrite_scheduled,aof_last_bgrewrite_status,aof_rewrites,aof_last_write_status,aof_last_cow_size,module_fork_in_progress,module_fork_last_cow_size",
+            "Stats" => "total_connections_received,total_net_repl_input_bytes,total_net_repl_output_bytes,instantaneous_input_repl_kbps,instantaneous_output_repl_kbps,rejected_connections,sync_full,sync_partial_ok,sync_partial_err,evicted_keys,evicted_clients,pubsub_channels,pubsub_patterns,pubsubshard_channels,latest_fork_usec,total_forks,migrate_cached_sockets,slave_expires_tracked_keys,active_defrag_hits,active_defrag_misses,active_defrag_key_hits,active_defrag_key_misses,total_active_defrag_time,current_active_defrag_time,tracking_total_keys,tracking_total_items,tracking_total_prefixes,dump_payload_sanitizations,io_threaded_reads_processed,io_threaded_writes_processed",
+            "Replication" => "role,connected_slaves,master_failover_state,master_repl_offset,second_repl_offset,repl_backlog_active,repl_backlog_first_byte_offset,repl_backlog_histlen",
+            "CPU" => "used_cpu_sys_children,used_cpu_user_children",
+            "Cluster" => "cluster_enabled",
+            "Keyspace" => "db0",
+            "Modules" | "Commandstats" | "Errorstats" | "Latencystats" | "Debug" => "",
+            _ => panic!("unexpected INFO section: {section}"),
+        };
+        let mut expected: Vec<_> = csv.split(',').filter(|name| !name.is_empty()).collect();
+        // The host may not expose RSS. When available it has its adjacent human
+        // representation; neither may be synthesized when the measurement fails.
+        if section == "Memory" && !names.contains(&"used_memory_rss") {
+            expected.retain(|name| !["used_memory_rss", "used_memory_rss_human"].contains(name));
+        }
+        if section == "Persistence" {
+            if aof {
+                expected.extend([
+                    "aof_current_size", "aof_base_size", "aof_pending_rewrite",
+                    "aof_buffer_length", "aof_pending_bio_fsync", "aof_delayed_fsync",
+                    "firn_aof_rewrite_commit_seq",
+                ]);
+            }
+            // Firn's existing rewrite diagnostics are an extension after every
+            // Redis field; they must not interrupt Redis's field order.
+            expected.extend([
+                "firn_aof_rewrite_cut", "firn_aof_rewrite_reserve", "firn_aof_rewrite_scan_peak",
+                "firn_aof_rewrite_abort_reason", "firn_aof_rewrite_used", "firn_aof_rewrite_peak",
+                "firn_aof_rewrite_cleanup_failed", "firn_aof_rewrite_journal_leftover",
+                "firn_aof_rewrite_journal_images", "firn_aof_rewrite_journal_effects",
+                "firn_aof_rewrite_scan_steps", "firn_aof_rewrite_scan_done",
+            ]);
+        }
+        assert_eq!(names, expected, "{section}: Redis field names, section and order");
+        for (name, value) in &fields {
+            let fixed = match *name {
+                "redis_version" => Some("7.2.16"),
+                "redis_mode" => Some("standalone"),
+                "arch_bits" => Some("64"),
+                "process_supervised" => Some("no"),
+                "hz" | "configured_hz" => Some("10"),
+                "config_file" | "firn_aof_rewrite_abort_reason" => Some(""),
+                "maxmemory_policy" => Some("noeviction"),
+                "rdb_last_bgsave_status" | "aof_last_bgrewrite_status" | "aof_last_write_status" => Some("ok"),
+                "rdb_last_bgsave_time_sec" | "rdb_current_bgsave_time_sec" | "second_repl_offset" => Some("-1"),
+                "role" => Some("master"),
+                "master_failover_state" => Some("no-failover"),
+                "current_fork_perc" | "instantaneous_input_repl_kbps" | "instantaneous_output_repl_kbps" => Some("0.00"),
+                "used_cpu_sys_children" | "used_cpu_user_children" => Some("0.000000"),
+                "db0" => Some("keys=1"),
+                "aof_enabled" => Some(if aof { "1" } else { "0" }),
+                "total_connections_received" => Some("1"),
+                "number_of_cached_scripts" | "number_of_functions" | "number_of_libraries"
+                | "used_memory_vm_functions" | "used_memory_functions" | "maxmemory"
+                | "mem_replication_backlog" | "mem_total_replication_buffers"
+                | "mem_clients_slaves" | "mem_cluster_links" | "active_defrag_running"
+                | "lazyfree_pending_objects" | "lazyfreed_objects" | "loading" | "async_loading"
+                | "current_cow_peak" | "current_cow_size" | "current_cow_size_age"
+                | "rdb_bgsave_in_progress" | "rdb_saves" | "rdb_last_cow_size"
+                | "rdb_last_load_keys_expired" | "rdb_last_load_keys_loaded"
+                | "aof_rewrite_in_progress" | "aof_rewrite_scheduled" | "aof_rewrites"
+                | "aof_last_cow_size" | "module_fork_in_progress" | "module_fork_last_cow_size"
+                | "aof_pending_rewrite" | "aof_pending_bio_fsync" | "aof_delayed_fsync"
+                | "total_net_repl_input_bytes" | "total_net_repl_output_bytes"
+                | "rejected_connections" | "sync_full" | "sync_partial_ok" | "sync_partial_err"
+                | "evicted_keys" | "evicted_clients" | "pubsub_channels" | "pubsub_patterns"
+                | "pubsubshard_channels" | "latest_fork_usec" | "total_forks"
+                | "migrate_cached_sockets" | "slave_expires_tracked_keys" | "active_defrag_hits"
+                | "active_defrag_misses" | "active_defrag_key_hits" | "active_defrag_key_misses"
+                | "total_active_defrag_time" | "current_active_defrag_time" | "tracking_total_keys"
+                | "tracking_total_items" | "tracking_total_prefixes" | "dump_payload_sanitizations"
+                | "io_threaded_reads_processed" | "io_threaded_writes_processed"
+                | "connected_slaves" | "master_repl_offset" | "repl_backlog_active"
+                | "repl_backlog_first_byte_offset" | "repl_backlog_histlen" | "cluster_enabled" => Some("0"),
+                _ => None,
+            };
+            if let Some(expected) = fixed {
+                assert_eq!(*value, expected, "{section}.{name}");
+            } else if name.ends_with("_human") {
+                let byte_name = name.strip_suffix("_human").unwrap();
+                let bytes = fields.iter().find(|(field, _)| *field == byte_name).unwrap().1;
+                assert_eq!(*value, info_human_bytes(bytes.parse().unwrap()), "{section}.{name}");
+            } else {
+                let number = value.parse::<u64>().unwrap_or_else(|_| panic!("{section}.{name}: unsigned decimal {value:?}"));
+                assert_eq!(*value, number.to_string(), "{section}.{name}: canonical decimal");
+            }
+        }
+        if section == "Server" {
+            assert_eq!(info_field(info, "tcp_port"), Some(port.to_string()));
+            let lru = info_field(info, "lru_clock").unwrap().parse::<u64>().unwrap();
+            let now = info_field(info, "server_time_usec").unwrap().parse::<u64>().unwrap();
+            assert_eq!(lru, (now / 1_000_000) & ((1 << 24) - 1), "LRU clock uses Redis's 24-bit seconds");
+            let seconds = info_field(info, "uptime_in_seconds").unwrap().parse::<u64>().unwrap();
+            let days = info_field(info, "uptime_in_days").unwrap().parse::<u64>().unwrap();
+            assert_eq!(days, seconds / 86400);
+        } else if section == "Memory" {
+            let used = info_field(info, "used_memory").unwrap().parse::<u64>().unwrap();
+            let peak = info_field(info, "used_memory_peak").unwrap().parse::<u64>().unwrap();
+            assert!(used > 0 && peak >= used, "real heap usage and its observed peak");
+            assert_eq!(info_field(info, "mem_aof_buffer"), info_field(info, "mem_not_counted_for_evict"));
+        }
+    }
+}
+
+fn info_field_audit_case(protocol: u8, aof: bool) {
+    let program = CompiledProgram::from_environment();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let port_text = port.to_string();
+    let mut arguments: Vec<&[u8]> = vec![port_text.as_bytes(), b"1"];
+    if aof {
+        arguments.push(b"appendonly.aof");
+    }
+    let child = program.spawn_on_route(true, &arguments).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    if protocol == 3 {
+        client.write_all(&resp(&["HELLO", "3"])).unwrap();
+        // Redis 7.2.16 networking.c:helloCommand; recorded batch 1 uses RESP3.
+        expect_replies(&mut client, b"%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n", "INFO audit HELLO 3");
+    }
+    client.write_all(&resp(&["INFO", "keyspace"])).unwrap();
+    let empty = info_reply(&mut client, protocol);
+    assert_eq!(empty, "# Keyspace\r\n", "an empty keyspace still has its header");
+    client.write_all(&resp(&["SET", "k", "v"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "INFO audit SET");
+    client.write_all(&resp(&["EXPIRE", "k", "100"])).unwrap();
+    assert_eq!(integer_reply(&mut client, "INFO audit EXPIRE"), 1);
+    for (request, expected) in [
+        (vec!["INFO"], INFO_AUDIT_DEFAULT),
+        (vec!["INFO", "default"], INFO_AUDIT_DEFAULT),
+        (vec!["INFO", "all"], INFO_AUDIT_ALL),
+        (vec!["INFO", "everything"], INFO_AUDIT_ALL),
+        (vec!["INFO", "ALL", "unknown"], INFO_AUDIT_ALL),
+        (vec!["INFO", "EvErYtHiNg", "unknown"], INFO_AUDIT_ALL),
+        (vec!["INFO", "mEmOrY", "SERVER", "nosuch", "memory"], &["Server", "Memory"][..]),
+        (vec!["INFO", "server", "clients"], &["Server", "Clients"][..]),
+        (vec!["INFO", "nosuch"], &[][..]),
+        (vec!["INFO", "nosuch", "unknown"], &[][..]),
+        (vec!["INFO", ""], &[][..]),
+        (vec!["INFO", "KEYSPACE\0suffix", "unknown"], &["Keyspace"][..]),
+        (vec!["INFO", "modules", "MODULE_LIST"], &["Modules"][..]),
+        (vec!["INFO", "debug"], &["Debug"][..]),
+        (vec!["INFO", "cpu", "modules", "commandstats", "errorstats", "latencystats"], &["CPU", "Modules", "Commandstats", "Errorstats", "Latencystats"][..]),
+    ] {
+        client.write_all(&resp(&request)).unwrap();
+        let info = info_reply(&mut client, protocol);
+        assert_info_field_audit(&info, expected, aof, port);
+    }
+    for section in INFO_AUDIT_ALL {
+        client.write_all(&resp(&["INFO", section])).unwrap();
+        let info = info_reply(&mut client, protocol);
+        assert_info_field_audit(&info, &[*section], aof, port);
+    }
+    // DEFAULT unions with explicitly requested extra sections; a later DEFAULT
+    // must not erase an earlier commandstats/latencystats request.
+    client.write_all(&resp(&["INFO", "latencystats", "DEFAULT", "commandstats"])).unwrap();
+    let info = info_reply(&mut client, protocol);
+    assert_info_field_audit(&info, INFO_AUDIT_ALL, aof, port);
+    // Redis's Debug section is explicit-only, even under ALL or EVERYTHING.
+    let mut with_debug = INFO_AUDIT_ALL.to_vec();
+    with_debug.push("Debug");
+    client.write_all(&resp(&["INFO", "ALL", "DeBuG", "debug"])).unwrap();
+    let info = info_reply(&mut client, protocol);
+    assert_info_field_audit(&info, &with_debug, aof, port);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Guards against INFO fields in the wrong section/order, incorrect formats,
+/// synthesized facts, enabled-only AOF fields while disabled, and selection
+/// or CR LF errors. Expected structure comes from the RESP2 recorded batch.
+#[test]
+fn firn_info_fields_match_redis_7_2_16_resp2_without_aof() {
+    info_field_audit_case(2, false);
+}
+
+/// Exercises the same structure and section selection under RESP3 verbatim
+/// framing, including the enabled-only persistence suffix from recorded batch 1.
+#[test]
+fn firn_info_fields_match_redis_7_2_16_resp3_with_aof() {
+    info_field_audit_case(3, true);
 }
 
 /// firn answers in RESP3 after HELLO 3 as Redis 7.2.16 does, and in RESP2

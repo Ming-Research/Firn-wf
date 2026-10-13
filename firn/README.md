@@ -258,13 +258,15 @@ signal too, where Redis's cancels a signal's request in the moment, at most
 a tenth of a second, before its next cron acts on it.
 
 `INFO memory` reports raw `used_memory` and `used_memory_human`,
-`used_memory_rss` when the host supplies it, `used_memory_peak`,
+`used_memory_rss` and `used_memory_rss_human` when the host supplies it,
+`used_memory_peak` and `used_memory_peak_human`,
 `mem_not_counted_for_evict`, the configured `maxmemory`, `maxmemory_human`
 and `maxmemory_policy`, with Redis's human-size formatting. It also reports
 the actual registered-script count. Heap readings use `heap_in_use`; RSS
 uses `resident_bytes` on demand. Peak tracks heap readings after commands,
 at admission and at INFO, rather than every transient allocation. AOF
-exclusion uses capacities even when drained, not lengths. `INFO stats`
+exclusion uses capacities even when drained, not lengths; `mem_aof_buffer`
+reports the same allocated buffers. `INFO stats`
 reports live `evicted_keys`. The heap meter counts the keyspace's own
 storage, its shared-map tables and nodes, as well as values.
 
@@ -274,15 +276,17 @@ values for the port, the calendar time, the uptime, the clients connected,
 whether the append-only file is kept, the connections accepted and the keys
 held, which it counts holding the table whole, as `DBSIZE` does. The other fields it reports have values
 that are fixed and true of firn: Redis's
-version 7.2.16, no git revision, `redis_git_sha1` being 00000000 as in
-Redis's builds from a release, standalone mode, 64 bits, its active
+version 7.2.16, standalone mode, 64 bits, its active
 expiry's 10 runs a second, no configuration file,
 function, replica, background save, fork, module, publish
 and subscribe, tracking or cluster. What firn does not measure,
-processor time, per-command and per-error counts among them, is left out,
-so its CPU, Commandstats, Errorstats and Latencystats sections are empty
+its own processor time, build revision, per-command and per-error counts
+among them, is left out. CPU reports only the fixed zero child-process times;
+Commandstats, Errorstats and Latencystats have empty headers,
 and its keyspace line gives `keys` alone, without the `expires` and
-`avg_ttl` firn does not count.
+`avg_ttl` firn does not count. Section selection is case insensitive, combines
+several names without duplicates and ignores unknown names. `debug` selects
+an empty Debug header explicitly; `all` and `everything` do not include it.
 
 `CLIENT INFO` answers the connection's line in Redis's form, with real
 values for the id, the name, the age and the protocol, and values fixed and
@@ -536,7 +540,9 @@ command, subsequent script writes skip that check (`multi.c:85-87,105-109,
 136-140,170-178,229-233`; `script.c:349-386,547-557`).
 
 `INFO persistence` reports rewrite progress, attempts, last rewrite status, current
-active-file bytes and the rewrite baseline. `aof_last_write_status` is `ok` only
+active-file bytes and the rewrite baseline. Redis fields follow Redis 7.2.16's
+order; the documented `firn_aof_rewrite_*` diagnostics follow them as a tail.
+`aof_last_write_status` is `ok` only
 when both append and sync errors are clear, otherwise `err`, independently of
 `aof_last_bgrewrite_status`. With AOF enabled, `aof_buffer_length` reports the
 collecting bytes plus bytes retained by the writer, excluding already appended
