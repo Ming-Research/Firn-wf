@@ -268,6 +268,29 @@ exclusion uses capacities even when drained, not lengths. `INFO stats`
 reports live `evicted_keys`. The heap meter counts the keyspace's own
 storage, its shared-map tables and nodes, as well as values.
 
+`INFO memory` also ends with diagnostics of the Lua script engine, which
+Redis does not report. They sum over scripts that took the engine, on the
+monotonic clock, in nanoseconds, saturating, and are added under the lock the
+engine's pool already has, so a script adds no lock of its own;
+`CONFIG RESETSTAT` does not clear them.
+- `firn_script_runs` counts EVAL and EVALSHA executions that took the engine
+  (SCRIPT LOAD does not count; firn has no FCALL), including one that was then
+  stopped by SCRIPT KILL or answered NOSCRIPT.
+- `firn_script_engine_held_ns` sums the time from each successful take of the
+  engine to its give-back, which is read just before the engine is reset and
+  returned to the pool; a script retried with a larger budget takes the engine
+  again and adds each take. Time spent waiting to take the engine is not in it.
+- `firn_script_halo_ns` sums the time inside Halo's start, resume and
+  call-continuation entry points, which includes Lua execution and the
+  host functions Halo calls itself (such as `redis.sha1hex`) but not the
+  commands a script runs.
+- `firn_script_command_ns` sums the time running the commands of
+  `redis.call` and `redis.pcall`, measured around the command alone, so that
+  it is not part of `firn_script_halo_ns`; it is part of
+  `firn_script_engine_held_ns`.
+- `firn_script_collections` sums the garbage collections the engine completed
+  while held (Halo's `collection_count` after minus before).
+
 `INFO`, with no section, `default`, `all`, `everything` or named sections,
 answers Redis's sections in Redis's order and form. Its fields carry real
 values for the port, the calendar time, the uptime, the clients connected,

@@ -15,7 +15,7 @@ public struct Registered {
 }
 
 public struct EnginePool {
-  doc "The one engine scripts run on and the SHA1-to-source registry. A script takes the engine in a short statement that waits while out is 1, keeps it outside the pool's statements while one of its attempts runs, and puts it back after the attempt, so that scripts use the engine in turn and see the state earlier ones left in it, as Redis's scripts share one Lua state; idle holds it while no script has it. running counts the scripts in progress, which SCRIPT KILL answers by, and kills the kills requested, which a script compares, between its attempts, with the count it saw when it first took the engine.";
+  doc "The one engine scripts run on and the SHA1-to-source registry. A script takes the engine in a short statement that waits while out is 1, keeps it outside the pool's statements while one of its attempts runs, and puts it back after the attempt, so that scripts use the engine in turn and see the state earlier ones left in it, as Redis's scripts share one Lua state; idle holds it while no script has it. running counts the scripts in progress, which SCRIPT KILL answers by, and kills the kills requested, which a script compares, between its attempts, with the count it saw when it first took the engine. The script_* fields are diagnostics INFO reports, each added in a statement a script already holds the pool for: script_runs counts the scripts that took the engine, in the statement that takes it; the others are added in the statement that gives the engine back, per take: script_held_ns the nanoseconds on the monotonic clock from a successful take to the give-back, script_halo_ns those spent inside Halo's start, resume and call-continuation entry points, script_command_ns those spent running redis.call and redis.pcall commands, and script_collections the garbage collections the engine completed meanwhile. Sums saturate.";
   public idle: Box<Slots<PooledEngine>>;
   public out: u64;
   public registry: Box<Slots<Registered>>;
@@ -23,6 +23,11 @@ public struct EnginePool {
   public generation: u64;
   public running: u64;
   public kills: u64;
+  public script_runs: u64;
+  public script_held_ns: u64;
+  public script_halo_ns: u64;
+  public script_command_ns: u64;
+  public script_collections: u64;
 }
 
 public fn new_pool() -> pool: EnginePool pure doc "A pool with no engine yet, the engine made when first taken.";

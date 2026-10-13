@@ -4690,6 +4690,62 @@ fn firn_keeps_a_script_error_reply_on_one_line() {
     assert_eq!(status, 0);
 }
 
+/// INFO memory reports the engine's diagnostic timing for the scripts run so
+/// far: firn_script_runs equals the EVALs and EVALSHAs that took the engine
+/// (SCRIPT LOAD and a refused EVAL do not count), and the time the engine was
+/// held covers the time spent inside Halo plus the time spent running
+/// redis.call commands, both nonzero after scripts that did work.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_reports_script_engine_timing_in_info() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let field = |client: &mut TcpStream, name: &str| -> u64 {
+        client.write_all(&resp(&["INFO", "memory"])).expect("ask for INFO memory");
+        let info = bulk_reply(client, "INFO memory");
+        info_field(&info, name)
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_else(|| panic!("INFO memory has no numeric {name}: {info:?}"))
+    };
+    for name in [
+        "firn_script_runs",
+        "firn_script_engine_held_ns",
+        "firn_script_halo_ns",
+        "firn_script_command_ns",
+        "firn_script_collections",
+    ] {
+        assert_eq!(field(&mut client, name), 0, "{name} before any script");
+    }
+    let loop_script = "local n=0;for i=1,3000 do n=n+1 end;return n";
+    let call_script = "redis.call('SET',KEYS[1],ARGV[1]);return redis.call('GET',KEYS[1])";
+    client.write_all(&resp(&["EVAL", loop_script, "0"])).expect("loop script");
+    expect_replies(&mut client, b":3000\r\n", "the loop script");
+    client.write_all(&resp(&["EVAL", call_script, "1", "timed", "v"])).expect("call script");
+    expect_replies(&mut client, b"$1\r\nv\r\n", "the command script");
+    client.write_all(&resp(&["SCRIPT", "LOAD", "return 7"])).expect("load script");
+    let sha = bulk_reply(&mut client, "SCRIPT LOAD");
+    client.write_all(&resp(&["EVALSHA", &sha, "0"])).expect("evalsha");
+    expect_replies(&mut client, b":7\r\n", "the loaded script");
+    let runs = field(&mut client, "firn_script_runs");
+    let held = field(&mut client, "firn_script_engine_held_ns");
+    let halo = field(&mut client, "firn_script_halo_ns");
+    let command = field(&mut client, "firn_script_command_ns");
+    let _collections = field(&mut client, "firn_script_collections");
+    assert_eq!(runs, 3, "two EVALs and one EVALSHA took the engine, SCRIPT LOAD did not");
+    assert!(halo > 0, "halo_ns {halo}");
+    assert!(command > 0, "command_ns {command}");
+    assert!(held > 0, "held_ns {held}");
+    assert!(held >= halo, "held {held} < halo {halo}");
+    assert!(held >= halo + command, "held {held} < halo {halo} + command {command}");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn's script host answers as Redis 7.2.16's does where 7.2 changed it.
 /// A Lua number passed to redis.call reaches the command as
 /// luaArgsToRedisArgv's text: an integral value no larger in magnitude than
