@@ -533,6 +533,39 @@ recorded per run.
 - *Reject (b)* if even arm N misses the criterion with AOF on: the limit is
   elsewhere (the writer, the rewrite scan of section 6, the allocator).
 
+### One-statement SET
+
+Question: does writing SET as one atomic statement that names its key and
+Meta, with every use of Meta under `if held`, cost anything against step 1's
+two statements when AOF is off? The pinned compiler acquires a named target
+at its first use on a path (Whitefoot's runtime line, from the
+specification's SHARE-3 and the lowering), so the AOF-off path should never
+hold Meta. Prior criterion, written in Whitefoot's research before measuring:
+the one-statement SET's throughput ratio to the two-statement form falls
+within the twin's noise; a ratio below the twin's lower bound rejects it.
+
+Run [38367914126](https://github.com/Ming-Research/Firn-wf/actions/runs/38367914126),
+i9-14900K, Linux 7.0.0-38, release wf-d75f318d5631; server on P-cores
+0,2,4,6,8,10,12,14, clients on E-cores 16-31; AOF off; redis-benchmark
+depth 16; 6 interleaved passes of 10 s. Images: main 1d1657c (two
+statements), its twin, and Firn-wf#72 at 73db747. Ratios are per pass
+against main's run in the same pass.
+
+| test | image | median rps | per-pass ratio, median | range |
+|---|---|---|---|---|
+| SET | main | 21,542,344 | 1 | |
+| SET | twin | 21,655,571 | 1.001 | 0.994-1.025 |
+| SET | one statement | 21,330,337 | 0.9965 | 0.984-1.001 |
+| GET | main | 21,177,203 | 1 | |
+| GET | twin | 21,297,132 | 1.000 | 0.998-1.027 |
+| GET | one statement | 21,283,652 | 1.006 | 0.993-1.016 |
+
+The one-statement SET's median ratio, 0.9965, lies inside the twin's range,
+so the prediction holds at this resolution: no cost beyond the twin's noise.
+The six passes' mean ratio, 0.994 (standard deviation 0.007), sits at the
+twin's lower bound; a cost under 1% is not excluded by six passes. GET does
+not run this statement and serves as a second control.
+
 ## 5. Whitefoot gaps and witnesses
 
 Sketches in the specification's style, not compiled.
