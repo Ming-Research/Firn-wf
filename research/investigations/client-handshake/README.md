@@ -131,3 +131,29 @@ The `depths` input belongs to compare mode and does not change these
 depth-one workloads. Keep the host/version record, revision record and
 `workloads.csv`, and copy the results and their spread here after the
 measurement; workflow logs and artifacts expire.
+
+## First full run, kept for reference (2026-10-13)
+
+[Run 38396589987](https://github.com/Ming-Research/Firn-wf/actions/runs/38396589987)
+on the i9-14900K: firn at
+[Firn-wf#74](https://github.com/Ming-Research/Firn-wf/pull/74)'s de6d7b5 and its
+twin, Redis 7.2.16, Valkey and Valkey with io-threads; 2 server CPUs (2,4),
+50 connections, 6 interleaved passes of 10 s. Dragonfly and Garnet were not
+installed on the host and are absent. This run does not decide the criterion
+above: the instrument predated explicit placement, so its automatic hybrid
+placement put the 10 client threads on P-cores 6-15
+(`placement,server=2,4,client=6,...,15,threads=10,source=hybrid`) instead of the
+16 E-cores the owner ruled for performance comparisons, and it recorded no
+client CPU load.
+
+Medians over 6 passes (operations/s; p99 in ms):
+
+| workload | firn | firn twin | Redis 7.2.16 | Valkey | Valkey io-threads |
+|---|---|---|---|---|---|
+| client-list | 132779 (0.58) | 133090 (0.54) | 34603 (2.52) | 26800 (3.25) | 28325 (1.79) |
+| handshake | 21664 (5.47) | 21717 (5.47) | 21704 (5.46) | 21618 (5.48) | 21899 (5.51) |
+
+CLIENT LIST ran 3.84 times the fastest competitor. Every server completed
+about 21.7 thousand handshakes per second with the same p99, so that workload
+was bounded outside the server, by connection setup or the client; the rerun
+records client CPU load to tell which.

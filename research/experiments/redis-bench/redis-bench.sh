@@ -1343,6 +1343,30 @@ if [ "$MODE" = workloads ]; then
     fi
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"
     echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
+    workload_cpu=
+    if [ -r /proc/stat ]; then
+        workload_cpu="$OUT/workload-cpu.csv"
+        echo 'line,pass,cpus,test,depth,cpu,role,busy,user,system' >"$workload_cpu"
+        echo 'line,pass,cpus,workload,connections,client_busy_mean,client_limited' >"$OUT/workload-limited.csv"
+    else
+        echo "skip,workload-cpu.csv,no /proc/stat"
+    fi
+    # Copies of /proc/stat just outside one client run, for cpu_busy: the run
+    # includes the client's own connection setup and warm-up, which the
+    # busy fraction therefore covers. workload_end takes <line> <connections>
+    # and appends the sample's rows to workload-cpu.csv and workload-limited.csv.
+    workload_begin() {
+        [ -z "$workload_cpu" ] || cat /proc/stat >"$OUT/workload-stat-before"
+    }
+    workload_end() {
+        [ -z "$workload_cpu" ] || {
+            cat /proc/stat >"$OUT/workload-stat-after"
+            cpu_busy "$OUT/workload-stat-before" "$OUT/workload-stat-after" \
+                "$SERVER_CPUS" "$CLIENT_CPUS" >"$OUT/workload-busy"
+            echo "$1,$pass,$n,$workload,$2,$(client_limited "$OUT/workload-busy")" >>"$OUT/workload-limited.csv"
+            awk -v key="$1,$pass,$n,$workload,$2" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu"
+        }
+    }
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,refused_sets,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections,keys_at_start,keys_at_end' >"$OUT/evict-zipf.csv"
     echo 'line,pass,cpus,workload,connections,keys,value_size,seed,warmup_seconds,sample_ms,maxmemory' >"$OUT/session-limits-settings.csv"
     # Accept only the measurement parameters shared by these opt-in workloads;
@@ -1454,9 +1478,11 @@ if [ "$MODE" = workloads ]; then
                             fi
                             start "$line"
                             for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                                workload_begin
                                 result=$(taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
                                     --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
                                     --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
+                                workload_end "$line" "$conns"
                                 echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
                             done
                             stop
@@ -1523,9 +1549,11 @@ if [ "$MODE" = workloads ]; then
                         echo "$line,$pass,$n,$workload,1000000,$rss" | tee -a "$OUT/workloads-memory.csv"
                     fi
                     for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                        workload_begin
                         result=$(taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
                             --threads "$CLIENT_THREADS" --connections "$conns" \
                             --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
+                        workload_end "$line" "$conns"
                         echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
                     done
                     # Profile only after every measured run on this server, so
