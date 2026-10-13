@@ -208,8 +208,9 @@ and others) keep the Meta form, because `due` is in Meta.
 needs the order Meta provides. Writing it did expose a language limitation.
 An atomic statement's targets are fixed syntax, so a statement cannot hold
 Meta only when a run-time condition (AOF on, an expiry option) holds. Each
-converted command is therefore two atomic statements around an ordinary `if`,
-one with the Meta target and one without. They share the body function but
+converted command was therefore first written as two atomic statements
+around an ordinary `if`, one with the Meta target and one without (the
+one-statement form below later replaced it). They share the body function but
 duplicate 4 to 30 lines of statement scaffolding per command, and drift
 between the two copies is the residual risk. The minimal witness is a
 conditional target,
@@ -566,6 +567,25 @@ so the prediction holds at this resolution: no cost beyond the twin's noise.
 The six passes' mean ratio, 0.994 (standard deviation 0.007), sits at the
 twin's lower bound; a cost under 1% is not excluded by six passes. GET does
 not run this statement and serves as a second control.
+
+[Firn-wf#75](https://github.com/Ming-Research/Firn-wf/pull/75) writes the
+other 39 conditional holds in the same one-statement form, so no
+two-statement copy remains in firn. Run
+[38376297156](https://github.com/Ming-Research/Firn-wf/actions/runs/38376297156),
+with the setup above: main d3d25fa (two statements at 39 sites), its twin
+(identical image) and Firn-wf#75 at 576df40; MSET at 50 connections like
+SET and GET. The same prior criterion applies: each test's median per-pass
+ratio to main within the twin's range.
+
+| test | twin ratio, median (range) | one statement, median (range) | one statement, mean (sd) |
+|---|---|---|---|
+| SET | 1.005 (0.986-1.009) | 0.9962 (0.990-1.004) | 0.9965 (0.005) |
+| MSET | 1.021 (1.000-1.045) | 1.004 (0.959-1.020) | 0.998 (0.021) |
+| GET | 1.001 (0.978-1.003) | 0.9995 (0.988-1.008) | 0.999 (0.007) |
+
+Each median lies inside the twin's range, so the criterion holds for all
+three tests. One MSET pass (0.959) fell below the twin's lowest pass; MSET's
+spread is the widest for both twin and change at six passes.
 
 ## 5. Whitefoot gaps and witnesses
 
