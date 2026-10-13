@@ -1,9 +1,27 @@
-Decision: Firn's downloadable Linux x86-64 program and container contain the same full-LTO build used in performance comparisons, because users should run the build whose performance is measured, instead of distributing the incremental developer build that optimizes the runtime separately.
+Decision: Firn ships the full-LTO build used in performance comparisons because users should run the measured build, instead of the incremental developer build that optimizes the runtime separately.
 
-Decision: Release checks execute the quickstart's marked shell blocks literally, substituting only a local release download URL and the image under test, because separately maintained example commands can pass while the document drifts; they also check the client replies and persisted AOF independently, instead of treating command exit codes alone as evidence that Redis protocol errors or missing persistence were detected.
+Decision: The quickstart checker executes the document's marked shell blocks literally because separately maintained test commands can pass while user instructions drift, instead of keeping a second command sequence in the checker.
 
-Decision: The container starts as a non-root user, listens on every IPv4 address inside the container and keeps an everysec AOF below its persistent working directory `/data`, because a published port must reach the server and replacing the container must preserve its dataset, instead of exposing the process's default loopback listener or keeping data only in the container's writable layer. The quickstart publishes the port only on the host's loopback address.
+Decision: The quickstart checker independently verifies client replies and persisted AOF contents because redis-cli can exit successfully after a server error, instead of accepting command exit codes alone.
 
-Decision: The initial container uses Debian trixie-slim with the GNU runtime library, because the Ubuntu 24.04 build can require glibc 2.39 while [Debian trixie supplies glibc 2.41](https://www.debian.org/News/2025/20250809), instead of Debian bookworm's older glibc or a compiler toolchain in the runtime image. This choice is conditional on CI's shared-library inspection and both quickstart runs succeeding; a new runtime dependency or loader incompatibility reopens it.
+Decision: The container keeps its AOF in a named volume at `/data` because replacing a container must preserve the dataset, instead of keeping it only in the container's writable layer.
 
-Decision: The release workflow builds and checks without publishing on packaging pull requests and manual dispatches, and a separate job with only contents and packages write permissions publishes the checked artifacts on pushed `v*` tags, because a review or validation run must not make a public release, instead of granting publishing credentials to builds or rebuilding after the release checks.
+Decision: The container binds every IPv4 address internally because its loopback default is unreachable through a published Docker port, instead of retaining the process's loopback bind inside the container.
+
+Decision: The container runs as a non-root user because the server needs access only to its data directory, instead of granting it root privileges.
+
+Decision: Firn ships a dynamic glibc build at the Ubuntu 24.04 baseline because it follows the established Linux CI toolchain and checks its runtime dependencies there, instead of a static build or an older distribution baseline.
+
+Decision: The runtime image uses Debian trixie-slim because its glibc supports the Ubuntu 24.04 build without a compiler toolchain, instead of Debian bookworm-slim whose glibc predates that baseline; a new runtime dependency or loader incompatibility reopens the choice.
+
+Decision: GitHub Releases and GHCR are Firn's only distribution channels because they share the project's existing GitHub credentials and permissions, instead of adding another download host or image registry.
+
+Decision: Only tags without a hyphen after `vX.Y.Z` move `latest` because the default quickstart should select a non-prerelease, instead of letting prerelease tags replace the default download and image.
+
+Decision: Only pushed `v*` tags publish checked artifacts because a review or validation run must not create a public release, instead of publishing on pull requests or manual dispatches.
+
+Decision: The release workflow refuses to republish an existing release tag because versioned downloads must retain their original bytes and checksums, instead of replacing published assets or image tags on a repeated tag push.
+
+Decision: Publishing reuses the artifacts that passed the release checks because rebuilding could publish different bytes, instead of building again in the publish job.
+
+Decision: Only the separate publish job receives contents and packages write permissions because builds and public download checks need no publishing access, instead of granting those permissions to the whole workflow.

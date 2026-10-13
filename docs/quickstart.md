@@ -1,83 +1,25 @@
 # Run a packaged firn
 
-Use Ubuntu 24.04 on x86-64 Linux for the binary tarball, or a Linux Docker
-daemon for the linux/amd64 container image. You need Bash, GNU coreutils
-(including `timeout` and `sha256sum`), and a free local port 6379.
-The image path also needs Docker installed and permission to use its daemon.
-These examples use the distribution's `redis-cli` as a client; it is not the
-Redis reference server used by firn's compatibility checks.
+Use Ubuntu 24.04 on x86-64 Linux for the binary tarball. You need Bash,
+`curl`, Python 3, `redis-cli`, `tar`, and GNU `sha256sum`. The container path
+also needs Docker with a Linux daemon that runs linux/amd64 images. Port
+6379 must be free; stop any local Redis server using it before this exercise.
+The distribution's `redis-cli` is a client here, not the Redis reference
+server used by firn's compatibility checks.
 
-Run the common blocks and **one** path, tarball or image, in document order
-in the same Bash shell. The exercise creates a fresh writable directory and
-leaves its data there. The image path leaves its named volume too. Expected
-replies are `PONG`, `OK`, and `survives-restart`; each is asserted because
-`redis-cli` can exit successfully after a server error.
+Open Bash in an empty, writable directory. Run the common blocks and **one**
+path, tarball or image, in document order in that same shell. Both paths
+write a value, stop the server, restart it, and read the value back. The
+expected replies are `PONG`, `OK`, and `survives-restart`.
 
-## Prepare the client and workspace
+## Download: binary tarball path
 
-The port probes bind and listen with address reuse enabled, as firn does.
-They reject a remaining listener while allowing closed connections to finish
-their TCP TIME_WAIT interval after the server has exited.
+The latest published release is selected automatically. Set `FIRN_TAG`
+before this block to select a published tag explicitly. The checksum checks
+the downloaded bytes against the release's `.sha256` file. The extracted
+folder includes firn's license and the Redis license notice.
 
-```sh quickstart-common
-set -euo pipefail
-if ! command -v curl >/dev/null || ! command -v redis-cli >/dev/null || ! command -v python3 >/dev/null; then
-    sudo apt-get update
-    sudo apt-get install -y --no-install-recommends curl redis-tools python3
-fi
-QUICKSTART_WORKDIR=${QUICKSTART_WORKDIR:-$(mktemp -d "${TMPDIR:-/tmp}/firn-quickstart.XXXXXX")}
-mkdir -p "$QUICKSTART_WORKDIR"
-[[ -z $(ls -A "$QUICKSTART_WORKDIR") ]]
-cd "$QUICKSTART_WORKDIR"
-QUICKSTART_WORKDIR=$PWD
-assert_port_free() {
-python3 - <<'PY'
-import socket
-with socket.socket() as listener:
-    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(('127.0.0.1', 6379))
-    listener.listen(1)
-PY
-}
-assert_port_free
-server_pid=
-container_name=
-cleanup() {
-    result=$?
-    trap - EXIT
-    if [[ -n $server_pid ]] && kill -0 "$server_pid" 2>/dev/null; then
-        kill -TERM "$server_pid" 2>/dev/null || true
-        wait "$server_pid" 2>/dev/null || true
-    fi
-    if [[ -n $container_name ]]; then
-        docker rm -f "$container_name" >/dev/null 2>&1 || true
-    fi
-    return "$result"
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-wait_for_firn() {
-    deadline=$((SECONDS + 19))
-    while (( SECONDS < deadline )); do
-        reply=$(timeout 1s redis-cli -h 127.0.0.1 -p 6379 --raw PING 2>/dev/null || true)
-        if [[ $reply == PONG ]]; then return 0; fi
-        sleep 0.2
-    done
-    printf 'firn did not answer PONG within 20 seconds\n' >&2
-    return 1
-}
-```
-
-## Start: binary tarball path
-
-The latest published release is selected automatically. Set `FIRN_TAG` in
-your shell before running this block to select a published tag explicitly.
-The `.sha256` file checks the downloaded bytes against the release's
-checksum. The extracted folder also contains firn's license and the Redis
-license notice beside the binary.
-
-```sh quickstart-tarball
+```sh quickstart-tarball-download
 FIRN_TAG=${FIRN_TAG:-$(curl --fail --silent --show-error --location https://api.github.com/repos/Ming-Research/Firn-wf/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')}
 FIRN_RELEASE_URL=${FIRN_RELEASE_URL:-https://github.com/Ming-Research/Firn-wf/releases/download/$FIRN_TAG}
 archive="firn-$FIRN_TAG-linux-x86_64.tar.gz"
@@ -85,120 +27,110 @@ curl --fail --silent --show-error --location "$FIRN_RELEASE_URL/$archive" --outp
 curl --fail --silent --show-error --location "$FIRN_RELEASE_URL/$archive.sha256" --output "$archive.sha256"
 sha256sum --check "$archive.sha256"
 tar -xzf "$archive"
-FIRN_BIN="$QUICKSTART_WORKDIR/firn-$FIRN_TAG-linux-x86_64/firn"
+FIRN_BIN="$PWD/firn-$FIRN_TAG-linux-x86_64/firn"
+```
+
+## Start: binary tarball path
+
+AOF persistence uses the fixed everysec sync policy. The server runs in the
+background, with its output in `first.log`. Wait a moment for it to listen
+before sending the client commands below.
+
+```sh quickstart-tarball-start
 mkdir data
 cd data
 "$FIRN_BIN" --port 6379 --bind 127.0.0.1 --appendonly yes >../first.log 2>&1 &
-server_pid=$!
 ```
 
 ## Start: Docker image path
 
-The image's default command enables AOF with its fixed everysec sync policy
-and listens inside the container on all IPv4 interfaces. The published port
-is bound only to the host's loopback address. The image runs as a nonroot
-user, with `/data` as its working directory. A named volume keeps that
-directory when the container is removed. Set `FIRN_IMAGE` before this block
-to select a published tag instead of `latest`.
+The image's default command enables AOF and listens on all IPv4 addresses
+inside the container **without a password**. Publish it only on
+`127.0.0.1`, as below, or set a password before exposing it to other hosts.
+Passing `--requirepass` puts the password in firn's command line, visible
+in `ps`; runtime `CONFIG SET requirepass` in an already open client session
+avoids command-line exposure.
+The image runs as UID 10001 with `/data` as its working directory. This
+example keeps data in the named volume `firn-data`; a bind-mounted host
+directory must be writable by UID 10001. Choose an unused container name
+and volume name for a new exercise. Set `FIRN_IMAGE` before this block to
+select a published tag instead of `latest`.
 
-```sh quickstart-image
-FIRN_IMAGE=${FIRN_IMAGE:-ghcr.io/ming-research/firn:latest}
-new_container_name=${FIRN_QUICKSTART_NAME:-firn-quickstart-$$}
-if docker container inspect "$new_container_name" >/dev/null 2>&1; then
-    printf 'Container name already exists: %s\n' "$new_container_name" >&2
-    exit 1
-fi
-container_name=$new_container_name
-volume_name="$container_name-data"
-docker volume create "$volume_name"
-docker run --detach --name "$container_name" --publish 127.0.0.1:6379:6379 \
-    --mount "type=volume,src=$volume_name,dst=/data" "$FIRN_IMAGE" >first-container.id
+Wait a moment for the container to listen before sending the client commands.
+
+```sh quickstart-image-start
+docker run --detach --name firn-quickstart -p 127.0.0.1:6379:6379 \
+    -v firn-data:/data "${FIRN_IMAGE:-ghcr.io/ming-research/firn:latest}"
 ```
 
 ## Write and read a value: both paths
 
-```sh quickstart-common
-wait_for_firn
-reply=$(redis-cli -h 127.0.0.1 -p 6379 --raw PING)
-[[ $reply == PONG ]]
-printf '%s\n' "$reply"
-reply=$(redis-cli -h 127.0.0.1 -p 6379 --raw SET firn:quickstart survives-restart)
-[[ $reply == OK ]]
-printf '%s\n' "$reply"
-reply=$(redis-cli -h 127.0.0.1 -p 6379 --raw GET firn:quickstart)
-[[ $reply == survives-restart ]]
-printf '%s\n' "$reply"
+These commands should print `PONG`, `OK`, and `survives-restart`, in order.
+
+```sh quickstart-common-write
+redis-cli -h 127.0.0.1 -p 6379 PING
+redis-cli -h 127.0.0.1 -p 6379 SET firn:quickstart survives-restart
+redis-cli -h 127.0.0.1 -p 6379 GET firn:quickstart
 ```
 
-## Stop and restart: binary tarball path
+## Stop: binary tarball path
 
 `SHUTDOWN NOSAVE` performs an orderly AOF stop; `NOSAVE` skips RDB snapshots,
-which firn does not implement. Waiting for the retained process ID confirms
-the server exited before the new one starts in the same data directory.
+which firn does not implement. Wait for the server to exit before restarting.
 
-```sh quickstart-tarball
+```sh quickstart-tarball-stop
 redis-cli -h 127.0.0.1 -p 6379 SHUTDOWN NOSAVE
-wait "$server_pid"
-assert_port_free
-server_pid=
-"$FIRN_BIN" --port 6379 --bind 127.0.0.1 --appendonly yes >../second.log 2>&1 &
-server_pid=$!
 ```
 
-## Stop and recreate: Docker image path
+## Stop: Docker image path
 
-Docker sends SIGTERM, which requests firn's orderly AOF stop. Check the
-container's exit status before removing it, then start a new container with
-the same volume. This checks persistence beyond the first container's life.
+Docker sends SIGTERM, which requests firn's orderly AOF stop.
 
-```sh quickstart-image
-docker stop --time 20 "$container_name"
-[[ $(docker inspect --format '{{.State.ExitCode}}' "$container_name") == 0 ]]
-docker logs "$container_name" >first.log 2>&1
-docker rm "$container_name"
-assert_port_free
-docker run --detach --name "$container_name" --publish 127.0.0.1:6379:6379 \
-    --mount "type=volume,src=$volume_name,dst=/data" "$FIRN_IMAGE" >second-container.id
+```sh quickstart-image-stop
+docker stop --time 20 firn-quickstart
+```
+
+## Restart: binary tarball path
+
+Stay in the same `data` directory and use the same options. Wait a moment
+for the restarted server to listen.
+
+```sh quickstart-tarball-restart
+"$FIRN_BIN" --port 6379 --bind 127.0.0.1 --appendonly yes >../second.log 2>&1 &
+```
+
+## Restart: Docker image path
+
+The stopped container keeps its configuration and named volume. Wait a
+moment for it to listen again.
+
+```sh quickstart-image-restart
+docker start firn-quickstart
 ```
 
 ## Read after restart: both paths
 
-The value must still be `survives-restart` after the server has loaded its
-AOF. No second `SET` is needed.
+The reply should still be `survives-restart`; there is no second `SET`.
 
-```sh quickstart-common
-wait_for_firn
-reply=$(redis-cli -h 127.0.0.1 -p 6379 --raw GET firn:quickstart)
-[[ $reply == survives-restart ]]
-printf '%s\n' "$reply"
+```sh quickstart-common-read
+redis-cli -h 127.0.0.1 -p 6379 GET firn:quickstart
 ```
 
 ## Final stop: binary tarball path
 
-```sh quickstart-tarball
+```sh quickstart-tarball-final-stop
 redis-cli -h 127.0.0.1 -p 6379 SHUTDOWN NOSAVE
-wait "$server_pid"
-server_pid=
-cd "$QUICKSTART_WORKDIR"
 ```
 
 ## Final stop: Docker image path
 
-```sh quickstart-image
-docker stop --time 20 "$container_name"
-[[ $(docker inspect --format '{{.State.ExitCode}}' "$container_name") == 0 ]]
-docker logs "$container_name" >second.log 2>&1
-docker rm "$container_name"
-container_name=
+```sh quickstart-image-final-stop
+docker stop --time 20 firn-quickstart
 ```
 
-```sh quickstart-common
-assert_port_free
-printf 'Data retained in %s\n' "$QUICKSTART_WORKDIR"
-```
-
-The tarball stores its files below `data/appendonlydir`. The image stores
-them below `/data/appendonlydir` in its named volume. Everysec replies can
+The tarball leaves its data below `data/appendonlydir`. Docker leaves a
+stopped container and keeps the AOF below `/data/appendonlydir` in
+`firn-data`, which also survives container removal. Everysec replies can
 precede the next sync; an orderly stop makes a final append and sync attempt.
 A storage error can still prevent durability. See
 [firn's persistence and shutdown behavior](../firn/README.md).
@@ -206,8 +138,7 @@ A storage error can still prevent durability. See
 ## Translate a small redis.conf
 
 firn accepts command-line options, not a Redis configuration file. Unknown
-options fail startup. These are the mappings for a small standalone setup;
-they do not imply support for every Redis setting.
+options fail startup. These mappings cover a small standalone setup.
 
 | Redis setting | firn equivalent or limitation |
 | --- | --- |
@@ -221,7 +152,7 @@ they do not imply support for every Redis setting.
 | `maxmemory-policy allkeys-lru` | Runtime `CONFIG SET maxmemory-policy allkeys-lru` only; resets on restart, no corresponding launch option |
 | `maxclients 100` | Unsupported; `--clients 100` counts all accepted clients over the server's lifetime and then stops, so it is not equivalent |
 | `timeout 60` | `--timeout 60`; zero means no idle limit |
-| `requirepass secret` | `--requirepass secret` |
+| `requirepass secret` | `--requirepass secret`, or runtime `CONFIG SET requirepass secret`, which resets on restart; see the [password guidance](#start-docker-image-path) above |
 | `save ""` | Empty snapshot schedule only; no RDB snapshots or `--save` |
 
 See [firn's command and option reference](../firn/README.md#build-and-run)
@@ -229,11 +160,13 @@ for its remaining options and compatibility limits.
 
 ## What release CI checks
 
-`packaging/quickstart-check.sh` extracts these tagged command blocks in
-document order and executes their literal contents for each path. The
-tarball check serves the newly built archive and checksum over a local HTTP
-mirror; the image check supplies the newly built Docker tag. Both check the
-replies, stop/restart sequence and persisted AOF independently of the prose.
-Thus prerelease CI checks the download procedure and image behavior without
-claiming those artifacts are already publicly available. Public GitHub
-download and registry availability need a separate check after publication.
+`packaging/quickstart-check.sh` executes the tagged commands literally and
+checks their replies, lifecycle sequence, free port after stopping, and
+persisted AOF. Readiness polling, assertions, time limits, temporary
+workspaces, and cleanup belong to that harness.
+
+Before publication, CI supplies a local HTTP mirror for the newly built
+archive and checksum, and a local Docker tag. After publication, the same
+harness uses the public latest-release lookup, GitHub downloads, and an
+anonymous pull of the default GHCR image. Prerelease checks do not claim
+that the artifacts are already publicly available.

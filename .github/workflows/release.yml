@@ -6,10 +6,17 @@ on:
       - packaging/**
       - docs/quickstart.md
       - .github/workflows/release.yml
+      - Makefile
+      - whitefoot.pin
   push:
     tags:
       - v*
   workflow_dispatch:
+    inputs:
+      check_latest:
+        description: Check the public latest quickstart without building or publishing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -17,12 +24,14 @@ permissions:
 jobs:
   build:
     name: build and check release packages
+    if: github.event_name != 'workflow_dispatch' || !inputs.check_latest
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
       package-tag: ${{ steps.package-tag.outputs.tag }}
+      prerelease: ${{ steps.package-tag.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
         with:
           submodules: true
           persist-credentials: false
@@ -41,6 +50,11 @@ jobs:
           fi
           echo "PACKAGE_TAG=$package_tag" >> "$GITHUB_ENV"
           echo "tag=$package_tag" >> "$GITHUB_OUTPUT"
+          prerelease=false
+          if [[ "$package_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+- ]]; then
+            prerelease=true
+          fi
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
       - name: Download the pinned compiler
         run: make compiler
@@ -130,18 +144,44 @@ jobs:
             exit 1
           fi
 
+      - name: Install the quickstart's host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl python3 redis-tools
+
       - name: Check the tarball quickstart
         run: packaging/quickstart-check.sh tarball "build/release/firn-${PACKAGE_TAG}-linux-x86_64.tar.gz"
 
       - name: Check the image quickstart
         run: packaging/quickstart-check.sh image firn-release:checked
 
+      - name: Require a broken persistence instruction to fail
+        run: |
+          set -euo pipefail
+          broken_doc="$RUNNER_TEMP/quickstart-no-aof.md"
+          failure_log="$RUNNER_TEMP/quickstart-no-aof.log"
+          python3 - "$broken_doc" <<'PY'
+          import pathlib
+          import sys
+
+          source = pathlib.Path('docs/quickstart.md').read_text()
+          if '--appendonly yes' not in source:
+              raise SystemExit('The persistence mutation has no instruction to change')
+          pathlib.Path(sys.argv[1]).write_text(source.replace('--appendonly yes', '--appendonly no'))
+          PY
+          status=0
+          QUICKSTART_DOC="$broken_doc" packaging/quickstart-check.sh tarball \
+            "build/release/firn-${PACKAGE_TAG}-linux-x86_64.tar.gz" >"$failure_log" 2>&1 || status=$?
+          cat "$failure_log"
+          [[ $status -ne 0 ]]
+          grep -Fq 'quickstart GET expected survives-restart' "$failure_log"
+
       - name: Save the tested image
         run: |
           set -euo pipefail
           docker save firn-release:checked | gzip > build/release/firn-image.tar.gz
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: firn-release
           if-no-files-found: error
@@ -161,13 +201,32 @@ jobs:
       packages: write
     env:
       PACKAGE_TAG: ${{ needs.build.outputs.package-tag }}
+      PRERELEASE: ${{ needs.build.outputs.prerelease }}
       GH_REPO: ${{ github.repository }}
     steps:
       # No source checkout or build runs in the job with publication access.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: firn-release
           path: release
+
+      # Creating the release first refuses an existing tag before either image
+      # reference can be pushed; reruns never replace published release assets.
+      - name: Publish the tarball and checksum to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tarball="release/firn-${PACKAGE_TAG}-linux-x86_64.tar.gz"
+          (cd release && sha256sum --check "firn-${PACKAGE_TAG}-linux-x86_64.tar.gz.sha256")
+          release_flags=(--latest)
+          if [[ "$PRERELEASE" == true ]]; then
+            release_flags=(--prerelease --latest=false)
+          fi
+          gh release create "$PACKAGE_TAG" "$tarball" "$tarball.sha256" --verify-tag \
+            --title "Firn $PACKAGE_TAG" \
+            --notes "Linux x86-64 tarball and SHA-256 checksum. Docker: ghcr.io/ming-research/firn:$PACKAGE_TAG. Quickstart: https://github.com/Ming-Research/Firn-wf/blob/$GITHUB_SHA/docs/quickstart.md" \
+            "${release_flags[@]}"
 
       - name: Publish the tested image to GHCR
         env:
@@ -177,21 +236,34 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           gzip -dc release/firn-image.tar.gz | docker load
           docker tag firn-release:checked "ghcr.io/ming-research/firn:$PACKAGE_TAG"
-          docker tag firn-release:checked ghcr.io/ming-research/firn:latest
           docker push "ghcr.io/ming-research/firn:$PACKAGE_TAG"
-          docker push ghcr.io/ming-research/firn:latest
-
-      - name: Publish the tarball and checksum to GitHub Releases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          tarball="release/firn-${PACKAGE_TAG}-linux-x86_64.tar.gz"
-          (cd release && sha256sum --check "firn-${PACKAGE_TAG}-linux-x86_64.tar.gz.sha256")
-          if gh release view "$PACKAGE_TAG" > /dev/null 2>&1; then
-            gh release upload "$PACKAGE_TAG" "$tarball" "$tarball.sha256" --clobber
-          else
-            gh release create "$PACKAGE_TAG" "$tarball" "$tarball.sha256" --verify-tag \
-              --title "Firn $PACKAGE_TAG" \
-              --notes "Linux x86-64 tarball and SHA-256 checksum. Docker: ghcr.io/ming-research/firn:$PACKAGE_TAG. Quickstart: https://github.com/Ming-Research/Firn-wf/blob/$GITHUB_SHA/docs/quickstart.md"
+          if [[ "$PRERELEASE" != true ]]; then
+            docker tag firn-release:checked ghcr.io/ming-research/firn:latest
+            docker push ghcr.io/ming-research/firn:latest
           fi
+
+  published-quickstart:
+    name: check the public latest quickstart
+    needs: [publish]
+    if: ${{ always() && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.publish.result == 'success') || (github.event_name == 'workflow_dispatch' && inputs.check_latest)) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      DOCKER_CONFIG: ${{ runner.temp }}/firn-public-docker
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Install the quickstart's host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl python3 redis-tools
+
+      - name: Check the public tarball quickstart
+        run: packaging/quickstart-check.sh tarball
+
+      - name: Check the public image quickstart
+        run: packaging/quickstart-check.sh image
