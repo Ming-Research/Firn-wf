@@ -21,10 +21,9 @@ folder includes firn's license and the Redis license notice.
 
 ```sh quickstart-tarball-download
 FIRN_TAG=${FIRN_TAG:-$(curl --fail --silent --show-error --location https://api.github.com/repos/Ming-Research/Firn-wf/releases/latest | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])')}
-FIRN_RELEASE_URL=${FIRN_RELEASE_URL:-https://github.com/Ming-Research/Firn-wf/releases/download/$FIRN_TAG}
 archive="firn-$FIRN_TAG-linux-x86_64.tar.gz"
-curl --fail --silent --show-error --location "$FIRN_RELEASE_URL/$archive" --output "$archive"
-curl --fail --silent --show-error --location "$FIRN_RELEASE_URL/$archive.sha256" --output "$archive.sha256"
+curl --fail --silent --show-error --location "https://github.com/Ming-Research/Firn-wf/releases/download/$FIRN_TAG/$archive" --output "$archive"
+curl --fail --silent --show-error --location "https://github.com/Ming-Research/Firn-wf/releases/download/$FIRN_TAG/$archive.sha256" --output "$archive.sha256"
 sha256sum --check "$archive.sha256"
 tar -xzf "$archive"
 FIRN_BIN="$PWD/firn-$FIRN_TAG-linux-x86_64/firn"
@@ -165,8 +164,10 @@ checks their replies, lifecycle sequence, free port after stopping, and
 persisted AOF. Readiness polling, assertions, time limits, temporary
 workspaces, and cleanup belong to that harness.
 
-Before publication, CI supplies a local HTTP mirror for the newly built
-archive and checksum, and a local Docker tag. After publication, the same
-harness uses the public latest-release lookup, GitHub downloads, and an
-anonymous pull of the default GHCR image. Prerelease checks do not claim
-that the artifacts are already publicly available.
+Before publication, the checker redirects the documented GitHub downloads
+to the local build artifacts and supplies a local Docker tag. After a
+non-prerelease publication, it checks the default latest-release lookup,
+GitHub downloads, and an anonymous pull of the default GHCR image; the
+selected release must match the pushed tag. Prerelease checks stay local.
+A manual dispatch can check the defaults against the existing latest
+published release without requiring a particular tag.

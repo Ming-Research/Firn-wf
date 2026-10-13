@@ -108,9 +108,10 @@ When priorities conflict, first:
   the Linux x86-64 program and Docker image, and execute the quickstart's
   commands against both. Only a pushed `v*` tag publishes the checked tarball,
   SHA-256 file and image to GitHub Releases and GHCR; write permissions belong
-  only to that publish job. Tags with a hyphen after `vX.Y.Z` are prereleases
-  and do not move `latest`. After publishing, a separate job checks the
-  quickstart's public defaults; dispatch with `check_latest` runs that check
+  only to that publish job. Only tags matching `^v[0-9]+\.[0-9]+\.[0-9]+$`
+  are stable; all other accepted tags are prereleases and do not move `latest`.
+  A stable publication checks the quickstart's public defaults and requires
+  its resolved release to match the pushed tag; dispatch with `check_latest` runs that check
   alone against the latest published release.
 
 ## Whitefoot

@@ -79,10 +79,14 @@ for name, body in blocks:
 pathlib.Path(scratch, 'stages').write_text('\n'.join(selected) + '\n')
 PY
 
+# A caller cannot supply a mirror to a public check. Local tarball mode alone
+# creates its private transport endpoint; other modes never redirect downloads.
+unset QUICKSTART_RELEASE_MIRROR
 if [[ $# == 1 ]]; then
     # Public checks exercise the documented defaults, regardless of caller env.
-    unset FIRN_TAG FIRN_RELEASE_URL FIRN_IMAGE
+    unset FIRN_TAG FIRN_IMAGE
 elif [[ $mode == tarball ]]; then
+    unset QUICKSTART_EXPECTED_RELEASE_TAG
     input=$(python3 - "$input" <<'PY'
 import pathlib, sys
 print(pathlib.Path(sys.argv[1]).resolve(strict=True))
@@ -109,8 +113,9 @@ PY
         sleep 0.1
     done
     [[ -s $scratch/http.port ]]
-    export FIRN_RELEASE_URL="http://127.0.0.1:$(cat "$scratch/http.port")"
+    export QUICKSTART_RELEASE_MIRROR="http://127.0.0.1:$(cat "$scratch/http.port")/$archive"
 else
+    unset QUICKSTART_EXPECTED_RELEASE_TAG
     export FIRN_IMAGE=$input
 fi
 
@@ -141,11 +146,14 @@ PY
 fi
 
 # This prelude is harness-only. Wrappers execute the supplied arguments and
-# record observations; they never supply a missing SET, stop, or restart.
+# record observations; they never supply a missing SET, stop, or restart. The
+# sole transport seam validates the documented GitHub release URL first, then
+# redirects just the built tarball and checksum to the local HTTP endpoint.
 cat >"$scratch/child.sh" <<'SH'
 set -euo pipefail
 scratch=$1
 mode=$2
+public=$3
 stage=preflight
 server_pid=
 mkdir "$scratch/work"
@@ -231,7 +239,30 @@ CLIENT
 chmod +x "$scratch/command-redis-cli"
 export PATH="$scratch:$PATH"
 curl() {
-    command curl "$@" || return "$?"
+    local url=${5:-} release_url download
+    local -a transport=("$@")
+    if [[ $stage == tarball-download && $url != https://api.github.com/repos/Ming-Research/Firn-wf/releases/latest ]]; then
+        if [[ $public == yes && -n ${QUICKSTART_EXPECTED_RELEASE_TAG:-} && ${FIRN_TAG:-} != "${QUICKSTART_EXPECTED_RELEASE_TAG:-}" ]]; then
+            printf 'quickstart latest release resolved %s; expected published tag %s\n' "${FIRN_TAG:-<missing>}" "$QUICKSTART_EXPECTED_RELEASE_TAG" >&2
+            return 1
+        fi
+        release_url="https://github.com/Ming-Research/Firn-wf/releases/download/$FIRN_TAG"
+        case $url in
+            "$release_url/$archive") download=$archive ;;
+            "$release_url/$archive.sha256") download=$archive.sha256 ;;
+            *) printf 'quickstart rejected documented release URL: %s\n' "$url" >&2; return 1 ;;
+        esac
+        if [[ -n ${QUICKSTART_RELEASE_MIRROR:-} ]]; then
+            if [[ ${QUICKSTART_RELEASE_MIRROR##*/} != "$archive" ]]; then
+                printf 'quickstart selected archive %s does not match the local build\n' "$archive" >&2
+                return 1
+            fi
+            transport[4]=$QUICKSTART_RELEASE_MIRROR
+            [[ $download == "$archive" ]] || transport[4]+=.sha256
+        fi
+    fi
+    command curl "${transport[@]}" || return "$?"
+    # Evidence names the original user command, never the redirected URL.
     event curl "$@"
 }
 sha256sum() {
@@ -283,7 +314,7 @@ while IFS= read -r stage; do
     event stage
     source "$scratch/$stage.sh"
     case $stage in
-        tarball-download) event release "$FIRN_TAG" "$FIRN_RELEASE_URL" "$archive" ;;
+        tarball-download) event release "$FIRN_TAG" "$archive" ;;
         tarball-start|tarball-restart)
             server_pid=$!
             kill -0 "$server_pid"
@@ -297,12 +328,12 @@ stage=final-check
 port_free
 SH
 
-timeout --kill-after=5s 180s bash "$scratch/child.sh" "$scratch" "$mode" \
+timeout --kill-after=5s 180s bash "$scratch/child.sh" "$scratch" "$mode" "$public" \
     >"$scratch/output.log" 2>"$scratch/error.log"
 
 # Verify observations, not shell spellings. A missing or substituted doc step
 # must fail even if the final AOF happens to contain the expected value.
-python3 - "$scratch/events.jsonl" "$mode" "$scratch/stages" "${image_ref:-}" "$public" <<'PY'
+python3 - "$scratch/events.jsonl" "$mode" "$scratch/stages" "${image_ref:-}" "$public" "${QUICKSTART_EXPECTED_RELEASE_TAG:-}" <<'PY'
 import json, pathlib, sys
 rows = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
 mode = sys.argv[2]
@@ -339,17 +370,18 @@ if mode == 'tarball':
         if observed('tarball-' + start, 'process-started')[0][0] != observed('tarball-' + stop, 'exited')[0][0]:
             raise SystemExit('SHUTDOWN must wait for the server that the document started')
     releases = observed('tarball-download', 'release')
-    if len(releases) != 1 or len(releases[0]) != 3:
+    if len(releases) != 1 or len(releases[0]) != 2:
         raise SystemExit('Missing release download evidence')
-    tag, url, archive = releases[0]
+    tag, archive = releases[0]
+    url = f'https://github.com/Ming-Research/Firn-wf/releases/download/{tag}'
     if archive != f'firn-{tag}-linux-x86_64.tar.gz':
         raise SystemExit('Archive filename must match the selected release tag')
     flags = ['--fail', '--silent', '--show-error', '--location']
     downloads = [[*flags, f'{url}/{name}', '--output', name]
                  for name in [archive, archive + '.sha256']]
     if sys.argv[5] == 'yes':
-        if url != f'https://github.com/Ming-Research/Firn-wf/releases/download/{tag}':
-            raise SystemExit('Public quickstart must download from GitHub Releases')
+        if sys.argv[6] and tag != sys.argv[6]:
+            raise SystemExit(f'quickstart latest release resolved {tag}; expected published tag {sys.argv[6]}')
         downloads.insert(0, [*flags, 'https://api.github.com/repos/Ming-Research/Firn-wf/releases/latest'])
     exact('tarball-download', 'curl', downloads)
     exact('tarball-download', 'sha256sum', [['--check', archive + '.sha256']])
