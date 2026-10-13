@@ -550,7 +550,7 @@ fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.
 }
 
 fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) {
-  doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_described selects the error the refusal describes.";
+  doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_text selects what the refusal describes.";
   let failed = False();
   match meta^.aof_append_error {
     Some(..) => {
@@ -569,30 +569,24 @@ fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(m
   return failed;
 }
 
-fn aof_error_described(meta: &Meta) -> described: Option<std::io::IoError> reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error) {
-  doc "Redis 7.0.15 server.c:4329-4340 tests the write status before the fsync status, and aof.c:1157-1184 sets aof_last_write_errno to the write's errno, or to ENOSPC after a short write. The ENOSPC case yields a NoSpace carrying no host code, which aof_error_by_class says to describe by its class.";
+fn aof_error_text(meta: &Meta) -> text: pkg::protocol::AofErrorText reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error) {
+  doc "Redis 7.0.15 server.c:4329-4340 tests the write status before the fsync status, and aof.c:1157-1184 sets aof_last_write_errno to the write's errno, or to ENOSPC after a short write.";
   match meta^.aof_append_error {
     Some(value: problem) => {
       if meta^.aof_append_partial {
-        let class_only = std::io::IoError::NoSpace(code: 0_u32, origin: 0_u8);
-        return Some<std::io::IoError>(value: class_only);
+        return pkg::protocol::AofErrorText::ShortWrite();
       }
-      return Some<std::io::IoError>(value: problem^);
+      return pkg::protocol::AofErrorText::Host(error: problem^);
     }
     None() => {
     }
   }
-  return meta^.aof_sync_error;
-}
-
-fn aof_error_by_class(meta: &Meta) -> by_class: Bool reads(meta.aof_append_error), reads(meta.aof_append_partial) {
-  doc "Whether the error aof_error_described selects is a short write's ENOSPC, which carries no host code and so is described by its class, as Redis describes every short write (aof.c:1163-1184).";
-  match meta^.aof_append_error {
-    Some(..) => {
-      return meta^.aof_append_partial;
+  match meta^.aof_sync_error {
+    Some(value: problem) => {
+      return pkg::protocol::AofErrorText::Host(error: problem^);
     }
     None() => {
     }
   }
-  return False();
+  return pkg::protocol::AofErrorText::Absent();
 }

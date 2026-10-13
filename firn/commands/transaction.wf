@@ -249,9 +249,8 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
     if transaction^.write_commands {
       if pkg::store::aof_failed(meta: m) {
         let aborted = True();
-        let described = pkg::store::aof_error_described(meta: m);
-        let by_class = pkg::store::aof_error_by_class(meta: m);
-        pkg::protocol::reply_aof_error(client: client, execabort: aborted, by_class: by_class, error: &described);
+        let text = pkg::store::aof_error_text(meta: m);
+        pkg::protocol::reply_aof_error(client: client, execabort: aborted, text: &text);
         transaction_reset(transaction: transaction);
         return unit;
       }
@@ -433,9 +432,8 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     atomic disk_meta = &store^.meta {
       set failed = pkg::store::aof_failed(meta: disk_meta);
       if failed {
-        let described = pkg::store::aof_error_described(meta: disk_meta);
-        let by_class = pkg::store::aof_error_by_class(meta: disk_meta);
-        pkg::protocol::reply_aof_error(client: client, execabort: exec, by_class: by_class, error: &described);
+        let text = pkg::store::aof_error_text(meta: disk_meta);
+        pkg::protocol::reply_aof_error(client: client, execabort: exec, text: &text);
         if exec {
           transaction_reset(transaction: transaction);
         } else if transaction^.open {

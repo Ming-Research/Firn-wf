@@ -265,8 +265,8 @@ with glibc's C-locale text. The design is rejected if a zero-progress append
 fault, its EXECABORT wrapping, or the script call and pcall paths give
 anything but `File too large` after the exact prefix.
 
-Design: `reply_aof_error` receives the error `aof_error_described` selects
-from Meta and copies its description straight into the reply window. When
+Design: `reply_aof_error` receives the text `aof_error_text` selects from
+Meta (the saved host error, a short write, or nothing) and copies its description straight into the reply window. When
 the window is too small the window grows by the length the host reports and
 the copy runs once more. `DescriptionUnavailable` leaves the suffix empty;
 glibc describes every code, so on Linux this needs a host failure.
