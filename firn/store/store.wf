@@ -514,10 +514,13 @@ fn client_sync(store: &Keyspace, client: &Client) -> result: unit reads(store), 
         }
       }
     }
-    if position <= t^.records.inner.len {
-      if t^.records.inner.len < t^.records.inner.cap {
-        insert_at(window: &t^.records.inner, index: position, value: move record);
-      }
+    let inside = position <= t^.records.inner.len;
+    let room = t^.records.inner.len < t^.records.inner.cap;
+    let possible = band(inside, room);
+    if possible {
+      insert_at(window: &t^.records.inner, index: position, value: move record);
+    } else {
+      let dropped = move record;
     }
   }
   return unit;
