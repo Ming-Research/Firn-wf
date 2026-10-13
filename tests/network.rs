@@ -4667,10 +4667,11 @@ fn firn_keeps_a_script_error_reply_on_one_line() {
 #[test]
 fn firn_runs_scripts_as_redis_7_2_16_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
         vec![
