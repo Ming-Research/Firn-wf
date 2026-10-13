@@ -400,19 +400,43 @@ worker and one driver, no append-only file, no client-count limit and no
 idle timeout. It relies on Linux `/proc`, util-linux `prlimit` and permission
 to lower the soft limit of its own child through `prlimit64`.
 
-A limit lowered only before exec would hit Whitefoot's reserved factory
-credits rather than the operating system's EMFILE. The case instead starts
-with soft and hard limits of 256, giving the pinned runtime 192 factory
-credits after its 64-descriptor reserve, verifies that limit and the live
-child descriptor set after a successful readiness PING, then lowers only
-the soft limit to the highest open descriptor plus one plus eight. It
-requires that limit to be at most 64, preserving enough of the original
-factory budget for actual host accepts. Sequential PONG-admitted peers
-consume every free descriptor slot; each admission must add exactly one
-child descriptor and preserve its startup descriptors. Before the failing
-attempt, the case requires every descriptor below the new soft limit to be
-occupied. This detects changing startup descriptor use rather than relying
-on a fixed guessed baseline.
+A tiny limit set only before exec can exhaust Whitefoot's factory credits
+before the operating system returns EMFILE. The case instead starts with
+soft and hard limits of 256, verifies that limit and the live child
+descriptor set after a successful readiness PING, then lowers only the soft
+limit to the highest open descriptor plus one plus eight. Every startup
+descriptor remains below the new limit, including inherited high-numbered
+descriptors. The number of additional admitted clients is the new soft
+limit minus the startup descriptor count; holes below the highest startup
+descriptor count as available slots. Sequential PONG-admitted peers consume
+those slots. Each admission must add exactly one child descriptor and
+preserve its startup descriptors, and the failing attempt requires every
+descriptor below the new soft limit to be occupied.
+
+The pinned runtime reads the initial soft limit once,
+[clips it at 1,048,576 and subtracts a reserve of 64](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1947-L1973),
+so the initial 256 supplies 192 factory credits. Its
+[shared acquisition counter](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L594-L617)
+counts outstanding acquisitions through related factories; it does not
+track descriptor numbers or a live kernel limit. Lowering the child's
+RLIMIT_NOFILE therefore restricts new native descriptor allocation without
+shrinking that counter. The
+[TCP listener](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1641),
+[stop listener](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1848)
+and [each accepted connection](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1723)
+consume one credit each. A native
+[failed accept returns its credit](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1749);
+closing both connection halves
+[returns one credit on the final descriptor-close attempt](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1478-L1482).
+
+The case conservatively budgets two fixed acquisitions for the stop and
+TCP listeners, one readiness connection, every additional connection and
+one in-flight failing accept. It requires `additional_clients + 4 <= 192`,
+instead of imposing a fixed maximum soft limit of 64. This calculation
+ignores credits returned when startup closes its two directory handles;
+those can only provide more room. With AOF disabled and the checked
+one-descriptor-per-admission behavior, exhaustion can therefore reach the
+native accept instead of being refused earlier by the factory.
 
 Admission shares a 15-second deadline. A queued peer connects and sends
 PING, but must remain unserved for 500 ms while all slots are occupied.
@@ -429,9 +453,33 @@ remaining absolute deadline. On the previous unconditional break, EMFILE
 closes the listener while admitted clients still exist; releasing peers
 cannot restore it, so the fresh-client PONG requirement fails.
 
-No local compiler, build, test or measurement was run. Compiler acceptance,
-both Linux routes, the failing control and the full CI gate remain
-unverified on this uncommitted change. The source and interfaces expose no
-Whitefoot gap needed for this fix: cancellation is distinct, host errors
-retain their native descriptions, and immediate waiting calls already
-provide scheduler fairness. No pin or submodule moves are required.
+The initial
+[fixed-server CI run](https://github.com/Ming-Research/Firn-wf/actions/runs/38417574158)
+on revision `1d12de7beb1097bfc7304b14e23437018ed2d1eb` and the
+[unchanged-accept-loop control](https://github.com/Ming-Research/Firn-wf/actions/runs/38417578518)
+on revision `1204bec9b794a50dc77a29e37b5e25440bf44e77` both failed the old
+`soft <= 64` precondition before exercising exhaustion or recovery. Each
+observed startup descriptors `{0, 1, 2, 3, 4, 5, 6, 7, 142, 145}`: ten open
+descriptors, highest 145, new soft limit 154, and 144 available slots.
+The conservative credit requirement is 148, below the initial 192, so this
+observed layout fits the corrected precondition without changing the
+initial limit or dropping inherited descriptors.
+
+The targets and origins of descriptors 142 and 145 were not recorded in
+those runs. They do not establish a test-harness descriptor leak. Cargo's
+intentionally inherited jobserver descriptors are a plausible explanation;
+ordinary Rust standard-library pipes and sockets use close-on-exec, but
+that mechanism alone does not identify these child descriptors. The
+repaired case records the child's descriptor targets and fdinfo, matching
+parent descriptors and jobserver authentication tokens for the next CI
+run. Until those observations exist, the source of the high descriptor
+numbers remains unknown.
+
+No local compiler, build, test or measurement was run. The precondition
+repair remains uncommitted and has no CI result; neither of the initial
+runs establishes EMFILE recovery or the required failing control. Both
+Linux routes and the full gate still need evidence on the repaired
+revision. The source and interfaces expose no Whitefoot gap needed for
+this fix: cancellation is distinct, host errors retain their native
+descriptions, and immediate waiting calls already provide scheduler
+fairness. No pin or submodule moves are required.
