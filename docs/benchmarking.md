@@ -10,21 +10,28 @@ and absolute throughput can change with the machine.
 
 ## Prerequisites and builds
 
-On Ubuntu 26.04-class systems, install these packages:
+CI runs this method on ubuntu-24.04 hosted runners and on the i9-14900K
+(Ubuntu, kernel 7.0). The package list below is checked against Ubuntu 24.04
+package names. Install these packages:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
   build-essential git curl ca-certificates python3 coreutils util-linux procps \
   iproute2 xz-utils tar pkg-config libicu-dev libssl-dev zlib1g \
-  libgssapi-krb5-2 tzdata
+  libgssapi-krb5-2 tzdata \
+  sudo perl lsb-release wget gnupg software-properties-common
 ```
 
 These provide the C build tools, archive tools, GNU core utilities, `taskset`,
 `lscpu`, Python and the native libraries for Garnet's .NET runtime. No Rust
-toolchain is needed for this prebuilt-image `compare` grid. The separate Rust
-application-workload client requires Cargo and Rust; it is outside the grid
-below. Optional `perf` profiling is disabled in these commands.
+toolchain is needed for this prebuilt-image `compare` grid: `make firn-lto`
+runs the downloaded `whitefootc`, and the compiler is a downloaded release, not
+built from source. The separate Rust application-workload client (the
+`workloads` mode) requires Cargo and Rust; it is outside the grid below.
+`make toolchain` additionally needs `sudo`, `lsb-release`, `wget`, `gnupg` and
+`software-properties-common` (apt.llvm.org's installer uses them), and `perl`
+provides `shasum` for the compiler download's checksum. Optional `perf` profiling is disabled in these commands.
 
 Set `FIRN_REVISION` to the published comparison's Firn-wf commit before this
 block. Run the rest of this guide in Bash from the checkout root:
@@ -113,6 +120,13 @@ information it uses all physical cores. It warns and caps the client count
 when fewer CPUs remain, and skips server counts that need too many physical
 cores. Automatic placement therefore does not recreate the eight-core and
 16-thread reference cells: use explicit lists for this grid.
+
+`host.txt` records the kernel command line only through an allow-list of
+performance-relevant parameters (isolcpus, nohz_full, rcu_nocbs, irqaffinity,
+mitigations, nosmt, intel_pstate, amd_pstate, idle, the C-state limits,
+transparent_hugepage, hugepages, default_hugepagesz, threadirqs, preempt,
+nmi_watchdog, skew_tick), or `none`; the raw command line, which can hold disk
+identifiers or secrets, and the host name are never recorded.
 
 The reference i9-14900K's lists below are **not portable CPU numbers**. Edit
 the server-list variables and the client list for your topology before

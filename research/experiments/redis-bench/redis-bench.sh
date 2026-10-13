@@ -832,8 +832,9 @@ PORT=${PORT:-$((10000 + $$ % 400 * 50))}
 MODE=${1:-bench}
 
 mkdir -p "$OUT"
-# CI already wrote its build/tool inventory here; append a fresh settings
-# block for the measurement itself. Standalone runs create the same record.
+# This is the only place the host settings are recorded, standalone and in CI
+# alike. CI wrote its runner and tool inventory here first; standalone runs
+# create host.txt here.
 record_host_system >>"$OUT/host.txt"
 {
     echo "measurement-mode: $MODE"

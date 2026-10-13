@@ -274,8 +274,6 @@ jobs:
           sh research/experiments/redis-bench/redis-bench.sh placement-selftest
           mkdir -p "$OUT"
           {
-            . research/experiments/redis-bench/host-info.sh
-            record_host_system
             echo "runner: $RUNNER_NAME ($RUNNER_ENVIRONMENT)"
             echo "load: $(cat /proc/loadavg)"
             for tool in redis-server valkey-server dragonfly garnet-server redis-benchmark; do

@@ -56,7 +56,17 @@ record_host_system() (
     printf 'transparent-hugepages-defrag: %s\n' "$(host_read_file "$host_sysfs/kernel/mm/transparent_hugepage/defrag")"
     printf 'vm.overcommit_memory: %s\n' "$(host_read_file /proc/sys/vm/overcommit_memory)"
     printf 'vm.swappiness: %s\n' "$(host_read_file /proc/sys/vm/swappiness)"
-    printf 'kernel-command-line: %s\n' "$(host_read_file /proc/cmdline)"
+    # host.txt is a public CI artifact: record only performance-relevant
+    # kernel parameters, never the raw command line (root=PARTUUID, secrets).
+    host_cmdline=$(cat /proc/cmdline 2>/dev/null) || host_cmdline=
+    host_params=
+    for host_word in $host_cmdline; do
+        case ${host_word%%=*} in
+            isolcpus|nohz_full|rcu_nocbs|irqaffinity|mitigations|nosmt|intel_pstate|amd_pstate|idle|processor.max_cstate|intel_idle.max_cstate|transparent_hugepage|hugepages|default_hugepagesz|threadirqs|preempt|nmi_watchdog|skew_tick)
+                host_params="${host_params:+$host_params }$host_word" ;;
+        esac
+    done
+    printf 'kernel-command-line-allowlisted: %s\n' "${host_params:-none}"
     # is-active prints inactive/failed even with a nonzero status; retain those
     # observations. No systemd or unreadable service state means unknown.
     host_value=$(timeout 3s systemctl --no-pager is-active irqbalance.service 2>/dev/null)
