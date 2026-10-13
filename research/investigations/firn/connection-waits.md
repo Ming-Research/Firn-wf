@@ -1085,6 +1085,86 @@ queued message ahead of it. Expected status, count, EXECABORT and message
 bytes follow the pinned Redis command bodies; no new oracle recording or
 ORACLE placeholder is needed for these histories.
 
+### Membership confirmations and the Redis suite barrier
+
+The reported regression in
+[gate run 38429510997](https://github.com/Ming-Research/Firn-wf/actions/runs/38429510997)
+returned one recipient for `PUBLISH chan1.hi hello` after the suite called
+argument-free `punsubscribe`. The assumption that this helper had read all
+three confirmations is false. Redis 7.2.16's
+[util.tcl](https://github.com/redis/redis/blob/7.2.16/tests/support/util.tcl)
+passes its default empty name list to `consume_subscribe_messages`, whose
+loop runs exactly once per supplied name. It therefore sends PUNSUBSCRIBE
+and reads zero replies. A publication on another connection can run first,
+legitimately counting the still-subscribed pattern. This missing barrier
+already existed in the previously passing versions; neither the promoted
+data-boundary change nor the subsequent control narrowing changed registry
+mutation or pub/sub reply commitment. Timing can expose the test race, but
+the failed run supplies no command-execution trace identifying its exact
+interleaving.
+
+Firn's existing subscription handlers add or remove forward indexes and
+reverse names before constructing each confirmation. Argument-free removal
+consumes every name and updates its index before appending that name's
+confirmation; explicit removal uses the same index operation. Direct
+commands retain one hub hold across the handler and complete reply
+commitment. The dispatcher must acquire that same hub before taking the
+committed Send action, and publishers consult those authoritative indexes
+under the hub. Thus a confirmation received on the wire implies the
+preceding membership change is visible to a later publisher. RESP2 versus
+RESP3 changes framing, not this boundary. The receiver's asynchronous
+subscription-class notification is not the publisher's source of truth.
+This also holds for subscription commands nested in the existing EXEC
+boundary. No server-ordering repair is supported by this source audit.
+
+The suite runner applies one
+[contextual patch](../../../tests/redis-suite/pubsub-barriers.patch) to
+all targets, preserving every original argument-free wire command and
+recipient/count assertion. It explicitly reads the three known names and
+requires confirmation counts 2, 1, 0 in the ordinary, pattern and shard
+removal cases. Two argument-free NUMPAT cleanup calls similarly drain their
+two known patterns and require 1, 0. The original helper still checks each
+message kind and each unordered name exactly once. A general loop until
+zero is unsuitable: ordinary channels and patterns share a combined count,
+so removing one family need not reach zero. Run metadata names the patch;
+a native forward-only, zero-fuzz application fails on stale context. A
+[CI input check](../../../tests/redis-suite/check-pubsub-barriers.py) uses
+fresh copies of the pinned files to require successful application and
+rejection of repeated application, a missing target file and a changed test
+heading. The patch and its input check are removed when the pinned upstream
+suite supplies these barriers. Compilation, patch application and network
+execution of this correction remain CI evidence to obtain; no local run is
+claimed.
+
+The four-driver network witness independently repeats the three-pattern
+sequence and both subscription directions. For each of RESP2 and RESP3,
+ordinary/pattern/shard families and explicit/argument-free removal, it drains
+all three confirmations, then immediately requires publication counts one
+after subscription and zero after removal on the other socket. All three
+channels are checked and each live delivery is read. A final PING catches
+leaked removed deliveries. Each of the twelve combinations runs 100 rounds;
+there is no sleep, polling-to-pass or intervening registry query hiding the
+confirmation boundary. These observations would reject a real reordered
+implementation; they are not a claim that the previous server violates
+that boundary or that the missing-barrier suite fails at a known frequency.
+
+RESET already removes all three indexes under the hub before its reply is
+formed. Its four-driver witness repeats 100 rounds per starting protocol,
+combines three memberships from each family, reads +RESET, then immediately
+requires zero from ordinary and shard publication before observing all
+registry counts at zero. PING detects leaked output, and an empty
+UNSUBSCRIBE checks RESET's restoration of RESP2.
+
+Client-local socket close has no membership confirmation: completion of a
+local close does not mean the server has observed EOF. A different client's
+immediate NUMSUB/PUBLISH therefore has no removal barrier from that local
+event. Cleanup remains eventual once EOF is observed. Firn removes indexes
+under the hub before cancelling owners; pressure removal does likewise.
+The output owner also forgets the registration before closing its send half.
+QUIT's +OK is an ordered finish response, not an unsubscribe confirmation;
+its queued output drains before cleanup. No new immediate-removal assertion
+is attached to local close or to QUIT's status reply.
+
 ### Pub/sub script attempts
 
 A declared-entry attempt encountering PUBLISH, SPUBLISH or PUBSUB introspection

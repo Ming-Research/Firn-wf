@@ -356,6 +356,135 @@ fn unsubscribe_all_returns_every_membership_and_empty_acknowledgment() {
     }
 }
 
+/// Redis 7.2.16 pubsub.c updates both client and server indexes before each
+/// acknowledgment. Its unit/pubsub test uses chan1.*, chan2.* and chan3.*,
+/// but the upstream no-argument helper drains no PUNSUBSCRIBE replies. This
+/// witness explicitly reads all three replies before publishing chanN.hi.
+/// Four drivers repeat that boundary for every family, protocol and removal
+/// form: the acknowledgment itself is the barrier, without a sleep or poll.
+#[test]
+fn membership_acknowledgments_are_cross_connection_barriers_with_multiple_drivers() {
+    for version in [2, 3] {
+        let (child, mut publisher, port) = start_with_drivers(2, "4");
+        let mut subscriber = connect_when_ready(port, &child);
+        for stream in [&mut publisher, &mut subscriber] {
+            stream.set_nodelay(true).expect("send membership barrier commands promptly");
+        }
+        hello(&mut subscriber, version);
+        for (subscribe, unsubscribe, publish, message_kind, names) in [
+            ("SUBSCRIBE", "UNSUBSCRIBE", "PUBLISH", "message", ["chan1.hi", "chan2.hi", "chan3.hi"]),
+            ("PSUBSCRIBE", "PUNSUBSCRIBE", "PUBLISH", "pmessage", ["chan1.*", "chan2.*", "chan3.*"]),
+            ("SSUBSCRIBE", "SUNSUBSCRIBE", "SPUBLISH", "smessage", ["chan1.hi", "chan2.hi", "chan3.hi"]),
+        ] {
+            let subscribe_kind = subscribe.to_ascii_lowercase();
+            let unsubscribe_kind = unsubscribe.to_ascii_lowercase();
+            for with_arguments in [false, true] {
+                for iteration in 0..100 {
+                    let context = format!("RESP{version} {subscribe}/{unsubscribe} arguments={with_arguments} round={iteration}");
+                    send(&mut subscriber, &[&[subscribe, names[0], names[1], names[2]]]);
+                    for (index, name) in names.iter().enumerate() {
+                        assert_eq!(frame(&mut subscriber), acknowledgment(version, &subscribe_kind, Some(name), index + 1), "{context}: subscribe acknowledgment");
+                    }
+                    // The first publisher command follows only the final
+                    // acknowledgment; no query can mask a late index update.
+                    let value = format!("live-{iteration}");
+                    for (index, channel) in ["chan1.hi", "chan2.hi", "chan3.hi"].iter().enumerate() {
+                        assert_eq!(request(&mut publisher, &[publish, channel, &value]), b":1\r\n", "{context}: {channel} must count one recipient after subscribe acknowledgment");
+                        let expected = if message_kind == "pmessage" {
+                            pattern_message(version, names[index], channel, &value)
+                        } else {
+                            message(version, message_kind, channel, &value)
+                        };
+                        assert_eq!(frame(&mut subscriber), expected, "{context}: {channel} must deliver after subscribe acknowledgment");
+                    }
+                    if with_arguments {
+                        send(&mut subscriber, &[&[unsubscribe, names[0], names[1], names[2]]]);
+                        for (index, name) in names.iter().enumerate() {
+                            assert_eq!(frame(&mut subscriber), acknowledgment(version, &unsubscribe_kind, Some(name), 2 - index), "{context}: explicit unsubscribe acknowledgment");
+                        }
+                    } else {
+                        send(&mut subscriber, &[&[unsubscribe]]);
+                        let mut remaining = names.to_vec();
+                        for count in [2, 1, 0] {
+                            let reply = frame(&mut subscriber);
+                            let position = remaining.iter().position(|name| reply == acknowledgment(version, &unsubscribe_kind, Some(name), count))
+                                .unwrap_or_else(|| panic!("{context}: unsubscribe-all missing, repeated, or wrong count: {reply:?}"));
+                            remaining.remove(position);
+                        }
+                        assert!(remaining.is_empty(), "{context}: unsubscribe-all omitted a membership");
+                    }
+                    for channel in ["chan1.hi", "chan2.hi", "chan3.hi"] {
+                        assert_eq!(request(&mut publisher, &[publish, channel, "hello"]), b":0\r\n", "{context}: {channel} must count zero recipients after the last unsubscribe acknowledgment");
+                    }
+                    assert_eq!(request(&mut subscriber, &["PING"]), b"+PONG\r\n", "{context}: an unsubscribed delivery leaked before the PING barrier");
+                }
+            }
+        }
+        drop((publisher, subscriber));
+        assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// Redis 7.2.16 networking.c:resetCommand calls clearClientConnectionState
+/// before replying +RESET; that clears all three indexes without unsubscribe
+/// notifications and restores RESP2. pubsub.c supplies the query counts and
+/// the RESP2 empty-unsubscribe frame used to verify the protocol reset.
+#[test]
+fn reset_reply_is_cross_connection_membership_barrier_with_multiple_drivers() {
+    for version in [2, 3] {
+        let (child, mut publisher, port) = start_with_drivers(2, "4");
+        let mut subscriber = connect_when_ready(port, &child);
+        for stream in [&mut publisher, &mut subscriber] {
+            stream.set_nodelay(true).expect("send RESET barrier commands promptly");
+        }
+        for iteration in 0..100 {
+            let context = format!("RESP{version} RESET round={iteration}");
+            // RESET also resets the protocol, so negotiate anew each round.
+            hello(&mut subscriber, version);
+            for (command, kind, names, prior_count) in [
+                ("SUBSCRIBE", "subscribe", ["chan1.hi", "chan2.hi", "chan3.hi"], 0),
+                ("PSUBSCRIBE", "psubscribe", ["chan1.*", "chan2.*", "chan3.*"], 3),
+                ("SSUBSCRIBE", "ssubscribe", ["chan1.hi", "chan2.hi", "chan3.hi"], 0),
+            ] {
+                send(&mut subscriber, &[&[command, names[0], names[1], names[2]]]);
+                for (index, name) in names.iter().enumerate() {
+                    assert_eq!(frame(&mut subscriber), acknowledgment(version, kind, Some(name), prior_count + index + 1), "{context}: {command} acknowledgment");
+                }
+            }
+            assert_eq!(request(&mut publisher, &["PUBSUB", "NUMPAT"]), b":3\r\n", "{context}: establish three live patterns before RESET");
+            let mut live_counts = b"*6\r\n".to_vec();
+            for channel in ["chan1.hi", "chan2.hi", "chan3.hi"] {
+                live_counts.extend(bulk(channel));
+                live_counts.extend_from_slice(b":1\r\n");
+            }
+            for query in ["NUMSUB", "SHARDNUMSUB"] {
+                assert_eq!(request(&mut publisher, &["PUBSUB", query, "chan1.hi", "chan2.hi", "chan3.hi"]), live_counts, "{context}: establish three live {query} memberships before RESET");
+            }
+            assert_eq!(request(&mut subscriber, &["RESET"]), b"+RESET\r\n", "{context}: RESET reply must contain no unsubscribe notifications");
+            // No subscriber command or observer poll separates the RESET
+            // reply from these publications on the other connection.
+            for channel in ["chan1.hi", "chan2.hi", "chan3.hi"] {
+                for publish in ["PUBLISH", "SPUBLISH"] {
+                    assert_eq!(request(&mut publisher, &[publish, channel, "after-reset"]), b":0\r\n", "{context}: {publish} {channel} must count zero recipients after RESET reply");
+                }
+            }
+            assert_eq!(request(&mut publisher, &["PUBSUB", "NUMPAT"]), b":0\r\n", "{context}: RESET left a pattern in the server index");
+            let mut empty_counts = b"*6\r\n".to_vec();
+            for channel in ["chan1.hi", "chan2.hi", "chan3.hi"] {
+                empty_counts.extend(bulk(channel));
+                empty_counts.extend_from_slice(b":0\r\n");
+            }
+            for query in ["NUMSUB", "SHARDNUMSUB"] {
+                assert_eq!(request(&mut publisher, &["PUBSUB", query, "chan1.hi", "chan2.hi", "chan3.hi"]), empty_counts, "{context}: RESET left a {query} membership in the server index");
+            }
+            assert_eq!(request(&mut subscriber, &["PING"]), b"+PONG\r\n", "{context}: a post-RESET delivery leaked before the PING barrier");
+            assert_eq!(request(&mut subscriber, &["UNSUBSCRIBE"]), acknowledgment(2, "unsubscribe", None, 0), "{context}: RESET must restore RESP2, including its array and bulk null");
+        }
+        drop((publisher, subscriber));
+        assert_eq!(finished(child).0, 0);
+    }
+}
+
 /// PUBSUB subcommand table arity is checked before execution; excess CHANNELS
 /// arguments are a handler syntax error. Wrong PUBLISH arity dirties MULTI.
 /// A valid queued PUBLISH is observable to a real subscriber if it leaks on
