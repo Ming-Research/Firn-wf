@@ -416,17 +416,29 @@ evidence of another firn defect.
 
 The correction evaluates each lost acknowledged event against the current
 recorded SIGKILL and actual EIO intervals. An explicitly unfixed firn image
-may retain the known-mechanism label when its reply completed no more than
-10 ms before that signal and no active EIO overlapped the request-to-kill
-interval. A healed EIO before invocation is not a veto. Overlapping EIO,
-missing attribution evidence, a fixed/unknown image, or an older reply
+may retain the known-mechanism label when its complete reply falls within
+the inclusive interval `[SIGKILL sent - 10 ms, SIGKILL reaped]` and no active
+EIO overlapped invocation through signal send. Signal delivery is asynchronous:
+a reply sent before appending may complete at the client after the kill
+request was issued and before the killed process was reaped. Record send
+and reap timestamps for the same current kill. Capture reap immediately upon
+observing its exit status, before collecting stdout/stderr. A valid request
+may also begin after send but finish before reap; its invocation-to-send
+interval is empty, so it is not rejected solely for that invocation time.
+Malformed fault metadata still cannot establish no EIO overlap. Missing reap evidence,
+a reversed reap interval, or a reply after reap keeps attribution unverified.
+Report `ack_to_kill_offset_ns = ack_completed_ns - sigkill_at_ns`: positive
+means the acknowledgment completed after signal send, negative means before.
+A healed EIO before invocation is not a veto. Overlapping EIO,
+other missing attribution evidence, a fixed/unknown image, or an older reply
 keeps a separate investigation or unverified label. Ten milliseconds is a
 conservative diagnostic criterion for consistency with the known mechanism,
 not a guaranteed upper bound on AOF-writer delay or proof that an older
 loss has a different cause. It never changes loss detection or turns a
 failed run into a pass. Repeated checks use the current signal, so a loss
 first observed only at a later restart cannot borrow its earlier signal's
-short interval.
+short interval. The reap-bound extension follows the 600-second observation
+below; it does not retroactively change the original artifact's labels.
 
 Redis again reported fsync EIO (`server-2.stdout:12`), then refused its
 third startup with a bad AOF (`server-3.stdout:8`). This time its report
@@ -436,9 +448,11 @@ remains unverified as in the first observation; this repeat does not
 resolve the storage-versus-Redis attribution.
 
 The classifier correction carries structured lost-write keys/tokens rather
-than parsing diagnostic text. It logs invocation, acknowledgment, signal,
-age, nominal threshold, and EIO overlap evidence alongside each loss. The
-checker predicate and error count are unchanged. These three regression
+than parsing diagnostic text. That correction logged invocation,
+acknowledgment, signal send, unsigned age, nominal threshold, and EIO overlap
+alongside each loss. The subsequent extension below adds reap time and signed
+offset, pending its own CI evidence. The checker predicate and error count
+are unchanged. These three regression
 cases compiled and passed with all 34 chaos self-tests in
 [gate run 38446017652](https://github.com/Ming-Research/Firn-wf/actions/runs/38446017652)
 at revision `6cd2b51`:
@@ -455,9 +469,81 @@ commitments, and original artifacts. It found one stale test-status sentence,
 which was corrected to distinguish the seven already validated cases from
 the three new classifier cases. Gate run 38446017652 subsequently compiled
 and passed all 34 chaos self-tests at `6cd2b51`, including those three cases.
-A real SIGKILL exercising the corrected classifier remains unverified:
-hosted run 38442238079 predates that correction. The original artifacts are
-retained unchanged.
+A real SIGKILL exercised that classifier at `a454c8b` in the 600-second
+hosted observation below. The subsequent reap-bound extension still needs
+its own CI execution. The original artifacts are retained unchanged.
+
+### 600-second hosted observation and reap-bound attribution
+
+[Gate run 38450286323](https://github.com/Ming-Research/Firn-wf/actions/runs/38450286323)
+at `a454c8b` passed design lint and all 38 chaos self-tests. Its only failure
+was the inherited durability failure; this is not a passing whole-gate claim.
+[Hosted run 38450308663](https://github.com/Ming-Research/Firn-wf/actions/runs/38450308663)
+used the same revision, requested 600 wall-clock seconds for firn and Redis,
+seed 2, and `firn_append_before_reply=absent`. These results are reported from
+the owner's CI observations; no workload or test was run locally.
+
+Firn completed 29 epochs and all 29 SIGKILL restarts, with nine combined
+write/flush EIO windows. It reported 36 lost acknowledged writes: 33 labelled
+known and three labelled `firn-loss-attribution-unverified-still-fails`.
+Those three complete replies followed signal send by approximately 68, 135,
+and 82 microseconds. One example records `ack_completed_ns=21102997559`
+and `sigkill_at_ns=21102929443`, a signed offset of `+68116 ns`. The original
+classifier's unsigned subtraction produced `ack_age_ns=None`, treating a
+post-send completion as invalid without considering asynchronous signal
+delivery. All 36 losses are consistent with the known pre-#97
+acknowledgment-before-append mechanism in the owner's reported observation;
+post-send completion alone does not establish another defect. This is a
+retrospective mechanism interpretation, not proof that the old artifacts
+satisfy the new classifier predicate: `a454c8b` did not record a structured
+reap timestamp, and the three original unverified labels remain unchanged.
+Automatic known attribution requires the new same-kill reap evidence; the
+extension still needs its own run. It is not proof of the AOF writer's
+precise cause. All 36 remain failures of zero-loss acceptance.
+
+The scheduler executed ten full and twenty incremental checks. Its reported
+`check_fraction=0.0048` is 0.48% of wall time, below the 10% budget for this
+ten-minute probe. It validates exercised short-run scheduling, not the
+24-hour resource forecast or the day-long acceptance.
+
+**Observed competitor finding:** Redis 7.2.16 stopped at lifetime 3 after
+the epoch-3 combined write/flush EIO window and SIGKILL. Restart reported
+`Bad file format reading the append only file appendonly.aof.1.incr.aof`
+and requested a backup followed by `redis-check-aof --fix`. Both
+[run 38450308663](https://github.com/Ming-Research/Firn-wf/actions/runs/38450308663)
+and [run 38442238079](https://github.com/Ming-Research/Firn-wf/actions/runs/38442238079)
+observed refusal to start after this fault sequence. Recovery requires
+manual repair rather than an ordinary restart; no repair was performed or
+validated by this experiment. This is the experiment's Redis `refused restart`
+finding, not a harness fault. It does not establish whether failed writeback
+left a hole, a write was partial, filesystem damage intervened, or Redis
+produced an invalid continuation. Preserved AOF/backing-image bytes and
+write payload/return traces, as described in the first observation, would
+distinguish those causes.
+
+The reap-bound extension adds three pure regression cases, pending CI:
+
+| Test | Wrong result it detects |
+| --- | --- |
+| `post_signal_ack_before_reap_is_known_and_still_fails` | A complete acknowledgment 68 microseconds after send but before reap is labelled unverified; inclusive send/reap boundaries fail; an overlapping EIO is labelled solely known; signed reporting or the loss failure count is erased. |
+| `ack_after_sigkill_reap_is_unverified` | A reply after reap establishes known attribution; a valid post-send invocation is rejected despite an in-window reply; or an empty invocation-to-send interval bypasses malformed EIO metadata. |
+| `missing_or_ambiguous_sigkill_reap_is_unverified` | Missing, wrong-epoch, duplicate, reversed, or earlier-kill reap evidence establishes known attribution for a pre-send or post-send reply. |
+
+Existing attribution and loss-count
+fixtures retain their independent failure checks with paired send/reap
+metadata. Reclassification never reduces the LOST finding count.
+
+A fresh read-only gpt-6.1-sol review covered the three-file reap extension
+against `a454c8b`, its checker/process-support consumers, project checklist,
+and design ancestors. It identified historical validation wording that
+could imply old runs had new reap evidence, and an extra invocation-before-
+send restriction; both were corrected and reinspected. Reap capture was also
+moved before output collection so log draining cannot inflate the boundary.
+The recorded reap is the first harness observation of exit status, not the
+kernel's exact termination instant. No unresolved static finding remains;
+`git diff --check` passed. No shell or Python source changed in this follow-up,
+so `bash -n` and `py_compile` have no changed input. Compilation, three new
+regressions, and a real-kill run of this extension remain pending CI.
 
 ### Follow-up corrections to the first run (validated by the second run)
 
@@ -488,8 +574,9 @@ is coverage evidence, not a scheduling guarantee or a change to acceptance.
 
 The following seven regression cases passed in each job of the second
 hosted run. The later per-loss classifier correction compiled and passed its
-three cases in gate run 38446017652 at `6cd2b51`; its real-kill runtime report
-remains unverified:
+three cases in gate run 38446017652 at `6cd2b51` and was exercised by real
+kills in run 38450308663 at `a454c8b`. The newer reap-bound extension remains
+pending CI:
 
 | Test | Wrong result it detects |
 | --- | --- |
@@ -549,7 +636,9 @@ The existing durability negative test remains in the network gate, which
 these chaos artifacts do not establish. The seven first-run correction
 cases above passed in the second run; the three classifier cases compiled
 and passed in gate run 38446017652 at `6cd2b51` (34 chaos self-tests total).
-The corrected classifier still lacks a real-kill run. The pure tests
+Gate run 38450286323 at `a454c8b` passed all 38 chaos self-tests, including
+the resource-budget fixtures; run 38450308663 exercised the classifier with
+real kills. The newer reap-bound cases remain pending CI. The pure tests
 run without starting a database; shared process-support tests remain wired.
 
 | Test | Discriminating case |
@@ -609,8 +698,9 @@ checks additionally dump full mismatching observations, so provision extra
 space for failures. These estimates reuse short-run numbers; they are not
 a measured day result or a fixed byte cap under arbitrary configuration.
 
-The new fixtures below are pending CI compilation and execution; the gate's
-34-test evidence applies to `6cd2b51`, before this scheduler change.
+The fixtures below compiled and passed in gate run 38450286323 at `a454c8b`
+(38 chaos self-tests total). The later reap-bound extension is not covered
+by that result.
 
 | Test | Wrong result it detects |
 | --- | --- |
@@ -640,13 +730,15 @@ distinguishes the original functional criterion from the later resource budget.
 No unresolved static findings remain. Four workflow shell-block copies passed
 `bash -n`, both inline Python payload copies passed `python3 -m py_compile`,
 and `git diff --check` passed. Those commands executed no workload scripts.
-The design lint, Rust compilation, five revised/new fixtures, smoke run, and
-day acceptance remain pending CI. No gate target, Whitefoot pin, submodule,
+Gate run 38450286323 at `a454c8b` subsequently passed design lint and all 38
+chaos self-tests; run 38450308663 supplied a 600-second smoke observation.
+The reap-bound extension and day acceptance remain pending CI. No gate target, Whitefoot pin, submodule,
 production server, or approval log changed.
 
-The revised scheduler, compact summaries, and timing report still need CI
-compilation, self-test execution, and a new smoke run. Actual day-run resource
-use remains unmeasured; the forecast below does not establish acceptance.
+The scheduler, compact summaries, and timing report have short-run CI
+evidence at `a454c8b`. Actual day-run resource use remains unmeasured; the
+forecast above does not establish acceptance. The new reap-bound classifier
+still needs compilation, regression execution, and a real-kill report in CI.
 Distinct failure deduplication uses additional memory in an already-failed
 run. The experiment measures process crashes and storage EIO, not power
 loss, ENOSPC, arbitrary mixed-command linearizability, or a throughput target.

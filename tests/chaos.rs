@@ -693,7 +693,7 @@ fn start(
 }
 
 fn kill(
-    child: support::ProgramChild,
+    mut child: support::ProgramChild,
     shared: &Shared,
     epoch: usize,
     label: &str,
@@ -733,19 +733,38 @@ fn kill(
             last_ack_age.map(|age| age.as_nanos())
         ),
     );
-    let output = child.wait_with_output().expect("reap killed server");
+    let (status, reaped) = loop {
+        if let Some(status) = child.try_wait().expect("reap killed server") {
+            // First harness observation of exit, before collecting captured
+            // output. This is not a claim about the kernel's exact exit time.
+            break (status, Instant::now());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
     use std::os::unix::process::ExitStatusExt;
     assert_eq!(
-        output.status.signal(),
+        status.signal(),
         Some(9),
         "server exited before injected kill: {:?}",
-        output.status
+        status
     );
-    locked(&shared.fault_coverage).sigkill_reaped += 1;
+    {
+        let mut coverage = locked(&shared.fault_coverage);
+        coverage.sigkill_reaped += 1;
+        coverage.faults.push(FaultRecord {
+            kind: "SIGKILL reaped",
+            epoch,
+            at_ns: reaped.duration_since(shared.origin).as_nanos(),
+        });
+    }
+    let _output = child.wait_with_output().expect("collect killed server output");
     note(
         &shared.wire,
         shared.origin,
-        &format!("REAP epoch={epoch} {label} status={}", output.status),
+        &format!(
+            "REAP epoch={epoch} {label} status={} at_ns={} timestamp=first_harness_exit_observation",
+            status, reaped.duration_since(shared.origin).as_nanos()
+        ),
     );
 }
 
@@ -1380,6 +1399,10 @@ struct LossAttribution {
     invoked_ns: Option<u128>,
     ack_completed_ns: Option<u128>,
     sigkill_at_ns: Option<u128>,
+    sigkill_reaped_ns: Option<u128>,
+    // Signed completed-minus-sent offset; positive means the reply completed
+    // after signal submission. The matched reap separately bounds attribution.
+    ack_offset_ns: Option<i128>,
     ack_age_ns: Option<u128>,
     eio_overlap: EioEvidence,
     interpretation: &'static str,
@@ -1402,9 +1425,6 @@ fn eio_overlap(faults: &[FaultRecord], invoked_ns: u128, sigkill_ns: u128) -> Ei
             return EioEvidence::Unverified("EIO timestamps are not monotonic");
         }
         last_time = Some(fault.at_ns);
-        if fault.at_ns > sigkill_ns {
-            continue;
-        }
         match fault.kind {
             "combined write/flush EIO active" => {
                 if active.insert(fault.epoch, fault.at_ns).is_some() {
@@ -1424,6 +1444,12 @@ fn eio_overlap(faults: &[FaultRecord], invoked_ns: u128, sigkill_ns: u128) -> Ei
             _ => unreachable!(),
         }
     }
+    // Signal delivery is asynchronous: a request can start after submission.
+    // Its invocation-to-send interval is empty. Validate the complete EIO
+    // metadata above before declaring that empty interval free of overlap.
+    if invoked_ns > sigkill_ns {
+        return EioEvidence::NoOverlap;
+    }
     windows.extend(active.into_iter().map(|(epoch, start)| EioWindow {
         epoch,
         active_ns: start,
@@ -1442,6 +1468,34 @@ fn eio_overlap(faults: &[FaultRecord], invoked_ns: u128, sigkill_ns: u128) -> Ei
     }
 }
 
+fn current_sigkill_window(faults: &[FaultRecord]) -> Result<(u128, u128), &'static str> {
+    let mut previous = None;
+    for fault in faults.iter().filter(|fault| {
+        matches!(fault.kind, "SIGKILL sent" | "SIGKILL reaped")
+    }) {
+        if previous.is_some_and(|time| time > fault.at_ns) {
+            return Err("SIGKILL send/reap timestamps are not monotonic");
+        }
+        previous = Some(fault.at_ns);
+    }
+    let (sent_index, sent) = faults.iter().enumerate().rev()
+        .find(|(_, fault)| fault.kind == "SIGKILL sent")
+        .ok_or("missing current SIGKILL send")?;
+    if faults.iter().filter(|fault| fault.kind == "SIGKILL sent" && fault.epoch == sent.epoch).count() != 1 {
+        return Err("ambiguous current SIGKILL send");
+    }
+    let mut reaps = faults.iter().enumerate()
+        .filter(|(_, fault)| fault.kind == "SIGKILL reaped" && fault.epoch == sent.epoch);
+    let (reaped_index, reaped) = reaps.next().ok_or("missing current SIGKILL reap")?;
+    if reaps.next().is_some() {
+        return Err("ambiguous current SIGKILL reap");
+    }
+    if reaped_index <= sent_index || reaped.at_ns < sent.at_ns {
+        return Err("SIGKILL reap precedes its send");
+    }
+    Ok((sent.at_ns, reaped.at_ns))
+}
+
 fn classify_lost_write(
     server: &str,
     fix: &str,
@@ -1452,14 +1506,17 @@ fn classify_lost_write(
 ) -> LossAttribution {
     let sigkill_at_ns = faults
         .iter()
-        .filter(|fault| fault.kind == "SIGKILL sent")
-        .map(|fault| fault.at_ns)
-        .max();
+        .rev()
+        .find(|fault| fault.kind == "SIGKILL sent")
+        .map(|fault| fault.at_ns);
+    let kill_window = current_sigkill_window(faults);
     let mut attribution = LossAttribution {
         label: UNVERIFIED_ACK_LOSS,
         invoked_ns: None,
         ack_completed_ns: None,
         sigkill_at_ns,
+        sigkill_reaped_ns: kill_window.as_ref().ok().map(|(_, reaped)| *reaped),
+        ack_offset_ns: None,
         ack_age_ns: None,
         eio_overlap: EioEvidence::Unverified(
             "missing or invalid acknowledged event/signal metadata",
@@ -1489,9 +1546,21 @@ fn classify_lost_write(
                 attribution.ack_completed_ns,
                 attribution.sigkill_at_ns,
             ) {
-                if let Some(age) = killed.checked_sub(completed) {
-                    attribution.ack_age_ns = Some(age);
-                    attribution.eio_overlap = eio_overlap(faults, invoked, killed);
+                attribution.ack_age_ns = killed.checked_sub(completed);
+                attribution.ack_offset_ns = i128::try_from(completed).ok()
+                    .zip(i128::try_from(killed).ok())
+                    .and_then(|(completed, killed)| completed.checked_sub(killed));
+                match kill_window {
+                    Err(reason) => {
+                        attribution.eio_overlap = EioEvidence::Unverified(reason);
+                        attribution.interpretation = reason;
+                    }
+                    Ok((_, reaped)) if completed <= reaped => {
+                        attribution.eio_overlap = eio_overlap(faults, invoked, killed);
+                    }
+                    Ok(_) => {
+                        attribution.interpretation = "acknowledgment follows the matched SIGKILL reap; attribution unverified";
+                    }
                 }
             }
         }
@@ -1518,10 +1587,11 @@ fn classify_lost_write(
     if fix == "unknown" {
         attribution.label = "firn-fix-status-unknown-still-fails";
         attribution.interpretation = "fix status is unverified; no known-cause attribution";
-    } else if attribution.ack_age_ns.is_none()
+    } else if attribution.ack_offset_ns.is_none()
+        || attribution.sigkill_reaped_ns.is_none()
         || matches!(attribution.eio_overlap, EioEvidence::Unverified(_))
     {
-        // No inferred age, missing request, reversed time, or malformed fault
+        // No inferred offset, missing request/reap, reversed time, or malformed fault
         // record can establish the known acknowledgment-before-append window.
     } else if fix == "present" {
         attribution.label = "lost-acknowledged-write";
@@ -1533,11 +1603,11 @@ fn classify_lost_write(
         attribution.label = OVERLAPPING_EIO_LOSS;
         attribution.interpretation = "EIO overlapped the request-to-kill interval; cannot attribute solely to acknowledgment-before-append";
     } else if attribution
-        .ack_age_ns
-        .is_some_and(|age| age <= KNOWN_ACK_WINDOW_NS)
+        .ack_offset_ns
+        .is_some_and(|offset| offset >= -(KNOWN_ACK_WINDOW_NS as i128))
     {
         attribution.label = KNOWN_ACK_LOSS;
-        attribution.interpretation = "consistent with the known pre-fix nominal 10ms window; still fails acceptance, not proof of sole cause";
+        attribution.interpretation = "consistent with the known pre-fix window from 10ms before SIGKILL send through its reap; still fails acceptance, not proof of sole cause";
     } else {
         attribution.label = OUTSIDE_ACK_WINDOW_LOSS;
         attribution.interpretation =
@@ -1558,11 +1628,13 @@ fn report_lost_write(
         shared,
         format!("LOST-{epoch}-{finding}"),
         &format!(
-            "LOST epoch={epoch} class={} {finding} invoked_ns={:?} ack_completed_ns={:?} sigkill_at_ns={:?} ack_age_ns={:?} nominal_ack_window_ns={} EIO_overlap={:?} interpretation={}",
+            "LOST epoch={epoch} class={} {finding} invoked_ns={:?} ack_completed_ns={:?} sigkill_at_ns={:?} sigkill_reaped_ns={:?} ack_to_kill_offset_ns={:?} ack_age_ns={:?} nominal_ack_window_ns={} EIO_overlap={:?} interpretation={}",
             attribution.label,
             attribution.invoked_ns,
             attribution.ack_completed_ns,
             attribution.sigkill_at_ns,
+            attribution.sigkill_reaped_ns,
+            attribution.ack_offset_ns,
             attribution.ack_age_ns,
             KNOWN_ACK_WINDOW_NS,
             attribution.eio_overlap,
@@ -2694,6 +2766,11 @@ fn loss_attribution_uses_ack_age_and_actual_eio_overlap_instead_of_ever_failed_d
         epoch: 6,
         at_ns: killed,
     };
+    let reap = FaultRecord {
+        kind: "SIGKILL reaped",
+        epoch: 6,
+        at_ns: killed + 1_000_000,
+    };
     let past = vec![
         FaultRecord {
             kind: "combined write/flush EIO active",
@@ -2706,6 +2783,7 @@ fn loss_attribution_uses_ack_age_and_actual_eio_overlap_instead_of_ever_failed_d
             at_ns: 8_000_000_000,
         },
         kill.clone(),
+        reap.clone(),
     ];
     let classify = |event: &Event, faults: &[FaultRecord], fix: &str| {
         classify_lost_write(
@@ -2726,7 +2804,11 @@ fn loss_attribution_uses_ack_age_and_actual_eio_overlap_instead_of_ever_failed_d
     assert_eq!(after_heal.eio_overlap, EioEvidence::NoOverlap);
     for current_epoch in [3, 4, 5, 6] {
         let mut faults = past.clone();
-        faults.last_mut().unwrap().epoch = current_epoch;
+        for fault in &mut faults {
+            if matches!(fault.kind, "SIGKILL sent" | "SIGKILL reaped") {
+                fault.epoch = current_epoch;
+            }
+        }
         assert_eq!(
             classify(&event, &faults, "absent").label,
             KNOWN_ACK_LOSS,
@@ -2745,6 +2827,7 @@ fn loss_attribution_uses_ack_age_and_actual_eio_overlap_instead_of_ever_failed_d
             at_ns: 9_999_750_000,
         },
         kill.clone(),
+        reap.clone(),
     ];
     assert_eq!(
         classify(&event, &during, "absent").label,
@@ -2760,6 +2843,7 @@ fn loss_attribution_uses_ack_age_and_actual_eio_overlap_instead_of_ever_failed_d
             at_ns: 9_999_750_000,
         },
         kill.clone(),
+        reap.clone(),
     ];
     assert_eq!(
         classify(&event, &intervening, "absent").label,
@@ -2773,12 +2857,12 @@ fn loss_attribution_uses_ack_age_and_actual_eio_overlap_instead_of_ever_failed_d
     boundary.invoked = origin + Duration::from_nanos(9_980_000_000);
     boundary.completed = origin + Duration::from_nanos(9_990_000_000);
     assert_eq!(
-        classify(&boundary, &[kill.clone()], "absent").label,
+        classify(&boundary, &[kill.clone(), reap.clone()], "absent").label,
         KNOWN_ACK_LOSS,
         "nominal 10ms boundary is inclusive"
     );
     boundary.completed -= Duration::from_nanos(1);
-    let outside = classify(&boundary, &[kill.clone()], "absent");
+    let outside = classify(&boundary, &[kill.clone(), reap.clone()], "absent");
     assert_eq!(outside.label, OUTSIDE_ACK_WINDOW_LOSS);
     assert!(
         outside
@@ -2798,6 +2882,11 @@ fn loss_attribution_uses_ack_age_and_actual_eio_overlap_instead_of_ever_failed_d
         kind: "SIGKILL sent",
         epoch: 7,
         at_ns: killed + 1_000_000_000,
+    });
+    later.push(FaultRecord {
+        kind: "SIGKILL reaped",
+        epoch: 7,
+        at_ns: killed + 1_001_000_000,
     });
     assert_eq!(
         classify(&event, &later, "absent").label,
@@ -2829,34 +2918,40 @@ fn loss_attribution_missing_or_reversed_metadata_cannot_establish_a_known_window
         epoch: 1,
         at_ns: 30,
     };
+    let reap = FaultRecord {
+        kind: "SIGKILL reaped",
+        epoch: 1,
+        at_ns: 40,
+    };
+    let paired = [kill.clone(), reap.clone()];
     let classify = |events: &[Event], faults: &[FaultRecord]| {
         classify_lost_write("firn", "absent", &lost, events, origin, faults)
     };
-    assert_eq!(classify(&[], &[kill.clone()]).label, UNVERIFIED_ACK_LOSS);
+    assert_eq!(classify(&[], &paired).label, UNVERIFIED_ACK_LOSS);
     assert_eq!(
         classify(std::slice::from_ref(&event), &[]).label,
         UNVERIFIED_ACK_LOSS
     );
-    let mut after_kill = event.clone();
-    after_kill.completed = origin + Duration::from_nanos(31);
+    let mut after_reap = event.clone();
+    after_reap.completed = origin + Duration::from_nanos(41);
     assert_eq!(
-        classify(&[after_kill], &[kill.clone()]).label,
+        classify(&[after_reap], &paired).label,
         UNVERIFIED_ACK_LOSS
     );
     let mut reversed = event.clone();
     reversed.invoked = origin + Duration::from_nanos(21);
     assert_eq!(
-        classify(&[reversed], &[kill.clone()]).label,
+        classify(&[reversed], &paired).label,
         UNVERIFIED_ACK_LOSS
     );
     let mut unknown = event.clone();
     unknown.outcome = Outcome::Unknown;
     assert_eq!(
-        classify(&[unknown], &[kill.clone()]).label,
+        classify(&[unknown], &paired).label,
         UNVERIFIED_ACK_LOSS
     );
     assert_eq!(
-        classify(&[event.clone(), event.clone()], &[kill.clone()]).label,
+        classify(&[event.clone(), event.clone()], &paired).label,
         UNVERIFIED_ACK_LOSS
     );
     let malformed = vec![
@@ -2866,6 +2961,7 @@ fn loss_attribution_missing_or_reversed_metadata_cannot_establish_a_known_window
             at_ns: 5,
         },
         kill.clone(),
+        reap.clone(),
     ];
     assert_eq!(
         classify(std::slice::from_ref(&event), &malformed).label,
@@ -2883,11 +2979,128 @@ fn loss_attribution_missing_or_reversed_metadata_cannot_establish_a_known_window
                 &lost,
                 std::slice::from_ref(&event),
                 origin,
-                &[kill.clone()]
+                &paired
             )
             .label,
             label
         );
+    }
+}
+
+#[test]
+fn post_signal_ack_before_reap_is_known_and_still_fails() {
+    let directory = support::fixture_directory();
+    let (origin, mut event, lost, faults) = post_signal_loss_fixture();
+    let shared = Shared::new(directory.path(), origin);
+    let classify = |event: &Event, fix: &str, faults: &[FaultRecord]| {
+        classify_lost_write("firn", fix, &lost, std::slice::from_ref(event), origin, faults)
+    };
+    let attribution = classify(&event, "absent", &faults);
+    assert_eq!(attribution.label, KNOWN_ACK_LOSS);
+    assert_eq!(attribution.ack_offset_ns, Some(68_000));
+    assert_eq!(attribution.ack_age_ns, None);
+    assert_eq!(attribution.sigkill_reaped_ns, Some(1_001_000_000));
+    assert_eq!(attribution.eio_overlap, EioEvidence::NoOverlap);
+    let empty = State {
+        logs: vec![String::new(); KEYS], sets: vec![None; KEYS], counters: vec![None; KEYS],
+    };
+    let findings = chaos_check::check(std::slice::from_ref(&event), &empty,
+        origin + Duration::from_nanos(1_001_000_001));
+    assert_eq!(findings.lost, vec![lost.clone()]);
+    report_lost_write(&shared, 1, &lost, &attribution);
+    assert_eq!(shared.errors.load(Ordering::Relaxed), 1);
+    let log = fs::read_to_string(directory.path().join("findings.log")).unwrap();
+    assert!(log.contains("ack_to_kill_offset_ns=Some(68000)"));
+    assert!(log.contains("sigkill_reaped_ns=Some(1001000000)"));
+    assert!(render_report(&shared, "failed", None).contains("findings=1"));
+    assert_eq!(classify(&event, "present", &faults).label, "lost-acknowledged-write");
+    assert_eq!(classify(&event, "unknown", &faults).label, "firn-fix-status-unknown-still-fails");
+
+    for completed in [1_000_000_000, 1_001_000_000] {
+        event.completed = origin + Duration::from_nanos(completed);
+        assert_eq!(classify(&event, "absent", &faults).label, KNOWN_ACK_LOSS,
+            "send and reap endpoints are inclusive");
+    }
+    let mut overlapping = vec![FaultRecord {
+        kind: "combined write/flush EIO active", epoch: 1, at_ns: 999_000_000,
+    }];
+    overlapping.extend(faults.iter().cloned());
+    assert_eq!(classify(&event, "absent", &overlapping).label, OVERLAPPING_EIO_LOSS);
+}
+
+fn post_signal_loss_fixture() -> (Instant, Event, LostWrite, [FaultRecord; 2]) {
+    let origin = Instant::now();
+    let event = Event {
+        key: 0,
+        token: "0000000000000001".into(),
+        kind: Kind::Append,
+        invoked: origin + Duration::from_nanos(999_999_000),
+        completed: origin + Duration::from_nanos(1_000_068_000),
+        outcome: Outcome::Applied { length: 16, counter: None },
+    };
+    let lost = LostWrite { key: 0, token: event.token.clone() };
+    let faults = [
+        FaultRecord { kind: "SIGKILL sent", epoch: 1, at_ns: 1_000_000_000 },
+        FaultRecord { kind: "SIGKILL reaped", epoch: 1, at_ns: 1_001_000_000 },
+    ];
+    (origin, event, lost, faults)
+}
+
+#[test]
+fn ack_after_sigkill_reap_is_unverified() {
+    let (origin, mut event, lost, faults) = post_signal_loss_fixture();
+    event.completed = origin + Duration::from_nanos(1_001_000_001);
+    let attribution = classify_lost_write("firn", "absent", &lost,
+        std::slice::from_ref(&event), origin, &faults);
+    assert_eq!(attribution.label, UNVERIFIED_ACK_LOSS);
+    assert_eq!(attribution.ack_offset_ns, Some(1_000_001));
+    assert_eq!(attribution.sigkill_reaped_ns, Some(1_001_000_000));
+    event.invoked = origin + Duration::from_nanos(1_000_000_001);
+    event.completed = origin + Duration::from_nanos(1_000_068_000);
+    assert_eq!(classify_lost_write("firn", "absent", &lost,
+        std::slice::from_ref(&event), origin, &faults).label,
+        KNOWN_ACK_LOSS, "asynchronous delivery permits invocation after send and completion before reap");
+    let mut active = vec![FaultRecord {
+        kind: "combined write/flush EIO active", epoch: 1, at_ns: 999_000_000,
+    }];
+    active.extend(faults.iter().cloned());
+    assert_eq!(classify_lost_write("firn", "absent", &lost,
+        std::slice::from_ref(&event), origin, &active).label,
+        KNOWN_ACK_LOSS, "the requested invocation-to-send EIO interval is empty");
+    active[0].kind = "combined write/flush EIO healed";
+    assert_eq!(classify_lost_write("firn", "absent", &lost,
+        std::slice::from_ref(&event), origin, &active).label,
+        UNVERIFIED_ACK_LOSS, "empty intervals must not bypass malformed EIO metadata");
+    active[0].at_ns = 1_000_010_000;
+    assert_eq!(classify_lost_write("firn", "absent", &lost,
+        std::slice::from_ref(&event), origin, &active).label,
+        UNVERIFIED_ACK_LOSS, "metadata validation also covers EIO records after signal submission");
+}
+
+#[test]
+fn missing_or_ambiguous_sigkill_reap_is_unverified() {
+    let (origin, mut event, lost, faults) = post_signal_loss_fixture();
+    let [sent, reaped] = faults;
+    let invalid = [
+        vec![sent.clone()],
+        vec![sent.clone(), FaultRecord { epoch: 2, ..reaped.clone() }],
+        vec![sent.clone(), FaultRecord { at_ns: sent.at_ns - 1, ..reaped.clone() }],
+        vec![reaped.clone(), sent.clone()],
+        vec![sent.clone(), reaped.clone(), reaped.clone()],
+        vec![sent.clone(), sent.clone(), reaped.clone()],
+        vec![sent.clone(), reaped.clone(), FaultRecord {
+            kind: "SIGKILL sent", epoch: 2, at_ns: 2_000_000_000,
+        }],
+    ];
+    // Both a post-signal reply and an ordinary pre-signal reply require the
+    // matching current reap; neither can borrow an earlier epoch's boundary.
+    for completed in [1_000_068_000, 999_999_500] {
+        event.completed = origin + Duration::from_nanos(completed);
+        for records in &invalid {
+            let attribution = classify_lost_write("firn", "absent", &lost,
+                std::slice::from_ref(&event), origin, records);
+            assert_eq!(attribution.label, UNVERIFIED_ACK_LOSS, "accepted malformed pair {records:?}");
+        }
     }
 }
 
@@ -2917,6 +3130,11 @@ fn six_known_window_losses_remain_six_failures_after_diagnostic_reclassification
             kind: "SIGKILL sent",
             epoch,
             at_ns: killed as u128,
+        });
+        faults.push(FaultRecord {
+            kind: "SIGKILL reaped",
+            epoch,
+            at_ns: (killed + 1_000_000) as u128,
         });
         let event = Event {
             key: 0,
@@ -2954,6 +3172,7 @@ fn six_known_window_losses_remain_six_failures_after_diagnostic_reclassification
         );
         assert_eq!(attribution.label, KNOWN_ACK_LOSS);
         assert_eq!(attribution.ack_age_ns, Some(gap as u128));
+        assert_eq!(attribution.ack_offset_ns, Some(-(gap as i128)));
         report_lost_write(&shared, epoch, &findings.lost[0], &attribution);
     }
     assert_eq!(
@@ -2964,4 +3183,7 @@ fn six_known_window_losses_remain_six_failures_after_diagnostic_reclassification
     let report = render_report(&shared, "failed", None);
     assert!(report.contains("status=failed"));
     assert!(report.contains("findings=6"));
+    let log = fs::read_to_string(directory.path().join("findings.log")).unwrap();
+    assert!(log.contains("ack_to_kill_offset_ns=Some(-261800)"));
+    assert!(log.contains("sigkill_reaped_ns=Some(10001000000)"));
 }
