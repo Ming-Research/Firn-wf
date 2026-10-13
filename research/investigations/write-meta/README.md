@@ -5,8 +5,8 @@ below is labelled: **source-read** (read in this repository at `e4ec8bc`, in
 Whitefoot at the pinned commit `94d353e33034` or in the named branch),
 **measured** (with its run or record), or **judgment** (reasoning not yet
 tested). Sections 1 to 3 and 5 to 7 were written before anything was built;
-only step 1 (section 3(a)) has been built since, and the one run of it so far
-is in "Step 1 results" in section 4.
+only step 1 (section 3(a)) has been built since, and its runs on 2, 4 and 8
+cores are in "Step 1 results" in section 4.
 
 ## 1. The question
 
@@ -420,36 +420,100 @@ peak statement cannot be mistaken for the remaining cost.
 
 ### Step 1 results
 
-**Measured, 2 cores only.** Run
-[38319226722](https://github.com/Ming-Research/Firn-wf/actions/runs/38319226722),
-i9-14900K, server on CPUs 2,4 (2 P-cores), clients on CPUs 16-31, pipeline
-depth 16, 6 interleaved passes of 10 s each, AOF off. Builds: main (`fd25006`),
-main-twin (the same revision, a second build, as the noise control) and step1
-(`9294228`). Medians in k requests/s; the percentage is step1 against main.
+**Measured, 2, 4 and 8 P-cores.** Setup, the same for every run: i9-14900K
+self-hosted runner, `redis-bench.yml` in compare mode. Builds: main at
+`fd25006` (base), main-twin (the same revision, a second build, as the noise
+control) and step1 at `d82c411`, the admission fix (`22b5318`) with its grammar repair. The server runs on P-cores: CPUs 2,4 for 2
+cores, 2,4,6,8 for 4 cores, and 0,2,...,14 for 8 cores. The
+redis-benchmark clients run on E-cores 16-31 with pipeline depth 16, in 6
+interleaved passes of 10 s each; the table values are medians. AOF is off.
+The client tools are the runner cache's redis-benchmark 7.0.15, used only as
+the load generator.
+
+Runs: [2 cores](https://github.com/Ming-Research/Firn-wf/actions/runs/38337775390),
+[4 cores](https://github.com/Ming-Research/Firn-wf/actions/runs/38326520306),
+[8 cores](https://github.com/Ming-Research/Firn-wf/actions/runs/38329020678).
+The 8-core run also took a perf profile and a perf c2c profile of SET. An
+earlier 2-core run, [38319226722](https://github.com/Ming-Research/Firn-wf/actions/runs/38319226722),
+measured build `9294228` before the admission fix and is superseded by run
+38337775390.
+
+The criterion is the one in section 4: SET and MSET reach at least 1.6 times
+per doubling of server cores, and SET at 8 cores is at least half of GET at 8
+cores in the same run.
+
+Medians in k requests/s. The last column is step1 against main.
+
+2 cores:
 
 | Test | main | main-twin | step1 | step1 vs main |
 |---|---|---|---|---|
-| SET | 4716 | 4666 | 6141 | +30.2% |
-| INCR | 4504 | 4400 | 5910 | +31.2% |
-| LPUSH | 3341 | 3326 | 4214 | +26.1% |
-| SADD | 3586 | 3627 | 4349 | +21.3% |
-| MSET | 1604 | 1631 | 1911 | +19.1% |
-| HSET | 3258 | 3238 | 3853 | +18.3% |
-| ZADD | 1154 | 1156 | 1171 | +1.4% |
-| GET (control) | 6331 | 6403 | 6420 | +1.4% |
+| SET | 4699 | 4717 | 6536 | +39.1% |
+| MSET | 1629 | 1606 | 2028 | +24.5% |
+| INCR | 4462 | 4471 | 6409 | +43.6% |
+| LPUSH | 3351 | 3359 | 4333 | +29.3% |
+| ZADD | 1150 | 1151 | 1179 | +2.6% |
+| GET (control) | 6443 | 6444 | 6420 | -0.3% |
 
-The twin is within 2.3% of main on every test, so the gains of 18% to 31%
-on the six tests that gain exceed the noise; the slowest step1 SET pass (6.09 M/s) is above the fastest
-main SET pass (4.89 M/s). GET, which step 1 does not change, differs by 1.4%,
-inside the twin's spread. ZADD gains only 1.4%, inside the spread, and is not
-explained here.
+4 cores:
 
-**Not yet the step-1 verdict.** That build (`9294228`) still held Meta in
-admission's disk-error statement for every write (section 3(a)), so these
-numbers understate the Meta-free path. Pending: 2-, 4- and 8-core runs of the
-fixed head (`22b5318`), with the criterion above unchanged: SET and MSET each
-at least 1.6 times per core doubling, and 8-core SET at least half of 8-core
-GET in the same run. Scaling past 2 cores is unmeasured for step 1.
+| Test | main | main-twin | step1 | step1 vs main |
+|---|---|---|---|---|
+| SET | 3380 | 3120 | 12308 | +264.2% |
+| MSET | 2054 | 2006 | 3725 | +81.4% |
+| INCR | 3578 | 3146 | 12023 | +236.0% |
+| LPUSH | 3222 | 3149 | 4996 | +55.1% |
+| ZADD | 1154 | 1159 | 1187 | +2.9% |
+| GET (control) | 12204 | 12122 | 12126 | -0.6% |
+
+8 cores:
+
+| Test | main | main-twin | step1 | step1 vs main |
+|---|---|---|---|---|
+| SET | 1225 | 1209 | 21397 | +1646.2% |
+| MSET | 1203 | 1196 | 6452 | +436.4% |
+| INCR | 1290 | 1273 | 20934 | +1522.9% |
+| LPUSH | 3070 | 3074 | 5164 | +68.2% |
+| ZADD | 1150 | 1148 | 1192 | +3.6% |
+| GET (control) | 21595 | 21622 | 21486 | -0.5% |
+
+The main runs spread widely on contended writes: the 6-pass spread is 20.4%
+for 4-core SET on main and 29.1% for its twin, and 62.1% for 8-core SET on the
+twin. Main-against-twin differences on those writes are noise; the largest
+of them is 4-core INCR, at 13.7%. The GET control differs from main by at
+most 0.6% at every core count, inside the twin's GET spread (2.8%, 3.1% and
+1.1% at 2, 4 and 8 cores).
+
+Scaling, as the ratio of the median at the larger core count to the median at
+the smaller one. The 2-to-4 ratio compares two runs, the 2-core and 4-core
+runs, each with its own twin.
+
+| Test | step1 2 to 4 | step1 4 to 8 | main 2 to 4 | main 4 to 8 |
+|---|---|---|---|---|
+| SET | 1.883 | 1.738 | 0.719 | 0.363 |
+| MSET | 1.836 | 1.732 | 1.260 | 0.586 |
+| LPUSH | 1.153 | 1.034 | 0.962 | 0.953 |
+| ZADD | 1.007 | 1.004 | 1.004 | 0.997 |
+
+**Verdict.** The prediction held for SET and MSET at every doubling measured
+(2, 4 and 8 P-cores). SET reached 1.883 and 1.738 per doubling, and MSET
+1.836 and 1.732. At 8 cores, step1 SET is 0.996 of GET in the same run
+(21397 k against 21486 k); main is 0.057 (1225 k against 21595 k).
+
+**Profile (8 cores, SET).** On main, `wf__shared_acquire` takes 43.3% of
+cycles and `set_key.resume` 44.8%. One cache line takes 65.1% of all
+cross-core cache-line hits (HITMs), at offset 0x10, touched by
+`wf__shared_acquire` and `set_key`; the total is 232854 local HITMs. On step1
+the top symbols are `try_entry` at 7.7% and `record_memory_peak.resume` at
+4.5%. The total is 5975 local HITMs, 97% fewer than main. The hottest line
+holds 2.5% of HITMs, and 96% of those are at `record_memory_peak`, the
+heap-peak update, which the admission change on PR #67 addresses.
+
+**Findings beyond the criterion.** LPUSH and ZADD do not scale on either
+revision. ZADD stays at 1.15 to 1.19 M requests/s at 2, 4 and 8 cores (step1:
+1179, 1187 and 1192 k). Step1 LPUSH grows 1.153 from 2 to 4 cores and 1.034
+from 4 to 8. The cause is not yet profiled; it is tracked on the status board
+as board item firn-list-zset-scaling.
 
 **Comparison for step 2.** Builds base, twin, (b)+(c) on a Whitefoot
 experiment release (`whitefoot-kit/downstream.md`, trying an unmerged
