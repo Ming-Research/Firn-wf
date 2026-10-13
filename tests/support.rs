@@ -59,6 +59,18 @@ pub fn lease_port() -> PortLease {
     })
 }
 
+/// Reserves a literal port used by a documented command, without rewriting
+/// the example. A conflicting listener or in-process lease fails the case.
+pub(super) fn lease_named_port(port: u16) -> PortLease {
+    let mut ports = locked(LEASED_PORTS.get_or_init(|| Mutex::new(HashSet::new())));
+    assert!(!ports.contains(&port), "documented port {port} is already leased");
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .unwrap_or_else(|error| panic!("reserve documented port {port}: {error}"));
+    ports.insert(port);
+    drop(listener);
+    PortLease { reservation: Arc::new(LeasedPort { port }) }
+}
+
 /// Retries candidates until the registry grants an exclusive reservation.
 fn lease_from(mut candidate: impl FnMut() -> u16) -> PortLease {
     loop {
