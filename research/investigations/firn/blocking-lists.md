@@ -184,9 +184,9 @@ case alone cannot detect omission of clearing on take because registration
 also clears any stale completion. This is coverage for the new handoff
 protocol, not a claimed failure on the old implementation's private PRNG
 loss; no deterministic network PRNG probe or test-specific execution path is
-introduced. Runtime random-continuation evidence remains unverified. This case still
-needs its exact Redis 7.2.16 recording; any fixed bytes without that evidence
-remain ORACLE-pending.
+introduced. Runtime random-continuation evidence remains unverified. Its exact Redis 7.2.16
+bytes now come from the remaining recording; any fixed bytes without that
+evidence would stay ORACLE-pending.
 
 ## Admission cost
 
@@ -269,9 +269,11 @@ named-client scenarios in `tests/blocking_lists_oracle.rs` run on one and four
 Whitefoot drivers. Exact covered wire bytes and selected INFO fields now cite
 Redis 7.2.16 runs [38453128755](https://github.com/Ming-Research/Firn-wf/actions/runs/38453128755)
 and [38453804021](https://github.com/Ming-Research/Firn-wf/actions/runs/38453804021)
-by batch and operation/frame or command index. Uncovered bytes remain
-`ORACLE-pending`; a preflight assertion stops each such case before starting
-a server. Numeric timeout cases are explicitly ignored with
+by batch and operation/frame or command index. The 144 expectations
+that were `ORACLE-pending` now come from a 20-batch recording of the same
+Redis 7.2.16 (all batches succeeded) and no placeholder remains; the
+preflight assertion stays so that a future pending value stops its case before
+a server starts. Numeric timeout cases are explicitly ignored with
 `firn-req-extended-float`, as the owner authorized, because the network gate
 does not tolerate deliberate failures. Their Redis expectations are retained,
 never changed to Firn's capability error. Independent arity/direction cases

@@ -1,7 +1,8 @@
 //! Sources: [main recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38453128755)
 //! and [negative recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38453804021).
 //! Recorded wire/AOF bytes and INFO values cite pinned Redis 7.2.16 CI artifacts.
-//! Remaining ORACLE-pending expectations require an exact source recording.
+//! Every expectation cites an exact recording; none remains ORACLE-pending.
+//! The 144 added later come from the 20-batch remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json).
 //! Failed or incomplete recorder batches supply no expected bytes.
 //! Fractional timeout acceptance also awaits the identified Whitefoot gap.
 
@@ -20,36 +21,58 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Command("p", &["BLPOP", "l", "0"], b"*2\r\n$1\r\nl\r\n$1\r\na\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-aof-immediate-timeout-exec-script-and-restart, reply 2.
             Command("p", &["BRPOP", "l", "0"], b"*2\r\n$1\r\nl\r\n$1\r\nb\r\n"),
-            Command("p", &["EXISTS", "l"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 8.
+            Command("p", &["EXISTS", "l"], b":0\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-brpoplpush-errors-typecheck-timeout-and-empty-context, reply 8.
             Command("p", &["RPUSH", "s", "a", "b", "c"], b":3\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-brpoplpush-errors-typecheck-timeout-and-empty-context, reply 11.
             Command("p", &["BRPOPLPUSH", "s", "d", "0"], b"$1\r\nc\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-brpoplpush-errors-typecheck-timeout-and-empty-context, reply 13.
             Command("p", &["LRANGE", "d", "0", "-1"], b"*1\r\n$1\r\nc\r\n"),
-            Command("p", &["RPUSH", "from-LEFT-LEFT", "a", "b"], b"ORACLE-pending"),
-            Command("p", &["BLMOVE", "from-LEFT-LEFT", "d", "LEFT", "LEFT", "0"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "from-LEFT-LEFT", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "d", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["RPUSH", "from-LEFT-RIGHT", "a", "b"], b"ORACLE-pending"),
-            Command("p", &["BLMOVE", "from-LEFT-RIGHT", "d", "LEFT", "RIGHT", "0"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "from-LEFT-RIGHT", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "d", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["RPUSH", "from-RIGHT-LEFT", "a", "b"], b"ORACLE-pending"),
-            Command("p", &["BLMOVE", "from-RIGHT-LEFT", "d", "RIGHT", "LEFT", "0"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "from-RIGHT-LEFT", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "d", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["RPUSH", "from-RIGHT-RIGHT", "a", "b"], b"ORACLE-pending"),
-            Command("p", &["BLMOVE", "from-RIGHT-RIGHT", "d", "RIGHT", "RIGHT", "0"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "from-RIGHT-RIGHT", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "d", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["BRPOPLPUSH", "d", "d", "0"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "d", "0", "-1"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 16.
+            Command("p", &["RPUSH", "from-LEFT-LEFT", "a", "b"], b":2\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 18.
+            Command("p", &["BLMOVE", "from-LEFT-LEFT", "d", "LEFT", "LEFT", "0"], b"$1\r\na\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 20.
+            Command("p", &["LRANGE", "from-LEFT-LEFT", "0", "-1"], b"*1\r\n$1\r\nb\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 22.
+            Command("p", &["LRANGE", "d", "0", "-1"], b"*2\r\n$1\r\na\r\n$1\r\nc\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 24.
+            Command("p", &["RPUSH", "from-LEFT-RIGHT", "a", "b"], b":2\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 26.
+            Command("p", &["BLMOVE", "from-LEFT-RIGHT", "d", "LEFT", "RIGHT", "0"], b"$1\r\na\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 28.
+            Command("p", &["LRANGE", "from-LEFT-RIGHT", "0", "-1"], b"*1\r\n$1\r\nb\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 30.
+            Command("p", &["LRANGE", "d", "0", "-1"], b"*3\r\n$1\r\na\r\n$1\r\nc\r\n$1\r\na\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 32.
+            Command("p", &["RPUSH", "from-RIGHT-LEFT", "a", "b"], b":2\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 34.
+            Command("p", &["BLMOVE", "from-RIGHT-LEFT", "d", "RIGHT", "LEFT", "0"], b"$1\r\nb\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 36.
+            Command("p", &["LRANGE", "from-RIGHT-LEFT", "0", "-1"], b"*1\r\n$1\r\na\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 38.
+            Command("p", &["LRANGE", "d", "0", "-1"], b"*4\r\n$1\r\nb\r\n$1\r\na\r\n$1\r\nc\r\n$1\r\na\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 40.
+            Command("p", &["RPUSH", "from-RIGHT-RIGHT", "a", "b"], b":2\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 42.
+            Command("p", &["BLMOVE", "from-RIGHT-RIGHT", "d", "RIGHT", "RIGHT", "0"], b"$1\r\nb\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 44.
+            Command("p", &["LRANGE", "from-RIGHT-RIGHT", "0", "-1"], b"*1\r\n$1\r\na\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 46.
+            Command("p", &["LRANGE", "d", "0", "-1"], b"*5\r\n$1\r\nb\r\n$1\r\na\r\n$1\r\nc\r\n$1\r\na\r\n$1\r\nb\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 48.
+            Command("p", &["BRPOPLPUSH", "d", "d", "0"], b"$1\r\nb\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 50.
+            Command("p", &["LRANGE", "d", "0", "-1"], b"*5\r\n$1\r\nb\r\n$1\r\nb\r\n$1\r\na\r\n$1\r\nc\r\n$1\r\na\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s10-destination-error-brpoplpush-resp2, operation 4.
             Command("p", &["SET", "bad", "string"], b"+OK\r\n"),
-            Command("p", &["BLPOP", "bad", "0"], b"ORACLE-pending"),
-            Command("p", &["BLMOVE", "s", "bad", "LEFT", "RIGHT", "0"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "s", "0", "-1"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 54.
+            Command("p", &["BLPOP", "bad", "0"], b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 56.
+            Command("p", &["BLMOVE", "s", "bad", "LEFT", "RIGHT", "0"], b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-immediate, operation 58.
+            Command("p", &["LRANGE", "s", "0", "-1"], b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-blpop-exec-and-script, reply 14.
             Command("p", &["PING"], b"+PONG\r\n"),
         ],
@@ -104,18 +127,27 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         actions: &[
             Send("a", &["BLPOP", "x", "y", "y", "x", "0"]),
             WaitBlocked(1),
-            Info("total_blocking_keys", "ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-multikey, operation 6.
+            Info("total_blocking_keys", "2"),
             Send("b", &["BRPOP", "y", "0"]),
             WaitBlocked(2),
-            Info("blocked_clients", "ORACLE-pending"),
-            Info("total_blocking_keys", "ORACLE-pending"),
-            Command("p", &["RPUSH", "y", "one", "two"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
-            Read("b", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-multikey, operation 10.
+            Info("blocked_clients", "2"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-multikey, operation 12.
+            Info("total_blocking_keys", "2"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-multikey, operation 14.
+            Command("p", &["RPUSH", "y", "one", "two"], b":2\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-multikey, operation 15.
+            Read("a", b"*2\r\n$1\r\ny\r\n$3\r\none\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-multikey, operation 16.
+            Read("b", b"*2\r\n$1\r\ny\r\n$3\r\ntwo\r\n"),
             WaitBlocked(0),
-            Info("total_blocking_keys", "ORACLE-pending"),
-            Command("p", &["RPUSH", "x", "retained"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "x", "0", "-1"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-multikey, operation 19.
+            Info("total_blocking_keys", "0"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-multikey, operation 21.
+            Command("p", &["RPUSH", "x", "retained"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-multikey, operation 23.
+            Command("p", &["LRANGE", "x", "0", "-1"], b"*1\r\n$8\r\nretained\r\n"),
         ],
     },
     Scenario {
@@ -140,7 +172,8 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             // Redis 7.2.16 run 38453128755, blocking-mc-s05-blpop-rescan-xy-resp2, operation 10.
             Read("b", b"*2\r\n$1\r\ny\r\n$1\r\nY\r\n"),
             WaitBlocked(0),
-            Command("p", &["EXISTS", "x", "y"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-ready-rescan, operation 19.
+            Command("p", &["EXISTS", "x", "y"], b":0\r\n"),
         ],
     },
     Scenario {
@@ -170,7 +203,8 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             WaitBlocked(1),
             // Redis 7.2.16 run 38453128755, blocking-mc-s07-exec-push-delete-string-resp2, operation 5 frame 0.
             Command("p", &["MULTI"], b"+OK\r\n"),
-            Command("p", &["LPUSH", "l", "transient"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 24.
+            Command("p", &["LPUSH", "l", "transient"], b"+QUEUED\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s07-exec-push-delete-string-resp2, operation 5 frame 2.
             Command("p", &["DEL", "l"], b"+QUEUED\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s07-exec-push-delete-string-resp2, operation 5 frame 3.
@@ -181,16 +215,26 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             WaitBlocked(1),
             // Redis 7.2.16 run 38453128755, blocking-mc-s07-exec-push-delete-string-resp2, operation 9.
             Command("p", &["DEL", "l"], b":1\r\n"),
-            Command("p", &["EVAL", "redis.call('LPUSH','l','first'); redis.call('LPUSH','l','last'); return 'done'", "0"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
-            Command("p", &["LRANGE", "l", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["MULTI"], b"ORACLE-pending"),
-            Command("p", &["BLPOP", "empty", "0"], b"ORACLE-pending"),
-            Command("p", &["BRPOP", "empty", "0"], b"ORACLE-pending"),
-            Command("p", &["BRPOPLPUSH", "empty", "d", "0"], b"ORACLE-pending"),
-            Command("p", &["BLMOVE", "empty", "d", "LEFT", "RIGHT", "0"], b"ORACLE-pending"),
-            Command("p", &["EXEC"], b"ORACLE-pending"),
-            Command("p", &["EVAL", "return {redis.call('BLPOP','empty','0'),redis.call('BRPOP','empty','0'),redis.call('BRPOPLPUSH','empty','d','0'),redis.call('BLMOVE','empty','d','LEFT','RIGHT','0')}", "0"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 36.
+            Command("p", &["EVAL", "redis.call('LPUSH','l','first'); redis.call('LPUSH','l','last'); return 'done'", "0"], b"$4\r\ndone\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 37.
+            Read("a", b"*2\r\n$1\r\nl\r\n$4\r\nlast\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 39.
+            Command("p", &["LRANGE", "l", "0", "-1"], b"*1\r\n$5\r\nfirst\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 41.
+            Command("p", &["MULTI"], b"+OK\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 43.
+            Command("p", &["BLPOP", "empty", "0"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 45.
+            Command("p", &["BRPOP", "empty", "0"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 47.
+            Command("p", &["BRPOPLPUSH", "empty", "d", "0"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 49.
+            Command("p", &["BLMOVE", "empty", "d", "LEFT", "RIGHT", "0"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 51.
+            Command("p", &["EXEC"], b"*4\r\n*-1\r\n*-1\r\n$-1\r\n$-1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-execution-unit, operation 53.
+            Command("p", &["EVAL", "return {redis.call('BLPOP','empty','0'),redis.call('BRPOP','empty','0'),redis.call('BRPOPLPUSH','empty','d','0'),redis.call('BLMOVE','empty','d','LEFT','RIGHT','0')}", "0"], b"*4\r\n$-1\r\n$-1\r\n$-1\r\n$-1\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-blpop-exec-and-script, reply 14.
             Command("p", &["PING"], b"+PONG\r\n"),
         ],
@@ -210,21 +254,29 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Command("p", &["RPUSH", "s", "a", "b", "c"], b":3\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s10-destination-error-brpoplpush-resp2, operation 11.
             Read("a", b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"),
-            Read("b", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-moves, operation 12.
+            Read("b", b"$1\r\nc\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s10-destination-error-brpoplpush-resp2, operation 19.
             Command("p", &["LRANGE", "s", "0", "-1"], b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"),
-            Command("p", &["LRANGE", "d", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["DEL", "s", "d"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-moves, operation 16.
+            Command("p", &["LRANGE", "d", "0", "-1"], b"*1\r\n$1\r\nc\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-moves, operation 18.
+            Command("p", &["DEL", "s", "d"], b":2\r\n"),
             Send("a", &["BLMOVE", "s", "d", "RIGHT", "LEFT", "0"]),
             WaitBlocked(1),
             Send("b", &["BLMOVE", "d", "e", "LEFT", "RIGHT", "0"]),
             WaitBlocked(2),
-            Command("p", &["RPUSH", "s", "linked"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
-            Read("b", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-moves, operation 24.
+            Command("p", &["RPUSH", "s", "linked"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-moves, operation 25.
+            Read("a", b"$6\r\nlinked\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-moves, operation 26.
+            Read("b", b"$6\r\nlinked\r\n"),
             WaitBlocked(0),
-            Command("p", &["EXISTS", "s", "d"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "e", "0", "-1"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-moves, operation 29.
+            Command("p", &["EXISTS", "s", "d"], b":0\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-moves, operation 31.
+            Command("p", &["LRANGE", "e", "0", "-1"], b"*1\r\n$6\r\nlinked\r\n"),
         ],
     },
     Scenario {
@@ -238,12 +290,15 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Command("p", &["SET", "x", "string"], b"+OK\r\n"),
             Quiet("a"),
             WaitBlocked(1),
-            Command("p", &["RPUSH", "y", "untouched"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-type-change, operation 9.
+            Command("p", &["RPUSH", "y", "untouched"], b":1\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s09-wrongtype-earlier-key-rescan-resp2, operation 10.
             Read("a", b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"),
             WaitBlocked(0),
-            Command("p", &["LRANGE", "y", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["DEL", "x", "y"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-type-change, operation 13.
+            Command("p", &["LRANGE", "y", "0", "-1"], b"*1\r\n$9\r\nuntouched\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-type-change, operation 15.
+            Command("p", &["DEL", "x", "y"], b":2\r\n"),
             Send("a", &["BLPOP", "x", "0"]),
             WaitBlocked(1),
             // Redis 7.2.16 run 38453128755, blocking-mc-s09-wrongtype-replaced-with-list-resp2, operation 5.
@@ -251,8 +306,10 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Quiet("a"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s09-wrongtype-replaced-with-list-resp2, operation 9.
             Command("p", &["DEL", "x"], b":1\r\n"),
-            Command("p", &["RPUSH", "x", "final"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-type-change, operation 24.
+            Command("p", &["RPUSH", "x", "final"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-type-change, operation 25.
+            Read("a", b"*2\r\n$1\r\nx\r\n$5\r\nfinal\r\n"),
         ],
     },
     Scenario {
@@ -266,15 +323,18 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Command("a", &["SUBSCRIBE", "news"], b">3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n"),
             Send("a", &["BLPOP", "l", "0"]),
             WaitBlocked(1),
-            Command("p", &["PUBLISH", "news", "while-blocked"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-resp3-pubsub, operation 9.
+            Command("p", &["PUBLISH", "news", "while-blocked"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-resp3-pubsub, operation 10.
+            Read("a", b">3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$13\r\nwhile-blocked\r\n"),
             WaitBlocked(1),
             // Redis 7.2.16 run 38453128755, blocking-mc-s18-subscribed-blpop-resp3, operation 11.
             Command("p", &["RPUSH", "l", "value"], b":1\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s18-subscribed-blpop-resp3, operation 12.
             Read("a", b"*2\r\n$1\r\nl\r\n$5\r\nvalue\r\n"),
             WaitBlocked(0),
-            Command("a", &["UNSUBSCRIBE", "news"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-resp3-pubsub, operation 17.
+            Command("a", &["UNSUBSCRIBE", "news"], b">3\r\n$11\r\nunsubscribe\r\n$4\r\nnews\r\n:0\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-blpop-exec-and-script, reply 14.
             Command("a", &["PING"], b"+PONG\r\n"),
         ],
@@ -315,23 +375,35 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             CaptureId("a"),
             Send("a", &["BLPOP", "queued", "0"]),
             WaitBlocked(1),
-            Command("p", &["MULTI"], b"ORACLE-pending"),
-            Command("p", &["CLIENT", "UNBLOCK", "@id:a", "TIMEOUT"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 7.
+            Command("p", &["MULTI"], b"+OK\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 9.
+            Command("p", &["CLIENT", "UNBLOCK", "@id:a", "TIMEOUT"], b"+QUEUED\r\n"),
             Quiet("a"),
-            Command("p", &["EXEC"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 12.
+            Command("p", &["EXEC"], b"*1\r\n:1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 13.
+            Read("a", b"*-1\r\n"),
             WaitBlocked(0),
             Send("a", &["BLMOVE", "queued", "destination", "LEFT", "RIGHT", "0"]),
             WaitBlocked(1),
-            Command("p", &["MULTI"], b"ORACLE-pending"),
-            Command("p", &["CLIENT", "UNBLOCK", "@id:a", "ERROR"], b"ORACLE-pending"),
-            Command("p", &["EXEC"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 18.
+            Command("p", &["MULTI"], b"+OK\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 20.
+            Command("p", &["CLIENT", "UNBLOCK", "@id:a", "ERROR"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 22.
+            Command("p", &["EXEC"], b"*1\r\n:1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 23.
+            Read("a", b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n"),
             WaitBlocked(0),
-            Command("p", &["EXISTS", "queued", "destination"], b"ORACLE-pending"),
-            Command("p", &["MULTI"], b"ORACLE-pending"),
-            Command("p", &["CLIENT", "UNBLOCK", "@id:a"], b"ORACLE-pending"),
-            Command("p", &["EXEC"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 26.
+            Command("p", &["EXISTS", "queued", "destination"], b":0\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 28.
+            Command("p", &["MULTI"], b"+OK\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 30.
+            Command("p", &["CLIENT", "UNBLOCK", "@id:a"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 32.
+            Command("p", &["EXEC"], b"*1\r\n:0\r\n"),
             Send("a", &["BLPOP", "x", "y", "y", "0"]),
             WaitBlocked(1),
             // Redis 7.2.16 run 38453128755, blocking-mc-s15-client-unblock-lifecycle-resp2, operation 48 final INFO blocked_clients.
@@ -360,10 +432,14 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             // Redis 7.2.16 run 38453128755, blocking-mc-s15-client-unblock-lifecycle-resp2, operation 35.
             Read("a", b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n"),
             WaitBlocked(0),
-            Command("a", &["PING", "tail"], b"ORACLE-pending"),
-            Command("p", &["RPUSH", "x", "one"], b"ORACLE-pending"),
-            Command("p", &["RPUSH", "y", "two"], b"ORACLE-pending"),
-            Command("p", &["EXISTS", "s", "d"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 59.
+            Command("a", &["PING", "tail"], b"$4\r\ntail\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 61.
+            Command("p", &["RPUSH", "x", "one"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 63.
+            Command("p", &["RPUSH", "y", "two"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-client-unblock, operation 65.
+            Command("p", &["EXISTS", "s", "d"], b":0\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s15-client-unblock-lifecycle-resp2, operation 52 final INFO blocked_clients.
             Info("blocked_clients", "0"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s15-client-unblock-lifecycle-resp2, operation 52 final INFO total_blocking_keys.
@@ -379,31 +455,46 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             WaitBlocked(1),
             // Redis 7.2.16 run 38453128755, blocking-mc-s19-aof-delayed-blpop-resp2, operation 4 incremental files.
             Aof(b""),
-            Command("p", &["RPUSH", "l", "popped", "left"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
-            Command("p", &["BRPOP", "l", "0"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 7.
+            Command("p", &["RPUSH", "l", "popped", "left"], b":2\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 8.
+            Read("a", b"*2\r\n$1\r\nl\r\n$6\r\npopped\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 10.
+            Command("p", &["BRPOP", "l", "0"], b"*2\r\n$1\r\nl\r\n$4\r\nleft\r\n"),
             Send("a", &["BRPOPLPUSH", "s", "d", "0"]),
             WaitBlocked(1),
-            Command("p", &["RPUSH", "s", "moved"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 14.
+            Command("p", &["RPUSH", "s", "moved"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 15.
+            Read("a", b"$5\r\nmoved\r\n"),
             Send("a", &["BLMOVE", "s", "d", "LEFT", "RIGHT", "0"]),
             WaitBlocked(1),
-            Command("p", &["RPUSH", "s", "second"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 19.
+            Command("p", &["RPUSH", "s", "second"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 20.
+            Read("a", b"$6\r\nsecond\r\n"),
             Send("a", &["BLMOVE", "from", "mid", "LEFT", "RIGHT", "0"]),
             WaitBlocked(1),
             Send("b", &["BLMOVE", "mid", "last", "RIGHT", "LEFT", "0"]),
             WaitBlocked(2),
-            Command("p", &["RPUSH", "from", "chain"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
-            Read("b", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 26.
+            Command("p", &["RPUSH", "from", "chain"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 27.
+            Read("a", b"$5\r\nchain\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 28.
+            Read("b", b"$5\r\nchain\r\n"),
             WaitBlocked(0),
-            Aof(b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 30.
+            Aof(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*4\r\n$5\r\nRPUSH\r\n$1\r\nl\r\n$6\r\npopped\r\n$4\r\nleft\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nl\r\n*2\r\n$4\r\nRPOP\r\n$1\r\nl\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\ns\r\n$5\r\nmoved\r\n*3\r\n$9\r\nRPOPLPUSH\r\n$1\r\ns\r\n$1\r\nd\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\ns\r\n$6\r\nsecond\r\n*5\r\n$5\r\nLMOVE\r\n$1\r\ns\r\n$1\r\nd\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*3\r\n$5\r\nRPUSH\r\n$4\r\nfrom\r\n$5\r\nchain\r\n*5\r\n$5\r\nLMOVE\r\n$4\r\nfrom\r\n$3\r\nmid\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*5\r\n$5\r\nLMOVE\r\n$3\r\nmid\r\n$4\r\nlast\r\n$5\r\nRIGHT\r\n$4\r\nLEFT\r\n"),
             Restart,
-            Command("p", &["LRANGE", "d", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "last", "0", "-1"], b"ORACLE-pending"),
-            Command("p", &["EXISTS", "l", "s", "from", "mid"], b"ORACLE-pending"),
-            Aof(b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 34.
+            Command("p", &["LRANGE", "d", "0", "-1"], b"*2\r\n$5\r\nmoved\r\n$6\r\nsecond\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 36.
+            Command("p", &["LRANGE", "last", "0", "-1"], b"*1\r\n$5\r\nchain\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 38.
+            Command("p", &["EXISTS", "l", "s", "from", "mid"], b":0\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-aof, operation 39.
+            Aof(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*4\r\n$5\r\nRPUSH\r\n$1\r\nl\r\n$6\r\npopped\r\n$4\r\nleft\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nl\r\n*2\r\n$4\r\nRPOP\r\n$1\r\nl\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\ns\r\n$5\r\nmoved\r\n*3\r\n$9\r\nRPOPLPUSH\r\n$1\r\ns\r\n$1\r\nd\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\ns\r\n$6\r\nsecond\r\n*5\r\n$5\r\nLMOVE\r\n$1\r\ns\r\n$1\r\nd\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*3\r\n$5\r\nRPUSH\r\n$4\r\nfrom\r\n$5\r\nchain\r\n*5\r\n$5\r\nLMOVE\r\n$4\r\nfrom\r\n$3\r\nmid\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*5\r\n$5\r\nLMOVE\r\n$3\r\nmid\r\n$4\r\nlast\r\n$5\r\nRIGHT\r\n$4\r\nLEFT\r\n"),
         ],
     },
     Scenario {
@@ -417,7 +508,8 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Command("p", &["BRPOP", "missing", "0.02"], b"*-1\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-brpoplpush-errors-typecheck-timeout-and-empty-context, reply 14.
             Command("p", &["BRPOPLPUSH", "missing", "d", "0.001"], b"*-1\r\n"),
-            Command("p", &["BLMOVE", "missing", "d", "LEFT", "RIGHT", "0.001"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-fractional-timeout, operation 8.
+            Command("p", &["BLMOVE", "missing", "d", "LEFT", "RIGHT", "0.001"], b"*-1\r\n"),
             // Redis rejects nan before any key lookup, so the recorded absent key k and missing give the same error (t_list.c:1218).
             // Redis 7.2.16 run 38453804021, ORACLE-pending-blpop-errors-and-finite-timeout, reply 4.
             Command("p", &["BLPOP", "missing", "nan"], b"-ERR timeout is not a float or out of range\r\n"),
@@ -432,7 +524,8 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         actions: &[
             Pipeline("a", &[&["BLPOP", "l", "0"], &["PING", "tail"], &["RPUSH", "after", "value"]]),
             WaitBlocked(1),
-            Command("p", &["EXISTS", "after"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-waiter-pipeline, operation 5.
+            Command("p", &["EXISTS", "after"], b":0\r\n"),
             Quiet("a"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s02-waiter-pipeline-producer-resp2, operation 10.
             Command("p", &["RPUSH", "l", "first"], b":1\r\n"),
@@ -442,7 +535,8 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Read("a", b"$4\r\ntail\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s02-waiter-pipeline-producer-resp2, operation 11 frame 2.
             Read("a", b":1\r\n"),
-            Command("p", &["LRANGE", "after", "0", "-1"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-waiter-pipeline, operation 13.
+            Command("p", &["LRANGE", "after", "0", "-1"], b"*1\r\n$5\r\nvalue\r\n"),
         ],
     },
     Scenario {
@@ -453,21 +547,30 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             CaptureId("a"),
             Pipeline("a", &[&["BLPOP", "x", "0"], &["BRPOPLPUSH", "y", "d", "0"], &["PING"]]),
             WaitBlocked(1),
-            Command("p", &["RPUSH", "x", "first"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-completion-reuse, operation 7.
+            Command("p", &["RPUSH", "x", "first"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-completion-reuse, operation 8.
+            Read("a", b"*2\r\n$1\r\nx\r\n$5\r\nfirst\r\n"),
             WaitBlocked(1),
-            Command("p", &["CLIENT", "UNBLOCK", "@id:a", "ERROR"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-completion-reuse, operation 11.
+            Command("p", &["CLIENT", "UNBLOCK", "@id:a", "ERROR"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-completion-reuse, operation 12.
+            Read("a", b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-completion-reuse, operation 13.
+            Read("a", b"+PONG\r\n"),
             WaitBlocked(0),
             Quiet("a"),
             Send("a", &["BLPOP", "z", "0"]),
             WaitBlocked(1),
-            Command("p", &["RPUSH", "z", "final"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-completion-reuse, operation 19.
+            Command("p", &["RPUSH", "z", "final"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-completion-reuse, operation 20.
+            Read("a", b"*2\r\n$1\r\nz\r\n$5\r\nfinal\r\n"),
             WaitBlocked(0),
-            Command("p", &["LRANGE", "d", "0", "-1"], b"ORACLE-pending"),
-            Command("a", &["PING"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-completion-reuse, operation 23.
+            Command("p", &["LRANGE", "d", "0", "-1"], b"*0\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-completion-reuse, operation 25.
+            Command("a", &["PING"], b"+PONG\r\n"),
         ],
     },
     Scenario {
@@ -506,24 +609,28 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Read("a", b"*2\r\n$6\r\ntarget\r\n$1\r\na\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s13-producer-rename-resp2, operation 17.
             Command("p", &["LRANGE", "target", "0", "-1"], b"*1\r\n$1\r\nb\r\n"),
-            Command("p", &["DEL", "target"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-other-producers, operation 12.
+            Command("p", &["DEL", "target"], b":1\r\n"),
             Send("a", &["BRPOP", "target", "0"]),
             WaitBlocked(1),
             // Redis 7.2.16 run 38453128755, blocking-mc-s13-producer-rename-resp2, operation 3.
             Command("p", &["RPUSH", "source", "a", "b"], b":2\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s13-producer-copy-resp2, operation 7.
             Command("p", &["COPY", "source", "target"], b":1\r\n"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-other-producers, operation 19.
+            Read("a", b"*2\r\n$6\r\ntarget\r\n$1\r\nb\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s13-producer-copy-resp2, operation 13.
             Command("p", &["LRANGE", "source", "0", "-1"], b"*2\r\n$1\r\na\r\n$1\r\nb\r\n"),
-            Command("p", &["DEL", "target"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-other-producers, operation 23.
+            Command("p", &["DEL", "target"], b":1\r\n"),
             Send("a", &["BLPOP", "target", "0"]),
             WaitBlocked(1),
             // Redis 7.2.16 run 38453128755, blocking-mc-s13-producer-lmove-resp2, operation 7.
             Command("p", &["LMOVE", "source", "target", "LEFT", "RIGHT"], b"$1\r\na\r\n"),
             // Redis 7.2.16 run 38453128755, blocking-mc-s13-producer-lmove-resp2, operation 8.
             Read("a", b"*2\r\n$6\r\ntarget\r\n$1\r\na\r\n"),
-            Command("p", &["EXISTS", "target"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-other-producers, operation 30.
+            Command("p", &["EXISTS", "target"], b":0\r\n"),
         ],
     },
     Scenario {
@@ -552,7 +659,8 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             // Redis 7.2.16 run 38453128755, blocking-mc-s12-nested-fifo-brpoplpush-resp2, operation 14.
             Read("c", b"*2\r\n$2\r\nl3\r\n$3\r\none\r\n"),
             WaitBlocked(0),
-            Command("p", &["EXISTS", "l1", "l2", "l3"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-nested-fifo, operation 23.
+            Command("p", &["EXISTS", "l1", "l2", "l3"], b":0\r\n"),
         ],
     },
     Scenario {
@@ -562,18 +670,27 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         actions: &[
             Send("a", &["BLPOP", "l", "0"]),
             WaitBlocked(1),
-            Command("p", &["MULTI"], b"ORACLE-pending"),
-            Command("p", &["RPUSH", "l", "transient"], b"ORACLE-pending"),
-            Command("p", &["PEXPIREAT", "l", "1"], b"ORACLE-pending"),
-            Command("p", &["EXEC"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-expiry-before-ready, operation 5.
+            Command("p", &["MULTI"], b"+OK\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-expiry-before-ready, operation 7.
+            Command("p", &["RPUSH", "l", "transient"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-expiry-before-ready, operation 9.
+            Command("p", &["PEXPIREAT", "l", "1"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-expiry-before-ready, operation 11.
+            Command("p", &["EXEC"], b"*2\r\n:1\r\n:1\r\n"),
             Quiet("a"),
             WaitBlocked(1),
-            Command("p", &["EXISTS", "l"], b"ORACLE-pending"),
-            Aof(b"ORACLE-pending"),
-            Command("p", &["RPUSH", "l", "final"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-expiry-before-ready, operation 15.
+            Command("p", &["EXISTS", "l"], b":0\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-expiry-before-ready, operation 16.
+            Aof(b"*1\r\n$5\r\nMULTI\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\nl\r\n$9\r\ntransient\r\n*2\r\n$3\r\nDEL\r\n$1\r\nl\r\n*1\r\n$4\r\nEXEC\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-expiry-before-ready, operation 18.
+            Command("p", &["RPUSH", "l", "final"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-expiry-before-ready, operation 19.
+            Read("a", b"*2\r\n$1\r\nl\r\n$5\r\nfinal\r\n"),
             WaitBlocked(0),
-            Aof(b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-expiry-before-ready, operation 21.
+            Aof(b"*1\r\n$5\r\nMULTI\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\nl\r\n$9\r\ntransient\r\n*2\r\n$3\r\nDEL\r\n$1\r\nl\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\nl\r\n$5\r\nfinal\r\n*2\r\n$4\r\nLPOP\r\n$1\r\nl\r\n"),
         ],
     },
     Scenario {
@@ -606,20 +723,31 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         actions: &[
             Send("a", &["BLPOP", "l", "0"]),
             WaitBlocked(1),
-            Command("p", &["LPUSHX", "l", "absent"], b"ORACLE-pending"),
-            Command("p", &["RPUSHX", "l", "absent"], b"ORACLE-pending"),
-            Command("p", &["LINSERT", "l", "AFTER", "absent", "value"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 5.
+            Command("p", &["LPUSHX", "l", "absent"], b":0\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 7.
+            Command("p", &["RPUSHX", "l", "absent"], b":0\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 9.
+            Command("p", &["LINSERT", "l", "AFTER", "absent", "value"], b":0\r\n"),
             Quiet("a"),
             WaitBlocked(1),
-            Command("p", &["MULTI"], b"ORACLE-pending"),
-            Command("p", &["RPUSH", "l", "first"], b"ORACLE-pending"),
-            Command("p", &["LPUSHX", "l", "left"], b"ORACLE-pending"),
-            Command("p", &["RPUSHX", "l", "right"], b"ORACLE-pending"),
-            Command("p", &["LINSERT", "l", "AFTER", "first", "inserted"], b"ORACLE-pending"),
-            Command("p", &["EXEC"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 13.
+            Command("p", &["MULTI"], b"+OK\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 15.
+            Command("p", &["RPUSH", "l", "first"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 17.
+            Command("p", &["LPUSHX", "l", "left"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 19.
+            Command("p", &["RPUSHX", "l", "right"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 21.
+            Command("p", &["LINSERT", "l", "AFTER", "first", "inserted"], b"+QUEUED\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 23.
+            Command("p", &["EXEC"], b"*4\r\n:1\r\n:2\r\n:3\r\n:4\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 24.
+            Read("a", b"*2\r\n$1\r\nl\r\n$4\r\nleft\r\n"),
             WaitBlocked(0),
-            Command("p", &["LRANGE", "l", "0", "-1"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-existing-list-producers-in-exec, operation 27.
+            Command("p", &["LRANGE", "l", "0", "-1"], b"*3\r\n$5\r\nfirst\r\n$8\r\ninserted\r\n$5\r\nright\r\n"),
         ],
     },
     Scenario {
@@ -634,12 +762,17 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Command("b", &["SUBSCRIBE", "news"], b">3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n"),
             Pipeline("a", &[&["BLPOP", "l", "0"], &["PUBLISH", "news", "after-unblock"]]),
             WaitBlocked(1),
-            Command("b", &["CLIENT", "UNBLOCK", "@id:a", "TIMEOUT"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
-            Read("b", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-promoted-unblock-order, operation 12.
+            Command("b", &["CLIENT", "UNBLOCK", "@id:a", "TIMEOUT"], b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-promoted-unblock-order, operation 13.
+            Read("a", b"*-1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-promoted-unblock-order, operation 14.
+            Read("a", b":1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-promoted-unblock-order, operation 15.
+            Read("b", b">3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$13\r\nafter-unblock\r\n"),
             WaitBlocked(0),
-            Command("b", &["UNSUBSCRIBE", "news"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-promoted-unblock-order, operation 18.
+            Command("b", &["UNSUBSCRIBE", "news"], b">3\r\n$11\r\nunsubscribe\r\n$4\r\nnews\r\n:0\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-blpop-exec-and-script, reply 14.
             Command("b", &["PING"], b"+PONG\r\n"),
         ],
@@ -662,11 +795,15 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Command("p", &["SET", "counter", "0"], b"+OK\r\n"),
             Send("a", &["BLPOP", "fallback-list", "0"]),
             WaitBlocked(1),
-            Command("p", &["EVAL", "redis.call('INCR',KEYS[1]); redis.call('RPUSH',KEYS[2],'once'); return redis.call('GET',KEYS[1])", "2", "counter", "fallback-list"], b"ORACLE-pending"),
-            Read("a", b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-script-error-and-declared-fallback, operation 15.
+            Command("p", &["EVAL", "redis.call('INCR',KEYS[1]); redis.call('RPUSH',KEYS[2],'once'); return redis.call('GET',KEYS[1])", "2", "counter", "fallback-list"], b"$1\r\n1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-script-error-and-declared-fallback, operation 16.
+            Read("a", b"*2\r\n$13\r\nfallback-list\r\n$4\r\nonce\r\n"),
             WaitBlocked(0),
-            Command("p", &["GET", "counter"], b"ORACLE-pending"),
-            Command("p", &["LRANGE", "fallback-list", "0", "-1"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-script-error-and-declared-fallback, operation 19.
+            Command("p", &["GET", "counter"], b"$1\r\n1\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-script-error-and-declared-fallback, operation 21.
+            Command("p", &["LRANGE", "fallback-list", "0", "-1"], b"*0\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-blpop-exec-and-script, reply 14.
             Command("p", &["PING"], b"+PONG\r\n"),
         ],
@@ -976,10 +1113,14 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         clients: &["p", "a"],
         aof: false,
         actions: &[
-            Command("a", &["BLPOP", "l", "-0.0015"], b"ORACLE-pending"),
-            Command("a", &["BLPOP", "l", "-0.002"], b"ORACLE-pending"),
-            Command("a", &["BRPOP", "l", "-0.0015"], b"ORACLE-pending"),
-            Command("a", &["BRPOP", "l", "-0.002"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-negative-finite-errors-resp2, operation 3.
+            Command("a", &["BLPOP", "l", "-0.0015"], b"-ERR timeout is negative\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-negative-finite-errors-resp2, operation 5.
+            Command("a", &["BLPOP", "l", "-0.002"], b"-ERR timeout is negative\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-negative-finite-errors-resp2, operation 7.
+            Command("a", &["BRPOP", "l", "-0.0015"], b"-ERR timeout is negative\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-negative-finite-errors-resp2, operation 9.
+            Command("a", &["BRPOP", "l", "-0.002"], b"-ERR timeout is negative\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-blpop-exec-and-script, reply 14.
             Command("p", &["PING"], b"+PONG\r\n"),
         ],
@@ -991,10 +1132,14 @@ pub(super) const SCENARIOS: &[Scenario] = &[
         actions: &[
             // Redis 7.2.16 run 38453804021, blocking-mc-s01-blpop-timeout--0.001-resp3, operation 1 HELLO proto field.
             Resp3("a", b":3\r\n"),
-            Command("a", &["BLPOP", "l", "-0.0015"], b"ORACLE-pending"),
-            Command("a", &["BLPOP", "l", "-0.002"], b"ORACLE-pending"),
-            Command("a", &["BRPOP", "l", "-0.0015"], b"ORACLE-pending"),
-            Command("a", &["BRPOP", "l", "-0.002"], b"ORACLE-pending"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-negative-finite-errors-resp3, operation 5.
+            Command("a", &["BLPOP", "l", "-0.0015"], b"-ERR timeout is negative\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-negative-finite-errors-resp3, operation 7.
+            Command("a", &["BLPOP", "l", "-0.002"], b"-ERR timeout is negative\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-negative-finite-errors-resp3, operation 9.
+            Command("a", &["BRPOP", "l", "-0.0015"], b"-ERR timeout is negative\r\n"),
+            // Redis 7.2.16 remaining recording ([run 38464000185](https://github.com/Ming-Research/Firn-wf/actions/runs/38464000185), oracle-replies.json), blocking-fixture-exact-negative-finite-errors-resp3, operation 11.
+            Command("a", &["BRPOP", "l", "-0.002"], b"-ERR timeout is negative\r\n"),
             // Redis 7.2.16 run 38453128755, ORACLE-pending-blpop-exec-and-script, reply 14.
             Command("p", &["PING"], b"+PONG\r\n"),
         ],
