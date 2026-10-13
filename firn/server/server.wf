@@ -804,7 +804,9 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
     close_directory(factory: &handles, directory: move cwd);
     return exit_status(code: 1_u8);
   }
-  if options.port == 0_u64 {
+  let no_port = options.port == 0_u64;
+  let no_bind = options.bind.inner.len == 0_u64;
+  if bor(no_port, no_bind) {
     config_write(factory: &handles, output: &stderr, bytes: &config_no_listener[0_u64..44_u64]);
     close_directory_write(factory: &handles, directory: move cwd_write);
     close_directory(factory: &handles, directory: move cwd);

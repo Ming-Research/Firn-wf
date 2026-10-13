@@ -536,6 +536,11 @@ fn config_apply(options: &Options, input: &[u8], arguments: &Box<Slots<Span>>) -
     return text_of(word: &config_include_gap[0_u64..56_u64]);
   }
   if kind == 2_u64 {
+    if count == 1_u64 {
+      let unbound = box_slots_new::<u8>(capacity: 0_u64);
+      set options^.bind = move unbound;
+      return move empty;
+    }
     if count > 2_u64 {
       return text_of(word: &config_bind_many[0_u64..45_u64]);
     }
@@ -582,6 +587,10 @@ fn config_apply(options: &Options, input: &[u8], arguments: &Box<Slots<Span>>) -
     return move parsed.error;
   }
   if kind == 2_u64 {
+    if value.inner.len == 0_u64 {
+      set options^.bind = move value;
+      return move empty;
+    }
     let address = parse_address(text: &value);
     if address.valid {
       set options^.bind = move value;

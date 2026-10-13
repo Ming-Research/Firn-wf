@@ -254,6 +254,30 @@ fn startup_reads_quoted_config_and_applies_later_command_line_overrides() {
 }
 
 #[test]
+fn startup_accepts_working_directory_spellings_and_keeps_aof_under_cwd() {
+    let fixture = fixture_directory();
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    for directory in [".", "./"] {
+        std::fs::write(fixture.path().join("startup.conf"), format!(
+            "dir {directory}\nbind 127.0.0.1\nappendonly yes\nappendfilename cwd.aof\n"
+        )).expect("write working-directory config");
+        for (label, binary) in servers() {
+            let args = arguments(&["startup.conf", "--port", &port]);
+            let child = start(&binary, fixture.path(), &args, None).with_port(&lease);
+            let mut client = connect_when_ready(lease.port(), &child);
+            config_value(&mut client, "appendonly", "yes", label);
+            config_value(&mut client, "appendfilename", "cwd.aof", label);
+            assert!(fixture.path().join("appendonlydir").is_dir(),
+                "{label}: dir {directory} must keep AOF under the supplied working directory");
+            shutdown(&mut client, child, label);
+            std::fs::remove_dir_all(fixture.path().join("appendonlydir"))
+                .expect("isolate next working-directory case");
+        }
+    }
+}
+
+#[test]
 fn startup_command_line_preserves_argument_bytes_and_empty_password() {
     let fixture = fixture_directory();
     let lease = support::lease_port();
@@ -285,6 +309,19 @@ fn fatal(line_number: usize, line: &str, reason: &str) -> Vec<u8> {
 fn assert_fatal(output: Output, expected: &[u8], label: &str) {
     assert_eq!(output.status.code(), Some(1), "{label}: {output:?}");
     assert_eq!(output.stderr, expected, "{label}: fatal config diagnostic; stdout={:?}", output.stdout);
+}
+
+#[test]
+fn startup_firn_clients_rejects_bad_values_with_its_firn_only_message() {
+    let fixture = fixture_directory();
+    let binary = PathBuf::from(std::env::var_os("FIRN").expect("FIRN"));
+    for value in ["nope", "-1", "18446744073709551616"] {
+        let args = arguments(&["--firn-clients", value]);
+        let output = start(&binary, fixture.path(), &args, None)
+            .wait_with_output().expect("bounded firn-only client-count refusal");
+        let line = format!("firn-clients \"{value}\"");
+        assert_fatal(output, &fatal(2, &line, "firn-clients must be an unsigned integer"), "firn");
+    }
 }
 
 #[test]
@@ -531,6 +568,50 @@ fn startup_zero_final_port_exits_but_a_later_port_override_listens() {
         let mut client = connect_when_ready(lease.port(), &child);
         config_value(&mut client, "port", &port, label);
         shutdown(&mut client, child, label);
+    }
+}
+
+#[test]
+fn startup_empty_bind_disables_tcp_but_a_later_bind_override_listens() {
+    let fixture = fixture_directory();
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    let reason = "Configured to not listen anywhere, exiting.";
+    // Redis's MULTI_ARG bind handler accepts both no values and one empty
+    // value. Neither means wildcard: each clears the listening addresses.
+    for (config, cli, needs_empty_delimiter) in [
+        ("bind\n", arguments(&["startup.conf", "--port", &port]), false),
+        ("bind \"\"\n", arguments(&["startup.conf", "--port", &port]), false),
+        ("", arguments(&["--port", &port, "--bind"]), true),
+        ("", arguments(&["--port", &port, "--bind", ""]), false),
+    ] {
+        std::fs::write(fixture.path().join("startup.conf"), config).expect("write empty-bind config");
+        for (label, binary) in servers() {
+            let output = start(&binary, fixture.path(), &cli, None).with_port(&lease)
+                .wait_with_output().expect("bounded no-bind-address startup");
+            assert_eq!(output.status.code(), Some(1), "{label}: {output:?}");
+            if label == "firn" {
+                assert_eq!(output.stderr, format!("{reason}\n").as_bytes(),
+                    "{label}: empty bind must be accepted before the no-listener exit");
+            } else {
+                assert!(String::from_utf8_lossy(&output.stdout).contains(reason),
+                    "{label}: empty bind must be accepted before the no-listener exit: {output:?}");
+                assert!(!String::from_utf8_lossy(&output.stderr).contains("FATAL CONFIG FILE ERROR"),
+                    "{label}: empty bind must not be a config error: {output:?}");
+            }
+            let mut args = cli.clone();
+            // Redis consumes a directive's first following argv value even
+            // when it starts with --. Keep the final zero-value CLI case
+            // above, but delimit it explicitly before adding an override.
+            if needs_empty_delimiter {
+                args.push(OsString::from(""));
+            }
+            args.extend(arguments(&["--bind", "127.0.0.1"]));
+            let child = start(&binary, fixture.path(), &args, None).with_port(&lease);
+            let mut client = connect_when_ready(lease.port(), &child);
+            config_value(&mut client, "bind", "127.0.0.1", label);
+            shutdown(&mut client, child, label);
+        }
     }
 }
 
