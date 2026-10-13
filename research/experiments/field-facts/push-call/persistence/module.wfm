@@ -1,0 +1,5 @@
+alias ExitStatus = std::process::ExitStatus;
+
+public fn main_cross() -> status: ExitStatus pure doc "Compile-only entry for a graph containing both cross-module and local-call loops; both bodies are checked.";
+
+public fn main_local() -> status: ExitStatus pure doc "Alternate entry for the same graph; it does not isolate the local loop from the cross-module source verdict.";

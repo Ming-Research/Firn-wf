@@ -1,0 +1,270 @@
+alias Clock = std::time::Clock;
+alias ExitStatus = std::process::ExitStatus;
+alias HandleFactory = std::io::HandleFactory;
+alias ReadFile = std::fs::ReadFile;
+alias Span = pkg::protocol::Span;
+
+struct Keyspace {
+  doc "Extraction-only stand-in for store cancellation state; no server keyspace behavior is modeled.";
+  cancelled: Bool;
+}
+
+struct AofSyntax {
+  doc "Shared incremental AOF grammar. Phases are record header, bulk header, bulk body and two unchecked trailer bytes. Headers retain at most one fgets chunk; bodies retain only the first argument's five-byte command probe. position counts physical bytes, while valid advances only after complete commands.";
+  phase: u64;
+  line: Slots<u8, 1023>;
+  position: u64;
+  valid: u64;
+  count: u64;
+  index: u64;
+  remaining: u64;
+  total: u64;
+  word: Array<u8, 5>;
+  word_length: u64;
+  probe: u64;
+  continuable: Bool;
+  invariant probe_bound(syntax): syntax.probe <= 5_u64;
+}
+
+struct AofEvent {
+  doc "State zero needs another chunk, one gives an argument's file position and length, two completes a command, three is clean EOF, four is a truncated record, five is bad format, and six is an unrecoverable read-format condition. next is the consumed endpoint in this chunk; a completed command's start is the preceding whole-command offset, excluding annotations.";
+  state: u64;
+  next: u64;
+  start: u64;
+  length: u64;
+  kind: u64;
+}
+
+struct AofReader {
+  bytes: Box<Array<u8>>;
+  cursor: u64;
+  held: u64;
+  position: u64;
+  size: u64;
+  eof: Bool;
+  syntax: AofSyntax;
+  invariant window(reader): reader.cursor <= reader.held;
+  invariant capacity(reader): reader.held <= reader.bytes.inner.len;
+  invariant header_room(reader): reader.syntax.line.len < 1023_u64;
+  invariant probe_bound(reader): reader.syntax.probe <= 5_u64;
+}
+
+struct AofRecord {
+  args: Box<Slots<Span>>;
+  length: u64;
+  kind: u64;
+}
+
+fn push_arg(args: &Box<Slots<Span>>, start: u64, length: u64) -> result: unit writes(args) {
+  doc "Appends one argument's span, doubling the spans' capacity when they are full.";
+  let capacity = args^.inner.cap;
+  if args^.inner.len >= capacity {
+    let doubled = capacity +wrap capacity;
+    let target = imax(doubled, 16_u64);
+    let fits = target <= 1073741824_u64;
+    if fits {
+      if target >= args^.inner.cap {
+        grow(cell: args, capacity: target);
+      }
+    }
+  }
+  if args^.inner.len < args^.inner.cap {
+    let span = Span(start: start, length: length);
+    place_back(window: &args^.inner, value: span);
+  }
+  return unit;
+}
+
+fn aof_rw_cancelled(store: &Keyspace) -> cancelled: Bool reads(store) waits {
+  return store^.cancelled;
+}
+
+fn aof_rw_pause(clock: &Clock) -> result: unit writes(clock) waits {
+  doc "A nonempty sleep that yields the driver between scan slices, journal reads and chunk cleanup; a zero-byte append would not yield.";
+  aof_rw_sleep(clock: clock, nanoseconds: 100000_u64);
+  return unit;
+}
+
+fn aof_rw_sleep(clock: &Clock, nanoseconds: u64) -> result: unit writes(clock) waits {
+  doc "Sleeps outside every hold for the given nonzero nanoseconds, which no cancellation shortens.";
+  let now = std::time::now(clock: clock);
+  let wake = std::time::instant_after(instant: now, nanoseconds: nanoseconds);
+  let never = std::time::cancel_never();
+  match std::time::sleep_until(deadline: wake, cancel: &never) {
+    Ok(..) => {
+    }
+    Err(..) => {
+    }
+  }
+  std::time::close_cancel_watch(watch: move never);
+  return unit;
+}
+
+fn aof_fill(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: &AofReader, clock: &Clock, rewriting: Bool) -> result: Result<unit, u8> reads(store), writes(factory), writes(file), writes(reader), writes(clock) waits {
+  doc "Transport only: bounded reads and rewrite cancellation, without interpreting AOF syntax. EOF is retained for the shared parser's explicit finalization.";
+  if reader^.cursor < reader^.held {
+    return Ok<unit, u8>(value: unit);
+  }
+  if rewriting {
+    if reader^.position > 0_u64 {
+      aof_rw_pause(clock: clock);
+    }
+    let cancelled = aof_rw_cancelled(store: store);
+    if cancelled {
+      return Err<unit, u8>(error: 3_u8);
+    }
+  }
+  let length = reader^.bytes.inner.len;
+  let destination = &reader^.bytes.inner[0_u64..length];
+  match std::fs::read_at(factory: factory, file: file, destination: destination, file_offset: reader^.position, start: 0_u64, end: length) {
+    Ok(value: next) => {
+      set reader^.cursor = 0_u64;
+      set reader^.held = next;
+      set reader^.eof = next == 0_u64;
+      if next == 0_u64 {
+        return Err<unit, u8>(error: 0_u8);
+      }
+      let end = reader^.position +wrap next;
+      set reader^.size = imax(reader^.size, end);
+      return Ok<unit, u8>(value: unit);
+    }
+    Err(error: stopped) => {
+      match stopped {
+        ReadEnd() => {
+          set reader^.eof = True();
+          return Err<unit, u8>(error: 0_u8);
+        }
+        ReadFailed(error: problem) => {
+          return Err<unit, u8>(error: 3_u8);
+        }
+      }
+    }
+  }
+}
+
+fn aof_syntax_next(syntax: &AofSyntax, input: &[u8], start: u64, end: u64, eof: Bool) -> event: AofEvent reads(input), writes(syntax) contract {
+  requires syntax^.line.len < 1023_u64;
+  requires start <= end;
+  requires end <= input^.len;
+  ensures syntax^.line.len < 1023_u64;
+  ensures event.next >= start;
+  ensures event.next <= end;
+} {
+  doc "Extraction-only reduced scanner body; the signature, effect row and all contracts are copied verbatim from the real scanner.";
+  let length = input^.len;
+  set syntax^.line = slots_new::<u8, 1023>();
+  set syntax^.probe = 0_u64;
+  set syntax^.position = syntax^.position +wrap 1_u64;
+  if eof {
+    return AofEvent(state: 3_u64, next: end, start: 0_u64, length: length, kind: 0_u64);
+  }
+  return AofEvent(state: 1_u64, next: end, start: 0_u64, length: length, kind: 0_u64);
+}
+
+fn aof_record(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: &AofReader, clock: &Clock, rewriting: Bool, retain: Bool) -> result: Result<AofRecord, u8> reads(store), writes(factory), writes(file), writes(reader), writes(clock) waits {
+  doc "Drive the shared pure syntax machine from file chunks. Startup keeps argument-header positions for later payload reads; boundary validation retains only fixed parser state. The window fields are read into locals and written back because the checker keeps no current-value record for fields (board item coord-wfbl-01-32).";
+  let args = box_slots_new::<Span>(capacity: 0_u64);
+  loop @events (
+    invariant window: reader^.cursor <= reader^.held,
+    invariant capacity: reader^.held <= reader^.bytes.inner.len,
+    invariant header_room: reader^.syntax.line.len < 1023_u64,
+    invariant probe_bound: reader^.syntax.probe <= 5_u64
+  ) {
+    if reader^.eof {
+    } else if reader^.cursor == reader^.held {
+      match aof_fill(store: store, factory: factory, file: file, reader: reader, clock: clock, rewriting: rewriting) {
+        Ok(value: filled) => {
+        }
+        Err(error: reason) => {
+          if reason != 0_u8 {
+            return Err<AofRecord, u8>(error: reason);
+          }
+        }
+      }
+    }
+    let cursor = reader^.cursor;
+    let held = reader^.held;
+    let input = &reader^.bytes.inner[0_u64..held];
+    let event = aof_syntax_next(syntax: &reader^.syntax, input: input, start: cursor, end: held, eof: reader^.eof);
+    let next = event.next;
+    let position = reader^.syntax.position;
+    set reader^.cursor = next;
+    set reader^.held = held;
+    set reader^.position = position;
+    if event.state == 1_u64 {
+      if retain {
+        pkg::protocol::push_arg(args: &args, start: event.start, length: event.length);
+      }
+    } else if event.state == 2_u64 {
+      let record = AofRecord(args: move args, length: reader^.syntax.total, kind: event.kind);
+      return Ok<AofRecord, u8>(value: move record);
+    } else if event.state == 3_u64 {
+      return Err<AofRecord, u8>(error: 0_u8);
+    } else if event.state == 4_u64 {
+      return Err<AofRecord, u8>(error: 1_u8);
+    } else if event.state == 5_u64 {
+      return Err<AofRecord, u8>(error: 2_u8);
+    } else if event.state == 6_u64 {
+      return Err<AofRecord, u8>(error: 3_u8);
+    }
+  }
+}
+
+fn aof_record_local(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: &AofReader, clock: &Clock, rewriting: Bool, retain: Bool) -> result: Result<AofRecord, u8> reads(store), writes(factory), writes(file), writes(reader), writes(clock) waits {
+  doc "Drive the shared pure syntax machine from file chunks. Startup keeps argument-header positions for later payload reads; boundary validation retains only fixed parser state. The window fields are read into locals and written back because the checker keeps no current-value record for fields (board item coord-wfbl-01-32).";
+  let args = box_slots_new::<Span>(capacity: 0_u64);
+  loop @events (
+    invariant window: reader^.cursor <= reader^.held,
+    invariant capacity: reader^.held <= reader^.bytes.inner.len,
+    invariant header_room: reader^.syntax.line.len < 1023_u64,
+    invariant probe_bound: reader^.syntax.probe <= 5_u64
+  ) {
+    if reader^.eof {
+    } else if reader^.cursor == reader^.held {
+      match aof_fill(store: store, factory: factory, file: file, reader: reader, clock: clock, rewriting: rewriting) {
+        Ok(value: filled) => {
+        }
+        Err(error: reason) => {
+          if reason != 0_u8 {
+            return Err<AofRecord, u8>(error: reason);
+          }
+        }
+      }
+    }
+    let cursor = reader^.cursor;
+    let held = reader^.held;
+    let input = &reader^.bytes.inner[0_u64..held];
+    let event = aof_syntax_next(syntax: &reader^.syntax, input: input, start: cursor, end: held, eof: reader^.eof);
+    let next = event.next;
+    let position = reader^.syntax.position;
+    set reader^.cursor = next;
+    set reader^.held = held;
+    set reader^.position = position;
+    if event.state == 1_u64 {
+      if retain {
+        push_arg(args: &args, start: event.start, length: event.length);
+      }
+    } else if event.state == 2_u64 {
+      let record = AofRecord(args: move args, length: reader^.syntax.total, kind: event.kind);
+      return Ok<AofRecord, u8>(value: move record);
+    } else if event.state == 3_u64 {
+      return Err<AofRecord, u8>(error: 0_u8);
+    } else if event.state == 4_u64 {
+      return Err<AofRecord, u8>(error: 1_u8);
+    } else if event.state == 5_u64 {
+      return Err<AofRecord, u8>(error: 2_u8);
+    } else if event.state == 6_u64 {
+      return Err<AofRecord, u8>(error: 3_u8);
+    }
+  }
+}
+
+fn main_cross() -> status: ExitStatus pure {
+  doc "Compile-only witness: FN-7 makes source acceptance independent of entry reachability, so aof_record is checked without acquiring or executing host I/O.";
+  return std::process::exit_status(code: 0_u8);
+}
+
+fn main_local() -> status: ExitStatus pure {
+  doc "Compile-only witness: FN-7 makes source acceptance independent of entry reachability, so aof_record is checked without acquiring or executing host I/O.";
+  return std::process::exit_status(code: 0_u8);
+}

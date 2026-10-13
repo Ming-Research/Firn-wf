@@ -1,0 +1,4 @@
+package protocol = "../protocol-package";
+pkg::persistence: [std::process, protocol::protocol, std::io, std::fs, std::time];
+
+entry field_facts = pkg::persistence::main;

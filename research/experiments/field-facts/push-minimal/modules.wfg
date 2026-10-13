@@ -1,0 +1,5 @@
+package remote = "protocol-package";
+
+pkg::caller: [remote::protocol, std::process];
+
+entry field_facts = pkg::caller::main;

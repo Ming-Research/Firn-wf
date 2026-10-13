@@ -47,6 +47,28 @@ jobs:
             exit 1
           fi
 
+      - name: Compile every module-graph witness entry
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          release=$(sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$/\1/p' whitefoot.pin)
+          compiler="$GITHUB_WORKSPACE/build/whitefoot/$release/whitefootc"
+          out="$RUNNER_TEMP/graph-bin"; mkdir -p "$out"
+          printf 'graph\tentry\texit\n' > "$RUNNER_TEMP/graph-summary.tsv"
+          while IFS= read -r graph; do
+            for entry in $(sed -n -E 's/^entry ([A-Za-z0-9_]+) = .*/\1/p' "$graph"); do
+              echo "::group::$graph $entry"
+              set +e
+              "$compiler" --graph "$graph" --entry "$entry" -o "$out/$(echo "$graph" | tr / _)-$entry" 2>&1
+              status=$?
+              set -e
+              echo "::endgroup::"
+              printf '%s\t%s\t%s\n' "$graph" "$entry" "$status" | tee -a "$RUNNER_TEMP/graph-summary.tsv"
+            done
+          done < <(find research/experiments/field-facts -name modules.wfg | sort)
+          cat "$RUNNER_TEMP/graph-summary.tsv"
+
       - name: Compile every witness and preserve its full diagnostics
         id: witnesses
         if: always()

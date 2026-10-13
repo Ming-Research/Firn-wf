@@ -1,0 +1,4 @@
+fn touch(value: &u64) -> result: unit writes(value) {
+  set value^ = 1_u64;
+  return unit;
+}

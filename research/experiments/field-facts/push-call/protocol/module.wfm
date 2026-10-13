@@ -1,0 +1,7 @@
+public struct Span {
+  doc "Where one argument lies in a client's input: its first byte's position and its length.";
+  public start: u64;
+  public length: u64;
+}
+
+public fn push_arg(args: &Box<Slots<Span>>, start: u64, length: u64) -> result: unit writes(args) doc "Appends one argument's span, doubling the spans' capacity when they are full.";

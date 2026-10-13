@@ -1,0 +1,19 @@
+fn push_arg(args: &Box<Slots<Span>>, start: u64, length: u64) -> result: unit writes(args) {
+  doc "Appends one argument's span, doubling the spans' capacity when they are full.";
+  let capacity = args^.inner.cap;
+  if args^.inner.len >= capacity {
+    let doubled = capacity +wrap capacity;
+    let target = imax(doubled, 16_u64);
+    let fits = target <= 1073741824_u64;
+    if fits {
+      if target >= args^.inner.cap {
+        grow(cell: args, capacity: target);
+      }
+    }
+  }
+  if args^.inner.len < args^.inner.cap {
+    let span = Span(start: start, length: length);
+    place_back(window: &args^.inner, value: span);
+  }
+  return unit;
+}

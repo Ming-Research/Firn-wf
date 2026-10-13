@@ -1,0 +1,3 @@
+alias ExitStatus = std::process::ExitStatus;
+
+public fn main() -> status: ExitStatus pure doc "Checks a reference-field invariant across an unrelated cross-package write.";

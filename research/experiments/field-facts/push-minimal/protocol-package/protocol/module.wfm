@@ -1,0 +1,1 @@
+public fn touch(value: &u64) -> result: unit writes(value) doc "Writes only the referenced integer.";
