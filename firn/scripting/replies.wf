@@ -14,15 +14,16 @@ alias reply_error = pkg::protocol::reply_error;
 fn value_reply(vm: &Vm, value: Value, client: &Client, mode: u8) -> r: unit reads(vm), writes(client) {
   let bytes = box_slots_new::<u8>(capacity: 0_u64);
   value_bytes(vm: vm, v: value, out: &bytes);
+  if mode == 1_u8 {
+    let printed = True();
+    reply_error_text(client: client, text: &bytes, formatted: printed);
+    return unit;
+  }
   let n = bytes.inner.len;
   if mode == 3_u8 {
     for (i in 0_u64..n) {
       let b = bytes.inner[i];
-      let cr = b == 13_u8;
-      let lf = b == 10_u8;
-      if bor(cr, lf) {
-        set bytes.inner[i] = 32_u8;
-      }
+      set bytes.inner[i] = pkg::protocol::echoed(byte: b);
     }
   }
   let bulk = mode == 0_u8;
@@ -40,11 +41,7 @@ fn value_reply(vm: &Vm, value: Value, client: &Client, mode: u8) -> r: unit read
   if bor(bulk, big) {
     reply_bulk_input(client: client, input: &bytes.inner[0_u64..n], start: 0_u64, length: n);
   } else {
-    if mode == 1_u8 {
-      reply_byte(client: client, value: 45_u8);
-    } else {
-      reply_byte(client: client, value: 43_u8);
-    }
+    reply_byte(client: client, value: 43_u8);
     let end = n;
     for (i in 0_u64..n) {
       if bytes.inner[i] == 0_u8 {
@@ -52,35 +49,11 @@ fn value_reply(vm: &Vm, value: Value, client: &Client, mode: u8) -> r: unit read
         break;
       }
     }
-    if mode == 1_u8 {
-      loop {
-        if end == 0_u64 {
-          break;
-        }
-        let last = end - 1_u64;
-        if last < bytes.inner.len {
-          let b = bytes.inner[last];
-          let cr = b == 13_u8;
-          let lf = b == 10_u8;
-          if bor(cr, lf) {
-            set end = last;
-          } else {
-            break;
-          }
-        } else {
-          break;
-        }
-      }
-    }
     for (i in 0_u64..end) {
       if i < bytes.inner.len {
         let b = bytes.inner[i];
-        let lf = b == 10_u8;
-        let cr = b == 13_u8;
-        if bor(lf, cr) {
-          set b = 32_u8;
-        }
-        reply_byte(client: client, value: b);
+        let shown = pkg::protocol::echoed(byte: b);
+        reply_byte(client: client, value: shown);
       }
     }
     reply_word(client: client, word: &replies_text_0[0_u64..2_u64]);
@@ -206,7 +179,7 @@ fn lua_to_protocol(vm: &Vm, value: Value, client: &Client, resp: u8) -> r: unit 
 }
 
 fn write_value(vm: &Vm, value: Value, height: u64, client: &Client, resp: u8, children: &Box<Slots<Pending>>) -> r: unit writes(vm), writes(client), writes(children) {
-  doc "Writes one value as luaReplyToRedisReply does, and for an array, a map or a set its header alone, adding its elements to children in the order Redis writes them, each at the height of Lua's stack Redis converts it at: an array's element one above the table, a map's key four above and its value three, a set's member three.";
+  doc "Writes one value as luaReplyToRedisReply does, and for an array, a map or a set its header alone, adding its elements to children in the order Redis writes them, each at the height of Lua's stack Redis converts it at: an array's element one above the table, a map's key four above and its value three, a set's member three. A table's double field is written as Redis 7.2.16's addReplyDouble writes it (see reply_double), and a function or a coroutine as a null, as luaReplyToRedisReply's default case writes every other type.";
   match value {
     Num(n: x) => {
       let n = ftrunc(x);
@@ -249,7 +222,7 @@ fn write_value(vm: &Vm, value: Value, height: u64, client: &Client, resp: u8, ch
       let double = field(vm: vm, table: value, name: &replies_text_3[0_u64..6_u64]);
       match double {
         Num(n: x) => {
-          pkg::scores::reply_score(client: client, score: x);
+          reply_double(client: client, x: x);
           return unit;
         }
         Nil() => {
@@ -265,6 +238,8 @@ fn write_value(vm: &Vm, value: Value, height: u64, client: &Client, resp: u8, ch
         Fun(..) => {
         }
         Builtin(..) => {
+        }
+        Thread(..) => {
         }
       }
       let big = field(vm: vm, table: value, name: &replies_text_4[0_u64..10_u64]);
@@ -373,6 +348,9 @@ fn write_value(vm: &Vm, value: Value, height: u64, client: &Client, resp: u8, ch
       reply_nil(client: client);
     }
     Builtin(..) => {
+      reply_nil(client: client);
+    }
+    Thread(..) => {
       reply_nil(client: client);
     }
   }

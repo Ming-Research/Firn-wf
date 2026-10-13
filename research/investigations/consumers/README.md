@@ -21,7 +21,7 @@ A candidate is selected when it meets all of these:
    library, unmodified.
 3. **Reproducible workload.** Its own tests exercise its Redis use against a
    server named by host and port alone, so the same workload runs unchanged
-   against Redis 7.0.15 and against firn.
+   against the reference Redis and against firn.
 4. **Adoption.** It is widely used, so its traffic stands for real
    deployments; GitHub stars are the recorded proxy.
 
@@ -61,13 +61,19 @@ read from its source as well.
 `research/experiments/consumers/` runs each consumer's Redis tests, pinned to
 a release, in CI against two servers:
 
-- **Redis 7.0.15**, with `MONITOR` started before the tests and recording
+- **Redis 7.2.16**, the reference of AGENTS.md, built from its release
+  archive by `tests/redis-suite/reference.sh` and run with an append-only
+  file (`--appendonly yes`), as firn is, with `MONITOR` started before the
+  tests and recording
   every command they send, including those a script runs; `profile.py`
   reduces the record to each command and the option words it was sent with,
   and their counts, and names the commands each recorded script's source can
   call.
-- **firn**, built at the same revision, whose test results name the
-  behavior the consumer needs and firn lacks.
+- **firn**, built at the same revision and run with an append-only file, whose
+  test results name the behavior the consumer needs and firn lacks.
+
+The first runs, below, used Redis 7.0.15 from Ubuntu's package without an
+append-only file; the rerun after them uses the setup above.
 
 The consumers' pins: Django 6.1.1, connect-redis v10.0.0,
 rate-limiter-flexible v11.2.1.
@@ -109,6 +115,19 @@ command a script ran), with how often:
   followed by `PTTL` (24). The sources of its four recorded scripts can also
   call `EXPIRE`, in a branch for a key without an expiry that the tests did
   not reach.
+
+### Rerun on Redis 7.2.16 with the append-only file (2026-10-12)
+
+CI run [38240404716](https://github.com/Ming-Research/Firn-wf/actions/runs/38240404716)
+at commit bb0bd6d ran the consumers against Redis 7.2.16 and against firn,
+both with an append-only file, on the pins above. Both servers gave the same
+results:
+
+| Consumer | Against Redis 7.2.16 | Against firn |
+|---|---|---|
+| Django 6.1.1 cache tests | 1,338 run: OK, 145 skipped, 1 expected failure | 1,338 run: OK, 145 skipped, 1 expected failure |
+| connect-redis 10.0.0 | 4 of 4 pass | 4 of 4 pass |
+| rate-limiter-flexible 11.2.1 | 100 of 100 pass | 100 of 100 pass |
 
 ## What the milestone needs from firn
 

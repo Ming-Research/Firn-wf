@@ -57,6 +57,8 @@ const text_lpos_count: Array<u8, 27> =[69_u8, 82_u8, 82_u8, 32_u8, 67_u8, 79_u8,
 
 const text_lpos_maxlen: Array<u8, 28> =[69_u8, 82_u8, 82_u8, 32_u8, 77_u8, 65_u8, 88_u8, 76_u8, 69_u8, 78_u8, 32_u8, 99_u8, 97_u8, 110_u8, 39_u8, 116_u8, 32_u8, 98_u8, 101_u8, 32_u8, 110_u8, 101_u8, 103_u8, 97_u8, 116_u8, 105_u8, 118_u8, 101_u8];
 
+const text_lpos_rank_range: Array<u8, 90> = "ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807";
+
 const word_lpos_rank: Array<u8, 4> =[82_u8, 65_u8, 78_u8, 75_u8];
 
 const word_lpos_maxlen: Array<u8, 6> =[77_u8, 65_u8, 88_u8, 76_u8, 69_u8, 78_u8];
@@ -218,12 +220,22 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  if logged {
+    atomic slot = &store^.keys[key], m = &store^.meta {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
+      let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slot = &store^.keys[key] {
+      let sequence = pkg::store::sequence_inert();
+      let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
+    }
   }
   push_finish(client: client);
   return unit;
@@ -303,12 +315,22 @@ fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    let work = pop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  if logged {
+    atomic slot = &store^.keys[key], m = &store^.meta {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let work = pop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
+      let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slot = &store^.keys[key] {
+      let sequence = pkg::store::sequence_inert();
+      let work = pop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
+    }
   }
   pop_finish(client: client);
   return unit;
@@ -607,12 +629,22 @@ fn run_lset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    let work = lset_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  if logged {
+    atomic slot = &store^.keys[key], m = &store^.meta {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let work = lset_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
+      let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slot = &store^.keys[key] {
+      let sequence = pkg::store::sequence_inert();
+      let work = lset_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
+    }
   }
   lset_finish(client: client);
   return unit;
@@ -719,12 +751,22 @@ fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    let work = lrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  if logged {
+    atomic slot = &store^.keys[key], m = &store^.meta {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let work = lrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
+      let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slot = &store^.keys[key] {
+      let sequence = pkg::store::sequence_inert();
+      let work = lrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
+    }
   }
   lrem_finish(client: client);
   return unit;
@@ -819,12 +861,22 @@ fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    let work = ltrim_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  if logged {
+    atomic slot = &store^.keys[key], m = &store^.meta {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let work = ltrim_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
+      let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slot = &store^.keys[key] {
+      let sequence = pkg::store::sequence_inert();
+      let work = ltrim_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
+    }
   }
   ltrim_finish(client: client);
   return unit;
@@ -916,12 +968,22 @@ fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    let work = linsert_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
-    let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  if logged {
+    atomic slot = &store^.keys[key], m = &store^.meta {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let work = linsert_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
+      let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slot = &store^.keys[key] {
+      let sequence = pkg::store::sequence_inert();
+      let work = linsert_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
+    }
   }
   linsert_finish(client: client);
   return unit;
@@ -947,7 +1009,7 @@ fn note_position(positions: &Box<Slots<u64>>, position: u64) -> result: unit wri
 }
 
 fn seek_items(env: &Seek, value: &Entry, input: &[u8], element: Span, positions: &Box<Slots<u64>>) -> kind: u64 reads(value), reads(input), writes(env), writes(positions) {
-  doc "Records where a live list holds the element as LPOS finds it: scanning from the head, or from the tail for a negative rank, at most maxlen elements when it is not 0, it passes the matches before the rank's and then records one, or with counted up to count of them, every one for a count of 0. The rank's magnitude and the count reached are computed as Redis's 64-bit arithmetic computes them, so that the rank -2^63 is met from the first match on and with a count never reaches it. Records done; wrong for another kind and expired for an expired entry.";
+  doc "Records where a live list holds the element as LPOS finds it: scanning from the head, or from the tail for a negative rank, at most maxlen elements when it is not 0, it passes the matches before the rank's and then records one, or with counted up to count of them, every one for a count of 0. The rank's magnitude and the count reached are computed as Redis's 64-bit arithmetic computes them; lpos_parse refuses the rank -2^63, whose magnitude 64 bits do not hold. Records done; wrong for another kind and expired for an expired entry.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -1017,7 +1079,7 @@ fn seek_items(env: &Seek, value: &Entry, input: &[u8], element: Span, positions:
 }
 
 fn run_lpos(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "LPOS key element [RANK rank] [COUNT num-matches] [MAXLEN len]: answers the position of the element's match the rank names, counted from the tail for a negative rank, or with COUNT an array of up to that many positions from that match on, every one for 0, scanning at most MAXLEN elements when it is not 0. Options come in any order, a later one replacing an earlier, each read in either case up to a zero byte and refused, as Redis refuses it, before the key is looked up: a rank that is no integer or is 0, a count or length that is no integer or negative, and an option without its value or unknown. No match, or an absent key, answers the null bulk string, or an empty array with COUNT.";
+  doc "LPOS key element [RANK rank] [COUNT num-matches] [MAXLEN len]: answers the position of the element's match the rank names, counted from the tail for a negative rank, or with COUNT an array of up to that many positions from that match on, every one for 0, scanning at most MAXLEN elements when it is not 0. Options come in any order, a later one replacing an earlier, each read in either case up to a zero byte and refused, as Redis refuses it, before the key is looked up: a rank that is no integer, is -2^63 or is 0, a count or length that is no integer or negative, and an option without its value or unknown. No match, or an absent key, answers the null bulk string, or an empty array with COUNT.";
   let journal = None<pkg::store::AccessJournal>();
   let no = False();
   let seek = Seek(rank: 1_i64, count: 0_i64, counted: no, maxlen: 0_u64, now: time^.check, state: state_absent);
@@ -1174,12 +1236,22 @@ fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let pair = rename_parse(input: input, args: args, keys: &ks);
   set client^.now = time^.check;
   let logged = store^.logging;
-  atomic slots = &store^.keys[ks], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
-    let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  if logged {
+    atomic slots = &store^.keys[ks], m = &store^.meta {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
+      let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slots = &store^.keys[ks] {
+      let sequence = pkg::store::sequence_inert();
+      let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
+    }
   }
   lmove_finish(client: client);
   return unit;
@@ -1728,7 +1800,7 @@ fn linsert_finish(client: &Client) -> result: unit writes(client) {
 }
 
 fn lpos_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, seek: &Seek) -> ready: Bool reads(input), reads(args), reads(time), writes(client), writes(seek) {
-  doc "LPOS options and errors, shared by network and held callers.";
+  doc "LPOS options and errors, shared by network and held callers, as Redis 7.2.16's lposCommand reads them: a rank must lie from -(2^63 - 1) through 2^63 - 1, as getRangeLongFromObjectOrReply checks it, before it is refused for being 0.";
   let count = args^.inner.len;
   let rank = 1_i64;
   let wanted = 0_i64;
@@ -1756,6 +1828,10 @@ fn lpos_parse(input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Tim
     if ranking {
       if invalid {
         reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+        return False();
+      }
+      if number.value == -9223372036854775808_i64 {
+        reply_error(client: client, word: &text_lpos_rank_range[0_u64..90_u64]);
         return False();
       }
       if number.value == 0_i64 {

@@ -124,6 +124,7 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
   let loaded_count = 0_u64;
   let current_size = 0_u64;
   let base_size = 0_u64;
+  let incr_size = 0_u64;
   for (pass in 0_u64..2_u64) {
     let kind = 98_u8;
     if pass == 1_u64 {
@@ -154,12 +155,16 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
         set current_size = current_size +wrap size;
         if kind == 98_u8 {
           set base_size = size;
+        } else {
+          set incr_size = size;
         }
       }
     }
   }
   atomic m = &store^.meta {
     set m^.aof_current_size = current_size;
+    set m^.aof_incr_size = incr_size;
+    set m^.aof_synced_size = incr_size;
     set m^.aof_base_size = base_size;
   }
   return True();

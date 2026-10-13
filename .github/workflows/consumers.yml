@@ -1,11 +1,16 @@
 # The deployment milestone's consumers (research/investigations/consumers/):
-# each consumer's own Redis tests run against Redis 7.0.15, recording the
-# commands they send, and against firn built at this revision. Dispatched by
-# hand; an investigation copies the results it relies on into its record.
+# each consumer's own Redis tests run against Redis 7.2.16, the reference of
+# AGENTS.md built from its release archive by tests/redis-suite/reference.sh,
+# recording the commands they send, and against firn built at this revision.
+# Dispatched by hand, and weekly so a change that breaks a consumer is seen
+# within a week; an investigation copies the results it relies on into its
+# record.
 name: consumers
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * 1'
 
 defaults:
   run:
@@ -16,6 +21,8 @@ jobs:
     name: ${{ matrix.consumer }} against ${{ matrix.server }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     strategy:
       fail-fast: false
       matrix:
@@ -27,12 +34,28 @@ jobs:
       - name: Check out Whitefoot-kit
         run: git submodule update --init whitefoot-kit deps/halo-wf
 
-      - name: Install Redis and its tools
+      # Redis 7.2.16 and its redis-cli, built from the release archive and
+      # cached under the key the gate uses; Ubuntu's package is 7.0.15. Both
+      # matrix servers need redis-cli, and the redis server needs the rest.
+      - name: Restore the Redis build
+        id: redis-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Put the reference Redis 7.2.16 on PATH
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends redis-server redis-tools
-          sudo systemctl stop redis-server || true
-          redis-server --version
+          bin=$(tests/redis-suite/reference.sh)
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/redis-server" --version
+
+      - name: Save the Redis build
+        if: ${{ steps.redis-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
       # firn's build needs the LLVM major the pinned release was built with.
       - name: Install the pinned release's LLVM

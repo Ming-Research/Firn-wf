@@ -127,29 +127,12 @@ fn start(program: &CompiledProgram) -> (ProgramChild, TcpStream, u16) {
 
 #[track_caller]
 fn start_with_minimum(program: &CompiledProgram, minimum: &[u8]) -> (ProgramChild, TcpStream, u16) {
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let mut child = program.spawn_on_route_with(true, &[("WF_WORKERS", "2"), ("WF_DRIVERS", "2")], &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", minimum]);
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        if let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
-            return (child, bounded_stream(stream), port);
-        }
-        // A program that exits while starting, such as one refusing its AOF,
-        // reports its own output instead of a refused connection.
-        if child.try_wait().expect("poll starting firn").is_some() {
-            let output = child.wait_with_output().expect("collect firn output");
-            panic!(
-                "firn exited before listening on {port} ({:?})\nstdout:\n{}\nstderr:\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        assert!(Instant::now() < deadline, "firn never listened on {port} and is still running");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let child = program.spawn_on_route_with(true, &[("WF_WORKERS", "2"), ("WF_DRIVERS", "2")], &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", minimum]).with_port(&port_lease);
+    let client = connect_when_ready(port, &child);
+    (child, client, port)
 }
 
 // Decode only complete temporary-file records, tolerating an append in flight.
@@ -210,6 +193,17 @@ fn scanned_keys(program: &CompiledProgram, client: &mut TcpStream) -> Vec<Vec<u8
     }
 }
 
+/// Redis 7.0.15's hidden rdb-key-save-delay sleeps that many microseconds
+/// after each key its rewrite writes (aof.c rewriteAppendOnlyFileRio), and
+/// Redis's own suite sets it to keep a rewrite running. 100 microseconds per
+/// key restores the pace these cases were written against, one key and one
+/// such sleep per step, leaving a scan window to write behind and ahead of
+/// the cursor.
+fn paced_rewrite_start(client: &mut TcpStream) {
+    assert_eq!(request(client, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"100"]), Reply::Line(b"+OK".to_vec()));
+    rewrite_start(client);
+}
+
 fn assert_old_manifest(program: &CompiledProgram) {
     assert_eq!(std::fs::read_to_string(program.working_directory().join("appendonlydir/appendonly.aof.manifest")).unwrap(), rewrite_manifest(1, 1));
 }
@@ -256,7 +250,7 @@ fn reconciled_scan_disk_journal_exceeds_reserve_and_restores() {
     let used: u64 = info_field(&memory, "used_memory").unwrap().parse().unwrap();
     let limit = (used * 5 / 4 + 8 * 1024 * 1024).max(40 * 1024 * 1024);
     assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", limit.to_string().as_bytes()]), Reply::Line(b"+OK".to_vec()));
-    rewrite_start(&mut client);
+    paced_rewrite_start(&mut client);
     scanned_keys(&program, &mut client);
     let reserve = rewrite_info(&mut client)["firn_aof_rewrite_reserve"].parse::<u64>().unwrap();
     assert_eq!(reserve, limit / 20);
@@ -306,7 +300,7 @@ fn reconciled_scan_atomic_effect_backlog_aborts_without_losing_write() {
     let used: u64 = info_field(&memory, "used_memory").unwrap().parse().unwrap();
     let limit = (used * 5 / 4 + 8 * 1024 * 1024).max(40 * 1024 * 1024);
     request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", limit.to_string().as_bytes()]);
-    rewrite_start(&mut client);
+    paced_rewrite_start(&mut client);
     scanned_keys(&program, &mut client);
     let reserve = rewrite_info(&mut client)["firn_aof_rewrite_reserve"].parse::<u64>().unwrap();
     request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"0"]);
@@ -340,7 +334,7 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
     let (child, mut control, port) = start(&program);
     let binary = b"binary\0\r\n\xff";
     request(&mut control, &[b"SET", binary, b"before"]);
-    rewrite_start(&mut control);
+    paced_rewrite_start(&mut control);
     let keys = scanned_keys(&program, &mut control);
     // Counters the scan has not observed yet: a write journaled as a bare
     // effect before the scan observes its key would be counted twice.
@@ -354,8 +348,9 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
     let worker_running = running.clone();
     let worker_keys = keys.clone();
     let worker_unobserved = unobserved.clone();
+    let monitor = child.monitor();
     let worker = std::thread::spawn(move || {
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &monitor);
         request(&mut client, &[b"DEL", &worker_keys[5]]);
         request(&mut client, &[b"RENAME", &worker_keys[6], b"renamed\0\xff"]);
         request(&mut client, &[b"PERSIST", &worker_keys[3]]);
@@ -444,7 +439,7 @@ fn reconciled_scan_repeated_sets_journal_one_image_then_effects() {
     let program = CompiledProgram::from_environment();
     fixture(&program);
     let (child, mut client, _) = start(&program);
-    rewrite_start(&mut client);
+    paced_rewrite_start(&mut client);
     let keys = scanned_keys(&program, &mut client);
     let before = rewrite_info(&mut client);
     assert_eq!(before["firn_aof_rewrite_abort_reason"], "");
@@ -489,7 +484,7 @@ fn reconciled_scan_reserve_abort_keeps_writes_and_old_files() {
     let used: u64 = info_field(&memory, "used_memory").unwrap().parse().unwrap();
     let limit = used * 5 / 4 + 4 * 1024 * 1024;
     assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory", &limit.to_string()]), "+OK\r\n");
-    rewrite_start(&mut client);
+    paced_rewrite_start(&mut client);
     scanned_keys(&program, &mut client);
     assert!(journal_path(&program).exists(), "admitted scan owns a temporary journal");
     let admitted = rewrite_info(&mut client);
@@ -534,7 +529,7 @@ fn reconciled_scan_flush_aborts_even_in_exec_and_script() {
         let program = CompiledProgram::from_environment();
         fixture(&program);
         let (child, mut client, _) = start(&program);
-        rewrite_start(&mut client);
+        paced_rewrite_start(&mut client);
         scanned_keys(&program, &mut client);
         assert!(journal_path(&program).exists(), "scan owns a temporary journal before flush");
         match command {
@@ -577,7 +572,7 @@ fn reconciled_scan_cleanup_failure_preserves_flush_and_serves_after_restart() {
     let initial = rewrite_info(&mut client);
     assert_eq!(initial["firn_aof_rewrite_cleanup_failed"], "0");
     assert_eq!(initial["firn_aof_rewrite_journal_leftover"], "0");
-    rewrite_start(&mut client);
+    paced_rewrite_start(&mut client);
     scanned_keys(&program, &mut client);
     request(&mut client, &[b"SET", b"cleanup:anchor", b"before"]);
     journal_drained(&mut client, 1, 0);
@@ -711,7 +706,7 @@ fn reconciled_scan_retry_clears_abort_diagnostics() {
         // record counters, without racing pressure against publication.
         std::fs::create_dir(&obstacle).unwrap();
         let (child, mut client, _) = start(&program);
-        rewrite_start(&mut client);
+        paced_rewrite_start(&mut client);
         scanned_keys(&program, &mut client);
         // Seed a high peak with one complete image, then leave only a small
         // live value for the next scan. Disk draining cannot erase that peak.
@@ -752,7 +747,7 @@ fn reconciled_scan_retry_clears_abort_diagnostics() {
             }
             assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"0"]), Reply::Line(b"+OK".to_vec()));
         } else {
-            rewrite_start(&mut client);
+            paced_rewrite_start(&mut client);
             let reset = rewrite_info(&mut client);
             assert_eq!(reset["aof_rewrite_in_progress"], "1", "reset evidence must precede completion");
             assert_eq!(reset["firn_aof_rewrite_abort_reason"], "", "accepted S0 clears the prior failure immediately");
@@ -787,7 +782,7 @@ fn reconciled_scan_crash_uses_old_authoritative_files() {
     let program = CompiledProgram::from_environment();
     fixture(&program);
     let (child, mut client, _) = start(&program);
-    rewrite_start(&mut client);
+    paced_rewrite_start(&mut client);
     scanned_keys(&program, &mut client);
     let committed = resp(&["INCR", "crash-counter"]);
     client.write_all(&committed).unwrap();
@@ -872,7 +867,7 @@ fn reconciled_scan_pressure_after_s1_aborts_before_installation() {
     let program = CompiledProgram::from_environment();
     fixture(&program);
     let (child, mut client, _) = start(&program);
-    rewrite_start(&mut client);
+    paced_rewrite_start(&mut client);
     scanned_keys(&program, &mut client);
     let payload = vec![b'p'; 32 * 1024];
     for _ in 0..200 {
@@ -973,7 +968,7 @@ fn reconciled_scan_rewrites_large_keys_scanned_and_written() {
     }
     let text = vec![b't'; 200 * 1024];
     request(&mut client, &[b"SET", b"large:text", &text]);
-    rewrite_start(&mut client);
+    paced_rewrite_start(&mut client);
     scanned_keys(&program, &mut client);
     request(&mut client, &[b"SADD", b"large:set", b"added"]);
     request(&mut client, &[b"APPEND", b"large:text", b"!"]);
@@ -985,8 +980,10 @@ fn reconciled_scan_rewrites_large_keys_scanned_and_written() {
     rewrite_stop(&mut restored, child);
 }
 
+/// A key longer than R can never enter a scan step within R: the scan must
+/// abort with `reserve` rather than wait, and neither the independently
+/// sampled heap growth nor the reserve ledger may pass R on the way.
 #[test]
-#[ignore = "pending firn-gap-scan-bound (status board): pinned map_scan copies a step's keys before the caller can charge them"]
 fn reconciled_scan_exact_reserve_includes_one_long_key_step() {
     let program = CompiledProgram::from_environment();
     let key = vec![b'k'; 17 * 1024 * 1024];
@@ -997,9 +994,167 @@ fn reconciled_scan_exact_reserve_includes_one_long_key_step() {
     rewrite_start(&mut client);
     let info = rewrite_wait(&mut client);
     assert_eq!(info["aof_last_bgrewrite_status"], "err");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "reserve", "a key that can never fit R must abort as reserve exhaustion: {info:?}");
     let peak: u64 = info["firn_aof_rewrite_scan_peak"].parse().unwrap();
     let reserve: u64 = info["firn_aof_rewrite_reserve"].parse().unwrap();
+    assert_eq!(reserve, 16 * 1024 * 1024, "unlimited maxmemory must retain its explicit 16-MiB rewrite allowance");
     assert!(peak <= reserve, "independently observed allocator growth for one scan step exceeds the entire reserve: {peak} > {reserve}");
+    let ledger_peak: u64 = info["firn_aof_rewrite_peak"].parse().unwrap();
+    let ledger_used: u64 = info["firn_aof_rewrite_used"].parse().unwrap();
+    assert!(ledger_used <= ledger_peak && ledger_peak <= reserve, "the reserve ledger must never record a charge beyond R: used {ledger_used}, peak {ledger_peak}, reserve {reserve}");
+    assert_old_manifest(&program);
     assert_eq!(bulk(request(&mut client, &[b"GET", &key])), b"v", "reserve refusal must not reject or remove the live key");
     rewrite_stop(&mut client, child);
+}
+
+/// A scan step crosses many keys and yields only once per time slice, so a
+/// keyspace far larger than one key per paced step rewrites while a client
+/// keeps writing. Count hint 1 with a sleep per step needs one step per key
+/// and, at the driver's millisecond timer, longer than rewrite_wait allows.
+#[test]
+fn reconciled_scan_time_slices_many_keys_per_step_under_writes() {
+    let program = CompiledProgram::from_environment();
+    let keys = 100_000_usize;
+    multipart_files(&program, &[("appendonly.aof.1.base.aof", &[]), ("appendonly.aof.1.incr.aof", &[])], &rewrite_manifest(1, 1));
+    let mut bytes = Vec::new();
+    for index in 0..keys {
+        let key = format!("slice:{index}");
+        let value = index.to_string();
+        bytes.extend(wire(&[b"SET", key.as_bytes(), value.as_bytes()]));
+    }
+    std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
+    let (child, mut control, port) = start(&program);
+    let running = Arc::new(AtomicBool::new(true));
+    let worker_running = running.clone();
+    let monitor = child.monitor();
+    let worker = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port, &monitor);
+        let mut count = 0_u64;
+        while worker_running.load(Ordering::Acquire) || count < 100 {
+            count += 1;
+            assert_eq!(request(&mut client, &[b"INCR", b"slice:counter"]), Reply::Line(format!(":{count}").into_bytes()));
+            let key = format!("slice:{}", (count as usize * 7919) % keys);
+            let value = format!("written:{count}");
+            assert_eq!(request(&mut client, &[b"SET", key.as_bytes(), value.as_bytes()]), Reply::Line(b"+OK".to_vec()));
+        }
+        count
+    });
+    let started = Instant::now();
+    rewrite_start(&mut control);
+    let info = rewrite_wait(&mut control);
+    let elapsed = started.elapsed();
+    running.store(false, Ordering::Release);
+    let count = worker.join().unwrap();
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok", "the rewrite must complete under writes: {info:?}");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "");
+    let steps: u64 = info["firn_aof_rewrite_scan_steps"].parse().unwrap();
+    assert!(steps * 8 <= keys as u64, "each step must cross many keys, not one: {steps} steps for {keys} keys");
+    assert!(elapsed < Duration::from_secs(30), "a time-sliced scan of {keys} keys took {elapsed:?}");
+    let reserve: u64 = info["firn_aof_rewrite_reserve"].parse().unwrap();
+    let ledger_peak: u64 = info["firn_aof_rewrite_peak"].parse().unwrap();
+    assert!(ledger_peak <= reserve, "the reserve ledger must stay within R: {ledger_peak} > {reserve}");
+    let names: Vec<Vec<u8>> = (0..keys).map(|index| format!("slice:{index}").into_bytes()).chain([b"slice:counter".to_vec()]).collect();
+    let values = |client: &mut TcpStream| -> Vec<Reply> {
+        names.chunks(1000).flat_map(|chunk| {
+            let mut args: Vec<&[u8]> = vec![b"MGET"];
+            args.extend(chunk.iter().map(|name| name.as_slice()));
+            array(request(client, &args))
+        }).collect()
+    };
+    let live = values(&mut control);
+    assert_eq!(live.last(), Some(&Reply::Bulk(Some(count.to_string().into_bytes()))));
+    assert_eq!(request(&mut control, &[b"DBSIZE"]), Reply::Line(format!(":{}", keys + 1).into_bytes()));
+    rewrite_stop(&mut control, child);
+    let (child, mut restored, _) = start(&program);
+    assert_eq!(request(&mut restored, &[b"DBSIZE"]), Reply::Line(format!(":{}", keys + 1).into_bytes()));
+    assert!(values(&mut restored) == live, "the installed base and increment must restore every live value");
+    rewrite_stop(&mut restored, child);
+}
+
+/// A first step of up to 64 positions holding 1-MiB values cannot fit the
+/// default 16-MiB R, so it must be discarded unwritten, its cursor kept, and
+/// retried one position at a time: each key's image reaches the base once.
+/// Successful steps cover distinct positions, at most one per key, and the
+/// pinned runtime returns the end cursor with the last key, so more steps
+/// than keys shows a discarded step. A runtime that ends with a separate
+/// empty step would need one step more; the specification allows either.
+#[test]
+fn reconciled_scan_discards_a_step_that_does_not_fit_and_retries_narrower() {
+    let program = CompiledProgram::from_environment();
+    let keys = 100_usize;
+    let names: Vec<Vec<u8>> = (0..keys).map(|index| format!("large:{index}").into_bytes()).collect();
+    let value = |index: usize| -> Vec<u8> {
+        let mut bytes = vec![b'v'; 1024 * 1024];
+        bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+        bytes
+    };
+    multipart_files(&program, &[("appendonly.aof.1.base.aof", &[]), ("appendonly.aof.1.incr.aof", &[])], &rewrite_manifest(1, 1));
+    let mut bytes = Vec::new();
+    for (index, name) in names.iter().enumerate() {
+        bytes.extend(wire(&[b"SET", name, &value(index)]));
+    }
+    std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
+    let (child, mut client, _) = start(&program);
+    rewrite_start(&mut client);
+    let info = rewrite_wait(&mut client);
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok", "a step too large for R must be narrowed, not abort: {info:?}");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "");
+    let reserve: u64 = info["firn_aof_rewrite_reserve"].parse().unwrap();
+    assert_eq!(reserve, 16 * 1024 * 1024);
+    let ledger_peak: u64 = info["firn_aof_rewrite_peak"].parse().unwrap();
+    assert!(ledger_peak <= reserve, "the reserve ledger must stay within R: {ledger_peak} > {reserve}");
+    let steps: u64 = info["firn_aof_rewrite_scan_steps"].parse().unwrap();
+    assert!(steps > keys as u64, "a discarded step must precede the narrowed ones: {steps} steps for {keys} keys");
+    let base = std::fs::read(program.working_directory().join("appendonlydir/appendonly.aof.2.base.aof")).unwrap();
+    let records = prefix_records(&base);
+    for (index, name) in names.iter().enumerate() {
+        let images: Vec<_> = records.iter().filter(|words| words.get(1) == Some(name)).collect();
+        assert_eq!(images.len(), 1, "{} must reach the base exactly once", String::from_utf8_lossy(name));
+        assert!(images[0].len() == 3 && images[0][0] == b"SET" && images[0][2] == value(index), "{} must keep its whole value", String::from_utf8_lossy(name));
+    }
+    let expected = snapshot(&mut client);
+    assert_eq!(expected.len(), keys);
+    rewrite_stop(&mut client, child);
+    let (child, mut restored, _) = start(&program);
+    assert!(snapshot(&mut restored) == expected, "the narrowed rewrite must restore every value");
+    rewrite_stop(&mut restored, child);
+}
+
+/// Redis 7.0.15's unit/type/set sets rdb-key-save-delay to 2147483647, about
+/// 36 minutes per key, and Redis kills its rewrite child on shutdown. firn's
+/// scan must leave such a sleep when SHUTDOWN cancels the rewrite or CONFIG
+/// SET changes the delay.
+#[test]
+fn reconciled_scan_key_delay_yields_to_shutdown_and_config() {
+    for stopping in [true, false] {
+        let program = CompiledProgram::from_environment();
+        fixture_keys(&program, 10);
+        let (child, mut client, _) = start(&program);
+        assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"2147483647"]), Reply::Line(b"+OK".to_vec()));
+        rewrite_start(&mut client);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let info = rewrite_info(&mut client);
+            assert_eq!(info["aof_rewrite_in_progress"], "1", "the delayed scan must still run: {info:?}");
+            if info["firn_aof_rewrite_scan_steps"] != "0" { break; }
+            assert!(Instant::now() < deadline, "the scan never took its first step");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if stopping {
+            // rewrite_stop allows the orderly stop five seconds.
+            rewrite_stop(&mut client, child);
+            assert_old_manifest(&program);
+            assert_journal_removed(&program);
+            let (child, mut restored, _) = start(&program);
+            assert_eq!(request(&mut restored, &[b"DBSIZE"]), Reply::Line(b":10".to_vec()));
+            rewrite_stop(&mut restored, child);
+        } else {
+            let released = Instant::now();
+            assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"0"]), Reply::Line(b"+OK".to_vec()));
+            let info = rewrite_wait(&mut client);
+            assert_eq!(info["aof_last_bgrewrite_status"], "ok");
+            assert!(released.elapsed() < Duration::from_secs(5), "CONFIG SET 0 must end the delay: {:?}", released.elapsed());
+            rewrite_stop(&mut client, child);
+        }
+    }
 }

@@ -2,6 +2,9 @@
 //! Redis INFO (this field is firn-specific). Command replies follow Redis
 //! 7.0.15. Each positive delta requires the shared mutation publication path;
 //! reads and refused/no-effect commands must leave that path untouched.
+//! firn reports the sequence only while it keeps an append-only file: without
+//! one, writes that queue no expiry hold no Meta and take no sequence
+//! (design/firn/aof-rewrite/sequence.md), so every case runs with AOF on.
 
 use super::*;
 
@@ -9,17 +12,16 @@ fn sequence(client: &mut TcpStream) -> u64 {
     client.write_all(&resp(&["INFO", "persistence"])).unwrap();
     let info = bulk_reply(client, "rewrite sequence");
     info_field(&info, "firn_aof_rewrite_commit_seq")
-        .expect("firn reports its actual commit sequence even with AOF off")
+        .expect("firn reports its actual commit sequence while AOF is on")
         .parse().expect("u64 sequence")
 }
 
-fn start(aof: bool) -> (CompiledProgram, ProgramChild, TcpStream) {
+fn start() -> (CompiledProgram, ProgramChild, TcpStream) {
     let program = CompiledProgram::from_environment();
-    let port = free_port().to_string();
-    let mut arguments = vec![port.as_bytes(), b"1".as_slice()];
-    if aof { arguments.push(b"sequence.aof"); }
-    let child = program.spawn_on_route(true, &arguments);
-    let client = connect_when_ready(port.parse().unwrap());
+    let port_lease = support::lease_port();
+    let port = port_lease.port().to_string();
+    let child = program.spawn_on_route(true, &[port.as_bytes(), b"1", b"sequence.aof"]).with_port(&port_lease);
+    let client = connect_when_ready(port.parse().unwrap(), &child);
     (program, child, client)
 }
 
@@ -30,77 +32,75 @@ fn expect(client: &mut TcpStream, args: &[&str], reply: &str, delta: u64) {
 }
 
 /// Exercise new entries and in-place updates separately: a constructor-only
-/// stamp misses the second write. Repeat with AOF off to reject an AOF hook.
+/// stamp misses the second write.
 #[test]
 fn rewrite_sequence_all_value_types_and_no_effects() {
-    for aof in [false, true] {
-        let (_program, child, mut client) = start(aof);
-        assert_eq!(sequence(&mut client), 0);
-        let cases: &[(&[&str], &str, u64)] = &[
-            (&["SET", "text", "1"], "+OK\r\n", 1),
-            (&["INCR", "text"], ":2\r\n", 1),
-            (&["APPEND", "text", "3"], ":2\r\n", 1),
-            (&["SETRANGE", "text", "0", "4"], ":2\r\n", 1),
-            (&["GET", "text"], "$2\r\n43\r\n", 0),
-            (&["SET", "text", "0", "NX"], "$-1\r\n", 0),
-            (&["SET", "absent", "0", "XX"], "$-1\r\n", 0),
-            (&["SETRANGE", "text", "0", ""], ":2\r\n", 0),
-            (&["INCRBY", "text", "bad"], "-ERR value is not an integer or out of range\r\n", 0),
-            (&["MSET", "a", "1", "b", "2", "a", "3"], "+OK\r\n", 1),
-            (&["MSETNX", "a", "0", "c", "0"], ":0\r\n", 0),
-            (&["MSETNX", "c", "1", "d", "2"], ":1\r\n", 1),
-            (&["LPUSH", "list", "a", "b", "c"], ":3\r\n", 1),
-            (&["RPUSH", "list", "d"], ":4\r\n", 1),
-            (&["LSET", "list", "0", "e"], "+OK\r\n", 1),
-            (&["LREM", "list", "0", "missing"], ":0\r\n", 0),
-            (&["LTRIM", "list", "0", "-1"], "+OK\r\n", 0),
-            (&["LINSERT", "list", "BEFORE", "missing", "z"], ":-1\r\n", 0),
-            (&["LINSERT", "list", "BEFORE", "e", "z"], ":5\r\n", 1),
-            (&["LREM", "list", "0", "z"], ":1\r\n", 1),
-            (&["LPOP", "list", "0"], "*0\r\n", 0),
-            (&["LPOP", "list"], "$1\r\ne\r\n", 1),
-            (&["LTRIM", "list", "0", "1"], "+OK\r\n", 1),
-            (&["LPUSHX", "missing", "v"], ":0\r\n", 0),
-            (&["SADD", "set", "a", "b"], ":2\r\n", 1),
-            (&["SADD", "set", "c"], ":1\r\n", 1),
-            (&["SADD", "set", "a"], ":0\r\n", 0),
-            (&["SREM", "set", "missing"], ":0\r\n", 0),
-            (&["SREM", "set", "c"], ":1\r\n", 1),
-            (&["SPOP", "set", "0"], "*0\r\n", 0),
-            (&["HSET", "hash", "a", "1", "b", "2"], ":2\r\n", 1),
-            (&["HSET", "hash", "a", "3"], ":0\r\n", 1),
-            (&["HSETNX", "hash", "a", "9"], ":0\r\n", 0),
-            (&["HSETNX", "hash", "c", "9"], ":1\r\n", 1),
-            (&["HINCRBY", "hash", "a", "1"], ":4\r\n", 1),
-            (&["HINCRBYFLOAT", "hash", "a", "0.5"], "$3\r\n4.5\r\n", 1),
-            (&["HDEL", "hash", "missing"], ":0\r\n", 0),
-            (&["HDEL", "hash", "b"], ":1\r\n", 1),
-            (&["ZADD", "sorted", "1", "a", "2", "b"], ":2\r\n", 1),
-            (&["ZADD", "sorted", "3", "a"], ":0\r\n", 1),
-            (&["ZADD", "sorted", "3", "a"], ":0\r\n", 0),
-            (&["ZADD", "sorted", "NX", "4", "a"], ":0\r\n", 0),
-            (&["ZADD", "sorted", "XX", "4", "missing"], ":0\r\n", 0),
-            (&["ZINCRBY", "sorted", "1", "a"], "$1\r\n4\r\n", 1),
-            (&["ZREM", "sorted", "missing"], ":0\r\n", 0),
-            (&["ZREMRANGEBYSCORE", "sorted", "20", "30"], ":0\r\n", 0),
-            (&["ZREMRANGEBYRANK", "sorted", "0", "0"], ":1\r\n", 1),
-            (&["ZPOPMAX", "sorted", "0"], "*0\r\n", 0),
-            (&["ZPOPMIN", "sorted"], "*2\r\n$1\r\na\r\n$1\r\n4\r\n", 1),
-            (&["DEL", "a", "b", "a"], ":2\r\n", 1),
-            (&["UNLINK", "c", "d"], ":2\r\n", 1),
-            (&["DEL", "missing"], ":0\r\n", 0),
-            (&["FLUSHDB"], "+OK\r\n", 1),
-            (&["FLUSHALL"], "+OK\r\n", 1),
-        ];
-        for (args, reply, delta) in cases { expect(&mut client, args, reply, *delta); }
-        drop(client);
-        assert_eq!(finished(child).0, 0);
-    }
+    let (_program, child, mut client) = start();
+    assert_eq!(sequence(&mut client), 0);
+    let cases: &[(&[&str], &str, u64)] = &[
+        (&["SET", "text", "1"], "+OK\r\n", 1),
+        (&["INCR", "text"], ":2\r\n", 1),
+        (&["APPEND", "text", "3"], ":2\r\n", 1),
+        (&["SETRANGE", "text", "0", "4"], ":2\r\n", 1),
+        (&["GET", "text"], "$2\r\n43\r\n", 0),
+        (&["SET", "text", "0", "NX"], "$-1\r\n", 0),
+        (&["SET", "absent", "0", "XX"], "$-1\r\n", 0),
+        (&["SETRANGE", "text", "0", ""], ":2\r\n", 0),
+        (&["INCRBY", "text", "bad"], "-ERR value is not an integer or out of range\r\n", 0),
+        (&["MSET", "a", "1", "b", "2", "a", "3"], "+OK\r\n", 1),
+        (&["MSETNX", "a", "0", "c", "0"], ":0\r\n", 0),
+        (&["MSETNX", "c", "1", "d", "2"], ":1\r\n", 1),
+        (&["LPUSH", "list", "a", "b", "c"], ":3\r\n", 1),
+        (&["RPUSH", "list", "d"], ":4\r\n", 1),
+        (&["LSET", "list", "0", "e"], "+OK\r\n", 1),
+        (&["LREM", "list", "0", "missing"], ":0\r\n", 0),
+        (&["LTRIM", "list", "0", "-1"], "+OK\r\n", 0),
+        (&["LINSERT", "list", "BEFORE", "missing", "z"], ":-1\r\n", 0),
+        (&["LINSERT", "list", "BEFORE", "e", "z"], ":5\r\n", 1),
+        (&["LREM", "list", "0", "z"], ":1\r\n", 1),
+        (&["LPOP", "list", "0"], "*0\r\n", 0),
+        (&["LPOP", "list"], "$1\r\ne\r\n", 1),
+        (&["LTRIM", "list", "0", "1"], "+OK\r\n", 1),
+        (&["LPUSHX", "missing", "v"], ":0\r\n", 0),
+        (&["SADD", "set", "a", "b"], ":2\r\n", 1),
+        (&["SADD", "set", "c"], ":1\r\n", 1),
+        (&["SADD", "set", "a"], ":0\r\n", 0),
+        (&["SREM", "set", "missing"], ":0\r\n", 0),
+        (&["SREM", "set", "c"], ":1\r\n", 1),
+        (&["SPOP", "set", "0"], "*0\r\n", 0),
+        (&["HSET", "hash", "a", "1", "b", "2"], ":2\r\n", 1),
+        (&["HSET", "hash", "a", "3"], ":0\r\n", 1),
+        (&["HSETNX", "hash", "a", "9"], ":0\r\n", 0),
+        (&["HSETNX", "hash", "c", "9"], ":1\r\n", 1),
+        (&["HINCRBY", "hash", "a", "1"], ":4\r\n", 1),
+        (&["HINCRBYFLOAT", "hash", "a", "0.5"], "$3\r\n4.5\r\n", 1),
+        (&["HDEL", "hash", "missing"], ":0\r\n", 0),
+        (&["HDEL", "hash", "b"], ":1\r\n", 1),
+        (&["ZADD", "sorted", "1", "a", "2", "b"], ":2\r\n", 1),
+        (&["ZADD", "sorted", "3", "a"], ":0\r\n", 1),
+        (&["ZADD", "sorted", "3", "a"], ":0\r\n", 0),
+        (&["ZADD", "sorted", "NX", "4", "a"], ":0\r\n", 0),
+        (&["ZADD", "sorted", "XX", "4", "missing"], ":0\r\n", 0),
+        (&["ZINCRBY", "sorted", "1", "a"], "$1\r\n4\r\n", 1),
+        (&["ZREM", "sorted", "missing"], ":0\r\n", 0),
+        (&["ZREMRANGEBYSCORE", "sorted", "20", "30"], ":0\r\n", 0),
+        (&["ZREMRANGEBYRANK", "sorted", "0", "0"], ":1\r\n", 1),
+        (&["ZPOPMAX", "sorted", "0"], "*0\r\n", 0),
+        (&["ZPOPMIN", "sorted"], "*2\r\n$1\r\na\r\n$1\r\n4\r\n", 1),
+        (&["DEL", "a", "b", "a"], ":2\r\n", 1),
+        (&["UNLINK", "c", "d"], ":2\r\n", 1),
+        (&["DEL", "missing"], ":0\r\n", 0),
+        (&["FLUSHDB"], "+OK\r\n", 1),
+        (&["FLUSHALL"], "+OK\r\n", 1),
+    ];
+    for (args, reply, delta) in cases { expect(&mut client, args, reply, *delta); }
+    drop(client);
+    assert_eq!(finished(child).0, 0);
 }
 
 #[test]
 fn rewrite_sequence_transfers_stores_and_expiry_metadata() {
-    let (_program, child, mut client) = start(false);
+    let (_program, child, mut client) = start();
     let cases: &[(&[&str], &str, u64)] = &[
         (&["MSET", "a", "v", "b", "w"], "+OK\r\n", 1),
         (&["RENAME", "a", "a"], "+OK\r\n", 0),
@@ -144,45 +144,43 @@ fn rewrite_sequence_transfers_stores_and_expiry_metadata() {
 /// a failed command between writes, and FLUSH followed by re-creation.
 #[test]
 fn rewrite_sequence_exec_and_script_are_single_units() {
-    for aof in [false, true] {
-        let (_program, child, mut client) = start(aof);
-        assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
-        let commands: &[&[&str]] = &[
-            &["MSET", "n", "1", "other", "2"], &["INCR", "n"],
-            &["HSET", "h", "f", "1"], &["HINCRBY", "h", "f", "1"],
-            &["LPUSH", "l", "a", "b"], &["LSET", "l", "0", "c"],
-            &["SADD", "s", "a"], &["SADD", "s", "b"],
-            &["ZADD", "z", "1", "a"], &["ZINCRBY", "z", "1", "a"],
-            &["GET", "l"], &["RENAME", "other", "renamed"],
-        ];
-        // INFO cannot execute inside MULTI; read the sequence only after EXEC.
-        for args in commands { assert_eq!(memory_request(&mut client, args), "+QUEUED\r\n"); }
-        let reply = memory_request(&mut client, &["EXEC"]);
-        assert!(reply.starts_with("*12\r\n"), "{reply:?}");
-        assert!(reply.contains("-WRONGTYPE "), "the error must be reached: {reply:?}");
-        assert_eq!(sequence(&mut client), 1);
-        expect(&mut client, &["GET", "n"], "$1\r\n2\r\n", 0);
-        let script = "redis.call('FLUSHALL'); redis.call('MSET','n','1','other','2'); \
-            redis.call('INCR','n'); redis.call('HSET','h','f','1'); redis.call('HINCRBY','h','f',1); \
-            redis.call('LPUSH','l','a','b'); redis.call('LSET','l',0,'c'); \
-            redis.call('SADD','s','a'); redis.call('SADD','s','b'); \
-            redis.call('ZADD','z',1,'a'); redis.call('ZINCRBY','z',1,'a'); \
-            redis.pcall('GET','l'); redis.call('RENAME','other','renamed'); return redis.call('GET','n')";
-        expect(&mut client, &["EVAL", script, "0"], "$1\r\n2\r\n", 1);
-        let before = sequence(&mut client);
-        let error = memory_request(&mut client, &["EVAL", "redis.call('INCR','n'); error('after write')", "0"]);
-        assert!(error.starts_with("-ERR ") && error.contains("after write"), "{error:?}");
-        assert_eq!(sequence(&mut client), before + 1);
-        expect(&mut client, &["GET", "n"], "$1\r\n3\r\n", 0);
-        assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
-        for args in [&["GET", "n"][..], &["SADD", "s", "a"], &["DEL", "missing"], &["GET", "l"]] {
-            assert_eq!(memory_request(&mut client, args), "+QUEUED\r\n");
-        }
-        let unchanged = sequence_after_exec(&mut client);
-        assert_eq!(unchanged, before + 1, "read/no-effect/error EXEC takes no token");
-        drop(client);
-        assert_eq!(finished(child).0, 0);
+    let (_program, child, mut client) = start();
+    assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+    let commands: &[&[&str]] = &[
+        &["MSET", "n", "1", "other", "2"], &["INCR", "n"],
+        &["HSET", "h", "f", "1"], &["HINCRBY", "h", "f", "1"],
+        &["LPUSH", "l", "a", "b"], &["LSET", "l", "0", "c"],
+        &["SADD", "s", "a"], &["SADD", "s", "b"],
+        &["ZADD", "z", "1", "a"], &["ZINCRBY", "z", "1", "a"],
+        &["GET", "l"], &["RENAME", "other", "renamed"],
+    ];
+    // INFO cannot execute inside MULTI; read the sequence only after EXEC.
+    for args in commands { assert_eq!(memory_request(&mut client, args), "+QUEUED\r\n"); }
+    let reply = memory_request(&mut client, &["EXEC"]);
+    assert!(reply.starts_with("*12\r\n"), "{reply:?}");
+    assert!(reply.contains("-WRONGTYPE "), "the error must be reached: {reply:?}");
+    assert_eq!(sequence(&mut client), 1);
+    expect(&mut client, &["GET", "n"], "$1\r\n2\r\n", 0);
+    let script = "redis.call('FLUSHALL'); redis.call('MSET','n','1','other','2'); \
+        redis.call('INCR','n'); redis.call('HSET','h','f','1'); redis.call('HINCRBY','h','f',1); \
+        redis.call('LPUSH','l','a','b'); redis.call('LSET','l',0,'c'); \
+        redis.call('SADD','s','a'); redis.call('SADD','s','b'); \
+        redis.call('ZADD','z',1,'a'); redis.call('ZINCRBY','z',1,'a'); \
+        redis.pcall('GET','l'); redis.call('RENAME','other','renamed'); return redis.call('GET','n')";
+    expect(&mut client, &["EVAL", script, "0"], "$1\r\n2\r\n", 1);
+    let before = sequence(&mut client);
+    let error = memory_request(&mut client, &["EVAL", "redis.call('INCR','n'); error('after write')", "0"]);
+    assert!(error.starts_with("-ERR ") && error.contains("after write"), "{error:?}");
+    assert_eq!(sequence(&mut client), before + 1);
+    expect(&mut client, &["GET", "n"], "$1\r\n3\r\n", 0);
+    assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+    for args in [&["GET", "n"][..], &["SADD", "s", "a"], &["DEL", "missing"], &["GET", "l"]] {
+        assert_eq!(memory_request(&mut client, args), "+QUEUED\r\n");
     }
+    let unchanged = sequence_after_exec(&mut client);
+    assert_eq!(unchanged, before + 1, "read/no-effect/error EXEC takes no token");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
 }
 
 fn sequence_after_exec(client: &mut TcpStream) -> u64 {
@@ -193,7 +191,7 @@ fn sequence_after_exec(client: &mut TcpStream) -> u64 {
 
 #[test]
 fn rewrite_sequence_reads_access_refreshes_and_read_only_retries() {
-    let (_program, child, mut client) = start(false);
+    let (_program, child, mut client) = start();
     expect(&mut client, &["SET", "n", "1"], "+OK\r\n", 1);
     for policy in ["allkeys-lru", "allkeys-lfu"] {
         expect(&mut client, &["CONFIG", "SET", "maxmemory-policy", policy, "lfu-log-factor", "0", "lfu-decay-time", "0"], "+OK\r\n", 0);
@@ -222,7 +220,7 @@ fn rewrite_sequence_reads_access_refreshes_and_read_only_retries() {
 /// expiry worker can remove this key during the polling loop.
 #[test]
 fn rewrite_sequence_active_expiry_and_stale_due_records() {
-    let (_program, child, mut client) = start(false);
+    let (_program, child, mut client) = start();
     expect(&mut client, &["SET", "expiring", "v", "PX", "1000"], "+OK\r\n", 1);
     expect(&mut client, &["PEXPIRE", "expiring", "1000"], ":1\r\n", 1);
     let before = sequence(&mut client);
@@ -250,9 +248,10 @@ fn rewrite_sequence_held_lazy_expiry() {
         for _ in 0..5 {
             let program = CompiledProgram::from_environment();
             std::fs::write(program.working_directory().join("expired.aof"), resp(&["SET", "expired", "v", "PXAT", "1"])).unwrap();
-            let port = free_port().to_string();
-            let child = program.spawn_on_route(true, &[port.as_bytes(), b"1", b"expired.aof"]);
-            let mut client = connect_when_ready(port.parse().unwrap());
+            let port_lease = support::lease_port();
+            let port = port_lease.port().to_string();
+            let child = program.spawn_on_route(true, &[port.as_bytes(), b"1", b"expired.aof"]).with_port(&port_lease);
+            let mut client = connect_when_ready(port.parse().unwrap(), &child);
             let reply = if script {
                 memory_request(&mut client, &["EVAL", "local n=redis.call('DBSIZE'); redis.call('GET','expired'); return n", "0"])
             } else {
@@ -277,7 +276,7 @@ fn rewrite_sequence_held_lazy_expiry() {
 
 #[test]
 fn rewrite_sequence_eviction_counts_actual_removals() {
-    let (_program, child, mut client) = start(false);
+    let (_program, child, mut client) = start();
     expect(&mut client, &["MSET", "a", "1", "b", "2", "c", "3"], "+OK\r\n", 1);
     let before = sequence(&mut client);
     assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", "allkeys-random", "maxmemory-eviction-tenacity", "100", "maxmemory", "1"]), "+OK\r\n");
@@ -300,9 +299,10 @@ fn rewrite_sequence_replay_starts_at_zero() {
     ];
     let file: Vec<u8> = commands.iter().flat_map(|args| resp(args)).collect();
     std::fs::write(program.working_directory().join("loaded.aof"), file).unwrap();
-    let port = free_port().to_string();
-    let child = program.spawn_on_route(true, &[port.as_bytes(), b"1", b"loaded.aof"]);
-    let mut client = connect_when_ready(port.parse().unwrap());
+    let port_lease = support::lease_port();
+    let port = port_lease.port().to_string();
+    let child = program.spawn_on_route(true, &[port.as_bytes(), b"1", b"loaded.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port.parse().unwrap(), &child);
     assert_eq!(sequence(&mut client), 0, "replay has no surviving capture");
     expect(&mut client, &["DBSIZE"], ":6\r\n", 0);
     expect(&mut client, &["GET", "copied"], "$1\r\n2\r\n", 0);

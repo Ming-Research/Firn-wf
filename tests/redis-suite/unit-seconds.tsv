@@ -1,0 +1,13 @@
+# unit	seconds; the unit's time in check run 38237876972 with every attempt summed, for the units that took 5 s or more; ratchet.py assign splits the suite among shards by these, and counts any other unit as 0.3 s, the mean of the others in that run
+unit/type/list	181
+unit/type/list-3	42
+unit/dump	15
+unit/type/list-2	12
+unit/expire	8
+unit/type/string	7
+unit/introspection-2	6
+unit/sort	6
+unit/type/set	6
+unit/type/zset	6
+unit/lazyfree	5
+unit/type/stream	5

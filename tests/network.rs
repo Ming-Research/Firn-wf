@@ -4,27 +4,17 @@
 
 mod support;
 mod memory_limit;
+mod aof_write_errors;
+mod aof_sync_fault;
 mod rewrite_sequence;
 mod rewrite_scan;
+mod write_meta;
 
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 use support::{CompiledProgram, ProgramChild, fixture_directory};
-
-/// One port the host is not using, released before the program binds it.
-///
-/// A listening socket that never accepted leaves no connection in `TIME_WAIT`,
-/// so the port is free the moment this drops, and the program's own `bind`
-/// would take it even on a host where the runtime set no `SO_REUSEADDR`.
-fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve a loopback port");
-    listener
-        .local_addr()
-        .expect("the reserved port's address")
-        .port()
-}
 
 /// Connects to a program that is still starting.
 ///
@@ -32,22 +22,30 @@ fn free_port() -> u16 {
 /// the first attempts are refused. This retries for a bounded wall-clock span
 /// and fails the case if the program never listened; nothing about the
 /// program's own acceptance depends on it.
-fn connect_when_ready(port: u16) -> TcpStream {
-    connect_to_when_ready(SocketAddr::from(([127, 0, 0, 1], port)))
+fn connect_when_ready(port: u16, child: &support::ProgramMonitor) -> TcpStream {
+    connect_to_when_ready(SocketAddr::from(([127, 0, 0, 1], port)), child)
 }
 
 /// Connects to a program that is still starting, at the address it listens on.
-fn connect_to_when_ready(address: SocketAddr) -> TcpStream {
+fn connect_to_when_ready(address: SocketAddr, child: &support::ProgramMonitor) -> TcpStream {
     let port = address.port();
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
+        child.assert_running(port);
         match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
-            Ok(stream) => return bounded_stream(stream),
+            Ok(stream) => {
+                child.assert_running(port);
+                return bounded_stream(stream);
+            }
             Err(error) if Instant::now() < deadline => {
                 let _ = error;
+                child.assert_running(port);
                 std::thread::sleep(Duration::from_millis(10));
             }
-            Err(error) => panic!("the program never listened on {port}: {error}"),
+            Err(error) => {
+                child.assert_running(port);
+                panic!("the program never listened on {port}: {error}");
+            }
         }
     }
 }
@@ -230,15 +228,16 @@ fn firn_serves_every_client_over_one_keyspace() {
     const CLIENTS: usize = 8;
     const INCREMENTS: usize = 250;
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
     let count = (CLIENTS + 1).to_string();
     let child = program.spawn_on_route_with(
         true,
         &[("WF_DRIVERS", "4")],
         &[text.as_bytes(), count.as_bytes()],
-    );
-    let mut first = connect_when_ready(port);
+    ).with_port(&port_lease);
+    let mut first = connect_when_ready(port, &child);
     first
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the first client's waits");
@@ -278,7 +277,7 @@ fn firn_serves_every_client_over_one_keyspace() {
     );
     let clients = (0..CLIENTS)
         .map(|client| {
-            let mut stream = connect_when_ready(port);
+            let mut stream = connect_when_ready(port, &child);
             std::thread::spawn(move || {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(20)))
@@ -352,10 +351,11 @@ fn firn_expires_keys_on_both_routes() {
     let program = firn();
     for native_ring in [true, false] {
         let what = format!("native ring: {native_ring}");
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
             .expect("bound the client's waits");
@@ -516,10 +516,11 @@ fn firn_removes_expired_keys_no_command_reads_on_both_routes() {
     let program = firn();
     for native_ring in [true, false] {
         let what = format!("native ring: {native_ring}");
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
             .expect("bound the client's waits");
@@ -593,10 +594,11 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes() {
     for native_ring in [true, false] {
         let what = format!("native ring: {native_ring}");
         let name = format!("replay-{native_ring}.aof");
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
             .expect("bound the first client's waits");
@@ -729,10 +731,11 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes() {
         let (status, _) = finished(child);
         assert_eq!(status, 0, "{what}: the first run");
         std::thread::sleep(Duration::from_millis(400));
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
             .expect("bound the second client's waits");
@@ -827,10 +830,11 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes_with_lists_a
     for native_ring in [true, false] {
         let what = format!("native ring: {native_ring}");
         let name = format!("replay-lists-sets-{native_ring}.aof");
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
             .expect("bound the first client's waits");
@@ -967,10 +971,11 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes_with_lists_a
         let (status, _) = finished(child);
         assert_eq!(status, 0, "{what}: the first run");
         std::thread::sleep(Duration::from_millis(400));
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
             .expect("bound the second client's waits");
@@ -1057,10 +1062,13 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes_with_lists_a
 fn firn_records_its_writes_as_redis_propagates_them() {
     let program = firn();
     let fixture = fixture_directory();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
+    let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", b"forms.aof"]).with_port(&port_lease);
+    let monitor = child.monitor();
     let client = std::thread::spawn(move || {
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &monitor);
         let mut batch = Vec::new();
         for request in [
             vec!["SET", "mset:k", "old", "PXAT", "1"],
@@ -1108,8 +1116,8 @@ fn firn_records_its_writes_as_redis_propagates_them() {
             "the writes",
         );
     });
-    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"forms.aof"]);
     client.join().expect("the client's exchange");
+    let output = child.wait_with_output().expect("wait for compiled program");
     assert!(output.status.success(), "firn: {:?}", output.status);
     let file =
         std::fs::read(aof_incremental_path(fixture.path(), "forms.aof")).expect("read firn's file");
@@ -1239,38 +1247,44 @@ fn firn_replays_blocks_and_cuts_an_unloaded_end_as_redis_does() {
         batch.extend_from_slice(&after);
         expected.extend_from_slice(b"+OK\r\n");
         kept.extend(after);
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
+        let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let monitor = child.monitor();
         let client = std::thread::spawn(move || {
-            let mut client = connect_when_ready(port);
+            let mut client = connect_when_ready(port, &monitor);
             client
                 .write_all(&batch)
                 .unwrap_or_else(|error| panic!("{name}: send the checks and write: {error}"));
             expect_replies(&mut client, &expected, &format!("{name}: first replay"));
         });
-        let output = program.run(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]);
         client
             .join()
             .unwrap_or_else(|error| panic!("{name}: first client: {error:?}"));
+        let output = child.wait_with_output().expect("wait for compiled program");
         assert!(output.status.success(), "{name}: first run: {output:?}");
         let file = std::fs::read(&path)
             .unwrap_or_else(|error| panic!("{name}: read the retained file: {error}"));
         assert_eq!(file, kept, "{name}: retained bytes and appended write");
 
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
+        let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let monitor = child.monitor();
         let client = std::thread::spawn(move || {
-            let mut client = connect_when_ready(port);
+            let mut client = connect_when_ready(port, &monitor);
             let batch = [resp(&["GET", "after"]), resp(&["DBSIZE"])].concat();
             client
                 .write_all(&batch)
                 .unwrap_or_else(|error| panic!("{name}: send the reload checks: {error}"));
             expect_replies(&mut client, &reload, &format!("{name}: second replay"));
         });
-        let output = program.run(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]);
         client
             .join()
             .unwrap_or_else(|error| panic!("{name}: second client: {error:?}"));
+        let output = child.wait_with_output().expect("wait for compiled program");
         assert!(output.status.success(), "{name}: second run: {output:?}");
     }
 }
@@ -1294,9 +1308,10 @@ fn firn_stops_on_an_append_only_file_that_does_not_parse() {
     ]
     .concat();
     std::fs::write(&path, &content).unwrap_or_else(|error| panic!("write the fixture: {error}"));
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]);
+    let output = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease).wait_with_output().expect("wait for compiled program");
     assert_eq!(
         output.status.code(),
         Some(4),
@@ -1328,11 +1343,12 @@ fn firn_closes_a_client_silent_past_its_idle_limit_on_both_routes() {
     let program = firn();
     for native_ring in [true, false] {
         let what = format!("native ring: {native_ring}");
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
         let clients: &[u8] = if native_ring { b"5" } else { b"3" };
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), clients, b"-", b"1"]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), clients, b"-", b"1"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         let ready = Instant::now();
         client
             .set_read_timeout(Some(Duration::from_secs(10)))
@@ -1351,12 +1367,12 @@ fn firn_closes_a_client_silent_past_its_idle_limit_on_both_routes() {
             "{what}: closed after {silent:?}"
         );
         drop(client);
-        let mut changer = connect_when_ready(port);
+        let mut changer = connect_when_ready(port, &child);
         changer
             .write_all(&resp(&["CONFIG", "SET", "timeout", "0"]))
             .expect("remove the limit");
         expect_replies(&mut changer, b"+OK\r\n", &what);
-        let mut later = connect_when_ready(port);
+        let mut later = connect_when_ready(port, &child);
         later.write_all(&resp(&["PING"])).expect("send a ping");
         expect_replies(&mut later, b"+PONG\r\n", &what);
         expect_silence_for(&mut changer, Duration::from_millis(1500), &what);
@@ -1385,7 +1401,7 @@ fn firn_closes_a_client_silent_past_its_idle_limit_on_both_routes() {
                 .write_all(&resp(&["CONFIG", "SET", "timeout", "5"]))
                 .expect("set a longer limit");
             expect_replies(&mut changer, b"+OK\r\n", &what);
-            let mut waiter = connect_when_ready(port);
+            let mut waiter = connect_when_ready(port, &child);
             waiter.write_all(&resp(&["PING"])).expect("send a ping");
             expect_replies(&mut waiter, b"+PONG\r\n", &what);
             let waited = Instant::now();
@@ -1394,7 +1410,8 @@ fn firn_closes_a_client_silent_past_its_idle_limit_on_both_routes() {
                 .expect("set the limit again");
             expect_replies(&mut changer, b"+OK\r\n", &what);
             let reader = what.clone();
-            let late = std::thread::spawn(move || read_replies_late(port, &reader));
+            let monitor = child.monitor();
+            let late = std::thread::spawn(move || read_replies_late(port, &monitor, &reader));
             let sending = Instant::now();
             let mut last_ping = sending;
             while sending.elapsed() < Duration::from_millis(1300) {
@@ -1428,10 +1445,10 @@ fn firn_closes_a_client_silent_past_its_idle_limit_on_both_routes() {
 /// wait while the replies stay unread for 1.5 seconds, then reads them all
 /// and, half a second later, expects an answer to PING.
 #[cfg(target_os = "linux")]
-fn read_replies_late(port: u16, what: &str) {
+fn read_replies_late(port: u16, child: &support::ProgramMonitor, what: &str) {
     const SIZE: usize = 1 << 20;
     const COPIES: usize = 24;
-    let mut stream = connect_when_ready(port);
+    let mut stream = connect_when_ready(port, &child);
     let mut set = format!("*3\r\n$3\r\nSET\r\n$3\r\nbig\r\n${SIZE}\r\n").into_bytes();
     set.resize(set.len() + SIZE, b'v');
     set.extend_from_slice(b"\r\n");
@@ -1466,10 +1483,11 @@ fn read_replies_late(port: u16, what: &str) {
 #[test]
 fn firn_answers_the_value_types_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the client's waits");
@@ -1533,15 +1551,20 @@ fn firn_answers_the_value_types_as_redis_does() {
 
 /// firn answers list updates, moves, searches and set membership, algebra,
 /// stores and random draws as Redis does. The expected bytes are those
-/// redis-server 7.0.15 returns for the same requests.
+/// redis-server 7.2.16 returns for the same requests, among them LPOS RANK
+/// -9223372036854775808, which it refuses as out of range (t_list.c
+/// lposCommand reads the rank with getRangeLongFromObjectOrReply from
+/// -LONG_MAX to LONG_MAX) where 7.0.15, and firn before it, answered a
+/// position; the rank -9223372036854775807 is still read, and finds nothing.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_the_value_types_as_redis_does_with_lists_and_sets() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the client's waits");
@@ -1556,6 +1579,8 @@ fn firn_answers_the_value_types_as_redis_does_with_lists_and_sets() {
         vec!["LPOS", "li", "a", "RANK", "-1", "COUNT", "0"],
         vec!["LPOS", "li", "a", "RANK", "0"],
         vec!["LPOS", "li", "a", "COUNT"],
+        vec!["LPOS", "li", "a", "RANK", "-9223372036854775808"],
+        vec!["LPOS", "li", "a", "RANK", "-9223372036854775807"],
         vec!["RPUSH", "ls", "a", "b", "c"],
         vec!["LSET", "ls", "-1", "C"],
         vec!["LSET", "ls", "9", "x"],
@@ -1597,7 +1622,7 @@ fn firn_answers_the_value_types_as_redis_does_with_lists_and_sets() {
     client.write_all(&batch).expect("send the list batch");
     expect_replies(
         &mut client,
-        b":5\r\n$1\r\nb\r\n$-1\r\n-ERR value is not an integer or out of range\r\n$-1\r\n:1\r\n*2\r\n:4\r\n:0\r\n-ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list\r\n-ERR syntax error\r\n:3\r\n+OK\r\n-ERR index out of range\r\n-ERR no such key\r\n*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nC\r\n:5\r\n:2\r\n*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nb\r\n:2\r\n:3\r\n:4\r\n:-1\r\n-ERR syntax error\r\n*4\r\n$1\r\na\r\n$1\r\nx\r\n$1\r\nb\r\n$1\r\ny\r\n:5\r\n+OK\r\n*3\r\n$1\r\n2\r\n$1\r\n3\r\n$1\r\n4\r\n:0\r\n:1\r\n:2\r\n:3\r\n*3\r\n$1\r\na\r\n$1\r\nm\r\n$1\r\nz\r\n:3\r\n*0\r\n*2\r\n$1\r\nc\r\n$1\r\nb\r\n:3\r\n$1\r\na\r\n$1\r\nc\r\n$1\r\nb\r\n-ERR syntax error\r\n+OK\r\n-WRONGTYPE Operation against a key holding the wrong kind of value\r\n$-1\r\n*1\r\n$1\r\nc\r\n*2\r\n$1\r\nb\r\n$1\r\na\r\n",
+        b":5\r\n$1\r\nb\r\n$-1\r\n-ERR value is not an integer or out of range\r\n$-1\r\n:1\r\n*2\r\n:4\r\n:0\r\n-ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list\r\n-ERR syntax error\r\n-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n$-1\r\n:3\r\n+OK\r\n-ERR index out of range\r\n-ERR no such key\r\n*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nC\r\n:5\r\n:2\r\n*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nb\r\n:2\r\n:3\r\n:4\r\n:-1\r\n-ERR syntax error\r\n*4\r\n$1\r\na\r\n$1\r\nx\r\n$1\r\nb\r\n$1\r\ny\r\n:5\r\n+OK\r\n*3\r\n$1\r\n2\r\n$1\r\n3\r\n$1\r\n4\r\n:0\r\n:1\r\n:2\r\n:3\r\n*3\r\n$1\r\na\r\n$1\r\nm\r\n$1\r\nz\r\n:3\r\n*0\r\n*2\r\n$1\r\nc\r\n$1\r\nb\r\n:3\r\n$1\r\na\r\n$1\r\nc\r\n$1\r\nb\r\n-ERR syntax error\r\n+OK\r\n-WRONGTYPE Operation against a key holding the wrong kind of value\r\n$-1\r\n*1\r\n$1\r\nc\r\n*2\r\n$1\r\nb\r\n$1\r\na\r\n",
         "the list batch",
     );
     let mut batch = Vec::new();
@@ -1688,10 +1713,11 @@ fn firn_answers_the_value_types_as_redis_does_with_lists_and_sets() {
 #[test]
 fn firn_copies_and_renames_the_value_types_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the client's waits");
@@ -1994,10 +2020,11 @@ fn firn_reads_and_writes_scores_as_redis_does() {
         ("007", Some("7")),
     ];
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the client's waits");
@@ -2075,10 +2102,11 @@ fn firn_reads_and_writes_scores_as_redis_does() {
 #[test]
 fn firn_keeps_strings_at_and_past_the_inline_length_apart() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the client's waits");
@@ -2208,10 +2236,11 @@ fn firn_keeps_strings_at_and_past_the_inline_length_apart() {
 #[test]
 fn firn_answers_string_commands_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the client's waits");
@@ -2414,10 +2443,11 @@ fn firn_answers_string_commands_as_redis_does() {
 #[test]
 fn firn_answers_commands_naming_a_key_twice_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the client's waits");
@@ -2520,20 +2550,26 @@ fn firn_answers_commands_naming_a_key_twice_as_redis_does() {
 /// message, empty or not, succeeds, its name read up to a zero byte, while
 /// `LOG` without exactly one message and an unknown subcommand, its line breaks
 /// echoed as spaces, are answered as Redis answers a `DEBUG` subcommand it does
-/// not know. The expected replies are redis-server 7.0.15's to the same bytes,
+/// not know. The expected replies are redis-server 7.2.16's to the same bytes,
 /// its debug command enabled, a `CONFIG GET` of several parameters in
 /// alphabetical order, one of the orders Redis answers in, but for the last
 /// four `CONFIG SET`s, which ask for a snapshot schedule, the append-only file,
 /// another address and another port: Redis would apply them, and firn refuses
-/// them in Redis's form for a refused value, with its own reason.
+/// them in Redis's form for a refused value, with its own reason. The
+/// set-max-listpack-entries and set-max-listpack-value cases are new in Redis
+/// 7.2.16, which adds both as plain integers from 0 to 2^63 - 1 (config.c
+/// createSizeTConfig without MEMORY_CONFIG), so that 1kb is refused for either
+/// though zset-max-listpack-value takes it; before firn knew them, CONFIG SET
+/// answered them as unknown options and CONFIG GET matched nothing.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_config_and_echoes_client_bytes_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the client's waits");
@@ -2574,6 +2610,19 @@ fn firn_answers_config_and_echoes_client_bytes_as_redis_does() {
         vec!["CONFIG", "SET", "set-max-intset-entries", "-1"],
         vec!["CONFIG", "SET", "stream-node-max-entries", "-1"],
         vec!["CONFIG", "SET", "zset-max-listpack-entries", "-1"],
+        vec![
+            "CONFIG",
+            "SET",
+            "set-max-listpack-entries",
+            "0",
+            "set-max-listpack-value",
+            "32",
+        ],
+        vec!["CONFIG", "GET", "set-max-listpack-*"],
+        vec!["CONFIG", "GET", "SET-MAX-LISTPACK-ENTRIES"],
+        vec!["CONFIG", "SET", "set-max-listpack-value", "-1"],
+        vec!["CONFIG", "SET", "set-max-listpack-value", "1kb"],
+        vec!["CONFIG", "SET", "set-max-listpack-entries", "1kb"],
         vec![
             "CONFIG",
             "SET",
@@ -2665,6 +2714,12 @@ fn firn_answers_config_and_echoes_client_bytes_as_redis_does() {
              {failed} 'set-max-intset-entries') - argument must be between 0 and {wide} inclusive\r\n\
              {failed} 'stream-node-max-entries') - argument must be between 0 and {wide} inclusive\r\n\
              {failed} 'zset-max-listpack-entries') - argument must be between 0 and {wide} inclusive\r\n\
+             +OK\r\n\
+             *4\r\n$24\r\nset-max-listpack-entries\r\n$1\r\n0\r\n$22\r\nset-max-listpack-value\r\n$2\r\n32\r\n\
+             *2\r\n$24\r\nSET-MAX-LISTPACK-ENTRIES\r\n$1\r\n0\r\n\
+             {failed} 'set-max-listpack-value') - argument must be between 0 and {wide} inclusive\r\n\
+             {failed} 'set-max-listpack-value') - argument couldn't be parsed into an integer\r\n\
+             {failed} 'set-max-listpack-entries') - argument couldn't be parsed into an integer\r\n\
              +OK\r\n+OK\r\n+OK\r\n\
              *6\r\n$23\r\nhash-max-listpack-value\r\n$2\r\n12\r\n$21\r\nstream-node-max-bytes\r\n$1\r\n0\r\n$23\r\nzset-max-listpack-value\r\n$4\r\n1024\r\n\
              {failed} 'stream-node-max-bytes') - argument must be between 0 and {wide} inclusive\r\n\
@@ -2709,10 +2764,11 @@ fn firn_answers_config_and_echoes_client_bytes_as_redis_does() {
 fn firn_carries_requests_and_replies_larger_than_its_windows() {
     const ELEMENTS: usize = 2_000;
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the client's waits");
@@ -2772,10 +2828,11 @@ fn firn_carries_requests_and_replies_larger_than_its_windows() {
 fn firn_replays_the_value_types_from_its_append_only_file() {
     let program = firn();
     let name = "replay-types.aof";
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the first client's waits");
@@ -2846,10 +2903,11 @@ fn firn_replays_the_value_types_from_its_append_only_file() {
         String::from_utf8_lossy(head),
         "the file's first commands"
     );
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the second client's waits");
@@ -2901,10 +2959,11 @@ fn firn_replays_the_value_types_from_its_append_only_file() {
 fn firn_replays_the_value_types_from_its_append_only_file_with_lists_and_sets() {
     let program = firn();
     let name = "replay-list-set-types.aof";
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the first client's waits");
@@ -2938,10 +2997,11 @@ fn firn_replays_the_value_types_from_its_append_only_file_with_lists_and_sets() 
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0, "the first run");
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the second client's waits");
@@ -3048,10 +3108,11 @@ fn silent_for(stream: &mut TcpStream, wait: Duration) -> std::io::Result<bool> {
 #[test]
 fn firn_splits_quoted_inline_arguments_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .write_all(b"ECHO \"hello world\"\r\nECHO \"a\\nb\\r\\t\\b\\a\\\\\\\"\\x41\\x4a\\xzz\\q\"\r\nECHO 'it\\'s'\r\nECHO 'a\\nb'\r\nECHO a\"b c\"\r\nECHO a\x0bb\r\nECHO \x0ba\r\nECHO \"a\"\x0bb\r\nECHO \"\"\r\n\"ECHO\" x\r\nECHO \"\\x4\"\r\nNOPE \"a b\" 'c\\'d' e\r\nECHO \"abc\"x\r\nPING\r\n")
         .expect("send the inline batch");
@@ -3067,7 +3128,7 @@ fn firn_splits_quoted_inline_arguments_as_redis_does() {
         &b"ECHO 'abc\r\nPING\r\n"[..],
     ] {
         let what = format!("{:?}", String::from_utf8_lossy(line));
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &child);
         client.write_all(line).expect("send a quote left open");
         expect_replies(
             &mut client,
@@ -3096,10 +3157,11 @@ fn firn_splits_quoted_inline_arguments_as_redis_does() {
 #[test]
 fn firn_reads_count_and_length_lines_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"9"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"9"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .write_all(b"*1\r\n$4\rXPING\r\n*1\rX$4\r\nPING\r\n*-1\r\n*2147483647\r\n")
         .expect("send lines of every shape");
@@ -3129,7 +3191,7 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
         ),
     ] {
         let what = format!("{:?}", String::from_utf8_lossy(line));
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &child);
         client.write_all(line).expect("send a malformed line");
         expect_replies(&mut client, error, &what);
         expect_closed(&mut client, &what);
@@ -3150,7 +3212,7 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
     ] {
         let what = format!("a zero byte in {:?}", String::from_utf8_lossy(head));
         let line_start = if head.starts_with(b"*1\r\n") { 4 } else { 0 };
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &child);
         let mut held = head.to_vec();
         held.resize(line_start + 65_536, b'x');
         client
@@ -3181,11 +3243,14 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
 /// orders. Memory settings and automatic rewrite thresholds join glob results.
 /// Redis's *o*t matches only port and timeout among these parameters: the
 /// final t must end the name, so neither automatic rewrite threshold matches.
+/// set-max-listpack-entries and set-max-listpack-value, with their Redis
+/// 7.2.16 defaults 128 and 64, join every pattern that reaches s.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_matches_config_get_patterns_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
     let child = program.spawn_on_route(
         true,
@@ -3199,8 +3264,8 @@ fn firn_matches_config_get_patterns_as_redis_does() {
             b"--appendfilename",
             b"patterns.aof",
         ],
-    );
-    let mut client = connect_when_ready(port);
+    ).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
         vec!["CONFIG", "GET", "*"],
@@ -3223,25 +3288,25 @@ fn firn_matches_config_get_patterns_as_redis_does() {
     client.write_all(&batch).expect("send the patterns");
     let port_field = format!("$4\r\nport\r\n${}\r\n{text}\r\n", text.len());
     let hash_and_list = "$25\r\nhash-max-listpack-entries\r\n$3\r\n512\r\n$23\r\nhash-max-listpack-value\r\n$2\r\n64\r\n$24\r\nhash-max-ziplist-entries\r\n$3\r\n512\r\n$22\r\nhash-max-ziplist-value\r\n$2\r\n64\r\n$19\r\nlist-compress-depth\r\n$1\r\n0\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-2\r\n$21\r\nlist-max-ziplist-size\r\n$2\r\n-2\r\n";
-    let s_fields = "$4\r\nsave\r\n$0\r\n\r\n$22\r\nset-max-intset-entries\r\n$3\r\n512\r\n$21\r\nstream-node-max-bytes\r\n$4\r\n4096\r\n$23\r\nstream-node-max-entries\r\n$3\r\n100\r\n";
+    let s_fields = "$4\r\nsave\r\n$0\r\n\r\n$22\r\nset-max-intset-entries\r\n$3\r\n512\r\n$24\r\nset-max-listpack-entries\r\n$3\r\n128\r\n$22\r\nset-max-listpack-value\r\n$2\r\n64\r\n$21\r\nstream-node-max-bytes\r\n$4\r\n4096\r\n$23\r\nstream-node-max-entries\r\n$3\r\n100\r\n";
     let zset_fields = "$25\r\nzset-max-listpack-entries\r\n$3\r\n128\r\n$23\r\nzset-max-listpack-value\r\n$2\r\n64\r\n$24\r\nzset-max-ziplist-entries\r\n$3\r\n128\r\n$22\r\nzset-max-ziplist-value\r\n$2\r\n64\r\n";
     let memory_fields = "$9\r\nmaxmemory\r\n$1\r\n0\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n$17\r\nmaxmemory-samples\r\n$1\r\n5\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$14\r\nlfu-decay-time\r\n$1\r\n1\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n";
     let rewrite_fields = "$27\r\nauto-aof-rewrite-percentage\r\n$3\r\n100\r\n$25\r\nauto-aof-rewrite-min-size\r\n$8\r\n67108864\r\n";
     let expected = format!(
-        "*60\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}\
+        "*64\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n{rewrite_fields}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n{rewrite_fields}\
          *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\
          *2\r\n{port_field}\
          *4\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n\
-         *18\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
+         *22\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
          *0\r\n\
          *0\r\n\
          *2\r\n{port_field}\
          *0\r\n\
-         *8\r\n{s_fields}\
+         *12\r\n{s_fields}\
          *2\r\n$9\r\nmaxmemory\r\n$1\r\n0\r\n\
-         *8\r\n{s_fields}"
+         *12\r\n{s_fields}"
     );
     expect_replies(&mut client, expected.as_bytes(), "the patterns");
     drop(client);
@@ -3263,7 +3328,8 @@ fn firn_matches_config_get_patterns_as_redis_does() {
 #[test]
 fn firn_listens_where_its_options_by_name_say() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
     let child = program.spawn_on_route(
         true,
@@ -3283,8 +3349,8 @@ fn firn_listens_where_its_options_by_name_say() {
             b"--timeout",
             b"9",
         ],
-    );
-    let mut client = connect_to_when_ready(SocketAddr::from(([127, 0, 0, 2], port)));
+    ).with_port(&port_lease);
+    let mut client = connect_to_when_ready(SocketAddr::from(([127, 0, 0, 2], port)), &child);
     let loopback = SocketAddr::from(([127, 0, 0, 1], port));
     assert!(
         TcpStream::connect_timeout(&loopback, Duration::from_millis(500)).is_err(),
@@ -3346,19 +3412,20 @@ fn firn_listens_again_on_its_port_after_a_restart() {
     let program = firn();
     for native_ring in [true, false] {
         let what = format!("native ring: {native_ring}");
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         client.write_all(&resp(&["QUIT"])).expect("send QUIT");
         expect_replies(&mut client, b"+OK\r\n", &what);
         expect_closed(&mut client, &what);
         drop(client);
         let (status, _) = finished(child);
         assert_eq!(status, 0, "{what}: the first run");
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"2"]);
-        let mut client = connect_when_ready(port);
-        let third = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"2"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
+        let third = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]).with_port(&port_lease);
         let (status, _) = finished(third);
         assert_eq!(
             status, 3,
@@ -3367,7 +3434,7 @@ fn firn_listens_again_on_its_port_after_a_restart() {
         client.write_all(&resp(&["PING"])).expect("send a ping");
         expect_replies(&mut client, b"+PONG\r\n", &what);
         drop(client);
-        drop(connect_when_ready(port));
+        drop(connect_when_ready(port, &child));
         let (status, _) = finished(child);
         assert_eq!(status, 0, "{what}: the second run");
     }
@@ -3403,10 +3470,11 @@ fn firn_listens_again_on_its_port_after_a_restart() {
 #[test]
 fn firn_requires_its_password_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"7", b"--requirepass", b"secret"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"7", b"--requirepass", b"secret"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     // Redis 7.0.15's src/commands/{mset,msetnx,lpop,rpop}.json admit
     // minimum counts of 3, 3, 2 and 2 before processCommand checks auth.
     // msetGenericCommand checks pairs and popGenericCommand the maximum
@@ -3492,17 +3560,18 @@ fn firn_requires_its_password_as_redis_does() {
         .expect("check rejected commands changed no key");
     expect_replies(&mut client, b":0\r\n", "rejected command side effects");
     drop(client);
-    let mut client = connect_when_ready(port);
+    let mut client = connect_when_ready(port, &child);
     let mut batch = resp(&["HELLO", "2", "AUTH", "default", "secret"]);
     batch.extend(resp(&["PING"]));
     client.write_all(&batch).expect("authenticate with HELLO");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     expect_replies(
         &mut client,
         b"*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:2\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n+PONG\r\n",
         "HELLO with AUTH",
     );
     drop(client);
-    let mut client = connect_when_ready(port);
+    let mut client = connect_when_ready(port, &child);
     client
         .write_all(&resp(&[
             "ECHO", "a", "a", "a", "a", "a", "a", "a", "a", "a", "a",
@@ -3515,7 +3584,7 @@ fn firn_requires_its_password_as_redis_does() {
     );
     expect_closed(&mut client, "11 elements while locked");
     drop(client);
-    let mut client = connect_when_ready(port);
+    let mut client = connect_when_ready(port, &child);
     client
         .write_all(b"*2\r\n$4\r\nECHO\r\n$16385\r\n")
         .expect("send a long bulk string while locked");
@@ -3526,7 +3595,7 @@ fn firn_requires_its_password_as_redis_does() {
     );
     expect_closed(&mut client, "16,385 bytes while locked");
     drop(client);
-    let mut setter = connect_when_ready(port);
+    let mut setter = connect_when_ready(port, &child);
     let mut batch = resp(&["AUTH", "secret"]);
     batch.extend(resp(&["CONFIG", "SET", "requirepass", "other"]));
     batch.extend(resp(&["PING"]));
@@ -3537,7 +3606,7 @@ fn firn_requires_its_password_as_redis_does() {
         b"+OK\r\n+OK\r\n+PONG\r\n*2\r\n$11\r\nrequirepass\r\n$5\r\nother\r\n",
         "the password changed",
     );
-    let mut waiting = connect_when_ready(port);
+    let mut waiting = connect_when_ready(port, &child);
     let mut batch = resp(&["PING"]);
     batch.extend(resp(&["AUTH", "secret"]));
     waiting.write_all(&batch).expect("give the old password");
@@ -3641,7 +3710,7 @@ fn firn_requires_its_password_as_redis_does() {
     expect_replies(&mut setter, b"+OK\r\n", "the password removed at last");
     drop(waiting);
     drop(setter);
-    let mut fresh = connect_when_ready(port);
+    let mut fresh = connect_when_ready(port, &child);
     fresh
         .write_all(&resp(&["PING"]))
         .expect("send with no password");
@@ -3691,11 +3760,12 @@ fn firn_requires_its_password_as_redis_does() {
 #[test]
 fn firn_answers_connection_commands_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
     let spawned = Instant::now();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
         vec!["CLIENT", "ID"],
@@ -3735,6 +3805,7 @@ fn firn_answers_connection_commands_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the connection batch");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
@@ -3814,7 +3885,7 @@ fn firn_answers_connection_commands_as_redis_does() {
         let info = bulk_reply(&mut client, "INFO");
         assert_eq!(info_sections(&info, "INFO"), sections, "{request:?}");
     }
-    let mut second = connect_when_ready(port);
+    let mut second = connect_when_ready(port, &child);
     second
         .write_all(&resp(&["PING"]))
         .expect("send a ping on a second connection");
@@ -3827,6 +3898,7 @@ fn firn_answers_connection_commands_as_redis_does() {
     let info = bulk_reply(&mut client, "INFO");
     assert_eq!(info_sections(&info, "INFO"), &defaults[..]);
     for (field, value) in [
+        // Redis 7.2.16 reports its own version in INFO; firn still reports 7.0.15 (board item firn-host-72-diffs).
         ("redis_version", "7.0.15"),
         ("redis_git_sha1", "00000000"),
         ("tcp_port", text.as_str()),
@@ -3876,7 +3948,7 @@ fn firn_answers_connection_commands_as_redis_does() {
     expect_replies(&mut client, b"+OK\r\n", "QUIT");
     expect_closed(&mut client, "after QUIT");
     drop(client);
-    let mut client = connect_when_ready(port);
+    let mut client = connect_when_ready(port, &child);
     client
         .write_all(&resp(&["CLIENT", "ID"]))
         .expect("ask the third connection's id");
@@ -3905,10 +3977,11 @@ fn firn_answers_connection_commands_as_redis_does() {
 #[test]
 fn firn_keeps_transactions_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
         vec!["EXEC"],
@@ -3970,24 +4043,30 @@ fn firn_keeps_transactions_as_redis_does() {
     assert_eq!(status, 0);
 }
 
-/// firn answers in RESP3 after HELLO 3 as Redis 7.0.15 does, and in RESP2
+/// firn answers in RESP3 after HELLO 3 as Redis 7.2.16 does, and in RESP2
 /// again after HELLO 2: HELLO's map with protocol 3; the null for an absent
 /// string, an absent element of MGET and LPOP's count on an absent key; a map
 /// for HGETALL and CONFIG GET, an empty one for an absent hash; a set for
 /// SMEMBERS, set algebra and SPOP's count; doubles for scores; member and
 /// score pairs nested in ZRANGE WITHSCORES, ZPOPMIN with a count and
 /// HRANDFIELD WITHVALUES but not in ZPOPMIN without one; and INFO's text as a
-/// verbatim string. The expected bytes follow redis-server 7.0.15's reply
+/// verbatim string. The expected bytes follow redis-server 7.2.16's reply
 /// writers (addReplyNull, addReplyNullArray, addReplyMapLen, addReplySetLen,
-/// addReplyDouble, addReplyVerbatim) for the same requests.
+/// addReplyDouble, addReplyVerbatim) for the same requests, but for the
+/// version HELLO reports, which firn still gives as 7.0.15 (board item
+/// firn-host-72-diffs), and ZRANK and ZREVRANK WITHSCORE, which Redis 7.2
+/// adds, answer the rank and the score as a double, or the null, as Redis
+/// 7.2.16's zrankGenericCommand writes them; before firn read WITHSCORE, both
+/// were arity errors.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
         vec!["HELLO", "3"],
@@ -4006,6 +4085,8 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
         vec!["ZADD", "z", "1.5", "a", "2", "b", "3", "c"],
         vec!["ZSCORE", "z", "a"],
         vec!["ZSCORE", "z", "absent"],
+        vec!["ZRANK", "z", "a", "WITHSCORE"],
+        vec!["ZREVRANK", "z", "absent", "WITHSCORE"],
         vec!["ZRANGE", "z", "0", "0", "WITHSCORES"],
         vec!["ZPOPMIN", "z"],
         vec!["ZPOPMIN", "z", "1"],
@@ -4019,12 +4100,104 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the RESP3 batch");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let hello2 = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
-        "{hello3}_\r\n+OK\r\n*2\r\n$1\r\nv\r\n_\r\n_\r\n:1\r\n%1\r\n$1\r\nf\r\n$1\r\nv\r\n%0\r\n*1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n:1\r\n~1\r\n$1\r\na\r\n~0\r\n~1\r\n$1\r\na\r\n:3\r\n,1.5\r\n_\r\n*1\r\n*2\r\n$1\r\na\r\n,1.5\r\n*2\r\n$1\r\na\r\n,1.5\r\n*1\r\n*2\r\n$1\r\nb\r\n,2\r\n%1\r\n$10\r\nappendonly\r\n$2\r\nno\r\n=34\r\ntxt:# Cluster\r\ncluster_enabled:0\r\n\r\n~1\r\n$1\r\na\r\n{hello2}$-1\r\n*0\r\n"
+        "{hello3}_\r\n+OK\r\n*2\r\n$1\r\nv\r\n_\r\n_\r\n:1\r\n%1\r\n$1\r\nf\r\n$1\r\nv\r\n%0\r\n*1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n:1\r\n~1\r\n$1\r\na\r\n~0\r\n~1\r\n$1\r\na\r\n:3\r\n,1.5\r\n_\r\n*2\r\n:0\r\n,1.5\r\n_\r\n*1\r\n*2\r\n$1\r\na\r\n,1.5\r\n*2\r\n$1\r\na\r\n,1.5\r\n*1\r\n*2\r\n$1\r\nb\r\n,2\r\n%1\r\n$10\r\nappendonly\r\n$2\r\nno\r\n=34\r\ntxt:# Cluster\r\ncluster_enabled:0\r\n\r\n~1\r\n$1\r\na\r\n{hello2}$-1\r\n*0\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the RESP3 batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers ZRANK and ZREVRANK with WITHSCORE, which Redis 7.2 adds, as
+/// Redis 7.2.16's zrankGenericCommand (t_zset.c) does, on the network, inside
+/// a transaction's EXEC and through a script: the rank with the score, in a
+/// two-element array, written as firn writes every score, Redis 7.0.15's
+/// %.17g, which differs from the shortest form of Redis 7.2.16's
+/// addReplyDouble for some values, such as 0.1 (board item
+/// firn-score-text-72); the null array for an
+/// absent key or member, which a script turns into the null bulk string, as
+/// Redis's Lua conversion turns it into false; the option read in either case
+/// up to a zero byte, as strcasecmp reads it; any other fourth argument
+/// refused with the syntax error and a fifth with the command's arity error,
+/// both before the key is looked up, so even inside EXEC; and the command's
+/// arity -3 still refusing two arguments. Before firn read WITHSCORE, its
+/// arity of 3 refused every request with a fourth argument, on the network
+/// and when queued.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_zrank_withscore_as_redis_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["ZADD", "z", "1.5", "a", "2", "b", "3", "c"],
+        vec!["SET", "wrong", "text"],
+        vec!["ZRANK", "z", "a", "WITHSCORE"],
+        vec!["ZREVRANK", "z", "a", "withscore"],
+        vec!["ZRANK", "z", "c", "WithScore\0x"],
+        vec!["ZRANK", "z", "absent", "WITHSCORE"],
+        vec!["ZREVRANK", "missing", "a", "WITHSCORE"],
+        vec!["ZRANK", "z", "absent"],
+        vec!["ZRANK", "z", "a", "WITHSCORES"],
+        vec!["ZRANK", "missing", "a", "bad"],
+        vec!["ZRANK", "z", "a", "WITHSCORE", "extra"],
+        vec!["ZREVRANK", "z", "a", "WITHSCORE", "extra"],
+        vec!["ZRANK", "wrong", "a", "WITHSCORE"],
+        vec!["ZRANK", "z"],
+        vec!["MULTI"],
+        vec!["ZRANK", "z", "b", "WITHSCORE"],
+        vec!["ZRANK", "z", "a", "WITHSCORE", "extra"],
+        vec!["ZREVRANK", "z", "absent", "WITHSCORE"],
+        vec!["EXEC"],
+        vec![
+            "EVAL",
+            "return redis.call('zrevrank', KEYS[1], ARGV[1], 'withscore')",
+            "1",
+            "z",
+            "b",
+        ],
+        vec![
+            "EVAL",
+            "return redis.call('zrank', KEYS[1], ARGV[1], 'WITHSCORE')",
+            "1",
+            "z",
+            "absent",
+        ],
+        vec![
+            "EVAL",
+            "return redis.pcall('zrank', KEYS[1], ARGV[1], 'WITHSCORE', 'x')",
+            "1",
+            "z",
+            "a",
+        ],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the ZRANK batch");
+    let arity = "-ERR wrong number of arguments for 'zrank' command\r\n";
+    let wrong = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+    let expected = format!(
+        ":3\r\n+OK\r\n\
+         *2\r\n:0\r\n$3\r\n1.5\r\n\
+         *2\r\n:2\r\n$3\r\n1.5\r\n\
+         *2\r\n:2\r\n$1\r\n3\r\n\
+         *-1\r\n*-1\r\n$-1\r\n\
+         -ERR syntax error\r\n-ERR syntax error\r\n\
+         {arity}-ERR wrong number of arguments for 'zrevrank' command\r\n\
+         {wrong}{arity}\
+         +OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n\
+         *3\r\n*2\r\n:1\r\n$1\r\n2\r\n{arity}*-1\r\n\
+         *2\r\n:1\r\n$1\r\n2\r\n$-1\r\n{arity}"
+    );
+    expect_replies(&mut client, expected.as_bytes(), "the ZRANK batch");
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
@@ -4042,11 +4215,12 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
 #[test]
 fn firn_answers_client_info_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
     let spawned = Instant::now();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
         vec!["CLIENT", "INFO"],
@@ -4067,6 +4241,7 @@ fn firn_answers_client_info_as_redis_does() {
     };
     let first = line("", 2);
     let second = line("conn-1", 3);
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
         "${}\r\n{first}\r\n+OK\r\n-ERR wrong number of arguments for 'client|info' command\r\n{hello3}={}\r\ntxt:{second}\r\n",
@@ -4123,10 +4298,16 @@ fn firn_answers_client_info_as_redis_does() {
 fn firn_records_transactions_as_redis_propagates_them() {
     let program = firn();
     let fixture = fixture_directory();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
+    let child = program.spawn_in_directory(
+        fixture.path(),
+        &[text.as_bytes(), b"1", b"transactions.aof"],
+    ).with_port(&port_lease);
+    let monitor = child.monitor();
     let client = std::thread::spawn(move || {
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &monitor);
         let mut batch = Vec::new();
         for request in [
             vec!["MULTI"],
@@ -4153,11 +4334,8 @@ fn firn_records_transactions_as_redis_propagates_them() {
             "the transactions",
         );
     });
-    let output = program.run(
-        fixture.path(),
-        &[text.as_bytes(), b"1", b"transactions.aof"],
-    );
     client.join().expect("the client's exchange");
+    let output = child.wait_with_output().expect("wait for compiled program");
     assert!(output.status.success(), "firn: {:?}", output.status);
     let file = std::fs::read(aof_incremental_path(fixture.path(), "transactions.aof"))
         .expect("read firn's file");
@@ -4165,10 +4343,16 @@ fn firn_records_transactions_as_redis_propagates_them() {
         String::from_utf8_lossy(&file),
         "*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
     );
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
+    let child = program.spawn_in_directory(
+        fixture.path(),
+        &[text.as_bytes(), b"1", b"transactions.aof"],
+    ).with_port(&port_lease);
+    let monitor = child.monitor();
     let client = std::thread::spawn(move || {
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &monitor);
         client
             .write_all(&resp(&["MGET", "a", "b", "c"]))
             .expect("read the replayed keys");
@@ -4178,11 +4362,8 @@ fn firn_records_transactions_as_redis_propagates_them() {
             "the replayed keys",
         );
     });
-    let output = program.run(
-        fixture.path(),
-        &[text.as_bytes(), b"1", b"transactions.aof"],
-    );
     client.join().expect("the replay's exchange");
+    let output = child.wait_with_output().expect("wait for compiled program");
     assert!(output.status.success(), "firn: {:?}", output.status);
 }
 
@@ -4209,10 +4390,11 @@ fn firn_records_transactions_as_redis_propagates_them() {
 #[test]
 fn firn_runs_scripts_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let sha = "1fa00e76656cc152ad327c13fe365858fd7be306";
     let upper = sha.to_ascii_uppercase();
     let mut batch = Vec::new();
@@ -4371,6 +4553,7 @@ fn firn_runs_scripts_as_redis_does() {
         batch.extend(resp(&request));
     }
     client.write_all(&batch).expect("send the scripting batch");
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     // redis-server 7.0.15 writes a result that contains itself to these
     // depths before its stack-limit error; a map's last level refuses both
@@ -4388,6 +4571,298 @@ fn firn_runs_scripts_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// A script's error text keeps every error reply on one line: firn writes
+/// each carriage return and line feed of it as a space, so a script cannot
+/// split its error reply into replies of its own and the next command on the
+/// connection gets its own reply. A returned error table, as from
+/// redis.error_reply, and a compile error are written as Redis 7.0.15's
+/// addReplyErrorFormat writes them, which also drops the line breaks that end
+/// the text; a raised error, a string, a table or a redis.call error caught by
+/// pcall and raised again, is written as Redis 7.2.13 and later write it,
+/// through addReplyErrorSdsExSafe, where Redis 7.0.15 wrote the raw bytes;
+/// the line breaks that end a raised error's text stay, as spaces.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_keeps_a_script_error_reply_on_one_line() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["EVAL", "return redis.error_reply('a\\r\\nb')", "0"],
+        vec!["ECHO", "after returned error_reply"],
+        vec!["EVAL", "return {err='a\\nb\\r\\n'}", "0"],
+        vec!["ECHO", "after returned table"],
+        vec!["EVAL", "error('a\\r\\nb')", "0"],
+        vec!["ECHO", "after raised string"],
+        vec!["EVAL", "error({err='a\\r\\nb'})", "0"],
+        vec!["ECHO", "after raised table"],
+        vec!["EVAL", "error({err='a\\r\\n'})", "0"],
+        vec!["ECHO", "after raised ending"],
+        vec![
+            "EVAL",
+            "local ok, e = pcall(redis.call, 'INCRBY', KEYS[1], 'x'); error(e .. '\\r\\n+OK')",
+            "1",
+            "k",
+        ],
+        vec!["ECHO", "after raised redis.call error"],
+        vec!["EVAL", "return 'a\\nb\n", "0"],
+        vec!["ECHO", "after compile error"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the script error batch");
+    let expected = concat!(
+        "-ERR a  b\r\n",
+        "$26\r\nafter returned error_reply\r\n",
+        "-a b\r\n",
+        "$20\r\nafter returned table\r\n",
+        "-ERR user_script:1: a  b script: 9651526a9f202dabbb853951a21a9aa00e6d7e2e, on @user_script:1.\r\n",
+        "$19\r\nafter raised string\r\n",
+        "-a  b script: 395169d0f7980ab3a9b6c9c08f3f3ef78d1f7caf, on @user_script:1.\r\n",
+        "$18\r\nafter raised table\r\n",
+        "-a   script: 79b4f309833604ff0b8aaecc979a6969dc73a1ac, on @user_script:1.\r\n",
+        "$19\r\nafter raised ending\r\n",
+        "-ERR user_script:1: ERR value is not an integer or out of range  +OK script: e5a5f29309db0a4a11c0a63ebedda47a2cd7f51a, on @user_script:1.\r\n",
+        "$29\r\nafter raised redis.call error\r\n",
+        "-ERR Error compiling script (new function): user_script:1: unfinished string near ''a b'\r\n",
+        "$19\r\nafter compile error\r\n",
+    );
+    expect_replies(&mut client, expected.as_bytes(), "the script error batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn's script host answers as Redis 7.2.16's does where 7.2 changed it.
+/// A Lua number passed to redis.call reaches the command as
+/// luaArgsToRedisArgv's text: an integral value no larger in magnitude than
+/// 2^62 as an integer, any other through fpconv's Grisu2 digits, which are
+/// not always the shortest (1e23), a NaN as -nan and negative zero as 0; so
+/// 1e17 stored by SET is one INCR reads, where Redis 7.0.15's %.17g stored
+/// 1e+17. A {double=x} result is written by addReplyDouble with d2string's
+/// text, every NaN as nan and negative zero as -0, as a bulk string under
+/// RESP2 and a double under RESP3. The globals, every table reachable from
+/// them and the string metatable are read-only, an assignment's refusal
+/// located at the script's line and rawset's and setmetatable's not, while
+/// KEYS and ARGV stay writable; getfenv, setfenv and newproxy are undeclared
+/// globals; a raised error's line feed becomes a space; redis.set_repl checks
+/// its argument as Redis does, and firn refuses the flags without REPL_AOF,
+/// which it does not implement; redis.REDIS_VERSION and REDIS_VERSION_NUM
+/// name 7.2.16. The expected replies are redis-server 7.2.16's as Halo-wf
+/// recorded them: its oracle scripts under
+/// deps/halo-wf/research/experiments/halo-oracle (number-argument-format,
+/// number-argument-effects, double-reply-table, string-metatable-readonly,
+/// readonly-library-tables, readonly-rawset-error, global-write,
+/// keys-argv-writable, removed-globals, error-message-newline,
+/// set-repl-no-argument, redis-version) and its table of double texts,
+/// deps/halo-wf/research/experiments/redis-double-text/redis-7.2.16.tsv, for
+/// 2^62, the double after it, their negatives, 1e23, -0 and -inf; the RESP3 doubles follow
+/// addReplyDouble in Redis 7.2.16's networking.c, and set_repl's flag error
+/// its luaRedisSetReplCommand in script_lua.c.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_scripts_as_redis_7_2_16_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut batch = Vec::new();
+    for request in [
+        vec![
+            "EVAL",
+            "local z=0 local v={0.1,1/3,1e17,2^62,2^62+1024,-2^62,-2^62-1024,2^63,-z,5e-324,1e-7,1e23,1e100,0/0,1/0,-1/0} local o={} for i=1,#v do o[i]=redis.call('ECHO',v[i]) end return o",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "return {redis.call('SET',KEYS[1],1e17),redis.call('INCR',KEYS[1]),redis.call('GET',KEYS[1])}",
+            "1",
+            "n",
+        ],
+        vec!["GET", "n"],
+        vec![
+            "EVAL",
+            "local z=0 return {{double=0.1},{double=1/3},{double=1e17},{double=2^62},{double=2^62+1024},{double=-2^62},{double=-2^62-1024},{double=2^63},{double=-z},{double=1e-7},{double=1e23},{double=0/0},{double=1/0},{double=-1/0},{double=3}}",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local mt=getmetatable('') local a,b=pcall(function() mt.halo=1 end) local c,d=pcall(rawset,mt,'halo',1) local e,f=pcall(setmetatable,mt,nil) return {tostring(a),b,tostring(c),d,tostring(e),f,tostring(rawget(mt,'halo')),tostring(mt.__index==string)}",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local function try(f) local ok,e=pcall(f) return tostring(ok)..' '..tostring(e) end return {try(function() math.pi=1 end),try(function() redis.halo=1 end),try(function() _G.halo=1 end),try(function() getmetatable(_G).__index=nil end),try(function() string.upper=1 end)}",
+            "0",
+        ],
+        vec!["EVAL", "string.halo = 1", "0"],
+        vec!["EVAL", "return rawset(string, 'halo', 1)", "0"],
+        vec!["EVAL", "halo_global = 1", "0"],
+        vec![
+            "EVAL",
+            "KEYS[1]=KEYS[1]..':changed' ARGV[1]=ARGV[1]..':changed' table.insert(KEYS,'appended') table.insert(ARGV,'appended') return {KEYS[1],KEYS[2],ARGV[1],ARGV[2],#KEYS,#ARGV}",
+            "1",
+            "k",
+            "first",
+        ],
+        vec![
+            "EVAL",
+            "local r={pcall(function() return getfenv end)} local s={pcall(function() return setfenv end)} local t={pcall(function() return newproxy end)} return {tostring(r[1]),r[2],tostring(s[1]),s[2],tostring(t[1]),t[2],type(rawget(_G,'getfenv')),type(rawget(_G,'setfenv')),type(rawget(_G,'newproxy'))}",
+            "0",
+        ],
+        vec!["EVAL", "error('a\\nb')", "0"],
+        vec![
+            "EVAL",
+            "local ok,e=pcall(redis.set_repl) return {tostring(ok),type(e),e}",
+            "0",
+        ],
+        vec!["EVAL", "local ok,e=pcall(redis.set_repl,4) return e", "0"],
+        vec![
+            "EVAL",
+            "redis.set_repl(redis.REPL_ALL) redis.set_repl(redis.REPL_AOF) return {redis.REPL_NONE,redis.REPL_AOF,redis.REPL_SLAVE,redis.REPL_REPLICA,redis.REPL_ALL}",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local ok,e=pcall(redis.set_repl,redis.REPL_NONE) return e",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local ok,e=pcall(redis.set_repl,redis.REPL_SLAVE) return e",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local ok,e=pcall(redis.set_repl,redis.REPL_REPLICA) return e",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "return {redis.REDIS_VERSION,redis.REDIS_VERSION_NUM,type(redis.REDIS_VERSION),type(redis.REDIS_VERSION_NUM)}",
+            "0",
+        ],
+        vec!["HELLO", "3"],
+        vec![
+            "EVAL",
+            "local z=0 return {{double=0.1},{double=0/0},{double=-z},{double=2^62},{double=-1/0}}",
+            "0",
+        ],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the 7.2.16 scripting batch");
+    let bulk = |s: &str| format!("${}\r\n{}\r\n", s.len(), s);
+    let array = |items: &[&str]| {
+        let mut out = format!("*{}\r\n", items.len());
+        for item in items {
+            out.push_str(&bulk(item));
+        }
+        out
+    };
+    let readonly = "Attempt to modify a readonly table";
+    let located = format!("user_script:1: {readonly}");
+    let refused = format!("false {located}");
+    let undeclared = |name: &str| {
+        format!("user_script:1: Script attempted to access nonexistent global variable '{name}'")
+    };
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let mut expected = String::new();
+    expected.push_str(&array(&[
+        "0.1",
+        "0.3333333333333333",
+        "100000000000000000",
+        "4611686018427387904",
+        "4611686018427389000",
+        "-4611686018427387904",
+        "-4611686018427389000",
+        "9223372036854776000",
+        "0",
+        "5e-324",
+        "1e-7",
+        "99999999999999990000000",
+        "1e+100",
+        "-nan",
+        "inf",
+        "-inf",
+    ]));
+    expected.push_str("*3\r\n+OK\r\n:100000000000000000\r\n$18\r\n100000000000000001\r\n");
+    expected.push_str(&bulk("100000000000000001"));
+    expected.push_str(&array(&[
+        "0.1",
+        "0.3333333333333333",
+        "100000000000000000",
+        "4611686018427387904",
+        "4611686018427389000",
+        "-4611686018427387904",
+        "-4611686018427389000",
+        "9223372036854776000",
+        "-0",
+        "1e-7",
+        "99999999999999990000000",
+        "nan",
+        "inf",
+        "-inf",
+        "3",
+    ]));
+    expected.push_str(&array(&[
+        "false", located.as_str(), "false", readonly, "false", readonly, "nil", "true",
+    ]));
+    expected.push_str(&array(&[refused.as_str(); 5]));
+    expected.push_str(&format!(
+        "-ERR {located} script: 96267629ca97fb4596587bc73e2444aa038e771a, on @user_script:1.\r\n"
+    ));
+    expected.push_str(&format!(
+        "-ERR {readonly} script: c183b37517c7a06778d9c49959043d725fd89e31, on @user_script:1.\r\n"
+    ));
+    expected.push_str(&format!(
+        "-ERR {located} script: 4ebd85e69813f5edad7180477f4256215420fcb4, on @user_script:1.\r\n"
+    ));
+    expected.push_str("*6\r\n$9\r\nk:changed\r\n$8\r\nappended\r\n$13\r\nfirst:changed\r\n$8\r\nappended\r\n:2\r\n:2\r\n");
+    expected.push_str(&array(&[
+        "false",
+        undeclared("getfenv").as_str(),
+        "false",
+        undeclared("setfenv").as_str(),
+        "false",
+        undeclared("newproxy").as_str(),
+        "nil",
+        "nil",
+        "nil",
+    ]));
+    expected.push_str(
+        "-ERR user_script:1: a b script: 119790126df3fc201f8f0498095b28c62b174151, on @user_script:1.\r\n",
+    );
+    expected.push_str(&array(&[
+        "false",
+        "string",
+        "ERR redis.set_repl() requires one argument.",
+    ]));
+    expected.push_str(&bulk(
+        "ERR Invalid replication flags. Use REPL_AOF, REPL_REPLICA, REPL_ALL or REPL_NONE.",
+    ));
+    expected.push_str("*5\r\n:0\r\n:1\r\n:2\r\n:2\r\n:3\r\n");
+    for _ in 0..3 {
+        expected.push_str(&bulk(
+            "ERR firn does not support redis.set_repl flags without REPL_AOF",
+        ));
+    }
+    expected.push_str("*4\r\n$6\r\n7.2.16\r\n:459280\r\n$6\r\nstring\r\n$6\r\nnumber\r\n");
+    expected.push_str(hello3);
+    expected.push_str("*5\r\n,0.1\r\n,nan\r\n,-0\r\n,4611686018427387904\r\n,-inf\r\n");
+    expect_replies(&mut client, expected.as_bytes(), "the 7.2.16 scripting batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn's SCRIPT KILL stops a script that has written nothing at the end of
 /// its current attempt and answers it Redis 7.0.15's error, naming the
 /// script's SHA1 and the line it ran, and SCRIPT KILL answers NOTBUSY when no
@@ -4398,11 +4873,12 @@ fn firn_runs_scripts_as_redis_does() {
 #[test]
 fn firn_kills_a_looping_script_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]);
-    let mut looping = connect_when_ready(port);
-    let mut other = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]).with_port(&port_lease);
+    let mut looping = connect_when_ready(port, &child);
+    let mut other = connect_when_ready(port, &child);
     let mut batch = resp(&["SCRIPT", "KILL"]);
     batch.extend(resp(&["SCRIPT", "KILL", "x"]));
     other
@@ -4459,12 +4935,13 @@ fn firn_kills_a_looping_script_as_redis_does() {
 #[test]
 fn firn_script_flush_waits_for_a_looping_script_to_be_killed() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]);
-    let mut looping = connect_when_ready(port);
-    let mut flushing = connect_when_ready(port);
-    let mut killing = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]).with_port(&port_lease);
+    let mut looping = connect_when_ready(port, &child);
+    let mut flushing = connect_when_ready(port, &child);
+    let mut killing = connect_when_ready(port, &child);
     let sha = "694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7";
     let mut round = 0;
     loop {
@@ -4547,12 +5024,13 @@ fn firn_script_flush_waits_for_a_looping_script_to_be_killed() {
 #[test]
 fn firn_scripts_share_one_lua_state_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), b"3"]);
-    let mut setter = connect_when_ready(port);
-    let mut writer = connect_when_ready(port);
-    let mut reader = connect_when_ready(port);
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), b"3"]).with_port(&port_lease);
+    let mut setter = connect_when_ready(port, &child);
+    let mut writer = connect_when_ready(port, &child);
+    let mut reader = connect_when_ready(port, &child);
     for stream in [&writer, &reader] {
         stream
             .set_read_timeout(Some(Duration::from_secs(60)))
@@ -4600,10 +5078,11 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
 #[test]
 fn firn_removes_an_expired_key_incrbyfloat_refuses_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .write_all(&resp(&["SET", "lapsing", "1", "PX", "1"]))
         .expect("set a key that lapses");
@@ -4745,10 +5224,11 @@ abcdef\x00\x00Z\r\n:1\r\n*2\r\n$4\r\nlast\r\n$5\r\nother\r\n:0\r\n:0\r\n$3\r\n\
 -ERR value is not a valid float\r\n\
 -ERR increment would produce NaN or Infinity\r\n:4\r\n";
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let setup: [&[&str]; 2] = [&["FLUSHALL"], &["LPUSH", "parts:list", "x"]];
     let mut transactions = Vec::new();
     for request in setup {
@@ -4885,10 +5365,11 @@ $3\r\ntwo\r\n+OK\r\n+OK\r\n:0\r\n:1\r\n:1\r\n+OK\r\n+OK\r\n:4102444800000\r\n\
 -ERR Wrong number of args calling Redis command from script\r\n\
 -ERR Wrong number of args calling Redis command from script\r\n";
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut transactions = vec![resp(&["MULTI"])];
     for request in VALID {
         transactions.push(resp(request));
@@ -4980,18 +5461,21 @@ fn check_held_records(loaded: &[&[&str]], requests: &[&[&str]], replies: &[u8], 
     for _ in 0..5 {
         let fixture = fixture_directory();
         std::fs::write(fixture.path().join("held.aof"), &loaded).expect("write the loaded file");
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
         let sent = batch.clone();
+        let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", b"held.aof"]).with_port(&port_lease);
+        let monitor = child.monitor();
         let client = std::thread::spawn(move || {
-            let mut client = connect_when_ready(port);
+            let mut client = connect_when_ready(port, &monitor);
             client.write_all(&sent).expect("send the commands");
             let mut returned = Vec::new();
             client.read_to_end(&mut returned).expect("read the replies");
             returned
         });
-        let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"held.aof"]);
         let returned = client.join().expect("the client's exchange");
+        let output = child.wait_with_output().expect("wait for compiled program");
         assert!(output.status.success(), "firn: {:?}", output.status);
         assert_eq!(
             std::fs::read(fixture.path().join("appendonlydir/held.aof")).unwrap(),
@@ -5277,10 +5761,11 @@ $0\r\n\r\n$3\r\nv\x00x\r\n:0\r\n:3\r\n$3\r\n3.5\r\n:4102444800000\r\n\
 -ERR syntax error\r\n-ERR value is out of range\r\n\
 -ERR value is out of range\r\n";
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
     for request in VALID {
@@ -5352,7 +5837,10 @@ fn firn_records_held_hashes_commands_as_redis_propagates_them() {
 /// firn runs the lists commands written as parts, LPUSH to RPOPLPUSH, inside a transaction's EXEC and through a script as Redis 7.0.15 does, LMOVE and RPOPLPUSH over one key and two among them. The same requests, from the same keys, run in one transaction,
 /// each error or boundary request in a transaction of its own, then through
 /// a script's redis.call and the errors through redis.pcall, and give the
-/// replies redis-server 7.0.15 gives (Firn-wf probe run 37499945138).
+/// replies redis-server 7.0.15 gives (Firn-wf probe run 37499945138), but for
+/// LPOS RANK -9223372036854775808, which Redis 7.2.16 refuses as out of range
+/// (t_list.c lposCommand, object.c getRangeLongFromObjectOrReply) where
+/// 7.0.15 answered the positions of the first matches.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_runs_lists_parts_as_redis_does() {
@@ -5510,8 +5998,8 @@ head2\r\n$1\r\nx\r\n:1\r\n*1\r\n$1\r\nz\r\n:0\r\n*-1\r\n$-1\r\n$-1\r\n:0\r\n\
 -ERR COUNT can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n\
 -ERR MAXLEN can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n\
 -ERR MAXLEN can't be negative\r\n+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n\
-+OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n*2\r\n\
-:2\r\n:0\r\n+OK\r\n+QUEUED\r\n*1\r\n\
++OK\r\n+QUEUED\r\n*1\r\n-ERR syntax error\r\n+OK\r\n+QUEUED\r\n*1\r\n\
+-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n+OK\r\n+QUEUED\r\n*1\r\n\
 -WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
 +QUEUED\r\n*1\r\n\
 -WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n\
@@ -5553,17 +6041,18 @@ $1\r\nz\r\n:0\r\n$-1\r\n$-1\r\n$-1\r\n:0\r\n+OK\r\n*0\r\n\
 -ERR value is not an integer or out of range\r\n-ERR COUNT can't be negative\r\n\
 -ERR COUNT can't be negative\r\n-ERR MAXLEN can't be negative\r\n\
 -ERR MAXLEN can't be negative\r\n-ERR syntax error\r\n-ERR syntax error\r\n\
-*2\r\n:2\r\n:0\r\n\
+-ERR value is out of range, value must between -9223372036854775807 and 9223372036854775807\r\n\
 -WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
 -WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
 -ERR syntax error\r\n-ERR syntax error\r\n\
 -WRONGTYPE Operation against a key holding the wrong kind of value\r\n\
 -WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
     for request in VALID {
@@ -5862,10 +6351,11 @@ $1\r\nx\r\n:0\r\n*0\r\n*0\r\n:0\r\n:0\r\n*0\r\n:0\r\n*2\r\n:0\r\n:0\r\n$-1\r\n\
 -ERR LIMIT can't be negative\r\n-ERR LIMIT can't be negative\r\n\
 -ERR syntax error\r\n-ERR syntax error\r\n-ERR LIMIT can't be negative\r\n";
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
     for request in VALID {
@@ -5912,10 +6402,11 @@ $1\r\nx\r\n:0\r\n*0\r\n*0\r\n:0\r\n:0\r\n*0\r\n:0\r\n*2\r\n:0\r\n:0\r\n$-1\r\n\
 #[test]
 fn firn_combines_lapsed_sets_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
         vec!["SADD", "lapsing", "x"],
@@ -6234,10 +6725,11 @@ $-1\r\n$-1\r\n*0\r\n:0\r\n*0\r\n:0\r\n-ERR syntax error\r\n\
 -ERR min or max is not a float\r\n\
 -ERR min or max not valid string range item\r\n:0\r\n";
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
     for request in VALID {
@@ -6314,10 +6806,11 @@ fn firn_records_held_sorted_commands_as_redis_propagates_them() {
 #[test]
 fn firn_answers_time_inside_transactions_and_scripts() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
         vec!["MULTI"],
@@ -6371,10 +6864,11 @@ fn firn_answers_time_inside_transactions_and_scripts() {
 #[test]
 fn firn_answers_command_inside_transactions_and_scripts_as_on_the_network() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
         vec!["COMMAND"],
@@ -6486,10 +6980,11 @@ $0\r\n\r\n+OK\r\n+OK\r\n:4\r\n\
 -ERR Wrong number of args calling Redis command from script\r\n\
 -ERR Unknown Redis command called from script\r\n";
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
     for request in VALID {
@@ -6647,10 +7142,11 @@ $1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n
 -ERR Wrong number of args calling Redis command from script\r\n$-1\r\n\
 -ERR syntax error\r\n-ERR syntax error\r\n+OK\r\n+OK\r\n+OK\r\n+OK\r\n";
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
     for request in VALID {
@@ -6846,10 +7342,11 @@ fn firn_enumerates_keys_as_redis_does() {
         assert_eq!(found, expected, "{what}");
     }
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let mut kinds: Vec<(String, &str)> = Vec::new();
     let mut writes: Vec<Vec<u8>> = Vec::new();
     for index in 0..300 {
@@ -6999,10 +7496,11 @@ fn firn_records_held_scan_type_none_as_redis_propagates_it() {
 #[test]
 fn firn_draws_random_keys_uniformly_as_redis_does() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let keys: Vec<String> = (0..10).map(|index| format!("draw:{index}")).collect();
     let writes: Vec<Vec<u8>> = keys.iter().map(|key| resp(&["SET", key, "v"])).collect();
     client.write_all(&writes.concat()).expect("send the writes");
@@ -7038,10 +7536,13 @@ fn firn_draws_random_keys_uniformly_as_redis_does() {
 fn firn_records_scripts_as_redis_propagates_them() {
     let program = firn();
     let fixture = fixture_directory();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
+    let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]).with_port(&port_lease);
+    let monitor = child.monitor();
     let client = std::thread::spawn(move || {
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &monitor);
         let mut batch = Vec::new();
         for request in [
             vec![
@@ -7057,8 +7558,8 @@ fn firn_records_scripts_as_redis_propagates_them() {
         client.write_all(&batch).expect("send the scripts");
         expect_replies(&mut client, b"$-1\r\n$1\r\n1\r\n:2\r\n", "the scripts");
     });
-    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]);
     client.join().expect("the client's exchange");
+    let output = child.wait_with_output().expect("wait for compiled program");
     assert!(output.status.success(), "firn: {:?}", output.status);
     let file = std::fs::read(aof_incremental_path(fixture.path(), "scripts.aof"))
         .expect("read firn's file");
@@ -7066,10 +7567,13 @@ fn firn_records_scripts_as_redis_propagates_them() {
         String::from_utf8_lossy(&file),
         "*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
     );
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
+    let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]).with_port(&port_lease);
+    let monitor = child.monitor();
     let client = std::thread::spawn(move || {
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &monitor);
         client
             .write_all(&resp(&["MGET", "a", "b"]))
             .expect("read the replayed keys");
@@ -7079,8 +7583,8 @@ fn firn_records_scripts_as_redis_propagates_them() {
             "the replayed keys",
         );
     });
-    let output = program.run(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]);
     client.join().expect("the replay's exchange");
+    let output = child.wait_with_output().expect("wait for compiled program");
     assert!(output.status.success(), "firn: {:?}", output.status);
 }
 
@@ -7093,10 +7597,11 @@ fn firn_records_scripts_as_redis_propagates_them() {
 #[test]
 fn firn_script_fallback_is_not_catchable_and_publishes_once() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-once.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-once.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let scripts = [
         "redis.call('INCR',KEYS[1]); return redis.call('GET','outside') or 'missing'",
         "redis.call('INCR',KEYS[1]); local r=redis.pcall('GET','outside'); if type(r)=='table' and r.err then return 'caught' end; return r or 'missing'",
@@ -7113,10 +7618,11 @@ fn firn_script_fallback_is_not_catchable_and_publishes_once() {
     assert_eq!(finished(child).0, 0);
     let expected: Vec<u8> = (0..3).flat_map(|index| resp(&["INCR", &format!("counter:{index}")])).collect();
     assert_eq!(std::fs::read(aof_incremental_path(program.working_directory(), "fallback-once.aof")).unwrap(), expected, "one INCR effect per accepted invocation, no abandoned effects");
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-once.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-once.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["MGET", "counter:0", "counter:1", "counter:2"]), "*3\r\n$1\r\n1\r\n$1\r\n1\r\n$1\r\n1\r\n");
     drop(client);
     assert_eq!(finished(child).0, 0);
@@ -7136,10 +7642,11 @@ fn script_fallback_sequence(client: &mut TcpStream) -> u64 {
 #[test]
 fn firn_script_fallback_restores_collection_payloads_but_not_lua_errors() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-values.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-values.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     for (args, expected) in [
         (vec!["RPUSH", "list", "base"], ":1\r\n"),
         (vec!["HSET", "hash", "n", "0"], ":1\r\n"),
@@ -7168,10 +7675,11 @@ fn firn_script_fallback_restores_collection_payloads_but_not_lua_errors() {
     assert_eq!(records.iter().filter(|r| r.first().is_some_and(|c| c=="RPUSH")).count(), 3, "setup and exactly two accepted pushes");
     assert_eq!(records.iter().filter(|r| r.first().is_some_and(|c| c=="HINCRBY")).count(), 2);
     assert_eq!(records.iter().filter(|r| r.first().is_some_and(|c| c=="ZINCRBY")).count(), 2);
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-values.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-values.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["LRANGE", "list", "0", "-1"]), "*3\r\n$4\r\nbase\r\n$1\r\na\r\n$1\r\nb\r\n");
     assert_eq!(memory_request(&mut client, &["HGET", "hash", "n"]), "$1\r\n2\r\n");
     assert_eq!(memory_request(&mut client, &["SISMEMBER", "set", "new"]), ":1\r\n");
@@ -7190,10 +7698,11 @@ fn firn_script_fallback_restores_collection_payloads_but_not_lua_errors() {
 #[test]
 fn firn_script_fallback_restores_deadlines_types_and_presence() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-branches.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-branches.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     for (args, reply) in [
         (vec!["SET", "deadline", "v", "PXAT", "9999999999999"], "+OK\r\n"),
         (vec!["RPUSH", "typed", "a", "b"], ":2\r\n"),
@@ -7236,10 +7745,11 @@ fn firn_script_fallback_restores_deadlines_types_and_presence() {
     ];
     let expected: Vec<u8> = requests.iter().flat_map(|args| resp(args)).collect();
     assert_eq!(std::fs::read(aof_incremental_path(program.working_directory(), "fallback-branches.aof")).unwrap(), expected, "only accepted effects, with the two-effect invocation wrapped once");
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-branches.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-branches.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["MGET", "deadline", "typed", "created", "removed"]), "*4\r\n$1\r\nv\r\n$3\r\nnew\r\n$3\r\nnew\r\n$-1\r\n");
     assert_eq!(memory_request(&mut client, &["PEXPIRETIME", "deadline"]), ":9999999998888\r\n");
     drop(client);
@@ -7256,10 +7766,12 @@ fn firn_script_fallback_restores_deadlines_types_and_presence() {
 #[test]
 fn firn_script_declared_names_and_global_fallback_preserve_replies() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    // AOF on: the rewrite sequence the fallback checks read is reported only while a file is kept.
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"declared-names.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let names = "local a,b,c=KEYS[1],KEYS[2],KEYS[3]; KEYS[1]='outside'; \
         redis.call('INCR',a); redis.call('INCR',b); redis.call('INCR',c); \
         redis.call('SET',KEYS[1],'v'); return {#KEYS,a,b,c,redis.call('GET',a),redis.call('GET',b)}";
@@ -7305,10 +7817,11 @@ fn firn_script_declared_names_and_global_fallback_preserve_replies() {
 fn firn_script_fallback_keeps_lazy_expiry_effects() {
     const KEYS: usize = 32;
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-expiry.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-expiry.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let script = "local a=redis.call('GET',KEYS[1]); local b=redis.call('GET','outside'); return {a or 'missing',b or 'missing'}";
     client.write_all(&resp(&["SCRIPT", "LOAD", script])).unwrap();
     let sha = bulk_reply(&mut client, "warm lazy-expiry script");
@@ -7337,11 +7850,12 @@ fn firn_script_fallback_keeps_lazy_expiry_effects() {
 #[test]
 fn firn_disjoint_declared_scripts_finish_with_a_serial_history() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "2")], &[text.as_bytes(), b"2"]);
-    let mut left = connect_when_ready(port);
-    let mut right = connect_when_ready(port);
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "2")], &[text.as_bytes(), b"2"]).with_port(&port_lease);
+    let mut left = connect_when_ready(port, &child);
+    let mut right = connect_when_ready(port, &child);
     let script = "local a=redis.call('INCR',KEYS[1]); local n=0; for i=1,3000 do n=n+i end; return {a,redis.call('INCR',KEYS[1]),redis.call('GET',KEYS[1])}";
     left.write_all(&resp(&["EVAL", script, "1", "left"])).unwrap();
     right.write_all(&resp(&["EVAL", script, "1", "right"])).unwrap();
@@ -7434,10 +7948,11 @@ fn aof_records(bytes: &[u8]) -> Vec<Vec<String>> {
 #[test]
 fn firn_answers_the_value_types_as_redis_does_with_hashes_and_sorted_sets() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the client's waits");
@@ -7773,10 +8288,11 @@ fn firn_answers_the_value_types_as_redis_does_with_hashes_and_sorted_sets() {
 fn firn_replays_the_value_types_from_its_append_only_file_with_hashes_and_sorted_sets() {
     let program = firn();
     let name = "replay-hash-zset-types.aof";
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the first client's waits");
@@ -7866,10 +8382,11 @@ fn firn_replays_the_value_types_from_its_append_only_file_with_hashes_and_sorted
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0, "the first run");
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
         .expect("bound the second client's waits");
@@ -7949,12 +8466,13 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
             attempt += 1;
             assert!(attempt <= 5, "five runs each missed a precondition");
             let name = format!("shutdown-drain-{native_ring}-{attempt}.aof");
-            let port = free_port();
+            let port_lease = support::lease_port();
+            let port = port_lease.port();
             let text = port.to_string();
             let child =
-                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
-            let mut client = connect_when_ready(port);
-            let mut late = connect_when_ready(port);
+                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+            let mut client = connect_when_ready(port, &child);
+            let mut late = connect_when_ready(port, &child);
             late.write_all(&resp(&["PING"]))
                 .expect("establish the second client");
             expect_replies(&mut late, b"+PONG\r\n", "second client ready");
@@ -8006,10 +8524,11 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
             break name;
         };
 
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         let mut keys: Vec<(String, String)> = (0..128)
             .map(|i| (format!("shutdown:{i}"), format!("value:{i}")))
             .collect();
@@ -8039,11 +8558,12 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
 #[test]
 fn firn_shutdown_closes_an_idle_client_without_an_idle_limit_on_both_routes() {
     for native_ring in [false, true] {
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
-        let mut idle = connect_when_ready(port);
-        let mut caller = connect_when_ready(port);
+        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+        let mut idle = connect_when_ready(port, &child);
+        let mut caller = connect_when_ready(port, &child);
         let started = Instant::now();
         idle.write_all(&resp(&["PING"]))
             .expect("establish idle peer");
@@ -8071,15 +8591,16 @@ fn firn_shutdown_closes_an_idle_client_without_an_idle_limit_on_both_routes() {
 #[test]
 fn firn_shutdown_refusals_match_redis_on_both_routes() {
     for native_ring in [false, true] {
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
-        let mut client = connect_when_ready(port);
+        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         client
             .write_all(&resp(&["CONFIG", "SET", "requirepass", "secret"]))
             .expect("require authentication for a new shutdown caller");
         expect_replies(&mut client, b"+OK\r\n", "password enabled");
-        let mut unauthenticated = connect_when_ready(port);
+        let mut unauthenticated = connect_when_ready(port, &child);
         unauthenticated
             .write_all(&resp(&["SHUTDOWN", "unknown"]))
             .expect("try shutdown without authentication");
@@ -8163,11 +8684,12 @@ fn firn_shutdown_refusals_match_redis_on_both_routes() {
 #[test]
 fn firn_shutdown_abandons_a_blocked_send_on_both_routes() {
     for native_ring in [true, false] {
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
-        let mut slow = connect_when_ready(port);
-        let mut caller = connect_when_ready(port);
+        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+        let mut slow = connect_when_ready(port, &child);
+        let mut caller = connect_when_ready(port, &child);
         let value = "x".repeat(16 * 1024 * 1024);
         caller
             .write_all(&resp(&["SET", "large", &value]))
@@ -8233,11 +8755,12 @@ fn firn_stops_in_order_on_sigterm_and_sigint_on_both_routes() {
     for signal in ["TERM", "INT"] {
         for native_ring in [false, true] {
             let name = format!("signal-{signal}-{native_ring}.aof");
-            let port = free_port();
+            let port_lease = support::lease_port();
+            let port = port_lease.port();
             let text = port.to_string();
             let child =
-                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
-            let mut client = connect_when_ready(port);
+                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+            let mut client = connect_when_ready(port, &child);
             let mut batch = Vec::new();
             for i in 0..128 {
                 batch.extend(resp(&["SET", &format!("signal:{i}"), &format!("value:{i}")]));
@@ -8248,11 +8771,12 @@ fn firn_stops_in_order_on_sigterm_and_sigint_on_both_routes() {
             shutdown_finished(child);
             assert_eq!(client.read(&mut [0]).expect("the signal closes the client"), 0);
 
-            let port = free_port();
+            let port_lease = support::lease_port();
+            let port = port_lease.port();
             let text = port.to_string();
             let child =
-                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]);
-            let mut reader = connect_when_ready(port);
+                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+            let mut reader = connect_when_ready(port, &child);
             for i in 0..128 {
                 reader
                     .write_all(&resp(&["GET", &format!("signal:{i}")]))
@@ -8286,15 +8810,16 @@ fn firn_stops_in_order_on_sigterm_and_sigint_on_both_routes() {
 fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
     use std::os::unix::process::ExitStatusExt;
     for (signal, number, native_ring) in [("TERM", 15, false), ("INT", 2, true)] {
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
         let mut child = firn().spawn_on_route_with(
             native_ring,
             &[("WF_WORKERS", "2"), ("WF_DRIVERS", "2")],
             &[text.as_bytes(), b"0"],
-        );
-        let mut looping = connect_when_ready(port);
-        let mut observer = connect_when_ready(port);
+        ).with_port(&port_lease);
+        let mut looping = connect_when_ready(port, &child);
+        let mut observer = connect_when_ready(port, &child);
         observer.write_all(&resp(&["PING"])).expect("establish observer");
         expect_replies(&mut observer, b"+PONG\r\n", "observer ready");
         looping
@@ -8338,11 +8863,12 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_applies_an_idle_limit_to_a_previously_unlimited_receive() {
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = firn().spawn_on_route(true, &[text.as_bytes(), b"0"]);
-    let mut idle = connect_when_ready(port);
-    let mut caller = connect_when_ready(port);
+    let child = firn().spawn_on_route(true, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+    let mut idle = connect_when_ready(port, &child);
+    let mut caller = connect_when_ready(port, &child);
     idle.write_all(&resp(&["PING"]))
         .expect("establish unlimited receive");
     expect_replies(&mut idle, b"+PONG\r\n", "unlimited client");
@@ -8362,7 +8888,7 @@ fn firn_applies_an_idle_limit_to_a_previously_unlimited_receive() {
         0
     );
     // The caller may also have become idle; use a fresh connection to stop.
-    let mut stopper = connect_when_ready(port);
+    let mut stopper = connect_when_ready(port, &child);
     stopper
         .write_all(&resp(&["SHUTDOWN"]))
         .expect("stop idle-limit case");
@@ -8378,11 +8904,12 @@ fn firn_reapplies_an_idle_limit_after_disabling_it_on_both_routes() {
     let program = firn();
     for native_ring in [true, false] {
         let what = format!("native ring: {native_ring}");
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0"]);
-        let mut idle = connect_when_ready(port);
-        let mut caller = connect_when_ready(port);
+        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+        let mut idle = connect_when_ready(port, &child);
+        let mut caller = connect_when_ready(port, &child);
         // This client stays active through its own configuration changes;
         // the final PONG establishes activity after timeout is zero again.
         let mut changes = resp(&["CONFIG", "SET", "timeout", "1"]);
@@ -8407,7 +8934,7 @@ fn firn_reapplies_an_idle_limit_after_disabling_it_on_both_routes() {
             "{what}: idle client must close without another request"
         );
 
-        let mut stopper = connect_when_ready(port);
+        let mut stopper = connect_when_ready(port, &child);
         stopper
             .write_all(&resp(&["SHUTDOWN"]))
             .expect("stop repeated idle-limit case");
@@ -8473,10 +9000,11 @@ fn multipart_values(client: &mut TcpStream, values: &[(&str, Option<&str>)]) {
 }
 
 fn multipart_load(program: &CompiledProgram, name: &str, values: &[(&str, Option<&str>)]) {
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     multipart_values(&mut client, values);
     // Also make an empty expected-values case prove that startup completed.
     client.write_all(&resp(&["PING"])).unwrap();
@@ -8486,11 +9014,12 @@ fn multipart_load(program: &CompiledProgram, name: &str, values: &[(&str, Option
 }
 
 fn multipart_refused(program: &CompiledProgram) {
-    let text = free_port().to_string();
-    let result = program.run(
+    let port_lease = support::lease_port();
+    let text = port_lease.port().to_string();
+    let result = program.spawn_in_directory(
         program.working_directory(),
         &[text.as_bytes(), b"1", b"appendonly.aof"],
-    );
+    ).with_port(&port_lease).wait_with_output().expect("wait for compiled program");
     assert_eq!(result.status.code(), Some(4), "{result:?}");
 }
 
@@ -8705,10 +9234,11 @@ fn multipart_empty_start(empty_directory: bool) {
     if empty_directory {
         std::fs::create_dir(&directory).unwrap();
     }
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"appendonly.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(
         std::fs::read(directory.join("appendonly.aof.1.base.aof")).unwrap(),
         b""
@@ -8826,10 +9356,11 @@ fn multipart_upgrade(interrupted: bool, both: bool) {
         b"file appendonly.aof seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i\n"
     );
     multipart_load(&program, "appendonly.aof", &expected);
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     rewrite_start(&mut client);
     assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
     assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), rewrite_manifest(2, 2));
@@ -8907,14 +9438,16 @@ fn multi_part_aof_can_upgrade_when_two_servers_share_the_same_server_dir() {
         "appendonly.aof2",
         &[("k4", "v4"), ("k5", "v5"), ("k6", "v6")],
     );
-    let first_port = free_port();
+    let first_port_lease = support::lease_port();
+    let first_port = first_port_lease.port();
     let first_text = first_port.to_string();
-    let first = program.spawn_on_route(true, &[first_text.as_bytes(), b"1", b"appendonly.aof"]);
-    let mut first_client = connect_when_ready(first_port);
-    let second_port = free_port();
+    let first = program.spawn_on_route(true, &[first_text.as_bytes(), b"1", b"appendonly.aof"]).with_port(&first_port_lease);
+    let mut first_client = connect_when_ready(first_port, &first);
+    let second_port_lease = support::lease_port();
+    let second_port = second_port_lease.port();
     let second_text = second_port.to_string();
-    let second = program.spawn_on_route(true, &[second_text.as_bytes(), b"1", b"appendonly.aof2"]);
-    let mut second_client = connect_when_ready(second_port);
+    let second = program.spawn_on_route(true, &[second_text.as_bytes(), b"1", b"appendonly.aof2"]).with_port(&second_port_lease);
+    let mut second_client = connect_when_ready(second_port, &second);
     multipart_values(
         &mut first_client,
         &[
@@ -8968,10 +9501,11 @@ fn multi_part_aof_can_upgrade_when_two_servers_share_the_same_server_dir() {
 fn multi_part_aof_can_handle_appendfilename_contains_whitespaces() {
     let program = CompiledProgram::from_environment();
     let name = " file seq \n\n.aof ";
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client.write_all(&resp(&["SET", "k1", "v1"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "whitespace appendfilename");
     drop(client);
@@ -8980,10 +9514,11 @@ fn multi_part_aof_can_handle_appendfilename_contains_whitespaces() {
     assert_eq!(std::fs::read(directory.join(format!("{name}.manifest"))).unwrap(),
         b"file \" file seq \\n\\n.aof .1.base.aof\" seq 1 type b\nfile \" file seq \\n\\n.aof .1.incr.aof\" seq 1 type i\n");
     multipart_load(&program, name, &[("k1", Some("v1"))]);
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     rewrite_start(&mut client);
     assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
     assert_eq!(std::fs::read(directory.join(format!("{name}.manifest"))).unwrap(),
@@ -8998,10 +9533,11 @@ fn multi_part_aof_can_handle_appendfilename_contains_whitespaces() {
 fn multi_part_aof_quotes_apostrophes_in_appendfilename() {
     let program = CompiledProgram::from_environment();
     let name = "a'b";
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client.write_all(&resp(&["SET", "k", "v"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "apostrophe appendfilename");
     drop(client);
@@ -9031,10 +9567,11 @@ fn multi_part_aof_replays_in_order_appends_to_last_and_removes_history() {
         "file appendonly.aof.1.incr.aof seq 1 type i\nfile old.aof seq 1 type h\nfile absent.aof seq 2 type h\nfile appendonly.aof.1.base.aof seq 1 type b\nfile appendonly.aof.3.incr.aof seq 3 type i\n",
     );
     let directory = program.working_directory().join("appendonlydir");
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"appendonly.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     multipart_values(&mut client, &[("k", Some("3"))]);
     client.write_all(&resp(&["INCR", "k"])).unwrap();
     expect_replies(&mut client, b":4\r\n", "append to last incremental");
@@ -9197,6 +9734,14 @@ fn rewrite_start(client: &mut TcpStream) {
     );
 }
 
+/// Sets Redis 7.0.15's hidden rdb-key-save-delay, the microseconds its
+/// rewrite sleeps after each key, so that a rewrite stays in progress long
+/// enough for a case to act during it, as Redis's own suite does.
+fn rewrite_key_delay(client: &mut TcpStream, microseconds: &str) {
+    client.write_all(&resp(&["CONFIG", "SET", "rdb-key-save-delay", microseconds])).unwrap();
+    expect_replies(client, b"+OK\r\n", "rdb-key-save-delay");
+}
+
 fn rewrite_stop(client: &mut TcpStream, child: ProgramChild) {
     client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
     shutdown_finished(child);
@@ -9213,10 +9758,11 @@ fn rewrite_manifest(base: u64, incremental: u64) -> String {
 #[test]
 fn firn_refuses_aof_rewrite_without_appendonly() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client.write_all(&resp(&["SET", "k", "v"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "in-memory value");
     client.write_all(&resp(&["BGREWRITEAOF", "extra"])).unwrap();
@@ -9240,10 +9786,11 @@ fn firn_refuses_aof_rewrite_without_appendonly() {
 #[test]
 fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client.write_all(&resp(&["SET", "text", "hello\0world\r\n"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "binary string");
     for index in 0..65 {
@@ -9290,10 +9837,11 @@ fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
     assert_eq!(info["aof_base_size"], info["aof_current_size"]);
     rewrite_stop(&mut client, child);
 
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     multipart_values(&mut client, &[("text", Some("hello\0world\r\n"))]);
     for index in 0..65 {
         let member = format!("m{index:02}");
@@ -9334,10 +9882,11 @@ fn firn_rewrite_cuts_a_retained_unfinished_block_before_switching() {
         resp(&["SET", "b", "2"]),
     ].concat();
     std::fs::write(&path, [retained.clone(), partial[..9].to_vec()].concat()).unwrap();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     multipart_values(&mut client, &[("a", Some("1")), ("b", None), ("c", None)]);
     assert_eq!(std::fs::read(&path).unwrap(), retained);
     client.write_all(&resp(&["SET", "after", "1"])).unwrap();
@@ -9376,10 +9925,11 @@ fn firn_rewrite_failed_after_cutting_a_retained_block_stays_loadable() {
     for obstacle in &obstacles {
         std::fs::create_dir(obstacle).unwrap();
     }
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     client.write_all(&resp(&["SET", "after", "1"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "append inside retained block");
     rewrite_start(&mut client);
@@ -9415,10 +9965,11 @@ fn firn_rewrite_keeps_a_retained_block_closed_by_an_appended_transaction() {
             resp(&["SET", "b", "2"]),
         ].concat();
         std::fs::write(&path, [retained.clone(), partial[..9].to_vec()].concat()).unwrap();
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         multipart_values(&mut client, &[("a", Some("1")), ("b", None), ("c", None)]);
         assert_eq!(std::fs::read(&path).unwrap(), retained);
         client.write_all(&[
@@ -9469,10 +10020,11 @@ fn firn_rewrite_cuts_before_both_retained_unmatched_multis() {
             resp(&["SET", "c", "3"]),
         ].concat();
         std::fs::write(&path, [retained.clone(), partial[..9].to_vec()].concat()).unwrap();
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         multipart_values(&mut client, &[("a", Some("2")), ("b", None), ("c", None), ("d", None)]);
         assert_eq!(std::fs::read(&path).unwrap(), retained);
         client.write_all(&resp(&["SET", "after", "1"])).unwrap();
@@ -9543,16 +10095,18 @@ fn rewrite_large_fixture(program: &CompiledProgram) {
 fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     let program = CompiledProgram::from_environment();
     rewrite_large_fixture(&program);
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
-    let mut control = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut control = connect_when_ready(port, &child);
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let mut workers = Vec::new();
     for operation in ["INCR", "APPEND", "LPUSH"] {
         let running = running.clone();
+        let monitor = child.monitor();
         workers.push(std::thread::spawn(move || {
-            let mut client = connect_when_ready(port);
+            let mut client = connect_when_ready(port, &monitor);
             let mut count = 0;
             while running.load(std::sync::atomic::Ordering::Acquire) || count < 100 {
                 let mut request = vec![operation, operation];
@@ -9566,6 +10120,7 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
             (operation, count)
         }));
     }
+    rewrite_key_delay(&mut control, "100");
     rewrite_start(&mut control);
     assert_eq!(rewrite_info(&mut control)["aof_rewrite_in_progress"], "1", "fixture must overlap the rewrite");
     control.write_all(&resp(&["BGREWRITEAOF"])).unwrap();
@@ -9574,10 +10129,11 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     running.store(false, std::sync::atomic::Ordering::Release);
     let expected: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
     rewrite_stop(&mut control, child);
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     for (operation, count) in expected {
         match operation {
             "INCR" => {
@@ -9608,10 +10164,12 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
 fn firn_shutdown_cancels_scan_before_rotation() {
     let program = CompiledProgram::from_environment();
     rewrite_large_fixture(&program);
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    rewrite_key_delay(&mut client, "100");
     rewrite_start(&mut client);
     assert_eq!(rewrite_info(&mut client)["aof_rewrite_in_progress"], "1");
     client.write_all(&resp(&["INCR", "after-switch"])).unwrap();
@@ -9634,14 +10192,15 @@ fn firn_automatic_rewrite_requires_size_and_growth_and_can_be_disabled() {
             ("appendonly.aof.1.base.aof", &[&["SET", "n", "0"]]),
             ("appendonly.aof.1.incr.aof", &[&["INCR", "n"], &["INCR", "n"], &["INCR", "n"]]),
         ], &rewrite_manifest(1, 1));
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
         let child = program.spawn_on_route(true, &[
             text.as_bytes(), b"0", b"appendonly.aof",
             b"--auto-aof-rewrite-percentage", percentage.as_bytes(),
             b"--auto-aof-rewrite-min-size", minimum.as_bytes(),
-        ]);
-        let mut client = connect_when_ready(port);
+        ]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut info = rewrite_info(&mut client);
         if expected_rewrites == 1 {
@@ -9671,10 +10230,11 @@ fn firn_automatic_rewrite_requires_size_and_growth_and_can_be_disabled() {
 fn firn_rewrite_host_failures_keep_a_replayable_manifest() {
     for failure in ["new-incremental", "temporary-base", "base-rename", "switch-manifest"] {
         let program = CompiledProgram::from_environment();
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         let directory = program.working_directory().join("appendonlydir");
         let obstacle = directory.join(match failure {
             "new-incremental" => "appendonly.aof.2.incr.aof",
@@ -9705,10 +10265,11 @@ fn firn_rewrite_host_failures_keep_a_replayable_manifest() {
         rewrite_stop(&mut client, child);
         multipart_load(&program, "appendonly.aof", &[("n", Some("2"))]);
         assert!(!directory.join("temp-appendonly.aof.base").exists());
-        let port = free_port();
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
-        let mut client = connect_when_ready(port);
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
         rewrite_start(&mut client);
         assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok", "retry after {failure}");
         rewrite_stop(&mut client, child);
@@ -9719,10 +10280,11 @@ fn firn_rewrite_host_failures_keep_a_replayable_manifest() {
 #[test]
 fn firn_rewrites_an_empty_dataset_without_select_and_can_rewrite_again() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let directory = program.working_directory().join("appendonlydir");
     for sequence in 2..=3 {
         rewrite_start(&mut client);
@@ -9746,12 +10308,13 @@ fn firn_automatic_rewrite_minimum_is_strict() {
         ("appendonly.aof.1.incr.aof", &[&["SET", "n", "0"]]),
     ], &rewrite_manifest(1, 1));
     let minimum = resp(&["SET", "n", "0"]).len().to_string();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
     let child = program.spawn_on_route(true, &[
         text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", minimum.as_bytes(),
-    ]);
-    let mut client = connect_when_ready(port);
+    ]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     std::thread::sleep(Duration::from_millis(250));
     assert_eq!(rewrite_info(&mut client)["aof_rewrites"], "0");
     client.write_all(&resp(&["INCR", "n"])).unwrap();
@@ -9786,14 +10349,18 @@ fn firn_simultaneous_rewrites_in_one_directory_keep_independent_datasets() {
         std::fs::write(directory.join(format!("{prefix}.1.incr.aof")), bytes).unwrap();
         std::fs::write(directory.join(format!("{prefix}.manifest")), format!("file {prefix}.1.base.aof seq 1 type b\nfile {prefix}.1.incr.aof seq 1 type i\n")).unwrap();
     }
-    let first_port = free_port();
+    let first_port_lease = support::lease_port();
+    let first_port = first_port_lease.port();
     let first_text = first_port.to_string();
-    let first = program.spawn_on_route(true, &[first_text.as_bytes(), b"0", b"appendonly.aof"]);
-    let mut first_client = connect_when_ready(first_port);
-    let second_port = free_port();
+    let first = program.spawn_on_route(true, &[first_text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&first_port_lease);
+    let mut first_client = connect_when_ready(first_port, &first);
+    let second_port_lease = support::lease_port();
+    let second_port = second_port_lease.port();
     let second_text = second_port.to_string();
-    let second = program.spawn_on_route(true, &[second_text.as_bytes(), b"0", b"second.aof"]);
-    let mut second_client = connect_when_ready(second_port);
+    let second = program.spawn_on_route(true, &[second_text.as_bytes(), b"0", b"second.aof"]).with_port(&second_port_lease);
+    let mut second_client = connect_when_ready(second_port, &second);
+    rewrite_key_delay(&mut first_client, "100");
+    rewrite_key_delay(&mut second_client, "100");
     rewrite_start(&mut first_client);
     rewrite_start(&mut second_client);
     assert_eq!(rewrite_info(&mut first_client)["aof_rewrite_in_progress"], "1", "fixture must overlap both rewrites");
@@ -9821,16 +10388,56 @@ fn memory_object(client: &mut TcpStream, sub: &str, key: &str) -> i64 {
         .and_then(|s| s.parse().ok()).unwrap_or_else(|| panic!("OBJECT {sub} {key}: {reply:?}"))
 }
 
+/// Redis 7.0.15 config.c declares rdb-key-save-delay a hidden integer from
+/// INT_MIN through INT_MAX, read by string2ll: CONFIG GET answers it only to
+/// its whole name in either case, never to a pattern, and CONFIG SET checks
+/// it and rolls back with every other pair of a refused SET.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_configures_rdb_key_save_delay_as_a_hidden_parameter() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let name = "rdb-key-save-delay";
+    assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, "0"]));
+    for value in ["-2147483648", "-1", "0", "1000", "2147483647"] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", name, value]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, value]));
+    }
+    assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "RDB-KEY-SAVE-DELAY"]).as_bytes(), resp(&["RDB-KEY-SAVE-DELAY", "2147483647"]));
+    for pattern in ["rdb-key-save-dela?", "rdb-*", "*delay", "*"] {
+        let reply = memory_request(&mut client, &["CONFIG", "GET", pattern]);
+        assert!(!reply.contains(name), "a pattern must not reach a hidden parameter: {pattern} {reply:?}");
+    }
+    let bounds = "argument must be between -2147483648 and 2147483647 inclusive";
+    let integer_error = "argument couldn't be parsed into an integer";
+    for (value, reason) in [
+        ("2147483648", bounds), ("-2147483649", bounds), ("9223372036854775807", bounds),
+        ("", integer_error), ("1ms", integer_error), ("+1", integer_error), ("01", integer_error),
+    ] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "lfu-log-factor", "12", name, value]),
+            format!("-ERR CONFIG SET failed (possibly related to argument '{name}') - {reason}\r\n"));
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, "2147483647"]));
+        assert_eq!(memory_request(&mut client, &["CONFIG", "GET", "lfu-log-factor"]).as_bytes(), resp(&["lfu-log-factor", "10"]));
+    }
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
 /// Redis 7.0.15 config.c declares an integer percentage and a signed off_t
 /// memory value. util.c string2ll/memtoull determine the accepted spellings.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_configures_and_reports_automatic_aof_rewrite_thresholds() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let percentage = "auto-aof-rewrite-percentage";
     let minimum = "auto-aof-rewrite-min-size";
     for (name, value) in [(percentage, "100"), (minimum, "67108864")] {
@@ -9921,10 +10528,11 @@ fn firn_configures_and_reports_automatic_aof_rewrite_thresholds() {
 #[test]
 fn firn_uses_config_set_thresholds_for_the_next_automatic_rewrite() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &[
         "CONFIG", "SET", "auto-aof-rewrite-percentage", "0", "auto-aof-rewrite-min-size", "1kb",
     ]), "+OK\r\n");
@@ -9996,10 +10604,11 @@ fn firn_uses_config_set_thresholds_for_the_next_automatic_rewrite() {
 #[test]
 fn firn_configures_and_reports_maxmemory() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     for (name, default, changed) in [
         ("maxmemory", "0", "1048576"),
         ("maxmemory-policy", "noeviction", "allkeys-lfu"),
@@ -10088,10 +10697,11 @@ fn firn_configures_and_reports_maxmemory() {
 #[test]
 fn firn_tracks_idle_time_and_notouch_lookups() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["SET", "idle", "v"]), "+OK\r\n");
     assert!(memory_object(&mut client, "IDLETIME", "idle") <= 1);
     std::thread::sleep(Duration::from_secs(2));
@@ -10149,10 +10759,11 @@ fn firn_tracks_idle_time_and_notouch_lookups() {
 #[test]
 fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu"]), "+OK\r\n");
     assert_eq!(memory_request(&mut client, &["SET", "freq", "v"]), "+OK\r\n");
     assert_eq!(memory_object(&mut client, "FREQ", "freq"), 5);
@@ -10212,10 +10823,11 @@ fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
 fn firn_initializes_access_stamps_during_aof_replay() {
     let program = CompiledProgram::from_environment();
     std::fs::write(program.working_directory().join("access.aof"), resp(&["SET", "loaded", "v"])).unwrap();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"access.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"access.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert!(memory_object(&mut client, "IDLETIME", "loaded") <= 1);
     drop(client);
     assert_eq!(finished(child).0, 0);
@@ -10228,10 +10840,11 @@ fn firn_initializes_access_stamps_during_aof_replay() {
 #[test]
 fn firn_restores_first_access_stamps_on_script_retries() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu", "lfu-log-factor", "0", "lfu-decay-time", "0"]), "+OK\r\n");
     for (args, expected) in [
         (vec!["SET", "", "v"], "+OK\r\n"),
@@ -10269,11 +10882,12 @@ fn firn_restores_first_access_stamps_on_script_retries() {
 #[test]
 fn firn_restores_access_stamps_when_a_read_only_script_is_killed() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]);
-    let mut looping = connect_when_ready(port);
-    let mut other = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]).with_port(&port_lease);
+    let mut looping = connect_when_ready(port, &child);
+    let mut other = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu", "lfu-log-factor", "0", "lfu-decay-time", "0"]), "+OK\r\n");
     assert_eq!(memory_request(&mut other, &["SET", "kill-access", "v"]), "+OK\r\n");
     looping.write_all(&resp(&["EVAL", "redis.call('GET',KEYS[1]); redis.call('GET',KEYS[1]); while true do end", "1", "kill-access"])).expect("start refreshing script");
