@@ -147,7 +147,7 @@ instead calls ld2string with LD_STR_AUTO, which
 double these are the same digits as %.17g of the original double. Both
 protocols still frame these texts as bulk strings.
 
-The owner recorded all ten batches in
+All ten batches were recorded in
 [the Redis 7.2.16 oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38398911733).
 Batch names, RESP selections and command arrays match
 [the recorder manifest](../../../tests/collection-scan-oracle.json) exactly.
