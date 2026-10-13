@@ -6,13 +6,11 @@ data races and two lock/wait deadlocks. They implement board item
 `firn-safety-showcase`'s bug witnesses. No upstream implementation is copied.
 They do not change firn or reproduce complete server commands.
 
-**Validation status: six pairs passed in the [first CI run][first-run] at
-[the tested revision][first-revision].** The four use-after-free pairs and
-both buffer-overrun pairs received their expected rejections and built their
-corrections. Garnet's rejected program matched its expected diagnostic, but
-its correction failed to compile; the old runner then stopped before the
-last three pairs. The revised runner remains pending CI. Do not cite this
-inventory as ten verified pairs.
+**Validation status: nine pairs passed in the [latest CI run][garnet-op2].**
+The runner checked all ten pairs. Garnet's rejected program matched its
+expected diagnostic; its correction's direct field subtraction met the known
+gap described below and is now written with a local copy, pending CI. Do not
+cite this inventory as ten verified pairs until that run passes.
 
 ## What the evidence means
 
@@ -66,7 +64,7 @@ status above; the remaining outcomes are expectations.
 | ACL LOAD with a deferred-free client | Valkey [#3800](https://github.com/valkey-io/valkey/pull/3800) | Use-after-free | Release the registry's user while a deferred client's alias still refers to its name. | [rejected.wf](valkey-acl-user/rejected.wf) | `error[REF-2]: InvalidReferenceUse` after the owning Box is consumed | [accepted.wf](valkey-acl-user/accepted.wf): retain an owned `Frozen<User>` handle for the client. |
 | XACKDEL fixed ID vector, CVE-2025-62507 | Redis [advisory](https://github.com/redis/redis/security/advisories/GHSA-jhjx-x4cf-4vm8) | Out-of-bounds | Fill a fixed-capacity ID array after skipping the growth needed for a larger request. | [rejected.wf](redis-xackdel/rejected.wf) | `error[OP-4]: UndischargedBoundsObligation` at the fixed-array write | [accepted.wf](redis-xackdel/accepted.wf): allocate the initialized array for the actual ID count. |
 | XAUTOCLAIM deleted-ID array, CVE-2022-31144 | Redis [#11002](https://github.com/redis/redis/pull/11002) | Out-of-bounds | Size the deleted-ID array by COUNT but advance the stopping counter only for claimed entries. | [rejected.wf](redis-xautoclaim/rejected.wf) | `error[OP-4]: UndischargedBoundsObligation` at the deleted-ID write | [accepted.wf](redis-xautoclaim/accepted.wf): count deleted and claimed entries toward the same limit. |
-| ZTTL mutation under a read lock | Garnet [#1642](https://github.com/microsoft/garnet/pull/1642) | Data race | Give a query read authority even though its helper removes an expired sorted-set member. | [rejected.wf](garnet-zttl/rejected.wf) | `error[SHARE-2]: ReadonlyWriteTarget` at the helper's writing argument | [accepted.wf](garnet-zttl/accepted.wf): supply `Shared` mutation authority and perform removal atomically. |
+| ZTTL mutation under a read lock | Garnet [#1642](https://github.com/microsoft/garnet/pull/1642) | Data race | Give a query read authority even though its helper removes an expired sorted-set member. | [rejected.wf](garnet-zttl/rejected.wf) | `error[SHARE-2]: ReadonlyWriteTarget` at the helper's writing argument | [accepted.wf](garnet-zttl/accepted.wf): supply `Shared` mutation authority and perform removal atomically; the expiry field is copied to a local before the subtraction (see below). |
 | IO-thread script timeout observation | Redis [#15781](https://github.com/redis/redis/pull/15781) | Data race | Spawn a reader borrowing the main context's flag while the main context can write it. | [rejected.wf](redis-script-timeout/rejected.wf) | `error[WAIT-3]: InvalidSpawn`: spawned parameters must be values | [accepted.wf](redis-script-timeout/accepted.wf): pass an owned shared handle and access the flag atomically. |
 | Reported work-queue/global-lock inversion | KeyDB [issue #883](https://github.com/Snapchat/KeyDB/issues/883) | Deadlock | Acquire global access while retaining queue access, opposite another worker's order. | [rejected.wf](keydb-lock-order/rejected.wf) | Original mutex protocol is not expressible; closest nested atomic attempt expects `error[SHARE-2]: WaitInsideAtomic` | [accepted.wf](keydb-lock-order/accepted.wf): name both objects in one atomic statement, including a caller with reversed header order. |
 | Shutdown holds GIL while draining lazy-free workers | Valkey [#3029](https://github.com/valkey-io/valkey/pull/3029) | Deadlock | Wait for worker completion while retaining engine access the worker needs. | [rejected.wf](valkey-shutdown/rejected.wf) | Original GIL protocol is not expressible; closest waiting call inside atomic expects `error[SHARE-2]: WaitInsideAtomic` | [accepted.wf](valkey-shutdown/accepted.wf): finish engine access, then wait for worker completion outside it. |
@@ -96,6 +94,16 @@ in this session. `SharedRead` represents read authority, not an implementation
 promise that Whitefoot uses a reader/writer lock. The script-timeout example
 has no timing assertion: either flag value can be observed legally after
 the repair, but a reference into the parent cannot be passed to a spawn.
+
+The accepted ZTTL helper copies `expires_at` into a local before comparing
+and subtracting. Written directly on the field, `sorted^.expires_at - now`
+after the `<= now` early return is rejected with
+`error[OP-2]: UndischargedIntegerDomainObligation` ([CI run][garnet-op2]):
+the checker keeps no current-value record for a field, so the branch fact
+does not reach the subtraction. That is a known Whitefoot gap, tracked on
+the status board as `coord-wfbl-01-32` and scheduled for Whitefoot's second
+version; it is unrelated to the read-authority violation this pair
+witnesses.
 
 Whitefoot's shared-state interface has no independently held raw mutex/GIL
 token. The deadlock witnesses use its nearest state-access constructs,
@@ -180,5 +188,4 @@ before it can be classified as a source defect or a language/compiler gap.
 [contexts]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L2268-L2344
 [atomic]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L2320-L2353
 [form]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L100
-[first-run]: https://github.com/Ming-Research/Firn-wf/actions/runs/38396436200
-[first-revision]: https://github.com/Ming-Research/Firn-wf/commit/6c8d976d8e89c774d851af85b5b76ebf71a93f1c
+[garnet-op2]: https://github.com/Ming-Research/Firn-wf/actions/runs/38403872458

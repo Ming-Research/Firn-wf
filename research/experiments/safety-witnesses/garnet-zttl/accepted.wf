@@ -5,11 +5,12 @@ struct SortedSet {
 }
 
 fn expiry_query(sorted: &SortedSet, now: u64) -> ttl: u64 reads(sorted.expires_at), writes(sorted.member) {
-  if sorted^.expires_at <= now {
+  let expires_at = sorted^.expires_at;
+  if expires_at <= now {
     set sorted^.member = None<u64>();
     return 0_u64;
   }
-  return sorted^.expires_at - now;
+  return expires_at - now;
 }
 
 fn zttl(sorted: Shared<SortedSet>, now: u64) -> ttl: u64 pure waits {
