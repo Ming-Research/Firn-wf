@@ -1663,6 +1663,7 @@ fn spop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, 
         let remaining = popped - first;
         let batch = imin(remaining, 1024_u64);
         let end = first + batch;
+        invariant batch_end_within_members: end <= popped;
         let count = batch + 2_u64;
         log_count(log: log, count: count, room: key_span.length, budget: budget);
         log_word(log: log, word: &word_srem[0_u64..4_u64], budget: budget);
