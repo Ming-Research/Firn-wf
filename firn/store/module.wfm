@@ -229,6 +229,7 @@ public struct Meta {
   public readonly stopping: Bool;
   public readonly random: u64;
   invariant selected(meta): meta.database < 16_u64;
+  invariant due_selected(meta): meta.due.database < 16_u64;
 }
 
 public fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_text selects what the refusal describes.";

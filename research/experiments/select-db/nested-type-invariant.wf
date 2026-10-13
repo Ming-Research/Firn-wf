@@ -1,0 +1,29 @@
+alias ExitStatus = std::process::ExitStatus;
+
+struct Inner {
+  database: u64;
+  invariant selected(inner): inner.database < 16_u64;
+}
+
+struct Outer {
+  doc "Natural owned containment: every constructed Inner is valid, but TYPE-11 does not carry its invariant into a parameter of type Outer. forward's read call therefore lacks outer.payload.database < 16. The accepted form adds invariant payload_selected(outer): outer.payload.database < 16_u64; here. That form owes the same fact at every Outer construction and writer exit. A proposed automatic rule must add those obligations as well as entry facts; it must not assume validity at projection after an internal temporary invalidating write.";
+  payload: Inner;
+}
+
+fn read(inner: &Inner) -> database: u64 reads(inner.database) {
+  return inner^.database;
+}
+
+fn forward(outer: &Outer) -> database: u64 reads(outer.payload.database) {
+  return read(inner: &outer^.payload);
+}
+
+fn main() -> status: ExitStatus pure {
+  let inner = Inner(database: 7_u64);
+  let outer = Outer(payload: inner);
+  let database = forward(outer: &outer);
+  if database != 7_u64 {
+    return std::process::exit_status(code: 1_u8);
+  }
+  return std::process::exit_status(code: 0_u8);
+}

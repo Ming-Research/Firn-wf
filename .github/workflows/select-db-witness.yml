@@ -1,6 +1,6 @@
 # Temporary CI caller for firn-scope-select-db. Remove before the PR is ready
-# once the pinned directory form is validated. Keep the witness as the
-# regression instrument linked from the database design decision.
+# once the pinned directory and invariant forms are validated. Keep the
+# witnesses as regression instruments for the database design and language requests.
 name: select-db-witness
 
 on:
@@ -49,3 +49,18 @@ jobs:
           sed -i 's/set state\^\.count = value;/pkg::state::write_count(state: state, value: value);/' "$type11_accepted/client/client.wf"
           "build/whitefoot/${witness_release}/whitefootc" --graph "$type11_accepted/modules.wfg" --entry witness -o build/type11-accepted
           build/type11-accepted
+
+      - name: Isolate the missing nested invariant and verify its explicit outer form
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          if "build/whitefoot/${witness_release}/whitefootc" --check research/experiments/select-db/nested-type-invariant.wf > "$RUNNER_TEMP/nested-invariant-diagnostic.txt" 2>&1; then
+            cat "$RUNNER_TEMP/nested-invariant-diagnostic.txt"
+            echo 'Expected FN-8 at the Inner parameter call'
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/nested-invariant-diagnostic.txt"
+          grep -F 'error[FN-8]: UndischargedCallRequirement' "$RUNNER_TEMP/nested-invariant-diagnostic.txt"
+          grep -F 'outer^.payload.database' "$RUNNER_TEMP/nested-invariant-diagnostic.txt"
+          sed '/^  payload: Inner;$/a\  invariant payload_selected(outer): outer.payload.database < 16_u64;' research/experiments/select-db/nested-type-invariant.wf > "$RUNNER_TEMP/nested-invariant-accepted.wf"
+          "build/whitefoot/${witness_release}/whitefootc" "$RUNNER_TEMP/nested-invariant-accepted.wf" -o build/nested-invariant-accepted
+          build/nested-invariant-accepted
