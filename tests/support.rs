@@ -5,10 +5,97 @@ use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
+
+/// Connects to a program that is still starting.
+///
+/// The program binds its listener some time after the harness spawned it, so
+/// the first attempts are refused. This retries for a bounded wall-clock span
+/// and fails the case if the program never listened; nothing about the
+/// program's own acceptance depends on it.
+pub(crate) fn connect_when_ready(port: u16, child: &ProgramMonitor) -> TcpStream {
+    connect_to_when_ready(SocketAddr::from(([127, 0, 0, 1], port)), child)
+}
+
+/// Connects to a program that is still starting, at the address it listens on.
+pub(crate) fn connect_to_when_ready(address: SocketAddr, child: &ProgramMonitor) -> TcpStream {
+    connect_to_when_ready_using(address, child, TcpStream::connect_timeout)
+}
+
+pub(crate) fn connect_to_when_ready_using(
+    address: SocketAddr,
+    child: &ProgramMonitor,
+    connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
+) -> TcpStream {
+    connect_to_when_ready_using_limit(address, child, Duration::from_secs(20), connect)
+}
+
+/// The same admission/retry rules with an explicit startup budget for a large AOF.
+pub(crate) fn connect_to_when_ready_with_limit(
+    address: SocketAddr,
+    child: &ProgramMonitor,
+    limit: Duration,
+) -> TcpStream {
+    connect_to_when_ready_using_limit(address, child, limit, TcpStream::connect_timeout)
+}
+
+fn connect_to_when_ready_using_limit(
+    address: SocketAddr,
+    child: &ProgramMonitor,
+    limit: Duration,
+    mut connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
+) -> TcpStream {
+    let port = address.port();
+    let deadline = Instant::now() + limit;
+    loop {
+        child.assert_running(port);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "connect to program at {address} exceeded the {}-second deadline{}",
+            limit.as_secs(), child.diagnostic_block(Some(port))
+        );
+        // Keep a bound even if the local listen backlog is full, but avoid
+        // imposing a short timeout on a handshake delayed by runner load.
+        match connect(&address, remaining) {
+            Ok(stream) => {
+                child.assert_running(port);
+                return bounded_stream(stream);
+            }
+            // Other errors, notably timeouts, can follow a completed
+            // handshake. Retrying would spend another accepted-client slot.
+            Err(error) if retry_refused_connection(&error, deadline) => {
+                child.assert_running(port);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => {
+                panic!(
+                    "connect to program at {address} failed: {error}{}",
+                    child.diagnostic_block(Some(port))
+                );
+            }
+        }
+    }
+}
+
+pub(crate) fn retry_refused_connection(error: &std::io::Error, deadline: Instant) -> bool {
+    error.kind() == std::io::ErrorKind::ConnectionRefused && Instant::now() < deadline
+}
+
+pub(crate) fn bounded_stream(stream: TcpStream) -> TcpStream {
+    stream.set_nonblocking(false).expect("blocking peer socket");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("bound peer reads");
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .expect("bound peer writes");
+    stream
+}
 
 static NEXT_EXECUTION: AtomicU64 = AtomicU64::new(0);
 static LEASED_PORTS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
@@ -895,7 +982,7 @@ mod tests {
         let mut accepted = None;
         let mut attempts = 0;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::connect_to_when_ready_using(address, &child, |address, timeout| {
+            connect_to_when_ready_using(address, &child, |address, timeout| {
                 attempts += 1;
                 // The old retry-on-any-error rule reaches this assertion on
                 // attempt two, rather than waiting for the readiness deadline.
@@ -931,7 +1018,7 @@ mod tests {
         assert!(message.contains("stderr (last 4096 bytes):"), "{message}");
         assert!(message.contains("stdout (last 4096 bytes):"), "{message}");
         assert_eq!(attempts, 1, "an admitted connection must not be replaced");
-        let mut accepted = crate::bounded_stream(accepted.expect("one connection was admitted"));
+        let mut accepted = bounded_stream(accepted.expect("one connection was admitted"));
         assert_eq!(accepted.read(&mut [0_u8; 1]).expect("read abandoned connection"), 0);
     }
 
@@ -943,7 +1030,7 @@ mod tests {
         let lease = lease_port();
         let child = shell_child("exec sleep 30", &lease);
         let mut attempts = 0;
-        let stream = crate::connect_to_when_ready_using(address, &child, |address, timeout| {
+        let stream = connect_to_when_ready_using(address, &child, |address, timeout| {
             attempts += 1;
             if attempts == 1 {
                 Err(std::io::ErrorKind::ConnectionRefused.into())
@@ -964,9 +1051,9 @@ mod tests {
             std::io::ErrorKind::Interrupted,
             std::io::ErrorKind::PermissionDenied,
         ] {
-            assert!(!crate::retry_refused_connection(&kind.into(), deadline), "{kind:?}");
+            assert!(!retry_refused_connection(&kind.into(), deadline), "{kind:?}");
         }
-        assert!(!crate::retry_refused_connection(
+        assert!(!retry_refused_connection(
             &std::io::ErrorKind::ConnectionRefused.into(), Instant::now(),
         ));
     }
@@ -984,7 +1071,7 @@ mod tests {
             .expect("spawn readiness witness")
             .with_port(&lease);
         let started = Instant::now();
-        let panic = std::panic::catch_unwind(|| crate::connect_when_ready(lease.port(), &child))
+        let panic = std::panic::catch_unwind(|| connect_when_ready(lease.port(), &child))
             .expect_err("an exited child cannot become ready");
         assert!(
             started.elapsed() < Duration::from_secs(10),

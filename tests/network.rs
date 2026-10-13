@@ -11,6 +11,8 @@ mod rewrite_scan;
 mod rewrite_faults;
 mod write_meta;
 mod durability;
+mod append_history;
+mod chaos_check;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
@@ -18,73 +20,7 @@ use std::time::{Duration, Instant};
 
 use support::{CompiledProgram, ProgramChild, fixture_directory};
 
-/// Connects to a program that is still starting.
-///
-/// The program binds its listener some time after the harness spawned it, so
-/// the first attempts are refused. This retries for a bounded wall-clock span
-/// and fails the case if the program never listened; nothing about the
-/// program's own acceptance depends on it.
-fn connect_when_ready(port: u16, child: &support::ProgramMonitor) -> TcpStream {
-    connect_to_when_ready(SocketAddr::from(([127, 0, 0, 1], port)), child)
-}
-
-/// Connects to a program that is still starting, at the address it listens on.
-fn connect_to_when_ready(address: SocketAddr, child: &support::ProgramMonitor) -> TcpStream {
-    connect_to_when_ready_using(address, child, TcpStream::connect_timeout)
-}
-
-fn connect_to_when_ready_using(
-    address: SocketAddr,
-    child: &support::ProgramMonitor,
-    mut connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
-) -> TcpStream {
-    let port = address.port();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        child.assert_running(port);
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(
-            !remaining.is_zero(),
-            "connect to program at {address} exceeded the 20-second deadline{}",
-            child.diagnostic_block(Some(port))
-        );
-        // Keep a bound even if the local listen backlog is full, but avoid
-        // imposing a short timeout on a handshake delayed by runner load.
-        match connect(&address, remaining) {
-            Ok(stream) => {
-                child.assert_running(port);
-                return bounded_stream(stream);
-            }
-            // Other errors, notably timeouts, can follow a completed
-            // handshake. Retrying would spend another accepted-client slot.
-            Err(error) if retry_refused_connection(&error, deadline) => {
-                child.assert_running(port);
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => {
-                panic!(
-                    "connect to program at {address} failed: {error}{}",
-                    child.diagnostic_block(Some(port))
-                );
-            }
-        }
-    }
-}
-
-fn retry_refused_connection(error: &std::io::Error, deadline: Instant) -> bool {
-    error.kind() == std::io::ErrorKind::ConnectionRefused && Instant::now() < deadline
-}
-
-fn bounded_stream(stream: TcpStream) -> TcpStream {
-    stream.set_nonblocking(false).expect("blocking peer socket");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .expect("bound peer reads");
-    stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
-        .expect("bound peer writes");
-    stream
-}
+use support::{connect_when_ready, connect_to_when_ready, bounded_stream, retry_refused_connection};
 
 /// The exit code one finished child reported, with its diagnostics on failure.
 fn finished(child: ProgramChild) -> (i32, Vec<u8>) {

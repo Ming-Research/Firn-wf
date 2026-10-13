@@ -1,0 +1,1398 @@
+//! Seeded, opt-in fault experiment; see research/investigations/chaos/README.md.
+#![cfg(target_os = "linux")]
+#![allow(dead_code)]
+mod append_history;
+mod chaos_check;
+mod support;
+
+use chaos_check::{Event, Findings, KEYS, Kind, Outcome, State};
+use std::collections::HashSet;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+const IO_LIMIT: Duration = Duration::from_secs(3);
+const MAX_FRAME: usize = 16 * 1024 * 1024;
+fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+fn append_file(path: &Path) -> File {
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("open healthy artifact")
+}
+fn note(file: &Mutex<File>, origin: Instant, message: &str) {
+    writeln!(locked(file), "{}\t{}", origin.elapsed().as_nanos(), message)
+        .expect("write healthy artifact");
+}
+fn resp(args: &[&str]) -> Vec<u8> {
+    let mut bytes = format!("*{}\r\n", args.len()).into_bytes();
+    for arg in args {
+        bytes.extend_from_slice(format!("${}\r\n{}\r\n", arg.len(), arg).as_bytes());
+    }
+    bytes
+}
+#[derive(Debug, PartialEq)]
+enum Frame {
+    Simple(String),
+    Error(String),
+    Integer(i64),
+    Bulk(Option<Vec<u8>>),
+    Array(Option<Vec<Frame>>),
+}
+// Record raw bytes even when a frame is truncated; cap sizes/depth before allocating.
+fn frame(reader: &mut impl Read, raw: &mut Vec<u8>, depth: usize) -> io::Result<Frame> {
+    if depth > 8 || raw.len() > MAX_FRAME {
+        return Err(invalid("RESP bound exceeded"));
+    }
+    fn byte(reader: &mut impl Read, raw: &mut Vec<u8>) -> io::Result<u8> {
+        let mut b = [0];
+        reader.read_exact(&mut b)?;
+        raw.push(b[0]);
+        Ok(b[0])
+    }
+    let prefix = byte(reader, raw)?;
+    let mut line = Vec::new();
+    loop {
+        let b = byte(reader, raw)?;
+        if b == b'\r' {
+            if byte(reader, raw)? != b'\n' {
+                return Err(invalid("RESP missing LF"));
+            }
+            break;
+        }
+        if b == b'\n' || line.len() >= 4096 {
+            return Err(invalid("RESP malformed line"));
+        }
+        line.push(b);
+    }
+    let text = String::from_utf8(line).map_err(|_| invalid("RESP non-UTF8 header"))?;
+    let number = || {
+        text.parse::<i64>()
+            .map_err(|_| invalid("RESP invalid integer"))
+    };
+    match prefix {
+        b'+' => Ok(Frame::Simple(text)),
+        b'-' => Ok(Frame::Error(text)),
+        b':' => Ok(Frame::Integer(number()?)),
+        b'$' => {
+            let n = number()?;
+            if n == -1 {
+                return Ok(Frame::Bulk(None));
+            }
+            if n < 0 || n as usize > MAX_FRAME - raw.len().min(MAX_FRAME) {
+                return Err(invalid("RESP bulk bound"));
+            }
+            let mut bytes = vec![0; n as usize];
+            // Reading in chunks retains partial bytes in the history on EOF.
+            let mut used = 0;
+            while used < bytes.len() {
+                let count = reader.read(&mut bytes[used..])?;
+                if count == 0 {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+                raw.extend_from_slice(&bytes[used..used + count]);
+                used += count;
+            }
+            if byte(reader, raw)? != b'\r' || byte(reader, raw)? != b'\n' {
+                return Err(invalid("RESP bulk terminator"));
+            }
+            Ok(Frame::Bulk(Some(bytes)))
+        }
+        b'*' => {
+            let n = number()?;
+            if n == -1 {
+                return Ok(Frame::Array(None));
+            }
+            if !(0..=32).contains(&n) {
+                return Err(invalid("RESP array bound"));
+            }
+            let values = (0..n)
+                .map(|_| frame(reader, raw, depth + 1))
+                .collect::<io::Result<Vec<_>>>()?;
+            Ok(Frame::Array(Some(values)))
+        }
+        _ => Err(invalid("RESP unknown prefix")),
+    }
+}
+fn has_set(kind: Kind) -> bool {
+    matches!(kind, Kind::Set | Kind::Both)
+}
+fn has_incr(kind: Kind) -> bool {
+    matches!(kind, Kind::Incr | Kind::Both)
+}
+fn kind_code(kind: Kind) -> u8 {
+    match kind {
+        Kind::Append => 0,
+        Kind::Set => 1,
+        Kind::Incr => 2,
+        Kind::Both => 3,
+    }
+}
+fn kind_from(n: u8) -> Kind {
+    match n {
+        0 => Kind::Append,
+        1 => Kind::Set,
+        2 => Kind::Incr,
+        3 => Kind::Both,
+        _ => panic!("bad archived kind"),
+    }
+}
+fn keys(epoch: usize, key: usize) -> [String; 3] {
+    [
+        format!("chaos:{epoch}:{key}:log"),
+        format!("chaos:{epoch}:{key}:set"),
+        format!("chaos:{epoch}:{key}:count"),
+    ]
+}
+fn request(epoch: usize, key: usize, token: &str, kind: Kind) -> (Vec<u8>, usize) {
+    let k = keys(epoch, key);
+    let mut commands = vec![vec!["APPEND", k[0].as_str(), token]];
+    if has_set(kind) {
+        commands.push(vec!["SET", &k[1], token]);
+    }
+    if has_incr(kind) {
+        commands.push(vec!["INCR", &k[2]]);
+    }
+    if matches!(kind, Kind::Append) {
+        return (resp(&commands[0]), 1);
+    }
+    let mut bytes = resp(&["MULTI"]);
+    for command in &commands {
+        bytes.extend(resp(command));
+    }
+    bytes.extend(resp(&["EXEC"]));
+    (bytes, commands.len() + 2)
+}
+fn refusal(f: &Frame) -> bool {
+    matches!(f, Frame::Error(s) if s.starts_with("MISCONF ") || s.starts_with("EXECABORT "))
+}
+fn classify(kind: Kind, replies: &[Frame], disk_window: bool) -> Result<Outcome, String> {
+    if matches!(kind, Kind::Append) {
+        return match replies {
+            [Frame::Integer(length)] if *length > 0 => Ok(Outcome::Applied {
+                length: *length,
+                counter: None,
+            }),
+            [f] if disk_window && refusal(f) => Ok(Outcome::Rejected),
+            _ => Err(format!("invalid APPEND replies {replies:?}")),
+        };
+    }
+    let count = 1 + usize::from(has_set(kind)) + usize::from(has_incr(kind));
+    if replies.len() != count + 2 || replies[0] != Frame::Simple("OK".into()) {
+        return Err(format!("invalid MULTI replies {replies:?}"));
+    }
+    if disk_window
+        && refusal(replies.last().unwrap())
+        && replies[1..=count]
+            .iter()
+            .all(|f| *f == Frame::Simple("QUEUED".into()) || refusal(f))
+    {
+        return Ok(Outcome::Rejected);
+    }
+    if replies[1..=count]
+        .iter()
+        .any(|f| *f != Frame::Simple("QUEUED".into()))
+    {
+        return Err(format!("invalid queued replies {replies:?}"));
+    }
+    let Frame::Array(Some(values)) = &replies[count + 1] else {
+        return Err(format!("invalid EXEC reply {replies:?}"));
+    };
+    if values.len() != count {
+        return Err(format!("wrong EXEC arity {values:?}"));
+    }
+    let Frame::Integer(length) = values[0] else {
+        return Err(format!("invalid APPEND inside EXEC {values:?}"));
+    };
+    if length <= 0 {
+        return Err("nonpositive APPEND length".into());
+    }
+    if has_set(kind) && values[1] != Frame::Simple("OK".into()) {
+        return Err(format!("SET inside EXEC not OK {values:?}"));
+    }
+    let counter = if has_incr(kind) {
+        match values.last().unwrap() {
+            Frame::Integer(n) if *n > 0 => Some(*n),
+            _ => return Err(format!("invalid INCR inside EXEC {values:?}")),
+        }
+    } else {
+        None
+    };
+    Ok(Outcome::Applied { length, counter })
+}
+fn connect(port: u16) -> io::Result<TcpStream> {
+    let stream = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), IO_LIMIT)?;
+    stream.set_read_timeout(Some(IO_LIMIT))?;
+    stream.set_write_timeout(Some(IO_LIMIT))?;
+    stream.set_nodelay(true)?;
+    Ok(stream)
+}
+fn random(seed: &mut u64) -> u64 {
+    *seed = seed.wrapping_add(0x9e3779b97f4a7c15);
+    let mut n = *seed;
+    n = (n ^ (n >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    n = (n ^ (n >> 27)).wrapping_mul(0x94d049bb133111eb);
+    n ^ (n >> 31)
+}
+
+struct Config {
+    server: String,
+    seconds: u64,
+    restart_seconds: u64,
+    seed: u64,
+    clients: usize,
+    out: PathBuf,
+    mount: Option<PathBuf>,
+    fix: String,
+}
+impl Config {
+    fn read() -> Self {
+        let number = |key: &str, default: u64| {
+            std::env::var(key)
+                .map(|v| v.parse::<u64>().expect(key))
+                .unwrap_or(default)
+        };
+        let c = Self {
+            server: std::env::var("CHAOS_SERVER").unwrap_or("firn".into()),
+            seconds: number("CHAOS_SECONDS", 120),
+            restart_seconds: number("CHAOS_RESTART_SECONDS", 300),
+            seed: number("CHAOS_SEED", 1),
+            clients: number("CHAOS_CLIENTS", 32) as usize,
+            out: PathBuf::from(std::env::var_os("CHAOS_OUT").expect("CHAOS_OUT required")),
+            mount: std::env::var_os("CHAOS_FAULT_MOUNT").map(PathBuf::from),
+            fix: std::env::var("CHAOS_FIRN_APPEND_BEFORE_REPLY").unwrap_or("unknown".into()),
+        };
+        assert!(
+            c.seconds > 0 && c.seconds <= 604800 && c.clients > 0 && c.clients <= 256,
+            "invalid duration/client bounds"
+        );
+        assert!(
+            (1..=3600).contains(&c.restart_seconds),
+            "invalid restart budget"
+        );
+        assert!(
+            matches!(c.fix.as_str(), "unknown" | "absent" | "present"),
+            "invalid fix status"
+        );
+        c
+    }
+    fn binary(&self) -> Option<PathBuf> {
+        let (env, default) = match self.server.as_str() {
+            "firn" => ("FIRN", ""),
+            "redis" => ("REDIS_SERVER", ""),
+            "valkey" => ("VALKEY", "valkey-server"),
+            "dragonfly" => ("DRAGONFLY", "dragonfly"),
+            "garnet" => ("GARNET", "garnet-server"),
+            _ => panic!("unknown CHAOS_SERVER"),
+        };
+        let name = PathBuf::from(std::env::var_os(env).unwrap_or_else(|| default.into()));
+        if name.as_os_str().is_empty() {
+            return None;
+        }
+        if self.server == "firn" || self.server == "redis" {
+            assert!(name.is_absolute(), "{env} must be absolute");
+        }
+        if name.components().count() > 1 {
+            return name.is_file().then(|| fs::canonicalize(name).unwrap());
+        }
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|p| p.join(&name))
+            .find(|p| p.is_file())
+            .map(|p| fs::canonicalize(p).unwrap())
+    }
+}
+struct Device<'a> {
+    enabled: bool,
+    mount: Option<PathBuf>,
+    script: PathBuf,
+    shared: &'a Shared,
+}
+impl Device<'_> {
+    fn checked_action(&self, action: &str) -> io::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let output = support::output_within(
+            Command::new("sudo").args(["-n", "cat", "/var/tmp/firn-sync-fault.state"]),
+            Duration::from_secs(10),
+        )?;
+        if !output.status.success() {
+            return Err(invalid(format!("read device ownership: {output:?}")));
+        }
+        let state =
+            String::from_utf8(output.stdout).map_err(|_| invalid("device state not UTF8"))?;
+        let owner = state
+            .lines()
+            .nth(5)
+            .ok_or_else(|| invalid("device state missing owned mount"))?;
+        let actual = fs::canonicalize(owner)?;
+        let expected = fs::canonicalize(
+            self.mount
+                .as_ref()
+                .ok_or_else(|| invalid("missing fault mount"))?,
+        )?;
+        if actual != expected {
+            return Err(invalid("refuse to change a device owned by another mount"));
+        }
+        let output = support::output_within(
+            Command::new("sudo").arg("-n").arg(&self.script).arg(action),
+            Duration::from_secs(30),
+        )?;
+        if !output.status.success() {
+            return Err(invalid(format!("device {action}: {output:?}")));
+        }
+        Ok(())
+    }
+    fn run(&self, action: &str) {
+        self.checked_action(action)
+            .unwrap_or_else(|error| panic!("device {action}: {error}"));
+    }
+}
+impl Drop for Device<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.checked_action("heal") {
+            self.shared.errors.fetch_add(1, Ordering::Relaxed);
+            let message = format!("CLEANUP_FAIL device heal: {error}");
+            let _ = writeln!(
+                locked(&self.shared.findings),
+                "{}\t{message}",
+                self.shared.origin.elapsed().as_nanos()
+            );
+            let _ = writeln!(io::stderr(), "{message}");
+        }
+    }
+}
+
+fn start(
+    c: &Config,
+    binary: &Path,
+    data: &Path,
+    lease: &support::PortLease,
+    number: usize,
+    log: &Mutex<File>,
+    origin: Instant,
+) -> support::ProgramChild {
+    let port = lease.port().to_string();
+    let mut args: Vec<String> = match c.server.as_str() {
+        "firn" => vec![
+            port,
+            "0".into(),
+            "chaos.aof".into(),
+            "0".into(),
+            "--auto-aof-rewrite-percentage".into(),
+            "0".into(),
+        ],
+        "redis" | "valkey" => [
+            "--port",
+            &port,
+            "--bind",
+            "127.0.0.1",
+            "--save",
+            "",
+            "--appendonly",
+            "yes",
+            "--appendfsync",
+            "everysec",
+            "--auto-aof-rewrite-percentage",
+            "0",
+            "--aof-use-rdb-preamble",
+            "no",
+            "--dir",
+            data.to_str().unwrap(),
+            "--daemonize",
+            "no",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
+        "dragonfly" => vec![
+            format!("--port={port}"),
+            "--bind=127.0.0.1".into(),
+            "--proactor_threads=4".into(),
+            "--dbfilename=".into(),
+            "--logtostderr".into(),
+        ],
+        "garnet" => [
+            "--port",
+            &port,
+            "--bind",
+            "127.0.0.1",
+            "--aof",
+            "--recover",
+            "--aof-commit-freq",
+            "1000",
+            "--logdir",
+            data.to_str().unwrap(),
+            "--checkpointdir",
+            data.to_str().unwrap(),
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
+        _ => unreachable!(),
+    };
+    note(
+        log,
+        origin,
+        &format!("START binary={binary:?} args={args:?} lifetime={number}"),
+    );
+    let mut cmd = if std::env::var_os("FIRN_REDIS_BENCH_RECORD").is_some() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c","python3 \"$1\" register \"$FIRN_REDIS_BENCH_RECORD\" parent || exit 1; shift; exec \"$@\"","chaos-server"])
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../research/experiments/redis-bench/session.py")).arg(binary);
+        cmd
+    } else {
+        Command::new(binary)
+    };
+    cmd.args(args.drain(..))
+        .current_dir(data)
+        .env("WF_WORKERS", "4")
+        .env("WF_DRIVERS", "2")
+        .env_remove("WF_REQUIRE_WINDOWS_IOCP")
+        .env_remove("WF_IO_NO_NATIVE_RING")
+        .stdin(Stdio::null())
+        .stdout(File::create(c.out.join(format!("server-{number}.stdout"))).unwrap())
+        .stderr(File::create(c.out.join(format!("server-{number}.stderr"))).unwrap());
+    let child =
+        support::ProgramChild::spawn_with_limit(&mut cmd, Duration::from_secs(c.seconds + 3600))
+            .expect("start server")
+            .with_port(lease);
+    let deadline = Instant::now() + Duration::from_secs(c.restart_seconds);
+    let mut stream = support::connect_to_when_ready_with_limit(
+        SocketAddr::from(([127, 0, 0, 1], lease.port())),
+        &child,
+        Duration::from_secs(c.restart_seconds),
+    );
+    loop {
+        child.assert_running(lease.port());
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "startup did not answer PONG within {} seconds",
+            c.restart_seconds
+        );
+        stream
+            .set_read_timeout(Some(remaining))
+            .expect("startup read deadline");
+        stream
+            .set_write_timeout(Some(remaining))
+            .expect("startup write deadline");
+        let bytes = resp(&["PING"]);
+        let invoked = Instant::now();
+        let mut raw = Vec::new();
+        let result = stream
+            .write_all(&bytes)
+            .and_then(|_| frame(&mut stream, &mut raw, 0));
+        note(
+            log,
+            origin,
+            &format!(
+                "STARTUP_PING begin={} end={} request={} reply={} result={result:?}",
+                invoked.duration_since(origin).as_nanos(),
+                origin.elapsed().as_nanos(),
+                hex(&bytes),
+                hex(&raw)
+            ),
+        );
+        match result.expect("startup PING transport/protocol") {
+            Frame::Simple(value) if value == "PONG" => break,
+            Frame::Error(error) if error.starts_with("LOADING ") => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            other => panic!("startup PING unexpected reply: {other:?}"),
+        }
+    }
+    child.assert_running(lease.port());
+    note(
+        log,
+        origin,
+        &format!("READY lifetime={number} pid={}", child.id()),
+    );
+    child
+}
+fn kill(child: support::ProgramChild, log: &Mutex<File>, origin: Instant, label: &str) {
+    note(log, origin, &format!("SIGKILL {label} pid={}", child.id()));
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    assert_eq!(unsafe { kill(child.id() as i32, 9) }, 0, "send SIGKILL");
+    let output = child.wait_with_output().expect("reap killed server");
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(
+        output.status.signal(),
+        Some(9),
+        "server exited before injected kill: {:?}",
+        output.status
+    );
+    note(
+        log,
+        origin,
+        &format!("REAP {label} status={}", output.status),
+    );
+}
+
+struct StopOnUnwind<'a>(&'a AtomicBool);
+impl Drop for StopOnUnwind<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+struct Shared {
+    stop: AtomicBool,
+    killing: AtomicBool,
+    disk: AtomicBool,
+    drops: AtomicUsize,
+    errors: AtomicUsize,
+    repeats: AtomicUsize,
+    seen: Mutex<HashSet<String>>,
+    coverage: Mutex<Vec<[usize; 4]>>,
+    acks: AtomicUsize,
+    wire: Mutex<File>,
+    findings: Mutex<File>,
+    origin: Instant,
+}
+fn problem(shared: &Shared, message: &str) {
+    shared.errors.fetch_add(1, Ordering::Relaxed);
+    note(&shared.findings, shared.origin, message);
+}
+fn unique_problem(shared: &Shared, key: String, message: &str) {
+    if locked(&shared.seen).insert(key) {
+        problem(shared, message);
+    } else {
+        shared.repeats.fetch_add(1, Ordering::Relaxed);
+    }
+}
+fn writer(c: &Config, shared: &Shared, port: u16, epoch: usize, client: usize) -> Vec<Event> {
+    let mut events = Vec::new();
+    let mut seed = c.seed ^ ((epoch as u64) << 32) ^ client as u64;
+    let mut stream: Option<TcpStream> = None;
+    let mut seq = 0_u32;
+    while !shared.stop.load(Ordering::Acquire) {
+        let key = (random(&mut seed) % KEYS as u64) as usize;
+        let kind = kind_from((random(&mut seed) % 4) as u8);
+        let dropped = random(&mut seed) % 16 == 0;
+        let token = format!("{:06x}{:02x}{:08x}", epoch, client, seq);
+        seq = seq.checked_add(1).expect("token overflow");
+        assert_eq!(token.len(), 16, "token width");
+        let (bytes, count) = request(epoch, key, &token, kind);
+        let invoked = Instant::now();
+        let mut raw = Vec::new();
+        let disk_before = shared.disk.load(Ordering::Acquire);
+        let result = (|| -> io::Result<Option<Vec<Frame>>> {
+            if stream.is_none() {
+                stream = Some(connect(port)?);
+            }
+            let socket = stream.as_mut().unwrap();
+            socket.write_all(&bytes)?;
+            if dropped {
+                shared.drops.fetch_add(1, Ordering::Relaxed);
+                socket.shutdown(Shutdown::Both)?;
+                return Ok(None);
+            }
+            let frames = (0..count)
+                .map(|_| frame(socket, &mut raw, 0))
+                .collect::<io::Result<Vec<_>>>()?;
+            Ok(Some(frames))
+        })();
+        let completed = Instant::now();
+        let outcome = match result {
+            Ok(Some(frames)) => match classify(
+                kind,
+                &frames,
+                disk_before || shared.disk.load(Ordering::Acquire),
+            ) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    problem(
+                        shared,
+                        &format!("PROTOCOL epoch={epoch} token={token} {error}"),
+                    );
+                    stream = None;
+                    Outcome::Unknown
+                }
+            },
+            Ok(None) => {
+                stream = None;
+                Outcome::Unknown
+            }
+            Err(error) => {
+                if error.kind() == io::ErrorKind::InvalidData
+                    || !(shared.killing.load(Ordering::Acquire)
+                        || disk_before
+                        || shared.disk.load(Ordering::Acquire))
+                {
+                    problem(
+                        shared,
+                        &format!("TRANSPORT epoch={epoch} token={token} error={error:?}"),
+                    );
+                }
+                note(
+                    &shared.wire,
+                    shared.origin,
+                    &format!("IO_ERROR token={token} {error:?}"),
+                );
+                stream = None;
+                Outcome::Unknown
+            }
+        };
+        if matches!(outcome, Outcome::Applied { .. }) {
+            shared.acks.fetch_add(1, Ordering::Relaxed);
+            locked(&shared.coverage)[client][kind_code(kind) as usize] += 1;
+        }
+        // A single artifact line contains complete wire bytes, including partial replies.
+        note(
+            &shared.wire,
+            shared.origin,
+            &format!(
+                "OP epoch={epoch} client={client} token={token} key={key} kind={} begin={} end={} drop={dropped} request={} reply={} outcome={outcome:?}",
+                kind_code(kind),
+                invoked.duration_since(shared.origin).as_nanos(),
+                completed.duration_since(shared.origin).as_nanos(),
+                hex(&bytes),
+                hex(&raw)
+            ),
+        );
+        events.push(Event {
+            key,
+            token,
+            kind,
+            invoked,
+            completed,
+            outcome,
+        });
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    events
+}
+fn archive(path: &Path, events: &[Event], origin: Instant) {
+    let mut file = File::create(path).expect("create epoch archive");
+    writeln!(file, "CHAOS1\t{}", events.len()).unwrap();
+    for e in events {
+        let (outcome, length, counter) = match e.outcome {
+            Outcome::Applied { length, counter } => {
+                ("A", length, counter.map_or("-".into(), |v| v.to_string()))
+            }
+            Outcome::Unknown => ("U", 0, "-".into()),
+            Outcome::Rejected => ("R", 0, "-".into()),
+        };
+        writeln!(
+            file,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            e.key,
+            e.token,
+            kind_code(e.kind),
+            e.invoked.duration_since(origin).as_nanos(),
+            e.completed.duration_since(origin).as_nanos(),
+            outcome,
+            length,
+            counter
+        )
+        .unwrap();
+    }
+    file.flush().expect("flush epoch archive");
+}
+fn load_archive(reader: impl BufRead, origin: Instant) -> Result<Vec<Event>, String> {
+    let mut lines = reader.lines();
+    let header = lines
+        .next()
+        .ok_or("missing archive header")?
+        .map_err(|e| e.to_string())?;
+    let count = header
+        .strip_prefix("CHAOS1\t")
+        .ok_or("bad archive header")?
+        .parse::<usize>()
+        .map_err(|_| "bad archive count")?;
+    if count > 1_000_000 {
+        return Err("archive count exceeds epoch bound".into());
+    }
+    let mut events = Vec::new();
+    for line in lines {
+        let line = line.map_err(|e| e.to_string())?;
+        let f: Vec<_> = line.split('\t').collect();
+        if f.len() != 8 {
+            return Err("bad archive field count".into());
+        }
+        let key = f[0].parse::<usize>().map_err(|_| "bad archive key")?;
+        let kind = f[2].parse::<u8>().map_err(|_| "bad archive kind")?;
+        let begin = f[3].parse::<u64>().map_err(|_| "bad archive begin")?;
+        let end = f[4].parse::<u64>().map_err(|_| "bad archive end")?;
+        let length = f[6].parse::<i64>().map_err(|_| "bad archive length")?;
+        let counter = if f[7] == "-" {
+            None
+        } else {
+            Some(f[7].parse::<i64>().map_err(|_| "bad archive counter")?)
+        };
+        if key >= KEYS
+            || kind > 3
+            || f[1].len() != 16
+            || !f[1].bytes().all(|b| b.is_ascii_hexdigit())
+            || begin > end
+        {
+            return Err("invalid archive event".into());
+        }
+        let outcome = match f[5] {
+            "A" => Outcome::Applied { length, counter },
+            "U" if length == 0 && counter.is_none() => Outcome::Unknown,
+            "R" if length == 0 && counter.is_none() => Outcome::Rejected,
+            _ => return Err("bad archive outcome".into()),
+        };
+        events.push(Event {
+            key,
+            token: f[1].into(),
+            kind: kind_from(kind),
+            invoked: origin + Duration::from_nanos(begin),
+            completed: origin + Duration::from_nanos(end),
+            outcome,
+        });
+        if events.len() > count {
+            return Err("extra archived event".into());
+        }
+    }
+    if events.len() != count {
+        return Err("truncated archive".into());
+    }
+    Ok(events)
+}
+/// Lossless content references avoid writing every unchanged closed epoch again.
+/// The index is metadata, never a replacement for reading/validating its bytes.
+fn retain_reply(out: &Path, epoch: usize, bytes: &[u8]) -> io::Result<PathBuf> {
+    let index_path = out.join(format!("snapshot-reply-{epoch}.index"));
+    let previous = match fs::read_to_string(&index_path) {
+        Ok(value) => Some(
+            value
+                .parse::<u64>()
+                .map_err(|_| invalid("bad snapshot reply index"))?,
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let name = |index| PathBuf::from(format!("snapshot-reply-{epoch}-{index}.resp"));
+    if let Some(index) = previous {
+        let path = name(index);
+        // Missing/corrupt metadata never silently falls back to a clean history.
+        if fs::read(out.join(&path))? == bytes {
+            return Ok(path);
+        }
+    }
+    let index = previous.map_or(Ok(0), |n| {
+        n.checked_add(1)
+            .ok_or_else(|| invalid("snapshot index overflow"))
+    })?;
+    let relative = name(index);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out.join(&relative))?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    if fs::read(out.join(&relative))? != bytes {
+        return Err(invalid("stored snapshot reply differs"));
+    }
+    fs::write(index_path, index.to_string())?;
+    Ok(relative)
+}
+fn snapshot(c: &Config, shared: &Shared, port: u16, epoch: usize) -> State {
+    let mut stream = connect(port).expect("snapshot connection");
+    let names: Vec<String> = (0..KEYS).flat_map(|key| keys(epoch, key)).collect();
+    let mut args = vec!["MGET"];
+    args.extend(names.iter().map(String::as_str));
+    let bytes = resp(&args);
+    let invoked = Instant::now();
+    stream.write_all(&bytes).expect("snapshot MGET");
+    let mut raw = Vec::new();
+    let parsed = frame(&mut stream, &mut raw, 0);
+    let reply_ref = retain_reply(&c.out, epoch, &raw).expect("retain complete snapshot reply");
+    note(
+        &shared.wire,
+        shared.origin,
+        &format!(
+            "SNAPSHOT epoch={epoch} begin={} end={} request={} reply_ref={}",
+            invoked.duration_since(shared.origin).as_nanos(),
+            shared.origin.elapsed().as_nanos(),
+            hex(&bytes),
+            reply_ref.display()
+        ),
+    );
+    let Frame::Array(Some(frames)) = parsed.expect("snapshot RESP") else {
+        panic!("snapshot MGET is not an array");
+    };
+    assert_eq!(frames.len(), KEYS * 3, "snapshot MGET arity");
+    let values: Vec<Option<String>> = frames
+        .into_iter()
+        .map(|f| match f {
+            Frame::Bulk(bytes) => bytes.map(|b| String::from_utf8(b).expect("snapshot UTF8")),
+            other => panic!("snapshot MGET element {other:?}"),
+        })
+        .collect();
+    let mut state = State {
+        logs: Vec::new(),
+        sets: Vec::new(),
+        counters: Vec::new(),
+    };
+    for group in values.chunks_exact(3) {
+        state.logs.push(group[0].clone().unwrap_or_default());
+        state.sets.push(group[1].clone());
+        state.counters.push(
+            group[2]
+                .as_ref()
+                .map(|v| v.parse().expect("counter must be integer")),
+        );
+    }
+    let latest = c.out.join(format!("snapshot-{epoch}.txt"));
+    let serialized = format!("{state:?}");
+    match fs::read_to_string(&latest) {
+        Ok(previous) if previous == serialized => {}
+        Ok(_) => fs::write(&latest, serialized).expect("replace latest snapshot"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::write(&latest, serialized).expect("write latest snapshot")
+        }
+        Err(error) => panic!("read latest snapshot: {error}"),
+    }
+    state
+}
+
+fn matches_validated_snapshot(previous: &str, current: &State) -> bool {
+    previous == format!("{current:?}")
+}
+
+fn checkpoint(
+    c: &Config,
+    shared: &Shared,
+    port: u16,
+    epochs: std::ops::RangeInclusive<usize>,
+    ever_disk: bool,
+) -> usize {
+    let begin = Instant::now();
+    let mut failures = 0;
+    for epoch in epochs {
+        let events = load_archive(
+            BufReader::new(
+                File::open(c.out.join(format!("epoch-{epoch}.tsv"))).expect("open epoch archive"),
+            ),
+            shared.origin,
+        )
+        .expect("validate complete archived history");
+        let state = snapshot(c, shared, port, epoch);
+        let Findings { lost, inconsistent } = chaos_check::check(&events, &state, Instant::now());
+        let baseline = c.out.join(format!("validated-{epoch}.txt"));
+        let serialized = format!("{state:?}");
+        if baseline.exists() {
+            if !matches_validated_snapshot(
+                &fs::read_to_string(&baseline).expect("read validated state"),
+                &state,
+            ) {
+                unique_problem(
+                    shared,
+                    format!("CHANGED-{epoch}"),
+                    &format!(
+                        "INCONSISTENT epoch={epoch} closed epoch changed after an independently validated checkpoint; includes unknown effects, not all are acknowledged losses"
+                    ),
+                );
+                failures += 1;
+            }
+        } else if lost.is_empty() && inconsistent.is_empty() {
+            fs::write(&baseline, serialized).expect("archive first independently validated state");
+        }
+        let loss_class = match c.server.as_str() {
+            "firn" if c.fix == "absent" && !ever_disk => {
+                "known-acknowledgment-before-append-#97-still-fails"
+            }
+            "firn" if c.fix == "unknown" => "firn-fix-status-unknown-still-fails",
+            "redis" | "valkey" => "observation-under-everysec-not-always-sync",
+            "garnet" => "aof-commit-semantics-unverified",
+            _ => "lost-acknowledged-write",
+        };
+        for finding in lost {
+            failures += 1;
+            unique_problem(
+                shared,
+                format!("LOST-{epoch}-{finding}"),
+                &format!("LOST epoch={epoch} class={loss_class} {finding}"),
+            );
+        }
+        for finding in inconsistent {
+            failures += 1;
+            unique_problem(
+                shared,
+                format!("INCONSISTENT-{epoch}-{finding}"),
+                &format!("INCONSISTENT epoch={epoch} {finding}"),
+            );
+        }
+    }
+    note(
+        &shared.wire,
+        shared.origin,
+        &format!(
+            "CHECK seconds={} findings={failures}",
+            begin.elapsed().as_secs_f64()
+        ),
+    );
+    failures
+}
+
+fn execute(c: &Config, shared: &Shared) -> String {
+    let Some(binary) = c.binary() else {
+        if matches!(c.server.as_str(), "firn" | "redis") {
+            panic!("required {} binary missing", c.server);
+        }
+        note(
+            &shared.findings,
+            shared.origin,
+            "SKIPPED missing competitor; comparison incomplete",
+        );
+        return "skipped".into();
+    };
+    let meta = fs::metadata(&binary).expect("binary metadata");
+    note(
+        &shared.wire,
+        shared.origin,
+        &format!(
+            "IDENTITY binary={binary:?} bytes={} modified={:?}",
+            meta.len(),
+            meta.modified()
+        ),
+    );
+    if c.server == "redis" {
+        let output = support::run_command(Command::new(&binary).arg("--version"));
+        note(
+            &shared.wire,
+            shared.origin,
+            &format!(
+                "VERSION stdout={} stderr={}",
+                hex(&output.stdout),
+                hex(&output.stderr)
+            ),
+        );
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains(" v=7.2.16 "),
+            "Redis must be pinned 7.2.16"
+        );
+    }
+    let data_parent = c.mount.as_deref().unwrap_or(&c.out);
+    let data = data_parent.join(format!("chaos-data-{}-{}", c.server, std::process::id()));
+    fs::create_dir(&data).expect("new server data directory");
+    let data = fs::canonicalize(data).unwrap();
+    let out = fs::canonicalize(&c.out).unwrap();
+    if let Some(mount) = &c.mount {
+        let mount = fs::canonicalize(mount).unwrap();
+        assert!(
+            !out.starts_with(&mount),
+            "CHAOS_OUT must be outside faulty mount"
+        );
+    }
+    let device = Device {
+        enabled: c.mount.is_some(),
+        mount: c.mount.clone(),
+        shared,
+        script: Path::new(env!("CARGO_MANIFEST_DIR")).join("aof_sync_fault_device.sh"),
+    };
+    device.run("heal");
+    if !device.enabled {
+        note(
+            &shared.findings,
+            shared.origin,
+            "SKIPPED disk failure: CHAOS_FAULT_MOUNT absent; full acceptance unavailable",
+        );
+    }
+    if c.server == "dragonfly" {
+        note(
+            &shared.findings,
+            shared.origin,
+            "NOT_APPLICABLE restart durability: Dragonfly has no AOF; check before kill, start new volatile lifetime",
+        );
+    }
+    if c.server == "garnet" {
+        note(
+            &shared.findings,
+            shared.origin,
+            "UNVERIFIED Garnet AOF commit semantics; startup has no fallback",
+        );
+    }
+    let lease = support::lease_port();
+    let mut child = Some(start(
+        c,
+        &binary,
+        &data,
+        &lease,
+        0,
+        &shared.wire,
+        shared.origin,
+    ));
+    let deadline = Instant::now() + Duration::from_secs(c.seconds);
+    let mut schedule = c.seed;
+    let mut epoch = 0;
+    let mut disks = 0;
+    let mut workload_seconds = 0.0;
+    loop {
+        epoch += 1;
+        shared.stop.store(false, Ordering::Release);
+        shared.killing.store(false, Ordering::Release);
+        shared.disk.store(false, Ordering::Release);
+        let seconds = 15 + random(&mut schedule) % 11;
+        let active = Instant::now();
+        let end = (active + Duration::from_secs(seconds)).min(deadline);
+        let disk_cycle = epoch % 3 == 0
+            && device.enabled
+            && end.saturating_duration_since(active) >= Duration::from_secs(6);
+        let acks_before = shared.acks.load(Ordering::Relaxed);
+        let events = std::thread::scope(|scope| {
+            let _stop_on_unwind = StopOnUnwind(&shared.stop);
+            let handles: Vec<_> = (0..c.clients)
+                .map(|client| {
+                    let port = lease.port();
+                    scope.spawn(move || writer(c, shared, port, epoch, client))
+                })
+                .collect();
+            let mut failed = false;
+            let mut failed_at = None;
+            let mut healed = false;
+            while Instant::now() < end || (failed && !healed) {
+                let status = child.as_mut().unwrap().try_wait().expect("monitor server");
+                assert!(status.is_none(), "unrequested server exit: {status:?}");
+                if disk_cycle && !failed && Instant::now() >= end - Duration::from_secs(5) {
+                    shared.disk.store(true, Ordering::Release);
+                    note(&shared.wire, shared.origin, "DISK_FAIL intention");
+                    device.run("fail");
+                    note(&shared.wire, shared.origin, "DISK_FAIL active");
+                    failed = true;
+                    failed_at = Some(Instant::now());
+                    disks += 1;
+                }
+                if failed && !healed && failed_at.unwrap().elapsed() >= Duration::from_secs(3) {
+                    device.run("heal");
+                    note(
+                        &shared.wire,
+                        shared.origin,
+                        "DISK_HEAL complete; refusal recovery window until restart",
+                    );
+                    healed = true;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            if c.server != "dragonfly" {
+                shared.killing.store(true, Ordering::Release);
+                kill(
+                    child.take().unwrap(),
+                    &shared.wire,
+                    shared.origin,
+                    "injected while writers active",
+                );
+            }
+            shared.stop.store(true, Ordering::Release);
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().expect("writer panic"))
+                .collect::<Vec<_>>()
+        });
+        workload_seconds += active.elapsed().as_secs_f64();
+        if shared.acks.load(Ordering::Relaxed) == acks_before {
+            problem(
+                shared,
+                &format!("NO_PROGRESS epoch={epoch} no successful writes"),
+            );
+        }
+        archive(
+            &c.out.join(format!("epoch-{epoch}.tsv")),
+            &events,
+            shared.origin,
+        );
+        drop(events);
+        fs::write(
+            c.out.join(format!("epoch-{epoch}.disk")),
+            if disk_cycle { "true" } else { "false" },
+        )
+        .expect("archive disk attribution");
+        if c.server == "dragonfly" {
+            checkpoint(c, shared, lease.port(), epoch..=epoch, disks > 0);
+            kill(
+                child.take().unwrap(),
+                &shared.wire,
+                shared.origin,
+                "injected after volatile checkpoint",
+            );
+        }
+        // Device is healed without resetting its files; retained data remains evidence.
+        device.run("heal");
+        child = Some(start(
+            c,
+            &binary,
+            &data,
+            &lease,
+            epoch,
+            &shared.wire,
+            shared.origin,
+        ));
+        if c.server != "dragonfly" {
+            checkpoint(c, shared, lease.port(), 1..=epoch, disks > 0);
+        }
+        note(
+            &shared.wire,
+            shared.origin,
+            &format!(
+                "EPOCH_DONE epoch={epoch} disk={disk_cycle} workload_seconds={workload_seconds}"
+            ),
+        );
+        if Instant::now() >= deadline {
+            break;
+        }
+    }
+    if c.server != "dragonfly" {
+        checkpoint(c, shared, lease.port(), 1..=epoch, disks > 0);
+    }
+    if shared.drops.load(Ordering::Relaxed) == 0 {
+        problem(shared, "COVERAGE no injected connection drops");
+    }
+    for (client, counts) in locked(&shared.coverage).iter().enumerate() {
+        note(
+            &shared.findings,
+            shared.origin,
+            &format!("CLIENT_COVERAGE client={client} applied_append_set_incr_both={counts:?}"),
+        );
+        if counts.iter().any(|count| *count == 0) {
+            problem(
+                shared,
+                &format!(
+                    "COVERAGE client={client} has an operation kind with zero acknowledgments"
+                ),
+            );
+        }
+    }
+    note(
+        &shared.findings,
+        shared.origin,
+        &format!(
+            "COVERAGE epochs={epoch} disk_cycles={disks} drops={} acknowledged={} workload_seconds={workload_seconds} elapsed_seconds={}",
+            shared.drops.load(Ordering::Relaxed),
+            shared.acks.load(Ordering::Relaxed),
+            shared.origin.elapsed().as_secs_f64()
+        ),
+    );
+    note(
+        &shared.wire,
+        shared.origin,
+        "CLEANUP normal end (not an unrequested crash)",
+    );
+    drop(child);
+    // Hardware identity is collected separately by CI; this harness never asserts it from a label.
+    note(
+        &shared.findings,
+        shared.origin,
+        "ACCEPTANCE not established automatically: requires reviewed 86400-second i9-14900K run, all requested coverage, and zero failures",
+    );
+    if shared.errors.load(Ordering::Relaxed) == 0 {
+        "passed-functional-probe".into()
+    } else {
+        "failed".into()
+    }
+}
+
+#[test]
+#[ignore = "explicit CI chaos experiment; see chaos.yml"]
+fn chaos_run() {
+    // Establish reporting before parsing all settings, so setup panics leave a report too.
+    let out = PathBuf::from(
+        std::env::var_os("CHAOS_OUT").expect("CHAOS_OUT must name healthy artifact directory"),
+    );
+    fs::create_dir_all(&out).expect("create artifact directory");
+    let origin = Instant::now();
+    let shared = Shared {
+        stop: AtomicBool::new(false),
+        killing: AtomicBool::new(false),
+        disk: AtomicBool::new(false),
+        drops: AtomicUsize::new(0),
+        errors: AtomicUsize::new(0),
+        repeats: AtomicUsize::new(0),
+        seen: Mutex::new(HashSet::new()),
+        coverage: Mutex::new(Vec::new()),
+        acks: AtomicUsize::new(0),
+        wire: Mutex::new(append_file(&out.join("history.log"))),
+        findings: Mutex::new(append_file(&out.join("findings.log"))),
+        origin,
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let c = Config::read();
+        *locked(&shared.coverage) = vec![[0; 4]; c.clients];
+        note(
+            &shared.wire,
+            origin,
+            &format!(
+                "CONFIG server={} seconds={} restart_seconds={} seed={} clients={} mount={:?} firn_append_before_reply={}",
+                c.server, c.seconds, c.restart_seconds, c.seed, c.clients, c.mount, c.fix
+            ),
+        );
+        execute(&c, &shared)
+    }));
+    let (mut status, panic) = match result {
+        Ok(status) => (status, None),
+        Err(payload) => {
+            let text = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or("non-string panic".into());
+            ("failed".into(), Some(text))
+        }
+    };
+    if shared.errors.load(Ordering::Relaxed) > 0 {
+        status = "failed".into();
+    }
+    note(
+        &shared.findings,
+        origin,
+        &format!(
+            "REPEATED_CHECKER_OBSERVATIONS {} (first attribution retained)",
+            shared.repeats.load(Ordering::Relaxed)
+        ),
+    );
+    let report = format!(
+        "status={status}\nelapsed_seconds={}\nfindings={}\nacknowledged={}\nconnection_drops={}\npanic={panic:?}\nacceptance=requires_review_of_full_duration_hardware_coverage_and_findings\n",
+        origin.elapsed().as_secs_f64(),
+        shared.errors.load(Ordering::Relaxed),
+        shared.acks.load(Ordering::Relaxed),
+        shared.drops.load(Ordering::Relaxed)
+    );
+    fs::write(out.join("report.txt"), report).expect("write final report");
+    assert_ne!(status, "failed", "chaos failed; see {}", out.display());
+}
+
+#[test]
+fn resp_parser_rejects_truncated_malformed_and_oversized_frames() {
+    assert_eq!(
+        frame(&mut &b"*2\r\n:16\r\n+OK\r\n"[..], &mut Vec::new(), 0).unwrap(),
+        Frame::Array(Some(vec![Frame::Integer(16), Frame::Simple("OK".into())]))
+    );
+    for bad in [
+        b"$3\r\nab".as_slice(),
+        b"+OK\n",
+        b":no\r\n",
+        b"$-2\r\n",
+        b"*999999\r\n",
+        b"$999999999\r\n",
+        b"$1\r\nx\rX",
+    ] {
+        assert!(
+            frame(&mut &bad[..], &mut Vec::new(), 0).is_err(),
+            "accepted {bad:?}"
+        );
+    }
+}
+#[test]
+fn protocol_rejects_partial_transactions_bad_set_and_unexpected_errors() {
+    let good = vec![
+        Frame::Simple("OK".into()),
+        Frame::Simple("QUEUED".into()),
+        Frame::Simple("QUEUED".into()),
+        Frame::Array(Some(vec![Frame::Integer(16), Frame::Simple("OK".into())])),
+    ];
+    assert!(matches!(
+        classify(Kind::Set, &good, false),
+        Ok(Outcome::Applied { .. })
+    ));
+    let mut bad = good;
+    bad[3] = Frame::Array(Some(vec![
+        Frame::Integer(16),
+        Frame::Error("ERR write failed".into()),
+    ]));
+    assert!(classify(Kind::Set, &bad, true).is_err());
+    bad[3] = Frame::Array(Some(vec![Frame::Integer(16)]));
+    assert!(classify(Kind::Set, &bad, false).is_err());
+    let refused = vec![Frame::Error("MISCONF disk failed".into())];
+    assert!(classify(Kind::Append, &refused, false).is_err());
+    assert!(matches!(
+        classify(Kind::Append, &refused, true),
+        Ok(Outcome::Rejected)
+    ));
+}
+#[test]
+fn archive_parser_rejects_missing_truncated_and_extra_history() {
+    let origin = Instant::now();
+    let event = "0\t0000000000000001\t0\t0\t1\tA\t16\t-\n";
+    assert_eq!(
+        load_archive(
+            BufReader::new(format!("CHAOS1\t1\n{event}").as_bytes()),
+            origin
+        )
+        .unwrap()
+        .len(),
+        1
+    );
+    for bad in [
+        String::new(),
+        "CHAOS1\t1\n".into(),
+        format!("CHAOS1\t0\n{event}"),
+        "CHAOS1\t1\n0\ttoken\n".into(),
+    ] {
+        assert!(load_archive(BufReader::new(bad.as_bytes()), origin).is_err());
+    }
+}
+
+#[test]
+fn retained_snapshot_detects_a_previously_witnessed_unknown_effect_disappearing() {
+    let now = Instant::now();
+    let event = Event {
+        key: 0,
+        token: "0000000000000001".into(),
+        kind: Kind::Append,
+        invoked: now,
+        completed: now,
+        outcome: Outcome::Unknown,
+    };
+    let empty = State {
+        logs: vec![String::new(); KEYS],
+        sets: vec![None; KEYS],
+        counters: vec![None; KEYS],
+    };
+    let mut present = empty.clone();
+    present.logs[0] = event.token.clone();
+    // Each snapshot alone permits either outcome of an unread reply. Once its
+    // effect was independently witnessed, a later checkpoint cannot erase it.
+    assert_eq!(
+        chaos_check::check(std::slice::from_ref(&event), &present, now),
+        Findings::default()
+    );
+    assert_eq!(
+        chaos_check::check(&[event], &empty, now),
+        Findings::default()
+    );
+    let validated = format!("{present:?}");
+    assert!(matches_validated_snapshot(&validated, &present));
+    assert!(!matches_validated_snapshot(&validated, &empty));
+}
+
+#[test]
+fn snapshot_reply_references_preserve_changes_and_reject_missing_or_stale_files() {
+    let directory = support::fixture_directory();
+    let out = directory.path();
+    let first = retain_reply(out, 1, b"$1\r\na\r\n").unwrap();
+    assert_eq!(retain_reply(out, 1, b"$1\r\na\r\n").unwrap(), first);
+    let second = retain_reply(out, 1, b"$1\r\nb\r\n").unwrap();
+    assert_ne!(first, second);
+    assert_eq!(fs::read(out.join(&second)).unwrap(), b"$1\r\nb\r\n");
+    fs::write(out.join("snapshot-reply-1.index"), "0").unwrap();
+    assert!(
+        retain_reply(out, 1, b"$1\r\nb\r\n").is_err(),
+        "stale index must not overwrite an existing reply"
+    );
+    fs::write(out.join("snapshot-reply-1.index"), "1").unwrap();
+    fs::remove_file(out.join(&second)).unwrap();
+    assert!(
+        retain_reply(out, 1, b"$1\r\nb\r\n").is_err(),
+        "missing referenced bytes must fail history retention"
+    );
+}
