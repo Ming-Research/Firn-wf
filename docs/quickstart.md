@@ -88,7 +88,7 @@ tar -xzf "$archive"
 FIRN_BIN="$QUICKSTART_WORKDIR/firn-$FIRN_TAG-linux-x86_64/firn"
 mkdir data
 cd data
-"$FIRN_BIN" --port 6379 --bind 127.0.0.1 --appendonly yes >../first.log 2>&1 &
+"$FIRN_BIN" --port 6379 --bind 127.0.0.1 --appendonly no >../first.log 2>&1 &
 server_pid=$!
 ```
 
