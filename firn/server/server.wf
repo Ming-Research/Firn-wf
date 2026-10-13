@@ -208,7 +208,7 @@ fn flush(send: &TcpSend, client: &Client, boundaries: &Box<Slots<ReplyBoundary>>
           break @runs;
         }
         if run_sequence != 0_u64 {
-          atomic m = &store^.meta when aof_reply_ready(meta: m, sequence: run_sequence) {
+          atomic m = &store^.meta when m^.aof_reply_sequence >= run_sequence {
             loop @coalescing (
               invariant reply_start: start <= end,
               invariant reply_extent: end <= written,
@@ -1295,6 +1295,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   let wake = None<CancelSource>();
   atomic m = &keyspace.meta, v = &keyspace.server when m^.aof_installing == 0_u64 {
     set m^.stopping = True();
+    pkg::store::aof_refresh_writer(meta: m);
     set v^.shutdown = True();
     let source = std::time::cancel_share(source: &v^.wake);
     set wake = Some<CancelSource>(value: move source);

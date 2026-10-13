@@ -24,6 +24,7 @@ fn run_aof_rewrite(store: &Keyspace, client: &Client) -> result: unit reads(stor
     } else {
       set m^.aof_rewrite_in_progress = True();
       set m^.aof_rewrite_requested = True();
+      pkg::store::aof_refresh_writer(meta: m);
     }
   }
   if busy {

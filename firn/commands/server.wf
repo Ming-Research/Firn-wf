@@ -1131,10 +1131,12 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     if rewrite_given[0_u64] == 1_u64 {
       set m^.aof_rewrite_percentage = rewrite_values[0_u64];
       set m^.aof_control = True();
+      pkg::store::aof_refresh_writer(meta: m);
     }
     if rewrite_given[1_u64] == 1_u64 {
       set m^.aof_rewrite_min_size = rewrite_values[1_u64];
       set m^.aof_control = True();
+      pkg::store::aof_refresh_writer(meta: m);
     }
     if delay_given {
       set m^.aof_rewrite_key_delay = new_delay;

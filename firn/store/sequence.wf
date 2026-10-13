@@ -106,7 +106,7 @@ fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: un
   return unit;
 }
 
-fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> appended_sequence: u64 reads(meta.log), reads(meta.aof_append_error), reads(budget), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite), writes(meta.aof_failed_sequence), writes(meta.aof_collecting_commands), writes(sequence) {
+fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> appended_sequence: u64 reads(meta.log), reads(meta.aof_append_error), reads(meta.stopping), reads(meta.aof_tick), reads(meta.aof_control), reads(meta.aof_rewrite_requested), reads(meta.aof_worker_done), reads(meta.aof_pending_length), reads(meta.aof_written_sequence), reads(budget), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite), writes(meta.aof_failed_sequence), writes(meta.aof_collecting_commands), writes(meta.aof_reply_sequence), writes(meta.aof_writer_wanted), writes(meta.aof_rebuilding_wanted), writes(sequence) {
   doc "Takes a sequence for any appended AOF records not already covered by a dataset mutation and returns it, or zero when no record was appended or the token is inert. Commits sequence, after-images and any rotation-buffer allocation or overflow under the same outer keys-and-Meta hold, including effects before an EXEC or script error. Appending internal expiry or eviction records during a saved append failure releases their replies through the failure watermark without claiming an append succeeded. One non-inert outer commit with appended bytes increments the collecting command count once, even when EXEC or a script emits several records. The separate log budget permits held command parts to borrow their sequence and encoder allowance without overlapping owners.";
   let appended = meta^.log.inner.len > sequence^.log_start;
   if appended {
@@ -134,6 +134,8 @@ fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) ->
   }
   if appended {
     if sequence^.inert {
+      aof_refresh_writer(meta: meta);
+      aof_refresh_reply(meta: meta);
       return 0_u64;
     }
     set meta^.aof_collecting_commands = meta^.aof_collecting_commands +sat 1_u64;
@@ -144,6 +146,8 @@ fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) ->
       None() => {
       }
     }
+    aof_refresh_writer(meta: meta);
+    aof_refresh_reply(meta: meta);
     return sequence^.value;
   }
   return 0_u64;

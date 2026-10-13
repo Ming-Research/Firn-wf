@@ -58,35 +58,6 @@ fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>
   return AofAppend(written: written, error: error);
 }
 
-fn aof_writer_ready(meta: &pkg::store::Meta) -> ready: Bool reads(meta.stopping), reads(meta.aof_tick), reads(meta.aof_control), reads(meta.aof_rewrite_requested), reads(meta.log), reads(meta.aof_append_error) {
-  let periodic = bor(meta^.stopping, meta^.aof_tick);
-  let requested = bor(meta^.aof_control, meta^.aof_rewrite_requested);
-  let control = bor(periodic, requested);
-  if control {
-    return True();
-  }
-  match meta^.aof_append_error {
-    Some(..) => {
-      return False();
-    }
-    None() => {
-      return meta^.log.inner.len > 0_u64;
-    }
-  }
-}
-
-fn aof_rebuilding_ready(meta: &pkg::store::Meta) -> ready: Bool reads(meta.stopping), reads(meta.aof_tick), reads(meta.aof_control), reads(meta.aof_rewrite_requested), reads(meta.log), reads(meta.aof_append_error), reads(meta.aof_worker_done), reads(meta.rewrite.scan_done), reads(meta.rewrite.cut_done) {
-  if meta^.aof_worker_done {
-    return True();
-  }
-  let uncut = bnot(meta^.rewrite.cut_done);
-  let cut_ready = band(meta^.rewrite.scan_done, uncut);
-  if cut_ready {
-    return True();
-  }
-  return aof_writer_ready(meta: meta);
-}
-
 fn aof_writer_timer(store: Keyspace, clock: Clock) -> result: unit pure waits {
   doc "Publish a coalesced housekeeping wake for sync, retained-append retry and rewrite scheduling; healthy collecting bytes wake the writer independently of this timer.";
   let never = std::time::cancel_never();
@@ -103,6 +74,7 @@ fn aof_writer_timer(store: Keyspace, clock: Clock) -> result: unit pure waits {
     atomic m = &store.meta {
       set stop = m^.stopping;
       set m^.aof_tick = True();
+      pkg::store::aof_refresh_writer(meta: m);
     }
     if stop {
       break @ticking;
@@ -129,7 +101,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
     let stop = False();
     let maintenance = False();
     let work = aof_work_empty();
-    atomic m = &store.meta when aof_writer_ready(meta: m) {
+    atomic m = &store.meta when m^.aof_writer_wanted {
       set stop = m^.stopping;
       let notified = bor(m^.aof_tick, m^.aof_control);
       set maintenance = bor(notified, m^.aof_rewrite_requested);
@@ -148,6 +120,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
             set m^.aof_rewrite_requested = False();
             set m^.aof_rewrite_in_progress = False();
             set m^.aof_rewrite_reply = 2_u64;
+            pkg::store::aof_refresh_writer(meta: m);
           }
         }
       } else {
@@ -158,6 +131,7 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
         atomic m = &store.meta {
           set manual = m^.aof_rewrite_requested;
           set m^.aof_rewrite_requested = False();
+          pkg::store::aof_refresh_writer(meta: m);
           set rewrite = manual;
           set blocked = m^.aof_rewrite_retry_blocked;
           let saved = False();
