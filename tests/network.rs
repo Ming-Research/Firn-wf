@@ -4667,12 +4667,12 @@ fn firn_keeps_a_script_error_reply_on_one_line() {
 /// which it does not implement; redis.REDIS_VERSION and REDIS_VERSION_NUM
 /// name 7.2.16. The expected replies are redis-server 7.2.16's as Halo-wf
 /// recorded them: its oracle scripts under
-/// deps/halo-wf/research/experiments/halo-oracle (number-argument-format,
+/// deps/halo-wf/tests/halo-oracle (number-argument-format,
 /// number-argument-effects, double-reply-table, string-metatable-readonly,
 /// readonly-library-tables, readonly-rawset-error, global-write,
 /// keys-argv-writable, removed-globals, error-message-newline,
 /// set-repl-no-argument, redis-version) and its table of double texts,
-/// deps/halo-wf/research/experiments/redis-double-text/redis-7.2.16.tsv, for
+/// deps/halo-wf/tests/redis-double-text/redis-7.2.16.tsv, for
 /// 2^62, the double after it, their negatives, 1e23, -0 and -inf; the RESP3 doubles follow
 /// addReplyDouble in Redis 7.2.16's networking.c, and set_repl's flag error
 /// its luaRedisSetReplCommand in script_lua.c.
