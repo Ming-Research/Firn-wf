@@ -8,7 +8,8 @@ fn scanner_probe(syntax: &AofSyntax, input: &[u8], start: u64, end: u64) -> next
   requires end <= input^.len;
   ensures next <= end;
 } {
-  let event = aof_syntax_next(syntax: syntax, input: input, start: start, end: end, eof: False());
+  let ended = False();
+  let event = aof_syntax_next(syntax: syntax, input: input, start: start, end: end, eof: ended);
   return event.next;
 }
 """
@@ -17,6 +18,8 @@ def scan(old, new):
 variants = {
   "v0_unchanged": {},
   "x1_probe_caller": {"replay": lambda s: s + probe},
+  "y1_full_only": {"scanner": lambda s: s.replace("      let complete = bor(newline, full);\n      if complete {", "      if full {")},
+  "y2_full_split": {"scanner": lambda s: s.replace("      let complete = bor(newline, full);\n      if complete {\n", "      let complete = bor(newline, full);\n      if full {\n        set complete = True();\n      }\n      if complete {\n")},
   "x2_no_linelen_ensures": {"scanner": lambda s: s.replace("  ensures syntax^.line.len < 1023_u64;\n  ensures event.next >= start;", "  ensures event.next >= start;")},
   "x3_no_lower_ensures": {"scanner": lambda s: s.replace("  ensures event.next >= start;\n", "")},
   "x4_no_upper_ensures": {"scanner": lambda s: s.replace("  ensures event.next <= end;\n} {\n  doc \"Consume one memory chunk", "} {\n  doc \"Consume one memory chunk")},
