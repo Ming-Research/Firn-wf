@@ -629,23 +629,34 @@ fn put_record_line(text: &Box<Slots<u8>>, record: &ClientRecord, current: u64) -
   return unit;
 }
 
+fn put_client_line(text: &Box<Slots<u8>>, record: &ClientRecord, client: &Client, current: u64, multi: i64) -> result: unit reads(record), reads(client), writes(text) {
+  doc "Appends one selected client record, taking the calling connection's current facts from its own state and another connection's facts from the record it published.";
+  if record^.id == client^.id {
+    put_own_line(text: text, client: client, command: &word_client_list[0_u64..11_u64], multi: multi);
+  } else {
+    put_record_line(text: text, record: record, current: current);
+  }
+  return unit;
+}
+
 fn put_clients(table: &ClientTable, client: &Client, text: &Box<Slots<u8>>, filtered: Bool, wanted: u64, multi: i64) -> result: unit reads(table), reads(client), writes(text) {
-  doc "Appends the lines of the live connections in the order of their numbers, only the one numbered wanted when filtered is true: the calling connection's from its own state, the others' from the records they published, from the table of clients already held by the caller.";
+  doc "Appends the lines of the live connections from the table already held by the caller: a filtered lookup binary-searches once for wanted and emits its line only when that id is present; an unfiltered call visits every record in client-number order.";
   let current = client^.unix_us / 1000000_u64;
+  if filtered {
+    let position = pkg::store::client_table_position(table: table, id: wanted);
+    if position < table^.records.inner.len {
+      let found = &table^.records.inner[position];
+      if found^.id == wanted {
+        put_client_line(text: text, record: found, client: client, current: current, multi: multi);
+      }
+    }
+    return unit;
+  }
   let count = table^.records.inner.len;
   for @records (index in 0_u64..count) {
     if index < table^.records.inner.len {
       let record = &table^.records.inner[index];
-      let matched = record^.id == wanted;
-      let unfiltered = bnot(filtered);
-      let selected = bor(unfiltered, matched);
-      if selected {
-        if record^.id == client^.id {
-          put_own_line(text: text, client: client, command: &word_client_list[0_u64..11_u64], multi: multi);
-        } else {
-          put_record_line(text: text, record: record, current: current);
-        }
-      }
+      put_client_line(text: text, record: record, client: client, current: current, multi: multi);
     }
   }
   return unit;

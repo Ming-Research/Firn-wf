@@ -468,16 +468,28 @@ fn request_shutdown(store: &Keyspace) -> result: unit reads(store) waits {
 }
 
 fn client_table_position(table: &ClientTable, id: u64) -> position: u64 reads(table) {
-  doc "Where the record of the connection numbered id is, or would be inserted to keep the records in the order of their numbers: the index of the first record numbered id or more, the table's length when there is none.";
+  doc "The lower bound of id in the client table, whose records stay in client-number order: binary search returns the index of its first record numbered id or more, or the table's length when there is none.";
   let count = table^.records.inner.len;
-  for @find (index in 0_u64..count) {
-    if index < table^.records.inner.len {
-      if table^.records.inner[index].id >= id {
-        return index;
-      }
+  let lower = 0_u64;
+  let upper = count;
+  loop @find (
+    invariant ordered: lower <= upper,
+    invariant bounded: upper <= count
+  ) {
+    if lower >= upper {
+      return lower;
+    }
+    let last = upper - 1_u64;
+    let span = last - lower;
+    let half = span / 2_u64;
+    let middle = lower + half;
+    let number = table^.records.inner[middle].id;
+    if number < id {
+      set lower = middle + 1_u64;
+    } else {
+      set upper = middle;
     }
   }
-  return count;
 }
 
 fn client_record(client: &Client) -> made: ClientRecord reads(client) {

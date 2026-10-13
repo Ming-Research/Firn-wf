@@ -337,6 +337,8 @@ public fn log_decimal(log: &Box<Slots<u8>>, value: u64, budget: &LogBudget) -> r
 
 public fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> result: unit reads(input), reads(args), writes(log), writes(budget) doc "Appends a command as the client sent it, every argument a RESP bulk string.";
 
+public fn client_table_position(table: &ClientTable, id: u64) -> position: u64 reads(table) doc "The lower bound of id in the client table, whose records stay in client-number order: the index of its first record numbered id or more, or the table's length when there is none, found by binary search.";
+
 public fn client_sync(store: &Keyspace, client: &pkg::protocol::Client) -> result: unit reads(store), reads(client) waits doc "Publishes the facts of a connection that CLIENT LIST shows to the other connections, its number, start time, protocol, addresses, name and library name and version, into the table of clients, replacing the record the connection published before.";
 
 public fn client_sync_held(table: &ClientTable, client: &pkg::protocol::Client) -> result: unit reads(client), writes(table) doc "Publishes the connection's current facts into the caller-held table without waiting, replacing its earlier record and preserving client-number order, so EXEC can publish metadata changes atomically with its key changes.";

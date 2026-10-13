@@ -188,6 +188,7 @@ discarded because of: OOM command not allowed when used memory >
 'maxmemory'.` instead. After admission there are no memory checks between
 queued commands. These replies follow Redis 7.0.15. `RESET` discards a
 transaction and resets the name, authentication and protocol to RESP2.
+It also clears NO-TOUCH, while keeping the library name and version.
 
 A script without a shebang captures OOM at its start. A DENYOOM call is
 refused until it has accepted a WRITE-flagged command: `DEL` of a missing
@@ -308,6 +309,8 @@ connection's reads leave the access stamps of keys alone, except `TOUCH`
 sent directly or queued in `MULTI`. A script's `redis.call('TOUCH', ...)`
 still leaves them alone while NO-TOUCH is on, because Redis checks the
 outer connection's command, which remains `EVAL` or `EVALSHA`.
+`RESET` turns NO-TOUCH off and keeps `lib-name` and `lib-ver`, as Redis's
+`clearClientConnectionState` does.
 The other `CLIENT` subcommands of Redis 7.2.16 (`CACHING`, `GETREDIR`,
 `HELP`, `KILL`, `NO-EVICT`, `PAUSE`, `REPLY`, `TRACKING`, `TRACKINGINFO`,
 `UNBLOCK` and `UNPAUSE`) are answered as unknown subcommands. Supported

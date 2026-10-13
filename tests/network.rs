@@ -3757,9 +3757,9 @@ fn firn_requires_its_password_as_redis_does() {
 /// firn answers the connection commands as Redis does. CLIENT ID counts the
 /// connections from 1 in the order firn accepted them, and HELLO reports the
 /// same id; CLIENT SETNAME gives a name, refuses one with a space keeping the
-/// old one, and removes it with the empty name; CLIENT SETINFO, which Redis
-/// 7.0 does not have, is an unknown subcommand; HELLO answers RESP2's map with
-/// no version or version 2 and RESP3's with 3, and refuses 1 as unsupported,
+/// old one, and removes it with the empty name; CLIENT SETINFO answers OK as
+/// Redis 7.2.16 networking.c clientSetinfoCommand does; HELLO answers RESP2's
+/// map with no version or version 2 and RESP3's with 3, and refuses 1 as unsupported,
 /// and its SETNAME names the connection, an option's name
 /// read up to a zero byte as Redis's strcasecmp reads it; AUTH without a
 /// configured password is answered with Redis's error for the password alone
@@ -3777,7 +3777,8 @@ fn firn_requires_its_password_as_redis_does() {
 /// database, but for the ids and the keyspace line, which leaves out the
 /// expires and avg_ttl firn does not count, and the version in HELLO and
 /// INFO, which follows Redis 7.2.16 networking.c:helloCommand and
-/// server.c:genRedisInfoString, both reading version.h's REDIS_VERSION.
+/// server.c:genRedisInfoString, both reading version.h's REDIS_VERSION,
+/// and SETINFO's OK, which follows Redis 7.2.16 clientSetinfoCommand.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_connection_commands_as_redis_does() {
@@ -10991,9 +10992,10 @@ fn verbatim_reply(stream: &mut TcpStream, what: &str) -> String {
 /// firn answers CLIENT SETINFO as Redis 7.2.16 does (networking.c
 /// clientSetinfoCommand): LIB-NAME and LIB-VER in either case are stored and
 /// shown as lib-name= and lib-ver= in CLIENT INFO; a value holding a byte
-/// outside ! to ~ and an attribute of another name are refused with the
-/// attribute as typed, leaving the stored values; the arity error is
-/// client|setinfo's (src/commands/client-setinfo.json, arity 4); RESET keeps
+/// outside ! to ~ before its first zero byte and an attribute of another
+/// name are refused with the attribute as typed, leaving the stored values;
+/// the arity error is client|setinfo's (src/commands/client-setinfo.json,
+/// arity 4); RESET keeps
 /// the library name and version (networking.c clearClientConnectionState does
 /// not touch lib_name, and Redis's own suite asserts it); and the empty value
 /// removes the stored one. Before the change firn answered every SETINFO as an
@@ -11038,6 +11040,70 @@ fn firn_answers_client_setinfo_as_redis_does() {
     assert_eq!(reply_line(&mut client, "SETINFO with an empty value"), "+OK\r\n");
     let line = bulk_reply(&mut client, "CLIENT INFO after clearing");
     assert!(line.ends_with(" lib-name= lib-ver=1.2.3\n"), "{line:?}");
+    // networking.c validateClientAttr stops at the first zero byte: invalid
+    // bytes after it are ignored. clientSetinfoCommand answers OK, while
+    // catClientInfoString's %s shows only the valid prefix of lib_name/lib_ver.
+    for (attribute, value, ending) in [
+        ("lib-name", "prefix\0 \n", " lib-name=prefix lib-ver=1.2.3\n"),
+        ("lib-ver", "2.0\0 \n", " lib-name=prefix lib-ver=2.0\n"),
+        ("lib-name", "\0 \n", " lib-name= lib-ver=2.0\n"),
+    ] {
+        assert_eq!(memory_request(&mut client, &["CLIENT", "SETINFO", attribute, value]), "+OK\r\n");
+        client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect a zero-terminated library value");
+        let line = bulk_reply(&mut client, "CLIENT INFO after zero-terminated SETINFO");
+        assert!(line.ends_with(ending), "{line:?}");
+    }
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// CLIENT LIST, SETINFO and NO-TOUCH have NOSCRIPT in Redis 7.2.16's
+/// src/commands/client-*.json. script.c scriptCall checks their table arity
+/// through scriptVerifyCommandArity before that restriction. Both redis.call
+/// and redis.pcall refuse them; malformed SETINFO gets the script arity error
+/// instead. An unconditional NOSCRIPT reply fails the SETINFO arity row.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_refuses_client_commands_from_scripts_as_redis_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    // networking.c clientSetinfoCommand applies this standalone setter.
+    assert_eq!(memory_request(&mut client, &["CLIENT", "SETINFO", "lib-name", "outside"]), "+OK\r\n");
+    for (raised, sha, error) in [
+        ("return redis.call('CLIENT','LIST')", "7ef377844bde0643f7083e0212ea72b6a9879367", "ERR This Redis command is not allowed from script"),
+        ("return redis.call('CLIENT','SETINFO','lib-name','x')", "e42aafbb10ff09a3d1f10430770e697a267be831", "ERR This Redis command is not allowed from script"),
+        ("return redis.call('CLIENT','NO-TOUCH','ON')", "e370ecbcc08b5da292d057e82c688a9eaed7e8d8", "ERR This Redis command is not allowed from script"),
+        ("return redis.call('CLIENT','SETINFO','lib-name')", "fd97c1f9fb498995c5a69d94d5261fdd2876b3d3", "ERR Wrong number of args calling Redis command from script"),
+    ] {
+        // script.c scriptCall supplies the error; script_lua.c luaPushError
+        // adds ERR. luaRedisGenericCommand raises for redis.call, and
+        // luaCallFunction adds the SHA and @user_script:1 location.
+        assert_eq!(
+            memory_request(&mut client, &["EVAL", raised, "0"]),
+            format!("-{error} script: {sha}, on @user_script:1.\r\n"),
+            "{raised}"
+        );
+        let guarded = raised.replace("redis.call", "redis.pcall");
+        // luaRedisGenericCommand returns the error table for redis.pcall;
+        // luaReplyToRedisReply turns a returned err table into one error,
+        // with no raised-error source suffix.
+        assert_eq!(memory_request(&mut client, &["EVAL", &guarded, "0"]), format!("-{error}\r\n"), "{guarded}");
+        // The same table's .err field is a Lua string, so
+        // luaReplyToRedisReply writes it as a bulk containing the ERR prefix.
+        let field = format!("{guarded}.err");
+        assert_eq!(memory_request(&mut client, &["EVAL", &field, "0"]), format!("${}\r\n{error}\r\n", error.len()), "{field}");
+    }
+    // networking.c catClientInfoString exposes both setters' original state:
+    // a refused script must not change the library or enable NO-TOUCH.
+    client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect state after script refusals");
+    let line = bulk_reply(&mut client, "CLIENT INFO after script refusals");
+    assert!(line.contains(" flags=N "), "{line:?}");
+    assert!(line.ends_with(" lib-name=outside lib-ver=\n"), "{line:?}");
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
@@ -11060,7 +11126,7 @@ fn firn_lists_clients_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]).with_port(&port_lease);
     let mut first = connect_when_ready(port, &child);
     first
         .write_all(&[resp(&["CLIENT", "SETNAME", "alpha"]), resp(&["CLIENT", "SETINFO", "lib-name", "lib-a"])].concat())
@@ -11100,7 +11166,7 @@ fn firn_lists_clients_as_redis_does() {
         vec!["CLIENT", "LIST", "TYPE", "NORMAL"],
         vec!["CLIENT", "LIST", "TYPE", "pubsub"],
         vec!["CLIENT", "LIST", "TYPE", "replica"],
-        vec!["CLIENT", "LIST", "ID", "2", "1", "99", "2"],
+        vec!["CLIENT", "LIST", "ID", "-1", "0", "2", "1", "99", "2", "9223372036854775807"],
         vec!["CLIENT", "LIST", "ID", "x"],
         vec!["CLIENT", "LIST", "TYPE", "bogus"],
         vec!["CLIENT", "LIST", "FOO"],
@@ -11115,9 +11181,9 @@ fn firn_lists_clients_as_redis_does() {
     assert_eq!(bulk_reply(&mut first, "TYPE pubsub"), "", "TYPE pubsub");
     assert_eq!(bulk_reply(&mut first, "TYPE replica"), "", "TYPE replica");
     assert_eq!(
-        zero_ages(&bulk_reply(&mut first, "ID 2 1 99 2")),
+        zero_ages(&bulk_reply(&mut first, "ID below, above, reversed and repeated")),
         second_other.clone() + &first_own + &second_other,
-        "ID 2 1 99 2"
+        "ID below, above, reversed and repeated"
     );
     expect_replies(
         &mut first,
@@ -11154,6 +11220,29 @@ fn firn_lists_clients_as_redis_does() {
         std::thread::sleep(Duration::from_millis(100));
     }
     assert_eq!(remaining, first_resp3, "the list after the close");
+    // A later connection receives a fresh ID after the closed middle ID.
+    // networking.c clientCommand parses each requested ID as a signed
+    // integer, lookupClientByID returns no line for absent IDs, and the
+    // handler appends matches in request order, including duplicates.
+    let mut third = connect_when_ready(port, &child);
+    third.write_all(&resp(&["CLIENT", "ID"])).expect("identify the replacement connection");
+    assert_eq!(integer_reply(&mut third, "replacement connection ID"), 3);
+    let third_addr = third.local_addr().expect("the third client's address");
+    let third_other = other(3, third_addr, "", 2, "");
+    first.write_all(&resp(&["CLIENT", "LIST", "ID", "-1", "0", "3", "2", "1", "3", "4"])).expect("filter around a removed middle ID");
+    assert_eq!(
+        zero_ages(&verbatim_reply(&mut first, "ID filter after closing the middle connection")),
+        third_other.clone() + &first_resp3 + &third_other,
+        "missing middle, lower and upper boundaries, reverse order and duplicates"
+    );
+    third.write_all(&resp(&["CLIENT", "LIST", "ID", "3", "1", "3", "2", "0"])).expect("filter from the replacement connection");
+    let third_own = own(3, third_addr, "", 2, "");
+    assert_eq!(
+        zero_ages(&bulk_reply(&mut third, "replacement connection's ID filter")),
+        third_own.clone() + &other(1, first_addr, "alpha", 3, "lib-a") + &third_own,
+        "the replacement's own line after a closed connection"
+    );
+    drop(third);
     drop(first);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
@@ -11404,9 +11493,13 @@ fn firn_executes_client_subcommands_in_transactions_as_redis_does() {
         // server.c commandCheckArity/commandCheckExistence reject immediately;
         // rejectCommandSds calls multi.c flagTransaction. execCommand answers
         // shared.execaborterr and applies none of the queued setters.
+        // KILL specifically tests Firn's documented unsupported-subcommand
+        // boundary. Redis supports KILL (client-kill.json, no NO_MULTI), so
+        // Firn's unknown-subcommand reply here is not a Redis KILL result.
         for (invalid, error) in [
             (vec!["CLIENT", "SETINFO", "lib-name"], "-ERR wrong number of arguments for 'client|setinfo' command\r\n"),
             (vec!["CLIENT", "NOPE"], "-ERR unknown subcommand 'NOPE'. Try CLIENT HELP.\r\n"),
+            (vec!["CLIENT", "KILL", "TYPE", "normal"], "-ERR unknown subcommand 'KILL'. Try CLIENT HELP.\r\n"),
         ] {
             let mut batch = resp(&["MULTI"]);
             batch.extend(resp(&["CLIENT", "SETINFO", "lib-name", "aborted"]));
