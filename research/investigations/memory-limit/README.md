@@ -820,3 +820,89 @@ reading at or below it cannot raise Meta's peak; a reading above it takes
 the statement as before. Recording once per read batch instead was not
 measured and was not adopted: a pipeline whose later command frees what an
 earlier one allocated would hide a peak Redis records.
+
+## Admission without Meta while no AOF is kept
+
+Every command's `maxmemory` admission check took the exclusive Meta atomic
+statement, whether or not a limit was binding, so with a limit set the
+statement serialized all cores. The change of Firn-wf PR #67 stops the check
+from taking Meta when firn keeps no append-only file: the check reads the
+heap and takes Meta only when that reading is over the limit.
+
+The question was whether a limit that is set but not reached costs
+throughput as server cores rise. Criteria, written before the runs: with an
+8 GiB `maxmemory`, the change's GET and SET throughput is at least 90% of its
+throughput without a limit at 2, 4 and 8 P-cores; and without a limit, the
+change's median is within the range the main twin shows against main, so
+that the change costs nothing when no limit is set. The runs are
+`redis-bench.yml` compare mode on the self-hosted 14900K (native Linux
+7.0.0-38), release wf-d75f318d5631: server on one hyperthread of each of 2, 4
+or 8 P-cores (CPUs 2,4 / 2,4,6,8 / 0,2,...,14), 16 client threads on CPUs
+16-31, GET and SET at depth 16, 50 connections, 10-second passes, 6
+interleaved passes, no append-only file. Builds: main (1d1657c), a twin of
+main from the same revision as the noise control, and the change at its
+first version (cf65360). The limited runs set `maxmemory` to 8589934592; the
+unlimited runs set none. Runs: limited
+[2 cores](https://github.com/Ming-Research/Firn-wf/actions/runs/38368942960),
+[4 cores](https://github.com/Ming-Research/Firn-wf/actions/runs/38368951243),
+[8 cores](https://github.com/Ming-Research/Firn-wf/actions/runs/38368960494);
+unlimited
+[2 cores](https://github.com/Ming-Research/Firn-wf/actions/runs/38368970499),
+[4 cores](https://github.com/Ming-Research/Firn-wf/actions/runs/38368979545),
+[8 cores](https://github.com/Ming-Research/Firn-wf/actions/runs/38368988169).
+
+Medians of the six passes, requests per second; L/U is limited over
+unlimited for the same build:
+
+| Test | Cores | main limited | main unlimited | main L/U | change limited | change unlimited | change L/U |
+|---|---|---|---|---|---|---|---|
+| GET | 2 | 6,964,048 | 7,770,718 | 0.896 | 7,339,117 | 7,646,192 | 0.960 |
+| GET | 4 | 8,023,040 | 14,681,687 | 0.546 | 13,871,421 | 14,507,880 | 0.956 |
+| GET | 8 | 3,078,387 | 26,268,298 | 0.117 | 24,418,286 | 25,957,891 | 0.941 |
+| SET | 2 | 6,027,186 | 6,747,403 | 0.893 | 6,276,876 | 6,505,948 | 0.965 |
+| SET | 4 | 8,249,274 | 12,506,997 | 0.660 | 11,769,725 | 12,226,213 | 0.963 |
+| SET | 8 | 3,126,792 | 21,522,887 | 0.145 | 20,006,368 | 21,097,091 | 0.948 |
+
+The main twin's limited/unlimited ratios agree with main's (GET 0.887, 0.546,
+0.108; SET 0.901, 0.644, 0.131), so the collapse under a limit is not noise.
+With a limit, the change scales from 2 to 4 cores by 1.89x (GET) and 1.875x
+(SET), and from 4 to 8 cores by 1.76x and 1.70x; main falls from 4 to 8
+cores, GET 8.02M/s to 3.08M/s.
+
+The limited criterion held: the change's ratios are 0.941 to 0.965, all
+above 0.90, where main's fall to 0.117 (GET) and 0.145 (SET) at 8 cores. The
+unlimited criterion did not hold at its first version. At 2 cores SET ran at
+0.964 of main (per-pass ratios 0.959 to 0.979), while the twin ran at 0.997
+of main (0.989 to 1.019), so the loss was outside the noise. Unlimited
+medians of the change against main at 4 and 8 cores were 0.988 and 0.988
+(GET) and 0.978 and 0.980 (SET), against twin ratios of 1.005, 1.000, 1.005
+and 1.010. Per-pass ratios spread widely at 4 cores GET (change 0.74 to
+1.27, twin 0.99 to 1.29) because main and the change each had a slow pass
+there, so that line decides nothing alone.
+
+The loss was traced to the after-command peak recording: the change had moved
+it into a new helper, which cost a call on every command even with no limit.
+The helper was removed and the recording restored to main's inline form. The
+recheck was
+[run 38390425014](https://github.com/Ming-Research/Firn-wf/actions/runs/38390425014):
+no limit, 2 cores, SET and GET at depth 16, 6 interleaved passes of 5
+seconds, main (c6f6058), its twin and the fix (db05e33) on the same release.
+
+| Test | main | twin | fix | twin/main | fix/main | per-pass fix/main | per-pass twin/main |
+|---|---|---|---|---|---|---|---|
+| SET | 6,618,120 | 6,620,453 | 6,620,215 | 1.0004 | 1.0003 | 0.965 to 1.038 | 0.981 to 1.032 |
+| GET | 6,613,885 | 6,616,206 | 6,633,995 | 1.0004 | 1.0030 | 0.972 to 1.020 | 0.986 to 1.012 |
+
+The fix's medians lie within the twin's spread of main for both tests, so
+the unlimited criterion holds at 2 cores. The recheck ran only 2 cores, SET
+and GET at depth 16; the 4 and 8 core unlimited lines were not repeated for
+the fixed build, and the limited lines above are for the first version, not
+the fixed one.
+
+The conclusion is confined to this machine, these two commands, depth 16, 50
+connections, a nonbinding 8 GiB limit, no append-only file, and 2 to 8
+P-cores: with that limit set, the change keeps at least 94% of unlimited
+throughput where main keeps 12% to 15% at 8 cores, and without a limit the
+fixed build matches main at 2 cores. The runs do not cover a limit that is
+reached, eviction under load, a firn that keeps an append-only file (where
+the statement is still taken), more than 8 cores or other commands.
