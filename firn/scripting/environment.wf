@@ -59,7 +59,7 @@ fn install_host(engine: &Engine) -> r: unit writes(engine) {
   let version = literal(vm: vm, text: &env_version_text[0_u64..6_u64]);
   raw(vm: vm, table: redis, key: version_key, value: version);
   let version_num_key = literal(vm: vm, text: &env_version_num_name[0_u64..17_u64]);
-  let version_num = num(x: 459280.0_f64);
+  let version_num = num(x: 4.5928e5_f64);
   raw(vm: vm, table: redis, key: version_num_key, value: version_num);
   let result = halo::embed::set_global(engine: engine, name: &env_text_11[0_u64..5_u64], value: redis);
   protect(engine: engine);
