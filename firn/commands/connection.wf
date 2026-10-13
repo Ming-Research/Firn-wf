@@ -589,7 +589,7 @@ fn put_clients(store: &Keyspace, client: &Client, text: &Box<Slots<u8>>, filtere
         let record = &table^.records.inner[index];
         let matched = record^.id == wanted;
         let unfiltered = bnot(filtered);
-            let selected = bor(unfiltered, matched);
+        let selected = bor(unfiltered, matched);
         if selected {
           if record^.id == client^.id {
             put_own_line(text: text, client: client, command: &word_client_list[0_u64..11_u64]);
