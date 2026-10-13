@@ -1,5 +1,5 @@
 # Temporary, on branch claude/oracle-replies only (never merged): records
-# Redis 7.2.16's replies to oracle/batches/*.json as firn's expected replies.
+# Redis 7.2.16's replies to command and multi-client operation batches.
 name: oracle-replies
 on:
   push:
@@ -23,6 +23,7 @@ jobs:
       - name: Record replies
         run: python3 oracle/replay.py "$BIN/redis-server"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: oracle-replies
           path: oracle-replies.json
