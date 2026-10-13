@@ -250,8 +250,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    env:
-      DOCKER_CONFIG: ${{ runner.temp }}/firn-public-docker
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
         with:
@@ -266,4 +264,6 @@ jobs:
         run: packaging/quickstart-check.sh tarball
 
       - name: Check the public image quickstart
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/firn-public-docker
         run: packaging/quickstart-check.sh image
