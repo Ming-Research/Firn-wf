@@ -205,8 +205,8 @@ Each workload is the selected consumers' own command forms, as the
   86400` alone, and `GET` of a stored session alone.
 
 The settings are as follows:
-- Every workload runs against redis-server 7.0.15 and firn, with the
-  append-only file off, and on with fsync every second.
+- The original five consumer workloads run against the pinned redis-server
+  7.2.16 and firn, with the append-only file off, and on with fsync every second.
 - It runs on 1 and 2 server CPUs, with 50 connections at pipeline depth 1,
   since these clients send one command or one transaction and wait.
 - Each line has 3 interleaved passes of 10 seconds after a probe of 2 passes
@@ -258,8 +258,9 @@ and any protocol, I/O or Redis error fails the run.
 
 Opt in to `rewrite-during` with `redis-bench.yml` inputs `mode=workloads`,
 `tests=rewrite-during`, `runner=14900k`, `seconds=5`, `passes=2`, and
-`connections=50`. Set `workload_images=true` to compare Redis and every
-image in `revisions` (including twins); otherwise the lines are Redis and
+`connections=50`, and `cpus=1` for one server core. Set
+`workload_images=true` to compare Redis and every image in `revisions`
+(including twins); otherwise the lines are Redis and
 this checkout's firn. This workload uses AOF on only, a fresh server for
 each connection count, and no perf pass. Equivalently, set
 `WORKLOADS=rewrite-during` for the script's `workloads` mode.
@@ -325,6 +326,60 @@ not yet recorded. Firn on main currently omits that duration field, so its
 wall interval is kept separately and is never substituted for server time.
 Successful rows report `ok,1`; failures exit without a successful row.
 These observations are kept separately from `workloads.csv`.
+
+Opt in to the cache rewrite comparison with `redis-bench.yml` inputs
+`mode=workloads`, `tests=evict-zipf-rewrite`, `runner=14900k`, `cpus=1`,
+`connections=50`, `seconds=5`, `passes=2`, and `profile=false` for a probe.
+The named lines are `reference-aof-cache-rewrite`, `firn-aof-cache-rewrite`
+and `firn-no-aof-cache-control`. The reference is the pinned Redis 7.2.16
+build. With `workload_images=true`, Redis keeps its AOF rewrite line and
+each image in `revisions`, including every twin, gets an AOF rewrite line
+and a no-AOF control line, named `image-<name>-aof-cache-rewrite` and
+`image-<name>-no-aof-cache-control`. Each line starts a fresh server; order
+reverses on even passes. The pass number seeds the same Zipf distribution
+on every line. No perf pass runs for this workload.
+
+The defaults are 1,000,000 keys, 64-byte values and Zipf exponent 0.99.
+The client sets `maxmemory-policy allkeys-lru`, fills the dataset without
+a limit, then sets a limit of **empty server memory plus
+half the dataset increment**, measured independently on each server:
+`prefill_used_memory + (filled_used_memory - prefill_used_memory) / 2`.
+The integer division rounds down. This is not half the server's total
+filled memory. `workload_options` shares the cache's `--keys`,
+`--value-size`, `--zipf-s`, `--warmup-seconds` and `--sample-ms` knobs;
+the harness owns the limit and does not accept `--maxmemory` for this mode.
+
+Both cache rewrite and no-AOF control disable automatic AOF rewrites with
+`auto-aof-rewrite-percentage 0`. After prefill and the configured warm-up,
+the AOF lines run Zipf cache-aside traffic and send exactly one BGREWRITEAOF
+halfway through the nominal `seconds` measurement. A separate control
+connection checks its reply while traffic and INFO persistence sampling
+continue. The measurement lasts at least the nominal window and, if
+necessary, extends until successful rewrite completion. An explicit
+failure stops it promptly. The rewrite request and completion polling have
+a 120-second cap from the request. The client requires idle, unscheduled
+completion, one added `aof_rewrites`, and `aof_last_bgrewrite_status:ok`.
+The no-AOF control sends no rewrite and uses the nominal measurement
+window; actual elapsed time includes draining in-flight requests, so the
+AOF and control durations can differ.
+
+`evict-zipf-rewrite.csv` retains all columns of `evict-zipf.csv`, including
+hit rate and refused SET count, and appends `rewrite_duration_seconds`,
+`rewrite_status` and `rewrite_abort_reason`. The duration is the client
+interval from sending BGREWRITEAOF to INFO observing completion, on the
+same basis for Redis and firn; it includes polling overhead. It is blank
+for a control or when completion was not observed. Status is `ok` for
+success, `err` for an observed failed rewrite, `timeout`, `request_error`
+or `protocol_error` for other failures, and `not_requested` for the
+no-AOF control. Firn's reported abort reason is CSV quoted; Redis or a
+successful rewrite normally contributes an empty reason. The row is
+saved even on terminal rewrite failure before the harness propagates the
+nonzero client exit. Such failure rows retain the last successfully sampled
+memory values and leave `keys_at_end` blank rather than issuing a final
+DBSIZE request. Setup errors or independent traffic-worker failures can
+terminate before a complete row is available. Successful rates also enter
+`workloads.csv`; failed rows remain only in the full cache CSV. The workflow
+uploads both CSVs even when measurement fails.
 
 ### Results
 

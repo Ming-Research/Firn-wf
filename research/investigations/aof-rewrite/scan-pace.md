@@ -73,11 +73,13 @@ is reported as a contract gap rather than worked around.
 ### Testing delay
 
 Cases that write during a rewrite relied on the slow scan to stay in
-progress. They now set Redis 7.0.15's hidden `rdb-key-save-delay`, which
-Redis's `rewriteAppendOnlyFileRio` (`aof.c:2337`) applies after each key and
-Redis's own suite sets for the same purpose, to 100 microseconds, the old
-per-step sleep. Any nonzero value scans one position per step; a positive
-one sleeps per key in place of the slice pause, so these cases keep the pace
+progress. They now set the hidden `rdb-key-save-delay` parameter, also used
+by the current Redis 7.2.16 reference, to 100 microseconds, the old
+per-step sleep. The original Redis 7.0.15 source investigation found that
+`rewriteAppendOnlyFileRio` (`aof.c:2337`) applies it after each key and
+Redis's own suite sets it for the same purpose. Any nonzero value scans
+one position per step; a positive one sleeps per key in place of the slice
+pause, so these cases keep the pace
 they were written against. Every sleep is rounded up to whole milliseconds
 by the driver's timer. A delay is taken in slices of at most 100 ms that end
 when CONFIG SET changes it or the rewrite is cancelled, so SHUTDOWN stops a
@@ -104,7 +106,7 @@ hook or stalled host I/O.
 
 On the idle 14900K through CI, repeat the million-key rewrite-during
 workload at R = 16 MiB with `make firn-lto` builds of this branch and its
-base, interleaved, with a base twin as noise control and Redis 7.0.15 under
+base, interleaved, with a base twin as noise control and Redis 7.2.16 under
 identical data, connections, CPU, AOF and fsync settings. Record completion,
 scan steps, rewrite duration, and throughput and latency during the rewrite.
 The design is rejected if the rewrite still fails to complete that workload,

@@ -16,21 +16,22 @@ pub(super) struct Progress {
 impl Progress {
     pub(super) fn completed(&self) { self.count.fetch_add(1, Ordering::Relaxed); }
     pub(super) fn stopped(&self) -> bool { self.stop.load(Ordering::Relaxed) }
+    pub(super) fn stop(&self) { self.stop.store(true, Ordering::Relaxed); }
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Persistence {
-    enabled: bool,
+pub(super) struct Persistence {
+    pub(super) enabled: bool,
     in_progress: bool,
     scheduled: bool,
-    last_ok: bool,
-    rewrites: u64,
+    pub(super) last_ok: bool,
+    pub(super) rewrites: u64,
     // Some older firn images omit this field; never substitute client wall time.
     last_seconds: Option<u64>,
 }
 
 impl Persistence {
-    fn parse(info: &str) -> Result<Self> {
+    pub(super) fn parse(info: &str) -> Result<Self> {
         let fields: HashMap<&str, &str> = info.lines().filter_map(|line| line.split_once(':')).collect();
         let flag = |name, optional| -> Result<bool> {
             match fields.get(name).copied() {
@@ -60,7 +61,7 @@ impl Persistence {
         })
     }
 
-    fn idle(&self) -> bool { !self.in_progress && !self.scheduled }
+    pub(super) fn idle(&self) -> bool { !self.in_progress && !self.scheduled }
 
     fn completed(&self, baseline: u64) -> Result<bool> {
         if !self.enabled { return Err("AOF disabled during rewrite workload".into()); }
@@ -79,7 +80,7 @@ fn observation(control: &mut Control, deadline: Instant) -> Result<Persistence> 
     Persistence::parse(info_body(&wire)?)
 }
 
-fn rewrite_started(wire: &[u8]) -> Result<()> {
+pub(super) fn rewrite_started(wire: &[u8]) -> Result<()> {
     if wire != b"+Background append only file rewriting started\r\n" {
         return Err(format!("BGREWRITEAOF did not start: {}", String::from_utf8_lossy(wire)).into());
     }

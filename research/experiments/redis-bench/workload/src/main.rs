@@ -16,8 +16,12 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKLOADS: &[&str] = &[
     "limiter-script", "limiter-tx", "setmany-tx", "session-set", "session-get",
-    "evict-zipf", "rewrite-during",
+    "evict-zipf", "evict-zipf-rewrite", "evict-zipf-control", "rewrite-during",
 ];
+
+fn cache_workload(name: &str) -> bool {
+    matches!(name, "evict-zipf" | "evict-zipf-rewrite" | "evict-zipf-control")
+}
 
 #[derive(Clone)]
 struct Options {
@@ -80,12 +84,16 @@ impl Options {
                 _ => return Err(format!("unknown option: {flag}").into()),
             }
         }
-        if matches!(opts.workload.as_str(), "evict-zipf" | "rewrite-during") {
+        if cache_workload(&opts.workload) || opts.workload == "rewrite-during" {
             if !keys_given { opts.keys = 1_000_000; }
             if !value_given { opts.value = vec![b'x'; 64]; }
         }
         if opts.workload == "rewrite-during" && (opts.seconds.is_none() || opts.fill.is_some()) {
             return Err("rewrite-during requires --seconds (per before/after phase), without --fill".into());
+        }
+        if matches!(opts.workload.as_str(), "evict-zipf-rewrite" | "evict-zipf-control")
+            && (opts.seconds.is_none() || opts.fill.is_some()) {
+            return Err("cache rewrite and control modes require --seconds, without --fill".into());
         }
         if !opts.zipf_s.is_finite() || opts.zipf_s < 0.0 || opts.sample_interval.is_zero() {
             return Err("--zipf-s must be finite and nonnegative; --sample-ms must be positive".into());
@@ -185,7 +193,7 @@ fn fill(opts: &Options, count: u64) -> Result<()> {
         out.clear();
         let mut batch = 0;
         while next < count && batch < 256 && out.len() < 1_048_576 {
-            if matches!(opts.workload.as_str(), "evict-zipf" | "rewrite-during") {
+            if cache_workload(&opts.workload) || opts.workload == "rewrite-during" {
                 let key = format!("key:{next}");
                 command(&mut out, &[b"SET", key.as_bytes(), &opts.value]);
             } else {
@@ -331,13 +339,13 @@ impl Connection {
         while self.replies > 0 {
             // Only a cache-aside miss SET may be refused. Fill, GET, control
             // commands and every other error retain the fatal RESP path.
-            let refused = opts.workload == "evict-zipf" && self.cache_set
+            let refused = cache_workload(&opts.workload) && self.cache_set
                 && self.input.starts_with(eviction::OOM_REPLY);
             let size = if refused { eviction::OOM_REPLY.len() } else {
                 let Some(size) = reply(&self.input, 0)? else { break; };
                 size
             };
-            if opts.workload == "evict-zipf" {
+            if cache_workload(&opts.workload) {
                 if self.cache_set {
                     if refused {
                         self.refused_sets += 1;
@@ -370,7 +378,7 @@ impl Connection {
             if self.sent != self.out.len() || !self.input.is_empty() {
                 return Err("unexpected extra or premature reply".into());
             }
-            if opts.workload == "evict-zipf" && !self.cache_set && !self.hit {
+            if cache_workload(&opts.workload) && !self.cache_set && !self.hit {
                 self.out.clear();
                 command(&mut self.out, &[b"SET", &self.cache_key, &opts.value]);
                 self.sent = 0;
@@ -420,7 +428,11 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
             if c.advance(opts)? {
                 let us = c.started.elapsed().as_nanos().div_ceil(1000) as u64;
                 *histogram.entry(us).or_insert(0) += 1;
-                if let Some(p) = progress { p.completed(); }
+                // Cache measurement keeps per-worker histograms; its shared
+                // Progress is only a stop flag, not a contended operation count.
+                if zipf.is_none() {
+                    if let Some(p) = progress { p.completed(); }
+                }
                 hits += u64::from(c.hit);
             }
         }
@@ -460,25 +472,37 @@ impl Measurement {
 }
 
 fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
-           mut monitor: Option<&mut eviction::Monitor>) -> Result<Measurement> {
+           monitor: Option<&mut eviction::Monitor>) -> Result<Measurement> {
+    measure_controlled(opts, zipf, monitor, None)
+}
+
+fn measure_controlled(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
+           mut monitor: Option<&mut eviction::Monitor>,
+           mut window: Option<&mut eviction::RewriteWindow>) -> Result<Measurement> {
     let mut groups: Vec<Vec<Connection>> = (0..opts.threads).map(|_| Vec::new()).collect();
     // Connections and SCRIPT LOAD finish before the shared measurement clock.
     for id in 0..opts.connections { groups[id % opts.threads].push(Connection::new(&opts, id)?); }
     // RESETSTAT and the initial INFO happen with all measured connections open,
     // before releasing any worker. A failed setup cannot strand a barrier waiter.
     if let Some(m) = monitor.as_deref_mut() { m.start()?; }
-    let opts = Arc::new(opts.clone());
+    let mut worker_options = opts.clone();
+    // The controller owns the stopping point; workers keep the ordinary
+    // cache-aside reply checking and drain their in-flight request on stop.
+    let progress = window.as_ref().map(|_| Arc::new(rewrite::Progress::default()));
+    if window.is_some() { worker_options.seconds = None; }
+    let opts = Arc::new(worker_options);
     let barrier = Arc::new(Barrier::new(opts.threads + 1));
     let cancelled = Arc::new(AtomicBool::new(false));
     let start = Arc::new(std::sync::OnceLock::new());
     let mut handles = Vec::new();
     for connections in groups {
         let zipf = zipf.clone();
+        let progress = progress.clone();
         let (opts, barrier, cancelled, start) =
             (opts.clone(), barrier.clone(), cancelled.clone(), start.clone());
         handles.push(thread::spawn(move || {
             barrier.wait();
-            let result = worker(connections, &opts, *start.get().unwrap(), &cancelled, zipf.as_deref(), None);
+            let result = worker(connections, &opts, *start.get().unwrap(), &cancelled, zipf.as_deref(), progress.as_deref());
             if result.is_err() { cancelled.store(true, Ordering::Relaxed); }
             result
         }));
@@ -487,13 +511,25 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
     start.set(begin).unwrap();
     barrier.wait();
     let mut failure = None;
-    if let Some(m) = monitor.as_deref_mut() {
+    if monitor.is_some() || window.is_some() {
         while handles.iter().any(|h| !h.is_finished()) {
-            thread::sleep(opts.sample_interval);
-            if let Err(e) = m.sample() {
-                cancelled.store(true, Ordering::Relaxed);
-                failure = Some(e);
-                break;
+            let pause = window.as_ref().map_or(opts.sample_interval, |w| w.pause(begin, opts.sample_interval));
+            thread::sleep(pause);
+            if let Some(w) = window.as_deref_mut() {
+                if w.tick(begin) { progress.as_ref().unwrap().stop(); }
+            }
+            if let Some(m) = monitor.as_deref_mut() {
+                if window.as_ref().is_some_and(|w| w.failed()) { continue; }
+                if let Err(e) = m.sample_before(window.as_ref().and_then(|w| w.deadline())) {
+                    if let Some(w) = window.as_deref_mut() {
+                        w.fail(e);
+                        progress.as_ref().unwrap().stop();
+                    } else {
+                        cancelled.store(true, Ordering::Relaxed);
+                        failure = Some(e);
+                    }
+                    break;
+                }
             }
         }
     }
@@ -515,7 +551,14 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
         }
     }
     if let Some(e) = failure { return Err(e); }
-    if let Some(m) = monitor { m.sample()?; }
+    if !window.as_ref().is_some_and(|w| w.failed()) {
+        if let Some(m) = monitor {
+            if let Err(error) = m.sample() {
+                if let Some(w) = window.as_deref_mut() { w.fail(error); }
+                else { return Err(error); }
+            }
+        }
+    }
     let count: u64 = histogram.values().sum();
     if count == 0 { return Err("no requests completed".into()); }
     if opts.requests.is_some_and(|n| count != n) { return Err("request count mismatch".into()); }
@@ -528,7 +571,7 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
 
 fn run(opts: Options) -> Result<()> {
     if let Some(count) = opts.fill { return fill(&opts, count); }
-    if opts.workload == "evict-zipf" { return eviction::run(&opts); }
+    if cache_workload(&opts.workload) { return eviction::run(&opts); }
     if opts.workload == "rewrite-during" { return rewrite::run(&opts); }
     if opts.maxmemory.is_some() { return eviction::session_limit(&opts); }
     println!("{}", measure(&opts, None, None)?.csv(&opts));
@@ -589,7 +632,7 @@ mod tests {
         use std::net::TcpListener;
         for &workload in WORKLOADS {
             // Opt-in workloads have their own state-machine and setup cases.
-            if matches!(workload, "evict-zipf" | "rewrite-during") { continue; }
+            if cache_workload(workload) || workload == "rewrite-during" { continue; }
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {

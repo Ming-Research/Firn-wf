@@ -74,7 +74,8 @@
 #                                 consumer workloads, whose twins are noise
 #                                 controls.
 #                                 Opt-in evict-zipf measures cache-aside hits
-#                                 under allkeys-lru at half the filled heap;
+#                                 under allkeys-lru at empty server memory plus
+#                                 half the dataset increment;
 #                                 session-set-limits/session-get-limits compare
 #                                 unlimited and 64 GiB on the same images,
 #                                 with a twin of each. These start fresh for
@@ -88,6 +89,15 @@
 #                                 --sample-ms 10 for both. Seed is the pass.
 #                                 evict-zipf.csv keeps memory/hit observations;
 #                                 all rates and latencies enter workloads.csv.
+#                                 Opt-in evict-zipf-rewrite adds one timed rewrite
+#                                 during cache traffic, on Redis and firn with
+#                                 AOF, plus firn without AOF as a control. With
+#                                 WORKLOAD_IMAGES, each image (twins included)
+#                                 gets both AOF rewrite and no-AOF control lines.
+#                                 evict-zipf-rewrite.csv keeps the cache row plus
+#                                 client rewrite duration, status and abort reason,
+#                                 including a terminal rewrite failure before
+#                                 the harness propagates its exit status.
 #                                 Opt-in rewrite-during runs only with AOF,
 #                                 on Redis and firn or each WORKLOAD_IMAGES
 #                                 image. It fills 1,000,000 keys (64-byte values),
@@ -101,7 +111,7 @@
 #                                 (bytes, default 0). Policy is noeviction. INFO
 #                                 AOF fields and used_memory go to stderr on both
 #                                 success and failure. Example CI:
-#                                 mode=workloads tests=rewrite-during seconds=5
+#                                 mode=workloads tests=rewrite-during cpus=1 seconds=5
 #                                 workload_images=true revisions='base=origin/main
 #                                 head=HEAD head-twin=HEAD'. rewrite-during.csv
 #                                 reports all three rates, sampled during time,
@@ -1022,7 +1032,7 @@ if [ "$MODE" = workloads ]; then
     for workload in $workloads; do
         case $workload in
             limiter-script|limiter-tx|setmany-tx|session-set|session-get) ;;
-            evict-zipf|session-set-limits|session-get-limits|rewrite-during) memory_workloads=1 ;;
+            evict-zipf|evict-zipf-rewrite|session-set-limits|session-get-limits|rewrite-during) memory_workloads=1 ;;
             *) echo "unknown workload: $workload" >&2; exit 1 ;;
         esac
     done
@@ -1037,7 +1047,9 @@ if [ "$MODE" = workloads ]; then
     echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
     echo 'line,pass,cpus,workload,connections,keys,value_size,seed,before_rate,during_rate,after_rate,during_seconds,aof_last_rewrite_time_sec,aof_last_bgrewrite_status,rewrite_completed' >"$OUT/rewrite-during.csv"
     echo 'line,pass,cpus,connections,field,value' >"$OUT/rewrite-during-info.csv"
-    echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,refused_sets,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections,keys_at_start,keys_at_end' >"$OUT/evict-zipf.csv"
+    cache_header='line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,refused_sets,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections,keys_at_start,keys_at_end'
+    printf '%s\n' "$cache_header" >"$OUT/evict-zipf.csv"
+    printf '%s,rewrite_duration_seconds,rewrite_status,rewrite_abort_reason\n' "$cache_header" >"$OUT/evict-zipf-rewrite.csv"
     echo 'line,pass,cpus,workload,connections,keys,value_size,seed,warmup_seconds,sample_ms,maxmemory' >"$OUT/session-limits-settings.csv"
     # Accept only the measurement parameters shared by these opt-in workloads;
     # the harness owns port, workload, duration and seed, and maxmemory except
@@ -1099,6 +1111,51 @@ if [ "$MODE" = workloads ]; then
             fi
             for workload in $workloads; do
                 case $workload in
+                    evict-zipf-rewrite)
+                        # Labels describe the measured condition; selectors
+                        # remain the server names that start() recognizes.
+                        cache_order="reference-aof-cache-rewrite|reference-aof|aof|evict-zipf-rewrite firn-aof-cache-rewrite|firn-aof-$n|aof|evict-zipf-rewrite firn-no-aof-cache-control|firn-$n|none|evict-zipf-control"
+                        if [ -n "${WORKLOAD_IMAGES:-}" ]; then
+                            cache_order='reference-aof-cache-rewrite|reference-aof|aof|evict-zipf-rewrite'
+                            for pair in $IMAGES; do
+                                image_name=${pair%%=*}
+                                cache_order="$cache_order image-$image_name-aof-cache-rewrite|image-$image_name|aof|evict-zipf-rewrite image-$image_name-no-aof-cache-control|image-$image_name|none|evict-zipf-control"
+                            done
+                        fi
+                        if [ $((pass % 2)) -eq 0 ]; then
+                            reversed=
+                            for cache_entry in $cache_order; do reversed="$cache_entry $reversed"; done
+                            cache_order=$reversed
+                        fi
+                        for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                            for cache_entry in $cache_order; do
+                                line=${cache_entry%%|*}
+                                cache_tail=${cache_entry#*|}
+                                cache_selector=${cache_tail%%|*}
+                                cache_tail=${cache_tail#*|}
+                                cache_aof=${cache_tail%%|*}
+                                memory_workload=${cache_tail#*|}
+                                variant=$memory_workload
+                                start "$cache_selector" "$cache_aof"
+                                cache_status=0
+                                result=$(memory_run) || cache_status=$?
+                                # The client emits a complete cache row even
+                                # on a terminal rewrite failure. Keep it before
+                                # returning its status to the workflow.
+                                if [ -n "$result" ]; then
+                                    printf '%s,%s,%s,%s\n' "$line" "$pass" "$n" "$result" | tee -a "$OUT/evict-zipf-rewrite.csv"
+                                fi
+                                if [ "$cache_status" -ne 0 ]; then
+                                    exit "$cache_status"
+                                fi
+                                rates=$(printf '%s\n' "$result" | cut -d, -f1-7)
+                                printf '%s,%s,%s,%s\n' "$line" "$pass" "$n" "$rates" | tee -a "$OUT/workloads.csv"
+                                stop
+                                server=
+                            done
+                        done
+                        continue
+                        ;;
                     rewrite-during)
                         rewrite_order="reference-aof firn-aof-$n"
                         if [ -n "${WORKLOAD_IMAGES:-}" ]; then
