@@ -860,3 +860,61 @@ source-line citation was corrected. Checklist source checks passed or were
 not applicable; compiler acceptance, CI correctness, measurement provenance
 and candidate performance remain unverified. Pins and submodules did not
 move. Only reads/searches and `git diff --check` ran.
+
+## Measured result of the batch overhead reduction (2026-10-13)
+
+Two 14900K `redis-bench.yml` runs measured #97 at `3d0f8a8` (the batch
+overhead reduction above) against main, a twin of main as the noise
+control, Redis 7.2.16 with the same AOF settings, and `22956c5`
+(`tmp/inline-guards`, measurement only, never to merge: `3d0f8a8` with the
+AOF hot-path wait guards written inline instead of through helper calls,
+which estimates what selective wake filtering of helper-call guards,
+`firn-req-helper-guard-wake-filter`, could gain). Every side used the
+pinned release `wf-af7665be672d`, AOF everysec, the server on the P-cores
+named below and the clients on the sixteen E-cores 16–31, four interleaved
+rounds. Rates are the median of the four rounds; a ratio range is the
+smallest and largest per-round ratio against main in the same round. The
+veto line is `#97/main >= min(twin/main) - 0.05`. These are the numbers
+the Whitefoot requests `firn-req-linear-resource-lease` and
+`firn-req-helper-guard-wake-filter` cite.
+
+[Run 38430979567](https://github.com/Ming-Research/Firn-wf/actions/runs/38430979567),
+two P-cores (CPUs 2 and 4), main `f12587f`:
+
+| Workload | Main ops/s | Twin/main | #97/main | Veto line | Inline guards/main | Redis ops/s | #97/Redis | p99 ms main → #97 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| SET, pipeline 1 | 777k | 0.986–1.001 | 0.607 (0.600–0.615) | 0.936 | 0.491 | 375k | 1.26 | 0.083 → 0.167 |
+| SET, pipeline 16 | 3.30M | 0.962–1.029 | 0.693 (0.658–0.708) | 0.912 | 0.554 | 1.61M | 1.42 | 0.439 → 0.483 |
+| MSET, pipeline 1 | 490k | 0.994–1.013 | 0.592 (0.584–0.613) | 0.944 | 0.513 | 220k | 1.32 | 0.159 → 0.219 |
+| MSET, pipeline 16 | 896k | 0.940–1.072 | 0.662 (0.631–0.706) | 0.890 | 0.623 | 404k | 1.46 | 2.627 → 1.423 |
+
+[Run 38433211566](https://github.com/Ming-Research/Firn-wf/actions/runs/38433211566),
+eight P-cores (CPUs 0, 2, …, 14), main `372db37`:
+
+| Workload | Main ops/s | Twin/main | #97/main | Veto line | Inline guards/main | Redis ops/s | #97/Redis | p99 ms main → #97 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| SET, pipeline 1 | 1.71M | 0.960–1.156 | 0.211 (0.211–0.222) | 0.910 | 0.206 | 384k | 0.95 | 0.039 → 0.215 |
+| SET, pipeline 16 | 1.10M | 0.812–1.366 | 0.597 (0.540–0.666) | 0.762 | 0.582 | 1.62M | 0.37 | 1.231 → 2.507 |
+| MSET, pipeline 1 | 866k | 1.000–1.092 | 0.314 (0.309–0.322) | 0.950 | 0.304 | 224k | 1.21 | 0.087 → 0.239 |
+| MSET, pipeline 16 | 859k | 0.920–1.111 | 0.565 (0.544–0.602) | 0.870 | 0.540 | 413k | 1.14 | 2.791 → 2.287 |
+
+`#97/Redis` is the median of per-round ratios; on eight cores SET pipeline
+16 ranges 0.37–0.44 over the four rounds.
+
+What this shows, no wider than these two runs:
+
+- #97 fails the veto line in every row on both core counts. The batch
+  overhead reduction did not move the two-core ratios materially from
+  `5ded221`'s 0.613, 0.657, 0.597 and 0.673 in run 38418748888, a
+  different run; this pair has no interleaved `5ded221` side, so the
+  attribution test written above ("indistinguishable from `5ded221` within
+  twin noise") is not settled by it.
+- On eight cores #97 at SET pipeline 16 runs at 0.37 of Redis, and at SET
+  pipeline 1 at 0.95 of Redis, where main leads Redis 4.5 times. Main
+  itself is at 0.68 of Redis at SET pipeline 16 on eight cores, the
+  separate scaling regression of board item `firn-write-meta-aof`.
+- Writing the hot-path guards inline did not raise throughput: it is below
+  #97 in every row, by 0.05–0.14 of main on two cores and 0.01–0.03 on
+  eight. So these runs give no measured estimate of a gain from selective
+  wake filtering of helper-call guards; any gain the request expects rests
+  on the analysis above, not on this measurement.
