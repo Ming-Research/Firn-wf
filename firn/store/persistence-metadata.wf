@@ -284,7 +284,7 @@ fn aof_installing(meta: &Meta, installing: u64) -> result: unit writes(meta.aof_
 }
 
 fn aof_rewrite_journal_detach(meta: &Meta) -> journal: Option<Box<Ring<Box<Slots<u8>>>>> writes(meta.rewrite.journal) {
-  let journal = None<Box<Ring<Box<Slots<u8>>>>();
+  let journal = None<Box<Ring<Box<Slots<u8>>>>>();
   swap(first: &journal, second: &meta^.rewrite.journal);
   return move journal;
 }
