@@ -1187,8 +1187,9 @@ fn reply_aof_error(client: &Client, execabort: Bool, text: &AofErrorText) -> res
   return unit;
 }
 
-fn copy_io_description(client: &Client, error: &std::io::IoError, by_class: Bool, start: u64, end: u64) -> copied: Result<u64, std::io::DescriptionError> reads(error), writes(client) {
-  doc "Copies the host's description of error, or with by_class of its class alone, into the reply window from start to end.";
+fn copy_io_description(client: &Client, error: &std::io::IoError, by_class: Bool, start: u64) -> copied: Result<u64, std::io::DescriptionError> reads(error), writes(client) {
+  doc "Copies the host's description of error, or with by_class of its class alone, into the reply window from start to its end.";
+  let end = client^.bytes.inner.len;
   if by_class {
     let by_class_copy = std::io::error_copy_class_description(error: error, destination: &client^.bytes.inner[0_u64..end], start: start, end: end);
     return by_class_copy;
@@ -1203,7 +1204,7 @@ fn reply_io_description(client: &Client, error: &std::io::IoError, by_class: Boo
   let start = client^.at;
   let end = client^.bytes.inner.len;
   if start <= end {
-    match copy_io_description(client: client, error: error, by_class: by_class, start: start, end: end) {
+    match copy_io_description(client: client, error: error, by_class: by_class, start: start) {
       Ok(value: next) => {
         set client^.at = next;
         return unit;
@@ -1224,7 +1225,7 @@ fn reply_io_description(client: &Client, error: &std::io::IoError, by_class: Boo
   let retry_start = client^.at;
   let retry_end = client^.bytes.inner.len;
   if retry_start <= retry_end {
-    match copy_io_description(client: client, error: error, by_class: by_class, start: retry_start, end: retry_end) {
+    match copy_io_description(client: client, error: error, by_class: by_class, start: retry_start) {
       Ok(value: next) => {
         set client^.at = next;
       }
