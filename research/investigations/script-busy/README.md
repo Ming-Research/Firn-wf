@@ -470,3 +470,48 @@ inputs has no executed fault-injection evidence. The reviewer confirmed
 that F1's probe tests the already-true BUSY alternative, not the later
 notification race, and that the network case cannot establish actual waiter
 admission. These limits remain part of the acceptance evidence.
+
+## Existing second-signal case after BUSY admission
+
+The owner reported [gate run 38406825693](https://github.com/Ming-Research/Firn-wf/actions/runs/38406825693)
+on the implementation revision: the second-stop-signal network case failed
+at its registry observation, expecting `*1\r\n` and reading `-BUS`.
+That assertion reads exactly four bytes, so the diagnostic shows the prefix
+of the BUSY reply, not a separate truncated protocol result. The case sends
+`SCRIPT EXISTS` for the SHA1 of its infinite `while true do end` EVAL. It
+sets no script threshold, so the default is 5000 ms. The BUSY path implies
+that at least 5000 ms had elapsed since the prepared-attempt timer was
+started;
+the supplied failure does not establish precise interpreter duration or CPU
+time, and the outstanding F3 lock-wait qualification still applies.
+
+Redis 7.2.16's `src/commands/script-exists.json` gives EXISTS only NOSCRIPT,
+not ALLOW_BUSY. Its `server.c:4125` rejects that command while the script is
+timed out, and `script.c:88` compares elapsed time with the threshold.
+Firn now queues nonexempt commands below the threshold; with this infinite
+script a larger threshold delays the BUSY result rather than producing the
+array on which the old test depended. No production exemption is added.
+
+The fixture now explicitly sets the threshold to 100 ms before EVAL, then
+uses a complete exact BUSY response to the same SCRIPT EXISTS query as its
+live-script barrier. An initial cache array may precede script execution and
+is fully consumed, but even presence 1 is not accepted as readiness. The
+observer then remains idle. Both backend routes, the first signal's EOF,
+the assertion that the process is still draining, and the second TERM/INT
+signal's exact exit status remain unchanged. This changes the preparation
+observation, not the signal behavior being checked. The network case uses
+its existing watchdog and socket bounds; it assumes no finite Lua-loop
+execution time.
+
+The original failed assertion supplies before-change evidence. The modified
+case has not been run in this worktree; its CI result remains required.
+Only this test and the investigation record change, with no compiler,
+production, pin, submodule, ratchet or approval-log edits and no commit.
+
+An independent gpt-6.1-sol reviewer at high effort inspected this two-file
+delta from `cdc5c1011f1a848321c8034574d1a9f8ac4d2a45`, the existing signal
+assertions and relevant design and Redis source. It confirmed full reply
+consumption and unchanged signal coverage. One ambiguous elapsed-time
+phrase was corrected and rechecked; no findings remained within source
+scope. Static checklist items passed or were not applicable; final gate and
+behavioral acceptance remain unverified.

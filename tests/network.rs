@@ -9139,9 +9139,11 @@ fn firn_stops_in_order_on_sigterm_and_sigint_on_both_routes() {
 /// default, so a second signal ends it at once, by that signal, before its
 /// drain ends (design/firn/orderly-stop.md). An unfinished script keeps one
 /// client alive because cancelling script waits is outside host cancellation.
-/// SCRIPT EXISTS observes its registration after the script takes the engine;
-/// that observer then stays idle. Its EOF after the first signal proves the
-/// request was recorded, after the listener was closed, without a fixed delay.
+/// SCRIPT EXISTS has no ALLOW_BUSY flag in Redis 7.2.16: it waits below the
+/// threshold, then answers BUSY while the script runs. Its exact BUSY reply
+/// proves the unfinished script is active, after which the observer stays idle.
+/// Its EOF after the first signal proves the request was recorded, after the
+/// listener was closed, without a fixed delay.
 /// Were the second ignored, as Redis 7.0.15 ignores a second SIGTERM, the
 /// script would keep firn alive until the test's process watchdog failed.
 #[cfg(target_os = "linux")]
@@ -9161,6 +9163,10 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
         let mut observer = connect_when_ready(port, &child);
         observer.write_all(&resp(&["PING"])).expect("establish observer");
         expect_replies(&mut observer, b"+PONG\r\n", "observer ready");
+        observer
+            .write_all(&resp(&["CONFIG", "SET", "busy-reply-threshold", "100"]))
+            .expect("set the script readiness threshold");
+        expect_replies(&mut observer, b"+OK\r\n", "script readiness threshold");
         looping
             .write_all(&resp(&["EVAL", "while true do end", "0"]))
             .expect("keep a script in progress through shutdown");
@@ -9170,14 +9176,17 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
                 .write_all(&resp(&[
                     "SCRIPT", "EXISTS", "694a5fe1ddb97a4c6a1bf299d9537c7d3d0f84e7",
                 ]))
-                .expect("observe script registration");
-            expect_replies(&mut observer, b"*1\r\n", "one script queried");
-            let present = integer_reply(&mut observer, "script registration");
-            if present == 1 {
+                .expect("observe the running script");
+            let reply = reply_line(&mut observer, "script readiness");
+            if reply == SCRIPT_BUSY_REPLY {
                 break;
             }
-            assert_eq!(present, 0, "SCRIPT EXISTS result");
-            assert!(Instant::now() < deadline, "script never took the engine");
+            // A query admitted before EVAL starts may still see either cache
+            // result; registration alone does not prove a script is running.
+            assert_eq!(reply, "*1\r\n", "one script queried before BUSY");
+            let present = integer_reply(&mut observer, "script registration");
+            assert!(matches!(present, 0 | 1), "SCRIPT EXISTS result: {present}");
+            assert!(Instant::now() < deadline, "script never became busy");
             std::thread::sleep(Duration::from_millis(10));
         }
         send_signal(&child, signal);
