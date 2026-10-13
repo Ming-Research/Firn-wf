@@ -1,0 +1,86 @@
+alias ExitStatus = std::process::ExitStatus;
+
+struct Databases {
+  doc "A plain owned directory of sixteen Shared map handles. Private fields are the standalone source-bundle form. This witness isolates directory construction, explicit duplication and shared identity; firn's public readonly consumer boundary is covered by its module-program CI.";
+  db0: Shared<ConcurrentHashMap<u64>>;
+  db1: Shared<ConcurrentHashMap<u64>>;
+  db2: Shared<ConcurrentHashMap<u64>>;
+  db3: Shared<ConcurrentHashMap<u64>>;
+  db4: Shared<ConcurrentHashMap<u64>>;
+  db5: Shared<ConcurrentHashMap<u64>>;
+  db6: Shared<ConcurrentHashMap<u64>>;
+  db7: Shared<ConcurrentHashMap<u64>>;
+  db8: Shared<ConcurrentHashMap<u64>>;
+  db9: Shared<ConcurrentHashMap<u64>>;
+  db10: Shared<ConcurrentHashMap<u64>>;
+  db11: Shared<ConcurrentHashMap<u64>>;
+  db12: Shared<ConcurrentHashMap<u64>>;
+  db13: Shared<ConcurrentHashMap<u64>>;
+  db14: Shared<ConcurrentHashMap<u64>>;
+  db15: Shared<ConcurrentHashMap<u64>>;
+}
+
+fn databases_new() -> made: Databases pure {
+  let db0 = shared_map_new::<u64>(capacity: 0_u64);
+  let db1 = shared_map_new::<u64>(capacity: 0_u64);
+  let db2 = shared_map_new::<u64>(capacity: 0_u64);
+  let db3 = shared_map_new::<u64>(capacity: 0_u64);
+  let db4 = shared_map_new::<u64>(capacity: 0_u64);
+  let db5 = shared_map_new::<u64>(capacity: 0_u64);
+  let db6 = shared_map_new::<u64>(capacity: 0_u64);
+  let db7 = shared_map_new::<u64>(capacity: 0_u64);
+  let db8 = shared_map_new::<u64>(capacity: 0_u64);
+  let db9 = shared_map_new::<u64>(capacity: 0_u64);
+  let db10 = shared_map_new::<u64>(capacity: 0_u64);
+  let db11 = shared_map_new::<u64>(capacity: 0_u64);
+  let db12 = shared_map_new::<u64>(capacity: 0_u64);
+  let db13 = shared_map_new::<u64>(capacity: 0_u64);
+  let db14 = shared_map_new::<u64>(capacity: 0_u64);
+  let db15 = shared_map_new::<u64>(capacity: 0_u64);
+  return Databases(db0: move db0, db1: move db1, db2: move db2, db3: move db3, db4: move db4, db5: move db5, db6: move db6, db7: move db7, db8: move db8, db9: move db9, db10: move db10, db11: move db11, db12: move db12, db13: move db13, db14: move db14, db15: move db15);
+}
+
+fn duplicate(databases: &Databases) -> made: Databases reads(databases) {
+  let db0 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db0);
+  let db1 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db1);
+  let db2 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db2);
+  let db3 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db3);
+  let db4 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db4);
+  let db5 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db5);
+  let db6 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db6);
+  let db7 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db7);
+  let db8 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db8);
+  let db9 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db9);
+  let db10 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db10);
+  let db11 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db11);
+  let db12 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db12);
+  let db13 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db13);
+  let db14 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db14);
+  let db15 = shared_share::<ConcurrentHashMap<u64>>(shared: &databases^.db15);
+  return Databases(db0: move db0, db1: move db1, db2: move db2, db3: move db3, db4: move db4, db5: move db5, db6: move db6, db7: move db7, db8: move db8, db9: move db9, db10: move db10, db11: move db11, db12: move db12, db13: move db13, db14: move db14, db15: move db15);
+}
+
+fn main() -> status: ExitStatus pure waits {
+  let original = databases_new();
+  let cloned = duplicate(databases: &original);
+  let cached = shared_share::<ConcurrentHashMap<u64>>(shared: &cloned.db0);
+  let bytes = array_filled::<u8, 1>(value: 107_u8);
+  let key = &bytes[0_u64..1_u64];
+  atomic slot = &cached[key] {
+    set slot^ = Some<u64>(value: 7_u64);
+  }
+  let seen = 0_u64;
+  atomic slot = &original.db0[key] {
+    match slot^ {
+      Some(value: stored) => {
+        set seen = stored^;
+      }
+      None() => {
+      }
+    }
+  }
+  if seen != 7_u64 {
+    return std::process::exit_status(code: 1_u8);
+  }
+  return std::process::exit_status(code: 0_u8);
+}

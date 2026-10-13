@@ -72,8 +72,7 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   let db13 = shared_map_new::<Entry>(capacity: 0_u64);
   let db14 = shared_map_new::<Entry>(capacity: 0_u64);
   let db15 = shared_map_new::<Entry>(capacity: 0_u64);
-  let directory = Databases(db0: move db0, db1: move db1, db2: move db2, db3: move db3, db4: move db4, db5: move db5, db6: move db6, db7: move db7, db8: move db8, db9: move db9, db10: move db10, db11: move db11, db12: move db12, db13: move db13, db14: move db14, db15: move db15);
-  let databases = frozen_new::<Databases>(value: move directory);
+  let databases = Databases(db0: move db0, db1: move db1, db2: move db2, db3: move db3, db4: move db4, db5: move db5, db6: move db6, db7: move db7, db8: move db8, db9: move db9, db10: move db10, db11: move db11, db12: move db12, db13: move db13, db14: move db14, db15: move db15);
   let due_queue = priority_queue_new::<Due, ceiling>();
   let changed = False();
   let staged_due = None<Box<Slots<Due>>>();
@@ -107,13 +106,33 @@ fn keyspace_share(store: &Keyspace) -> made: Keyspace reads(store) {
   return move made;
 }
 
+fn databases_share(databases: &Databases) -> made: Databases reads(databases) {
+  let db0 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db0);
+  let db1 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db1);
+  let db2 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db2);
+  let db3 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db3);
+  let db4 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db4);
+  let db5 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db5);
+  let db6 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db6);
+  let db7 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db7);
+  let db8 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db8);
+  let db9 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db9);
+  let db10 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db10);
+  let db11 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db11);
+  let db12 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db12);
+  let db13 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db13);
+  let db14 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db14);
+  let db15 = shared_share::<ConcurrentHashMap<Entry>>(shared: &databases^.db15);
+  return Databases(db0: move db0, db1: move db1, db2: move db2, db3: move db3, db4: move db4, db5: move db5, db6: move db6, db7: move db7, db8: move db8, db9: move db9, db10: move db10, db11: move db11, db12: move db12, db13: move db13, db14: move db14, db15: move db15);
+}
+
 fn keyspace_logging(store: &Keyspace, logging: Bool) -> made: Keyspace reads(store) {
   doc "A handle to the same keyspace and server's state that appends changes to the append-only file's pending bytes when logging is true.";
   let keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.keys);
   let kept = shared_share::<Meta>(shared: &store^.meta);
   let beside = shared_share::<ServerState>(shared: &store^.server);
   let scripts = shared_share::<pkg::script_pool::EnginePool>(shared: &store^.scripts);
-  let databases = frozen_share::<Databases>(frozen: &store^.databases);
+  let databases = databases_share(databases: &store^.databases);
   return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, logging: logging, database: store^.database, databases: move databases);
 }
 
@@ -669,37 +688,37 @@ fn keyspace_select(store: &Keyspace, database: u64) -> result: unit reads(store.
   requires database < 16_u64;
 } {
   if database == 0_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db0);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db0);
   } else if database == 1_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db1);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db1);
   } else if database == 2_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db2);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db2);
   } else if database == 3_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db3);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db3);
   } else if database == 4_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db4);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db4);
   } else if database == 5_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db5);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db5);
   } else if database == 6_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db6);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db6);
   } else if database == 7_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db7);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db7);
   } else if database == 8_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db8);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db8);
   } else if database == 9_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db9);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db9);
   } else if database == 10_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db10);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db10);
   } else if database == 11_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db11);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db11);
   } else if database == 12_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db12);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db12);
   } else if database == 13_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db13);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db13);
   } else if database == 14_u64 {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db14);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db14);
   } else {
-    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.inner.db15);
+    set store^.keys = shared_share::<ConcurrentHashMap<Entry>>(shared: &store^.databases.db15);
   }
   set store^.database = database;
   return unit;

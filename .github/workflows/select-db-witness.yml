@@ -1,0 +1,31 @@
+# Temporary CI caller for firn-scope-select-db. Remove before the PR is ready
+# once the pinned directory form is validated. Keep the witness as the
+# regression instrument linked from the database design decision.
+name: select-db-witness
+
+on:
+  push:
+    branches: [claude/select-db]
+
+jobs:
+  shared-handles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Compile the shared-handle directory witness and show its stack ledger
+        run: |
+          witness_release=$(sed -n 's/^release = //p' whitefoot.pin)
+          "build/whitefoot/${witness_release}/whitefootc" --stack-ledger research/experiments/select-db/shared-handles-witness.wf -o build/shared-handles-witness
+
+      - name: Check that the duplicated directory retains the original map identity
+        run: build/shared-handles-witness

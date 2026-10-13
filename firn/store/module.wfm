@@ -259,33 +259,33 @@ public struct ServerState {
 
 public struct Databases {
   doc "Permanent identities for Redis databases zero through fifteen. Connections cache one shared handle; SWAPDB exchanges map contents, never these handles.";
-  public db0: Shared<ConcurrentHashMap<Entry>>;
-  public db1: Shared<ConcurrentHashMap<Entry>>;
-  public db2: Shared<ConcurrentHashMap<Entry>>;
-  public db3: Shared<ConcurrentHashMap<Entry>>;
-  public db4: Shared<ConcurrentHashMap<Entry>>;
-  public db5: Shared<ConcurrentHashMap<Entry>>;
-  public db6: Shared<ConcurrentHashMap<Entry>>;
-  public db7: Shared<ConcurrentHashMap<Entry>>;
-  public db8: Shared<ConcurrentHashMap<Entry>>;
-  public db9: Shared<ConcurrentHashMap<Entry>>;
-  public db10: Shared<ConcurrentHashMap<Entry>>;
-  public db11: Shared<ConcurrentHashMap<Entry>>;
-  public db12: Shared<ConcurrentHashMap<Entry>>;
-  public db13: Shared<ConcurrentHashMap<Entry>>;
-  public db14: Shared<ConcurrentHashMap<Entry>>;
-  public db15: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db0: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db1: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db2: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db3: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db4: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db5: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db6: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db7: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db8: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db9: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db10: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db11: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db12: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db13: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db14: Shared<ConcurrentHashMap<Entry>>;
+  public readonly db15: Shared<ConcurrentHashMap<Entry>>;
 }
 
 public struct Keyspace {
   doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
-  public keys: Shared<ConcurrentHashMap<Entry>>;
-  public meta: Shared<Meta>;
-  public server: Shared<ServerState>;
-  public scripts: Shared<pkg::script_pool::EnginePool>;
-  public logging: Bool;
+  public readonly keys: Shared<ConcurrentHashMap<Entry>>;
+  public readonly meta: Shared<Meta>;
+  public readonly server: Shared<ServerState>;
+  public readonly scripts: Shared<pkg::script_pool::EnginePool>;
+  public readonly logging: Bool;
   public readonly database: u64;
-  public databases: Frozen<Databases>;
+  public readonly databases: Databases;
   invariant selected(store): store.database < 16_u64;
 }
 

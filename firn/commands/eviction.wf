@@ -23,37 +23,37 @@ fn release_reserve(store: &Keyspace, client: &Client) -> freed: u64 reads(store)
   match client^.meter {
     Some(value: meter) => {
       let freed = 0_u64;
-      let freed0 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db0, meter: meter);
+      let freed0 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db0, meter: meter);
       set freed = freed +sat freed0;
-      let freed1 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db1, meter: meter);
+      let freed1 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db1, meter: meter);
       set freed = freed +sat freed1;
-      let freed2 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db2, meter: meter);
+      let freed2 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db2, meter: meter);
       set freed = freed +sat freed2;
-      let freed3 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db3, meter: meter);
+      let freed3 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db3, meter: meter);
       set freed = freed +sat freed3;
-      let freed4 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db4, meter: meter);
+      let freed4 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db4, meter: meter);
       set freed = freed +sat freed4;
-      let freed5 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db5, meter: meter);
+      let freed5 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db5, meter: meter);
       set freed = freed +sat freed5;
-      let freed6 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db6, meter: meter);
+      let freed6 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db6, meter: meter);
       set freed = freed +sat freed6;
-      let freed7 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db7, meter: meter);
+      let freed7 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db7, meter: meter);
       set freed = freed +sat freed7;
-      let freed8 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db8, meter: meter);
+      let freed8 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db8, meter: meter);
       set freed = freed +sat freed8;
-      let freed9 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db9, meter: meter);
+      let freed9 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db9, meter: meter);
       set freed = freed +sat freed9;
-      let freed10 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db10, meter: meter);
+      let freed10 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db10, meter: meter);
       set freed = freed +sat freed10;
-      let freed11 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db11, meter: meter);
+      let freed11 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db11, meter: meter);
       set freed = freed +sat freed11;
-      let freed12 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db12, meter: meter);
+      let freed12 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db12, meter: meter);
       set freed = freed +sat freed12;
-      let freed13 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db13, meter: meter);
+      let freed13 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db13, meter: meter);
       set freed = freed +sat freed13;
-      let freed14 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db14, meter: meter);
+      let freed14 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db14, meter: meter);
       set freed = freed +sat freed14;
-      let freed15 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db15, meter: meter);
+      let freed15 = std::process::release_map_reserve::<Entry>(map: &store^.databases.db15, meter: meter);
       set freed = freed +sat freed15;
       return freed;
     }
@@ -494,7 +494,7 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
     }
     let no_key = None<EvictionCandidate>();
     let sample = EvictionSample(key: move no_key, exhausted: over);
-    atomic db0 = &store^.databases.inner.db0, db1 = &store^.databases.inner.db1, db2 = &store^.databases.inner.db2, db3 = &store^.databases.inner.db3, db4 = &store^.databases.inner.db4, db5 = &store^.databases.inner.db5, db6 = &store^.databases.inner.db6, db7 = &store^.databases.inner.db7, db8 = &store^.databases.inner.db8, db9 = &store^.databases.inner.db9, db10 = &store^.databases.inner.db10, db11 = &store^.databases.inner.db11, db12 = &store^.databases.inner.db12, db13 = &store^.databases.inner.db13, db14 = &store^.databases.inner.db14, db15 = &store^.databases.inner.db15, meta = &store^.meta {
+    atomic db0 = &store^.databases.db0, db1 = &store^.databases.db1, db2 = &store^.databases.db2, db3 = &store^.databases.db3, db4 = &store^.databases.db4, db5 = &store^.databases.db5, db6 = &store^.databases.db6, db7 = &store^.databases.db7, db8 = &store^.databases.db8, db9 = &store^.databases.db9, db10 = &store^.databases.db10, db11 = &store^.databases.db11, db12 = &store^.databases.db12, db13 = &store^.databases.db13, db14 = &store^.databases.db14, db15 = &store^.databases.db15, meta = &store^.meta {
       set sample = eviction_sample_all(db0: db0, db1: db1, db2: db2, db3: db3, db4: db4, db5: db5, db6: db6, db7: db7, db8: db8, db9: db9, db10: db10, db11: db11, db12: db12, db13: db13, db14: db14, db15: db15, meta: meta, client: client);
       if sample.exhausted {
         set over = memory_over(meta: meta, client: client, logged: logged);

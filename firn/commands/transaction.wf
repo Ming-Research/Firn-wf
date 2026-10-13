@@ -246,7 +246,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
   let queued = &transaction^.bytes.inner[0_u64..total];
   set client^.now = time^.check;
   let database = store^.database;
-  atomic db0 = &store^.databases.inner.db0, db1 = &store^.databases.inner.db1, db2 = &store^.databases.inner.db2, db3 = &store^.databases.inner.db3, db4 = &store^.databases.inner.db4, db5 = &store^.databases.inner.db5, db6 = &store^.databases.inner.db6, db7 = &store^.databases.inner.db7, db8 = &store^.databases.inner.db8, db9 = &store^.databases.inner.db9, db10 = &store^.databases.inner.db10, db11 = &store^.databases.inner.db11, db12 = &store^.databases.inner.db12, db13 = &store^.databases.inner.db13, db14 = &store^.databases.inner.db14, db15 = &store^.databases.inner.db15, m = &store^.meta {
+  atomic db0 = &store^.databases.db0, db1 = &store^.databases.db1, db2 = &store^.databases.db2, db3 = &store^.databases.db3, db4 = &store^.databases.db4, db5 = &store^.databases.db5, db6 = &store^.databases.db6, db7 = &store^.databases.db7, db8 = &store^.databases.db8, db9 = &store^.databases.db9, db10 = &store^.databases.db10, db11 = &store^.databases.db11, db12 = &store^.databases.db12, db13 = &store^.databases.db13, db14 = &store^.databases.db14, db15 = &store^.databases.db15, m = &store^.meta {
     if transaction^.write_commands {
       if pkg::store::aof_failed(meta: m) {
         let aborted = True();
