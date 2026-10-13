@@ -9,6 +9,7 @@ mod aof_sync_fault;
 mod rewrite_sequence;
 mod rewrite_scan;
 mod write_meta;
+mod accept_errors;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};

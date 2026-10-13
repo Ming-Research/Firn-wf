@@ -325,3 +325,113 @@ The prediction's stronger half, that head is at least base, is not resolved:
 the twins differ by up to 3%, so a gain from dropping the per-receive timer
 (at most 1.25% at depth 1 in the polling measurement above) is below this
 probe's noise. The result is reported as no measured loss, not as a gain.
+
+## Accept errors keep serving
+
+### Question and acceptance criterion
+
+An operational `tcp_accept` error currently breaks firn's accept loop,
+closes its listener and, once existing clients leave, returns status 0.
+Can firn recover from Linux EMFILE without changing orderly stop or hiding a
+Whitefoot limitation? Board item `firn-accept-error-keeps-serving` requires a
+new client to receive `+PONG` within ten seconds after descriptor exhaustion
+and the release of four admitted connections. The same case must fail with
+the previous unconditional break. This is a correctness deadline with CI
+scheduling margin, not a throughput or recovery-latency measurement.
+
+### Redis reference and retry policy
+
+Redis 7.2.16's
+[`connSocketAcceptHandler`](https://github.com/redis/redis/blob/7.2.16/src/socket.c#L311-L330)
+tries at most
+[1,000 accepts per callback](https://github.com/redis/redis/blob/7.2.16/src/connection.h#L43).
+On EMFILE it logs `Accepting client connection: %s` and returns from the
+callback without closing the listener or removing its readable registration.
+[`anetGenericAccept`](https://github.com/redis/redis/blob/7.2.16/src/anet.c#L521-L548)
+retries EINTR internally and formats an `accept:` description; the
+[retryable network-error list](https://github.com/redis/redis/blob/7.2.16/src/anet.c#L715-L730)
+excludes EMFILE. The
+[epoll registration](https://github.com/redis/redis/blob/7.2.16/src/ae_epoll.c#L74-L89)
+is level-triggered. A pending client therefore makes a persistent EMFILE
+readable again on a later event-loop turn. The callback cap and returning
+on the first EMFILE let the loop service other events; they do not impose
+backoff or promise low CPU under persistent exhaustion.
+
+Firn submits one `tcp_accept` per iteration. The pinned Whitefoot release
+`wf-af7665be672d` provides a
+[distinct Cancelled result and a supplied watch](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/lib/std/net/module.wfm#L44),
+so only that orderly-stop cancellation, a recorded shutdown or the existing
+accepted-client limit ends the loop. Every other accept error gets a
+best-effort stderr diagnostic and another attempt. An operation already
+completed can win over cancellation; the shutdown check at the loop head
+and after each outcome retains the existing stop policy.
+
+The pinned runtime
+[yields after 64 immediately answered waits](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/completion/bridge.c#L1958-L1988)
+when another context is ready on its driver. Its
+[host-call lowering](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/emitter/frames.rs#L368-L428)
+applies that handoff even when a call finishes synchronously, including
+[factory-credit exhaustion before host submission](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1718-L1762).
+Client contexts can therefore run and release descriptors during repeated
+accept failures. No short sleep is added: Redis introduces no timed pause,
+and a pause would delay recovery after a descriptor becomes free. Firn,
+like Redis, can consume CPU and produce repeated diagnostics while EMFILE
+persists. The fairness mechanism is not an idle-CPU guarantee.
+
+Before this change, firn had no operational logger: main discarded stderr,
+while `DEBUG LOG` is documented as a no-op. The diagnostic uses Redis's phrase, the host
+error-description API already used for append-only-file errors, and LF.
+On Linux EMFILE this produces
+`Accepting client connection: Too many open files\n`; it does not reproduce
+Redis's process/time prefix or its `accept:` wrapper. A fixed 512-byte
+buffer reserves one byte for LF and uses a generic description when the
+host description is unavailable or too long. Partial writes share one
+absolute 100 ms deadline and the orderly-stop watch; errors and zero
+progress abandon the remaining bytes. Logging failure leaves the accept
+retry policy intact. A completed host write can win over deadline expiry;
+the finite message and strictly advancing endpoint also bound retry count.
+
+### Regression assumptions and unverified results
+
+The Linux network case `firn_accept_recovers_after_emfile_on_both_routes`
+uses the existing child/port/output harness. It runs once through the shared
+file adapter and once through the default native route, each with one
+worker and one driver, no append-only file, no client-count limit and no
+idle timeout. It relies on Linux `/proc`, util-linux `prlimit` and permission
+to lower the soft limit of its own child through `prlimit64`.
+
+A limit lowered only before exec would hit Whitefoot's reserved factory
+credits rather than the operating system's EMFILE. The case instead starts
+with soft and hard limits of 256, giving the pinned runtime 192 factory
+credits after its 64-descriptor reserve, verifies that limit and the live
+child descriptor set after a successful readiness PING, then lowers only
+the soft limit to the highest open descriptor plus one plus eight. It
+requires that limit to be at most 64, preserving enough of the original
+factory budget for actual host accepts. Sequential PONG-admitted peers
+consume every free descriptor slot; each admission must add exactly one
+child descriptor and preserve its startup descriptors. Before the failing
+attempt, the case requires every descriptor below the new soft limit to be
+occupied. This detects changing startup descriptor use rather than relying
+on a fixed guessed baseline.
+
+Admission shares a 15-second deadline. A queued peer connects and sends
+PING, but must remain unserved for 500 ms while all slots are occupied.
+The case then retains every peer and waits at most five seconds for either
+the live captured EMFILE diagnostic or a change from the previously full
+child descriptor set, which exposes the old listener teardown. Only after
+this barrier does it close the queued peer and four admitted peers. This
+prevents delayed CI scheduling from freeing slots before the server's
+accept attempt has encountered exhaustion. A fresh peer must then receive
+PONG within ten seconds. Other clients stay open while SHUTDOWN NOSAVE
+must complete with status 0 within five seconds, and captured stderr must
+contain the EMFILE diagnostic above. Socket operations consume their
+remaining absolute deadline. On the previous unconditional break, EMFILE
+closes the listener while admitted clients still exist; releasing peers
+cannot restore it, so the fresh-client PONG requirement fails.
+
+No local compiler, build, test or measurement was run. Compiler acceptance,
+both Linux routes, the failing control and the full CI gate remain
+unverified on this uncommitted change. The source and interfaces expose no
+Whitefoot gap needed for this fix: cancellation is distinct, host errors
+retain their native descriptions, and immediate waiting calls already
+provide scheduler fairness. No pin or submodule moves are required.
