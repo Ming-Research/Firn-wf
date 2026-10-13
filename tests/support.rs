@@ -6,8 +6,8 @@ use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
 
 static NEXT_EXECUTION: AtomicU64 = AtomicU64::new(0);
@@ -46,10 +46,23 @@ impl PortLease {
 /// Keep the lease across every server lifetime, including restarts on that
 /// port; `ProgramChild::with_port` also retains it for a single child.
 pub fn lease_port() -> PortLease {
-    loop {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+    // Keep each candidate's listener bound until the registry has accepted
+    // or refused it. A refused listener is dropped before choosing again.
+    let mut listener = None;
+    lease_from(|| {
+        drop(listener.take());
+        let bound = std::net::TcpListener::bind(("127.0.0.1", 0))
             .expect("bind loopback port for lease");
-        let port = listener.local_addr().expect("leased listener address").port();
+        let port = bound.local_addr().expect("leased listener address").port();
+        listener = Some(bound);
+        port
+    })
+}
+
+/// Retries candidates until the registry grants an exclusive reservation.
+fn lease_from(mut candidate: impl FnMut() -> u16) -> PortLease {
+    loop {
+        let port = candidate();
         if locked(LEASED_PORTS.get_or_init(|| Mutex::new(HashSet::new()))).insert(port) {
             return PortLease {
                 reservation: Arc::new(LeasedPort { port }),
@@ -271,6 +284,46 @@ impl Drop for FixtureDirectory {
 pub(crate) const PROGRAM_DEADLINE: Duration = Duration::from_secs(60);
 
 const DIAGNOSTIC_TAIL_BYTES: usize = 4096;
+const DIAGNOSTIC_LIMIT: Duration = Duration::from_secs(2);
+
+/// A diagnostic never waits behind another thread's blocking cleanup.
+fn locked_until<T>(mutex: &Mutex<T>, deadline: Instant) -> Option<MutexGuard<'_, T>> {
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Some(guard),
+            Err(TryLockError::Poisoned(error)) => return Some(error.into_inner()),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        if !pause_until(deadline) {
+            return None;
+        }
+    }
+}
+
+/// Poll briefly without extending the shared diagnostic deadline.
+fn pause_until(deadline: Instant) -> bool {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return false;
+    }
+    std::thread::sleep(remaining.min(Duration::from_millis(5)));
+    true
+}
+
+/// Marks completion even if a reader returns an error or unwinds.
+struct ReaderCompletion {
+    complete: Arc<AtomicBool>,
+    failure: Arc<Mutex<Option<String>>>,
+}
+
+impl Drop for ReaderCompletion {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            *locked(&self.failure) = Some("output reader thread panicked".to_owned());
+        }
+        self.complete.store(true, Ordering::Release);
+    }
+}
 
 fn output_tail(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(DIAGNOSTIC_TAIL_BYTES)..])
@@ -280,17 +333,32 @@ fn output_tail(bytes: &[u8]) -> String {
 struct CapturedOutput {
     bytes: Arc<Mutex<Vec<u8>>>,
     reader: Mutex<Option<std::thread::JoinHandle<std::io::Result<()>>>>,
+    complete: Arc<AtomicBool>,
+    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl CapturedOutput {
     fn drain(reader: Option<impl Read + Send + 'static>) -> Self {
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&bytes);
+        let complete = Arc::new(AtomicBool::new(reader.is_none()));
+        let failure = Arc::new(Mutex::new(None));
+        let completion = ReaderCompletion {
+            complete: Arc::clone(&complete),
+            failure: Arc::clone(&failure),
+        };
         let reader = reader.map(|mut reader| {
             std::thread::spawn(move || {
+                let _completion = completion;
                 let mut chunk = [0_u8; 4096];
                 loop {
-                    let count = reader.read(&mut chunk)?;
+                    let count = match reader.read(&mut chunk) {
+                        Ok(count) => count,
+                        Err(error) => {
+                            *locked(&_completion.failure) = Some(error.to_string());
+                            return Err(error);
+                        }
+                    };
                     if count == 0 {
                         return Ok(());
                     }
@@ -301,12 +369,14 @@ impl CapturedOutput {
         Self {
             bytes,
             reader: Mutex::new(reader),
+            complete,
+            failure,
         }
     }
 
     fn finish(&self) -> std::io::Result<Vec<u8>> {
-        // Keep the handle lock through joining so another monitor cannot
-        // report a partial tail while this reader is still draining.
+        // Keep the handle lock through joining so another normal finisher
+        // cannot return before this reader has finished draining.
         let mut reader = locked(&self.reader);
         if let Some(thread) = reader.take() {
             thread
@@ -316,14 +386,30 @@ impl CapturedOutput {
         Ok(locked(&self.bytes).clone())
     }
 
-    fn diagnostic_tail(&self) -> String {
-        match self.finish() {
-            Ok(bytes) => output_tail(&bytes),
-            Err(error) => format!(
-                "{}\n[output collection failed: {error}]",
-                output_tail(&locked(&self.bytes))
-            ),
+    fn diagnostic_tail(&self, deadline: Instant) -> String {
+        // Do not take the handle mutex: a successful waiter can hold it
+        // while joining a reader whose inherited pipe never reaches EOF.
+        while !self.complete.load(Ordering::Acquire) && pause_until(deadline) {}
+        let mut complete = self.complete.load(Ordering::Acquire);
+        let mut tail = match locked_until(&self.bytes, deadline) {
+            Some(bytes) => output_tail(&bytes),
+            None => {
+                complete = false;
+                "[captured output unavailable: buffer busy]".to_owned()
+            }
+        };
+        match locked_until(&self.failure, deadline) {
+            Some(failure) => {
+                if let Some(error) = failure.as_ref() {
+                    tail.push_str(&format!("\n[output collection failed: {error}]"));
+                }
+            }
+            None => complete = false,
         }
+        if !complete {
+            tail.push_str("\n[output collection incomplete after 2 s]");
+        }
+        tail
     }
 }
 
@@ -333,6 +419,7 @@ struct MonitoredProgram {
     errors: CapturedOutput,
     program: OsString,
     pid: u32,
+    diagnostic_deadline: OnceLock<Instant>,
 }
 
 /// A shareable view of a child for peers that wait on separate test threads.
@@ -343,20 +430,66 @@ pub struct ProgramMonitor {
 }
 
 impl ProgramMonitor {
-    /// Fails with the child's completed stderr if it exited before readiness.
+    /// Fails with the child's stderr tail if it exited before readiness.
     /// This checks the actual child even when another server accepts this port.
     pub fn assert_running(&self, port: u16) {
-        let status = locked(&self.program.child).try_wait();
+        let deadline = self.program.diagnostic_deadline.get().copied()
+            .unwrap_or_else(|| Instant::now() + DIAGNOSTIC_LIMIT);
+        let status = self.status_until(deadline);
         match status {
             Ok(Some(status)) => {
-                self.kill_group();
+                let deadline = *self.program.diagnostic_deadline.get_or_init(|| deadline);
+                self.stop_for_diagnostics(deadline);
                 panic!(
                     "firn exited before listening on {port}: {status}\nstderr (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}",
-                    self.program.errors.diagnostic_tail()
+                    self.program.errors.diagnostic_tail(deadline)
                 );
             }
             Ok(None) => {}
-            Err(error) => panic!("check firn while waiting for port {port}: {error}"),
+            Err(error) => {
+                let deadline = *self.program.diagnostic_deadline.get_or_init(|| deadline);
+                self.stop_for_diagnostics(deadline);
+                panic!("check firn while waiting for port {port}: {error}");
+            }
+        }
+    }
+
+    /// Probes without applying the normal program timeout or blocking on a
+    /// concurrent waiter that owns the child mutex.
+    fn status_until(&self, deadline: Instant) -> std::io::Result<Option<ExitStatus>> {
+        locked_until(&self.program.child, deadline)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "child status lock exceeded diagnostic deadline",
+                )
+            })?
+            .try_wait()
+    }
+
+    /// Signals even an exited leader's group, then polls reaping within the
+    /// same budget as both output readers. Never invokes a helper process or
+    /// Child::wait, either of which could block indefinitely.
+    fn stop_for_diagnostics(&self, deadline: Instant) {
+        #[cfg(unix)]
+        {
+            unsafe extern "C" {
+                fn kill(pid: i32, signal: i32) -> i32;
+            }
+            // spawn assigns each child its own group; SIGKILL is 9 on the
+            // Unix hosts used by this harness. kill itself does not wait.
+            unsafe {
+                kill(-(self.program.pid as i32), 9);
+            }
+        }
+        if let Some(mut child) = locked_until(&self.program.child, deadline) {
+            let _ = child.kill();
+        }
+        loop {
+            match self.status_until(deadline) {
+                Ok(None) if pause_until(deadline) => {}
+                _ => break,
+            }
         }
     }
 
@@ -416,6 +549,7 @@ impl ProgramChild {
                     errors,
                     program: command.get_program().to_os_string(),
                     pid,
+                    diagnostic_deadline: OnceLock::new(),
                 }),
             },
             deadline: Instant::now() + limit,
@@ -476,39 +610,44 @@ impl ProgramChild {
         })
     }
 
-    fn diagnose_panic(&mut self) {
-        let exited = locked(&self.monitor.program.child).try_wait();
+    /// Stops this child and builds the panic report within one shared two
+    /// second collection budget. A later Drop never repeats blocking cleanup.
+    fn diagnostic_block(&mut self) -> String {
+        let deadline = *self.monitor.program.diagnostic_deadline
+            .get_or_init(|| Instant::now() + DIAGNOSTIC_LIMIT);
+        let exited = self.monitor.status_until(deadline);
         let status = match exited {
-            Ok(Some(status)) => {
-                self.monitor.kill_group();
-                format!("already exited: yes; exit status: {status}")
-            }
+            Ok(Some(status)) => format!("already exited: yes; exit status: {status}"),
             Ok(None) => "already exited: no; killed by harness".to_owned(),
             Err(error) => format!("already exited: unknown ({error}); killed by harness"),
         };
-        self.terminate();
+        self.monitor.stop_for_diagnostics(deadline);
         let port = self.port.as_ref().map_or_else(
             || "unknown".to_owned(),
             |lease| lease.port().to_string(),
         );
-        let diagnostic = format!(
+        format!(
             "\n----- BEGIN TEST CHILD DIAGNOSTICS -----\nprogram: {}\nPID: {}\nport: {port}\n{status}\nstderr (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}\nstdout (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}\n----- END TEST CHILD DIAGNOSTICS -----\n",
             self.monitor.program.program.to_string_lossy(),
             self.id(),
-            self.monitor.program.errors.diagnostic_tail(),
-            self.monitor.program.output.diagnostic_tail(),
-        );
-        // Standard error can be closed or fail; cleanup must never panic.
-        let _ = std::io::stderr().lock().write_all(diagnostic.as_bytes());
+            self.monitor.program.errors.diagnostic_tail(deadline),
+            self.monitor.program.output.diagnostic_tail(deadline),
+        )
     }
 }
 
 impl Drop for ProgramChild {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            self.diagnose_panic();
-        } else {
+            let diagnostic = self.diagnostic_block();
+            // A closed or failing stderr must not cause a second panic.
+            let _ = std::io::stderr().lock().write_all(diagnostic.as_bytes());
+        } else if self.monitor.program.diagnostic_deadline.get().is_none() {
             self.terminate();
+        } else {
+            // Reap a child that exited after the diagnostic deadline, but
+            // never resume the normal blocking cleanup after diagnostics.
+            let _ = self.monitor.status_until(Instant::now());
         }
     }
 }
@@ -532,6 +671,184 @@ pub(crate) fn run_command(command: &mut Command) -> Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn port_lease_rejects_held_candidate_and_reuses_released_candidate() {
+        let held = lease_port();
+        // Hold an OS reservation for an unleased candidate so no parallel
+        // lease_port call can receive it during the deterministic sequence.
+        let listener = loop {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+                .expect("reserve deterministic candidate in the operating system");
+            let port = listener.local_addr().expect("candidate address").port();
+            if !locked(LEASED_PORTS.get_or_init(|| Mutex::new(HashSet::new())))
+                .contains(&port)
+            {
+                break listener;
+            }
+        };
+        let next_port = listener.local_addr().expect("candidate address").port();
+        let mut candidates = [held.port(), next_port].into_iter();
+        let mut calls = 0;
+        let lease = lease_from(|| {
+            calls += 1;
+            candidates.next().expect("held candidate must be skipped once")
+        });
+        assert_eq!(calls, 2, "a held candidate must be refused");
+        assert_eq!(lease.port(), next_port);
+        drop(lease);
+        let mut reuse_calls = 0;
+        let reused = lease_from(|| {
+            reuse_calls += 1;
+            assert_eq!(
+                reuse_calls, 1,
+                "released candidate must be accepted immediately"
+            );
+            next_port
+        });
+        assert_eq!(reused.port(), next_port, "dropping a lease frees its port");
+        drop(reused);
+        drop(listener);
+    }
+
+    /// Spawns a firn-free witness through the same process and capture path.
+    fn shell_child(script: &str, lease: &PortLease) -> ProgramChild {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        ProgramChild::spawn(&mut command)
+            .expect("spawn diagnostic witness")
+            .with_port(lease)
+    }
+
+    /// Waits for a fixture's natural exit without the normal timeout cleanup.
+    fn wait_for_witness_exit(child: &ProgramChild) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if child.monitor.status_until(deadline).expect("probe witness").is_some() {
+                return;
+            }
+            assert!(pause_until(deadline), "witness did not exit promptly");
+        }
+    }
+
+    #[test]
+    fn panic_diagnostic_block_preserves_exited_child_and_both_outputs() {
+        let lease = lease_port();
+        let mut child = shell_child("echo OUT-MARK; echo ERR-MARK >&2; exit 7", &lease);
+        let pid = child.id();
+        wait_for_witness_exit(&child);
+        let diagnostic = child.diagnostic_block();
+        assert!(diagnostic.contains("program: /bin/sh"), "{diagnostic}");
+        assert!(diagnostic.contains(&format!("PID: {pid}")), "{diagnostic}");
+        assert!(
+            diagnostic.contains(&format!("port: {}", lease.port())),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("already exited: yes"), "{diagnostic}");
+        assert!(diagnostic.contains("exit status: 7"), "{diagnostic}");
+        assert!(diagnostic.contains("OUT-MARK"), "{diagnostic}");
+        assert!(diagnostic.contains("ERR-MARK"), "{diagnostic}");
+    }
+
+    #[test]
+    fn panic_diagnostic_block_stops_running_child_within_budget() {
+        let lease = lease_port();
+        let mut child = shell_child("sleep 30", &lease);
+        assert!(child.monitor.status_until(Instant::now() + DIAGNOSTIC_LIMIT)
+            .expect("probe running witness")
+            .is_none());
+        let started = Instant::now();
+        let diagnostic = child.diagnostic_block();
+        assert!(
+            diagnostic.contains("already exited: no; killed by harness"),
+            "{diagnostic}"
+        );
+        assert!(child.monitor.status_until(Instant::now())
+            .expect("probe reaped witness")
+            .is_some());
+        // Include ordinary Drop: it must not re-enter unbounded cleanup.
+        drop(child);
+        assert!(started.elapsed() < Duration::from_secs(3), "{diagnostic}");
+    }
+
+    #[test]
+    fn diagnostic_tail_preserves_output_collection_errors() {
+        struct FailedPipe;
+        impl Read for FailedPipe {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("READ-FAILURE-MARKER"))
+            }
+        }
+        let output = CapturedOutput::drain(Some(FailedPipe));
+        let diagnostic = output.diagnostic_tail(Instant::now() + DIAGNOSTIC_LIMIT);
+        assert!(
+            diagnostic.contains("[output collection failed: READ-FAILURE-MARKER]"),
+            "{diagnostic}"
+        );
+    }
+
+    #[test]
+    fn panic_diagnostics_bound_output_collection_without_pipe_eof() {
+        struct HeldPipe {
+            release: std::sync::mpsc::Receiver<()>,
+            marker: Option<&'static [u8]>,
+            ready: std::sync::mpsc::Sender<()>,
+        }
+        impl Read for HeldPipe {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if let Some(marker) = self.marker.take() {
+                    buffer[..marker.len()].copy_from_slice(marker);
+                    return Ok(marker.len());
+                }
+                let _ = self.ready.send(());
+                // A regressed unbounded collector reaches EOF after four
+                // seconds and fails the timing assertion instead of hanging CI.
+                let _ = self.release.recv_timeout(Duration::from_secs(4));
+                Ok(0)
+            }
+        }
+        // Disconnecting on either success or panic releases both readers;
+        // this witness leaves no detached descendant or blocked thread.
+        let (release_output, output_receiver) = std::sync::mpsc::channel();
+        let (release_errors, error_receiver) = std::sync::mpsc::channel();
+        let (ready, readers_ready) = std::sync::mpsc::channel();
+        let lease = lease_port();
+        let mut child = shell_child("exit 7", &lease);
+        wait_for_witness_exit(&child);
+        let program = Arc::get_mut(&mut child.monitor.program).expect("unshared fixture");
+        program.output = CapturedOutput::drain(Some(HeldPipe {
+            release: output_receiver,
+            marker: Some(b"OUTPUT-BEFORE-EOF"),
+            ready: ready.clone(),
+        }));
+        program.errors = CapturedOutput::drain(Some(HeldPipe {
+            release: error_receiver,
+            marker: Some(b"ERROR-BEFORE-EOF"),
+            ready,
+        }));
+        for _ in 0..2 {
+            readers_ready.recv_timeout(Duration::from_secs(1))
+                .expect("reader captured its marker before blocking");
+        }
+        let started = Instant::now();
+        let diagnostic = child.diagnostic_block();
+        drop(child);
+        let elapsed = started.elapsed();
+        drop(release_output);
+        drop(release_errors);
+        assert!(elapsed < Duration::from_secs(3), "{diagnostic}");
+        assert!(diagnostic.contains("OUTPUT-BEFORE-EOF"), "{diagnostic}");
+        assert!(diagnostic.contains("ERROR-BEFORE-EOF"), "{diagnostic}");
+        assert_eq!(
+            diagnostic.matches("[output collection incomplete after 2 s]").count(),
+            2,
+            "both tails share one diagnostic budget: {diagnostic}"
+        );
+    }
 
     #[test]
     fn concurrent_port_leases_do_not_reuse_held_ports() {
@@ -575,8 +892,13 @@ mod tests {
         let child = ProgramChild::spawn(&mut command)
             .expect("spawn readiness witness")
             .with_port(&lease);
+        let started = Instant::now();
         let panic = std::panic::catch_unwind(|| crate::connect_when_ready(lease.port(), &child))
             .expect_err("an exited child cannot become ready");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "readiness must detect child exit before the 20 second connect deadline"
+        );
         let message = panic
             .downcast_ref::<String>()
             .map(String::as_str)
