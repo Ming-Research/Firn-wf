@@ -131,6 +131,7 @@ fn run_object(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.now = time^.check;
   atomic slot = &store^.keys[key], m = &store^.meta {
     let sequence = if store^.logging {
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {

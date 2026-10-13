@@ -62,7 +62,10 @@ public struct Entry {
 }
 
 public struct WriteSequence {
-  doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; an inert token, taken while loading or by a statement that holds no Meta, leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed key before the outer statement commits; the inactive path allocates nothing.";
+  doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; an inert token, taken while loading or by a statement that holds no Meta, leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed (database,key) pair before the outer statement commits; database selects subsequent capture identity, and effects_first_db/effects_selected retain the private effect stream's first and last propagated database, with 16 meaning no effects. The inactive path allocates nothing.";
+  public readonly database: u64;
+  public effects_first_db: u64;
+  public effects_selected: u64;
   public value: u64;
   public taken: Bool;
   public inert: Bool;
@@ -79,10 +82,12 @@ public struct WriteSequence {
   public anchored: Bool;
   public effect: Bool;
   public images: Option<Box<Slots<RewriteImage>>>;
+  invariant selected(sequence): sequence.database < 16_u64;
 }
 
 public struct RewriteImage {
-  doc "One execution unit's final replacement for a binary key, including DEL, reconstruction and its absolute expiry. Replacing this record coalesces repeated writes under the same hold.";
+  doc "One execution unit's final replacement for a (database,binary key) pair, including SELECT, DEL, reconstruction and its absolute expiry. Replacing this record coalesces repeated writes to the same pair under the same hold.";
+  public database: u64;
   public key: Box<Slots<u8>>;
   public output: Box<Slots<u8>>;
 }
@@ -124,12 +129,16 @@ public struct AccessUndo {
   doc "One key's access stamp before its first live refresh in a script attempt.";
   public key: Box<Array<u8>>;
   public stamp: u32;
+  public database: u64;
 }
 
 public struct AccessJournal {
-  doc "Owned by one script attempt's environment and dropped with it. keys deduplicates binary key names; entries keeps each key and its original stamp in first-refresh order. Ordinary commands and EXEC pass None instead of allocating a journal.";
-  public keys: KeySet;
-  public entries: Box<Slots<AccessUndo>>;
+  doc "One script attempt's first-refresh stamps, deduplicated by separate database-local key sets. Ordinary commands pass None and allocate no journal. The sixteen key sets start empty.";
+  keys: Slots<KeySet, 16>;
+  entries: Box<Slots<AccessUndo>>;
+  database: u64;
+  invariant database_bound(journal): journal.database < 16_u64;
+  invariant initialized(journal): journal.keys.len == 16_u64;
 }
 
 public struct AttemptEntryUndo {
@@ -147,24 +156,32 @@ public struct Due {
   doc "An expiry queued for active removal: the key's bytes and the calendar milliseconds it was set to expire at.";
   public key: Bytes;
   public at: u64;
+  public readonly database: u64;
+  invariant selected(due): due.database < 16_u64;
 }
 
 public struct ExpiryQueue {
   doc "Active-expiry queue plus invalidation of a resumable volatile-policy absence scan. A script attempt instead sets staged to an ordered private list, published only on acceptance through queue_due. Every successful creation or transfer of a nonzero expiry sets eligibility_changed even if the ordinary queue is full. Removing expiry records or clearing the queue cannot add eligibility and preserves this flag.";
   public queue: PriorityQueue<Due, ceiling>;
+  public readonly database: u64;
   public eligibility_changed: Bool;
   public staged: Option<Box<Slots<Due>>>;
+  invariant selected(due): due.database < 16_u64;
 }
 
 public struct EvictionCandidate {
   doc "Redis 7.0.15 evictionPoolPopulate's owned key and score; larger scores are better victims. The shared pool keeps at most EVPOOL_SIZE (16) candidates without borrowing the map.";
   public key: Box<Array<u8>>;
   public score: u64;
+  public readonly database: u64;
+  invariant selected(candidate): candidate.database < 16_u64;
 }
 
 public struct Meta {
   doc "What the keyspace keeps beside its keys: the queued expiries, the dataset statement sequence and capture-exhaustion state, the append-only file's collecting buffer, published retained length/capacity, saved append/sync IoErrors and partial-append marker, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the total active-file and current incremental byte counts, the incremental byte count at its last successful sync, and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion, automatic thresholds and the rdb-key-save-delay testing delay the scan reads at each step, the clients connected, whether the server is stopping, and the state SPOP draws from. aof_rewrite_journal_leftover records the latest failed removal of an unlisted temporary journal until a later removal or absence is observed; admission does not reset it and it is not a filesystem stat.";
   public due: ExpiryQueue;
+  public readonly database: u64;
+  public aof_database: u64;
   public commit_seq: u64;
   public aof_rewrite_seq_exhausted: Bool;
   public rewrite: RewriteCapture;
@@ -184,6 +201,12 @@ public struct Meta {
   public expired_keys: u64;
   public eviction_pool: Box<Slots<EvictionCandidate>>;
   public eviction_policy: u64;
+  public eviction_database: u64;
+  public eviction_cursors: Array<u64, 16>;
+  public eviction_starts: Array<u64, 16>;
+  public eviction_searches: Array<Bool, 16>;
+  public eviction_wraps: Array<Bool, 16>;
+  public eviction_exhausted: Array<Bool, 16>;
   public eviction_cursor: u64;
   public eviction_start: u64;
   public eviction_searching: Bool;
@@ -205,6 +228,7 @@ public struct Meta {
   public clients: u64;
   public stopping: Bool;
   public random: u64;
+  invariant selected(meta): meta.database < 16_u64;
 }
 
 public fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_text selects what the refusal describes.";
@@ -233,6 +257,26 @@ public struct ServerState {
   public memory: MemoryConfig;
 }
 
+public struct Databases {
+  doc "Permanent identities for Redis databases zero through fifteen. Connections cache one shared handle; SWAPDB exchanges map contents, never these handles.";
+  public db0: Shared<ConcurrentHashMap<Entry>>;
+  public db1: Shared<ConcurrentHashMap<Entry>>;
+  public db2: Shared<ConcurrentHashMap<Entry>>;
+  public db3: Shared<ConcurrentHashMap<Entry>>;
+  public db4: Shared<ConcurrentHashMap<Entry>>;
+  public db5: Shared<ConcurrentHashMap<Entry>>;
+  public db6: Shared<ConcurrentHashMap<Entry>>;
+  public db7: Shared<ConcurrentHashMap<Entry>>;
+  public db8: Shared<ConcurrentHashMap<Entry>>;
+  public db9: Shared<ConcurrentHashMap<Entry>>;
+  public db10: Shared<ConcurrentHashMap<Entry>>;
+  public db11: Shared<ConcurrentHashMap<Entry>>;
+  public db12: Shared<ConcurrentHashMap<Entry>>;
+  public db13: Shared<ConcurrentHashMap<Entry>>;
+  public db14: Shared<ConcurrentHashMap<Entry>>;
+  public db15: Shared<ConcurrentHashMap<Entry>>;
+}
+
 public struct Keyspace {
   doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
   public keys: Shared<ConcurrentHashMap<Entry>>;
@@ -240,6 +284,9 @@ public struct Keyspace {
   public server: Shared<ServerState>;
   public scripts: Shared<pkg::script_pool::EnginePool>;
   public logging: Bool;
+  public readonly database: u64;
+  public databases: Frozen<Databases>;
+  invariant selected(store): store.database < 16_u64;
 }
 
 public struct Time {
@@ -263,9 +310,9 @@ public binding DueOrder : PriorityOrder<Due, KeyEnv> {
 
 public const keyspace_capacity: u64 = 262144_u64;
 
-public fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "Starts one outer atomic statement's sequence token from its held metadata; nested command parts reuse this token. Its captures are complete images.";
+public fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.database), reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "Starts one outer atomic statement's sequence token from its held metadata; nested command parts reuse this token. Its captures are complete images.";
 
-public fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "sequence_new for a statement holding exactly one key. When that key's previous write lies inside the current rewrite window, the journal already reproduces its state, so the statement journals its own append-only bytes instead of the key's image.";
+public fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.database), reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "sequence_new for a statement holding exactly one key. When that key's previous write lies inside the current rewrite window, the journal already reproduces its state, so the statement journals its own append-only bytes instead of the key's image.";
 
 public fn sequence_inert() -> sequence: WriteSequence pure doc "The token of an outer atomic statement that holds no Meta, as a command's statement does while the keyspace keeps no append-only file and the statement queues no expiry: it takes no sequence, stamps changed entries zero, captures nothing and is never committed, as a loading token behaves.";
 
@@ -281,7 +328,7 @@ public fn sequence_entry(sequence: &WriteSequence, value: &Entry) -> result: uni
 
 public fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit writes(sequence), writes(slot) doc "Removes a present entry and takes the statement's sequence; an absent entry changes nothing. Expiry, eviction and command deletion share this contract.";
 
-public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), reads(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) doc "Publishes a taken sequence, its journal unit (after-images, or a one-key statement's own append-only bytes) and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
+public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), reads(meta.log), writes(meta.aof_database), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) doc "Publishes a taken sequence, its journal unit (after-images, or a one-key statement's own append-only bytes) and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
 
 public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
 
@@ -370,10 +417,15 @@ public fn sequence_capture_at(sequence: &WriteSequence, keys: &KeySet, index: u6
 
 public fn rewrite_measure(slot: &Option<Entry>, key_length: u64) -> measured: RewriteMeasure reads(slot) doc "Allocation-free upper bound for complete replacement bytes including RESP framing and encoder lookahead, visiting every payload element; the caller charges the bound against the rewrite reserve before copying.";
 
-public fn rewrite_image(slot: &Option<Entry>, key: &[u8], capacity: u64, replacement: Bool) -> output: Box<Slots<u8>> reads(slot), reads(key) doc "Serializes the complete held image using Redis command-format reconstruction and absolute expiry. The caller must first charge rewrite_measure bytes plus temporary key and formatting storage; replacement prepends DEL.";
+public fn rewrite_image(slot: &Option<Entry>, key: &[u8], capacity: u64, replacement: Bool, database: u64) -> output: Box<Slots<u8>> reads(slot), reads(key) doc "Serializes the complete held image using Redis command-format reconstruction and absolute expiry. The caller must first charge rewrite_measure bytes plus temporary key and formatting storage; replacement prepends SELECT database and DEL.";
 
 public struct LogBudget {
-  doc "A statement-local allowance for collecting-buffer growth while the sole writer rotates. Charge full new backing capacity before grow, preserving overlap; failed disables only rewrite accounting, never the ordinary append. sequence_commit publishes this local failure under the same Meta hold.";
+  doc "A statement-local allowance for collecting-buffer growth while the sole writer rotates. Charge full new backing capacity before grow, preserving overlap; failed disables only rewrite accounting, never the ordinary append. sequence_commit publishes this local failure and the last emitted database under the same Meta hold. database is the next effect's context; selected is the last emitted database, with 16 invalid. first records the first private effect database; selecting enables lazy SELECT and defer_first reserves the first private selection for outer MULTI framing.";
+  public database: u64;
+  public selected: u64;
+  public first: u64;
+  public selecting: Bool;
+  public defer_first: Bool;
   public enabled: Bool;
   public allowance: u64;
   public charged: u64;
@@ -384,4 +436,48 @@ public fn log_budget_new() -> budget: LogBudget pure doc "An unmetered ordinary 
 
 public fn log_append_plain(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), writes(log) doc "Appends bytes in a private non-command builder, with no rotation-related collecting-buffer budget.";
 
-public fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.rewrite) doc "Snapshots remaining R under the statement's Meta hold only while the writer rotates; service encoders charge collecting-buffer growth before allocation, and sequence_commit publishes overflow without failing the command.";
+public fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.database), reads(meta.aof_database), reads(meta.rewrite) doc "Snapshots database selection and remaining R under the statement's Meta hold, charging R only while the writer rotates; service encoders charge collecting-buffer growth before allocation, and sequence_commit publishes overflow without failing the command.";
+
+public fn database_context(meta: &Meta, database: u64) -> result: unit writes(meta.database), writes(meta.due.database) contract {
+  requires database < 16_u64;
+} doc "Sets the database used by sequence, expiry and AOF builders under the existing Meta hold; it never runs on the no-Meta keyed path.";
+
+public fn keyspace_select(store: &Keyspace, database: u64) -> result: unit reads(store.databases), writes(store.keys), writes(store.database) contract {
+  requires database < 16_u64;
+} doc "Changes this context's cached map and logical database without taking shared state.";
+
+public fn keyspace_database(store: &Keyspace, database: u64) -> made: Keyspace reads(store) contract {
+  requires database < 16_u64;
+} doc "Shares server handles and selects the requested permanent database for administrative or background work.";
+
+public fn clear_database_expiry(due: &ExpiryQueue, database: u64) -> result: unit writes(due) doc "Drops queued expiry records only for the flushed database, retaining every other database's records.";
+
+public fn swap_database_metadata(meta: &Meta, left_db: u64, right_db: u64) -> result: unit writes(meta) doc "Drops queued records for both swapped databases and invalidates global eviction candidates and absence searches; queue_map_expiry repopulates the two swapped maps before the hold ends.";
+
+public fn effect_budget_begin(sequence: &WriteSequence) -> budget: LogBudget reads(sequence.database), reads(sequence.effects_first_db), reads(sequence.effects_selected) doc "Starts one private effect encoder from its execution unit's database and prior effect selection; the first SELECT is deferred until outer framing.";
+
+public fn effect_budget_commit(sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(budget.first), reads(budget.selected), writes(sequence.effects_first_db), writes(sequence.effects_selected) doc "Publishes the private effect stream's first and last emitted databases after a held command, including an error after effects.";
+
+public fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(effects), reads(sequence.effects_first_db), reads(sequence.effects_selected), writes(log), writes(budget) doc "Writes optional MULTI without selection, selects the first effect database, appends the private stream and its internal selections, then writes EXEC without changing the last effect database. A selection without effects writes nothing.";
+
+public fn log_append_raw(log: &Box<Slots<u8>>, bytes: &[u8], budget: &LogBudget) -> result: unit reads(bytes), writes(log), writes(budget) doc "Appends already framed bytes while charging growth, without adding database selection; record_effects owns that stream's first and last database context.";
+
+public fn log_select(log: &Box<Slots<u8>>, budget: &LogBudget) -> result: unit writes(log), writes(budget) doc "Emits SELECT lazily for the encoder's database, except a private stream's first selection which outer framing emits; unselected byte builders do nothing.";
+
+public fn expiry_context(due: &ExpiryQueue, database: u64) -> result: unit writes(due.database) contract {
+  requires database < 16_u64;
+} doc "Selects the database tagged on later expiry insertions under the caller's hold.";
+
+public fn queue_map_expiry(keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, database: u64, env: &KeyEnv) -> result: unit reads(keys), reads(env), writes(due) contract {
+  requires database < 16_u64;
+} doc "Requeues every expiring entry of a swapped map, including records an expiry worker had already removed from the pending queue before the swap.";
+
+public fn access_journal_select(journal: &Option<AccessJournal>, database: u64) -> result: unit writes(journal) contract {
+  requires database < 16_u64;
+} doc "Selects the database for subsequent first-refresh undo records within a script attempt.";
+
+public fn restore_access_database(journal: &Option<AccessJournal>, keys: &ConcurrentHashMap<Entry>, database: u64) -> result: unit reads(journal), writes(keys) doc "Restores only this database's original access stamps on an abandoned whole-database script attempt.";
+
+public fn sequence_database(sequence: &WriteSequence, database: u64) -> result: unit writes(sequence.database) contract {
+  requires database < 16_u64;
+} doc "Selects the database identity for subsequent captures within an outer execution unit; it changes neither the global sequence nor the already encoded effect selection.";

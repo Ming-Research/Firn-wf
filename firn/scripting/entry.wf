@@ -245,22 +245,7 @@ fn reply_killed(client: &Client, sha: &Array<u8, 40>, line: u64) -> r: unit read
   return unit;
 }
 
-fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64, budget: &pkg::store::LogBudget) -> r: unit reads(effects), writes(log), writes(budget) {
-  doc "Appends the records a script's commands made to the append-only file's pending bytes, wrapped in MULTI and EXEC when they are more than one, as Redis 7.0.15 propagates a script's effects.";
-  if appended > 1_u64 {
-    log_count(log: log, count: 1_u64, room: 16_u64, budget: budget);
-    log_word(log: log, word: &effects_multi[0_u64..5_u64], budget: budget);
-  }
-  let length = effects^.inner.len;
-  log_append(log: log, bytes: &effects^.inner[0_u64..length], budget: budget);
-  if appended > 1_u64 {
-    log_count(log: log, count: 1_u64, room: 16_u64, budget: budget);
-    log_word(log: log, word: &effects_exec[0_u64..4_u64], budget: budget);
-  }
-  return unit;
-}
-
-fn answer_call<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(sequence), writes(engine), writes(env), writes(keys), writes(meta), writes(effects), writes(client) {
+fn answer_call<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, db0: &ConcurrentHashMap<Entry>, db1: &ConcurrentHashMap<Entry>, db2: &ConcurrentHashMap<Entry>, db3: &ConcurrentHashMap<Entry>, db4: &ConcurrentHashMap<Entry>, db5: &ConcurrentHashMap<Entry>, db6: &ConcurrentHashMap<Entry>, db7: &ConcurrentHashMap<Entry>, db8: &ConcurrentHashMap<Entry>, db9: &ConcurrentHashMap<Entry>, db10: &ConcurrentHashMap<Entry>, db11: &ConcurrentHashMap<Entry>, db12: &ConcurrentHashMap<Entry>, db13: &ConcurrentHashMap<Entry>, db14: &ConcurrentHashMap<Entry>, db15: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(sequence), writes(engine), writes(env), writes(db0), writes(db1), writes(db2), writes(db3), writes(db4), writes(db5), writes(db6), writes(db7), writes(db8), writes(db9), writes(db10), writes(db11), writes(db12), writes(db13), writes(db14), writes(db15), writes(meta), writes(effects), writes(client) {
   doc "Runs the command a script's redis.call or redis.pcall left pending, inside the script's statement, and continues the script with its reply: the arguments, numbers formatted as Redis formats them, are laid out as the network's input; the command runs through ScriptCommands with the client answering in the script's protocol, which redis.setresp selects, its records counted in the script's effects; its reply is converted to a Lua value from the bytes it wrote, which are then taken back; and an error reply is raised at redis.call, while redis.pcall returns it as its error table, as Redis 7.0.15's luaRedisGenericCommand does. budget is what the script's attempt has left.";
   let id = 0_u32;
   let argc = 0_u64;
@@ -291,7 +276,7 @@ fn answer_call<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, e
   set client^.resp = scripted;
   set client^.now = time^.check;
   let logged = True();
-  let appended = ScriptCommands::call(sequence: sequence, memory: &env^.memory, journal: &env^.access, keys: keys, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
+  let appended = ScriptCommands::call(sequence: sequence, memory: &env^.memory, journal: &env^.access, database: &env^.database, db0: db0, db1: db1, db2: db2, db3: db3, db4: db4, db5: db5, db6: db6, db7: db7, db8: db8, db9: db9, db10: db10, db11: db11, db12: db12, db13: db13, db14: db14, db15: db15, meta: meta, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
   set client^.resp = protocol;
   return complete_command_call(sequence: sequence, engine: engine, env: env, client: client, id: id, appended: appended, reply_start: reply_start, budget: budget);
 }
@@ -492,7 +477,8 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
           let access = pkg::store::access_journal_new();
           let journal = Some<pkg::store::AccessJournal>(value: move access);
           let memory = ScriptMemory(pre_command_oom: script_oom, write_dirty: no);
-          let env = Env(memory: memory, held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64, access: move journal, access_random: client^.random, need_whole: no);
+          let env = Env(memory: memory, held: held, resp: 2_u8, error: no, reply: move reply, appended: 0_u64, access: move journal, access_random: client^.random, need_whole: no, database: store^.database);
+          pkg::store::access_journal_select(journal: &env.access, database: store^.database);
           let effects = box_slots_new::<u8>(capacity: 64_u64);
           let logged = store^.logging;
           let random = pooled.engine.vm.random_state;
@@ -500,7 +486,8 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
           let config_active = pooled.engine.vm.cjson_active_config;
           let attempt_reply_start = client^.at;
           if whole {
-            atomic t = &store^.keys, m = &store^.meta {
+            atomic db0 = &store^.databases.inner.db0, db1 = &store^.databases.inner.db1, db2 = &store^.databases.inner.db2, db3 = &store^.databases.inner.db3, db4 = &store^.databases.inner.db4, db5 = &store^.databases.inner.db5, db6 = &store^.databases.inner.db6, db7 = &store^.databases.inner.db7, db8 = &store^.databases.inner.db8, db9 = &store^.databases.inner.db9, db10 = &store^.databases.inner.db10, db11 = &store^.databases.inner.db11, db12 = &store^.databases.inner.db12, db13 = &store^.databases.inner.db13, db14 = &store^.databases.inner.db14, db15 = &store^.databases.inner.db15, m = &store^.meta {
+              pkg::store::database_context(meta: m, database: store^.database);
               let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
               let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
               let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
@@ -510,7 +497,22 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     if env.held.wrote {
                       set outcome = halo::embed::resume::<ScriptHost>(engine: &pooled.engine, env: &env, budget: 18446744073709551615_u64);
                     } else {
-                      pkg::store::restore_access(journal: &env.access, keys: t);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db0, database: 0_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db1, database: 1_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db2, database: 2_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db3, database: 3_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db4, database: 4_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db5, database: 5_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db6, database: 6_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db7, database: 7_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db8, database: 8_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db9, database: 9_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db10, database: 10_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db11, database: 11_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db12, database: 12_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db13, database: 13_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db14, database: 14_u64);
+                      pkg::store::restore_access_database(journal: &env.access, keys: db15, database: 15_u64);
                       set client^.random = env.access_random;
                       set client^.at = attempt_reply_start;
                       set retry = True();
@@ -526,7 +528,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     if env.held.wrote {
                       set more = 18446744073709551615_u64;
                     }
-                    set outcome = answer_call::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, keys: t, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                    set outcome = answer_call::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, db0: db0, db1: db1, db2: db2, db3: db3, db4: db4, db5: db5, db6: db6, db7: db7, db8: db8, db9: db9, db10: db10, db11: db11, db12: db12, db13: db13, db14: db14, db15: db15, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
                   }
                   Done(..) => {
                     let v = Value::Nil();
@@ -539,7 +541,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     }
                     lua_to_protocol(vm: &pooled.engine.vm, value: v, client: client, resp: env.resp);
                     if logged {
-                      record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
+                      pkg::store::record_effects(log: &m^.log, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
                     }
                     break;
                   }
@@ -549,7 +551,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     let raised = False();
                     reply_error_text(client: client, text: &message, formatted: raised);
                     if logged {
-                      record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
+                      pkg::store::record_effects(log: &m^.log, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
                     }
                     break;
                   }
@@ -568,6 +570,8 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
               let saved = pkg::store::attempt_undo_new();
               let undo = Some<pkg::store::AttemptUndo>(value: move saved);
               let due = pkg::store::attempt_due_new();
+              pkg::store::expiry_context(due: &due, database: store^.database);
+              pkg::store::database_context(meta: m, database: store^.database);
               let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
               let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
               let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
@@ -615,7 +619,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     }
                     lua_to_protocol(vm: &pooled.engine.vm, value: v, client: client, resp: env.resp);
                     if logged {
-                      record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
+                      pkg::store::record_effects(log: &m^.log, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
                     }
                     break;
                   }
@@ -625,7 +629,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     let raised = False();
                     reply_error_text(client: client, text: &message, formatted: raised);
                     if logged {
-                      record_effects(log: &m^.log, effects: &effects, appended: env.appended, budget: &log_budget);
+                      pkg::store::record_effects(log: &m^.log, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
                     }
                     break;
                   }

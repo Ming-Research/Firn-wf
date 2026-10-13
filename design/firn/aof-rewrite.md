@@ -21,6 +21,8 @@ Decision: Installation, pressure-triggered abort and accepting a shutdown reques
 Decision: An append-only file or manifest whose name is a symbolic link is refused where Redis 7.0.15 follows the link, provisionally, because firn opens names below a directory through Whitefoot's operations, which refuse a link at the name so that a name stays below its root, and no deployment is known to keep these files behind a link, instead of adding to Whitefoot now an operation that follows a link with the authority it reaches; reopened when a deployment keeps its file behind a link ([board item `firn-bl-03-00`](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip)).
 
 
+Decision: Rewrite visits all sixteen permanent databases and selects each nonempty database before reconstructing its keys, while journal replacement identity is the pair of database and key and each journal unit establishes its own database context, because identical names in different databases are distinct entries and scan and journal order need not share a selection, instead of coalescing by key bytes alone or relying on the scan's last selected database. The global statement sequence and S0/S1 boundary remain unchanged.
+
 Rejected:
 - Private replay in the rewrite worker (superseded): rejected because the owner's firn-maxmem-scope B ruling includes actual process footprint and forbids retaining an eager second dataset to sustain rewrite.
 - Private replay for switch-time block validation (superseded): rejected because the same firn-maxmem-scope B ruling applies to pre-switch allocations; syntax and block classification require no reconstructed keyspace.

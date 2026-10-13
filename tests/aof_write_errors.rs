@@ -119,7 +119,8 @@ fn stop(client: &mut TcpStream, child: ProgramChild) {
 
 fn seed(client: &mut TcpStream, path: &Path) -> Vec<u8> {
     assert_eq!(memory_request(client, &["SET", "readable", "v"]), "+OK\r\n");
-    let bytes = resp(&["SET", "readable", "v"]);
+    let mut bytes = resp(&["SELECT", "0"]);
+    bytes.extend(resp(&["SET", "readable", "v"]));
     wait_bytes(path, &bytes);
     // Appended bytes can reach the file before Meta publishes the empty
     // retained buffer, while the original healthy status still reads ok.
@@ -289,7 +290,8 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
         let (child, mut client, _) = start(&program, native);
         let path = incremental(&program);
         assert_eq!(memory_request(&mut client, &["RPUSH", "events", "before"]), ":1\r\n");
-        let mut expected = resp(&["RPUSH", "events", "before"]);
+        let mut expected = resp(&["SELECT", "0"]);
+        expected.extend(resp(&["RPUSH", "events", "before"]));
         wait_bytes(&path, &expected);
         wait_empty_healthy_buffer(&mut client);
         let old = file_limit(&child, expected.len() as u64 + 7);
@@ -343,7 +345,8 @@ fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
         let padding = "p".repeat(1 << 20);
         assert_eq!(memory_request(&mut client, &["SET", "padding", padding.as_str()]), "+OK\r\n");
         assert_eq!(memory_request(&mut client, &["DEL", "padding"]), ":1\r\n");
-        let mut expected = resp(&args);
+        let mut expected = resp(&["SELECT", "0"]);
+        expected.extend(resp(&args));
         expected.extend(resp(&["SET", "padding", padding.as_str()]));
         expected.extend(resp(&["DEL", "padding"]));
         wait_bytes(&path, &expected);
@@ -370,7 +373,8 @@ fn aof_short_append_reports_no_space_on_both_routes() {
         let (child, mut client, _) = start(&program, native);
         let path = incremental(&program);
         assert_eq!(memory_request(&mut client, &["SET", "before", "b"]), "+OK\r\n");
-        let expected = resp(&["SET", "before", "b"]);
+        let mut expected = resp(&["SELECT", "0"]);
+        expected.extend(resp(&["SET", "before", "b"]));
         wait_bytes(&path, &expected);
         wait_empty_healthy_buffer(&mut client);
         let old = file_limit(&child, expected.len() as u64 + 7);

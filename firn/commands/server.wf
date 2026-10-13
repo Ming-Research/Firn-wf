@@ -1,6 +1,5 @@
 alias Bytes = pkg::bytes::Bytes;
 alias Client = pkg::protocol::Client;
-alias Due = pkg::store::Due;
 alias ExpiryQueue = pkg::store::ExpiryQueue;
 alias Entry = pkg::store::Entry;
 alias ServerState = pkg::store::ServerState;
@@ -11,10 +10,7 @@ alias arg = pkg::protocol::arg;
 alias bytes_new = pkg::bytes::bytes_new;
 alias read_integer = pkg::bytes::read_integer;
 alias reply_decimal = pkg::protocol::reply_decimal;
-alias ceiling = pkg::store::ceiling;
 alias log_command = pkg::store::log_command;
-alias PriorityQueue = std::collections::priority_queue::PriorityQueue;
-alias priority_queue_new = std::collections::priority_queue::priority_queue_new;
 alias reply_ok = pkg::protocol::reply_ok;
 alias byte_at = pkg::bytes::byte_at;
 alias bytes_copy = pkg::bytes::bytes_copy;
@@ -115,7 +111,7 @@ const reply_no: Array<u8, 8> =[36_u8, 50_u8, 13_u8, 10_u8, 110_u8, 111_u8, 13_u8
 
 const reply_empty_bulk: Array<u8, 6> =[36_u8, 48_u8, 13_u8, 10_u8, 13_u8, 10_u8];
 
-const reply_one_database: Array<u8, 7> =[36_u8, 49_u8, 13_u8, 10_u8, 49_u8, 13_u8, 10_u8];
+const reply_database_count: Array<u8, 8> = "$2\r\n16\r\n";
 
 const reply_empty_array: Array<u8, 4> =[42_u8, 48_u8, 13_u8, 10_u8];
 
@@ -157,13 +153,6 @@ fn flush_refused(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> refu
   return True();
 }
 
-fn flush_meta(due: &ExpiryQueue, none_due: &PriorityQueue<Due, ceiling>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), writes(due), writes(none_due), writes(log), writes(budget) {
-  doc "FLUSHALL and FLUSHDB's metadata clears the expiry queue and appends the command exactly as sent, even for an empty database, returning its record count. Earlier records in the caller's log and the expiry-eligibility invalidation flag are preserved; clearing keys cannot add eligibility.";
-  swap(first: &due^.queue, second: none_due);
-  let appended = mset_meta(log: log, logged: logged, input: input, args: args, budget: budget);
-  return appended;
-}
-
 fn flush_body(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>) -> result: unit writes(sequence), writes(keys) {
   doc "Empties the held keyspace. Entry references for later commands must be formed after this call.";
   pkg::store::sequence_change(sequence: sequence);
@@ -179,18 +168,26 @@ fn held_flush(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Ent
     return 0_u64;
   }
   flush_body(sequence: sequence, keys: keys);
-  let none_due = priority_queue_new::<Due, ceiling>();
-  let appended = flush_meta(due: due, none_due: &none_due, log: log, logged: logged, input: input, args: args, budget: budget);
+  pkg::store::clear_database_expiry(due: due, database: sequence^.database);
+  let appended = mset_meta(log: log, logged: logged, input: input, args: args, budget: budget);
   reply_ok(client: client);
   return appended;
 }
 
 fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
   doc "FLUSHALL and FLUSHDB use the same parsing, map_clear body, expiry and file metadata, and reply as EXEC and scripts. Both modes release old values when the hold ends.";
+  let command = arg(args: args, index: 0_u64);
+  let kind = held_kind(input: input, name: command);
+  if kind == 164_u64 {
+    let env = pkg::bytes::KeyEnv();
+    run_flushall(store: store, input: input, args: args, client: client, env: &env, time: time);
+    return unit;
+  }
   atomic t = &store^.keys, m = &store^.meta {
     if aof_refuse(meta: m, client: client) {
       return unit;
     }
+    pkg::store::database_context(meta: m, database: store^.database);
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let appended = held_flush(sequence: &sequence, keys: t, due: &m^.due, log: &m^.log, logged: store^.logging, input: input, args: args, client: client, budget: &log_budget);
@@ -242,6 +239,7 @@ fn run_function(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
         return unit;
       }
       let loading = False();
+      pkg::store::database_context(meta: m, database: store^.database);
       let sequence = pkg::store::sequence_new(meta: m, loading: loading);
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: loading);
       log_command(log: &m^.log, input: input, args: args, budget: &log_budget);
@@ -404,7 +402,7 @@ fn reply_parameter_value(store: &Keyspace, client: &Client, which: u64, snapshot
     let address = bytes_copy(bytes: &client^.settings.bind);
     reply_text(client: client, text: &address);
   } else if which == 3_u64 {
-    reply_word(client: client, word: &reply_one_database[0_u64..7_u64]);
+    reply_word(client: client, word: &reply_database_count[0_u64..8_u64]);
   } else if which == 11_u64 {
     let port = cvt.wrap::<u64, i64>(client^.settings.port);
     reply_bulk_decimal(client: client, value: port);
@@ -749,7 +747,7 @@ fn reply_bounds(client: &Client, which: u64, least: i64, most: i64) -> result: u
 }
 
 fn run_config(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "CONFIG GET parameter [parameter ...]: answers the parameters firn reports that the arguments reach, as Redis 7.0 answers: appendfilename, the append-only file's name; appendonly, yes while firn keeps the file; bind, the address firn listens on; databases, 1; port; requirepass, the password clients must give; save, empty, since firn never saves a snapshot; timeout, the idle limit; the memory settings; both automatic AOF rewrite thresholds; rdb-key-save-delay, which, being hidden in Redis, only an argument naming it whole reaches, never a pattern; and the parameters whose only effect in Redis is on its internal encodings, with their aliases, each with the value CONFIG SET last gave it or Redis's default. The mutable values are copied from ServerState and Meta together. An argument holding [, * or ? before any zero byte is a glob pattern, its bytes from a zero byte on ignored as Redis's C string ignores them, matched as glob_match matches one; any other argument names a parameter in either case. A parameter several arguments reach is answered once, spelled as the first argument reaching it spells it, a pattern spelling it in lower case, an alias counting as a parameter of its own, as in Redis; the parameters come in parameter_names order, one of the orders Redis answers in, since Redis orders them by a hash seeded anew at each start; and an argument reaching none of them, a parameter firn does not report included, matches nothing, as one Redis does not know does. CONFIG SET is answered as run_config_set answers it, after too few arguments are answered as Redis answers them; CONFIG RESETSTAT answers OK and zeroes connections, eviction and active-expiry counts while preserving the observed heap peak, as Redis 7.0.15 configResetStatCommand/resetServerStats does; and any other subcommand is answered as Redis answers an unknown one, its name echoed to 128 bytes. A connection that must authenticate first is answered NOAUTH once the subcommand and its arguments are counted.";
+  doc "CONFIG GET parameter [parameter ...]: answers the parameters firn reports that the arguments reach, as Redis 7.0 answers: appendfilename, the append-only file's name; appendonly, yes while firn keeps the file; bind, the address firn listens on; databases, 16; port; requirepass, the password clients must give; save, empty, since firn never saves a snapshot; timeout, the idle limit; the memory settings; both automatic AOF rewrite thresholds; rdb-key-save-delay, which, being hidden in Redis, only an argument naming it whole reaches, never a pattern; and the parameters whose only effect in Redis is on its internal encodings, with their aliases, each with the value CONFIG SET last gave it or Redis's default. The mutable values are copied from ServerState and Meta together. An argument holding [, * or ? before any zero byte is a glob pattern, its bytes from a zero byte on ignored as Redis's C string ignores them, matched as glob_match matches one; any other argument names a parameter in either case. A parameter several arguments reach is answered once, spelled as the first argument reaching it spells it, a pattern spelling it in lower case, an alias counting as a parameter of its own, as in Redis; the parameters come in parameter_names order, one of the orders Redis answers in, since Redis orders them by a hash seeded anew at each start; and an argument reaching none of them, a parameter firn does not report included, matches nothing, as one Redis does not know does. CONFIG SET is answered as run_config_set answers it, after too few arguments are answered as Redis answers them; CONFIG RESETSTAT answers OK and zeroes connections, eviction and active-expiry counts while preserving the observed heap peak, as Redis 7.0.15 configResetStatCommand/resetServerStats does; and any other subcommand is answered as Redis answers an unknown one, its name echoed to 128 bytes. A connection that must authenticate first is answered NOAUTH once the subcommand and its arguments are counted.";
   let sub = arg(args: args, index: 1_u64);
   let getting = name_is(input: input, start: sub.start, length: sub.length, word: &word_get[0_u64..3_u64]);
   let setting = name_is(input: input, start: sub.start, length: sub.length, word: &word_set[0_u64..3_u64]);

@@ -157,6 +157,7 @@ fn run_sadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -237,6 +238,7 @@ fn run_srem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -363,6 +365,7 @@ fn run_spop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -917,6 +920,7 @@ fn run_smove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -1213,6 +1217,7 @@ fn run_combine(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
           return unit;
         }
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -1241,6 +1246,7 @@ fn run_sintercard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
   let ranks = script_key_ranks(keys: &keys, declared: &keys);
   atomic slots = &store^.keys[keys], m = &store^.meta {
     let sequence = if store^.logging {
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new(meta: m, loading: time^.loading);
       give move active;
     } else {

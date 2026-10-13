@@ -73,7 +73,7 @@ fn sequence_fail(sequence: &WriteSequence, reason: RewriteAbortReason) -> result
 }
 
 fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) {
-  doc "Coalesces a changed key's complete final image in bounded execution-unit scratch. Every reservation precedes allocation, including capacity growth overlap and replacement of an earlier image. Failure affects capture alone; normal mutation and AOF publication still complete.";
+  doc "Coalesces a changed (database,key) pair's complete final image in bounded execution-unit scratch. Every reservation precedes allocation, including capacity growth overlap and replacement of an earlier image. Failure affects capture alone; normal mutation and AOF publication still complete.";
   let recording = band(sequence^.capturing, sequence^.taken);
   let viable = bnot(sequence^.failed);
   let enabled = band(recording, viable);
@@ -100,7 +100,7 @@ fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
   let measure = rewrite_measure(slot: slot, key_length: length);
   match sequence^.images {
     None() => {
-      let charged = sequence_room(sequence: sequence, bytes: 280_u64);
+      let charged = sequence_room(sequence: sequence, bytes: 408_u64);
       if charged {
         let records = box_slots_new::<RewriteImage>(capacity: 16_u64);
         set sequence^.images = Some<Box<Slots<RewriteImage>>>(value: move records);
@@ -121,8 +121,8 @@ fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
   }
   let key_copy = pkg::bytes::copy_bytes(input: key, start: 0_u64, length: length);
   let yes = True();
-  let output = rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: yes);
-  let image = RewriteImage(key: move key_copy, output: move output);
+  let output = rewrite_image(slot: slot, key: key, capacity: measure.bytes, replacement: yes, database: sequence^.database);
+  let image = RewriteImage(database: sequence^.database, key: move key_copy, output: move output);
   match sequence^.images {
     Some(value: records) => {
       for (index in 0_u64..records^.inner.len) {
@@ -130,7 +130,9 @@ fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
         let old_length = previous^.key.inner.len;
         let old_key = &previous^.key.inner[0_u64..old_length];
         let order = pkg::bytes::windows_order(left: key, right: old_key);
-        if order == 0_i32 {
+        let same_key = order == 0_i32;
+        let same_database = previous^.database == sequence^.database;
+        if band(same_key, same_database) {
           set previous^ = move image;
           return unit;
         }
@@ -138,7 +140,7 @@ fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) 
       let capacity = records^.inner.cap;
       if records^.inner.len == capacity {
         let target = capacity *sat 2_u64;
-        let backing = target *sat 16_u64;
+        let backing = target *sat 24_u64;
         let growth = backing +sat 24_u64;
         let available = sequence^.allowance -sat sequence^.retained;
         if growth > available {
@@ -335,7 +337,7 @@ fn sequence_publish(meta: &Meta, sequence: &WriteSequence) -> result: unit reads
 }
 
 fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: unit reads(sequence), reads(meta.log), writes(meta.rewrite) {
-  doc "Journals the statement's own append-only bytes as one framed unit. Its single key's previous write is already in the journal, so replaying these bytes in sequence order reproduces the key exactly, at the cost of the bytes rather than the key's size.";
+  doc "Journals the statement's own append-only bytes as one framed unit, preceded by an independent SELECT so the scan or preceding journal unit cannot supply the wrong database. Its single key's previous write is already in the journal, so replaying these bytes in sequence order reproduces the key exactly, at the cost of the bytes rather than the key's size.";
   let end = meta^.log.inner.len;
   let start = sequence^.log_start;
   if start > end {
@@ -343,7 +345,9 @@ fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: uni
     rewrite_abort(capture: &meta^.rewrite, reason: journal_invalid_reason);
     return unit;
   }
-  let length = end - start;
+  let payload = end - start;
+  let selection = rewrite_selection_length(database: sequence^.database);
+  let length = payload +sat selection;
   let framed = length +sat 24_u64;
   let room = rewrite_journal_room(capture: &meta^.rewrite, length: framed);
   if room {
@@ -352,6 +356,7 @@ fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: uni
         rewrite_journal_number(chunks: chunks, value: sequence^.value);
         rewrite_journal_number(chunks: chunks, value: length);
         rewrite_journal_number(chunks: chunks, value: 1_u64);
+        rewrite_journal_select(chunks: chunks, database: sequence^.database);
         for (offset in start..end) {
           let byte = meta^.log.inner[offset];
           rewrite_journal_put(chunks: chunks, value: byte);
@@ -361,5 +366,74 @@ fn sequence_publish_effect(meta: &Meta, sequence: &WriteSequence) -> result: uni
       }
     }
   }
+  return unit;
+}
+
+const journal_select_prefix: Array<u8, 16> = "*2\r\n$6\r\nSELECT\r\n";
+
+fn rewrite_selection_length(database: u64) -> length: u64 pure {
+  let digits = 1_u64;
+  let remaining = database / 10_u64;
+  loop {
+    if remaining == 0_u64 {
+      break;
+    }
+    set digits = digits +wrap 1_u64;
+    set remaining = remaining / 10_u64;
+  }
+  let digit_count = 1_u64;
+  if digits >= 10_u64 {
+    set digit_count = 2_u64;
+  }
+  let framing = 21_u64 +wrap digit_count;
+  return framing +wrap digits;
+}
+
+fn rewrite_journal_decimal(chunks: &Box<Ring<Box<Slots<u8>>>>, value: u64) -> result: unit writes(chunks) {
+  let digits = slots_new::<u8, 20>();
+  let remaining = value;
+  loop {
+    let low = remaining % 10_u64;
+    let digit = cvt::<u64, u8>(low);
+    let byte = digit + 48_u8;
+    if digits.len < digits.cap {
+      place_back(window: &digits, value: byte);
+    }
+    set remaining = remaining / 10_u64;
+    if remaining == 0_u64 {
+      break;
+    }
+  }
+  loop {
+    if digits.len == 0_u64 {
+      break;
+    }
+    let byte = take_back(window: &digits);
+    rewrite_journal_put(chunks: chunks, value: byte);
+  }
+  return unit;
+}
+
+fn rewrite_journal_select(chunks: &Box<Ring<Box<Slots<u8>>>>, database: u64) -> result: unit writes(chunks) {
+  for (index in 0_u64..16_u64) {
+    let byte = journal_select_prefix[index];
+    rewrite_journal_put(chunks: chunks, value: byte);
+  }
+  let digits = 1_u64;
+  let remaining = database / 10_u64;
+  loop {
+    if remaining == 0_u64 {
+      break;
+    }
+    set digits = digits +wrap 1_u64;
+    set remaining = remaining / 10_u64;
+  }
+  rewrite_journal_put(chunks: chunks, value: 36_u8);
+  rewrite_journal_decimal(chunks: chunks, value: digits);
+  rewrite_journal_put(chunks: chunks, value: 13_u8);
+  rewrite_journal_put(chunks: chunks, value: 10_u8);
+  rewrite_journal_decimal(chunks: chunks, value: database);
+  rewrite_journal_put(chunks: chunks, value: 13_u8);
+  rewrite_journal_put(chunks: chunks, value: 10_u8);
   return unit;
 }

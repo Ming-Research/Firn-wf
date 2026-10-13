@@ -49,6 +49,8 @@
 # They stand first on PATH for this script, the suite and the servers it
 # starts. REDIS_COMPAT_CACHE names the cache directory,
 # ${XDG_CACHE_HOME:-$HOME/.cache}/whitefoot-redis-compat by default.
+# The server supplies sixteen databases: the suite's normal SELECT setup and
+# cross-database cases run, including those tagged singledb:skip.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -161,7 +163,7 @@ if [ -n "$shard" ]; then
 fi
 printf '%s\n' $units > "$out/shard-units.txt"
 
-flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeout")
+flags=(--ignore-encoding --ignore-digest --durable --timeout "$timeout")
 {
     echo "suite: redis-$version.tar.gz sha256 $sha256"
     echo "target: $target"

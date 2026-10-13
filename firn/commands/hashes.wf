@@ -208,6 +208,7 @@ fn run_hset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -294,6 +295,7 @@ fn run_hsetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -509,6 +511,7 @@ fn run_hdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -807,6 +810,7 @@ fn run_hincrby(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {
@@ -934,6 +938,7 @@ fn run_hincrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
       if aof_refuse(meta: m, client: client) {
         return unit;
       }
+      pkg::store::database_context(meta: m, database: store^.database);
       let active = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
       give move active;
     } else {

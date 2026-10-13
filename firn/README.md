@@ -2,8 +2,9 @@
 
 firn is a server of Redis's protocol written in Whitefoot. It answers RESP2
 or RESP3, the version a connection's HELLO selects, and inline requests, quoted arguments included, over TCP, pipelined or not,
-and keeps strings, lists, sets, hashes and sorted sets in one keyspace, a
-shared map that every connection reaches through atomic statements naming
+and keeps strings, lists, sets, hashes and sorted sets in sixteen databases,
+numbered 0 through 15. Each has a permanent shared map; every connection
+caches its selected map and reaches it through atomic statements naming
 the entries of the keys a command uses and the separate expiry, log or server
 metadata objects it also needs. It is named for firn, snow that has lasted a
 season: stored and compacted.
@@ -13,7 +14,7 @@ suite sends, with expiry, an append-only file and the connection commands
 clients send on their own:
 
 - keys: `DEL`, `UNLINK`, `EXISTS`, `TOUCH`, `TYPE`, `RENAME`, `RENAMENX`,
-  `COPY` with `REPLACE` and `DB 0`, `EXPIRE`, `PEXPIRE`, `EXPIREAT` and
+  `MOVE`, `SWAPDB`, `COPY` with `REPLACE` and `DB 0` through `DB 15`, `EXPIRE`, `PEXPIRE`, `EXPIREAT` and
   `PEXPIREAT` with their options `NX`, `XX`, `GT` and `LT`, `TTL`, `PTTL`,
   `EXPIRETIME`, `PEXPIRETIME`, `PERSIST`, `DBSIZE`, `OBJECT IDLETIME`,
   `OBJECT FREQ`, `OBJECT HELP`,
@@ -68,13 +69,13 @@ clients send on their own:
   `REPL_REPLICA`, whose partial propagation firn does not implement;
 - connection: `PING`, `ECHO`, `QUIT`, `RESET`, `AUTH`, `HELLO` with no version,
   version 2 or version 3, which switches the connection to RESP3,
-  `SELECT 0`, firn having one database, and `CLIENT ID`, `CLIENT GETNAME`,
+  `SELECT 0` through `SELECT 15`, and `CLIENT ID`, `CLIENT GETNAME`,
   `CLIENT SETNAME` and `CLIENT INFO`, described below;
 - transactions: `MULTI`, `EXEC` and `DISCARD`. `EXEC` runs the queued
   commands in order in one atomic statement, their time frozen at its start,
   for the commands written as parts: every keys, strings, hashes, lists, sets
   and sorted sets command this list names, including `SCAN`, `KEYS` and
-  `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
+  `RANDOMKEY`, `MOVE`, `SWAPDB`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
   `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`; `INFO` is not among
   them. These same command parts run in scripts.
   A command without parts, or any name firn does not run, is queued and makes
@@ -88,7 +89,8 @@ clients send on their own:
   described below, `TIME`, and `COMMAND` and `COMMAND COUNT`, which
   describe no command. `COMMAND DOCS` is answered as an unknown subcommand,
   so that `redis-cli` uses its own help. `FLUSHALL` and `FLUSHDB`, with
-  `ASYNC` or `SYNC`, empty firn's one database and its queued expiries in
+  `ASYNC` or `SYNC`, empty all databases or only the selected database and
+  its queued expiries in
   one atomic statement and are appended to the append-only file as Redis
   appends them; the old keys are released before the reply is sent, under
   either option. `FUNCTION FLUSH`, with `ASYNC` or `SYNC`,
@@ -98,6 +100,16 @@ clients send on their own:
   answers OK, as Redis does with its debug command enabled, firn keeping no
   log to write it to; every other `DEBUG` subcommand is answered as an
   unknown one.
+
+`SELECT` defaults to database zero. Selection inside `MULTI` takes effect in
+queue order and survives `EXEC`; selection inside a script starts from the
+connection's database but stays local to that script. `RESET` returns to zero.
+`SWAPDB` exchanges contents, so existing connections see their database's
+new contents. Expiry and enumeration are database-local; eviction uses the
+server-wide memory limit and considers every database. AOF effects carry
+`SELECT` records, including the first mutation in database zero, and rewrite
+visits every nonempty database. A swap during a rewrite aborts that rewrite
+while preserving the ordinary AOF; this differs from Redis's forked rewrite.
 
 `SCAN` takes one map scan step per request; its unsigned decimal cursor is
 zero when the scan ends, and a nonzero cursor can accompany an empty batch.

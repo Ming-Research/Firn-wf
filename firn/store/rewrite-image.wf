@@ -131,7 +131,7 @@ fn rewrite_measure_score(env: &RewriteMeasure, key: &Key, value: &f64) -> result
 }
 
 fn rewrite_measure(slot: &Option<Entry>, key_length: u64) -> measured: RewriteMeasure reads(slot) {
-  doc "Allocation-free upper bound before copying a complete image, visiting every payload element; the caller charges it against the rewrite reserve. RESP bulk overhead, 64-element command headers, DEL, expiry and the encoder's reserve lookahead are included; saturating arithmetic cannot admit an oversized image.";
+  doc "Allocation-free upper bound before copying a complete image, visiting every payload element; the caller charges it against the rewrite reserve. RESP bulk overhead, 64-element command headers, SELECT, DEL, expiry and the encoder's reserve lookahead are included; saturating arithmetic cannot admit an oversized image.";
   let measured = RewriteMeasure(bytes: 512_u64, elements: 1_u64);
   let commands = 3_u64;
   match slot^ {
@@ -177,14 +177,17 @@ fn rewrite_measure(slot: &Option<Entry>, key_length: u64) -> measured: RewriteMe
   return measured;
 }
 
-fn rewrite_image(slot: &Option<Entry>, key: &[u8], capacity: u64, replacement: Bool) -> output: Box<Slots<u8>> reads(slot), reads(key) {
-  doc "The caller charged the measured capacity, the temporary key copy and score formatting before entry. Scan and journal use the same Redis reconstruction, retaining physical expiry metadata. Replacements clear the previous type, contents and TTL first.";
+fn rewrite_image(slot: &Option<Entry>, key: &[u8], capacity: u64, replacement: Bool, database: u64) -> output: Box<Slots<u8>> reads(slot), reads(key) {
+  doc "The caller charged the measured capacity, the temporary key copy and score formatting before entry. Scan and journal use the same Redis reconstruction, retaining physical expiry metadata. Replacements select their database and clear the previous type, contents and TTL first.";
   let length = key^.len;
   let copied = pkg::bytes::bytes_new(input: key, start: 0_u64, length: length);
   let buffer = box_slots_new::<u8>(capacity: capacity);
   let budget = log_budget_new();
   let emitter = RewriteEmitter(key: move copied, output: move buffer, remaining: 0_u64, batch: 0_u64, budget: budget);
   if replacement {
+    log_count(log: &emitter.output, count: 2_u64, room: 64_u64, budget: &emitter.budget);
+    log_word(log: &emitter.output, word: &rewrite_select[0_u64..6_u64], budget: &emitter.budget);
+    log_decimal(log: &emitter.output, value: database, budget: &emitter.budget);
     log_removal(log: &emitter.output, key: key, budget: &emitter.budget);
   }
   rewrite_entry(slot: slot, emitter: &emitter);

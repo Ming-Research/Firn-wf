@@ -670,7 +670,7 @@ struct AofScanResult {
 }
 
 fn aof_rw_cut(store: &Keyspace, pending: &Box<Slots<u8>>) -> accepted: Bool reads(store), writes(pending) waits {
-  doc "The sole writer enters only after its prior private partial append drained. Disable capture, freeze the journal and exchange collecting bytes through S1 with the empty private buffer in one Meta statement. Later commands collect separately; no ordinary flush may swap those bytes before this sealed prefix drains.";
+  doc "The sole writer enters only after its prior private partial append drained. Disable capture, freeze the journal and exchange collecting bytes through S1 with the empty private buffer in one Meta statement. Later commands collect separately with invalidated AOF selection, so the new incremental stream selects its first effect database; no ordinary flush may swap those bytes before this sealed prefix drains.";
   let cut = False();
   atomic m = &store^.meta {
     let ready = band(m^.rewrite.active, m^.rewrite.scan_done);
@@ -682,6 +682,7 @@ fn aof_rw_cut(store: &Keyspace, pending: &Box<Slots<u8>>) -> accepted: Bool read
       set m^.rewrite.active = False();
       set m^.rewrite.rotating = True();
       swap(first: pending, second: &m^.log);
+      set m^.aof_database = 16_u64;
       set m^.aof_pending_capacity = pending^.inner.cap;
       set m^.aof_pending_length = pending^.inner.len;
       set cut = True();

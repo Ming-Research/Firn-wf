@@ -22,7 +22,40 @@ fn release_reserve(store: &Keyspace, client: &Client) -> freed: u64 reads(store)
   doc "Gives back the keyspace map's reserve, the cells it keeps for its next move, and answers the bytes that lowered the heap reading; zero when the map holds none or a move or reclaim holds it. AOF replay has no meter and never enters admission.";
   match client^.meter {
     Some(value: meter) => {
-      return std::process::release_map_reserve::<Entry>(map: &store^.keys, meter: meter);
+      let freed = 0_u64;
+      let freed0 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db0, meter: meter);
+      set freed = freed +sat freed0;
+      let freed1 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db1, meter: meter);
+      set freed = freed +sat freed1;
+      let freed2 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db2, meter: meter);
+      set freed = freed +sat freed2;
+      let freed3 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db3, meter: meter);
+      set freed = freed +sat freed3;
+      let freed4 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db4, meter: meter);
+      set freed = freed +sat freed4;
+      let freed5 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db5, meter: meter);
+      set freed = freed +sat freed5;
+      let freed6 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db6, meter: meter);
+      set freed = freed +sat freed6;
+      let freed7 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db7, meter: meter);
+      set freed = freed +sat freed7;
+      let freed8 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db8, meter: meter);
+      set freed = freed +sat freed8;
+      let freed9 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db9, meter: meter);
+      set freed = freed +sat freed9;
+      let freed10 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db10, meter: meter);
+      set freed = freed +sat freed10;
+      let freed11 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db11, meter: meter);
+      set freed = freed +sat freed11;
+      let freed12 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db12, meter: meter);
+      set freed = freed +sat freed12;
+      let freed13 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db13, meter: meter);
+      set freed = freed +sat freed13;
+      let freed14 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db14, meter: meter);
+      set freed = freed +sat freed14;
+      let freed15 = std::process::release_map_reserve::<Entry>(map: &store^.databases.inner.db15, meter: meter);
+      set freed = freed +sat freed15;
+      return freed;
     }
     None() => {
       return 0_u64;
@@ -159,10 +192,10 @@ fn eviction_pool_add(pool: &Box<Slots<EvictionCandidate>>, candidate: EvictionCa
   return unit;
 }
 
-fn eviction_pool_take(pool: &Box<Slots<EvictionCandidate>>) -> key: Option<Box<Array<u8>>> writes(pool) {
+fn eviction_pool_take(pool: &Box<Slots<EvictionCandidate>>) -> key: Option<EvictionCandidate> writes(pool) {
   let length = pool^.inner.len;
   if length == 0_u64 {
-    return None<Box<Array<u8>>>();
+    return None<EvictionCandidate>();
   }
   let best = 0_u64;
   let highest = 0_u64;
@@ -178,34 +211,25 @@ fn eviction_pool_take(pool: &Box<Slots<EvictionCandidate>>) -> key: Option<Box<A
     if best < pool^.inner.len {
       swap(first: &candidate, second: &pool^.inner[best]);
     }
-    let EvictionCandidate(key: owned, score: unused_score) = move candidate;
-    return Some<Box<Array<u8>>>(value: move owned);
+    return Some<EvictionCandidate>(value: move candidate);
   }
-  return None<Box<Array<u8>>>();
+  return None<EvictionCandidate>();
 }
 
 struct EvictionSample {
-  key: Option<Box<Array<u8>>>;
+  key: Option<EvictionCandidate>;
   exhausted: Bool;
 }
 
-fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client) -> sample: EvictionSample reads(keys), writes(meta), writes(client) {
+fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client, database: u64) -> sample: EvictionSample reads(keys), writes(meta), writes(client) contract {
+  requires database < 16_u64;
+} {
   doc "Redis 7.0.15 performEvictions/evictionPoolPopulate, using map_scan from a random cursor and maxmemory-samples as its count. Meta owns the single shared pool and empty-search cursor; it is already held when deletion must log DEL. A failed batch continues around the map before declaring exhaustion. Empty searches retain their cursor across time slices and connections, so static sparse volatile keyspaces do not repeatedly restart and permanently avoid EVICT_FAIL. queue_due marks actual expiry creation or transfer in the same entry-and-Meta statement; consuming that flag restarts the absence scan, so EXPIRE behind the cursor cannot cause false EVICT_FAIL. Permanent writes and looping read-only scripts do not invalidate a volatile scan. Allkeys exhaustion uses live map_count rather than a scan spanning concurrent insertions; a nonempty map never certifies no allkeys candidates. Eligibility is checked again when the entry is deleted. map_scan count is a hint: consume the returned batch whole, selecting at most maxmemory-samples eligible keys by reservoir sampling.";
   let policy = client^.memory_policy;
-  if meta^.eviction_policy != policy {
-    set meta^.eviction_pool = box_slots_new::<EvictionCandidate>(capacity: 16_u64);
-    set meta^.eviction_policy = policy;
-    set meta^.eviction_searching = False();
-  }
-  if meta^.due.eligibility_changed {
-    set meta^.eviction_searching = False();
-    set meta^.due.eligibility_changed = False();
-  }
   let count = map_count::<Entry>(map: keys);
   if count == 0_u64 {
-    set meta^.eviction_pool = box_slots_new::<EvictionCandidate>(capacity: 16_u64);
     set meta^.eviction_searching = False();
-    let absent = None<Box<Array<u8>>>();
+    let absent = None<EvictionCandidate>();
     let complete = True();
     return EvictionSample(key: move absent, exhausted: complete);
   }
@@ -250,7 +274,7 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
             if position < client^.maxmemory_samples {
               let score = eviction_score(item: sampled, client: client);
               let owned = scanned_key(keys: &gathered, index: index);
-              let candidate = EvictionCandidate(key: move owned, score: score);
+              let candidate = EvictionCandidate(key: move owned, score: score, database: database);
               if position < candidates.inner.len {
                 set candidates.inner[position] = move candidate;
               } else {
@@ -276,7 +300,7 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
       }
     }
   }
-  let picked = None<Box<Array<u8>>>();
+  let picked = None<EvictionCandidate>();
   if candidates.inner.len > 0_u64 {
     set meta^.eviction_searching = False();
     if random {
@@ -286,8 +310,7 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
         if position < candidates.inner.len {
           swap(first: &candidate, second: &candidates.inner[position]);
         }
-        let EvictionCandidate(key: owned, score: unused_score) = move candidate;
-        set picked = Some<Box<Array<u8>>>(value: move owned);
+        set picked = Some<EvictionCandidate>(value: move candidate);
       }
     } else {
       loop {
@@ -299,14 +322,100 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
       }
     }
   }
-  if bnot(random) {
-    set picked = eviction_pool_take(pool: &meta^.eviction_pool);
+  if seen > 0_u64 {
+    set exhausted = False();
   }
   if exhausted {
     set meta^.eviction_searching = False();
   }
   if bnot(volatile) {
     set exhausted = False();
+  }
+  return EvictionSample(key: move picked, exhausted: exhausted);
+}
+
+fn eviction_sample_all(db0: &ConcurrentHashMap<Entry>, db1: &ConcurrentHashMap<Entry>, db2: &ConcurrentHashMap<Entry>, db3: &ConcurrentHashMap<Entry>, db4: &ConcurrentHashMap<Entry>, db5: &ConcurrentHashMap<Entry>, db6: &ConcurrentHashMap<Entry>, db7: &ConcurrentHashMap<Entry>, db8: &ConcurrentHashMap<Entry>, db9: &ConcurrentHashMap<Entry>, db10: &ConcurrentHashMap<Entry>, db11: &ConcurrentHashMap<Entry>, db12: &ConcurrentHashMap<Entry>, db13: &ConcurrentHashMap<Entry>, db14: &ConcurrentHashMap<Entry>, db15: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client) -> sample: EvictionSample reads(db0), reads(db1), reads(db2), reads(db3), reads(db4), reads(db5), reads(db6), reads(db7), reads(db8), reads(db9), reads(db10), reads(db11), reads(db12), reads(db13), reads(db14), reads(db15), writes(meta), writes(client) {
+  let policy = client^.memory_policy;
+  let reset = meta^.eviction_policy != policy;
+  if bor(reset, meta^.due.eligibility_changed) {
+    let inactive = False();
+    set meta^.eviction_searches = array_filled::<Bool, 16>(value: inactive);
+    set meta^.eviction_exhausted = array_filled::<Bool, 16>(value: inactive);
+    set meta^.due.eligibility_changed = False();
+  }
+  if reset {
+    set meta^.eviction_pool = box_slots_new::<EvictionCandidate>(capacity: 16_u64);
+    set meta^.eviction_policy = policy;
+  }
+  let exhausted = True();
+  let random = eviction_random(policy: policy);
+  let volatile = eviction_volatile(policy: policy);
+  for (offset in 0_u64..16_u64) {
+    let position = meta^.eviction_database +wrap offset;
+    let database = position % 16_u64;
+    if volatile {
+      if meta^.eviction_exhausted[database] {
+        continue;
+      }
+    }
+    let keys = db0;
+    if database == 1_u64 {
+      set keys = db1;
+    } else if database == 2_u64 {
+      set keys = db2;
+    } else if database == 3_u64 {
+      set keys = db3;
+    } else if database == 4_u64 {
+      set keys = db4;
+    } else if database == 5_u64 {
+      set keys = db5;
+    } else if database == 6_u64 {
+      set keys = db6;
+    } else if database == 7_u64 {
+      set keys = db7;
+    } else if database == 8_u64 {
+      set keys = db8;
+    } else if database == 9_u64 {
+      set keys = db9;
+    } else if database == 10_u64 {
+      set keys = db10;
+    } else if database == 11_u64 {
+      set keys = db11;
+    } else if database == 12_u64 {
+      set keys = db12;
+    } else if database == 13_u64 {
+      set keys = db13;
+    } else if database == 14_u64 {
+      set keys = db14;
+    } else if database == 15_u64 {
+      set keys = db15;
+    }
+    set meta^.eviction_cursor = meta^.eviction_cursors[database];
+    set meta^.eviction_start = meta^.eviction_starts[database];
+    set meta^.eviction_searching = meta^.eviction_searches[database];
+    set meta^.eviction_wrapped = meta^.eviction_wraps[database];
+    let sampled = eviction_sample(keys: keys, meta: meta, client: client, database: database);
+    set meta^.eviction_cursors[database] = meta^.eviction_cursor;
+    set meta^.eviction_starts[database] = meta^.eviction_start;
+    set meta^.eviction_searches[database] = meta^.eviction_searching;
+    set meta^.eviction_wraps[database] = meta^.eviction_wrapped;
+    set meta^.eviction_exhausted[database] = sampled.exhausted;
+    set exhausted = band(exhausted, sampled.exhausted);
+    match move sampled.key {
+      Some(value: picked) => {
+        let next = database + 1_u64;
+        set meta^.eviction_database = next % 16_u64;
+        let selected = Some<EvictionCandidate>(value: move picked);
+        let incomplete = False();
+        return EvictionSample(key: move selected, exhausted: incomplete);
+      }
+      None() => {
+      }
+    }
+  }
+  let picked = None<EvictionCandidate>();
+  if bnot(random) {
+    set picked = eviction_pool_take(pool: &meta^.eviction_pool);
   }
   return EvictionSample(key: move picked, exhausted: exhausted);
 }
@@ -366,10 +475,10 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
     if bnot(over) {
       return False();
     }
-    let no_key = None<Box<Array<u8>>>();
+    let no_key = None<EvictionCandidate>();
     let sample = EvictionSample(key: move no_key, exhausted: over);
-    atomic keys = &store^.keys, meta = &store^.meta {
-      set sample = eviction_sample(keys: keys, meta: meta, client: client);
+    atomic db0 = &store^.databases.inner.db0, db1 = &store^.databases.inner.db1, db2 = &store^.databases.inner.db2, db3 = &store^.databases.inner.db3, db4 = &store^.databases.inner.db4, db5 = &store^.databases.inner.db5, db6 = &store^.databases.inner.db6, db7 = &store^.databases.inner.db7, db8 = &store^.databases.inner.db8, db9 = &store^.databases.inner.db9, db10 = &store^.databases.inner.db10, db11 = &store^.databases.inner.db11, db12 = &store^.databases.inner.db12, db13 = &store^.databases.inner.db13, db14 = &store^.databases.inner.db14, db15 = &store^.databases.inner.db15, meta = &store^.meta {
+      set sample = eviction_sample_all(db0: db0, db1: db1, db2: db2, db3: db3, db4: db4, db5: db5, db6: db6, db7: db7, db8: db8, db9: db9, db10: db10, db11: db11, db12: db12, db13: db13, db14: db14, db15: db15, meta: meta, client: client);
       if sample.exhausted {
         set over = memory_over(meta: meta, client: client, logged: logged);
       }
@@ -377,12 +486,16 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
     let EvictionSample(key: victim, exhausted: exhausted) = move sample;
     let removed = False();
     match move victim {
-      Some(value: owned) => {
+      Some(value: candidate) => {
+        let database = candidate.database;
+        let selected = pkg::store::keyspace_database(store: store, database: database);
+        let owned = move candidate.key;
         let length = owned.inner.len;
         let name = &owned.inner[0_u64..length];
         let volatile = eviction_volatile(policy: client^.memory_policy);
-        atomic slot = &store^.keys[name], meta = &store^.meta {
+        atomic slot = &selected.keys[name], meta = &store^.meta {
           let loading = False();
+          pkg::store::database_context(meta: meta, database: database);
           let sequence = pkg::store::sequence_new(meta: meta, loading: loading);
           let log_budget = pkg::store::log_budget_begin(meta: meta, loading: loading);
           set over = memory_over(meta: meta, client: client, logged: logged);

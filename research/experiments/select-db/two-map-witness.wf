@@ -1,0 +1,25 @@
+alias ExitStatus = std::process::ExitStatus;
+
+fn transfer(source: &Option<u64>, destination: &Option<u64>) -> result: unit writes(source), writes(destination) {
+  swap(first: source, second: destination);
+  return unit;
+}
+
+fn exchange(source: &ConcurrentHashMap<u64>, destination: &ConcurrentHashMap<u64>) -> result: unit writes(source), writes(destination) {
+  swap(first: source, second: destination);
+  return unit;
+}
+
+fn main() -> status: ExitStatus pure waits {
+  let first = shared_map_new::<u64>(capacity: 0_u64);
+  let second = shared_map_new::<u64>(capacity: 0_u64);
+  let bytes = array_filled::<u8, 1>(value: 107_u8);
+  let key = &bytes[0_u64..1_u64];
+  atomic source = &first[key], destination = &second[key] {
+    transfer(source: source, destination: destination);
+  }
+  atomic source = &first, destination = &second {
+    exchange(source: source, destination: destination);
+  }
+  return std::process::exit_status(code: 0_u8);
+}

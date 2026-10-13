@@ -23,6 +23,8 @@ struct Env {
   access: Option<pkg::store::AccessJournal>;
   access_random: u64;
   need_whole: Bool;
+  database: u64;
+  invariant database_bound(env): env.database < 16_u64;
 }
 
 fn raw(vm: &Vm, table: Value, key: Value, value: Value) -> r: unit writes(vm) {

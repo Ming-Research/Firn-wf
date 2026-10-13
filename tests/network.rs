@@ -9,6 +9,7 @@ mod aof_sync_fault;
 mod rewrite_sequence;
 mod rewrite_scan;
 mod write_meta;
+mod select_db;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
@@ -1052,8 +1053,8 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes_with_lists_a
 /// `PEXPIREAT` or `PERSIST`, `EXAT` as `PXAT` and `EXPIREAT` as `PEXPIREAT`,
 /// both in milliseconds, a `PEXPIREAT` its LT refused not at all, and the
 /// other commands as they were sent. The expected file is redis-server
-/// 7.0.15's for the same requests but for the `SELECT 0` it writes first and
-/// the `MULTI` and `EXEC` it brackets one command's records in. The expiring
+/// 7.0.15's for the same requests, with Redis 7.2.16's initial `SELECT 0`, but
+/// without the `MULTI` and `EXEC` it brackets one command's records in. The expiring
 /// context, which records the same `DEL` when it removes an expired key
 /// first, could change the file only by removing `zz` or `aa` between their
 /// `SET` and `MSETNX`, a window of microseconds.
@@ -1124,7 +1125,7 @@ fn firn_records_its_writes_as_redis_propagates_them() {
     assert_eq!(
         String::from_utf8_lossy(&file),
         String::from_utf8_lossy(
-            b"*5\r\n$3\r\nSET\r\n$6\r\nmset:k\r\n$3\r\nold\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$6\r\nmset:k\r\n*3\r\n$4\r\nMSET\r\n$6\r\nmset:k\r\n$3\r\nnew\r\n*5\r\n$3\r\nSET\r\n$4\r\nread\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$4\r\nread\r\n*3\r\n$3\r\nSET\r\n$2\r\ngd\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\ngd\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\na\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\nb\r\n*3\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.5\r\n*4\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.6\r\n$7\r\nKEEPTTL\r\n*3\r\n$3\r\nSET\r\n$2\r\nge\r\n$1\r\nv\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nge\r\n$14\r\n99999999999999\r\n*2\r\n$7\r\nPERSIST\r\n$2\r\nge\r\n*5\r\n$3\r\nSET\r\n$2\r\nat\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$14\r\n99999999999000\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nat\r\n$14\r\n99999999998000\r\n*3\r\n$5\r\nSETNX\r\n$2\r\nnx\r\n$1\r\nv\r\n*3\r\n$6\r\nAPPEND\r\n$2\r\nap\r\n$1\r\nx\r\n*4\r\n$8\r\nSETRANGE\r\n$2\r\nap\r\n$1\r\n3\r\n$1\r\ny\r\n*3\r\n$6\r\nINCRBY\r\n$2\r\nib\r\n$1\r\n5\r\n*2\r\n$4\r\nDECR\r\n$2\r\nib\r\n*5\r\n$3\r\nSET\r\n$2\r\nzz\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\naa\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\nlive\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\nzz\r\n*2\r\n$3\r\nDEL\r\n$2\r\naa\r\n*5\r\n$6\r\nMSETNX\r\n$2\r\nm1\r\n$1\r\na\r\n$2\r\nm2\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$2\r\nm1\r\n$2\r\nm3\r\n*3\r\n$4\r\nCOPY\r\n$2\r\nm3\r\n$2\r\nm4\r\n*2\r\n$6\r\nUNLINK\r\n$2\r\nm4\r\n*5\r\n$3\r\nSET\r\n$2\r\ny2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\ny1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny2\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx2\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n"
+            b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$6\r\nmset:k\r\n$3\r\nold\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$6\r\nmset:k\r\n*3\r\n$4\r\nMSET\r\n$6\r\nmset:k\r\n$3\r\nnew\r\n*5\r\n$3\r\nSET\r\n$4\r\nread\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$4\r\nread\r\n*3\r\n$3\r\nSET\r\n$2\r\ngd\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\ngd\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\na\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\nb\r\n*3\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.5\r\n*4\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.6\r\n$7\r\nKEEPTTL\r\n*3\r\n$3\r\nSET\r\n$2\r\nge\r\n$1\r\nv\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nge\r\n$14\r\n99999999999999\r\n*2\r\n$7\r\nPERSIST\r\n$2\r\nge\r\n*5\r\n$3\r\nSET\r\n$2\r\nat\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$14\r\n99999999999000\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nat\r\n$14\r\n99999999998000\r\n*3\r\n$5\r\nSETNX\r\n$2\r\nnx\r\n$1\r\nv\r\n*3\r\n$6\r\nAPPEND\r\n$2\r\nap\r\n$1\r\nx\r\n*4\r\n$8\r\nSETRANGE\r\n$2\r\nap\r\n$1\r\n3\r\n$1\r\ny\r\n*3\r\n$6\r\nINCRBY\r\n$2\r\nib\r\n$1\r\n5\r\n*2\r\n$4\r\nDECR\r\n$2\r\nib\r\n*5\r\n$3\r\nSET\r\n$2\r\nzz\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\naa\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\nlive\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\nzz\r\n*2\r\n$3\r\nDEL\r\n$2\r\naa\r\n*5\r\n$6\r\nMSETNX\r\n$2\r\nm1\r\n$1\r\na\r\n$2\r\nm2\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$2\r\nm1\r\n$2\r\nm3\r\n*3\r\n$4\r\nCOPY\r\n$2\r\nm3\r\n$2\r\nm4\r\n*2\r\n$6\r\nUNLINK\r\n$2\r\nm4\r\n*5\r\n$3\r\nSET\r\n$2\r\ny2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\ny1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny2\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx2\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n"
         ),
         "firn's append-only file"
     );
@@ -1246,6 +1247,7 @@ fn firn_replays_blocks_and_cuts_an_unloaded_end_as_redis_does() {
         let after = resp(&["SET", "after", "1"]);
         batch.extend_from_slice(&after);
         expected.extend_from_slice(b"+OK\r\n");
+        kept.extend(resp(&["SELECT", "0"]));
         kept.extend(after);
         let port_lease = support::lease_port();
         let port = port_lease.port();
@@ -2436,9 +2438,9 @@ fn firn_answers_string_commands_as_redis_does() {
 /// and `RENAMENX` and `COPY` without REPLACE leave a live destination alone.
 /// `UNLINK` removes and counts a key named twice once, `TOUCH` counts it
 /// twice. `COPY` reads its options in order, each up to a zero byte: DB takes
-/// an integer of the int range, of which only 0 names firn's one database.
-/// The expected replies are redis-server 7.0.15's to the same requests, a
-/// server configured with one database for `COPY`'s DB.
+/// an integer of the int range, then a database index from 0 through 15.
+/// The legacy Redis 7.0.15 transcript keeps its invalid-index coverage by
+/// using 16; Redis 7.2.16 src/db.c supplies that boundary and error.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_answers_commands_naming_a_key_twice_as_redis_does() {
@@ -2483,13 +2485,13 @@ fn firn_answers_commands_naming_a_key_twice_as_redis_does() {
         vec!["MGET", "k", "j"],
         vec!["UNLINK", "j", "j", "absent", "x"],
         vec!["TOUCH", "k", "k", "absent", "y"],
-        vec!["COPY", "k", "m", "DB", "1"],
+        vec!["COPY", "k", "m", "DB", "16"],
         vec!["COPY", "k", "m", "DB", "-1"],
         vec!["COPY", "k", "m", "DB", "x"],
         vec!["COPY", "k", "m", "DB", "4294967296"],
         vec!["COPY", "k", "m", "DB"],
         vec!["COPY", "k", "m", "FOO"],
-        vec!["COPY", "k", "m", "DB", "0", "DB", "1"],
+        vec!["COPY", "k", "m", "DB", "0", "DB", "16"],
         vec!["COPY", "k", "m", "replace\0x", "db\0", "0"],
         vec!["MGET", "m"],
         vec!["DBSIZE"],
@@ -2816,7 +2818,7 @@ fn firn_carries_requests_and_replies_larger_than_its_windows() {
 /// absent, since the file records both commands, and FUNCTION FLUSH after
 /// them, as Redis does, and a FLUSHALL of the keyspace still empty before
 /// them: the file's first bytes are those redis-server 7.0.15 appends for the
-/// same requests, the SELECT it writes first aside. A key the expiring context
+/// same requests, with Redis 7.2.16's initial SELECT included. A key the expiring context
 /// removed is recorded as removed, as Redis propagates it, so a `SET` with NX
 /// that found it absent holds its value after the restart, where a replay
 /// keeping the expired key would refuse it. INFO reports the file as kept;
@@ -2897,7 +2899,7 @@ fn firn_replays_the_value_types_from_its_append_only_file() {
     assert_eq!(status, 0, "the first run");
     let file = std::fs::read(aof_incremental_path(program.working_directory(), name))
         .expect("read the file");
-    let head: &[u8] = b"*1\r\n$8\r\nFLUSHALL\r\n*3\r\n$3\r\nSET\r\n$7\r\nflushed\r\n$1\r\nv\r\n*1\r\n$8\r\nFLUSHALL\r\n*3\r\n$5\r\nRPUSH\r\n$12\r\nflushed-list\r\n$1\r\na\r\n*2\r\n$7\r\nFLUSHDB\r\n$5\r\nASYNC\r\n*3\r\n$8\r\nFUNCTION\r\n$5\r\nFLUSH\r\n$5\r\nASYNC\r\n";
+    let head: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*1\r\n$8\r\nFLUSHALL\r\n*3\r\n$3\r\nSET\r\n$7\r\nflushed\r\n$1\r\nv\r\n*1\r\n$8\r\nFLUSHALL\r\n*3\r\n$5\r\nRPUSH\r\n$12\r\nflushed-list\r\n$1\r\na\r\n*2\r\n$7\r\nFLUSHDB\r\n$5\r\nASYNC\r\n*3\r\n$8\r\nFUNCTION\r\n$5\r\nFLUSH\r\n$5\r\nASYNC\r\n";
     assert_eq!(
         String::from_utf8_lossy(&file[..head.len().min(file.len())]),
         String::from_utf8_lossy(head),
@@ -3293,10 +3295,10 @@ fn firn_matches_config_get_patterns_as_redis_does() {
     let memory_fields = "$9\r\nmaxmemory\r\n$1\r\n0\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n$17\r\nmaxmemory-samples\r\n$1\r\n5\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$14\r\nlfu-decay-time\r\n$1\r\n1\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n";
     let rewrite_fields = "$27\r\nauto-aof-rewrite-percentage\r\n$3\r\n100\r\n$25\r\nauto-aof-rewrite-min-size\r\n$8\r\n67108864\r\n";
     let expected = format!(
-        "*64\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}\
+        "*64\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$2\r\n16\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n{rewrite_fields}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n{rewrite_fields}\
-         *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\
+         *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$2\r\n16\r\n\
          *2\r\n{port_field}\
          *4\r\n{port_field}$7\r\ntimeout\r\n$1\r\n7\r\n\
          *22\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}\
@@ -3745,8 +3747,8 @@ fn firn_requires_its_password_as_redis_does() {
 /// and its SETNAME names the connection, an option's name
 /// read up to a zero byte as Redis's strcasecmp reads it; AUTH without a
 /// configured password is answered with Redis's error for the password alone
-/// and succeeds for the user default; SELECT takes 0 alone, as Redis does with
-/// one database; COMMAND and COMMAND COUNT describe no command and COMMAND
+/// and succeeds for the user default; SELECT accepts 0 and refuses 16, as
+/// Redis 7.2.16 does with sixteen databases; COMMAND and COMMAND COUNT describe no command and COMMAND
 /// DOCS is an unknown subcommand; TIME answers the calendar time; INFO
 /// answers Redis's sections in Redis's form and order, the default ones, all
 /// of them for all or everything, or those named, an unknown name adding none,
@@ -3796,7 +3798,7 @@ fn firn_answers_connection_commands_as_redis_does() {
         vec!["AUTH", "x"],
         vec!["AUTH", "default", "x"],
         vec!["SELECT", "0"],
-        vec!["SELECT", "1"],
+        vec!["SELECT", "16"],
         vec!["SELECT", "abc"],
         vec!["SELECT", "3000000000"],
         vec!["COMMAND"],
@@ -4303,7 +4305,7 @@ fn firn_answers_client_info_as_redis_does() {
 /// transaction of two writes bracketed in MULTI and EXEC, one of one write as
 /// that write alone, and one that only reads not at all; a restart replays
 /// the file to the same keys. The expected file is redis-server 7.0.15's for
-/// the same requests but for the SELECT 0 it writes first.
+/// the same requests, with Redis 7.2.16's initial SELECT 0 included.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_transactions_as_redis_propagates_them() {
@@ -4352,7 +4354,7 @@ fn firn_records_transactions_as_redis_propagates_them() {
         .expect("read firn's file");
     assert_eq!(
         String::from_utf8_lossy(&file),
-        "*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
+        "*1\r\n$5\r\nMULTI\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$3\r\nSET\r\n$1\r\nc\r\n$1\r\n3\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
     );
     let port_lease = support::lease_port();
     let port = port_lease.port();
@@ -5468,6 +5470,14 @@ fn file_records(mut bytes: &[u8]) -> Vec<Vec<Vec<u8>>> {
 /// run and fails.
 #[cfg(target_os = "linux")]
 fn check_held_records(loaded: &[&[&str]], requests: &[&[&str]], replies: &[u8], records: &[u8]) {
+    // Redis 7.2.16 propagatePendingCommands gives MULTI database -1;
+    // feedAppendOnlyFile inserts the initial SELECT before its first effect.
+    let multi = resp(&["MULTI"]);
+    assert!(records.starts_with(&multi));
+    let mut contextual_records = multi.clone();
+    contextual_records.extend(resp(&["SELECT", "0"]));
+    contextual_records.extend_from_slice(&records[multi.len()..]);
+    let records = contextual_records.as_slice();
     let program = firn();
     let loaded: Vec<u8> = loaded.iter().flat_map(|request| resp(request)).collect();
     let mut batch: Vec<u8> = requests.iter().flat_map(|request| resp(request)).collect();
@@ -7544,7 +7554,7 @@ fn firn_draws_random_keys_uniformly_as_redis_does() {
 /// of two writes bracketed in MULTI and EXEC, one of one write as that write
 /// alone, and one that only reads not at all; a restart replays the file to
 /// the same keys. The expected file is redis-server 7.0.15's for the same
-/// scripts with one database, without the SELECT it begins with.
+/// scripts, with Redis 7.2.16's initial SELECT inside MULTI included.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_scripts_as_redis_propagates_them() {
@@ -7579,7 +7589,7 @@ fn firn_records_scripts_as_redis_propagates_them() {
         .expect("read firn's file");
     assert_eq!(
         String::from_utf8_lossy(&file),
-        "*1\r\n$5\r\nMULTI\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
+        "*1\r\n$5\r\nMULTI\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n*1\r\n$4\r\nEXEC\r\n*2\r\n$4\r\nINCR\r\n$1\r\na\r\n",
     );
     let port_lease = support::lease_port();
     let port = port_lease.port();
@@ -7630,7 +7640,8 @@ fn firn_script_fallback_is_not_catchable_and_publishes_once() {
     }
     drop(client);
     assert_eq!(finished(child).0, 0);
-    let expected: Vec<u8> = (0..3).flat_map(|index| resp(&["INCR", &format!("counter:{index}")])).collect();
+    let mut expected = resp(&["SELECT", "0"]);
+    expected.extend((0..3).flat_map(|index| resp(&["INCR", &format!("counter:{index}")])));
     assert_eq!(std::fs::read(aof_incremental_path(program.working_directory(), "fallback-once.aof")).unwrap(), expected, "one INCR effect per accepted invocation, no abandoned effects");
     let port_lease = support::lease_port();
     let port = port_lease.port();
@@ -7750,6 +7761,7 @@ fn firn_script_fallback_restores_deadlines_types_and_presence() {
     drop(client);
     assert_eq!(finished(child).0, 0);
     let requests: &[&[&str]] = &[
+        &["SELECT", "0"],
         &["SET", "deadline", "v", "PXAT", "9999999999999"],
         &["RPUSH", "typed", "a", "b"],
         &["SET", "removed", "original"],
@@ -7839,7 +7851,7 @@ fn firn_script_fallback_keeps_lazy_expiry_effects() {
     let script = "local a=redis.call('GET',KEYS[1]); local b=redis.call('GET','outside'); return {a or 'missing',b or 'missing'}";
     client.write_all(&resp(&["SCRIPT", "LOAD", script])).unwrap();
     let sha = bulk_reply(&mut client, "warm lazy-expiry script");
-    let mut expected = Vec::new();
+    let mut expected = resp(&["SELECT", "0"]);
     for index in 0..KEYS {
         let key = format!("lazy:{index}");
         let mut pair = resp(&["SET", &key, "v", "PXAT", "1"]);

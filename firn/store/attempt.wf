@@ -261,7 +261,7 @@ fn attempt_due_new() -> due: ExpiryQueue pure {
   let entries = box_slots_new::<Due>(capacity: 0_u64);
   let staged = Some<Box<Slots<Due>>>(value: move entries);
   let steady = False();
-  return ExpiryQueue(queue: move queue, eligibility_changed: steady, staged: move staged);
+  return ExpiryQueue(queue: move queue, database: 0_u64, eligibility_changed: steady, staged: move staged);
 }
 
 fn attempt_due_commit(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(staged), writes(target) {
@@ -275,6 +275,7 @@ fn attempt_due_commit(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) 
       let held_records = &records;
       for (index in 0_u64..held_records^.inner.len) {
         let due = &held_records^.inner[index];
+        set target^.database = due^.database;
         match due^.key {
           Short(bytes: short) => {
             let length = short^.len;
