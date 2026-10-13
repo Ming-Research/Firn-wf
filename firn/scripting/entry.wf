@@ -545,9 +545,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   }
                   Error() => {
                     let line = halo::embed::error_line(engine: &pooled.engine);
-                    let value = halo::embed::error_value(engine: &pooled.engine);
-                    let locate = readonly_message(vm: &pooled.engine.vm, value: value);
-                    let message = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
+                    let message = format_redis_error(engine: &pooled.engine, sha: &sha, line: line);
                     let raised = False();
                     reply_error_text(client: client, text: &message, formatted: raised);
                     if logged {
@@ -623,9 +621,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   }
                   Error() => {
                     let line = halo::embed::error_line(engine: &pooled.engine);
-                    let value = halo::embed::error_value(engine: &pooled.engine);
-                    let locate = readonly_message(vm: &pooled.engine.vm, value: value);
-                    let message = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
+                    let message = format_redis_error(engine: &pooled.engine, sha: &sha, line: line);
                     let raised = False();
                     reply_error_text(client: client, text: &message, formatted: raised);
                     if logged {

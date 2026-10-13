@@ -4637,6 +4637,232 @@ fn firn_keeps_a_script_error_reply_on_one_line() {
     assert_eq!(status, 0);
 }
 
+/// firn's script host answers as Redis 7.2.16's does where 7.2 changed it.
+/// A Lua number passed to redis.call reaches the command as
+/// luaArgsToRedisArgv's text: an integral value no larger in magnitude than
+/// 2^62 as an integer, any other through fpconv's Grisu2 digits, which are
+/// not always the shortest (1e23), a NaN as -nan and negative zero as 0; so
+/// 1e17 stored by SET is one INCR reads, where Redis 7.0.15's %.17g stored
+/// 1e+17. A {double=x} result is written by addReplyDouble with d2string's
+/// text, every NaN as nan and negative zero as -0, as a bulk string under
+/// RESP2 and a double under RESP3. The globals, every table reachable from
+/// them and the string metatable are read-only, an assignment's refusal
+/// located at the script's line and rawset's and setmetatable's not, while
+/// KEYS and ARGV stay writable; getfenv, setfenv and newproxy are undeclared
+/// globals; a raised error's line feed becomes a space; redis.set_repl checks
+/// its argument as Redis does, and firn refuses the flags without REPL_AOF,
+/// which it does not implement; redis.REDIS_VERSION and REDIS_VERSION_NUM
+/// name 7.2.16. The expected replies are redis-server 7.2.16's as Halo-wf
+/// recorded them: its oracle scripts under
+/// deps/halo-wf/research/experiments/halo-oracle (number-argument-format,
+/// number-argument-effects, double-reply-table, string-metatable-readonly,
+/// readonly-library-tables, readonly-rawset-error, global-write,
+/// keys-argv-writable, removed-globals, error-message-newline,
+/// set-repl-no-argument, redis-version) and its table of double texts,
+/// deps/halo-wf/research/experiments/redis-double-text/redis-7.2.16.tsv, for
+/// 2^62, the double after it, their negatives, 1e23, -0 and -inf; the RESP3 doubles follow
+/// addReplyDouble in Redis 7.2.16's networking.c, and set_repl's flag error
+/// its luaRedisSetReplCommand in script_lua.c.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_runs_scripts_as_redis_7_2_16_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut batch = Vec::new();
+    for request in [
+        vec![
+            "EVAL",
+            "local z=0 local v={0.1,1/3,1e17,2^62,2^62+1024,-2^62,-2^62-1024,2^63,-z,5e-324,1e-7,1e23,1e100,0/0,1/0,-1/0} local o={} for i=1,#v do o[i]=redis.call('ECHO',v[i]) end return o",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "return {redis.call('SET',KEYS[1],1e17),redis.call('INCR',KEYS[1]),redis.call('GET',KEYS[1])}",
+            "1",
+            "n",
+        ],
+        vec!["GET", "n"],
+        vec![
+            "EVAL",
+            "local z=0 return {{double=0.1},{double=1/3},{double=1e17},{double=2^62},{double=2^62+1024},{double=-2^62},{double=-2^62-1024},{double=2^63},{double=-z},{double=1e-7},{double=1e23},{double=0/0},{double=1/0},{double=-1/0},{double=3}}",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local mt=getmetatable('') local a,b=pcall(function() mt.halo=1 end) local c,d=pcall(rawset,mt,'halo',1) local e,f=pcall(setmetatable,mt,nil) return {tostring(a),b,tostring(c),d,tostring(e),f,tostring(rawget(mt,'halo')),tostring(mt.__index==string)}",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local function try(f) local ok,e=pcall(f) return tostring(ok)..' '..tostring(e) end return {try(function() math.pi=1 end),try(function() redis.halo=1 end),try(function() _G.halo=1 end),try(function() getmetatable(_G).__index=nil end),try(function() string.upper=1 end)}",
+            "0",
+        ],
+        vec!["EVAL", "string.halo = 1", "0"],
+        vec!["EVAL", "return rawset(string, 'halo', 1)", "0"],
+        vec!["EVAL", "halo_global = 1", "0"],
+        vec![
+            "EVAL",
+            "KEYS[1]=KEYS[1]..':changed' ARGV[1]=ARGV[1]..':changed' table.insert(KEYS,'appended') table.insert(ARGV,'appended') return {KEYS[1],KEYS[2],ARGV[1],ARGV[2],#KEYS,#ARGV}",
+            "1",
+            "k",
+            "first",
+        ],
+        vec![
+            "EVAL",
+            "local r={pcall(function() return getfenv end)} local s={pcall(function() return setfenv end)} local t={pcall(function() return newproxy end)} return {tostring(r[1]),r[2],tostring(s[1]),s[2],tostring(t[1]),t[2],type(rawget(_G,'getfenv')),type(rawget(_G,'setfenv')),type(rawget(_G,'newproxy'))}",
+            "0",
+        ],
+        vec!["EVAL", "error('a\\nb')", "0"],
+        vec![
+            "EVAL",
+            "local ok,e=pcall(redis.set_repl) return {tostring(ok),type(e),e}",
+            "0",
+        ],
+        vec!["EVAL", "local ok,e=pcall(redis.set_repl,4) return e", "0"],
+        vec![
+            "EVAL",
+            "redis.set_repl(redis.REPL_ALL) redis.set_repl(redis.REPL_AOF) return {redis.REPL_NONE,redis.REPL_AOF,redis.REPL_SLAVE,redis.REPL_REPLICA,redis.REPL_ALL}",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local ok,e=pcall(redis.set_repl,redis.REPL_NONE) return e",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local ok,e=pcall(redis.set_repl,redis.REPL_SLAVE) return e",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "local ok,e=pcall(redis.set_repl,redis.REPL_REPLICA) return e",
+            "0",
+        ],
+        vec![
+            "EVAL",
+            "return {redis.REDIS_VERSION,redis.REDIS_VERSION_NUM,type(redis.REDIS_VERSION),type(redis.REDIS_VERSION_NUM)}",
+            "0",
+        ],
+        vec!["HELLO", "3"],
+        vec![
+            "EVAL",
+            "local z=0 return {{double=0.1},{double=0/0},{double=-z},{double=2^62},{double=-1/0}}",
+            "0",
+        ],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the 7.2.16 scripting batch");
+    let bulk = |s: &str| format!("${}\r\n{}\r\n", s.len(), s);
+    let array = |items: &[&str]| {
+        let mut out = format!("*{}\r\n", items.len());
+        for item in items {
+            out.push_str(&bulk(item));
+        }
+        out
+    };
+    let readonly = "Attempt to modify a readonly table";
+    let located = format!("user_script:1: {readonly}");
+    let refused = format!("false {located}");
+    let undeclared = |name: &str| {
+        format!("user_script:1: Script attempted to access nonexistent global variable '{name}'")
+    };
+    // Redis 7.2.16 reports its own version here; firn still reports 7.0.15 (board item firn-host-72-diffs).
+    let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
+    let mut expected = String::new();
+    expected.push_str(&array(&[
+        "0.1",
+        "0.3333333333333333",
+        "100000000000000000",
+        "4611686018427387904",
+        "4611686018427389000",
+        "-4611686018427387904",
+        "-4611686018427389000",
+        "9223372036854776000",
+        "0",
+        "5e-324",
+        "1e-7",
+        "99999999999999990000000",
+        "1e+100",
+        "-nan",
+        "inf",
+        "-inf",
+    ]));
+    expected.push_str("*3\r\n+OK\r\n:100000000000000000\r\n$18\r\n100000000000000001\r\n");
+    expected.push_str(&bulk("100000000000000001"));
+    expected.push_str(&array(&[
+        "0.1",
+        "0.3333333333333333",
+        "100000000000000000",
+        "4611686018427387904",
+        "4611686018427389000",
+        "-4611686018427387904",
+        "-4611686018427389000",
+        "9223372036854776000",
+        "-0",
+        "1e-7",
+        "99999999999999990000000",
+        "nan",
+        "inf",
+        "-inf",
+        "3",
+    ]));
+    expected.push_str(&array(&[
+        "false", located.as_str(), "false", readonly, "false", readonly, "nil", "true",
+    ]));
+    expected.push_str(&array(&[refused.as_str(); 5]));
+    expected.push_str(&format!(
+        "-ERR {located} script: 96267629ca97fb4596587bc73e2444aa038e771a, on @user_script:1.\r\n"
+    ));
+    expected.push_str(&format!(
+        "-ERR {readonly} script: c183b37517c7a06778d9c49959043d725fd89e31, on @user_script:1.\r\n"
+    ));
+    expected.push_str(&format!(
+        "-ERR {located} script: 4ebd85e69813f5edad7180477f4256215420fcb4, on @user_script:1.\r\n"
+    ));
+    expected.push_str("*6\r\n$9\r\nk:changed\r\n$8\r\nappended\r\n$13\r\nfirst:changed\r\n$8\r\nappended\r\n:2\r\n:2\r\n");
+    expected.push_str(&array(&[
+        "false",
+        undeclared("getfenv").as_str(),
+        "false",
+        undeclared("setfenv").as_str(),
+        "false",
+        undeclared("newproxy").as_str(),
+        "nil",
+        "nil",
+        "nil",
+    ]));
+    expected.push_str(
+        "-ERR user_script:1: a b script: 119790126df3fc201f8f0498095b28c62b174151, on @user_script:1.\r\n",
+    );
+    expected.push_str(&array(&[
+        "false",
+        "string",
+        "ERR redis.set_repl() requires one argument.",
+    ]));
+    expected.push_str(&bulk(
+        "ERR Invalid replication flags. Use REPL_AOF, REPL_REPLICA, REPL_ALL or REPL_NONE.",
+    ));
+    expected.push_str("*5\r\n:0\r\n:1\r\n:2\r\n:2\r\n:3\r\n");
+    for _ in 0..3 {
+        expected.push_str(&bulk(
+            "ERR firn does not support redis.set_repl flags without REPL_AOF",
+        ));
+    }
+    expected.push_str("*4\r\n$6\r\n7.2.16\r\n:459280\r\n$6\r\nstring\r\n$6\r\nnumber\r\n");
+    expected.push_str(hello3);
+    expected.push_str("*5\r\n,0.1\r\n,nan\r\n,-0\r\n,4611686018427387904\r\n,-inf\r\n");
+    expect_replies(&mut client, expected.as_bytes(), "the 7.2.16 scripting batch");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
 /// firn's SCRIPT KILL stops a script that has written nothing at the end of
 /// its current attempt and answers it Redis 7.0.15's error, naming the
 /// script's SHA1 and the line it ran, and SCRIPT KILL answers NOTBUSY when no

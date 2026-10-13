@@ -10,6 +10,4 @@ const sha_arity: Array<u8, 29> = "ERR wrong number of arguments";
 
 const lua_source: Array<u8, 12> = "user_script:";
 
-const readonly_error: Array<u8, 34> = "Attempt to modify a readonly table";
-
 const s_2: Array<u8, 63> = "ERR Lua redis lib command arguments must be strings or integers";
