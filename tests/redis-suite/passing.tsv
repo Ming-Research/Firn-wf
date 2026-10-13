@@ -5,6 +5,7 @@ integration/redis-cli	Interactive CLI: Integer reply	1
 integration/redis-cli	Interactive CLI: Multi-bulk reply	1
 integration/redis-cli	Interactive CLI: Parsing quotes	1
 integration/redis-cli	Interactive CLI: Status reply	1
+integration/redis-cli	Interactive CLI: Subscribed mode	1
 integration/redis-cli	Non-interactive TTY CLI: Bulk reply	1
 integration/redis-cli	Non-interactive TTY CLI: Escape character in JSON mode	1
 integration/redis-cli	Non-interactive TTY CLI: Integer reply	1
@@ -153,6 +154,7 @@ unit/other	FUZZ stresser with data model alpha	1
 unit/other	FUZZ stresser with data model binary	1
 unit/other	FUZZ stresser with data model compr	1
 unit/other	PIPELINING stresser (also a regression for the old epoll bug)	1
+unit/other	RESET clears Pub/Sub state	1
 unit/other	RESET clears and discards MULTI state	1
 unit/other	SELECT an out of range DB	1
 unit/other	Same dataset digest if saving/reloading as AOF?	1
@@ -174,6 +176,36 @@ unit/protocol	Wrong multibulk payload header	1
 unit/protocol	raw protocol response	1
 unit/protocol	raw protocol response - deferred	1
 unit/protocol	raw protocol response - multiline	1
+unit/pubsub	Mix SUBSCRIBE and PSUBSCRIBE	1
+unit/pubsub	NUMPATs returns the number of unique patterns	1
+unit/pubsub	NUMSUB returns numbers, not strings (#1561)	1
+unit/pubsub	PUBLISH/PSUBSCRIBE after PUNSUBSCRIBE without arguments	1
+unit/pubsub	PUBLISH/PSUBSCRIBE basics	1
+unit/pubsub	PUBLISH/PSUBSCRIBE with two clients	1
+unit/pubsub	PUBLISH/SUBSCRIBE after UNSUBSCRIBE without arguments	1
+unit/pubsub	PUBLISH/SUBSCRIBE basics	1
+unit/pubsub	PUBLISH/SUBSCRIBE with two clients	1
+unit/pubsub	PUNSUBSCRIBE and UNSUBSCRIBE should always reply	1
+unit/pubsub	PUNSUBSCRIBE from non-subscribed channels	1
+unit/pubsub	Pub/Sub PING on RESP2	1
+unit/pubsub	Pub/Sub PING on RESP3	1
+unit/pubsub	SUBSCRIBE to one channel more than once	1
+unit/pubsub	UNSUBSCRIBE from non-subscribed channels	1
+unit/pubsub	psubscribe  fails with OOM when memory limit exceeded	1
+unit/pubsub	psubscribe succeeds with small pattern but fails with large pattern due to OOM	1
+unit/pubsub	psubscribe with 2 clients fails with OOM when memory limit exceeded	1
+unit/pubsub	psubscribe with large pattern name fails due to OOM	1
+unit/pubsub	publish to self inside multi	1
+unit/pubsub	publish to self inside script	1
+unit/pubsub	ssubscribe  fails with OOM when memory limit exceeded	1
+unit/pubsub	ssubscribe succeeds with small channel but fails with large channel due to OOM	1
+unit/pubsub	ssubscribe with 2 clients fails with OOM when memory limit exceeded	1
+unit/pubsub	ssubscribe with large shard channel name fails due to OOM	1
+unit/pubsub	subscribe  fails with OOM when memory limit exceeded	1
+unit/pubsub	subscribe succeeds with small channel but fails with large channel due to OOM	1
+unit/pubsub	subscribe with 2 clients fails with OOM when memory limit exceeded	1
+unit/pubsub	subscribe with large channel name fails due to OOM	1
+unit/pubsub	unsubscribe inside multi, and publish to self	1
 unit/quit	Pipelined commands after QUIT must not be executed	1
 unit/quit	Pipelined commands after QUIT that exceed read buffer size	1
 unit/quit	QUIT returns OK	1
@@ -202,6 +234,8 @@ unit/scripting	Scripting engine PRNG can be seeded correctly	1
 unit/scripting	random numbers are random now	1
 unit/sort	SETRANGE with huge offset	1
 unit/sort	SORT sorted set: +inf and -inf handling	1
+unit/tracking	HELLO 3 reply is correct	1
+unit/tracking	HELLO without protover	1
 unit/type/hash	HSET/HLEN - Small hash creation	1
 unit/type/hash	Is the small hash encoded with a listpack?	1
 unit/type/incr	DECR against key created by incr	1
