@@ -101,11 +101,15 @@ clients send on their own:
 
 `SCAN` takes one map scan step per request; its unsigned decimal cursor is
 zero when the scan ends, and a nonzero cursor can accompany an empty batch.
-`MATCH` and `KEYS` patterns are binary and case-sensitive; `TYPE` names are
+`MATCH` and `KEYS` patterns are binary and case-sensitive. The shared glob
+matcher, also used by `CONFIG GET`, follows Redis 7.2.16's limit of 1000
+nested evaluations of a nonterminal `*` suffix; another level does not match.
+Adjacent stars collapse into one, trailing stars add no level, and retries,
+escaped stars and character classes add no level. `TYPE` names are
 case-insensitive. `KEYS` walks the whole keyspace in one atomic statement
 and skips expired entries without removing them. `SCAN` removes expired
-entries reached after `MATCH`, returning their names only under
-`TYPE none`, as Redis 7.0.15 does, and `RANDOMKEY` removes expired
+entries reached after `MATCH` and excludes their names even under
+`TYPE none`, as Redis 7.2.16 does, and `RANDOMKEY` removes expired
 candidates; both record those removals as `DEL`. `RANDOMKEY` draws as Redis's
 `dbRandomKey` does, picking uniformly among the keys one scan step of count
 15 gathers from a random position, wrapping at the table's end, with a
