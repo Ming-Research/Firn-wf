@@ -1,0 +1,3 @@
+alias ExitStatus = std::process::ExitStatus;
+
+public fn main() -> status: ExitStatus pure waits doc "Instantiates the full store adapter from the dependent command module inside one map hold.";

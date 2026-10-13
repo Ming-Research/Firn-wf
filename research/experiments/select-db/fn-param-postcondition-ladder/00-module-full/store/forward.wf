@@ -1,0 +1,32 @@
+fn sequence_new() -> made: WriteSequence pure {
+  return WriteSequence(database: 0_u64, count: 0_u64);
+}
+
+fn due_new() -> made: ExpiryQueue pure {
+  return ExpiryQueue(database: 0_u64, count: 0_u64);
+}
+
+fn meta_new() -> made: Meta pure {
+  let pending = due_new();
+  return Meta(due: move pending, database: 0_u64);
+}
+
+fn sequence_touch(sequence: &WriteSequence) -> result: unit writes(sequence.count) {
+  set sequence^.count = 0_u64;
+  return unit;
+}
+
+fn due_touch(due: &ExpiryQueue) -> result: unit writes(due.count) {
+  set due^.count = 0_u64;
+  return unit;
+}
+
+fn command_held_entries_run_due<A, C, fn apply(sequence: &WriteSequence, effect_budget: &LogBudget, journal: &Option<AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<AttemptUndo>, fallback: &Bool, due: &ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, client: &C, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+}>(meta: &Meta, sequence: &WriteSequence, effect_budget: &LogBudget, journal: &Option<AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<AttemptUndo>, fallback: &Bool, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, client: &C, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(meta.due), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+} {
+  return apply(sequence: sequence, effect_budget: effect_budget, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, due: &meta^.due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+}

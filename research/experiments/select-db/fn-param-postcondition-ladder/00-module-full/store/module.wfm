@@ -1,0 +1,60 @@
+public nocopy struct Entry {
+  public count: u64;
+}
+
+public nocopy struct WriteSequence {
+  public readonly database: u64;
+  public readonly count: u64;
+  invariant selected(sequence): sequence.database < 16_u64;
+}
+
+public nocopy struct ExpiryQueue {
+  public readonly database: u64;
+  public readonly count: u64;
+  invariant selected(due): due.database < 16_u64;
+}
+
+public nocopy struct Meta {
+  public readonly due: ExpiryQueue;
+  public readonly database: u64;
+  invariant selected(meta): meta.database < 16_u64;
+  invariant due_selected(meta): meta.due.database < 16_u64;
+}
+
+public struct LogBudget {
+  public count: u64;
+}
+
+public nocopy struct AccessJournal {
+  public count: u64;
+}
+
+public nocopy struct AttemptUndo {
+  public count: u64;
+}
+
+public struct KeyEnv {
+  public salt: u64;
+}
+
+public struct Time {
+  public check: u64;
+}
+
+public fn sequence_new() -> made: WriteSequence pure doc "Owns the invariant-bearing state constructor or narrow counter write.";
+
+public fn due_new() -> made: ExpiryQueue pure doc "Owns the invariant-bearing state constructor or narrow counter write.";
+
+public fn meta_new() -> made: Meta pure doc "Owns the invariant-bearing state constructor or narrow counter write.";
+
+public fn sequence_touch(sequence: &WriteSequence) -> result: unit writes(sequence.count) doc "Owns the invariant-bearing state constructor or narrow counter write.";
+
+public fn due_touch(due: &ExpiryQueue) -> result: unit writes(due.count) doc "Owns the invariant-bearing state constructor or narrow counter write.";
+
+public fn command_held_entries_run_due<A, C, fn apply(sequence: &WriteSequence, effect_budget: &LogBudget, journal: &Option<AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<AttemptUndo>, fallback: &Bool, due: &ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, client: &C, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+}>(meta: &Meta, sequence: &WriteSequence, effect_budget: &LogBudget, journal: &Option<AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<AttemptUndo>, fallback: &Bool, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, client: &C, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(meta.due), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
+  requires keys^.len == declared^.len;
+  ensures keys^.len == entry(keys)^.len;
+} doc "Preserves the original sixteen-argument callback and field-projection shape from firn revision 60d7105.";

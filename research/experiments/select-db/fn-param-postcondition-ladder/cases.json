@@ -1,0 +1,156 @@
+[
+  {
+    "id": "00-module-full",
+    "kind": "graph",
+    "path": "00-module-full/modules.wfg",
+    "delta": "Historical sixteen-argument adapter, module interface, field projection, Entries, generics, Options and four database invariant clauses.",
+    "chain": true
+  },
+  {
+    "id": "01-flatten-modules",
+    "kind": "bundle",
+    "path": "01-flatten-modules.wf",
+    "delta": "Flatten the module boundary; preserve the signatures, invariant facts, helper calls and payload behavior.",
+    "chain": true
+  },
+  {
+    "id": "02-direct-due-first",
+    "kind": "bundle",
+    "path": "02-direct-due-first.wf",
+    "delta": "Replace projected Meta.due by a direct due parameter at the same outer ordinal zero; preserve the keys ordinal mismatch.",
+    "chain": true
+  },
+  {
+    "id": "03-align-parameter-ordinals",
+    "kind": "bundle",
+    "path": "03-align-parameter-ordinals.wf",
+    "delta": "Move the outer due parameter to callback ordinal eight, aligning keys from outer five to callback four.",
+    "chain": true
+  },
+  {
+    "id": "04-remove-type-invariants",
+    "kind": "bundle",
+    "path": "04-remove-type-invariants.wf",
+    "delta": "Remove the four WriteSequence, ExpiryQueue and Meta database invariant clauses.",
+    "chain": true
+  },
+  {
+    "id": "05-remove-unrelated-arguments",
+    "kind": "bundle",
+    "path": "05-remove-unrelated-arguments.wf",
+    "delta": "Remove unrelated sequence, budget, kind, fallback, effects, logging, input, env and time argument/effect channels.",
+    "chain": true
+  },
+  {
+    "id": "06-remove-option-arguments",
+    "kind": "bundle",
+    "path": "06-remove-option-arguments.wf",
+    "delta": "Remove journal and undo Option argument/effect channels.",
+    "chain": true
+  },
+  {
+    "id": "07-specialize-type-parameters",
+    "kind": "bundle",
+    "path": "07-specialize-type-parameters.wf",
+    "delta": "Specialize A and C to the same concrete argument-vector and client types, removing the type parameters.",
+    "chain": true
+  },
+  {
+    "id": "08-remove-due",
+    "kind": "bundle",
+    "path": "08-remove-due.wf",
+    "delta": "Remove the direct due argument/effect channel.",
+    "chain": true
+  },
+  {
+    "id": "09-remove-args",
+    "kind": "bundle",
+    "path": "09-remove-args.wf",
+    "delta": "Remove the concrete command-argument vector argument/read channel.",
+    "chain": true
+  },
+  {
+    "id": "10-remove-client",
+    "kind": "bundle",
+    "path": "10-remove-client.wf",
+    "delta": "Remove the concrete client argument/write channel.",
+    "chain": true
+  },
+  {
+    "id": "11-remove-relational-requirement",
+    "kind": "bundle",
+    "path": "11-remove-relational-requirement.wf",
+    "delta": "Remove the declared KeySet and keys.len == declared.len requirement; preserve the entry-state postcondition.",
+    "chain": true
+  },
+  {
+    "id": "12-slots-container",
+    "kind": "bundle",
+    "path": "12-slots-container.wf",
+    "delta": "Replace Entries<Entry> with Slots<u64,4>; keep the element-writing body and the postcondition.",
+    "chain": true
+  },
+  {
+    "id": "13-nonempty-requirement",
+    "kind": "bundle",
+    "path": "13-nonempty-requirement.wf",
+    "delta": "Add only the nonempty requirement needed by the accepted take/place example.",
+    "chain": true
+  },
+  {
+    "id": "14-take-place-body",
+    "kind": "bundle",
+    "path": "14-take-place-body.wf",
+    "delta": "Replace only the concrete element-writing body with take_back followed by place_back.",
+    "chain": true
+  },
+  {
+    "id": "15-unit-result",
+    "kind": "bundle",
+    "path": "15-unit-result.wf",
+    "delta": "Change only the callback/formal/adapter result from u64 to unit, reaching the accepted reduction shape.",
+    "chain": true
+  },
+  {
+    "id": "ordinal-before",
+    "kind": "bundle",
+    "path": "ordinal-before.wf",
+    "delta": "Accepted Slots shape with an extra read-only dummy before window; callback window ordinal remains zero.",
+    "chain": false
+  },
+  {
+    "id": "ordinal-after",
+    "kind": "bundle",
+    "path": "ordinal-after.wf",
+    "delta": "Same dummy/data/effects as ordinal-before; move dummy after window to align ordinals.",
+    "chain": false
+  },
+  {
+    "id": "specialized-full-raw",
+    "kind": "bundle",
+    "path": "specialized-full-raw-control.wf",
+    "delta": "Full projected sixteen-argument shape with concrete A/C types and a raw function parameter.",
+    "chain": false
+  },
+  {
+    "id": "direct-control",
+    "kind": "bundle",
+    "path": "direct-control.wf",
+    "delta": "Same full concrete shape as specialized-full-raw, calling held_entries_run directly instead of through a raw fn parameter.",
+    "chain": false
+  },
+  {
+    "id": "accepted-baseline",
+    "kind": "bundle",
+    "path": "accepted-baseline.wf",
+    "delta": "Byte-exact copy of the existing function-parameter-postcondition.wf that Whitefoot reports accepted on main.",
+    "chain": false
+  },
+  {
+    "id": "caller-view-control",
+    "kind": "bundle",
+    "path": "caller-view-control.wf",
+    "delta": "Step 01 full generic/projection shape with the original held_run whole-map parameter, locally built command_keys and borrowed Entries view before instantiating apply.",
+    "chain": false
+  }
+]

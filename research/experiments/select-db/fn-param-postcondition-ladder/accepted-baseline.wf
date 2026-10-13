@@ -1,0 +1,34 @@
+alias ExitStatus = std::process::ExitStatus;
+
+fn preserve(window: &Slots<u64, 4>) -> result: unit writes(window) contract {
+  requires window^.len > 0_u64;
+  ensures window^.len == entry(window)^.len;
+} {
+  let value = take_back(window: window);
+  place_back(window: window, value: value);
+  return unit;
+}
+
+fn forward<fn apply(window: &Slots<u64, 4>) -> result: unit writes(window) contract {
+  requires window^.len > 0_u64;
+  ensures window^.len == entry(window)^.len;
+}>(window: &Slots<u64, 4>) -> result: unit writes(window) contract {
+  requires window^.len > 0_u64;
+  ensures window^.len == entry(window)^.len;
+} {
+  doc "Expected to compile under pinned FN-3 through FN-5 and FN-8 through FN-9: the raw function parameter publishes an affine postcondition, which its caller uses after the formal write kills prior length facts. This preserves the form of firn's observed FN-9 at command_held_entries_run_due, whose apply signature already declares the same length postcondition. This smaller witness has not yet been checked in CI; success would mean the firn failure needs a more specific reduction, not that fn-kind parameters lack contracts.";
+  return apply(window: window);
+}
+
+fn main() -> status: ExitStatus pure {
+  let window = slots_new::<u64, 4>();
+  place_back(window: &window, value: 7_u64);
+  forward::<fn preserve>(window: &window);
+  if window.len != 1_u64 {
+    return std::process::exit_status(code: 1_u8);
+  }
+  if window[0_u64] != 7_u64 {
+    return std::process::exit_status(code: 2_u8);
+  }
+  return std::process::exit_status(code: 0_u8);
+}

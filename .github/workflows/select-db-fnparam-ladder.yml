@@ -1,0 +1,47 @@
+# Temporary caller for firn-scope-select-db. Remove before the PR is ready;
+# retain the ladder and recording instrument for the checker investigation.
+name: select-db-fnparam-ladder
+
+on:
+  push:
+    branches: [claude/select-db]
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Check the recording instrument
+        run: python3 -B -m unittest discover -s research/experiments/select-db/fn-param-postcondition-ladder -p 'test_run.py'
+
+      - name: Download both released compilers through Whitefoot-kit
+        run: |
+          make compiler
+          printf '%s\n' 'release = wf-3adedae9bb1a' > "$RUNNER_TEMP/fnparam-formal.pin"
+          make compiler PIN="$RUNNER_TEMP/fnparam-formal.pin"
+
+      # These checks emit no executable and need no LLVM installation.
+      # Compiler rejections are comparison data; an invalid experiment fails.
+      - name: Record every ladder step with both compilers
+        run: |
+          python3 -B research/experiments/select-db/fn-param-postcondition-ladder/run.py \
+            --cases research/experiments/select-db/fn-param-postcondition-ladder/cases.json \
+            --compiler wf-af7665be672d af7665be672d29912d878dd5da8c3932bb6f296c build/whitefoot/wf-af7665be672d \
+            --compiler wf-3adedae9bb1a 3adedae9bb1a9028e0afd95d2776e5330db4abc1 build/whitefoot/wf-3adedae9bb1a \
+            --output "$RUNNER_TEMP/fnparam-ladder" \
+            --timeout 60
+
+      - name: Preserve all comparison rows and complete diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: select-db-fnparam-ladder-${{ github.sha }}
+          path: ${{ runner.temp }}/fnparam-ladder
+          if-no-files-found: warn
