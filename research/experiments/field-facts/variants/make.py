@@ -207,12 +207,45 @@ for name, edits in prepared.items():
         (directory / files[key]).write_text(source)
     print(name, "ok")
 
-for name, first in (("s1_scanner_sorts_first", "scanner.wf"),):
+
+probe_block = """        if syntax^.index == 0_u64 {
+          let room = 5_u64 - syntax^.probe;
+          let count = imin(room, taken);
+          for (index in 0_u64..count) {
+            let source = at + index;
+            let target = syntax^.probe + index;
+            set syntax^.word[target] = input^[source];
+          }
+          set syntax^.probe = syntax^.probe + count;
+        }
+"""
+min2 = "        let taken = imin(available, syntax^.remaining);\n        let next = at + taken;\n"
+min2_if = "        let taken = available;\n        if syntax^.remaining < available {\n          set taken = syntax^.remaining;\n        }\n        let next = at + taken;\n"
+scanner_edits = {
+    "k1_no_probe_copy": lambda s: s.replace(probe_block, ""),
+    "k2_explicit_min_phase2": lambda s: s.replace(min2, min2_if),
+    "k3_no_copy_loop_keep_probe": lambda s: s.replace("""          for (index in 0_u64..count) {
+            let source = at + index;
+            let target = syntax^.probe + index;
+            set syntax^.word[target] = input^[source];
+          }
+""", ""),
+    "k4_next_after_copy": lambda s: s.replace(min2, "        let taken = imin(available, syntax^.remaining);\n").replace("        set at = next;\n        continue @scan;", "        set at = at + taken;\n        continue @scan;", 1),
+    "s1_scanner_sorts_first": lambda s: s,
+}
+
+for name, edit in scanner_edits.items():
+    first = "scanner.wf"
     directory = out / name
     shutil.copytree(root / "firn", directory / "firn")
     for entry in root.resolve().iterdir():
         if entry.name not in ("firn", ".git", "build"):
             (directory / entry.name).symlink_to(entry)
     package = directory / "firn" / "persistence"
-    (package / first).rename(package / ("aaa-" + first))
+    original = (package / first).read_text()
+    changed = edit(original)
+    if name != "s1_scanner_sorts_first" and changed == original:
+        raise ValueError(f"{name}: patch did not change the scanner")
+    (package / first).unlink()
+    (package / ("aaa-" + first)).write_text(changed)
     print(name, "ok")
