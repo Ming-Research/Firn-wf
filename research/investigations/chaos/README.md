@@ -10,15 +10,19 @@ is killed and restarted? Run the same seeded workload separately against
 firn, Redis 7.2.16, Valkey, Dragonfly, and Garnet. This is a correctness
 experiment, not a throughput comparison or a power-loss simulation.
 
-The owner's proposed acceptance is 86,400 seconds on the i9-14900K, zero
+The owner's proposed acceptance is 86,400 wall-clock seconds on the i9-14900K, zero
 unrequested firn exits, zero inconsistencies, and zero lost acknowledged
-writes. An injected SIGKILL is not an unrequested crash. A missing server,
+writes, with checks consuming at most 10% of reported wall time. Report actual
+workload time separately; 24 hours does not mean 24 hours of active traffic.
+An injected SIGKILL is not an unrequested crash. A missing server,
 skipped storage fault, incomplete history/check, failed restart, lack of
 successful writes, or shorter run cannot establish that acceptance. First
 run the 120-second hosted smoke mode, inspect its time and coverage, then
-choose the long-run scale. The criterion and workload below were written
-before the first measurement; the first hosted observation is recorded
-under Results.
+choose the long-run scale. The original zero-exit, zero-inconsistency,
+zero-loss criterion and workload were written before the first measurement.
+The check-time budget and revised scheduling are follow-up requirements
+from review of the short run, not predictions made before that run. The
+first hosted observation is recorded under Results.
 
 **Known expected failure:** before [append before reply, Firn-wf#97](https://github.com/Ming-Research/Firn-wf/pull/97)
 lands, firn can reply before its AOF record reaches the file. SIGKILL can
@@ -52,14 +56,31 @@ eviction, deletion, or acknowledged-data retirement in this workload.
 
 Each epoch uses fresh key names, so histories in memory are bounded. Closed
 epochs remain in the server and their independently checked expectations
-remain outside the faulty filesystem. Recheck all closed epochs after each
-restart and at the end; never reset the database between epochs. Histories
-grow on disk, and rechecking accumulated data costs more as the run grows.
-Record elapsed workload/check time and operation counts; this is no fixed
+remain outside the faulty filesystem. After each persistent-server restart,
+check epochs created since the last full recheck, including the newest closed
+epoch. Only the current epoch's keys are mutated by traffic. The first
+checkpoint is full; later checkpoints become full when time since the last
+full check finished reaches the greater of 60 seconds and 19 times its
+measured duration. A full check replaces that restart's incremental check.
+Always finish with a full check, unless the last in-loop full check already
+covered every closed epoch and no further traffic occurred. Loss of older
+data remains a failure, detected at the next full check rather than necessarily
+the immediately following restart. Never reset the database between epochs.
+Record wall, workload, and check time and operation counts; this is no fixed
 throughput promise. Provision space for both AOF and history before a day
 run; the workflow's larger sparse fault device is not the existing 64 MiB
 device's default. Unexpected exhaustion of artifact storage is a harness
 failure, never a clean result.
+
+The deadline is harness-start time plus `CHAOS_SECONDS`, including startup.
+No new epoch begins at or after that deadline. An already-started fault cycle
+may complete its bounded three-second fresh-acknowledgment wait, kill, restart,
+and mandatory final verification afterward. Report actual wall time including
+this tail, workload time while writers may issue requests, and complete
+checkpoint time; joins, restart, and cleanup are separate wall-time overhead.
+Do not pad an early failure to the requested duration. A day run exceeding
+the 10% check-time budget fails that acceptance even if its functional checks
+pass. The following estimate is a forecast, not execution evidence.
 
 Seeded epochs last 15–25 seconds of active traffic. One in sixteen requests
 is sent and its connection closed before reading a reply; reconnect before
@@ -91,11 +112,15 @@ times, complete RESP replies (including transaction queue replies), client,
 epoch, token, and outcome. Also record fault intentions and actual times,
 startup command and executable identity, configuration, restart results,
 snapshots, checker findings, and skipped coverage. Keep these on healthy
-storage. Repeated identical snapshot replies reference an immutable file
-containing the complete RESP bytes; changed replies receive a new file.
-This lossless representation avoids storing the accumulated dataset again
-after every restart. Each request still has its own timestamps and reply
-reference. A complete successful APPEND or EXEC reply is an acknowledgment;
+storage. Each checked epoch logs one compact SNAPSHOT summary: key count and
+a 64-bit standard-library hash of the observed journal/register/counter values.
+The digest is diagnostic only: exact values and the independent checker decide
+correctness, so a hash collision cannot conceal a mismatch. Dump complete
+observed values and RESP bytes only on mismatch or malformed input. Retain
+one exact independently validated baseline per epoch as the continuity
+check's expected input, rather than repeatedly dumping clean observations.
+Each request still records its own timestamps and complete reply.
+A complete successful APPEND or EXEC reply is an acknowledgment;
 partial frames and deliberately unread replies remain unknown, never
 successes and never definite non-execution. Do not retry an ambiguous token.
 
@@ -238,7 +263,7 @@ CHAOS_SERVER=firn CHAOS_SECONDS=120 CHAOS_SEED=1 \
 ```
 
 The all-server day comparison requires five sequential jobs, each with its
-own 86,400-second requested duration, and a reserved 14900K. Inspect the
+own 86,400-second wall-clock budget, and a reserved 14900K. Inspect the
 smoke artifacts before scheduling it. The optional device size is 32 GiB
 in this workflow; the existing fault suite retains its 64 MiB default.
 
@@ -253,8 +278,8 @@ seed 1, 32 clients, and the fault device, separately for firn and Redis
 this is not the proposed i9-14900K day acceptance. Both jobs built the
 harness and passed its 24 tests (14 chaos fixtures and 10 shared support
 tests). These artifacts provide execution evidence for that revision;
-subsequent corrections described below remain unverified until another CI
-run.
+later observations below establish subsequent corrections only on the
+revisions they name.
 
 | Observed workload coverage | firn | Redis 7.2.16 |
 | --- | ---: | ---: |
@@ -318,7 +343,9 @@ record. An otherwise identical no-EIO control shows whether EIO is needed
 to reproduce the observation. No causal attribution or Redis defect claim
 is made before those observations exist.
 
-### Second hosted observation: loss attribution, 2026-10-13
+### Second hosted observation: loss attribution
+
+Observation date: 2026-10-13.
 
 [Actions run 38442238079](https://github.com/Ming-Research/Firn-wf/actions/runs/38442238079)
 ran revision `842392bd55455a42a86526526e52572248123ace` with the same
@@ -411,8 +438,10 @@ resolve the storage-versus-Redis attribution.
 The classifier correction carries structured lost-write keys/tokens rather
 than parsing diagnostic text. It logs invocation, acknowledgment, signal,
 age, nominal threshold, and EIO overlap evidence alongside each loss. The
-checker predicate and error count are unchanged. These new regression
-cases have not run on the corrected worktree:
+checker predicate and error count are unchanged. These three regression
+cases compiled and passed with all 34 chaos self-tests in
+[gate run 38446017652](https://github.com/Ming-Research/Firn-wf/actions/runs/38446017652)
+at revision `6cd2b51`:
 
 | Test | Wrong result it detects |
 | --- | --- |
@@ -424,9 +453,11 @@ An independent read-only review covered all four changed files against the
 second hosted revision, including the structured-finding consumers, design
 commitments, and original artifacts. It found one stale test-status sentence,
 which was corrected to distinguish the seven already validated cases from
-the three new classifier cases. No static findings remain. Compilation,
-execution of these three cases, and a corrected runtime report remain
-unverified; the original artifacts are retained unchanged.
+the three new classifier cases. Gate run 38446017652 subsequently compiled
+and passed all 34 chaos self-tests at `6cd2b51`, including those three cases.
+A real SIGKILL exercising the corrected classifier remains unverified:
+hosted run 38442238079 predates that correction. The original artifacts are
+retained unchanged.
 
 ### Follow-up corrections to the first run (validated by the second run)
 
@@ -456,8 +487,9 @@ not delay it. The measured count of signals within 10 ms of an acknowledgment
 is coverage evidence, not a scheduling guarantee or a change to acceptance.
 
 The following seven regression cases passed in each job of the second
-hosted run. The later per-loss classifier correction remains unexecuted
-until its own CI run:
+hosted run. The later per-loss classifier correction compiled and passed its
+three cases in gate run 38446017652 at `6cd2b51`; its real-kill runtime report
+remains unverified:
 
 | Test | Wrong result it detects |
 | --- | --- |
@@ -515,8 +547,9 @@ evidence and design approval remain unverified.
 The 14 original chaos tests below passed in each job of the first hosted run.
 The existing durability negative test remains in the network gate, which
 these chaos artifacts do not establish. The seven first-run correction
-cases above passed in the second run; the three new classifier cases
-remain unexecuted until CI. The pure tests
+cases above passed in the second run; the three classifier cases compiled
+and passed in gate run 38446017652 at `6cd2b51` (34 chaos self-tests total).
+The corrected classifier still lacks a real-kill run. The pure tests
 run without starting a database; shared process-support tests remain wired.
 
 | Test | Discriminating case |
@@ -535,17 +568,85 @@ run without starting a database; shared process-support tests remain wired.
 | `protocol_rejects_partial_transactions_bad_set_and_unexpected_errors` | Partial EXEC, failed SET inside an apparently successful transaction, or MISCONF outside the injected disk window. |
 | `archive_parser_rejects_missing_truncated_and_extra_history` | Missing header, omitted event, or extra event cannot produce a clean check. |
 | `retained_snapshot_detects_a_previously_witnessed_unknown_effect_disappearing` | Two individually permitted unknown histories cannot conceal a previously observed effect disappearing. |
-| `snapshot_reply_references_preserve_changes_and_reject_missing_or_stale_files` | Changed reply gets distinct bytes; a missing referenced file or stale index cannot silently overwrite history. |
+| Former `snapshot_reply_references_preserve_changes_and_reject_missing_or_stale_files` (retired by the compact-summary change) | Covered the former immutable-reply reference format; replaced by mismatch-only evidence coverage below. |
 
 The workflow also requires an invalid device size to fail before device
 operations, verifies the saved ownership path, and reuses the device's
 existing failure/writeback self-checks.
 
+### Day-run check and artifact budget
+
+The 120-second hosted run completed six epochs, approximately one every
+20 seconds, and checks cost approximately 8 ms per checked epoch (review
+of run 38442238079). Rechecking every old epoch after every restart costs
+`0.008 * N * (N + 1) / 2` seconds. Solving approximately
+`86400 = 20 * N + 0.008 * N * (N + 1) / 2` gives about 2,780 epochs,
+about 36% wall time in checks and about 15.4 hours of workload before other
+overhead. The review estimated 2.4 GB of repeated SNAPSHOT lines plus
+5.6 GB of OP lines, or roughly 8–9 GB of history per server. That scheme
+does not meet the revised time budget.
+
+With the revised schedule, a late full check of roughly 4,100 epochs costs
+about 33 seconds and is followed by at least roughly 620 seconds before
+another full check is due. The 19-times interval targets approximately 5%
+full-check cost, reserving headroom for incremental checks. At the observed
+cadence, a cycle then accumulates about 31 new epochs; incremental checks
+read those new epochs, not the entire old dataset. Including the final full
+check, a forecast of roughly 570,000–600,000 checked epochs costs about
+4,600–4,800 seconds, or 5–6% of 24 hours. Startup/restart overhead further
+reduces workload time; report its actual value rather than promising active
+hours. A slower or nonlinear checker can overturn this forecast, which is
+why the report rejects a day run above 10% check time.
+
+At at most roughly 160 bytes per compact summary, 600,000 summaries occupy
+about 0.1 GB rather than 2.4 GB. Keeping the review's conservative 5.6 GB OP
+estimate gives about 5.7 GB of clean history per server, plus exact baseline
+files, epoch archives, server logs, and fault records. Request logs remain
+linear in duration and paced request count (32 clients / 250 ms gives at
+most 128 requests per second, approximately 11.1 million per day plus the
+bounded final fault-cycle tail). Nothing truncates request evidence. Failed
+checks additionally dump full mismatching observations, so provision extra
+space for failures. These estimates reuse short-run numbers; they are not
+a measured day result or a fixed byte cap under arbitrary configuration.
+
+The new fixtures below are pending CI compilation and execution; the gate's
+34-test evidence applies to `6cd2b51`, before this scheduler change.
+
+| Test | Wrong result it detects |
+| --- | --- |
+| `periodic_full_check_detects_corruption_in_an_old_epoch` | Old acknowledged data disappears after a full check, incremental checks skip it, and disabling scheduled full checks conceals the loss. |
+| `final_full_check_is_not_repeated_and_interval_tracks_cost` | A terminal full check is omitted after an incremental check, duplicated after a complete full check, or the adaptive interval ignores measured cost. |
+| `snapshot_dumps_only_failures_and_preserves_raw_evidence` | A valid 4096-byte journal expands the production day-time summary beyond 160 bytes or leaks full values; clean snapshots retain raw dumps; or a mismatch loses complete observed RESP/state evidence. |
+| `phase_timings_preserve_partial_work_without_join_time` | Unwinding erases elapsed work/check time, or completed workload timing includes later join overhead. |
+| `day_check_budget_rejects_more_than_ten_percent_but_not_smoke_or_boundary` | A requested day run above 10% check time passes, the exact 10% boundary fails, or the day-only budget rejects a short smoke. |
+
+The old snapshot-reference fixture is retired because clean repeated RESP
+payloads are no longer retained. Its replacement must show that clean checks
+produce only a summary while mismatches retain the complete observed bytes.
+The exact-baseline continuity fixture remains: a hash alone cannot justify
+unknown-effect continuity. A scheduled-full regression must corrupt an old
+epoch after its first full check, show that the next incremental range skips
+it, and then observe LOST through the independent checker at the scheduled
+full check. It must fail if periodic full checks are disabled.
+
 ### Remaining experimental limits
 
-Accumulated checkpoint reads and model work grow quadratically in the
-number of epochs. Reply payloads are retained by reference to limit artifact
-growth, but actual day-run resource use still needs the short-run evidence.
+The completion-review follow-up changed the harness, workflow wording,
+this record, and the existing chaos design node. A fresh read-only
+gpt-6.1-sol review covered all four files against `6cd2b51`, their consumers,
+the project checklist, and relevant design ancestors and persistence/transaction
+nodes. It found one misleading prior-criterion sentence; that sentence now
+distinguishes the original functional criterion from the later resource budget.
+No unresolved static findings remain. Four workflow shell-block copies passed
+`bash -n`, both inline Python payload copies passed `python3 -m py_compile`,
+and `git diff --check` passed. Those commands executed no workload scripts.
+The design lint, Rust compilation, five revised/new fixtures, smoke run, and
+day acceptance remain pending CI. No gate target, Whitefoot pin, submodule,
+production server, or approval log changed.
+
+The revised scheduler, compact summaries, and timing report still need CI
+compilation, self-test execution, and a new smoke run. Actual day-run resource
+use remains unmeasured; the forecast below does not establish acceptance.
 Distinct failure deduplication uses additional memory in an already-failed
 run. The experiment measures process crashes and storage EIO, not power
 loss, ENOSPC, arbitrary mixed-command linearizability, or a throughput target.

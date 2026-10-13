@@ -14,7 +14,7 @@ on:
         required: true
         default: firn,redis
       seconds:
-        description: Seconds per server (120 for smoke, 86400 for 14900K acceptance)
+        description: Wall-clock deadline seconds per server (120 smoke, 86400 on 14900K; final verification may finish afterward)
         type: number
         required: true
         default: 120
@@ -69,9 +69,9 @@ jobs:
           seconds_text = os.environ['SECONDS_REQUESTED']
           seed_text = os.environ['SEED']
           if not re.fullmatch(r'[0-9]+', seconds_text) or not 1 <= int(seconds_text) <= 86400:
-              raise SystemExit('seconds must be an integer from 1 through 86400')
+              raise SystemExit('seconds must be an integer wall-clock deadline from 1 through 86400 per server')
           if os.environ['CHAOS_RUNNER'] == 'github' and int(seconds_text) > 18000:
-              raise SystemExit('hosted smoke runs are limited to 18000 seconds; select 14900k for 24 hours')
+              raise SystemExit('hosted wall-clock deadlines are limited to 18000 seconds; select 14900k for 86400 wall-clock seconds')
           if not re.fullmatch(r'[0-9]+', seed_text) or int(seed_text) > 2**64 - 1:
               raise SystemExit('seed must be an unsigned 64-bit integer')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
@@ -83,7 +83,8 @@ jobs:
     name: chaos ${{ matrix.server }} (${{ inputs.runner }})
     runs-on: ${{ inputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
     # Hosted jobs have a six-hour platform ceiling; select caps their run.
-    # A self-hosted server gets 24 hours plus one hour for build/check/upload.
+    # A self-hosted server gets a 24-hour wall-clock deadline plus one hour
+    # for setup, mandatory final verification after the deadline, and upload.
     timeout-minutes: 1500
     strategy:
       fail-fast: false
@@ -112,7 +113,8 @@ jobs:
           mkdir "$CHAOS_OUT"
           {
             echo "revision=$GITHUB_SHA"
-            echo "server=$CHAOS_SERVER seconds=$CHAOS_SECONDS seed=$CHAOS_SEED clients=$CHAOS_CLIENTS"
+            echo "server=$CHAOS_SERVER wall_clock_deadline_seconds=$CHAOS_SECONDS seed=$CHAOS_SEED clients=$CHAOS_CLIENTS"
+            echo 'duration=wall-clock deadline includes workload and checks; mandatory final verification may finish afterward; inspect workload/check time in the harness report'
             echo "runner=$RUNNER_NAME environment=$RUNNER_ENVIRONMENT"
             echo "firn_append_before_reply=$CHAOS_FIRN_APPEND_BEFORE_REPLY"
             echo 'acceptance=not established by infrastructure setup; inspect the harness report'
@@ -275,7 +277,7 @@ jobs:
             echo '```text'
             cat "$CHAOS_OUT/infrastructure.txt"
             echo '```'
-            echo 'The artifact contains the complete harness report and history. A skipped server or disk fault leaves the full comparison incomplete.'
+            echo 'The artifact reports the per-server wall-clock deadline, workload time, check time, and complete history. Mandatory final verification may finish after the deadline. A skipped server or disk fault leaves the full comparison incomplete.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4

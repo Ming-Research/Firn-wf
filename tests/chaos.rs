@@ -6,8 +6,10 @@ mod chaos_check;
 mod support;
 
 use chaos_check::{Event, Findings, KEYS, Kind, LostWrite, Outcome, State};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
@@ -824,18 +826,148 @@ fn prepare_kill_with_limit(
     (fresh, disk_cycle)
 }
 
-struct StopOnUnwind<'a>(&'a AtomicBool);
-impl Drop for StopOnUnwind<'_> {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
-    }
-}
-
 #[derive(Clone)]
 struct RunPlan {
     seconds: u64,
     device_configured: bool,
     fault_skip_reason: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CheckKind {
+    Full,
+    Incremental,
+    Volatile,
+}
+impl CheckKind {
+    fn index(self) -> usize {
+        match self {
+            Self::Full => 0,
+            Self::Incremental => 1,
+            Self::Volatile => 2,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CheckPlan {
+    first: usize,
+    last: usize,
+    kind: CheckKind,
+}
+struct CheckRun {
+    finished: Instant,
+    duration: Duration,
+}
+#[derive(Default)]
+struct CheckScheduler {
+    last_full_epoch: usize,
+    last_full_finished: Option<Instant>,
+    last_full_duration: Duration,
+}
+impl CheckScheduler {
+    fn interval(&self) -> Duration {
+        self.last_full_duration
+            .max(Duration::from_millis(1))
+            .saturating_mul(19)
+            .max(Duration::from_secs(60))
+    }
+    fn next(&self, newest: usize, now: Instant) -> CheckPlan {
+        let full = self.last_full_finished.is_none_or(|finished| {
+            now.saturating_duration_since(finished) >= self.interval()
+        });
+        CheckPlan {
+            first: if full { 1 } else { self.last_full_epoch + 1 },
+            last: newest,
+            kind: if full {
+                CheckKind::Full
+            } else {
+                CheckKind::Incremental
+            },
+        }
+    }
+    fn finish_plan(&self, newest: usize) -> Option<CheckPlan> {
+        (newest > 0 && self.last_full_epoch < newest).then_some(CheckPlan {
+            first: 1,
+            last: newest,
+            kind: CheckKind::Full,
+        })
+    }
+    fn completed(&mut self, plan: CheckPlan, run: &CheckRun) {
+        if plan.kind == CheckKind::Full {
+            self.last_full_epoch = plan.last;
+            self.last_full_finished = Some(run.finished);
+            self.last_full_duration = run.duration.max(Duration::from_millis(1));
+        }
+    }
+}
+
+#[derive(Default)]
+struct Timings {
+    workload: Duration,
+    check: Duration,
+    checks_started: [usize; 3],
+    checks_completed: [usize; 3],
+    checked_epochs: [usize; 3],
+}
+impl Timings {
+    fn fraction(&self, wall: Duration) -> f64 {
+        if wall.is_zero() {
+            0.0
+        } else {
+            self.check.as_secs_f64() / wall.as_secs_f64()
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum TimedPhase {
+    Workload,
+    Check(CheckKind),
+}
+struct PhaseTimer<'a> {
+    shared: &'a Shared,
+    phase: TimedPhase,
+    started: Instant,
+    finished: bool,
+}
+impl<'a> PhaseTimer<'a> {
+    fn start(shared: &'a Shared, phase: TimedPhase, started: Instant) -> Self {
+        if let TimedPhase::Check(kind) = phase {
+            locked(&shared.timings).checks_started[kind.index()] += 1;
+        }
+        Self {
+            shared,
+            phase,
+            started,
+            finished: false,
+        }
+    }
+    fn finish_at(&mut self, finished: Instant, complete: bool) {
+        if self.finished {
+            return;
+        }
+        // Stop issuing requests before recording workload time, including on
+        // unwind. Joining clients and all later work lie outside this interval.
+        if matches!(self.phase, TimedPhase::Workload) {
+            self.shared.stop.store(true, Ordering::Release);
+        }
+        let elapsed = finished.saturating_duration_since(self.started);
+        let mut timings = locked(&self.shared.timings);
+        match self.phase {
+            TimedPhase::Workload => timings.workload += elapsed,
+            TimedPhase::Check(kind) => {
+                timings.check += elapsed;
+                if complete {
+                    timings.checks_completed[kind.index()] += 1;
+                }
+            }
+        }
+        self.finished = true;
+    }
+}
+impl Drop for PhaseTimer<'_> {
+    fn drop(&mut self) {
+        self.finish_at(Instant::now(), false);
+    }
 }
 
 struct Shared {
@@ -850,6 +982,7 @@ struct Shared {
     fault_coverage: Mutex<Coverage>,
     server_failures: Mutex<Vec<StartupFailure>>,
     run_plan: Mutex<Option<RunPlan>>,
+    timings: Mutex<Timings>,
     ack_progress: Mutex<AckProgress>,
     ack_changed: Condvar,
     acks: AtomicUsize,
@@ -871,6 +1004,7 @@ impl Shared {
             fault_coverage: Mutex::new(Coverage::default()),
             server_failures: Mutex::new(Vec::new()),
             run_plan: Mutex::new(None),
+            timings: Mutex::new(Timings::default()),
             ack_progress: Mutex::new(AckProgress::default()),
             ack_changed: Condvar::new(),
             acks: AtomicUsize::new(0),
@@ -1089,77 +1223,74 @@ fn load_archive(reader: impl BufRead, origin: Instant) -> Result<Vec<Event>, Str
     }
     Ok(events)
 }
-/// Lossless content references avoid writing every unchanged closed epoch again.
-/// The index is metadata, never a replacement for reading/validating its bytes.
-fn retain_reply(out: &Path, epoch: usize, bytes: &[u8]) -> io::Result<PathBuf> {
-    let index_path = out.join(format!("snapshot-reply-{epoch}.index"));
-    let previous = match fs::read_to_string(&index_path) {
-        Ok(value) => Some(
-            value
-                .parse::<u64>()
-                .map_err(|_| invalid("bad snapshot reply index"))?,
-        ),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    let name = |index| PathBuf::from(format!("snapshot-reply-{epoch}-{index}.resp"));
-    if let Some(index) = previous {
-        let path = name(index);
-        // Missing/corrupt metadata never silently falls back to a clean history.
-        if fs::read(out.join(&path))? == bytes {
-            return Ok(path);
-        }
-    }
-    let index = previous.map_or(Ok(0), |n| {
-        n.checked_add(1)
-            .ok_or_else(|| invalid("snapshot index overflow"))
-    })?;
-    let relative = name(index);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(out.join(&relative))?;
-    file.write_all(bytes)?;
-    file.flush()?;
-    if fs::read(out.join(&relative))? != bytes {
-        return Err(invalid("stored snapshot reply differs"));
-    }
-    fs::write(index_path, index.to_string())?;
-    Ok(relative)
+struct ObservedSnapshot {
+    state: State,
+    request: Vec<u8>,
+    raw: Vec<u8>,
 }
-fn snapshot(c: &Config, shared: &Shared, port: u16, epoch: usize) -> State {
-    let mut stream = connect(port).expect("snapshot connection");
-    let names: Vec<String> = (0..KEYS).flat_map(|key| keys(epoch, key)).collect();
-    let mut args = vec!["MGET"];
-    args.extend(names.iter().map(String::as_str));
-    let bytes = resp(&args);
-    let invoked = Instant::now();
-    stream.write_all(&bytes).expect("snapshot MGET");
-    let mut raw = Vec::new();
-    let parsed = frame(&mut stream, &mut raw, 0);
-    let reply_ref = retain_reply(&c.out, epoch, &raw).expect("retain complete snapshot reply");
-    note(
-        &shared.wire,
-        shared.origin,
-        &format!(
-            "SNAPSHOT epoch={epoch} begin={} end={} request={} reply_ref={}",
-            invoked.duration_since(shared.origin).as_nanos(),
-            shared.origin.elapsed().as_nanos(),
-            hex(&bytes),
-            reply_ref.display()
-        ),
-    );
-    let Frame::Array(Some(frames)) = parsed.expect("snapshot RESP") else {
-        panic!("snapshot MGET is not an array");
+
+fn snapshot_digest(state: &State) -> u64 {
+    // Diagnostic only: neither model validation nor continuity uses this hash.
+    let mut digest = DefaultHasher::new();
+    (&state.logs, &state.sets, &state.counters).hash(&mut digest);
+    digest.finish()
+}
+
+fn dump_snapshot(
+    out: &Path,
+    epoch: usize,
+    request: &[u8],
+    raw: &[u8],
+    state: Option<&State>,
+    reason: &str,
+) -> io::Result<PathBuf> {
+    static NEXT_DUMP: AtomicUsize = AtomicUsize::new(0);
+    let id = NEXT_DUMP.fetch_add(1, Ordering::Relaxed);
+    let stem = out.join(format!("snapshot-failure-{epoch}-{id}"));
+    fs::write(stem.with_extension("request"), request)?;
+    fs::write(stem.with_extension("resp"), raw)?;
+    fs::write(stem.with_extension("txt"), format!("{reason}\nstate={state:?}\n"))?;
+    Ok(stem)
+}
+
+fn retain_failed_snapshot(
+    out: &Path,
+    epoch: usize,
+    observed: &ObservedSnapshot,
+    findings: &Findings,
+    baseline_mismatch: bool,
+) -> io::Result<Option<PathBuf>> {
+    if findings.lost.is_empty() && findings.inconsistent.is_empty() && !baseline_mismatch {
+        return Ok(None);
+    }
+    dump_snapshot(
+        out,
+        epoch,
+        &observed.request,
+        &observed.raw,
+        Some(&observed.state),
+        &format!("baseline_mismatch={baseline_mismatch} findings={findings:?}"),
+    )
+    .map(Some)
+}
+
+fn snapshot_state(parsed: Frame) -> Result<State, String> {
+    let Frame::Array(Some(frames)) = parsed else {
+        return Err("snapshot MGET is not an array".into());
     };
-    assert_eq!(frames.len(), KEYS * 3, "snapshot MGET arity");
+    if frames.len() != KEYS * 3 {
+        return Err("snapshot MGET arity".into());
+    }
     let values: Vec<Option<String>> = frames
         .into_iter()
         .map(|f| match f {
-            Frame::Bulk(bytes) => bytes.map(|b| String::from_utf8(b).expect("snapshot UTF8")),
-            other => panic!("snapshot MGET element {other:?}"),
+            Frame::Bulk(bytes) => bytes
+                .map(String::from_utf8)
+                .transpose()
+                .map_err(|error| format!("snapshot UTF8: {error}")),
+            other => Err(format!("snapshot MGET element {other:?}")),
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     let mut state = State {
         logs: Vec::new(),
         sets: Vec::new(),
@@ -1169,22 +1300,56 @@ fn snapshot(c: &Config, shared: &Shared, port: u16, epoch: usize) -> State {
         state.logs.push(group[0].clone().unwrap_or_default());
         state.sets.push(group[1].clone());
         state.counters.push(
-            group[2]
-                .as_ref()
-                .map(|v| v.parse().expect("counter must be integer")),
+            group[2].as_ref().map(|v| v.parse::<i64>())
+                .transpose().map_err(|error| format!("snapshot counter: {error}"))?,
         );
     }
-    let latest = c.out.join(format!("snapshot-{epoch}.txt"));
-    let serialized = format!("{state:?}");
-    match fs::read_to_string(&latest) {
-        Ok(previous) if previous == serialized => {}
-        Ok(_) => fs::write(&latest, serialized).expect("replace latest snapshot"),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::write(&latest, serialized).expect("write latest snapshot")
+    Ok(state)
+}
+
+fn snapshot_summary(epoch: usize, state: Option<&State>, begin_ns: u128, end_ns: u128) -> String {
+    let digest = state
+        .map(|state| format!("{:016x}", snapshot_digest(state)))
+        .unwrap_or_else(|| "unavailable".into());
+    format!(
+        "SNAPSHOT e={epoch} keys={} digest=default-hasher64:{digest} begin={begin_ns} end={end_ns}",
+        KEYS * 3,
+    )
+}
+
+fn snapshot(c: &Config, shared: &Shared, port: u16, epoch: usize) -> ObservedSnapshot {
+    let names: Vec<String> = (0..KEYS).flat_map(|key| keys(epoch, key)).collect();
+    let mut args = vec!["MGET"];
+    args.extend(names.iter().map(String::as_str));
+    let bytes = resp(&args);
+    let invoked = Instant::now();
+    let mut raw = Vec::new();
+    let parsed = (|| {
+        let mut stream = connect(port)?;
+        stream.write_all(&bytes)?;
+        frame(&mut stream, &mut raw, 0)
+    })()
+    .map_err(|error: io::Error| error.to_string())
+    .and_then(snapshot_state);
+    let ended = Instant::now();
+    note(
+        &shared.wire,
+        shared.origin,
+        &snapshot_summary(
+            epoch,
+            parsed.as_ref().ok(),
+            invoked.duration_since(shared.origin).as_nanos(),
+            ended.duration_since(shared.origin).as_nanos(),
+        ),
+    );
+    match parsed {
+        Ok(state) => ObservedSnapshot { state, request: bytes, raw },
+        Err(error) => {
+            dump_snapshot(&c.out, epoch, &bytes, &raw, None, &error)
+                .expect("retain malformed snapshot evidence");
+            panic!("snapshot: {error}");
         }
-        Err(error) => panic!("read latest snapshot: {error}"),
     }
-    state
 }
 
 fn matches_validated_snapshot(previous: &str, current: &State) -> bool {
@@ -1410,11 +1575,12 @@ fn checkpoint(
     c: &Config,
     shared: &Shared,
     port: u16,
-    epochs: std::ops::RangeInclusive<usize>,
-) -> usize {
+    plan: CheckPlan,
+) -> CheckRun {
     let begin = Instant::now();
+    let mut timer = PhaseTimer::start(shared, TimedPhase::Check(plan.kind), begin);
     let mut failures = 0;
-    for epoch in epochs {
+    for epoch in plan.first..=plan.last {
         let events = load_archive(
             BufReader::new(
                 File::open(c.out.join(format!("epoch-{epoch}.tsv"))).expect("open epoch archive"),
@@ -1422,15 +1588,18 @@ fn checkpoint(
             shared.origin,
         )
         .expect("validate complete archived history");
-        let state = snapshot(c, shared, port, epoch);
-        let Findings { lost, inconsistent } = chaos_check::check(&events, &state, Instant::now());
+        let observed = snapshot(c, shared, port, epoch);
+        let state = &observed.state;
+        let findings = chaos_check::check(&events, state, Instant::now());
         let baseline = c.out.join(format!("validated-{epoch}.txt"));
         let serialized = format!("{state:?}");
+        let mut baseline_mismatch = false;
         if baseline.exists() {
             if !matches_validated_snapshot(
                 &fs::read_to_string(&baseline).expect("read validated state"),
-                &state,
+                state,
             ) {
+                baseline_mismatch = true;
                 unique_problem(
                     shared,
                     format!("CHANGED-{epoch}"),
@@ -1440,9 +1609,14 @@ fn checkpoint(
                 );
                 failures += 1;
             }
-        } else if lost.is_empty() && inconsistent.is_empty() {
+        } else if findings.lost.is_empty() && findings.inconsistent.is_empty() {
+            // This first independently validated exact state is expectation input
+            // for unknown-effect continuity, not a repeated observed-state dump.
             fs::write(&baseline, serialized).expect("archive first independently validated state");
         }
+        retain_failed_snapshot(&c.out, epoch, &observed, &findings, baseline_mismatch)
+            .expect("retain failing snapshot evidence");
+        let Findings { lost, inconsistent } = findings;
         for finding in lost {
             let attribution = classify_lost_write(
                 &c.server,
@@ -1463,16 +1637,22 @@ fn checkpoint(
                 &format!("INCONSISTENT epoch={epoch} {finding}"),
             );
         }
+        locked(&shared.timings).checked_epochs[plan.kind.index()] += 1;
     }
     note(
         &shared.wire,
         shared.origin,
         &format!(
-            "CHECK seconds={} findings={failures}",
-            begin.elapsed().as_secs_f64()
+            "CHECK kind={:?} first={} last={} seconds={} findings={failures}",
+            plan.kind, plan.first, plan.last, begin.elapsed().as_secs_f64()
         ),
     );
-    failures
+    let finished = Instant::now();
+    timer.finish_at(finished, true);
+    CheckRun {
+        finished,
+        duration: finished.duration_since(begin),
+    }
 }
 
 fn execute(c: &Config, shared: &Shared) -> String {
@@ -1568,12 +1748,12 @@ fn execute(c: &Config, shared: &Shared) -> String {
         Ok(child) => child,
         Err(failure) => return record_startup_failure(shared, failure),
     });
-    let deadline = Instant::now() + Duration::from_secs(c.seconds);
+    let deadline = shared.origin + Duration::from_secs(c.seconds);
     let mut schedule = c.seed;
     let mut epoch = 0;
     let mut disks = 0;
-    let mut workload_seconds = 0.0;
-    loop {
+    let mut checks = CheckScheduler::default();
+    while Instant::now() < deadline {
         epoch += 1;
         locked(&shared.fault_coverage).epochs_started += 1;
         shared.stop.store(false, Ordering::Release);
@@ -1587,7 +1767,7 @@ fn execute(c: &Config, shared: &Shared) -> String {
             && end.saturating_duration_since(active) >= Duration::from_secs(6);
         let acks_before = shared.acks.load(Ordering::Relaxed);
         let events = std::thread::scope(|scope| {
-            let _stop_on_unwind = StopOnUnwind(&shared.stop);
+            let mut workload = PhaseTimer::start(shared, TimedPhase::Workload, active);
             let handles: Vec<_> = (0..c.clients)
                 .map(|client| {
                     let port = lease.port();
@@ -1648,12 +1828,12 @@ fn execute(c: &Config, shared: &Shared) -> String {
                 );
             }
             shared.stop.store(true, Ordering::Release);
+            workload.finish_at(Instant::now(), true);
             handles
                 .into_iter()
                 .flat_map(|h| h.join().expect("writer panic"))
                 .collect::<Vec<_>>()
         });
-        workload_seconds += active.elapsed().as_secs_f64();
         if shared.acks.load(Ordering::Relaxed) == acks_before {
             problem(
                 shared,
@@ -1672,7 +1852,9 @@ fn execute(c: &Config, shared: &Shared) -> String {
         )
         .expect("archive disk attribution");
         if c.server == "dragonfly" {
-            checkpoint(c, shared, lease.port(), epoch..=epoch);
+            checkpoint(c, shared, lease.port(), CheckPlan {
+                first: epoch, last: epoch, kind: CheckKind::Volatile,
+            });
             kill(
                 child.take().unwrap(),
                 shared,
@@ -1692,22 +1874,30 @@ fn execute(c: &Config, shared: &Shared) -> String {
             Err(failure) => return record_startup_failure(shared, failure),
         });
         if c.server != "dragonfly" {
-            checkpoint(c, shared, lease.port(), 1..=epoch);
+            let plan = checks.next(epoch, Instant::now());
+            let run = checkpoint(c, shared, lease.port(), plan);
+            checks.completed(plan, &run);
         }
         locked(&shared.fault_coverage).epochs_completed += 1;
         note(
             &shared.wire,
             shared.origin,
             &format!(
-                "EPOCH_DONE epoch={epoch} disk={disk_cycle} workload_seconds={workload_seconds}"
+                "EPOCH_DONE epoch={epoch} disk={disk_cycle} workload_seconds={}",
+                locked(&shared.timings).workload.as_secs_f64()
             ),
         );
-        if Instant::now() >= deadline {
-            break;
-        }
     }
     if c.server != "dragonfly" {
-        checkpoint(c, shared, lease.port(), 1..=epoch);
+        // An incremental check crossing the deadline did not revisit old epochs.
+        // A full check already covering this last epoch needs no duplicate pass.
+        if let Some(plan) = checks.finish_plan(epoch) {
+            let run = checkpoint(c, shared, lease.port(), plan);
+            checks.completed(plan, &run);
+        }
+    }
+    if epoch == 0 {
+        problem(shared, "NO_PROGRESS startup consumed the wall-clock budget; no workload epoch started");
     }
     let gaps = locked(&shared.fault_coverage).smoke_gaps(c.seconds, device.enabled);
     for gap in gaps {
@@ -1732,9 +1922,10 @@ fn execute(c: &Config, shared: &Shared) -> String {
         &shared.findings,
         shared.origin,
         &format!(
-            "COVERAGE epochs={epoch} disk_cycles={disks} drops={} acknowledged={} workload_seconds={workload_seconds} elapsed_seconds={}",
+            "COVERAGE epochs={epoch} disk_cycles={disks} drops={} acknowledged={} workload_seconds={} elapsed_seconds={}",
             shared.drops.load(Ordering::Relaxed),
             shared.acks.load(Ordering::Relaxed),
+            locked(&shared.timings).workload.as_secs_f64(),
             shared.origin.elapsed().as_secs_f64()
         ),
     );
@@ -1758,13 +1949,43 @@ fn execute(c: &Config, shared: &Shared) -> String {
 }
 
 fn render_report(shared: &Shared, status: &str, panic: Option<&str>) -> String {
+    render_report_at(shared, status, panic, shared.origin.elapsed())
+}
+
+fn enforce_check_budget(shared: &Shared, wall: Duration) {
+    let long_run = locked(&shared.run_plan)
+        .as_ref()
+        .is_some_and(|p| p.seconds >= 86400);
+    let fraction = locked(&shared.timings).fraction(wall);
+    if long_run && fraction > 0.10 {
+        problem(shared, &format!(
+            "CHECK_BUDGET check_fraction={fraction} exceeds 0.10 of wall time for a requested day run"
+        ));
+    }
+}
+
+fn render_report_at(shared: &Shared, status: &str, panic: Option<&str>, wall: Duration) -> String {
     let mut report = format!(
-        "status={status}\nelapsed_seconds={}\nfindings={}\nacknowledged={}\nconnection_drops={}\npanic={panic:?}\nacceptance=requires_review_of_full_duration_hardware_coverage_and_findings\n",
-        shared.origin.elapsed().as_secs_f64(),
+        "status={status}\nelapsed_seconds={}\nwall_seconds={}\nfindings={}\nacknowledged={}\nconnection_drops={}\npanic={panic:?}\nacceptance=requires_review_of_full_duration_hardware_coverage_and_findings\ndeadline_semantics=wall_clock_budget_no_new_epochs_after_deadline_final_fault_and_verification_may_overrun\n",
+        wall.as_secs_f64(),
+        wall.as_secs_f64(),
         shared.errors.load(Ordering::Relaxed),
         shared.acks.load(Ordering::Relaxed),
         shared.drops.load(Ordering::Relaxed)
     );
+    {
+        let timings = locked(&shared.timings);
+        report.push_str(&format!(
+            "workload_seconds={}\ncheck_seconds={}\ncheck_fraction={}\n",
+            timings.workload.as_secs_f64(), timings.check.as_secs_f64(), timings.fraction(wall)
+        ));
+        for (index, kind) in ["full", "incremental", "volatile"].iter().enumerate() {
+            report.push_str(&format!(
+                "{kind}_checks_started={}\n{kind}_checks_completed={}\n{kind}_epochs_checked={}\n",
+                timings.checks_started[index], timings.checks_completed[index], timings.checked_epochs[index]
+            ));
+        }
+    }
     let plan = locked(&shared.run_plan).clone();
     report.push_str(&format!(
         "requested_seconds={:?}\nconfigured_fault_device={:?}\n",
@@ -1862,6 +2083,10 @@ fn chaos_run() -> Result<(), String> {
             ("failed".into(), Some(text))
         }
     };
+    // execute's child/device cleanup and final full checkpoint have finished.
+    // Freeze one wall value for the budget decision and the published fraction.
+    let wall = shared.origin.elapsed();
+    enforce_check_budget(&shared, wall);
     if shared.errors.load(Ordering::Relaxed) > 0 {
         status = "failed".into();
     }
@@ -1873,7 +2098,7 @@ fn chaos_run() -> Result<(), String> {
             shared.repeats.load(Ordering::Relaxed)
         ),
     );
-    let report = render_report(&shared, &status, panic.as_deref());
+    let report = render_report_at(&shared, &status, panic.as_deref(), wall);
     fs::write(out.join("report.txt"), report).expect("write final report");
     if status == "failed" {
         Err(format!("chaos failed; see {}", out.display()))
@@ -1987,25 +2212,205 @@ fn retained_snapshot_detects_a_previously_witnessed_unknown_effect_disappearing(
 }
 
 #[test]
-fn snapshot_reply_references_preserve_changes_and_reject_missing_or_stale_files() {
+fn snapshot_dumps_only_failures_and_preserves_raw_evidence() {
+    // Reply-reference machinery is retired: clean observations produce only a
+    // diagnostic digest, while exact validated expectations remain unchanged.
     let directory = support::fixture_directory();
     let out = directory.path();
-    let first = retain_reply(out, 1, b"$1\r\na\r\n").unwrap();
-    assert_eq!(retain_reply(out, 1, b"$1\r\na\r\n").unwrap(), first);
-    let second = retain_reply(out, 1, b"$1\r\nb\r\n").unwrap();
-    assert_ne!(first, second);
-    assert_eq!(fs::read(out.join(&second)).unwrap(), b"$1\r\nb\r\n");
-    fs::write(out.join("snapshot-reply-1.index"), "0").unwrap();
-    assert!(
-        retain_reply(out, 1, b"$1\r\nb\r\n").is_err(),
-        "stale index must not overwrite an existing reply"
-    );
-    fs::write(out.join("snapshot-reply-1.index"), "1").unwrap();
-    fs::remove_file(out.join(&second)).unwrap();
-    assert!(
-        retain_reply(out, 1, b"$1\r\nb\r\n").is_err(),
-        "missing referenced bytes must fail history retention"
-    );
+    let now = Instant::now();
+    let event = Event {
+        key: 0, token: "0000000000000001".into(), kind: Kind::Append,
+        invoked: now, completed: now, outcome: Outcome::Applied { length: 16, counter: None },
+    };
+    let mut observed = ObservedSnapshot {
+        state: State { logs: vec![String::new(); KEYS], sets: vec![None; KEYS], counters: vec![None; KEYS] },
+        request: resp(&["MGET", "fixture"]),
+        raw: b"*1\r\n$-1\r\n".to_vec(),
+    };
+    observed.state.logs[0] = event.token.clone();
+    let good = chaos_check::check(std::slice::from_ref(&event), &observed.state, now);
+    assert_eq!(good, Findings::default());
+    assert!(retain_failed_snapshot(out, 1, &observed, &good, false).unwrap().is_none());
+    assert_eq!(fs::read_dir(out).unwrap().count(), 0, "clean snapshots must not dump values");
+
+    let mut large = State {
+        logs: vec![String::new(); KEYS],
+        sets: vec![None; KEYS],
+        counters: vec![None; KEYS],
+    };
+    let history: Vec<_> = (1..=256).map(|index| {
+        let token = format!("feedface{index:08x}");
+        large.logs[0].push_str(&token);
+        Event {
+            key: 0, token, kind: Kind::Append, invoked: now, completed: now,
+            outcome: Outcome::Applied { length: index * 16, counter: None },
+        }
+    }).collect();
+    assert_eq!(chaos_check::check(&history, &large, now), Findings::default());
+    assert_eq!(large.logs[0].len(), 4096);
+    let end_ns = Duration::from_secs(86400).as_nanos();
+    let summary = snapshot_summary(6000, Some(&large), end_ns - 1_000_000, end_ns);
+    let line = format!("{end_ns}\t{summary}\n");
+    assert!(line.len() <= 160, "snapshot summary expanded to {} bytes", line.len());
+    assert!(summary.contains("keys=12 "));
+    assert!(summary.contains(&format!("digest=default-hasher64:{:016x}", snapshot_digest(&large))));
+    assert!(!summary.contains("feedface"), "token values must not enter clean snapshot summaries");
+    assert!(!summary.contains(&large.logs[0]));
+    assert!(!summary.contains("State {"));
+
+    observed.state.logs[0].clear();
+    let lost = chaos_check::check(&[event], &observed.state, now);
+    assert_eq!(lost.lost.len(), 1);
+    let path = retain_failed_snapshot(out, 1, &observed, &lost, false).unwrap().unwrap();
+    assert_eq!(fs::read(path.with_extension("resp")).unwrap(), observed.raw);
+    assert_eq!(fs::read(path.with_extension("request")).unwrap(), observed.request);
+    assert!(fs::read_to_string(path.with_extension("txt")).unwrap().contains("0000000000000001"));
+
+    let continuity = retain_failed_snapshot(out, 2, &observed, &Findings::default(), true)
+        .unwrap().expect("unknown-effect continuity mismatch must also retain evidence");
+    assert!(fs::read_to_string(continuity.with_extension("txt")).unwrap().contains("baseline_mismatch=true"));
+    let inconsistent = Findings { lost: vec![], inconsistent: vec!["duplicated effect".into()] };
+    assert!(retain_failed_snapshot(out, 3, &observed, &inconsistent, false).unwrap().is_some());
+
+    let mut partial = Vec::new();
+    assert!(frame(&mut &b"$3\r\nab"[..], &mut partial, 0).is_err());
+    let malformed = dump_snapshot(out, 4, &observed.request, &partial, None, "truncated RESP").unwrap();
+    assert_eq!(fs::read(malformed.with_extension("resp")).unwrap(), b"$3\r\nab");
+    assert!(snapshot_state(Frame::Array(Some(vec![]))).is_err());
+    assert!(snapshot_state(Frame::Error("ERR fixture".into())).is_err());
+}
+
+#[test]
+fn periodic_full_check_detects_corruption_in_an_old_epoch() {
+    let origin = Instant::now();
+    let mut states = Vec::new();
+    let mut histories = Vec::new();
+    for epoch in 1..=4 {
+        let token = format!("{epoch:016x}");
+        let mut state = State {
+            logs: vec![String::new(); KEYS], sets: vec![None; KEYS], counters: vec![None; KEYS],
+        };
+        state.logs[0] = token.clone();
+        histories.push(vec![Event {
+            key: 0, token, kind: Kind::Append, invoked: origin, completed: origin,
+            outcome: Outcome::Applied { length: 16, counter: None },
+        }]);
+        states.push(state);
+    }
+    // Run the real independent checker over exactly the scheduled range. A
+    // scheduler that never returns to old epochs cannot pass the last assertion.
+    let inspect = |plan: CheckPlan, states: &[State]| {
+        (plan.first..=plan.last).flat_map(|epoch| {
+            chaos_check::check(&histories[epoch - 1], &states[epoch - 1], origin).lost
+        }).collect::<Vec<_>>()
+    };
+    let mut schedule = CheckScheduler::default();
+    let first = schedule.next(1, origin);
+    assert!(inspect(first, &states).is_empty());
+    let full_finished = origin + Duration::from_secs(1);
+    schedule.completed(first, &CheckRun { finished: full_finished, duration: Duration::from_secs(1) });
+    states[0].logs[0].clear();
+    let incremental = schedule.next(2, full_finished + Duration::from_secs(20));
+    assert!(inspect(incremental, &states).is_empty());
+    schedule.completed(incremental, &CheckRun {
+        finished: full_finished + Duration::from_secs(21), duration: Duration::from_secs(1),
+    });
+    let later = schedule.next(3, full_finished + Duration::from_secs(40));
+    assert_eq!(later.first, 2, "every epoch since the last full remains in incremental checks");
+    assert!(inspect(later, &states).is_empty());
+    schedule.completed(later, &CheckRun {
+        finished: full_finished + Duration::from_secs(41), duration: Duration::from_secs(1),
+    });
+    let due = schedule.next(4, full_finished + Duration::from_secs(60));
+    let losses = inspect(due, &states);
+    assert_eq!(losses, vec![LostWrite { key: 0, token: "0000000000000001".into() }]);
+}
+
+#[test]
+fn final_full_check_is_not_repeated_and_interval_tracks_cost() {
+    let origin = Instant::now();
+    let mut schedule = CheckScheduler::default();
+    assert!(schedule.finish_plan(0).is_none(), "startup-only runs have no imaginary epochs");
+    let first = schedule.next(1, origin);
+    let finished = origin + Duration::from_secs(10);
+    schedule.completed(first, &CheckRun { finished, duration: Duration::from_secs(10) });
+    assert!(schedule.finish_plan(1).is_none(), "last full already covers the final epoch");
+    assert_eq!(schedule.interval(), Duration::from_secs(190));
+    assert_eq!(schedule.next(2, finished + Duration::from_secs(189)).kind, CheckKind::Incremental);
+    assert_eq!(schedule.next(2, finished + Duration::from_secs(190)).kind, CheckKind::Full);
+    let incremental = schedule.next(2, finished + Duration::from_secs(20));
+    schedule.completed(incremental, &CheckRun {
+        finished: finished + Duration::from_secs(21), duration: Duration::from_secs(1),
+    });
+    let final_plan = schedule.finish_plan(2).expect("deadline after an incremental needs a final full");
+    assert_eq!(final_plan, CheckPlan { first: 1, last: 2, kind: CheckKind::Full });
+    schedule.completed(final_plan, &CheckRun {
+        finished: finished + Duration::from_secs(23), duration: Duration::from_secs(2),
+    });
+    assert!(schedule.finish_plan(2).is_none(), "final full executes exactly once");
+    assert_eq!(schedule.interval(), Duration::from_secs(60), "short checks keep a 60-second floor");
+    schedule.completed(final_plan, &CheckRun { finished, duration: Duration::ZERO });
+    assert_eq!(schedule.last_full_duration, Duration::from_millis(1));
+}
+
+#[test]
+fn phase_timings_preserve_partial_work_without_join_time() {
+    let directory = support::fixture_directory();
+    let origin = Instant::now();
+    let shared = Shared::new(directory.path(), origin);
+    let mut work = PhaseTimer::start(&shared, TimedPhase::Workload, origin);
+    work.finish_at(origin + Duration::from_secs(5), true);
+    assert!(shared.stop.load(Ordering::Acquire));
+    work.finish_at(origin + Duration::from_secs(8), true); // Joining must not add time.
+    let mut check = PhaseTimer::start(&shared, TimedPhase::Check(CheckKind::Full), origin + Duration::from_secs(8));
+    check.finish_at(origin + Duration::from_secs(10), false); // Unwound partial check.
+    drop(work);
+    drop(check);
+    let report = render_report_at(&shared, "failed", Some("fixture interrupted check"), Duration::from_secs(20));
+    for expected in ["wall_seconds=20\n", "elapsed_seconds=20\n", "workload_seconds=5\n",
+        "check_seconds=2\n", "check_fraction=0.1\n", "full_checks_started=1\n", "full_checks_completed=0\n"] {
+        assert!(report.contains(expected), "missing {expected}: {report}");
+    }
+    // Exercise the actual unfinished guard's Drop during unwinding, without
+    // sleeping or relying on an exact real-clock duration.
+    *locked(&shared.timings) = Timings::default();
+    let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _check = PhaseTimer::start(
+            &shared,
+            TimedPhase::Check(CheckKind::Full),
+            Instant::now() - Duration::from_secs(2),
+        );
+        panic!("fixture interrupts a checkpoint before explicit completion");
+    }));
+    assert!(interrupted.is_err());
+    let timings = locked(&shared.timings);
+    assert!(timings.check >= Duration::from_secs(2), "unwind must retain elapsed check work");
+    assert_eq!(timings.checks_started[CheckKind::Full.index()], 1);
+    assert_eq!(timings.checks_completed[CheckKind::Full.index()], 0);
+}
+
+#[test]
+fn day_check_budget_rejects_more_than_ten_percent_but_not_smoke_or_boundary() {
+    let directory = support::fixture_directory();
+    let shared = Shared::new(directory.path(), Instant::now());
+    *locked(&shared.run_plan) = Some(RunPlan {
+        seconds: 120,
+        device_configured: false,
+        fault_skip_reason: "fixture".into(),
+    });
+    locked(&shared.timings).check = Duration::from_secs(9000);
+    let wall = Duration::from_secs(86400);
+    enforce_check_budget(&shared, wall);
+    assert_eq!(shared.errors.load(Ordering::Relaxed), 0, "smoke runs do not enforce a day budget");
+    locked(&shared.run_plan).as_mut().unwrap().seconds = 86400;
+    locked(&shared.timings).check = Duration::from_secs(8640);
+    enforce_check_budget(&shared, wall);
+    assert_eq!(shared.errors.load(Ordering::Relaxed), 0, "ten percent is inclusive");
+    locked(&shared.timings).check += Duration::from_nanos(1);
+    enforce_check_budget(&shared, wall);
+    assert_eq!(shared.errors.load(Ordering::Relaxed), 1, "excess checking must fail acceptance");
+    let findings = fs::read_to_string(directory.path().join("findings.log")).unwrap();
+    assert!(findings.contains("CHECK_BUDGET"));
 }
 
 #[test]
