@@ -133,9 +133,9 @@ jobs:
         run: make test
 
       # SIGCHLD (17), sent at every child's exit, has no handler in the test
-      # process and so cannot interrupt a read; the other signals are shown
-      # when the job fails. The counts show the recording worked: the shutdown
-      # cases send their children SIGTERM and SIGINT.
+      # process and so cannot interrupt a read; it is only counted. SIGURG
+      # (23) is summarized by sender and target. Every other signal is listed
+      # with its sender (the task column) and its target (comm= and pid=).
       - name: Show the signals sent during the network cases
         if: always()
         run: |
@@ -144,9 +144,13 @@ jobs:
           sudo cat $t/trace > "$RUNNER_TEMP/signals.txt"
           echo "signal_generate events by signal number:"
           grep -o 'signal_generate: sig=[0-9]*' "$RUNNER_TEMP/signals.txt" | sort | uniq -c
-          if [ "${{ job.status }}" != success ]; then
-            grep 'signal_generate:' "$RUNNER_TEMP/signals.txt" | grep -v ' sig=17 ' || true
-          fi
+          echo "lost events per CPU buffer (overrun):"
+          sudo sh -c "grep -h overrun $t/per_cpu/cpu*/stats" | sort | uniq -c
+          echo "SIGURG by sender and target:"
+          grep 'signal_generate: sig=23 ' "$RUNNER_TEMP/signals.txt" |
+            sed -E 's/^ *(.*)-[0-9]+ +\[.*comm=([^ ]*) pid=.*/\1 -> \2/' | sort | uniq -c
+          echo "every other signal:"
+          grep 'signal_generate:' "$RUNNER_TEMP/signals.txt" | grep -v -E ' sig=(17|23) ' || true
 
   design:
     name: design lint and gate sync
