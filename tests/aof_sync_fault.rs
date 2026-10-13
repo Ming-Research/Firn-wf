@@ -849,7 +849,7 @@ impl RewriteServer {
         let label = if redis { "redis" } else { "firn" };
         let log = std::env::temp_dir().join(format!(
             "firn-sync-fault-redis-rewrite-{scenario}-{label}-{}.log", std::process::id()));
-        Self { program, redis: redis.then(oracle), log }
+        Self { program, redis: redis.then(support::redis_oracle), log }
     }
 
     fn directory(&self) -> &Path { self.program.working_directory() }
