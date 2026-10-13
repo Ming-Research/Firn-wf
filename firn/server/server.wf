@@ -478,7 +478,7 @@ fn address_of(result: Result<SocketAddress, IoError>) -> made: Bytes pure {
       return move text;
     }
     Err(error: refused) => {
-      let dropped = move refused;
+      let dropped = refused;
       let nothing = array_filled::<u8, 1>(value: 0_u8);
       let empty = bytes_new(input: &nothing[0_u64..1_u64], start: 0_u64, length: 0_u64);
       return move empty;
