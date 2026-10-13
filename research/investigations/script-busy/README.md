@@ -744,3 +744,114 @@ compiler fidelity, runtime progress and all new-revision CI outcomes remain
 unverified. Root inspected the reviewed diff and the native service predicates.
 Git whitespace inspection passes. Neither pin nor submodule moved, no
 language request was filed, and no changes were committed in this session.
+
+
+## Live thread evidence from the diagnostic branch
+
+The owner supplied the complete log of [the diagnostic run](https://github.com/Ming-Research/Firn-wf/actions/runs/38419985574)
+on `57c059d5ad4bbb71f6c4454518e328fb7f8077b7`. That revision differs from
+`68566831211c1ca1397646f5ba31bfdf89e249af` only in the temporary workflow and
+test instrumentation. Reading the log gives two failures and two passes,
+not four timeout captures:
+
+| Case | Observation | Full job log lines |
+| --- | --- | --- |
+| New client, requested two drivers | PING timed out; PID 5316; selected count was 2 | 746, 749, 807, 928 |
+| New client, requested eight drivers | Exact late-PING BUSY; complete test passed in 0.03 seconds | 965–968 |
+| AOF NOSAVE | Complete test, including persisted-state assertions, passed in 0.07 seconds | 1002–1004 |
+| Pending GET then NOSAVE | GET answered exact BUSY; five-second stop failed; PID 5443; selected count was 2 | 1038–1044, 1102, 1224 |
+
+The passing cases produced no timeout dump. The eight-driver setting is
+recorded as requested, not independently observed as the selected count.
+Both failing cases show two native io_uring descriptors and two eventpoll
+sets as well as GDB's selected count of 2; native-ring fallback to one driver
+does not explain those failures.
+
+### Every captured native thread
+
+Each failed process has ten threads. Only the Lua thread is R; every other
+thread is S. The table accounts for all captured threads and names the
+runtime wait object from the pinned source. GDB has no argument/local debug
+information, so the specific lane/executor indices and condition addresses
+are not directly observed.
+
+| Role / stack | New-client LWP | GET/NOSAVE LWP | Pinned wait object or activity |
+| --- | --- | --- | --- |
+| Halo VM run or instruction_jmp, embed.resume, scripting.eval, executor | 5319 | 5446 | Running Lua, not blocked in a lock |
+| par_worker_main, pthread_cond_wait | 5320, 5321, 5322 | 5447, 5448, 5449 | Compute lane's lane->wait; sched/core.c:1163 |
+| linux_io_uring_park, bridge_wait, executor, epoll_wait | 5323 | 5450 | Its adapter's wait_descriptor; completion/linux_io_uring.c:1320 |
+| executor_loop, completion_park_if_unchanged, pthread_cond_wait | 5324, 5325 | 5451, 5452 | Spare physical executor's executor->wake; completion/bridge.c:4860 |
+| monitor_main, completion_park_if_unchanged, pthread_cond_timedwait | 5326 | 5453 | wf_monitor_wake; completion/bridge.c:4797 |
+| file_helper_main, completion_wait_sleep, pthread_cond_wait | 5327 | 5454 | Empty helper queue's adapter->queue_wait; completion/file_adapter.c:521 |
+| floor_run, stop_receive, poll | 5316 | 5443 | Launcher's stop channel, not the network SHUTDOWN command |
+
+State/wchan appears at log lines 752–771 and 1047–1066. Complete stacks are
+809–906 and 1104–1202. The observed futex waits belong to runtime scheduling
+and completion objects, not a native thread holding or acquiring Firn Meta.
+Suspended coroutine frames do not appear in these native thread stacks;
+absence of a Shared-acquire frame alone does not rule out a parked guard.
+
+### Classification and limits
+
+Classification: **the per-driver progress need already filed as
+firn-req-single-driver-progress**, with acceptance needing to include native
+I/O assigned to a computing driver while another logical driver is idle.
+The originally reported one-driver deadline witness does not cover this
+additional native-I/O condition. This report supplies evidence to extend
+that request; it does not claim that the Whitefoot session has accepted the
+extension or that a one-driver timer fix automatically fixes native I/O.
+
+The source-level mechanism matches the captured Lua-plus-idle-ring state:
+
+- completion/bridge.c:354–359 selects a per-driver native ring;
+  :418–419 reaps only the current driver's ring.
+- :4600–4602 leaves the driver OUTSIDE while its coroutine computes.
+- :4395–4399 explicitly excludes ring entry from borrowed service;
+  :4405–4423 admits only an already-published DONE record or a due/cancelled
+  TIMER. An idle peer cannot turn the occupied driver's native completion
+  into a ready coroutine through that path.
+- :4732–4735 requires an overdue deadline for full service reassignment and
+  refuses it while any driver is idle. This accounts for the available spare
+  executors staying asleep instead of servicing the occupied driver's ring.
+
+This is completion servicing starvation, not evidence that an already-READY
+coroutine was refused a driver. The dump lacks CQ contents, parked context
+records and ready queues; it cannot identify the exact accept/receive record
+or its owner. The four distinct socket inodes in the new-client dump are
+consistent with the listener plus three accepted clients, but io_uring ACCEPT
+can create an fd before its completion is reaped. They do not prove that the
+late accept continuation ran and spawned serve. The contexts owed progress
+are therefore main's accept continuation or the late client's first receive
+in the new-client case, and the existing control client's receive/dispatch
+of NOSAVE in the GET case. The latter's Lua caller was still executing at
+capture; no stack identifies a post-force-stop join as the culprit.
+
+The single passing eight-driver observation supports scheduling sensitivity,
+not reliable operation at eight drivers or exact ownership of the missing
+completion. No confirmed Firn object wait was found to repair, and no Firn
+polling, synthetic deadline, driver-count special path, test ignore or
+increased timeout is introduced from these observations.
+
+### Minimal additional Whitefoot acceptance case
+
+Use two logical drivers and native I/O, with no Firn or Halo dependency:
+
+1. Submit and flush an empty pipe read, or a TCP receive, on driver 0; park
+   the read context on its pending native completion.
+2. Run a computing atomic statement on driver 0. It ends only after the read
+   context settles an independent DecisionCell. Keep driver 1 available.
+3. An external peer writes the byte that satisfies the read. Add no timer,
+   polling context or yield to make driver 0 return to its ring.
+4. Require the reader to resume, settle the cell and end the computation
+   within a five-second external watchdog. Capture logical ring ownership
+   and pending/published record state on failure. Also cover native accept.
+
+The pinned completion/driver_service_native_test.c already has a controlled
+native pipe submission at :39–46 and a userspace computation hold at :30–37.
+Its fixture adds an artificial overdue sleep at :87–95 specifically to
+trigger reassignment. A Whitefoot runtime test can remove that aid, introduce
+an idle second logical driver, and make successful read resumption release
+the computation. A second variant retains the due timer while the peer is
+idle to isolate the idle-driver refusal at bridge.c:4735. This is a proposed
+minimal reproducer description, not a locally compiled or executed witness.
+No Whitefoot repository change or new request was made in this session.
