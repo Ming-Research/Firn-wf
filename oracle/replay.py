@@ -220,8 +220,10 @@ class Client:
 
 def info_fields(raw):
     _, tag, body = scan(raw)
-    if tag != b'$' or body is None:
-        raise ValueError('INFO did not return a bulk string: %r' % raw)
+    if tag == b'=' and body is not None and body[3:4] == b':':
+        body = body[4:]  # RESP3 verbatim string: drop the 'txt:' format prefix
+    elif tag != b'$' or body is None:
+        raise ValueError('INFO did not return a bulk or verbatim string: %r' % raw)
     fields = {}
     for line in body.split(b'\r\n'):
         if b':' in line and not line.startswith(b'#'):
@@ -583,9 +585,6 @@ def main():
                 if 'error' in result or 'cleanup_error' in result:
                     failed = True
                     print('  ERROR: %s' % result.get('error', result.get('cleanup_error')), file=sys.stderr, flush=True)
-                    break
-            if failed:
-                break
     except Exception as error:
         failed = True
         out.append({'error': '%s: %s' % (type(error).__name__, error)})
