@@ -134,13 +134,16 @@ unit/keyspace	Zero length value in key. SET/GET/EXISTS	1
 unit/lazyfree	FLUSHDB ASYNC can reclaim memory in background	1
 unit/multi	DISCARD	1
 unit/multi	DISCARD should not fail during OOM	1
+unit/multi	EXEC and script timeout	1
 unit/multi	EXEC fails if there are errors while queueing commands #1	1
 unit/multi	EXEC fails if there are errors while queueing commands #2	1
 unit/multi	EXEC with at least one use-memory command should fail	1
 unit/multi	If EXEC aborts, the client MULTI state is cleared	1
 unit/multi	MULTI / EXEC basics	1
+unit/multi	MULTI and script timeout	1
 unit/multi	MULTI where commands alter argc/argv	1
 unit/multi	MULTI with SHUTDOWN	1
+unit/multi	MULTI-EXEC body and script timeout	1
 unit/multi	Nested MULTI are not allowed	1
 unit/multi	WATCH inside MULTI is not allowed	1
 unit/other	APPEND basics	1

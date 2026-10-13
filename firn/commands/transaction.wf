@@ -311,7 +311,7 @@ const script_busy_error: Array<u8, 86> = "BUSY Redis is busy running a script. Y
 const script_busy_execabort: Array<u8, 130> = "EXECABORT Transaction discarded because of: BUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.";
 
 fn command_allows_busy(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> result: Bool reads(input), reads(args) {
-  doc "Redis 7.2.16 ALLOW_BUSY flags among firn's supported commands: AUTH, HELLO, QUIT, RESET, MULTI, DISCARD, WATCH, SHUTDOWN and SCRIPT KILL. EXEC is deliberately excluded so its rejection discards the transaction.";
+  doc "Redis 7.2.16 ALLOW_BUSY flags among firn's supported commands: AUTH, HELLO, QUIT, RESET, MULTI, DISCARD, WATCH, SHUTDOWN, SCRIPT KILL and FUNCTION KILL. EXEC is deliberately excluded so its rejection discards the transaction.";
   let authentication = kind == 177_u64;
   let greeting = kind == 178_u64;
   let quitting = kind == 179_u64;
@@ -329,7 +329,9 @@ fn command_allows_busy(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> resu
   if bor(connection, server) {
     return True();
   }
-  if kind == 174_u64 {
+  let script = kind == 174_u64;
+  let function = kind == 182_u64;
+  if bor(script, function) {
     let sub = arg(args: args, index: 1_u64);
     let code = name_code(input: input, start: sub.start, length: sub.length);
     return code == 1280067915_u64;

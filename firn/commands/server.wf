@@ -207,10 +207,50 @@ const text_subcommand_or_arity: Array<u8, 58> = "-ERR unknown subcommand or wron
 
 const text_flush_option: Array<u8, 50> = "ERR FUNCTION FLUSH only supports SYNC|ASYNC option";
 
+const word_function_kill: Array<u8, 13> = "function|kill";
+
+const word_function_kill_sub: Array<u8, 4> = "KILL";
+
+const function_notbusy_error: Array<u8, 42> = "NOTBUSY No scripts in execution right now.";
+
+const function_unkillable_error: Array<u8, 191> = "UNKILLABLE Sorry the script already executed write commands against the dataset. You can either wait the script termination or kill the server in a hard way using the SHUTDOWN NOSAVE command.";
+
 fn run_function(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "FUNCTION FLUSH [ASYNC | SYNC]: firn has no functions, so it answers OK as Redis does with none loaded, and appends the command as the client sent it to the append-only file's pending bytes when the keyspace keeps them, as Redis appends it. Two options or more, and an option other than ASYNC or SYNC, read up to a zero byte, are answered as Redis answers them, after a connection that must authenticate first is answered NOAUTH. Every other subcommand, LOAD and LIST among them, is answered as Redis answers an unknown one, its name echoed to 128 bytes.";
+  doc "FUNCTION FLUSH [ASYNC | SYNC]: firn has no functions, so it answers OK as Redis does with none loaded, and appends the command as the client sent it to the append-only file's pending bytes when the keyspace keeps them, as Redis appends it. Two options or more, and an option other than ASYNC or SYNC, read up to a zero byte, are answered as Redis answers them, after a connection that must authenticate first is answered NOAUTH. FUNCTION KILL observes active invocations without claiming their decisions: Redis 7.2.16 scriptKill checks for an accepted write before rejecting a request to kill EVAL, so it answers NOTBUSY when idle, UNKILLABLE when any invocation is Written and BUSY otherwise. Every other subcommand, LOAD and LIST among them, is answered as Redis answers an unknown one, its name echoed to 128 bytes.";
   let count = args^.inner.len;
   let sub = arg(args: args, index: 1_u64);
+  let killing = name_is(input: input, start: sub.start, length: sub.length, word: &word_function_kill_sub[0_u64..4_u64]);
+  if killing {
+    if count != 2_u64 {
+      reply_arity_word(client: client, word: &word_function_kill[0_u64..13_u64]);
+      return unit;
+    }
+    if denied(client: client) {
+      return unit;
+    }
+    let verdict = 0_u8;
+    atomic pool = &store^.scripts {
+      if pool^.running > 0_u64 {
+        set verdict = 1_u8;
+        let written = Written();
+        for (index in 0_u64..pool^.active.inner.len) {
+          let state = decision_cell_read(cell: &pool^.active.inner[index].decision);
+          if state == written {
+            set verdict = 2_u8;
+            break;
+          }
+        }
+      }
+    }
+    if verdict == 0_u8 {
+      reply_error(client: client, word: &function_notbusy_error[0_u64..42_u64]);
+    } else if verdict == 2_u8 {
+      reply_error(client: client, word: &function_unkillable_error[0_u64..191_u64]);
+    } else {
+      reply_error(client: client, word: &script_busy_error[0_u64..86_u64]);
+    }
+    return unit;
+  }
   let flushing = name_is(input: input, start: sub.start, length: sub.length, word: &word_flush[0_u64..5_u64]);
   if flushing {
   } else {

@@ -515,3 +515,115 @@ consumption and unchanged signal coverage. One ambiguous elapsed-time
 phrase was corrected and rechecked; no findings remained within source
 scope. Static checklist items passed or were not applicable; final gate and
 behavioral acceptance remain unverified.
+
+## Gate failure follow-up on the second-signal revision
+
+The owner supplied [CI run 38410690919](https://github.com/Ming-Research/Firn-wf/actions/runs/38410690919)
+for Firn `4ef699678533a6da05e3c39d1efa5bd13d41f106`: the ratchet lost
+“FUNCTION - test function wrong argument”, reported three unit/multi
+candidates, and the pre-threshold GET fixture did not exit within its
+five-second shutdown bound. The requested single `gh run view --log-failed`
+call could not connect to GitHub's API; no repeated call was made. The
+provided excerpt remains the actual CI evidence. No exact failing FUNCTION
+assertion or GET observation was retrieved.
+
+### FUNCTION reply and cleanup
+
+The Redis [wrong-argument case](https://github.com/redis/redis/blob/7.2.16/tests/unit/functions.tcl#L296)
+sends FUNCTION FLUSH bad_arg and FUNCTION FLUSH sync extra_arg. Firn's
+existing FLUSH handler and exact network checks already produce their
+reference errors and remain unchanged. Source inspection identifies a
+preceding [cleanup case](https://github.com/redis/redis/blob/7.2.16/tests/unit/functions.tcl#L265):
+it starts an infinite EVAL, expects BUSY from FUNCTION KILL, and only then
+uses SCRIPT KILL. Firn treated FUNCTION KILL as unsupported during preflight,
+so that assertion could abort before cleanup. The later FLUSH case then
+receives BUSY from the live script. This causal chain is inferred from the
+source ordering; the unavailable detailed failure log has not independently
+confirmed it.
+
+The production repair recognizes FUNCTION KILL with exact arity 2 and
+ALLOW_BUSY, as its [command entry](https://github.com/redis/redis/blob/7.2.16/src/commands/function-kill.json)
+defines. Redis's [handler](https://github.com/redis/redis/blob/7.2.16/src/functions.c#L605)
+calls scriptKill in function mode; [scriptKill](https://github.com/redis/redis/blob/7.2.16/src/script.c#L287)
+first reports NOTBUSY when idle, then UNKILLABLE after an accepted write,
+then refuses EVAL with BUSY. Firn, which has no function libraries, now
+observes its active invocation verdicts under the pool hold and follows those
+three cases without making any kill claim. It does not merely route the
+read-only test through a generic BUSY refusal: the written and idle cases
+also match the reference. Existing two-driver fixtures now check idle,
+wrong arity, mixed-case busy admission and no-effect-write UNKILLABLE;
+subsequent PING and SCRIPT KILL/NOSAVE retain the noncancellation checks.
+
+The three reported unit/multi candidates are added to passing.tsv with one
+row each: EXEC and script timeout, MULTI and script timeout, and MULTI-EXEC
+body and script timeout. Each title is one reference test, and the existing
+format is retained. No required row is removed or weakened. FUNCTION KILL's
+cleanup case is not added without its own reported candidate evidence.
+
+### Shutdown remains unresolved; no longer timeout is justified
+
+The failing fixture preopens and uses the control connection for CONFIG,
+SET and SCRIPT LOAD before starting its writer. Its shutdown therefore does
+not require a new connection's initialization. Once NOSAVE reaches its
+handler, force_stop publishes shutdown and the independent stop verdicts
+without taking Meta; the interpreter checks them at every bounded slice
+and exits the held attempt. The normal shutdown request then waits for Meta
+and performs the existing client/AOF drain. That is a bound in interpreter
+steps after dispatch, not a wall-clock bound on dispatch or all clients.
+
+A GET admitted before registration can still reach the held entry after the
+writer starts. The pin's
+[synchronous entry acquisition](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/backend/keyed_table.c#L173)
+does not observe BUSY or shutdown and does not park its context. The runtime
+[service reassignment](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/backend/completion/bridge.c#L4721)
+requires an overdue registered deadline on that driver; ready control work
+alone supplies no such bound. Watched network receive selects native ring
+or helper completion, not readiness polling. For native ring, another
+driver's borrowed service can observe a record already DONE but does not
+enter or reap that ring itself. Depending on context assignment and remaining
+deadlines, the control receive may therefore make no progress while a driver
+computes or waits on the key. Existing expiry deadlines can alter the
+interleaving, so source inspection does not identify this particular CI
+stack with certainty.
+
+The CI failure cannot be classified as merely slow under load: the program
+and pin supply no termination-time guarantee for the blocked acquisition or
+control dispatch. The three-second GET read and five-second shutdown bounds
+remain unchanged. The fixture now emits its captured GET result before
+NOSAVE, so a cleanup assertion cannot hide a preceding GET timeout. The
+next failing CI observation should retain that result and native thread
+stacks, distinguishing an unread control command from a dispatched stop
+whose cleanup is blocked. Until that evidence identifies a local Firn
+repair or Whitefoot supplies the missing progress form, no safe production
+shutdown fix is claimed. No extra driver, polling context, artificial
+deadline or hold release is introduced to mask F1.
+
+### Additional finding and disposition
+
+New clients independently stall at the existing Meta acquisitions in main's
+accept bookkeeping and serve's random initialization. A writing script
+retains Meta, so a newly connected control peer cannot reach BUSY or NOSAVE.
+This is a separate observed-in-source Firn ownership problem; it cannot
+explain the failing fixture's preopened control peer. A proposed follow-up
+moves admission-independent client accounting/random state out of the
+script-held metadata, then checks new-client BUSY and NOSAVE while a writer
+runs. It is deferred because those ownership interfaces and consumers are
+outside this change, and board MCP tools remain unavailable for filing it
+from this worktree. It must not be represented as already handled by the
+existing preopened-client cases.
+
+All follow-up edits remain uncommitted. No local compiler, build, suite or
+measurement ran. Pin, submodule and approval logs are unchanged. FUNCTION
+behavior and the added ratchet rows require the next exact-revision gate;
+the shutdown defect remains open rather than being accepted with a larger
+timeout.
+
+An independent gpt-6-astra read-only review inspected the complete eight-file
+delta from the revision above after the preferred gpt-6.1-sol reviewer could
+not start at capacity. It found no new source defect, confirmed reference
+reply ordering and noncancellation, and checked the runtime statements
+against the pin. Static code, document and gate-selection checks passed;
+compile, design lint, exact-revision gate and shutdown acceptance remain
+unverified. The owner-supplied candidate evidence supports the three added
+rows, but raw CI logs were not independently retrieved. The existing GET
+and new-connection issues remain open, with board filing unverified.

@@ -5077,8 +5077,12 @@ fn busy_script_controls_and_uncatchable_kill(drivers: &str) {
         let id = memory_request(&mut other, &["CLIENT", "ID"]);
         let id = id.strip_prefix(':').unwrap().strip_suffix("\r\n").unwrap();
         assert_eq!(memory_request(&mut other, &["SCRIPT", "KILL"]), "-NOTBUSY No scripts in execution right now.\r\n");
+        assert_eq!(memory_request(&mut other, &["FUNCTION", "KILL"]), "-NOTBUSY No scripts in execution right now.\r\n");
+        assert_eq!(memory_request(&mut other, &["FUNCTION", "KILL", "extra"]), "-ERR wrong number of arguments for 'function|kill' command\r\n");
         looping.write_all(&resp(&["EVAL", SCRIPT, "0"])).expect("start the protected looping script");
         wait_for_script_busy(&mut other, &child, port);
+        assert_eq!(memory_request(&mut other, &["function", "kill"]), SCRIPT_BUSY_REPLY);
+        assert_eq!(memory_request(&mut other, &["FUNCTION", "KILL", "extra"]), "-ERR wrong number of arguments for 'function|kill' command\r\n");
         for args in [&["PING"][..], &["GET", "busy-missing"], &["SCRIPT", "FLUSH"], &["CONFIG", "GET", "lua-time-limit"], &["CONFIG", "SET", "lua-time-limit", "0"]] {
             assert_eq!(memory_request(&mut other, args), SCRIPT_BUSY_REPLY, "WF_DRIVERS={drivers}: {args:?}");
         }
@@ -5136,6 +5140,7 @@ fn busy_no_effect_write_is_unkillable_but_shutdown_nosave_exits(drivers: &str) {
         looping.write_all(&resp(&["EVAL", "redis.call('DEL', KEYS[1]); while true do end", "1", "busy-missing"]))
             .expect("start the script after a no-effect write");
         wait_for_script_busy(&mut other, &child, port);
+        assert_eq!(memory_request(&mut other, &["FUNCTION", "KILL"]), UNKILLABLE);
         assert_eq!(memory_request(&mut other, &["SCRIPT", "KILL"]), UNKILLABLE);
         assert_eq!(memory_request(&mut other, &["PING"]), SCRIPT_BUSY_REPLY, "UNKILLABLE must not end the script");
         assert_eq!(memory_request(&mut other, &["SHUTDOWN", "NOSAVE", "SAVE"]), "-ERR syntax error\r\n");
@@ -5201,6 +5206,7 @@ fn firn_get_sent_before_busy_threshold_answers_busy_while_a_written_key_is_held(
     };
     // Preserve cleanup on a missing/wrong GET response: assert the captured
     // result only after NOSAVE closes the infinite writer and all its peers.
+    eprintln!("pre-threshold GET result before NOSAVE cleanup: {outcome:?}");
     control.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("force cleanup after the pending GET observation");
     shutdown_finished(child);
     expect_closed(&mut looping, "writing script caller at forced cleanup");

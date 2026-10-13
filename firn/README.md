@@ -93,8 +93,11 @@ clients send on their own:
   appends them; the old keys are released before the reply is sent, under
   either option. `FUNCTION FLUSH`, with `ASYNC` or `SYNC`,
   succeeds as Redis does with no function loaded, firn having none, and is
-  appended to the file as Redis appends it; every other `FUNCTION`
-  subcommand is answered as an unknown one. `DEBUG LOG` with a message
+  appended to the file as Redis appends it. `FUNCTION KILL` answers NOTBUSY
+  when idle, UNKILLABLE after any active EVAL accepted a write, and BUSY
+  for an active read-only EVAL; it never cancels EVAL, as Redis 7.2.16
+  distinguishes the two execution modes. Every other `FUNCTION` subcommand
+  is answered as an unknown one. `DEBUG LOG` with a message
   answers OK, as Redis does with its debug command enabled, firn keeping no
   log to write it to; every other `DEBUG` subcommand is answered as an
   unknown one.
@@ -222,7 +225,7 @@ SCRIPT KILL also restores read-only refreshes from the interrupted attempt.
 A script exceeding its threshold makes other clients receive Redis 7.2.16's
 `BUSY Redis is busy running a script. You can only call SCRIPT KILL or SHUTDOWN NOSAVE.`
 The supported exceptions are AUTH, HELLO, QUIT, RESET, MULTI, DISCARD,
-WATCH's existing refusal inside MULTI, SCRIPT KILL and SHUTDOWN; PING, INFO,
+WATCH's existing refusal inside MULTI, SCRIPT KILL, FUNCTION KILL and SHUTDOWN; PING, INFO,
 CONFIG, EXEC and SCRIPT FLUSH are refused. This does not add Redis's other
 ALLOW_BUSY commands that firn does not implement. SCRIPT KILL answers
 NOTBUSY with no active invocation. If any active invocation accepted a

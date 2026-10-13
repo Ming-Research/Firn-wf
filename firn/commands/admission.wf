@@ -134,6 +134,9 @@ fn admission_arity(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> arity: i
     if code == 310635744326_u64 {
       return -2_i64;
     }
+    if code == 1280067915_u64 {
+      return 2_i64;
+    }
     return 0_i64;
   }
   if kind == 175_u64 {
