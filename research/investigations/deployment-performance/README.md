@@ -267,7 +267,13 @@ steady-state append path. Each server starts in a fresh directory that is
 removed when it stops. The run prints `aof,<line>,aof_enabled=<n>` from
 INFO persistence at every start and fails unless it reads 1; it records
 `setting,aof=true` (`false` when off) in its output and in `host.txt`.
-Compare mode starts no Redis line.
+Its `compare_reference` input (`COMPARE_REFERENCE=true`, default false)
+adds Redis 7.2.16 as one more line named `reference`, measured after the
+images under the same settings: with `aof` set it runs with the append-only
+file on (appendfsync everysec, a fresh directory removed when it stops) and
+the same checks; the script fails unless `redis-server --version` reads
+7.2.16. It records `setting,reference=true` (`false` when off) in its output
+and in `host.txt`.
 
 **Placement.** By default the script places servers and clients itself, one
 thread per physical core, leaving core 0 to the OS. `server_cpus` and
@@ -307,6 +313,12 @@ marks each sample with `line,pass,cpus,test,depth,client_busy_mean,client_limite
 - `maxmemory`: sets `maxmemory` in bytes with `CONFIG SET` on every measured
   server after it starts, read back with `CONFIG GET`; empty sets none.
 - `aof`: described above.
+- `compare_reference`: described above.
+- The correctness pass of scale and suite modes runs Redis 7.0's
+  redis-benchmark default suite, its 19 tests named explicitly
+  (`SUITE_DEFAULT`), on every line. Redis 7.2.16's default suite adds XADD;
+  it is left out only because firn has no streams yet, and goes back in when
+  firn's minimal streams (board item `firn-scope-min-streams`) land.
 - `drivers`: sets the Whitefoot driver count of each image, apart from the
   number of server CPUs; empty gives one driver per server CPU.
 - `c2c`: with `profile`, also records `perf c2c` on each profiled test,
