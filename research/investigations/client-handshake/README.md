@@ -157,3 +157,30 @@ CLIENT LIST ran 3.84 times the fastest competitor. Every server completed
 about 21.7 thousand handshakes per second with the same p99, so that workload
 was bounded outside the server, by connection setup or the client; the rerun
 records client CPU load to tell which.
+
+## Rerun with the owner's placement (2026-10-13)
+
+[Run 38400671487](https://github.com/Ming-Research/Firn-wf/actions/runs/38400671487):
+the same images and settings as the first full run, with servers on P-cores
+2,4 and the client on E-cores 16-31
+(`placement,server=2,4,client=16,...,31,threads=16,source=override,server_class=2:P,4:P,client_class=16:E,...,31:E`).
+Dragonfly and Garnet are still absent from the host.
+
+Medians over 6 passes (operations/s; p99 in ms):
+
+| workload | firn | firn twin | Redis 7.2.16 | Valkey | Valkey io-threads |
+|---|---|---|---|---|---|
+| client-list | 132251 (0.59) | 131618 (0.70) | 34435 (2.47) | 26710 (3.19) | 28368 (1.78) |
+| handshake | 23133 (5.44) | 23062 (5.34) | 23138 (5.28) | 23036 (5.37) | 19222 (17.9) |
+
+CLIENT LIST ran 3.84 times the fastest competitor, with a lower p99. The
+handshake rate was the same for firn, Redis and Valkey within 0.5%; firn's p99
+was 1.03 times Redis's, while the two firn images differed by 1.02 times. One
+Valkey io-threads pass fell to 1669 handshakes/s, which pulls its median down.
+
+The recorded client CPU load does not separate client-limited cells: every
+cell, including Redis's 34 thousand CLIENT LIST calls per second, shows a
+client mean busy fraction of 0.998 or more. The workload client polls
+non-blocking sockets and yields in a loop (`workload/src/main.rs`), so its CPUs
+are busy whether or not it is the bottleneck. A client that blocks while
+waiting would make the 0.90 rule meaningful for these workloads.
