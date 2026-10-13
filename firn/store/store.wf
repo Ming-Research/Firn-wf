@@ -877,7 +877,8 @@ fn queue_map_expiry(keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, database
     let slots = &keys^[gathered];
     for (index in 0_u64..gathered.len) {
       if index < slots^.len {
-        match slots^[index] {
+        let slot = &slots^[index];
+        match slot^ {
           Some(value: stored) => {
             if stored^.expires != 0_u64 {
               let empty = array_filled::<u8, 0>(value: 0_u8);
