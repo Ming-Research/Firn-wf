@@ -81,11 +81,17 @@ fn hub_new() -> made: Shared<Hub> pure {
   let channels = hash_map_new::<Key, Box<Slots<u64>>, extent>(capacity: 8_u64);
   let patterns = hash_map_new::<Key, Box<Slots<u64>>, extent>(capacity: 8_u64);
   let shards = hash_map_new::<Key, Box<Slots<u64>>, extent>(capacity: 8_u64);
+  let blocked = hash_map_new::<u64, BlockedList, extent>(capacity: 8_u64);
+  let block_ids = hash_map_new::<u64, u64, extent>(capacity: 8_u64);
+  let blocking_state = BlockingState(ids: move block_ids, keys: 0_u64, timed: 0_u64);
+  let waiting = hash_map_new::<Key, Box<Slots<u64>>, extent>(capacity: 8_u64);
+  let block_deadlines = priority_queue_new::<BlockDeadline, extent>();
+  let block_positions = hash_map_new::<u64, u64, extent>(capacity: 8_u64);
   let committed = box_ring_new::<Action>(capacity: 8_u64);
   let deadlines = priority_queue_new::<Deadline, extent>();
   let wake = std::time::cancel_source();
   let stopping = False();
-  let state = Hub(records: move records, clients: move clients, channels: move channels, patterns: move patterns, shards: move shards, committed: move committed, deadlines: move deadlines, wake: move wake, next: 1_u64, stopping: stopping);
+  let state = Hub(records: move records, clients: move clients, channels: move channels, patterns: move patterns, shards: move shards, blocked: move blocked, blocking_state: move blocking_state, waiting: move waiting, block_deadlines: move block_deadlines, block_positions: move block_positions, next_wait: 1_u64, committed: move committed, deadlines: move deadlines, wake: move wake, next: 1_u64, stopping: stopping);
   return shared_new::<Hub>(value: move state);
 }
 
@@ -351,14 +357,15 @@ fn arm_soft(hub: &Hub, record: &Record, time: u64) -> result: unit reads(record.
   return unit;
 }
 
-fn remove_record(hub: &Hub, record: &Record) -> result: unit reads(record.channels), reads(record.patterns), reads(record.shards), reads(record.connection.id), writes(hub.channels), writes(hub.patterns), writes(hub.shards) {
+fn remove_record(hub: &Hub, record: &Record) -> result: unit reads(record), writes(hub) {
+  let abandoned = block_take(hub: hub, id: record^.connection.id);
   memberships_remove(map: &hub^.channels, names: &record^.channels, id: record^.connection.id);
   memberships_remove(map: &hub^.patterns, names: &record^.patterns, id: record^.connection.id);
   memberships_remove(map: &hub^.shards, names: &record^.shards, id: record^.connection.id);
   return unit;
 }
 
-fn close_record(hub: &Hub, record: Record) -> result: unit writes(hub.clients), writes(hub.channels), writes(hub.patterns), writes(hub.shards), writes(hub.committed) {
+fn close_record(hub: &Hub, record: Record) -> result: unit writes(hub) {
   forget_client(hub: hub, client_id: record.client_id);
   remove_record(hub: hub, record: &record);
   let Record(connection: target, ..) = move record;
@@ -432,7 +439,9 @@ fn forget_idle(hub: &Shared<Hub>, connection: &Connection, last: Instant, now: I
   atomic state = &hub^, receiving = &connection^.receive_state {
     match take_record(hub: state, id: connection^.id) {
       Some(value: record) => {
-        let active = record_subscribed(record: &record);
+        let subscribed = record_subscribed(record: &record);
+        let blocked = block_present(hub: state, id: connection^.id);
+        let active = bor(subscribed, blocked);
         let latest = last;
         match receiving^.activity {
           Some(value: activity) => {
@@ -511,17 +520,23 @@ struct TimerState {
   stopping: Bool;
 }
 
-fn timer_ready(hub: &Hub) -> ready: Bool reads(hub.deadlines), reads(hub.stopping) {
+fn timer_ready(hub: &Hub) -> ready: Bool reads(hub.block_deadlines), reads(hub.deadlines), reads(hub.stopping) {
   let pending = hub^.deadlines.storage.inner.len > 0_u64;
-  return bor(pending, hub^.stopping);
+  let blocked = hub^.block_deadlines.storage.inner.len > 0_u64;
+  let timed = bor(pending, blocked);
+  return bor(timed, hub^.stopping);
 }
 
 fn next_timer(hub: &Shared<Hub>) -> state: TimerState reads(hub) waits {
   atomic state = &hub^ when timer_ready(hub: state) {
     let source = std::time::cancel_share(source: &state^.wake);
-    let due = 0_u64;
+    let due = 18446744073709551615_u64;
     if state^.deadlines.storage.inner.len > 0_u64 {
-      set due = state^.deadlines.storage.inner[0_u64].due;
+      set due = state^.deadlines.storage.inner[0_u64].due *sat 1000_u64;
+    }
+    if state^.block_deadlines.storage.inner.len > 0_u64 {
+      let blocked = state^.block_deadlines.storage.inner[0_u64].due +sat 1_u64;
+      set due = imin(due, blocked);
     }
     return TimerState(source: move source, due: due, stopping: state^.stopping);
   }
@@ -566,28 +581,35 @@ fn expire_soft(hub: &Hub, time: u64) -> result: unit writes(hub) {
   return unit;
 }
 
+fn wall_milliseconds(wall: &WallClock) -> time: u64 reads(wall) {
+  let calendar = std::time::unix_nanoseconds(clock: wall);
+  if calendar > 0_i64 {
+    let unsigned = cvt.wrap::<i64, u64>(calendar);
+    return unsigned / 1000000_u64;
+  }
+  return 0_u64;
+}
+
 fn timer(hub: Shared<Hub>, clock: Clock, wall: WallClock) -> result: unit pure waits {
   loop @deadlines {
     let state = next_timer(hub: &hub);
     if state.stopping {
       break @deadlines;
     }
-    let calendar = std::time::unix_nanoseconds(clock: &wall);
-    let time = 0_u64;
-    if calendar > 0_i64 {
-      let unsigned = cvt.wrap::<i64, u64>(calendar);
-      set time = unsigned / 1000000000_u64;
-    }
+    let time = wall_milliseconds(wall: &wall);
     if state.due > time {
       let delta = state.due - time;
-      let nanoseconds = delta *sat 1000000000_u64;
+      let nanoseconds = delta *sat 1000000_u64;
       let instant = std::time::now(clock: &clock);
       let deadline = std::time::instant_after(instant: instant, nanoseconds: nanoseconds);
       let watch = std::time::cancel_watch(source: &state.source);
       let slept = std::time::sleep_until(deadline: deadline, cancel: &watch);
     } else {
       atomic held = &hub {
-        expire_soft(hub: held, time: time);
+        let current = wall_milliseconds(wall: &wall);
+        let seconds = current / 1000_u64;
+        expire_soft(hub: held, time: seconds);
+        expire_blocks(hub: held, time: current);
       }
     }
   }

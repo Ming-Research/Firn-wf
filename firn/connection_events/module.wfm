@@ -61,6 +61,30 @@ public struct RegistryCounts {
   public shards: u64;
 }
 
+public struct BlockedList {
+  doc "One suspended original list command. The registration generation is never reused within fewer than 2^64 waits per process. deadline is absolute Unix milliseconds, zero for forever. Names are distinct while args preserve original order and duplicates. The command owner retains its session; client is private reply and execution scratch for a committed retry.";
+  public generation: u64;
+  public deadline: u64;
+  public kind: u64;
+  public input: Box<Slots<u8>>;
+  public args: Box<Slots<Span>>;
+  public client: Client;
+  public names: Box<Slots<Key>>;
+}
+
+public struct BlockingCounts {
+  public clients: u64;
+  public keys: u64;
+  public timed: u64;
+}
+
+public struct BlockingState {
+  doc "Host-free registration projection, updated in the same hub hold as the owned requests, FIFO memberships and indexed deadline heap. The id map records each live registration generation; the counts describe its distinct source keys and finite deadlines.";
+  ids: HashMap<u64, u64, extent>;
+  keys: u64;
+  timed: u64;
+}
+
 public struct Record {
   client_id: u64;
   connection: Connection;
@@ -91,6 +115,12 @@ public struct Deadline {
   due: u64;
 }
 
+public struct BlockDeadline {
+  id: u64;
+  generation: u64;
+  due: u64;
+}
+
 public struct Stage {
   publications: Box<Ring<Delivery>>;
 }
@@ -101,12 +131,34 @@ public struct Hub {
   channels: HashMap<Key, Box<Slots<u64>>, extent>;
   patterns: HashMap<Key, Box<Slots<u64>>, extent>;
   shards: HashMap<Key, Box<Slots<u64>>, extent>;
+  blocked: HashMap<u64, BlockedList, extent>;
+  public readonly blocking_state: BlockingState;
+  waiting: HashMap<Key, Box<Slots<u64>>, extent>;
+  block_deadlines: PriorityQueue<BlockDeadline, extent>;
+  block_positions: HashMap<u64, u64, extent>;
+  next_wait: u64;
   committed: Box<Ring<Action>>;
   deadlines: PriorityQueue<Deadline, extent>;
   wake: CancelSource;
   next: u64;
   stopping: Bool;
 }
+
+public fn promote(hub: &Hub, client: &Client) -> result: unit writes(hub), writes(client) doc "Allocates the same one-time receiver/command/output registration for the first actual list suspension or subscription; an already promoted client keeps its identity.";
+
+public fn block_install(hub: &Hub, request: BlockedList) -> result: unit writes(hub) doc "Registers distinct source keys in FIFO order under the same hold that observed no available value. A zero generation receives a never-reused identity; reblocking retains its original deadline and generation.";
+
+public fn block_take(hub: &Hub, id: u64) -> request: Option<BlockedList> writes(hub) doc "Removes a wait from every source key before retry, timeout, unblocking or disconnect. The caller commits a completed reply in the same hub hold before allowing the command owner to continue.";
+
+public fn block_front(hub: &Hub, key: &Key) -> id: Option<u64> reads(hub), reads(key) doc "Reads the oldest current waiter on a source key; it grants no wake or mutation authority outside the caller's data/hub hold.";
+
+public fn block_key_count(hub: &Hub, key: &Key) -> count: u64 reads(hub), reads(key) doc "Captures the FIFO retry budget for one ready key; reblocked requests cannot run twice in that pass.";
+
+public fn blocking_counts(hub: &Hub) -> counts: BlockingCounts reads(hub.blocking_state) doc "Counts live suspended clients, distinct registered source keys and finite deadlines. These list waits do not request wake-on-key-deletion, so total_blocking_keys_on_nokey is zero. The host-free observation state changes with the registrations and lets guards observe membership without reading the execution scratch's memory meter.";
+
+public fn block_wait(hub: &Shared<Hub>, connection: &Connection) -> live: Bool reads(hub), reads(connection) waits doc "Suspends the command owner until its committed list reply or cancellation. The independent receiver continues to observe EOF and the output owner can still deliver RESP3 pushes.";
+
+public fn block_unblock(hub: &Hub, client_id: u64, failed: Bool, time: u64) -> changed: Bool writes(hub) doc "CLIENT UNBLOCK under the hub: removes all memberships and commits Redis's timeout null-array or UNBLOCKED error in the same hold before letting the command owner resume. time is Unix seconds for output accounting.";
 
 public fn hub_new() -> made: Shared<Hub> pure doc "Creates the event hub. Connection ids are never reused during this process; the supported execution contains fewer than 2^64 promotions.";
 
@@ -116,7 +168,7 @@ public fn hub_stop(hub: &Shared<Hub>) -> result: unit reads(hub) waits doc "Remo
 
 public fn dispatch(hub: Shared<Hub>) -> result: unit pure waits doc "Delivers committed actions in order without holding the hub during inbox publication or cancellation and without waiting for network progress.";
 
-public fn timer(hub: Shared<Hub>, clock: Clock, wall: WallClock) -> result: unit pure waits doc "Waits on armed soft-limit deadlines or their replacement generation; it never polls an empty queue. time arguments elsewhere are Unix whole seconds.";
+public fn timer(hub: Shared<Hub>, clock: Clock, wall: WallClock) -> result: unit pure waits doc "Waits on the earliest output soft-limit or blocking-list deadline, or its replacement generation; it never polls an empty queue. Blocking expiry uses strict absolute Unix milliseconds and rechecks the wall clock after each monotonic wake. time arguments for output accounting remain Unix whole seconds.";
 
 public fn connection_get(hub: &Shared<Hub>, id: u64) -> found: Option<Connection> reads(hub) waits doc "Retains a live promoted connection, or returns None after cleanup invalidated its never-reused id.";
 
@@ -126,7 +178,7 @@ public fn connection_share(connection: &Connection) -> made: Connection reads(co
 
 public fn forget(hub: &Shared<Hub>, id: u64) -> result: unit reads(hub) waits doc "Idempotently invalidates the registration and removes its subscriptions, then cancels its owners outside the hub hold.";
 
-public fn forget_idle(hub: &Shared<Hub>, connection: &Connection, last: Instant, now: Instant, interval: u64) -> expired: Bool reads(hub), reads(connection) waits doc "Checks authoritative committed membership and latest socket activity together with invalidation. A delayed membership notification cannot expire a subscribed client. interval is monotonic nanoseconds; cancellation fires outside the holds.";
+public fn forget_idle(hub: &Shared<Hub>, connection: &Connection, last: Instant, now: Instant, interval: u64) -> expired: Bool reads(hub), reads(connection) waits doc "Checks authoritative committed membership and latest socket activity together with invalidation. A delayed membership notification cannot expire a subscribed or blocked client. interval is monotonic nanoseconds; cancellation fires outside the holds.";
 
 public fn stage_new() -> made: Stage pure doc "Creates an empty attempt-local publication stage.";
 

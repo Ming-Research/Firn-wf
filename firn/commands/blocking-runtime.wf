@@ -1,0 +1,284 @@
+alias BlockedList = pkg::connection_events::BlockedList;
+alias Client = pkg::protocol::Client;
+alias Entry = pkg::store::Entry;
+alias Hub = pkg::connection_events::Hub;
+alias Key = pkg::bytes::Key;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Keyspace = pkg::store::Keyspace;
+alias Meta = pkg::store::Meta;
+alias ServerState = pkg::store::ServerState;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+
+fn list_signal(client: &Client, key: &[u8]) -> result: unit reads(key), writes(client.list_ready) {
+  doc "Stages Redis dbAdd's list-ready notification in the current execution unit, in first-signal order. It is drained only after that unit commits, and abandoned script attempts discard it. No GET/SET path calls this helper.";
+  let name = pkg::bytes::make_key(input: key, start: 0_u64, length: key^.len);
+  let env = KeyEnv();
+  match client^.list_ready {
+    Some(value: queued) => {
+      let count = queued^.inner.len;
+      for (index in 0_u64..count) {
+        if index < queued^.inner.len {
+          if pkg::bytes::key_equal(env: &env, left: &queued^.inner[index], right: &name) {
+            return unit;
+          }
+        }
+      }
+      if queued^.inner.len == queued^.inner.cap {
+        let current = queued^.inner.cap;
+        let doubled = current +sat current;
+        let capacity = imax(doubled, 8_u64);
+        grow(cell: queued, capacity: capacity);
+      }
+      if queued^.inner.len < queued^.inner.cap {
+        place_back(window: &queued^.inner, value: move name);
+      } else {
+        let dropped = move name;
+      }
+    }
+    None() => {
+      let queued = box_slots_new::<Key>(capacity: 8_u64);
+      place_back(window: &queued.inner, value: move name);
+      set client^.list_ready = Some<Box<Slots<Key>>>(value: move queued);
+    }
+  }
+  return unit;
+}
+
+fn list_signal_at(client: &Client, keys: &KeySet, index: u64, slot: &Option<Entry>) -> result: unit reads(keys), reads(slot), writes(client.list_ready) {
+  let list = False();
+  match slot^ {
+    Some(value: held_entry) => {
+      match held_entry^.value {
+        Items(..) => {
+          set list = True();
+        }
+        Text(..) => {
+        }
+        Members(..) => {
+        }
+        Fields(..) => {
+        }
+        Ranked(..) => {
+        }
+      }
+    }
+    None() => {
+    }
+  }
+  if list {
+    if index < keys^.len {
+      let name = scanned_key(keys: keys, index: index);
+      let length = name.inner.len;
+      list_signal(client: client, key: &name.inner[0_u64..length]);
+    }
+  }
+  return unit;
+}
+
+fn list_ready_take(client: &Client) -> key: Option<Key> writes(client.list_ready) {
+  match client^.list_ready {
+    Some(value: queued) => {
+      if queued^.inner.len > 0_u64 {
+        let key = remove_at(window: &queued^.inner, index: 0_u64);
+        return Some<Key>(value: move key);
+      }
+    }
+    None() => {
+    }
+  }
+  set client^.list_ready = None<Box<Slots<Key>>>();
+  return None<Key>();
+}
+
+fn list_ready_merge(target: &Client, source: &Client) -> result: unit writes(target.list_ready), writes(source.list_ready) {
+  loop {
+    match list_ready_take(client: source) {
+      Some(value: name) => {
+        let bytes = pkg::bytes::key_boxed(key: move name);
+        let length = bytes.inner.len;
+        list_signal(client: target, key: &bytes.inner[0_u64..length]);
+      }
+      None() => {
+        break;
+      }
+    }
+  }
+  return unit;
+}
+
+fn list_producer(kind: u64) -> result: Bool pure {
+  let rename = kind == 37_u64;
+  let renamenx = kind == 38_u64;
+  let copying = kind == 39_u64;
+  let push = kind == 60_u64;
+  let rpush = kind == 61_u64;
+  let pushx = kind == 62_u64;
+  let rpushx = kind == 63_u64;
+  let insert = kind == 72_u64;
+  let lmove = kind == 74_u64;
+  let rotate = kind == 75_u64;
+  let transfer = bor(rename, renamenx);
+  let copies = bor(copying, transfer);
+  let pushes = bor(push, rpush);
+  let existing = bor(pushx, rpushx);
+  let moves = bor(lmove, rotate);
+  let writes_list = bor(pushes, existing);
+  let replaces_list = bor(copies, moves);
+  let changes_list = bor(writes_list, replaces_list);
+  return bor(changes_list, insert);
+}
+
+fn blocking_hold_ready(meta: &Meta, hub: &Hub, server: &ServerState) -> ready: Bool reads(meta.aof_rewrite_in_progress), reads(hub.blocking_state), reads(server.memory.maxmemory) {
+  doc "A limited-memory replay can need eviction and rewrite cleanup. Await an existing rewrite before entering the indivisible producer/service unit, so cleanup never needs Meta held by its waiter. This proposed scheduling cost affects list-service units only; it adds no GET/SET target.";
+  if server^.memory.maxmemory == 0_u64 {
+    return True();
+  }
+  let counts = pkg::connection_events::blocking_counts(hub: hub);
+  if counts.clients == 0_u64 {
+    return True();
+  }
+  return bnot(meta^.aof_rewrite_in_progress);
+}
+
+fn blocking_snapshot(client: &Client) -> made: Client reads(client) {
+  let made = pkg::protocol::client_new(capacity: 128_u64);
+  set made.id = client^.id;
+  set made.pubsub_id = client^.pubsub_id;
+  set made.resp = client^.resp;
+  set made.random = client^.random;
+  set made.authenticated = client^.authenticated;
+  set made.locked = client^.locked;
+  set made.settings = pkg::protocol::settings_copy(settings: &client^.settings);
+  match client^.meter {
+    Some(value: meter) => {
+      let retained = std::process::meter_share(meter: meter);
+      set made.meter = Some<std::process::MemoryMeter>(value: move retained);
+    }
+    None() => {
+    }
+  }
+  return move made;
+}
+
+fn blocking_request(hub: &Hub, input: &[u8], args: &Box<Slots<Span>>, client: &Client, kind: u64, deadline: u64) -> result: unit reads(input), reads(args), writes(hub), writes(client) {
+  pkg::connection_events::promote(hub: hub, client: client);
+  set client^.blocked = True();
+  let bytes = box_slots_new::<u8>(capacity: 0_u64);
+  let copied_args = box_slots_new::<Span>(capacity: 8_u64);
+  let names = box_slots_new::<Key>(capacity: args^.inner.len);
+  let unique = key_set_new(capacity: 0_u64);
+  let count = args^.inner.len;
+  let source_end = if kind < 202_u64 {
+    give count -sat 1_u64;
+  } else {
+    give 2_u64;
+  }
+  for (index in 0_u64..count) {
+    let span = pkg::protocol::arg(args: args, index: index);
+    let start = bytes.inner.len;
+    let owned = pkg::bytes::copy_bytes(input: input, start: span.start, length: span.length);
+    let length = owned.inner.len;
+    pkg::protocol::frame_word(buffer: &bytes, word: &owned.inner[0_u64..length]);
+    pkg::protocol::push_arg(args: &copied_args, start: start, length: length);
+    let source = index >= 1_u64;
+    let before_end = index < source_end;
+    if band(source, before_end) {
+      let before = unique.len;
+      let position = key_set_insert(keys: &unique, key: &owned.inner[0_u64..length]);
+      if position == before {
+        let name = pkg::bytes::make_key(input: &owned.inner[0_u64..length], start: 0_u64, length: length);
+        if names.inner.len < names.inner.cap {
+          place_back(window: &names.inner, value: move name);
+        } else {
+          let dropped = move name;
+        }
+      }
+    }
+  }
+  let scratch = blocking_snapshot(client: client);
+  let request = BlockedList(generation: 0_u64, deadline: deadline, kind: kind, input: move bytes, args: move copied_args, client: move scratch, names: move names);
+  pkg::connection_events::block_install(hub: hub, request: move request);
+  return unit;
+}
+
+fn blocking_drain(map_shared: &Shared<ConcurrentHashMap<Entry>>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, hub: &Hub, server: &ServerState, client: &Client, clock: &std::time::Clock, wall: &std::time::WallClock, logged: Bool) -> result: unit reads(map_shared), reads(server), reads(wall), writes(keys), writes(meta), writes(hub), writes(client), writes(clock) {
+  doc "Services each ready key in signal order after the producer's complete reply and effects commit. FIFO retries consume under the same map/metadata/hub hold; a woken command owner never races to pop. A retry rescans original keys, refreshes time and settings, redoes eviction and AOF admission, and either commits its result or re-registers its original deadline. Newly ready move destinations join the remaining queue.";
+  loop @ready {
+    match list_ready_take(client: client) {
+      Some(value: name) => {
+        let budget = pkg::connection_events::block_key_count(hub: hub, key: &name);
+        for @waiters (index in 0_u64..budget) {
+          let copied = pkg::bytes::copy_key(key: &name);
+          let bytes = pkg::bytes::key_boxed(key: move copied);
+          let length = bytes.inner.len;
+          let key = &bytes.inner[0_u64..length];
+          let slot = &keys^[key];
+          let calendar = std::time::unix_nanoseconds(clock: wall);
+          let millis = 0_u64;
+          let micros = 0_u64;
+          if calendar > 0_i64 {
+            let positive = cvt.wrap::<i64, u64>(calendar);
+            set millis = positive / 1000000_u64;
+            set micros = positive / 1000_u64;
+          }
+          let live = False();
+          let time = Time(unix_ms: millis, check: millis, loading: live);
+          if list_kind(slot: slot, now: millis) != entry_wanted {
+            break @waiters;
+          }
+          match pkg::connection_events::block_front(hub: hub, key: &name) {
+            Some(value: id) => {
+              match pkg::connection_events::block_take(hub: hub, id: id) {
+                Some(value: request) => {
+                  set request.client.unix_us = micros;
+                  pkg::store::access_settings(server: server, client: &request.client);
+                  prepare_access(client: &request.client, time: &time);
+                  set request.client.now = millis;
+                  let oom = evict_held(map_shared: map_shared, keys: keys, meta: meta, client: &request.client, clock: clock, logged: logged);
+                  let denied = command_denyoom(kind: request.kind);
+                  let completed = False();
+                  if band(oom, denied) {
+                    pkg::protocol::reply_error(client: &request.client, word: &oom_error[0_u64..55_u64]);
+                    set completed = True();
+                  } else if aof_refuse(meta: meta, client: &request.client) {
+                    set completed = True();
+                  } else {
+                    let sequence = pkg::store::sequence_new(meta: meta, loading: live);
+                    let log_budget = pkg::store::log_budget_begin(meta: meta, loading: live);
+                    let effects = box_slots_new::<u8>(capacity: 64_u64);
+                    let journal = None<pkg::store::AccessJournal>();
+                    let input_length = request.input.inner.len;
+                    let (done, appended) = blocking_try(sequence: &sequence, journal: &journal, kind: request.kind, keys: keys, effects: &effects, logged: logged, input: &request.input.inner[0_u64..input_length], args: &request.args, client: &request.client, time: &time);
+                    set completed = done;
+                    let effect_length = effects.inner.len;
+                    pkg::store::log_append(log: &meta^.log, bytes: &effects.inner[0_u64..effect_length], budget: &log_budget);
+                    pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &log_budget);
+                  }
+                  list_ready_merge(target: client, source: &request.client);
+                  if completed {
+                    let stage = pkg::connection_events::stage_new();
+                    let seconds = micros / 1000000_u64;
+                    pkg::connection_events::commit(hub: hub, client: &request.client, stage: &stage, time: seconds);
+                    let dropped = move request;
+                  } else {
+                    pkg::connection_events::block_install(hub: hub, request: move request);
+                  }
+                }
+                None() => {
+                }
+              }
+            }
+            None() => {
+              break @waiters;
+            }
+          }
+        }
+      }
+      None() => {
+        break @ready;
+      }
+    }
+  }
+  return unit;
+}

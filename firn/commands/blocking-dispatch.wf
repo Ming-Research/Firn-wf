@@ -1,0 +1,86 @@
+alias Client = pkg::protocol::Client;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Keyspace = pkg::store::Keyspace;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+
+fn run_list_producer(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
+  doc "Runs a list-producing command through the existing held command parts. Dataset changes, AOF publication, the producer's complete reply commitment and FIFO service of newly ready lists occur in that order under one keyspace, metadata, event-hub and server-state hold. Ordinary GET and SET retain their existing dispatch and targets.";
+  let journal = None<pkg::store::AccessJournal>();
+  let effects = box_slots_new::<u8>(capacity: 64_u64);
+  let stage = pkg::connection_events::stage_new();
+  let seconds = client^.unix_us / 1000000_u64;
+  let logged = store^.logging;
+  set client^.now = time^.check;
+  atomic keys = &store^.keys, meta = &store^.meta, hub = &store^.pubsub, server = &store^.server when blocking_hold_ready(meta: meta, hub: hub, server: server) {
+    if aof_refuse(meta: meta, client: client) {
+      pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+      return unit;
+    }
+    let sequence = pkg::store::sequence_new(meta: meta, loading: time^.loading);
+    let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
+    let appended = held_run(sequence: &sequence, journal: &journal, kind: kind, keys: keys, meta: meta, effects: &effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let length = effects.inner.len;
+    pkg::store::log_append(log: &meta^.log, bytes: &effects.inner[0_u64..length], budget: &budget);
+    pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &budget);
+    pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+    blocking_drain(map_shared: &store^.keys, keys: keys, meta: meta, hub: hub, server: server, client: client, clock: clock, wall: &store^.wall, logged: logged);
+  }
+  return unit;
+}
+
+fn run_blocking_list(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client), writes(clock) waits {
+  doc "Validates directions and timeout once before its first key lookup. An immediately served command commits its ordinary effects and reply before draining list readiness. An empty result promotes the connection only at actual suspension, retains the original parsed deadline, registers the request under the same hold as its failed lookup and commits any earlier pipelined replies. The connection owner handles waiting and EOF after this function returns.";
+  let parsed = blocking_parse(input: input, args: args, client: client, time: time, kind: kind);
+  let deadline = match parsed {
+    Some(value: accepted) => {
+      give accepted;
+    }
+    None() => {
+      return unit;
+    }
+  }
+  let journal = None<pkg::store::AccessJournal>();
+  let effects = box_slots_new::<u8>(capacity: 64_u64);
+  let stage = pkg::connection_events::stage_new();
+  let seconds = client^.unix_us / 1000000_u64;
+  let logged = store^.logging;
+  atomic keys = &store^.keys, meta = &store^.meta, hub = &store^.pubsub, server = &store^.server when blocking_hold_ready(meta: meta, hub: hub, server: server) {
+    if aof_refuse(meta: meta, client: client) {
+      pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+      return unit;
+    }
+    let sequence = pkg::store::sequence_new(meta: meta, loading: time^.loading);
+    let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
+    let (completed, appended) = blocking_try(sequence: &sequence, journal: &journal, kind: kind, keys: keys, effects: &effects, logged: logged, input: input, args: args, client: client, time: time);
+    let length = effects.inner.len;
+    pkg::store::log_append(log: &meta^.log, bytes: &effects.inner[0_u64..length], budget: &budget);
+    pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &budget);
+    if bnot(completed) {
+      blocking_request(hub: hub, input: input, args: args, client: client, kind: kind, deadline: deadline);
+    }
+    pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+    blocking_drain(map_shared: &store^.keys, keys: keys, meta: meta, hub: hub, server: server, client: client, clock: clock, wall: &store^.wall, logged: logged);
+  }
+  return unit;
+}
+
+fn held_blocking_list(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<pkg::store::Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(effects), writes(client) {
+  doc "The EXEC and script form of a blocking list command: validate exactly as the network form, execute the shared attempt, and answer null immediately if no list is ready. It never registers a blocked client; any newly ready move destination is drained after the outer execution unit commits.";
+  match blocking_parse(input: input, args: args, client: client, time: time, kind: kind) {
+    Some(value: deadline) => {
+    }
+    None() => {
+      return 0_u64;
+    }
+  }
+  let (completed, appended) = blocking_try(sequence: sequence, journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
+  if bnot(completed) {
+    if kind < 202_u64 {
+      pkg::protocol::reply_nil_array(client: client);
+    } else {
+      pkg::protocol::reply_nil(client: client);
+    }
+  }
+  return appended;
+}

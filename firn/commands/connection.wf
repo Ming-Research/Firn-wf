@@ -323,6 +323,118 @@ fn run_quit(client: &Client) -> result: unit writes(client) {
   return unit;
 }
 
+const word_client_unblock: Array<u8, 14> = "client|unblock";
+
+const word_unblock: Array<u8, 7> = "UNBLOCK";
+
+const word_unblock_timeout: Array<u8, 7> = "TIMEOUT";
+
+const word_unblock_error: Array<u8, 5> = "ERROR";
+
+const client_unblock_reason: Array<u8, 52> = "ERR CLIENT UNBLOCK reason should be TIMEOUT or ERROR";
+
+const client_unblock_arguments: Array<u8, 58> = "-ERR unknown subcommand or wrong number of arguments for '";
+
+fn client_unblock_command(input: &[u8], args: &Box<Slots<Span>>) -> recognized: Bool reads(input), reads(args) {
+  doc "Whether a CLIENT subcommand is UNBLOCK, preserving the full subcommand name used by Redis's command-table lookup. It only recognizes the name; the runner owns argument and authentication refusal order.";
+  if args^.inner.len < 2_u64 {
+    return False();
+  }
+  let sub = arg(args: args, index: 1_u64);
+  let recognized = name_is(input: input, start: sub.start, length: sub.length, word: &word_unblock[0_u64..7_u64]);
+  return recognized;
+}
+
+struct ClientUnblock {
+  client_id: u64;
+  failed: Bool;
+}
+
+fn client_unblock_plan(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> plan: Option<ClientUnblock> reads(input), reads(args), writes(client) {
+  doc "Shared CLIENT UNBLOCK parsing for ordinary and held EXEC execution: minimum arity before authentication, excessive arguments after authentication, optional reason before the strict signed integer id. Refusals write the reply and return None; the omitted reason means TIMEOUT.";
+  let count = args^.inner.len;
+  if count < 3_u64 {
+    reply_arity_word(client: client, word: &word_client_unblock[0_u64..14_u64]);
+    return None<ClientUnblock>();
+  }
+  if denied(client: client) {
+    return None<ClientUnblock>();
+  }
+  if count > 4_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    let spelled = before_zero(input: input, span: sub);
+    let limit = imin(spelled, 128_u64);
+    reply_word(client: client, word: &client_unblock_arguments[0_u64..58_u64]);
+    let echoed = reply_echoed(client: client, input: input, span: sub, limit: limit);
+    reply_word(client: client, word: &text_try_client[0_u64..21_u64]);
+    return None<ClientUnblock>();
+  }
+  let failed = False();
+  if count == 4_u64 {
+    let reason = arg(args: args, index: 3_u64);
+    let spelled = before_zero(input: input, span: reason);
+    let timed = name_is(input: input, start: reason.start, length: spelled, word: &word_unblock_timeout[0_u64..7_u64]);
+    let error = name_is(input: input, start: reason.start, length: spelled, word: &word_unblock_error[0_u64..5_u64]);
+    if timed {
+    } else if error {
+      set failed = True();
+    } else {
+      reply_error(client: client, word: &client_unblock_reason[0_u64..52_u64]);
+      return None<ClientUnblock>();
+    }
+  }
+  let target = arg(args: args, index: 2_u64);
+  let number = read_integer(input: input, start: target.start, length: target.length);
+  if number.state != 1_u64 {
+    reply_error(client: client, word: &text_not_integer[0_u64..43_u64]);
+    return None<ClientUnblock>();
+  }
+  let id = cvt.wrap::<i64, u64>(number.value);
+  let request = ClientUnblock(client_id: id, failed: failed);
+  return Some<ClientUnblock>(value: request);
+}
+
+fn client_unblock_apply(hub: &pkg::connection_events::Hub, request: ClientUnblock, client: &Client) -> result: unit writes(hub), writes(client) {
+  doc "Commits the target's timeout null-array or UNBLOCKED error and removes every wait registration under the existing hub hold, then writes the requesting client's integer result. A shared body serves ordinary requests and EXEC without a nested atomic statement.";
+  let time = client^.unix_us / 1000000_u64;
+  let changed = pkg::connection_events::block_unblock(hub: hub, client_id: request.client_id, failed: request.failed, time: time);
+  if changed {
+    reply_integer(client: client, value: 1_i64);
+  } else {
+    reply_integer(client: client, value: 0_i64);
+  }
+  return unit;
+}
+
+fn run_client_unblock_held(hub: &pkg::connection_events::Hub, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(hub), writes(client) {
+  doc "CLIENT UNBLOCK inside EXEC, under its already-held event hub. Redis 7.2.16 does not mark this command NO_MULTI, while scripts still refuse CLIENT through NOSCRIPT admission.";
+  match client_unblock_plan(input: input, args: args, client: client) {
+    Some(value: request) => {
+      client_unblock_apply(hub: hub, request: request, client: client);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn run_client_unblock(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
+  doc "CLIENT UNBLOCK id [TIMEOUT|ERROR] through the shared parser and body, taking an event-hub statement only for an accepted request. The origin's complete reply commits before this hold ends, so an unblocked target's later publication cannot overtake a promoted origin's integer result. EXEC commits its aggregate at its outer boundary instead. Redis 7.2.16 networking.c:3243-3282 supplies its syntax, integer result and target reply semantics.";
+  match client_unblock_plan(input: input, args: args, client: client) {
+    Some(value: request) => {
+      let stage = pkg::connection_events::stage_new();
+      let seconds = client^.unix_us / 1000000_u64;
+      atomic hub = &store^.pubsub {
+        client_unblock_apply(hub: hub, request: request, client: client);
+        pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
 fn run_client(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
   doc "CLIENT ID, CLIENT GETNAME, CLIENT SETNAME name and CLIENT INFO answer as Redis does: the connection's id; its name, or the null bulk string when it has none; OK once SETNAME has given or removed the name; and the connection's line of facts, as run_client_info writes it. Each given the wrong number of arguments is answered as Redis answers it, and then a connection that must authenticate first is answered NOAUTH. Any other subcommand, CLIENT SETINFO among them, which Redis 7.0 does not have, is answered as Redis answers an unknown one, its name echoed to 128 bytes.";
   let count = args^.inner.len;

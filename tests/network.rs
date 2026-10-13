@@ -10,6 +10,7 @@ mod rewrite_sequence;
 mod rewrite_scan;
 mod write_meta;
 mod pubsub;
+mod blocking_lists;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};

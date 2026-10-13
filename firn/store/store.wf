@@ -47,8 +47,8 @@ fn due_order(env: &KeyEnv, left: &Due, right: &Due) -> order: i32 reads(left), r
 
 const encoding_defaults: Array<i64, 11> =[512_i64, 64_i64, 0_i64, -2_i64, 512_i64, 128_i64, 64_i64, 4096_i64, 100_i64, 128_i64, 64_i64];
 
-fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure {
-  doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, and holds Redis 7.2.16's defaults for the encoding parameters: hash-max-listpack-entries 512, hash-max-listpack-value 64, list-compress-depth 0, list-max-listpack-size -2, set-max-intset-entries 512, set-max-listpack-entries 128, set-max-listpack-value 64, stream-node-max-bytes 4096, stream-node-max-entries 100, zset-max-listpack-entries 128 and zset-max-listpack-value 64, in that order, the order of their names; and records started, the calendar time in milliseconds at which the server started.";
+fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64, wall: std::time::WallClock) -> made: Keyspace pure {
+  doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, and holds Redis 7.2.16's defaults for the encoding parameters: hash-max-listpack-entries 512, hash-max-listpack-value 64, list-compress-depth 0, list-max-listpack-size -2, set-max-intset-entries 512, set-max-listpack-entries 128, set-max-listpack-value 64, stream-node-max-bytes 4096, stream-node-max-entries 100, zset-max-listpack-entries 128 and zset-max-listpack-value 64, in that order, the order of their names; and records started, the calendar time in milliseconds at which the server started. wall is retained for fresh nonwaiting calendar snapshots when a producer services blocked commands; ordinary keyed commands do not read it.";
   let keys = shared_map_new::<Entry>(capacity: keyspace_capacity);
   let due_queue = priority_queue_new::<Due, ceiling>();
   let changed = False();
@@ -73,7 +73,7 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   let pool = pkg::script_pool::new_pool();
   let scripts = shared_new::<pkg::script_pool::EnginePool>(value: move pool);
   let pubsub = pkg::connection_events::hub_new();
-  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, pubsub: move pubsub, logging: logging);
+  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, pubsub: move pubsub, wall: move wall, logging: logging);
 }
 
 fn keyspace_share(store: &Keyspace) -> made: Keyspace reads(store) {
@@ -89,7 +89,8 @@ fn keyspace_logging(store: &Keyspace, logging: Bool) -> made: Keyspace reads(sto
   let beside = shared_share::<ServerState>(shared: &store^.server);
   let scripts = shared_share::<pkg::script_pool::EnginePool>(shared: &store^.scripts);
   let pubsub = pkg::connection_events::hub_share(hub: &store^.pubsub);
-  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, pubsub: move pubsub, logging: logging);
+  let wall = std::time::wall_clock_share(clock: &store^.wall);
+  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, pubsub: move pubsub, wall: move wall, logging: logging);
 }
 
 fn expired(expires: u64, now: u64) -> reached: Bool pure {

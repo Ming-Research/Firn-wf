@@ -322,6 +322,120 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
   return EvictionSample(key: move picked, exhausted: exhausted);
 }
 
+fn evict_held(map_shared: &Shared<ConcurrentHashMap<Entry>>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client, clock: &Clock, logged: Bool) -> oom: Bool reads(map_shared), writes(keys), writes(meta), writes(client), writes(clock) {
+  doc "Runs ordinary eviction admission before a resumed blocking command under the producer's existing whole-map and metadata hold. map_shared names the held keys object. When maxmemory is nonzero the caller establishes that no rewrite is in progress before its producer runs and retains Meta through this call; the adapter neither waits for cleanup nor substitutes an OOM snapshot. It returns true only for EVICT_FAIL, while the same tenacity exhaustion as evict_before permits the command as EVICT_RUNNING. The host reserve operation takes no whole-map gate, tries its short internal lock without waiting, changes no entry and may return zero while a hold protects storage. Each victim keeps its own sequence and DEL record after the producer's completed propagation boundary.";
+  if client^.maxmemory == 0_u64 {
+    return False();
+  }
+  let over = False();
+  if logged {
+    set over = memory_over(meta: meta, client: client, logged: logged);
+  } else {
+    let used = heap_read(client: client);
+    if used > client^.seen_peak {
+      set meta^.memory_peak = imax(meta^.memory_peak, used);
+      set client^.seen_peak = meta^.memory_peak;
+    }
+    set over = used > client^.maxmemory;
+  }
+  if bnot(over) {
+    return False();
+  }
+  match client^.meter {
+    Some(value: meter) => {
+      let freed = std::process::release_map_reserve::<Entry>(map: map_shared, meter: meter);
+    }
+    None() => {
+    }
+  }
+  set over = memory_over(meta: meta, client: client, logged: logged);
+  if bnot(over) {
+    return False();
+  }
+  if client^.memory_policy == 7_u64 {
+    return True();
+  }
+  let started = std::time::now(clock: clock);
+  let limit = eviction_limit(tenacity: client^.maxmemory_tenacity);
+  let deleted = 0_u64;
+  let attempts = 0_u64;
+  loop {
+    set over = memory_over(meta: meta, client: client, logged: logged);
+    if bnot(over) {
+      return False();
+    }
+    let sample = eviction_sample(keys: keys, meta: meta, client: client);
+    if sample.exhausted {
+      set over = memory_over(meta: meta, client: client, logged: logged);
+    }
+    let EvictionSample(key: victim, exhausted: exhausted) = move sample;
+    let removed = False();
+    match move victim {
+      Some(value: owned) => {
+        let length = owned.inner.len;
+        let name = &owned.inner[0_u64..length];
+        let volatile = eviction_volatile(policy: client^.memory_policy);
+        let slot = &keys^[name];
+        let loading = False();
+        let sequence = pkg::store::sequence_new(meta: meta, loading: loading);
+        let log_budget = pkg::store::log_budget_begin(meta: meta, loading: loading);
+        set over = memory_over(meta: meta, client: client, logged: logged);
+        if over {
+          let lapsed = False();
+          let eligible = False();
+          match slot^ {
+            Some(value: current) => {
+              let expiring = current^.expires != 0_u64;
+              let all = bnot(volatile);
+              set eligible = bor(all, expiring);
+              set lapsed = pkg::store::expired(expires: current^.expires, now: client^.now);
+            }
+            None() => {
+            }
+          }
+          if eligible {
+            pkg::store::sequence_delete_key(sequence: &sequence, slot: slot, key: name);
+            if logged {
+              pkg::store::log_removal(log: &meta^.log, key: name, budget: &log_budget);
+            }
+            if lapsed {
+              set meta^.expired_keys = meta^.expired_keys +wrap 1_u64;
+            } else {
+              set meta^.evicted_keys = meta^.evicted_keys +wrap 1_u64;
+            }
+            set removed = True();
+          }
+        }
+        pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &log_budget);
+        if bnot(over) {
+          return False();
+        }
+      }
+      None() => {
+        if exhausted {
+          return over;
+        }
+      }
+    }
+    if removed {
+      set deleted = deleted +wrap 1_u64;
+      set attempts = 0_u64;
+    } else {
+      set attempts = attempts +wrap 1_u64;
+    }
+    let deletion_batch = deleted % 16_u64;
+    let full = deletion_batch == 0_u64;
+    let check_deletions = band(removed, full);
+    let check_attempts = attempts >= 16_u64;
+    if bor(check_deletions, check_attempts) {
+      if eviction_timed_out(clock: clock, started: started, limit: limit, tenacity: client^.maxmemory_tenacity) {
+        return False();
+      }
+      set attempts = 0_u64;
+    }
+  }
+}
+
 fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool reads(store), writes(client), writes(clock) waits {
   doc "Redis 7.0.15 performEvictions: only EVICT_FAIL sets OOM. Without an append-only file the first check takes no Meta statement: nothing is excluded and no rewrite can start, so memory_over reduces to the raw heap against the limit, and the peak is raised as record_memory_peak raises it; with one, the first check reads the excluded AOF capacity and may abort a rewrite under Meta. Over the limit, the keyspace map's reserve is given back first and the limit read again, since that storage holds no key. Each command's context re-reads the heap before every victim; no global command turn is held. EVICT_RUNNING permits the command and the next command resumes, replacing Redis's evictionTimeProc continuation as the owner ruled. Check monotonic tenacity every 16 deletions, and every 16 unsuccessful batches to bound sparse/ghost searches. An exhaustion decision reads the heap in the same whole-map and Meta statement as its final sample, which is its admission point even if a writer starts afterward. Each deletion, DEL propagation and statistic update holds the chosen entry plus Meta together; an entry now expired follows active expiry instead of eviction. A single map_scan and a single deletion remain indivisible, as Redis's sampling and deletion do.";
   if client^.maxmemory == 0_u64 {
