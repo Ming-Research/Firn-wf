@@ -2031,7 +2031,7 @@ fn held_entries_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
 }
 
 fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: u64 reads(input), reads(args), reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error), writes(memory), writes(client) {
-  doc "Redis script command admission, shared by declared and whole attempts, in Redis 7.0.15 scriptCall's order (script.c:530-557): subcommand and arity errors, then the active AOF check at the first WRITE command (scriptVerifyWriteCommandAllow, script.c:349-386), then DENYOOM; accepted WRITE flags are recorded before command-specific parsing. Both attempt kinds hold Meta for the entire attempt and the writer needs that hold to publish, so the status read here cannot change during the attempt. WRITE_DIRTY suppresses later disk checks and restarts with each retry, including the whole-keyspace fallback. The shared error reply reaches redis.call as an exception and redis.pcall as an error table.";
+  doc "Redis script command admission, shared by declared and whole attempts, in Redis 7.0.15 scriptCall's order (script.c:530-557): subcommand and arity errors, then the active AOF check at the first WRITE command (scriptVerifyWriteCommandAllow, script.c:349-386), then DENYOOM; accepted WRITE flags are recorded before command-specific parsing. Both attempt kinds hold Meta for the entire attempt and the writer needs that hold to publish, so the status read here cannot change during the attempt. WRITE_DIRTY suppresses later disk checks and restarts with each retry, including the whole-keyspace fallback. The shared error reply reaches redis.call as an exception and redis.pcall as an error table. For the seven supported CLIENT subcommands, the shared client_arity table is checked before NOSCRIPT as Redis 7.2.16 scriptCall does; CLIENT names outside that table retain firn's existing generic minimum-arity NOSCRIPT boundary.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
@@ -2114,7 +2114,14 @@ fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8]
     let auth_or_debug = bor(auth, debug);
     let argued = bor(auth_or_debug, administration);
     if argued {
-      if arity_holds(arity: arity_noscript_with_argument, count: count) {
+      let required_arity = arity_noscript_with_argument;
+      if client_command {
+        let client_count = client_arity(input: input, args: args);
+        if client_count != 0_i64 {
+          set required_arity = client_count;
+        }
+      }
+      if arity_holds(arity: required_arity, count: count) {
       } else {
         reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
         return 0_u64;
