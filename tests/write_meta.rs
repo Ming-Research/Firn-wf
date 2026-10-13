@@ -7,10 +7,12 @@
 use super::*;
 
 fn start(clients: &[u8]) -> (ProgramChild, TcpStream, u16) {
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = firn().spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), clients]);
-    (child, connect_when_ready(port), port)
+    let child = firn().spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), clients]).with_port(&port_lease);
+    let client = connect_when_ready(port, &child);
+    (child, client, port)
 }
 
 fn pttl(client: &mut TcpStream, key: &str) -> i64 {
@@ -116,15 +118,17 @@ fn without_aof_mset_is_seen_whole_by_a_concurrent_mget() {
     const ROUNDS: usize = 2000;
     let (child, mut control, port) = start(b"3");
     assert_eq!(memory_request(&mut control, &["MSET", "left", "0", "right", "0"]), "+OK\r\n");
+    let writer_monitor = child.monitor();
     let writer = std::thread::spawn(move || {
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &writer_monitor);
         for round in 1..=ROUNDS {
             let value = round.to_string();
             assert_eq!(memory_request(&mut client, &["MSET", "left", &value, "right", &value]), "+OK\r\n");
         }
     });
+    let reader_monitor = child.monitor();
     let reader = std::thread::spawn(move || {
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &reader_monitor);
         let mut last = 0_usize;
         while last < ROUNDS {
             let reply = memory_request(&mut client, &["MGET", "left", "right"]);

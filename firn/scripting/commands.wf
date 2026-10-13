@@ -1,5 +1,6 @@
 alias Value = halo::value::Value;
 alias Vm = halo::vm::Vm;
+alias num_of = halo::value::num_of;
 
 fn command(env: &Env, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64) -> r: Value reads(stack), writes(env), writes(vm) {
   doc "redis.call and redis.pcall: checks the arguments as Redis 7.0.15's luaRedisGenericCommand does, at least one and each a string or a number, answering the error table of a call that fails; a call that passes leaves its host call pending, for eval to run the command inside the script's statement.";
@@ -20,18 +21,15 @@ fn command(env: &Env, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64) 
 }
 
 fn command_argument(vm: &Vm, v: Value) -> text: Value writes(vm) {
-  doc "Redis luaArgsToRedisArgv formats numeric command arguments with %.17g, separately from Lua tostring's %.14g. Reuse firn's Redis score formatter and decode its bulk reply.";
-  let tag = kind(v: v);
-  if tag == 2_u8 {
-    let x = number(vm: vm, v: v);
-    let client = pkg::protocol::client_new(capacity: 64_u64);
-    pkg::scores::reply_score(client: &client, score: x);
-    let n = client.at;
-    if n <= client.bytes.inner.len {
-      return command_reply(vm: vm, bytes: &client.bytes.inner[0_u64..n], start: 0_u64, end: n, resp: 2_u8);
+  doc "A redis.call or redis.pcall argument as the command receives it: a number in the text Redis 7.2.16's luaArgsToRedisArgv gives it (see append_argument_text), separately from Lua tostring's %.14g, and a string unchanged.";
+  match num_of(v: v) {
+    Is(x: n) => {
+      return argument_text(vm: vm, x: n);
+    }
+    Not() => {
+      return v;
     }
   }
-  return v;
 }
 
 const commands_text_0: Array<u8, 64> = "ERR Please specify at least one argument for this redis lib call";

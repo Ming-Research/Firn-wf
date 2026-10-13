@@ -147,7 +147,14 @@ public fn reply_verbatim(client: &Client, input: &[u8], start: u64, length: u64)
 
 public fn reply_error(client: &Client, word: &[u8]) -> result: unit reads(word), writes(client) doc "Writes a RESP error: a minus sign, the word, which carries its own ERR or WRONGTYPE prefix, and CR LF.";
 
-public fn reply_aof_error(client: &Client, execabort: Bool, error: &Option<std::io::IoError>) -> result: unit reads(error), writes(client) doc "Writes Redis 7.0.15 server.c:4350-4353's AOF MISCONF reply, the exact prefix followed by the host's description of error under PRE-2's error_copy_description, optionally wrapped by EXECABORT as server.c:3568-3576 and multi.c:136-140 do. None, the short-write case whose ENOSPC description awaits board item firn-req-enospc-text, and an unavailable description write the prefix alone.";
+public enum AofErrorText {
+  doc "What follows the MISCONF prefix of an AOF refusal, as Redis 7.0.15 writeCommandsDeniedByDiskError (server.c:4324-4344) selects aof_last_write_errno: the saved host error, a short write's ENOSPC, or nothing.";
+  Absent();
+  Host(public error: std::io::IoError);
+  ShortWrite();
+}
+
+public fn reply_aof_error(client: &Client, execabort: Bool, text: &AofErrorText) -> result: unit reads(text), writes(client) doc "Writes Redis 7.0.15 server.c:4350-4353's AOF MISCONF reply, the exact prefix followed by the text: the host's description of Host's error under PRE-2's error_copy_description, or for ShortWrite the no-space class's description under error_copy_class_description (aof.c:1163-1184); optionally wrapped by EXECABORT as server.c:3568-3576 and multi.c:136-140 do. Absent and an unavailable description write the prefix alone.";
 
 public fn reply_wrong_type(client: &Client) -> result: unit writes(client) doc "Writes the error Redis replies to a command on a key holding another kind of value.";
 
