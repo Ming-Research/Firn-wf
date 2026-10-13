@@ -69,6 +69,7 @@ passes.
   (`research/investigations/firn/`) and the instruments behind them
   (`research/experiments/`).
 - [Shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip): known gaps and defects.
+- [Benchmarking](docs/benchmarking.md): reproduce the published performance comparison on your own Linux machine.
 - [AGENTS.md](AGENTS.md): how work on firn proceeds.
 
 firn's history before it moved here is in the Whitefoot repository, where it
