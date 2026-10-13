@@ -5130,11 +5130,18 @@ fn firn_busy_no_effect_write_is_unkillable_but_shutdown_nosave_exits() {
 /// receive must not wait for the writing script's Meta hold to end.
 #[test]
 fn firn_new_client_answers_busy_while_a_writing_script_holds_meta() {
+    // Temporary tmp/busy-diag comparison; ordinary gate runs remain at two.
+    let drivers = if std::env::var_os("FIRN_BUSY_DIAG").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        std::env::var("FIRN_BUSY_DIAG_DRIVERS").unwrap_or_else(|_| "2".to_owned())
+    } else {
+        "2".to_owned()
+    };
+    eprintln!("new-client BUSY fixture: requested WF_DRIVERS={drivers}");
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
     let child = firn().spawn_on_route_with(
-        true, &[("WF_DRIVERS", "2")], &[text.as_bytes(), b"0"],
+        true, &[("WF_DRIVERS", drivers.as_str())], &[text.as_bytes(), b"0"],
     ).with_port(&port_lease);
     let mut looping = connect_when_ready(port, &child);
     let mut control = connect_when_ready(port, &child);
@@ -5145,7 +5152,9 @@ fn firn_new_client_answers_busy_while_a_writing_script_holds_meta() {
     ])).expect("start the writing script before accepting a new client");
     wait_for_script_busy(&mut control, &child, port);
     let mut late = connect_when_ready(port, &child);
-    assert_eq!(memory_request(&mut late, &["PING"]), SCRIPT_BUSY_REPLY,
+    let late_reply = memory_request(&mut late, &["PING"]);
+    eprintln!("new-client BUSY fixture: WF_DRIVERS={drivers}, late PING={late_reply:?}");
+    assert_eq!(late_reply, SCRIPT_BUSY_REPLY,
         "a client connected after BUSY must reach command admission");
     control.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop the new-client BUSY fixture");
     shutdown_finished(child);

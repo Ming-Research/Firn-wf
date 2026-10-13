@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
+#[cfg(target_os = "linux")]
+use std::sync::{Once, Weak};
 use std::time::{Duration, Instant};
 
 static NEXT_EXECUTION: AtomicU64 = AtomicU64::new(0);
@@ -286,6 +288,142 @@ pub(crate) const PROGRAM_DEADLINE: Duration = Duration::from_secs(60);
 const DIAGNOSTIC_TAIL_BYTES: usize = 4096;
 const DIAGNOSTIC_LIMIT: Duration = Duration::from_secs(2);
 
+/// Temporary tmp/busy-diag instrumentation. Capture the live process before
+/// panic cleanup kills it; normal gate runs do not set FIRN_BUSY_DIAG.
+#[cfg(target_os = "linux")]
+static BUSY_DIAGNOSTIC_CHILDREN: OnceLock<Mutex<Vec<Weak<MonitoredProgram>>>> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+fn register_busy_diagnostics(program: &Arc<MonitoredProgram>) {
+    if std::env::var_os("FIRN_BUSY_DIAG").as_deref() != Some(OsStr::new("1")) {
+        return;
+    }
+    if std::env::var_os("FIRN").as_deref() != Some(program.program.as_os_str()) {
+        return;
+    }
+    locked(BUSY_DIAGNOSTIC_CHILDREN.get_or_init(|| Mutex::new(Vec::new())))
+        .push(Arc::downgrade(program));
+    static INSTALL_HOOK: Once = Once::new();
+    INSTALL_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |information| {
+            previous(information);
+            // Capture before unwinding drops TCP peers and changes the waits.
+            // Release the registry lock before invoking any diagnostic tool.
+            let programs = {
+                let mut children = locked(
+                    BUSY_DIAGNOSTIC_CHILDREN.get_or_init(|| Mutex::new(Vec::new())),
+                );
+                let programs: Vec<_> = children.iter().filter_map(Weak::upgrade).collect();
+                children.retain(|child| child.strong_count() != 0);
+                programs
+            };
+            for program in programs {
+                busy_timeout_snapshot(&program);
+            }
+        }));
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn busy_timeout_snapshot(program: &MonitoredProgram) {
+    if std::env::var_os("FIRN_BUSY_DIAG").as_deref() != Some(OsStr::new("1")) {
+        return;
+    }
+    let pid = program.pid;
+    if !Path::new(&format!("/proc/{pid}/task")).is_dir()
+        || program.busy_snapshot_taken.swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    // Snapshot proc state before gdb stops the threads while attaching.
+    let _ = writeln!(std::io::stderr().lock(), "\n----- BEGIN LIVE FIRN BUSY DIAGNOSTICS PID {pid} -----");
+    match std::fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(value) => {
+            let value = String::from_utf8_lossy(&value).replace('\0', " ");
+            let _ = writeln!(std::io::stderr().lock(), "cmdline: {value}");
+        }
+        Err(error) => {
+            let _ = writeln!(std::io::stderr().lock(), "cmdline: {error}");
+        }
+    }
+    match std::fs::read(format!("/proc/{pid}/environ")) {
+        Ok(value) => {
+            for setting in value.split(|byte| *byte == 0).filter(|setting| {
+                setting.starts_with(b"WF_DRIVERS=") || setting.starts_with(b"WF_WORKERS=")
+            }) {
+                let _ = writeln!(std::io::stderr().lock(), "runtime setting: {}", String::from_utf8_lossy(setting));
+            }
+        }
+        Err(error) => {
+            let _ = writeln!(std::io::stderr().lock(), "runtime settings: {error}");
+        }
+    }
+    let tasks = PathBuf::from(format!("/proc/{pid}/task"));
+    match std::fs::read_dir(&tasks) {
+        Ok(entries) => {
+            let mut tasks: Vec<_> = entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect();
+            tasks.sort();
+            for task in tasks {
+                for name in ["stat", "wchan"] {
+                    let path = task.join(name);
+                    match std::fs::read_to_string(&path) {
+                        Ok(value) => {
+                            let _ = writeln!(std::io::stderr().lock(), "{}: {}", path.display(), value.trim_end());
+                        }
+                        Err(error) => {
+                            let _ = writeln!(std::io::stderr().lock(), "{}: {error}", path.display());
+                        }
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            let _ = writeln!(std::io::stderr().lock(), "{}: {error}", tasks.display());
+        }
+    }
+    // GNU timeout bounds a failed debugger attach as well as collection.
+    // Do not use output_within: its ProgramChild cleanup would recurse here.
+    busy_diagnostic_command("5s", "ls", &["-l", &format!("/proc/{pid}/fd")]);
+    busy_diagnostic_command(
+        "20s",
+        "gdb",
+        &[
+            "-p",
+            &pid.to_string(),
+            "-batch",
+            "-ex",
+            "p (unsigned int)wf_driver_selected_count",
+            "-ex",
+            "thread apply all bt",
+        ],
+    );
+    let _ = writeln!(std::io::stderr().lock(), "----- END LIVE FIRN BUSY DIAGNOSTICS PID {pid} -----\n");
+}
+
+#[cfg(target_os = "linux")]
+fn busy_diagnostic_command(limit: &str, program: &str, arguments: &[&str]) {
+    let _ = writeln!(std::io::stderr().lock(), "diagnostic command: {program} {arguments:?}");
+    match Command::new("timeout")
+        .args(["--kill-after=2s", limit, program])
+        .args(arguments)
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(output) => {
+            let _ = writeln!(std::io::stderr().lock(), "diagnostic exit status: {}", output.status);
+            let _ = std::io::stderr().lock().write_all(&output.stdout);
+            let _ = std::io::stderr().lock().write_all(&output.stderr);
+        }
+        Err(error) => {
+            let _ = writeln!(std::io::stderr().lock(), "diagnostic command failed: {error}");
+        }
+    }
+}
+
 /// A diagnostic never waits behind another thread's blocking cleanup.
 fn locked_until<T>(mutex: &Mutex<T>, deadline: Instant) -> Option<MutexGuard<'_, T>> {
     loop {
@@ -420,6 +558,8 @@ struct MonitoredProgram {
     program: OsString,
     pid: u32,
     diagnostic_deadline: OnceLock<Instant>,
+    #[cfg(target_os = "linux")]
+    busy_snapshot_taken: AtomicBool,
 }
 
 /// A shareable view of a child for peers that wait on separate test threads.
@@ -541,17 +681,20 @@ impl ProgramChild {
         let pid = child.id();
         let output = CapturedOutput::drain(child.stdout.take());
         let errors = CapturedOutput::drain(child.stderr.take());
+        let program = Arc::new(MonitoredProgram {
+            child: Mutex::new(child),
+            output,
+            errors,
+            program: command.get_program().to_os_string(),
+            pid,
+            diagnostic_deadline: OnceLock::new(),
+            #[cfg(target_os = "linux")]
+            busy_snapshot_taken: AtomicBool::new(false),
+        });
+        #[cfg(target_os = "linux")]
+        register_busy_diagnostics(&program);
         Ok(Self {
-            monitor: ProgramMonitor {
-                program: Arc::new(MonitoredProgram {
-                    child: Mutex::new(child),
-                    output,
-                    errors,
-                    program: command.get_program().to_os_string(),
-                    pid,
-                    diagnostic_deadline: OnceLock::new(),
-                }),
-            },
+            monitor: ProgramMonitor { program },
             deadline: Instant::now() + limit,
             port: None,
         })
@@ -577,6 +720,8 @@ impl ProgramChild {
     pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
         let status = locked(&self.monitor.program.child).try_wait()?;
         if status.is_none() && Instant::now() >= self.deadline {
+            #[cfg(target_os = "linux")]
+            busy_timeout_snapshot(&self.monitor.program);
             self.terminate();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
@@ -610,9 +755,11 @@ impl ProgramChild {
         })
     }
 
-    /// Stops this child and builds the panic report within one shared two
-    /// second collection budget. A later Drop never repeats blocking cleanup.
+    /// The opt-in busy snapshot precedes cleanup. Ordinary child cleanup and
+    /// output collection share a two-second budget; Drop does not repeat them.
     fn diagnostic_block(&mut self) -> String {
+        #[cfg(target_os = "linux")]
+        busy_timeout_snapshot(&self.monitor.program);
         let deadline = *self.monitor.program.diagnostic_deadline
             .get_or_init(|| Instant::now() + DIAGNOSTIC_LIMIT);
         let exited = self.monitor.status_until(deadline);

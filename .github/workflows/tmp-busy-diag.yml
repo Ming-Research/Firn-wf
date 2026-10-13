@@ -1,0 +1,106 @@
+# Temporary instrument for busy-script failures; remove after stack evidence.
+name: temporary busy-script diagnostics
+
+on:
+  push:
+    branches: [tmp/busy-diag]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-busy-diag-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      FIRN: ${{ github.workspace }}/build/firn-test
+      FIRN_BUSY_DIAG: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install GDB and permit attaching to the test child
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gdb binutils
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Show the host toolchain
+        run: |
+          ld.lld --version
+          /usr/bin/clang --version
+          gdb --version
+          cat /proc/sys/kernel/yama/ptrace_scope
+          if test -f /proc/sys/kernel/io_uring_disabled; then
+            cat /proc/sys/kernel/io_uring_disabled
+          fi
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      # Neither the Makefile nor the pinned compiler exposes a debug flag.
+      # Use the unchanged overlap build, retain its unstripped symbol table,
+      # and record symbol availability. No gate build or compiler is changed.
+      - name: Build the same firn-test and inspect its symbols
+        run: |
+          make firn-test
+          mkdir -p build/busy-diag
+          file "$FIRN"
+          readelf -S "$FIRN" > build/busy-diag/elf-sections.txt
+          nm -an "$FIRN" > build/busy-diag/symbols.txt
+          git rev-parse HEAD
+          cat whitefoot.pin
+
+      - name: New client with two requested drivers
+        id: new_client_two
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          FIRN_BUSY_DIAG_DRIVERS=2 cargo test --manifest-path tests/Cargo.toml --locked --test network firn_new_client_answers_busy_while_a_writing_script_holds_meta -- --exact --nocapture --test-threads=1 2>&1 | tee build/busy-diag/new-client-2.log
+
+      - name: New client with eight requested drivers
+        id: new_client_eight
+        if: ${{ !cancelled() && steps.new_client_two.outcome != 'skipped' }}
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          FIRN_BUSY_DIAG_DRIVERS=8 cargo test --manifest-path tests/Cargo.toml --locked --test network firn_new_client_answers_busy_while_a_writing_script_holds_meta -- --exact --nocapture --test-threads=1 2>&1 | tee build/busy-diag/new-client-8.log
+
+      - name: Busy shutdown with AOF
+        id: aof
+        if: ${{ !cancelled() && steps.new_client_two.outcome != 'skipped' }}
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo test --manifest-path tests/Cargo.toml --locked --test network firn_busy_shutdown_nosave_preserves_completed_aof_and_discards_script_effects -- --exact --nocapture --test-threads=1 2>&1 | tee build/busy-diag/aof.log
+
+      - name: Pending GET then NOSAVE
+        id: get
+        if: ${{ !cancelled() && steps.new_client_two.outcome != 'skipped' }}
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo test --manifest-path tests/Cargo.toml --locked --test network firn_get_sent_before_busy_threshold_answers_busy_while_a_written_key_is_held -- --exact --nocapture --test-threads=1 2>&1 | tee build/busy-diag/get-nosave.log
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: busy-diag-${{ github.sha }}
+          path: build/busy-diag
+          if-no-files-found: warn
+
+      - name: Preserve failure after collecting all four observations
+        if: ${{ !cancelled() && (steps.new_client_two.outcome == 'failure' || steps.new_client_eight.outcome == 'failure' || steps.aof.outcome == 'failure' || steps.get.outcome == 'failure') }}
+        run: exit 1
