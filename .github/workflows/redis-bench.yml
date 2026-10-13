@@ -5,7 +5,8 @@
 #
 #   mode compare  the built images measured interleaved against each other
 #                 (redis-bench.sh compare); a name ending in -twin measures
-#                 the image of its stem again, as a noise control
+#                 the image of its stem again, as a noise control; workload_servers
+#                 also selects competitors and the optional probe marker
 #   mode scale    this checkout's firn, the image named base as firn-base,
 #                 and Redis, Valkey, Dragonfly and Garnet where the host has
 #                 them, on each server CPU count in `cpus`
@@ -74,7 +75,7 @@ on:
         type: boolean
         default: false
       tests:
-        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits handshake client-list"
+        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Compare also accepts SUITE_DEFAULT for all 19 tests. Also: evict-zipf session-set-limits session-get-limits handshake client-list"
         type: string
         default: ""
       depths:
@@ -102,7 +103,7 @@ on:
         type: boolean
         default: false
       workload_servers:
-        description: "Workloads only: ordered selection from reference firn valkey valkey-io dragonfly garnet, without AOF; firn expands all images with workload_images. Empty preserves defaults."
+        description: "Compare: reference reference-io valkey valkey-io dragonfly garnet, plus probe to allow missing Dragonfly/Garnet and record unverified versions. Workloads: reference firn valkey valkey-io dragonfly garnet, without AOF. Empty preserves defaults."
         type: string
         default: ""
       maxmemory:
@@ -110,7 +111,7 @@ on:
         type: string
         default: ""
       aof:
-        description: "Compare only: start every measured server with the append-only file on (appendfsync everysec), automatic rewrites off and a fresh directory per run, so the cost measured is the steady-state append path; the run fails unless INFO reports aof_enabled:1"
+        description: "Compare only: fresh AOF, everysec, rewrites off; INFO enabled check for firn/Redis/Valkey, log-write check for Garnet (durability unverified). Dragonfly is refused."
         type: boolean
         default: false
       compare_reference:
@@ -206,7 +207,8 @@ jobs:
       - name: Check the host's tools
         run: |
           if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
-            export PATH="$HOME/.cargo/bin:$PATH"
+            # Append competitor paths so reference Redis stays first.
+            export PATH="$HOME/.cargo/bin:$PATH:$HOME/.local/bin"
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           fi
           echo "OUT=$RUNNER_TEMP/redis-bench" >> "$GITHUB_ENV"
@@ -266,7 +268,8 @@ jobs:
             for tool in redis-server valkey-server dragonfly garnet-server redis-benchmark; do
               echo "$tool: $(command -v "$tool" || echo missing)"
             done
-            # The versions are a record; none of them stops the run.
+            # Initial inventory only. Compare with workload_servers also validates
+            # selected versions and archive provenance before starting servers.
             redis-server --version || true
             valkey-server --version 2>/dev/null || true
             { dragonfly --version 2>/dev/null | head -1; } || true
@@ -340,6 +343,7 @@ jobs:
             images="$images $name=$OUT/$name"
           done
           echo "IMAGES=$images" >> "$GITHUB_ENV"
+          cat "$OUT/revisions.csv" >> "$OUT/host.txt"
 
       - name: Keep the images
         if: ${{ inputs.mode == 'build' }}
@@ -371,6 +375,7 @@ jobs:
           COMPARE_MAXMEMORY: ${{ inputs.maxmemory }}
           COMPARE_AOF: ${{ inputs.aof && 'true' || 'false' }}
           COMPARE_REFERENCE: ${{ inputs.compare_reference && 'true' || 'false' }}
+          COMPARE_LINES: ${{ inputs.workload_servers }}
           PROFILE: ${{ inputs.profile }}
           COMPARE_PROFILE: ${{ inputs.profile_test }}
           PERF_ANNOTATE: ${{ inputs.annotate }}
@@ -391,6 +396,7 @@ jobs:
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"
+          export PATH="$PATH:$HOME/.local/bin"
           if [ "$MODE" = compare ] || [ "$MODE" = workloads ]; then
             if [ "$PROFILE" = true ]; then
               # The first perf that can count a task: the one on PATH, as the

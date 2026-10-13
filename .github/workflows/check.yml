@@ -112,7 +112,7 @@ jobs:
         run: make test
 
   design:
-    name: design lint and gate sync
+    name: design lint, instrument selftests and gate sync
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -139,6 +139,9 @@ jobs:
 
       - name: Lint the design trees
         run: make design-lint
+
+      - name: Check the measurement instrument without starting servers
+        run: make placement-selftest
 
       - name: Check that these jobs run every target of make check
         run: make gate-sync
