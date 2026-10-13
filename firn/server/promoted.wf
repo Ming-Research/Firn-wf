@@ -312,7 +312,7 @@ fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown
         } else {
           return False();
         }
-        let requested = pkg::commands::execute_client(store: store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: clock, transaction: &transaction);
+        let requested = pkg::commands::execute_client::<1>(store: store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: clock, transaction: &transaction);
         if requested {
           std::time::cancel_fire(source: shutdown);
         }

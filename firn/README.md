@@ -119,6 +119,9 @@ mode. RESP3 delivers subscription acknowledgments and messages as push frames
 and allows ordinary commands. A client's command, EXEC or script reply group
 precedes its self-publication pushes. Lua errors retain publications from
 preceding accepted calls; abandoned attempts publish nothing.
+On a promoted connection, a dataset command's complete reply is queued
+before another client can observe its effects and publish a later message,
+including data-only EXEC and declared-key scripts.
 
 A connection transfers once to receive, command and output owners on its
 first subscription. Connections that never subscribe retain the original

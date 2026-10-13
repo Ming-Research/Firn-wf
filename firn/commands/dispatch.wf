@@ -255,7 +255,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_eval::<FirnCommands>(store: store, input: input, args: args, client: client, keys_env: env, time: time, clock: clock, by_sha: by_sha);
+      run_eval::<FirnCommands, 0>(store: store, input: input, args: args, client: client, keys_env: env, time: time, clock: clock, by_sha: by_sha);
     }
     return unit;
   }
@@ -1304,5 +1304,63 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   reply_unknown(client: client, input: input, args: args);
+  return unit;
+}
+
+fn execute_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
+  doc "Only the promoted owner's static dispatch reaches this function. Supported dataset commands use their shared EXEC/script bodies under the whole keyspace, metadata and event hub, committing the complete reply before release. Their AOF effects remain ordinary command records without MULTI/EXEC framing. Scripts begin with their existing whole-map/hub attempt. Invalid commands and non-dataset controls retain ordinary dispatch and its error precedence.";
+  let name = arg(args: args, index: 0_u64);
+  let code = name_code(input: input, start: name.start, length: name.length);
+  let evaluating = code == code_eval;
+  let by_sha = code == code_evalsha;
+  let count = args^.inner.len;
+  let open = bnot(client^.locked);
+  if bor(evaluating, by_sha) {
+    let fits = count >= 3_u64;
+    if band(fits, open) {
+      prepare_access(client: client, time: time);
+      run_eval::<FirnCommands, 1>(store: store, input: input, args: args, client: client, keys_env: env, time: time, clock: clock, by_sha: by_sha);
+    } else {
+      execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+    }
+    return unit;
+  }
+  let kind = held_kind(input: input, name: name);
+  let events = pubsub_command(kind: kind);
+  let unsupported = kind == 0_u64;
+  if bor(events, unsupported) {
+    execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+    return unit;
+  }
+  let arity = held_arity(kind: kind);
+  let fits = arity_holds(arity: arity, count: count);
+  let admitted = band(fits, open);
+  if bnot(admitted) {
+    execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+    return unit;
+  }
+  prepare_access(client: client, time: time);
+  set client^.now = time^.check;
+  let journal = None<pkg::store::AccessJournal>();
+  let effects = box_slots_new::<u8>(capacity: 64_u64);
+  let stage = pkg::connection_events::stage_new();
+  let seconds = client^.unix_us / 1000000_u64;
+  let logged = store^.logging;
+  let writing = command_writes(kind: kind);
+  atomic keys = &store^.keys, meta = &store^.meta, hub = &store^.pubsub {
+    if writing {
+      if aof_refuse(meta: meta, client: client) {
+        pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+        return unit;
+      }
+    }
+    let sequence = pkg::store::sequence_new(meta: meta, loading: time^.loading);
+    let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
+    let appended = held_run(sequence: &sequence, journal: &journal, kind: kind, keys: keys, meta: meta, effects: &effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let length = effects.inner.len;
+    pkg::store::log_append(log: &meta^.log, bytes: &effects.inner[0_u64..length], budget: &budget);
+    pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &budget);
+    pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+  }
   return unit;
 }

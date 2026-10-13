@@ -417,7 +417,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
         break @commands;
       }
       if parsed.state == 1_u64 {
-        let requested = execute_client(store: &store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: &clock, transaction: &transaction);
+        let requested = execute_client::<0>(store: &store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: &clock, transaction: &transaction);
         if requested {
           std::time::cancel_fire(source: &shutdown);
         }

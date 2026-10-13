@@ -9,12 +9,16 @@ use super::*;
 mod oracle;
 
 fn start(connections: usize) -> (ProgramChild, TcpStream, u16) {
+    start_with_drivers(connections, "1")
+}
+
+fn start_with_drivers(connections: usize, drivers: &str) -> (ProgramChild, TcpStream, u16) {
     let lease = support::lease_port();
     let port = lease.port();
     let port_text = port.to_string();
     let count = connections.to_string();
     let child = firn().spawn_on_route_with(
-        true, &[("WF_DRIVERS", "1")], &[port_text.as_bytes(), count.as_bytes()],
+        true, &[("WF_DRIVERS", drivers)], &[port_text.as_bytes(), count.as_bytes()],
     ).with_port(&lease);
     let stream = connect_when_ready(port, &child);
     (child, stream, port)
@@ -354,21 +358,83 @@ fn unsubscribe_all_returns_every_membership_and_empty_acknowledgment() {
 
 /// PUBSUB subcommand table arity is checked before execution; excess CHANNELS
 /// arguments are a handler syntax error. Wrong PUBLISH arity dirties MULTI.
-/// Only the zero-recipient PUBLISH footer is covered by
-/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
-/// These PUBSUB/PUBLISH arity errors and EXECABORT remain source-derived.
+/// A valid queued PUBLISH is observable to a real subscriber if it leaks on
+/// DISCARD or EXECABORT. The next barrier publication must be the next frame.
+/// Expected bytes follow Redis 7.2.16 src/multi.c and src/pubsub.c; the arity
+/// errors follow src/server.c and src/pubsub.c, rather than a new recording.
 #[test]
 fn pubsub_admission_errors_abort_transaction_without_publication() {
-    let (child, mut client, _) = start(1);
+    let (child, mut client, port) = start(2);
+    let mut subscriber = connect_when_ready(port, &child);
+    assert_eq!(request(&mut subscriber, &["SUBSCRIBE", "news"]), acknowledgment(2, "subscribe", Some("news"), 1));
     assert_eq!(request(&mut client, &["PUBSUB"]), b"-ERR wrong number of arguments for 'pubsub' command\r\n");
     assert_eq!(request(&mut client, &["PUBSUB", "NUMPAT", "extra"]), b"-ERR wrong number of arguments for 'pubsub|numpat' command\r\n");
     assert_eq!(request(&mut client, &["PUBSUB", "HELP", "extra"]), b"-ERR wrong number of arguments for 'pubsub|help' command\r\n");
     assert_eq!(request(&mut client, &["PUBSUB", "CHANNELS", "*", "extra"]), b"-ERR unknown subcommand or wrong number of arguments for 'CHANNELS'. Try PUBSUB HELP.\r\n");
     assert_eq!(request(&mut client, &["MULTI"]), b"+OK\r\n");
+    assert_eq!(request(&mut client, &["PUBLISH", "news", "discarded"]), b"+QUEUED\r\n");
+    assert_eq!(request(&mut client, &["DISCARD"]), b"+OK\r\n");
+    assert_eq!(request(&mut client, &["PUBLISH", "news", "after-discard"]), b":1\r\n");
+    assert_eq!(frame(&mut subscriber), message(2, "message", "news", "after-discard"), "DISCARD must not leak its valid queued PUBLISH");
+    assert_eq!(request(&mut client, &["MULTI"]), b"+OK\r\n");
+    assert_eq!(request(&mut client, &["PUBLISH", "news", "aborted"]), b"+QUEUED\r\n");
     assert_eq!(request(&mut client, &["PUBLISH", "news"]), b"-ERR wrong number of arguments for 'publish' command\r\n");
     assert_eq!(request(&mut client, &["EXEC"]), b"-EXECABORT Transaction discarded because of previous errors.\r\n");
-    assert_eq!(request(&mut client, &["PUBLISH", "news", "gone"]), b":0\r\n");
-    drop(client);
+    assert_eq!(request(&mut client, &["PUBLISH", "news", "after-abort"]), b":1\r\n");
+    assert_eq!(frame(&mut subscriber), message(2, "message", "news", "after-abort"), "EXECABORT must not leak the earlier valid queued PUBLISH");
+    drop((client, subscriber));
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Redis executes each command, queues its complete reply, and only then runs
+/// another client's command. Seeing the new value with GET therefore forces
+/// the subscribed writer's reply ahead of B's later publication. Four drivers
+/// exercise the gap between releasing data locks and committing that reply.
+/// SET's status, EXEC's aggregate and Lua's status-table conversion follow
+/// Redis 7.2.16 src/t_string.c, src/multi.c and src/script_lua.c.
+#[test]
+fn resp3_visible_write_reply_precedes_causally_later_publication_with_multiple_drivers() {
+    let (child, mut observer, port) = start_with_drivers(2, "4");
+    let mut writer = connect_when_ready(port, &child);
+    for stream in [&mut observer, &mut writer] {
+        stream.set_nodelay(true).expect("send causal barrier commands promptly");
+    }
+    hello(&mut writer, 3);
+    assert_eq!(request(&mut writer, &["SUBSCRIBE", "news"]), acknowledgment(3, "subscribe", Some("news"), 1));
+    for kind in ["direct", "exec", "script"] {
+        for iteration in 0..200 {
+            let value = format!("{kind}-{iteration}");
+            let expected_reply: &[u8] = match kind {
+                "direct" => {
+                    send(&mut writer, &[&["SET", "causal-key", &value]]);
+                    b"+OK\r\n"
+                }
+                "exec" => {
+                    assert_eq!(request(&mut writer, &["MULTI"]), b"+OK\r\n");
+                    assert_eq!(request(&mut writer, &["SET", "causal-key", &value]), b"+QUEUED\r\n");
+                    send(&mut writer, &[&["EXEC"]]);
+                    b"*1\r\n+OK\r\n"
+                }
+                "script" => {
+                    send(&mut writer, &[&["EVAL", "return redis.call('SET',KEYS[1],ARGV[1])", "1", "causal-key", &value]]);
+                    b"+OK\r\n"
+                }
+                _ => unreachable!(),
+            };
+            // Do not read A's reply until B has observed this iteration's
+            // distinct value and completed the resulting PUBLISH.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let visible = bulk(&value);
+            loop {
+                if request(&mut observer, &["GET", "causal-key"]) == visible { break; }
+                assert!(Instant::now() < deadline, "{value}: write never became visible to the other connection");
+            }
+            assert_eq!(request(&mut observer, &["PUBLISH", "news", &value]), b":1\r\n");
+            assert_eq!(frame(&mut writer), expected_reply, "{value}: a causally later publication overtook the write reply");
+            assert_eq!(frame(&mut writer), message(3, "message", "news", &value), "{value}: the publication follows the complete reply");
+        }
+    }
+    drop((observer, writer));
     assert_eq!(finished(child).0, 0);
 }
 
@@ -603,10 +669,9 @@ fn promoted_quit_and_protocol_error_drain_pipeline_and_leave_other_subscriber_li
     }
 }
 
-/// An unread subscriber cannot park delivery to another subscriber. Recipient
-/// counts may drop once Redis's hard output limit disconnects the slow peer.
-/// This checks progress, not an allocator/socket-dependent disconnect count;
-/// separate CI observation must validate the hard and 60-second soft limits.
+/// An unread subscriber cannot park delivery to another subscriber. This
+/// progress case allows the hard limit to close the slow peer; the separate
+/// oversized-publication case below requires that closure to happen.
 #[test]
 fn slow_subscriber_does_not_delay_other_subscribers() {
     let (child, mut publisher, port) = start(3);
@@ -621,6 +686,50 @@ fn slow_subscriber_does_not_delay_other_subscribers() {
         let count = request(&mut publisher, &["PUBLISH", "large", &payload]);
         assert!(count == b":2\r\n" || count == b":1\r\n", "unexpected recipient count: {count:?}");
         assert_eq!(frame(&mut fast), expected, "fast subscriber receives while slow subscriber never reads");
+    }
+    drop((publisher, slow, fast));
+    assert_eq!(finished(child).0, 0);
+}
+
+/// One 33 MiB body exceeds Redis's 32 MiB pub/sub hard output limit when its
+/// complete reply is queued, before socket flushing, regardless of kernel
+/// buffer sizes. Redis 7.2.16 src/networking.c:_addReplyProtoToList checks that
+/// limit synchronously; src/config.c:clientBufferLimitsDefaults defines it.
+/// A separate small channel keeps the fast subscriber below that same limit.
+/// This witnesses the hard limit, not the 8 MiB / 60-second soft limit.
+#[test]
+fn hard_output_limit_closes_slow_subscriber_and_other_subscriber_keeps_receiving() {
+    let (child, mut publisher, port) = start(3);
+    let mut slow = connect_when_ready(port, &child);
+    let mut fast = connect_when_ready(port, &child);
+    assert_eq!(request(&mut slow, &["SUBSCRIBE", "large"]), acknowledgment(2, "subscribe", Some("large"), 1));
+    assert_eq!(request(&mut fast, &["SUBSCRIBE", "heartbeat"]), acknowledgment(2, "subscribe", Some("heartbeat"), 1));
+    let payload = "x".repeat(33 * 1024 * 1024);
+    assert_eq!(request(&mut publisher, &["PUBLISH", "large", &payload]), b":1\r\n", "the publication counts the subscriber before its output limit closes it");
+    // Closing is asynchronous in Redis. Require actual registry removal;
+    // disabled limits leave :1 here and fail this bounded observation.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let count = request(&mut publisher, &["PUBSUB", "NUMSUB", "large"]);
+        if count == b"*2\r\n$5\r\nlarge\r\n:0\r\n" { break; }
+        assert_eq!(count, b"*2\r\n$5\r\nlarge\r\n:1\r\n");
+        assert!(Instant::now() < deadline, "32 MiB hard limit did not remove the unread subscriber after a 33 MiB publication");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(request(&mut publisher, &["PUBLISH", "heartbeat", "still-live"]), b":1\r\n");
+    assert_eq!(frame(&mut fast), message(2, "message", "heartbeat", "still-live"), "closing the slow subscriber does not close or stall the fast subscriber");
+    // Allow bytes already handed to the socket before closing. Drain with
+    // fixed storage and require closure, rather than treating registry removal
+    // alone as evidence that the connection was closed.
+    let mut buffer = [0; 64 * 1024];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match slow.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(_) => assert!(Instant::now() < deadline, "output-limited subscriber never reached EOF"),
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+            Err(error) => panic!("output-limited subscriber did not close: {error}"),
+        }
     }
     drop((publisher, slow, fast));
     assert_eq!(finished(child).0, 0);

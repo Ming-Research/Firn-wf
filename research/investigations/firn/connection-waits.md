@@ -946,7 +946,10 @@ Meta targets. Added work is local command classification/admission, a local
 promotion check, a larger client record and one retained hub handle created
 at connection setup; there is no hub target or queue transfer on these
 commands. RESP3 subscribers' ordinary commands use committed queued output
-and pay the promoted-path cost. No unused-path timing result is claimed.
+and pay the promoted-path cost. The review fix described below adds no new
+ordinary target, runtime ownership predicate or wrapper call: the original
+owner instantiates the existing coordinator with compile-time mode zero.
+No unused-path timing result or emitted-code comparison is claimed.
 
 Channel and pattern registries are server-wide and separate from shard
 channels. Duplicate membership acknowledges without adding another path.
@@ -964,6 +967,89 @@ matcher's missing reference depth refusal for other glob consumers. The
 source's BSD notice is retained beside the port. Stack-ledger evidence is
 still required for the maximum 1002 active calls including a rejected call.
 
+### Promoted command visibility and reply ordering
+
+The previous boundary committed a promoted data reply after its command
+released the data hold. That admits this incompatible causal history: A
+sets `k` to `v`; B reads `v` with GET and publishes `seen`; A receives the
+message before its SET reply. Redis 7.2.16's
+[SET handler](https://github.com/redis/redis/blob/7.2.16/src/t_string.c),
+[EXEC handler](https://github.com/redis/redis/blob/7.2.16/src/multi.c) and
+[reply construction](https://github.com/redis/redis/blob/7.2.16/src/networking.c)
+queue the complete command reply before another client's command executes.
+That ordering applies equally to data-only EXEC and declared-key scripts.
+
+The proposed correction executes an admitted promoted dataset command
+through the existing held command parts, holding the whole keyspace, Meta
+and event hub until the complete reply is committed. Direct commands retain
+ordinary AOF records without an added MULTI/EXEC wrapper. Promoted EXEC
+uses the existing event-aware transaction body even for a data-only queue.
+Promoted EVAL/EVALSHA starts with the existing whole-map/hub attempt; it
+retains Lua KEYS and all acceptance, error and budget-abandonment semantics.
+The broader hold reuses the existing transaction/script execution interface;
+its effect on promoted-command contention and latency remains unmeasured.
+
+The promoted direct adapter rechecks AOF health under Meta before the held
+handler parses semantic options. Ordinary SET parses those options before
+its mutation-time recheck. If admission first observes healthy AOF and the
+writer then reports failure concurrently, an invalid SET may therefore
+return MISCONF on the promoted path where the ordinary path returns syntax.
+Stable healthy and failed states retain the existing precedence; the
+overlapping failure and command can be ordered with failure first, consistent
+with Redis's pre-execution health refusal. No exact parity of the internal
+racing-health observation point is claimed.
+
+There are two necessary ordering directions. If A changes data first, a
+conflicting reader cannot observe that change until A releases its data
+hold, which happens after A's reply enters the hub order; its later
+publication therefore follows the reply. If B executes an atomic
+SET/PUBLISH transaction first, its publication enters that same hub order
+before it releases the data hold; A cannot read B's value and commit its
+read reply ahead of that publication. Reserving A's reply position before
+acquiring the data hold would violate the second history: A reserves a GET
+reply, B commits SET/PUBLISH, A finally reads B's value but its reserved
+reply precedes B's message. No placeholder reservation or deferred busy-client
+publication is used.
+
+The original receive/execute/send owner instantiates `execute_client::<0>`;
+the promoted owner instantiates `execute_client::<1>`. The coordinator is
+the original function body with compile-time dispatch selection, without an
+adapter call layer. Ordinary EVAL uses the existing evaluator instantiated
+with initial whole mode zero, while promoted EVAL uses one. The pinned
+language's FN-2 monomorphization fixes these const arguments; they are not
+runtime connection-state predicates. Ordinary GET/SET still call their
+original handlers with their existing key and optional Meta targets and no
+event-hub target, frame commitment or queue transfer. This source argument
+does not establish identical generated instructions or measured timings;
+CI emitted-code inspection can check that stronger claim.
+
+This boundary protects admitted dataset execution. Authentication,
+pre-command eviction, parser failures and other control replies retain
+their existing admission phases; eviction still removes victims in separate
+statements. It is not a claim that Firn globally serializes every admission
+phase as Redis's event loop does. Once dataset execution starts, reply
+commitment precedes releasing that hold. Socket sends never occur under it;
+the dispatcher and independent output owners retain committed order even
+when a socket makes no progress.
+
+The multi-driver network witness uses four drivers and 200 iterations for
+each of direct SET, data-only EXEC containing SET, and declared-key EVAL
+returning SET's status. A is subscribed with RESP3 and does not consume its
+reply until B's GET observes that iteration's unique value and B finishes
+PUBLISH. A must then receive its entire reply followed by the message. The
+old interleaving fails that exact assertion, but its failure frequency is
+unknown: no old/new run was performed in this round. The race may be too
+short to fail reliably in 600 iterations. A passing stress run therefore
+supplements, rather than replaces, the ordering argument above.
+
+The transaction-abort witness now gives a real RESP2 subscriber a valid
+queued PUBLISH before DISCARD, and another before a wrong-arity command
+makes EXEC abort. A subsequent distinct publication is the barrier in each
+history: the subscriber's next frame must be that barrier, with no leaked
+queued message ahead of it. Expected status, count, EXECABORT and message
+bytes follow the pinned Redis command bodies; no new oracle recording or
+ORACLE placeholder is needed for these histories.
+
 ### Pub/sub script attempts
 
 A declared-entry attempt encountering PUBLISH, SPUBLISH or PUBSUB introspection
@@ -971,8 +1057,11 @@ abandons through the existing uncatchable whole-map retry before observing
 membership. Its existing journal restores preceding writes and access stamps.
 Every whole-map attempt holds the hub from its start together with keys and
 Meta, including nonpublishing whole-map scripts, because those attempts have
-no general rollback boundary for a later wider hold. This adds possible hub
-contention only on that broad path; its cost is unmeasured.
+no general rollback boundary for a later wider hold. Promoted connections
+start with that broad hold even when every access is declared, so their
+accepted result commits before data visibility as described above. A
+never-promoted declared-only script retains its original declared-entry
+path. Whole-map and promoted script hub contention remains unmeasured.
 
 Publication counts and recipients use the held membership snapshot. Frames
 remain in an attempt-local stage until the final Lua result or error reply
@@ -1017,10 +1106,20 @@ This accounting excludes allocator rounding, reference-control and queue
 storage overhead, whereas Redis includes dynamic reply-allocation and
 block/list overhead. Exact allocation values and the publication number at
 which a slow client closes therefore differ; no allocator-equivalence claim
-is made. The numerical thresholds, interval reset and independent output
-progress still require CI observations. The slow-client network case checks
-progress only. A controlled accounting witness must hold a backlog above the
-soft threshold without reaching the hard threshold, then exercise a drop
+is made. The progress case still only checks that the other subscriber
+receives. A separate hard-limit witness publishes one 33 MiB body to an
+unread subscriber's exclusive channel, requires NUMSUB to reach zero and
+then EOF or connection reset, and checks a second subscriber on a small
+heartbeat channel remains live. Disabled limits cannot pass that zero-count
+and closure requirement. Redis charges the large reply allocation and checks
+its hard limit while constructing the command reply, before socket flushing
+([output limit check](https://github.com/redis/redis/blob/7.2.16/src/networking.c),
+[defaults](https://github.com/redis/redis/blob/7.2.16/src/config.c)); the single
+33 MiB body exceeds the 32 MiB threshold without relying on kernel buffering.
+CI compilation and execution remain required. The 60-second soft threshold
+and interval reset are still unverified. A controlled accounting witness
+must hold a backlog above the soft threshold without reaching the hard
+threshold, then exercise a drop
 below and re-entry. Compare the reference and Firn without assuming identical
 kernel socket buffering.
 
