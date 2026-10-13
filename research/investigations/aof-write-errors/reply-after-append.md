@@ -914,7 +914,7 @@ What this shows, no wider than these two runs:
   itself is at 0.68 of Redis at SET pipeline 16 on eight cores, the
   separate scaling regression of board item `firn-write-meta-aof`.
 - Writing the hot-path guards inline did not raise throughput: it is below
-  #97 in every row, by 0.05–0.14 of main on two cores and 0.01–0.03 on
+  #97 in every row, by 0.04–0.14 of main on two cores and 0.005–0.025 on
   eight. So these runs give no measured estimate of a gain from selective
   wake filtering of helper-call guards; any gain the request expects rests
   on the analysis above, not on this measurement.
