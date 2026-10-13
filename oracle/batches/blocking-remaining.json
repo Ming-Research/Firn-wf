@@ -1,0 +1,6369 @@
+[
+  {
+    "name": "blocking-fixture-exact-immediate",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "immediate",
+    "fixture_pending_steps": [
+      3,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      26,
+      27,
+      28
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "l",
+          "a",
+          "b"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 0,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 0,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLPOP",
+          "l",
+          "0"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 1,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 1,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BRPOP",
+          "l",
+          "0"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXISTS",
+          "l"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "s",
+          "a",
+          "b",
+          "c"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BRPOPLPUSH",
+          "s",
+          "d",
+          "0"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "d",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "from-LEFT-LEFT",
+          "a",
+          "b"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLMOVE",
+          "from-LEFT-LEFT",
+          "d",
+          "LEFT",
+          "LEFT",
+          "0"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "from-LEFT-LEFT",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "d",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "from-LEFT-RIGHT",
+          "a",
+          "b"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLMOVE",
+          "from-LEFT-RIGHT",
+          "d",
+          "LEFT",
+          "RIGHT",
+          "0"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "from-LEFT-RIGHT",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "d",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 14,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 14,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "from-RIGHT-LEFT",
+          "a",
+          "b"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 15,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 15,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLMOVE",
+          "from-RIGHT-LEFT",
+          "d",
+          "RIGHT",
+          "LEFT",
+          "0"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 16,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 16,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "from-RIGHT-LEFT",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 17,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 17,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "d",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 18,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 18,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "from-RIGHT-RIGHT",
+          "a",
+          "b"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 19,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 19,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLMOVE",
+          "from-RIGHT-RIGHT",
+          "d",
+          "RIGHT",
+          "RIGHT",
+          "0"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 20,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 20,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "from-RIGHT-RIGHT",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 21,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 21,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "d",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 22,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 22,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BRPOPLPUSH",
+          "d",
+          "d",
+          "0"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 23,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 23,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "d",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 24,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 24,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "SET",
+          "bad",
+          "string"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 25,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 25,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLPOP",
+          "bad",
+          "0"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 26,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 26,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLMOVE",
+          "s",
+          "bad",
+          "LEFT",
+          "RIGHT",
+          "0"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 27,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 27,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "s",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 28,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 28,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "PING"
+        ],
+        "fixture_scenario": "immediate",
+        "fixture_step": 29,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "immediate",
+        "fixture_step": 29,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-multikey",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "multikey",
+    "fixture_pending_steps": [
+      2,
+      5,
+      6,
+      7,
+      8,
+      9,
+      11,
+      12,
+      13
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "b",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "x",
+          "y",
+          "y",
+          "x",
+          "0"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 0,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "INFO",
+          "clients"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 2,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_info_field": "total_blocking_keys",
+        "fixture_scenario": "multikey",
+        "fixture_step": 2,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "BRPOP",
+          "y",
+          "0"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 3,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 2,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 4,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "INFO",
+          "clients"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 5,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_info_field": "blocked_clients",
+        "fixture_scenario": "multikey",
+        "fixture_step": 5,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "INFO",
+          "clients"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 6,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_info_field": "total_blocking_keys",
+        "fixture_scenario": "multikey",
+        "fixture_step": 6,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "y",
+          "one",
+          "two"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "multikey",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "multikey",
+        "fixture_step": 8,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "multikey",
+        "fixture_step": 9,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 10,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "INFO",
+          "clients"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 11,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_info_field": "total_blocking_keys",
+        "fixture_scenario": "multikey",
+        "fixture_step": 11,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "x",
+          "retained"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "multikey",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "x",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "multikey",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "multikey",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-ready-rescan",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "ready-rescan",
+    "fixture_pending_steps": [
+      11
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "b",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "x",
+          "y",
+          "0"
+        ],
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 0,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "BLPOP",
+          "y",
+          "0"
+        ],
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 2,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 2,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 3,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "MULTI"
+        ],
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "y",
+          "Y"
+        ],
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "x",
+          "X"
+        ],
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXEC"
+        ],
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 8,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 9,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 10,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXISTS",
+          "x",
+          "y"
+        ],
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "ready-rescan",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-execution-unit",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "execution-unit",
+    "fixture_pending_steps": [
+      13,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "0"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 0,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "MULTI"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LPUSH",
+          "l",
+          "a"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LPUSH",
+          "l",
+          "b"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LPUSH",
+          "l",
+          "c"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXEC"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 7,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "l",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "DEL",
+          "l"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "0"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 10,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 11,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "MULTI"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LPUSH",
+          "l",
+          "transient"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "DEL",
+          "l"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 14,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 14,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "SET",
+          "l",
+          "string"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 15,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 15,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXEC"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 16,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 16,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "quiet",
+        "client": "a",
+        "ms": 100,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 17,
+        "fixture_action": "Quiet"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 18,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "DEL",
+          "l"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 19,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 19,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EVAL",
+          "redis.call('LPUSH','l','first'); redis.call('LPUSH','l','last'); return 'done'",
+          "0"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 20,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 20,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 21,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "l",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 22,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 22,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "MULTI"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 23,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 23,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLPOP",
+          "empty",
+          "0"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 24,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 24,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BRPOP",
+          "empty",
+          "0"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 25,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 25,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BRPOPLPUSH",
+          "empty",
+          "d",
+          "0"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 26,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 26,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLMOVE",
+          "empty",
+          "d",
+          "LEFT",
+          "RIGHT",
+          "0"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 27,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 27,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXEC"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 28,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 28,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EVAL",
+          "return {redis.call('BLPOP','empty','0'),redis.call('BRPOP','empty','0'),redis.call('BRPOPLPUSH','empty','d','0'),redis.call('BLMOVE','empty','d','LEFT','RIGHT','0')}",
+          "0"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 29,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 29,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "PING"
+        ],
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 30,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "execution-unit",
+        "fixture_step": 30,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-moves",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "moves",
+    "fixture_pending_steps": [
+      7,
+      9,
+      10,
+      15,
+      16,
+      17,
+      19,
+      20
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "b",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "SET",
+          "bad",
+          "string"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 0,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 0,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BRPOPLPUSH",
+          "s",
+          "bad",
+          "0"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 1,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 2,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "BRPOPLPUSH",
+          "s",
+          "d",
+          "0"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 3,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 2,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 4,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "s",
+          "a",
+          "b",
+          "c"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 6,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 7,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "s",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "d",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "DEL",
+          "s",
+          "d"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLMOVE",
+          "s",
+          "d",
+          "RIGHT",
+          "LEFT",
+          "0"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 11,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 12,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "BLMOVE",
+          "d",
+          "e",
+          "LEFT",
+          "RIGHT",
+          "0"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 13,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 2,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 14,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "s",
+          "linked"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 15,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 15,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 16,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 17,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 18,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXISTS",
+          "s",
+          "d"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 19,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 19,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "e",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "moves",
+        "fixture_step": 20,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "moves",
+        "fixture_step": 20,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-type-change",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "type-change",
+    "fixture_pending_steps": [
+      5,
+      8,
+      9,
+      15,
+      16
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "x",
+          "y",
+          "0"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 0,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "SET",
+          "x",
+          "string"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "type-change",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "quiet",
+        "client": "a",
+        "ms": 100,
+        "fixture_scenario": "type-change",
+        "fixture_step": 3,
+        "fixture_action": "Quiet"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 4,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "y",
+          "untouched"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "type-change",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "type-change",
+        "fixture_step": 6,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 7,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "y",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "type-change",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "DEL",
+          "x",
+          "y"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "type-change",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "x",
+          "0"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 10,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 11,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "SET",
+          "x",
+          "string"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "type-change",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "quiet",
+        "client": "a",
+        "ms": 100,
+        "fixture_scenario": "type-change",
+        "fixture_step": 13,
+        "fixture_action": "Quiet"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "DEL",
+          "x"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 14,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "type-change",
+        "fixture_step": 14,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "x",
+          "final"
+        ],
+        "fixture_scenario": "type-change",
+        "fixture_step": 15,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "type-change",
+        "fixture_step": 15,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "type-change",
+        "fixture_step": 16,
+        "fixture_action": "Read"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-resp3-pubsub",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "resp3-pubsub",
+    "fixture_pending_steps": [
+      4,
+      5,
+      10
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "HELLO",
+          "3"
+        ],
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 0,
+        "fixture_action": "Resp3"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_projection": "HELLO proto field",
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 0,
+        "fixture_action": "Resp3"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "SUBSCRIBE",
+          "news"
+        ],
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 1,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 1,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "0"
+        ],
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 2,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 3,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "PUBLISH",
+          "news",
+          "while-blocked"
+        ],
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 5,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 6,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "l",
+          "value"
+        ],
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 8,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 9,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "UNSUBSCRIBE",
+          "news"
+        ],
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "PING"
+        ],
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "resp3-pubsub",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-client-unblock",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "client-unblock",
+    "fixture_pending_steps": [
+      3,
+      4,
+      6,
+      7,
+      11,
+      12,
+      13,
+      14,
+      16,
+      17,
+      18,
+      19,
+      38,
+      39,
+      40,
+      41
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "CLIENT",
+          "ID"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 0,
+        "fixture_action": "CaptureId"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "capture": "id-a",
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 0,
+        "fixture_action": "CaptureId"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "queued",
+          "0"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 1,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 2,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "MULTI"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "CLIENT",
+          "UNBLOCK",
+          {
+            "var": "id-a"
+          },
+          "TIMEOUT"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "quiet",
+        "client": "a",
+        "ms": 100,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 5,
+        "fixture_action": "Quiet"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXEC"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 7,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 8,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLMOVE",
+          "queued",
+          "destination",
+          "LEFT",
+          "RIGHT",
+          "0"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 9,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 10,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "MULTI"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "CLIENT",
+          "UNBLOCK",
+          {
+            "var": "id-a"
+          },
+          "ERROR"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXEC"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 14,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 15,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXISTS",
+          "queued",
+          "destination"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 16,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 16,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "MULTI"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 17,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 17,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "CLIENT",
+          "UNBLOCK",
+          {
+            "var": "id-a"
+          }
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 18,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 18,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXEC"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 19,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 19,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "x",
+          "y",
+          "y",
+          "0"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 20,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 21,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "INFO",
+          "clients"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 22,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_info_field": "blocked_clients",
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 22,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "INFO",
+          "clients"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 23,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_info_field": "total_blocking_keys",
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 23,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "INFO",
+          "clients"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 24,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_info_field": "total_blocking_keys_on_nokey",
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 24,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "CLIENT",
+          "UNBLOCK",
+          {
+            "var": "id-a"
+          }
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 25,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 25,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 26,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 27,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "CLIENT",
+          "UNBLOCK",
+          {
+            "var": "id-a"
+          }
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 28,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 28,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BRPOPLPUSH",
+          "s",
+          "d",
+          "0"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 29,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 30,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "CLIENT",
+          "UNBLOCK",
+          {
+            "var": "id-a"
+          },
+          "TIMEOUT"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 31,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 31,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 32,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLMOVE",
+          "s",
+          "d",
+          "LEFT",
+          "RIGHT",
+          "0"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 33,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 34,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "CLIENT",
+          "UNBLOCK",
+          {
+            "var": "id-a"
+          },
+          "ERROR"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 35,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 35,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 36,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 37,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "PING",
+          "tail"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 38,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 38,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "x",
+          "one"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 39,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 39,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "y",
+          "two"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 40,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 40,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXISTS",
+          "s",
+          "d"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 41,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 41,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "INFO",
+          "clients"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 42,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_info_field": "blocked_clients",
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 42,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "INFO",
+          "clients"
+        ],
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 43,
+        "fixture_action": "Info"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_info_field": "total_blocking_keys",
+        "fixture_scenario": "client-unblock",
+        "fixture_step": 43,
+        "fixture_action": "Info"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-aof",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "aof",
+    "fixture_pending_steps": [
+      3,
+      4,
+      5,
+      8,
+      9,
+      12,
+      13,
+      18,
+      19,
+      20,
+      22,
+      24,
+      25,
+      26,
+      27
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "b",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "0"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 0,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "aof",
+        "fixture_scenario": "aof",
+        "fixture_step": 2,
+        "fixture_action": "Aof"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "l",
+          "popped",
+          "left"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 4,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BRPOP",
+          "l",
+          "0"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BRPOPLPUSH",
+          "s",
+          "d",
+          "0"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 6,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 7,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "s",
+          "moved"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 9,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLMOVE",
+          "s",
+          "d",
+          "LEFT",
+          "RIGHT",
+          "0"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 10,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 11,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "s",
+          "second"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 13,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLMOVE",
+          "from",
+          "mid",
+          "LEFT",
+          "RIGHT",
+          "0"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 14,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 15,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "BLMOVE",
+          "mid",
+          "last",
+          "RIGHT",
+          "LEFT",
+          "0"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 16,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 2,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 17,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "from",
+          "chain"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 18,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 18,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 19,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 20,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 21,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "aof",
+        "fixture_scenario": "aof",
+        "fixture_step": 22,
+        "fixture_action": "Aof"
+      },
+      {
+        "op": "restart",
+        "fixture_scenario": "aof",
+        "fixture_step": 23,
+        "fixture_action": "Restart"
+      },
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2,
+        "fixture_scenario": "aof",
+        "fixture_step": 23,
+        "fixture_action": "Restart"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "d",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 24,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 24,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "last",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 25,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 25,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXISTS",
+          "l",
+          "s",
+          "from",
+          "mid"
+        ],
+        "fixture_scenario": "aof",
+        "fixture_step": 26,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "aof",
+        "fixture_step": 26,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "aof",
+        "fixture_scenario": "aof",
+        "fixture_step": 27,
+        "fixture_action": "Aof"
+      }
+    ],
+    "appendonly": true,
+    "config": {
+      "appendfilename": "blocking.aof"
+    }
+  },
+  {
+    "name": "blocking-fixture-exact-fractional-timeout",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "fractional-timeout",
+    "fixture_pending_steps": [
+      3
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLPOP",
+          "missing",
+          "0.001"
+        ],
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 0,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 0,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BRPOP",
+          "missing",
+          "0.02"
+        ],
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 1,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 1,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BRPOPLPUSH",
+          "missing",
+          "d",
+          "0.001"
+        ],
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLMOVE",
+          "missing",
+          "d",
+          "LEFT",
+          "RIGHT",
+          "0.001"
+        ],
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "BLPOP",
+          "missing",
+          "nan"
+        ],
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "PING"
+        ],
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "fractional-timeout",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-waiter-pipeline",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "waiter-pipeline",
+    "fixture_pending_steps": [
+      2,
+      8
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "pipeline",
+        "client": "a",
+        "commands": [
+          [
+            "BLPOP",
+            "l",
+            "0"
+          ],
+          [
+            "PING",
+            "tail"
+          ],
+          [
+            "RPUSH",
+            "after",
+            "value"
+          ]
+        ],
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 0,
+        "fixture_action": "Pipeline"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXISTS",
+          "after"
+        ],
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "quiet",
+        "client": "a",
+        "ms": 100,
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 3,
+        "fixture_action": "Quiet"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "l",
+          "first"
+        ],
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 5,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 6,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 7,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "after",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "waiter-pipeline",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-completion-reuse",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "completion-reuse",
+    "fixture_pending_steps": [
+      3,
+      4,
+      6,
+      7,
+      8,
+      13,
+      14,
+      16,
+      17
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "CLIENT",
+          "ID"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 0,
+        "fixture_action": "CaptureId"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "capture": "id-a",
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 0,
+        "fixture_action": "CaptureId"
+      },
+      {
+        "op": "pipeline",
+        "client": "a",
+        "commands": [
+          [
+            "BLPOP",
+            "x",
+            "0"
+          ],
+          [
+            "BRPOPLPUSH",
+            "y",
+            "d",
+            "0"
+          ],
+          [
+            "PING"
+          ]
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 1,
+        "fixture_action": "Pipeline"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 2,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "x",
+          "first"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 4,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 5,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "CLIENT",
+          "UNBLOCK",
+          {
+            "var": "id-a"
+          },
+          "ERROR"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 7,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 8,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 9,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "quiet",
+        "client": "a",
+        "ms": 100,
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 10,
+        "fixture_action": "Quiet"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "z",
+          "0"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 11,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 12,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "z",
+          "final"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 14,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 15,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "d",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 16,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 16,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "PING"
+        ],
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 17,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "completion-reuse",
+        "fixture_step": 17,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-other-producers",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "other-producers",
+    "fixture_pending_steps": [
+      6,
+      11,
+      13,
+      18
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "target",
+          "0"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 0,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "source",
+          "a",
+          "b"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RENAME",
+          "source",
+          "target"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 4,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "target",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "DEL",
+          "target"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BRPOP",
+          "target",
+          "0"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 7,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 8,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "source",
+          "a",
+          "b"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "COPY",
+          "source",
+          "target"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 11,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "source",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "DEL",
+          "target"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "target",
+          "0"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 14,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 15,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LMOVE",
+          "source",
+          "target",
+          "LEFT",
+          "RIGHT"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 16,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 16,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 17,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXISTS",
+          "target"
+        ],
+        "fixture_scenario": "other-producers",
+        "fixture_step": 18,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "other-producers",
+        "fixture_step": 18,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-nested-fifo",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "nested-fifo",
+    "fixture_pending_steps": [
+      14
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "b",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "c",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BRPOPLPUSH",
+          "l1",
+          "l3",
+          "0"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 0,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "BLPOP",
+          "l2",
+          "0"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 2,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 2,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 3,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "c",
+        "argv": [
+          "BLPOP",
+          "l2",
+          "l3",
+          "0"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 4,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 3,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 5,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "MULTI"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LPUSH",
+          "l1",
+          "one"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LPUSH",
+          "l2",
+          "two"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXEC"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 10,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 11,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "c",
+        "count": 1,
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 12,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 13,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXISTS",
+          "l1",
+          "l2",
+          "l3"
+        ],
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 14,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "nested-fifo",
+        "fixture_step": 14,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-expiry-before-ready",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "expiry-before-ready",
+    "fixture_pending_steps": [
+      2,
+      3,
+      4,
+      5,
+      8,
+      9,
+      10,
+      11,
+      13
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "0"
+        ],
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 0,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "MULTI"
+        ],
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "l",
+          "transient"
+        ],
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "PEXPIREAT",
+          "l",
+          "1"
+        ],
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXEC"
+        ],
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "quiet",
+        "client": "a",
+        "ms": 100,
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 6,
+        "fixture_action": "Quiet"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 7,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXISTS",
+          "l"
+        ],
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "aof",
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 9,
+        "fixture_action": "Aof"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "l",
+          "final"
+        ],
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 11,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 12,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "aof",
+        "fixture_scenario": "expiry-before-ready",
+        "fixture_step": 13,
+        "fixture_action": "Aof"
+      }
+    ],
+    "appendonly": true,
+    "config": {
+      "appendfilename": "blocking.aof"
+    }
+  },
+  {
+    "name": "blocking-fixture-exact-existing-list-producers-in-exec",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "existing-list-producers-in-exec",
+    "fixture_pending_steps": [
+      2,
+      3,
+      4,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      15
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "0"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 0,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LPUSHX",
+          "l",
+          "absent"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSHX",
+          "l",
+          "absent"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LINSERT",
+          "l",
+          "AFTER",
+          "absent",
+          "value"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "quiet",
+        "client": "a",
+        "ms": 100,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 5,
+        "fixture_action": "Quiet"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 6,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "MULTI"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 7,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSH",
+          "l",
+          "first"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 8,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LPUSHX",
+          "l",
+          "left"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "RPUSHX",
+          "l",
+          "right"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LINSERT",
+          "l",
+          "AFTER",
+          "first",
+          "inserted"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EXEC"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 13,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 14,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "l",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 15,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "existing-list-producers-in-exec",
+        "fixture_step": 15,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-promoted-unblock-order",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "promoted-unblock-order",
+    "fixture_pending_steps": [
+      5,
+      6,
+      7,
+      8,
+      10
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "b",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "CLIENT",
+          "ID"
+        ],
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 0,
+        "fixture_action": "CaptureId"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "capture": "id-a",
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 0,
+        "fixture_action": "CaptureId"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "HELLO",
+          "3"
+        ],
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 1,
+        "fixture_action": "Resp3"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_projection": "HELLO proto field",
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 1,
+        "fixture_action": "Resp3"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "SUBSCRIBE",
+          "news"
+        ],
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "pipeline",
+        "client": "a",
+        "commands": [
+          [
+            "BLPOP",
+            "l",
+            "0"
+          ],
+          [
+            "PUBLISH",
+            "news",
+            "after-unblock"
+          ]
+        ],
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 3,
+        "fixture_action": "Pipeline"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 4,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "CLIENT",
+          "UNBLOCK",
+          {
+            "var": "id-a"
+          },
+          "TIMEOUT"
+        ],
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 6,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 7,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 8,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 9,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "UNSUBSCRIBE",
+          "news"
+        ],
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 10,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "b",
+        "argv": [
+          "PING"
+        ],
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "b",
+        "count": 1,
+        "fixture_scenario": "promoted-unblock-order",
+        "fixture_step": 11,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-script-error-and-declared-fallback",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "script-error-and-declared-fallback",
+    "fixture_pending_steps": [
+      9,
+      10,
+      12,
+      13
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "0"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 0,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 1,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EVAL",
+          "redis.call('RPUSH','l','kept'); error('after push')",
+          "0"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 3,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 4,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "l",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "SET",
+          "counter",
+          "0"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 6,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "fallback-list",
+          "0"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 7,
+        "fixture_action": "Send"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 1,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 8,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "EVAL",
+          "redis.call('INCR',KEYS[1]); redis.call('RPUSH',KEYS[2],'once'); return redis.call('GET',KEYS[1])",
+          "2",
+          "counter",
+          "fallback-list"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 9,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 10,
+        "fixture_action": "Read"
+      },
+      {
+        "op": "poll_info",
+        "client": "p",
+        "section": "clients",
+        "field": "blocked_clients",
+        "equals": 0,
+        "timeout_ms": 5000,
+        "interval_ms": 10,
+        "record_fields": [
+          "blocked_clients",
+          "total_blocking_keys",
+          "total_blocking_keys_on_nokey"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 11,
+        "fixture_action": "WaitBlocked"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "GET",
+          "counter"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 12,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "LRANGE",
+          "fallback-list",
+          "0",
+          "-1"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 13,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "PING"
+        ],
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 14,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "script-error-and-declared-fallback",
+        "fixture_step": 14,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-negative-finite-errors-resp2",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "negative-finite-errors-resp2",
+    "fixture_pending_steps": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "-0.0015"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp2",
+        "fixture_step": 0,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "negative-finite-errors-resp2",
+        "fixture_step": 0,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "-0.002"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp2",
+        "fixture_step": 1,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "negative-finite-errors-resp2",
+        "fixture_step": 1,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BRPOP",
+          "l",
+          "-0.0015"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp2",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "negative-finite-errors-resp2",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BRPOP",
+          "l",
+          "-0.002"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp2",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "negative-finite-errors-resp2",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "PING"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp2",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "negative-finite-errors-resp2",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      }
+    ]
+  },
+  {
+    "name": "blocking-fixture-exact-negative-finite-errors-resp3",
+    "resp": 2,
+    "timeout_ms": 120000,
+    "fixture_scenario": "negative-finite-errors-resp3",
+    "fixture_pending_steps": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "operations": [
+      {
+        "op": "open",
+        "client": "p",
+        "resp": 2
+      },
+      {
+        "op": "open",
+        "client": "a",
+        "resp": 2
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "HELLO",
+          "3"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 0,
+        "fixture_action": "Resp3"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_projection": "HELLO proto field",
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 0,
+        "fixture_action": "Resp3"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "-0.0015"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 1,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 1,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BLPOP",
+          "l",
+          "-0.002"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 2,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BRPOP",
+          "l",
+          "-0.0015"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 3,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "a",
+        "argv": [
+          "BRPOP",
+          "l",
+          "-0.002"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "a",
+        "count": 1,
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 4,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "send",
+        "client": "p",
+        "argv": [
+          "PING"
+        ],
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      },
+      {
+        "op": "read",
+        "client": "p",
+        "count": 1,
+        "fixture_scenario": "negative-finite-errors-resp3",
+        "fixture_step": 5,
+        "fixture_action": "Command"
+      }
+    ]
+  }
+]
