@@ -3,7 +3,8 @@ const frame_crlf: Array<u8, 2> = "\r\n";
 fn frame_byte(buffer: &Box<Slots<u8>>, value: u8) -> result: unit writes(buffer) {
   doc "Appends to a logical prefix buffer, growing its initialized window when full; Client reply buffers instead retain initialized storage and a separate output offset.";
   if buffer^.inner.len >= buffer^.inner.cap {
-    let doubled = buffer^.inner.cap *sat 2_u64;
+    let current = buffer^.inner.cap;
+    let doubled = current +sat current;
     let capacity = imax(doubled, 8_u64);
     grow(cell: buffer, capacity: capacity);
   }
