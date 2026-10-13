@@ -43,8 +43,9 @@ setup before that call frees no substantial read prefix in this workload.
 **Judgment; predictions by option.** Option D, the AOF-off-only change, is
 predicted to improve the two-core limiter's throughput by more than max(10%, N),
 where N is the twin/spread noise bound defined below, without one-core throughput
-or p99 regressions exceeding N. It predicts no AOF-on gain because that path is
-unchanged. Option A is predicted to gain about nothing on this AOF-on limiter;
+or p99 regressions exceeding N. It predicts no AOF-on metadata gain because
+that path is unchanged; both comparison arms must share the validated control
+integration described below. Option A is predicted to gain about nothing on this AOF-on limiter;
 its AOF-off result has the same gain criterion as D. Only option B, after a
 live-health contract permits staying Meta-free past first WRITE, has the proposed
 AOF-on throughput-gain criterion. These are unmeasured predictions, not results.
@@ -141,7 +142,7 @@ Classification:
 | First accepted WRITE admission `commands/script.wf:2069-2084`; `commands/admission.wf:35-44`; `store/store.wf:553` onward | Reads `aof_append_error`, `aof_sync_error`, `aof_append_partial`, including error selection. Later accepted WRITEs bypass it via local WRITE_DIRTY. | **(b)** when AOF is enabled. It changes a call exception/pcall result before Lua continues. AOF off has no writer and can use the known healthy condition without Meta; this is an explicit configuration fact, not a stale snapshot. |
 | OOM command check `commands/script.wf:2076-2084`; `entry.wf:439,492` | Local `pre_command_oom` and WRITE_DIRTY only. | **(c)** preserve the original captured OOM state across retries; no per-redis.call memory measurement or eviction. |
 | All mutation helpers `store/sequence.wf:28-99,126-190`; `store/rewrite-capture.wf:59-167` | Entry stamps and local WriteSequence fields/images; their initial values currently came from Meta. | **(a)** track actual mutations independently of the eventual sequence. Assign final stamps/capture at commit. Do not use an inert token as the mutation detector. |
-| Reply conversion `entry.wf:349-376,539,548-550,615,624-626`; `scripting/replies.wf` | Engine/Env/client bytes and sequence.taken; no Meta. | **(c)** conversion needs none; keep replies private until publication. Replace sequence.taken's role in `held.wrote` if sequence allocation is deferred. |
+| Reply conversion and written-state detection `entry.wf:349-376,539,548-550,615,624-626`; `scripting/replies.wf` | Current `held.wrote` comes only from sequence.taken or appended > 0; conversion itself uses engine/Env/client bytes, not Meta. | **(c)** conversion needs none. D must add the logging-independent `changed` detector specified below before resuming Lua; inert tokens and disabled effect encoding provide neither current signal. |
 | Done and Lua Error `entry.wf:542,552,618,628`; `record_effects:248-261` | Append private effects to `m.log`, with MULTI/EXEC when record count exceeds one. | **(a)** append exactly once on either accepted outcome, never on abandonment. |
 | Accepted narrow exit `entry.wf:658`; `store/attempt.wf:267-295` | Apply local expiry insertions to `m.due`, including eligibility invalidation. | **(a)** already staged on the narrow path; preserve this atomic publication. |
 | Both accepted exits `entry.wf:563,659`; `store/sequence.wf:109-136`; `store/rewrite-capture.wf:282-365` | Write `commit_seq`, exhaustion, rewrite reserve/peak/abort/journal, read appended log bytes as needed. | **(a)** single final publication while all keys remain held. Sequence exhaustion still saturates and refuses capture, not service writes. |
@@ -228,9 +229,11 @@ single-threaded Redis history. The qualifications below are part of the result.
    before that attempt starts. No nested acquisition or widening occurs.
 2. No ordinary observer, expiry worker, eviction victim or rewrite scanner
    sees provisional entries. All conflicting paths use the same map authority.
-3. Local bookkeeping tracks actual mutations (including deletions), ordered
-   propagated effects, expiry insertions and necessary reset actions. Mutation
-   detection remains separate from sequence allocation and WRITE_DIRTY.
+3. A logging-independent attempt flag tracks mutation operations (including
+   deletions and the existing conservative FLUSH marker); local bookkeeping
+   tracks ordered propagated effects, expiry insertions and reset actions.
+   Mutation detection remains separate from
+   sequence allocation, append counts and accepted-WRITE control publication.
 4. Done **and Lua Error** accept preceding effects. Only internal abandonment
    rolls back, restoring entries, access and last-write stamps, client reply
    position/random state and engine-visible state before releasing keys.
@@ -556,10 +559,142 @@ representation for script execution.
 
 **Judgment.** D still needs to remove `m` and `&m^.due` from unlogged ordinary
 command dispatch and stage expiry/reset work in whole mode as well as narrow
-mode. Keep the existing private effect records/counts used to detect actual
-writes even with AOF off: `sequence_inert()` never sets `taken`, so replacing
-the token alone would lose part of the attempt's written-state detection.
-These changes do not require the AOF-on final-image capture redesign.
+mode. It also needs the following independent detector and KILL integration;
+neither an inert sequence nor effect counts can supply them. These changes do
+not require the AOF-on final-image capture redesign.
+
+### D's mutation detector and KILL publication
+
+**Source-read; before D.** Today's serving scripts take a real sequence even
+with AOF off: both attempt branches call `sequence_new(meta: m, loading:
+time^.loading)` without testing logging (`entry.wf:504,571`), and serving
+EVAL has loading false. `sequence_change` therefore sets `taken` on a mutation.
+The call wrappers also set their internal `logged` argument to True
+(`entry.wf:297,333`), independently of `store.logging`; only final file emission
+is gated by the latter. Thus today's AOF-off scripts can produce private
+records as well as a real sequence. This differs from the plain AOF-off inert
+path. It does not justify relying on those records in D's proposed unlogged
+execution path.
+
+**Source-read; failure of the earlier D proposal.** `complete_command_call`
+sets `held.wrote` only from `sequence.taken` or `appended > 0`
+(`entry.wf:350-356`). An inert token never sets taken
+(`store/sequence.wf:43-48`), and with the helper's `logged` argument false,
+`mset_lapse_meta` and `mset_meta` return zero (`commands/strings.wf:871-887`),
+as do other disabled effect encoders. D cannot disable encoding and use an
+inert token while retaining this detector: a real write would appear unwritten.
+Narrow budget retries would undo/replay a write; whole budget retries would
+repeat it without payload undo. A retry gap would also admit a kill, and the
+written-attempt budget-extension branches would not fire.
+
+**Judgment; after D.** Add a local `changed: Bool` to the attempt's existing
+WriteSequence token, initialized false by both real and inert constructors.
+Set it in `sequence_change` **before** its inert early return. The token remains
+inert for numbering, stamps and capture; `changed` is independent of those
+fields and of whether any bytes were appended. This is one local mutation
+marker, not a new shared counter or a replacement meaning for `taken`.
+
+All handlers must mark the same mutation boundary they currently report via
+sequence operations: string/hash/list/set/zset and multi-key writes reach
+`sequence_stamp`/`sequence_entry`; actual removals reach `sequence_delete`;
+script lazy expiry reaches `sequence_delete_key` (`script.wf:483-484`). These
+converge on `sequence_change` (`sequence.wf:78-105,134-143`). Whole FLUSH calls
+it directly (`commands/server.wf:166-172`), including an empty map, preserving
+today's conservative no-restart marker for that operation. Replacement helpers
+must still be followed by their existing stamp/capture mutation hook; audit
+every accepted handler and early return against this coverage. Failed/no-effect
+commands must not infer mutation from WRITE flags or reply success alone.
+
+In `complete_command_call`, fold `sequence.changed` into `env.held.wrote`
+before `fail_call`/`complete_call` resumes Lua. Keep `env.appended` only as the
+AOF record count; it is no longer the source of truth for retry safety. Audit
+the continuation/abandonment sites that rely on written-state detection:
+
+| Consumer | Required D behavior |
+|---|---|
+| Whole Budget branch, `entry.wf:510-520` | If changed, continue that same attempt, never restart it: whole mode has no payload undo. After accepted WRITE, grant unlimited budget; for read-only mutation use the finite cancellation checkpoints below. |
+| Narrow Budget branch, `entry.wf:579-595` | If changed, continue that same attempt; do not use undo to permit write-bearing budget retries. Choose unlimited or finite continuation according to the accepted-WRITE verdict as below. |
+| Whole/narrow HostCall continuation budgets, `entry.wf:526,602` | Use updated held.wrote together with the invocation verdict: unlimited after mutation plus accepted WRITE, finite checkpoints for Open/read-only mutation. A first-write continuation that immediately returns Budget must already see changed. |
+| Undeclared-key fallback, `entry.wf:632-653` | This remains the explicitly permitted written-attempt abandonment: restore narrow payload/access state, discard due/effects and reset local changed only for the next attempt. Done and Lua Error retain mutations. |
+
+**Source-read; current KILL publication.** There is none for `held.wrote`.
+SCRIPT KILL checks only `pool.running`, increments `pool.kills`, and answers
+OK/NOTBUSY (`entry.wf:732-745`). `kill_requested` compares that epoch
+(`entry.wf:216-222`), and invocation entry checks it between attempts
+(`entry.wf:449-450`). The local wrote flag prevents write-bearing budget gaps
+today; it is not read by KILL and cannot make KILL answer UNKILLABLE. The script
+design's separate KILL decision explicitly records that existing discrepancy.
+
+**Judgment; required D control integration.** Actual dataset mutation and Redis
+accepted WRITE are distinct. An accepted `DEL missing` leaves changed false
+but makes Redis's invocation unkillable. Give each invocation a DecisionCell,
+created before first checkout and registered with the first take's running-count
+increment. Retain its shared handle in an invocation control record across all
+attempts, not merely in the currently leased engine slot; remove it only when
+the invocation ends. At
+the existing accepted-WRITE admission boundary (`commands/script.wf:2065-2083`),
+after identity/arity, disk-health and OOM checks and before the handler, perform
+`claim_written`. Written permits the command; Killed stops the invocation before
+the handler through uncatchable host control, not a call/pcall error table.
+Carry a dedicated killed-invocation result through ScriptCommands and the host
+loop, distinct from NeedWholeMap and ordinary command errors.
+The attempt-local `write_dirty` keeps its existing OOM/health role; it is not
+the retry detector or the published verdict.
+
+For one active invocation, KILL obtains that invocation's cell and calls
+`claim_killed`: Written means UNKILLABLE, Killed means accepted cancellation,
+and absence of an active invocation means NOTBUSY. Retry entry checks the
+verdict instead of treating every changed global kill epoch as permission to
+kill. A Written verdict persists across budget gaps and narrow-to-whole fallback,
+even when the local changed/write_dirty flags are reset for re-execution.
+Never reset the cell with payload rollback. A claim that wins before first
+WRITE prevents that handler from executing; a write claim that wins prevents
+later cancellation. These are independent control effect points under the
+pinned SHARE-3/DecisionCell rules, not publication of intermediate key contents.
+
+**Judgment; read-only mutation edge.** Lazy expiry can set changed while the
+invocation cell remains Open: an internal deletion is not an accepted WRITE
+command. Do not give that path an unlimited continuation that loses all later
+KILL checks. At each Budget boundary, read the cell independently. If still
+Open and changed, resume the **same held attempt** in finite budget chunks,
+including finite HostCall continuation budgets; never restore/restart its
+completed mutations. If Killed, use a dedicated uncatchable killed-invocation
+outcome, preserve the completed read-command prefix's lazy-expiry effects and
+finalize its metadata once before returning the script-killed reply. Do not
+reuse a generic host-stopped error or a catchable Lua error. Written plus changed
+can retain unlimited continuation because cancellation must be refused. A
+no-effect accepted WRITE may leave changed false and permit budget restart,
+while its persistent Written verdict still makes KILL return UNKILLABLE.
+
+Finite boundaries provide observation points, not scheduling progress. With
+one cooperative driver, continuing inside the atomic statement cannot assume
+that the KILL context gets to run; SHARE-2 forbids waiting/nested atomic calls
+there. D must validate a control-executor progress mechanism for configured
+one-driver operation, or carry that unmet runtime need to Whitefoot, before
+claiming general read-only killability. Releasing the key hold and retrying
+read-induced mutations is not a substitute. This is an explicit readiness
+prerequisite, not an implemented facility established by source inspection.
+
+**Judgment; pool prerequisite.** This describes single-invocation arbitration,
+not an atomic “kill all unless any has written” implementation for many pooled
+invocations. Reading/claiming individual cells in a loop can partially kill
+while another invocation becomes Written. The engine-pool/control work must
+settle and validate coordinated KILL semantics before D claims pooled KILL
+compatibility or runs its pooled acceptance comparison. D must include that
+integration or depend explicitly on its delivery; a local detector alone does
+not satisfy the UNKILLABLE requirement. This reopens the existing KILL decision
+for owner approval as well as D's Meta-lifetime decisions.
+
+**Judgment; cost.** Mutation detection adds one Boolean per attempt, constructor
+and contract updates, an idempotent local store at each existing mutation hook,
+and one local read/fold per completed redis.call/pcall. It adds no Meta acquisition,
+allocation or log encoding. KILL integration adds one cell allocation and shared
+handle per invocation, an admission claim at accepted WRITE, control-record
+lifecycle/lookup and killed-admission handling, plus race/fallback tests. Pooled
+coordination and read-only cancellation progress have separate design cost and
+are not priced as merely one Boolean.
+D remains narrower than A/B's capture redesign, but it is not just substituting
+an inert token and delaying expiry publication.
 
 **Source-read.** The deployment-performance workload inventory
 (`research/investigations/deployment-performance/README.md:192-205`) includes
@@ -582,14 +717,18 @@ resolving the stronger AOF-on contract, and waiting for pooled evidence.
 | A — General staged metadata, retain live checks | Refactor expiry/effects/sequence/capture publication after pooling, retaining Meta from first WRITE with AOF on. Frees a substantial pre-WRITE prefix if a workload has one. | Moderate interface/design work, new mutation tracking and final-image/reserve validation. Expected AOF-on limiter gain is about zero; no selected deployment workload currently justifies this redesign solely for prefix concurrency. Not recommended now. |
 | B — Resolve the full observation contract first | Whitefoot/Firn joint design for live persistence status, plus an explicit ruling on the timed-history claim and accepted memory exception, before implementing commit-only AOF-on execution. | Larger, uncertain language/semantic scope; strongest concurrency target, but no existing API/diagnostic proves its final shape. May uncover a fundamental shared dependency rather than an optimization. |
 | C — Keep full-attempt Meta and measure only after pooling | A clean pooled baseline with no token/capture refactor yet. | Lowest immediate change cost; retains script serialization. Prefer if D's end-to-end throughput comparison rejects its benefit. |
-| **D — AOF-off-only execution change; recommended** | Use an inert token, no outer AOF log budget, the known-healthy disk condition, and local expiry staging in both attempt modes. Acquire Meta at accepted `attempt_due_commit` only when expiry/reset work exists; finite attempts without it take no Meta. Keep AOF-on execution unchanged. | Small configuration-scoped script/command-interface change, with rollback and expiry-publication cases. Retain local actual-effect tracking: an inert sequence never sets `taken`. Whole-map RANDOMKEY keeps its existing shared draw; whole FLUSH stages its queue reset. No capture/sequence redesign, live-health API or AOF-on gain claim. |
+| **D — AOF-off execution with independent mutation detection; recommended conditionally** | Use an inert token, no outer AOF log budget, known health and local expiry staging in both modes. Add the local changed flag at mutation hooks before the inert return, and include/depend on accepted-WRITE KILL publication. Acquire Meta at accepted expiry/reset publication only when needed; retain whole RANDOMKEY's existing draw. Keep AOF-on metadata/capture execution unchanged. | Bounded script/token-interface changes plus control integration and budget/KILL/fallback tests. One local Boolean/store/read for detection; one cell/shared handle per invocation and admission claims for KILL. Pooled coordination is a prerequisite, not an already solved small edit. No AOF-on capture redesign or new health API. |
 
-**Judgment; confidence 4/5 in D as the next bounded step, not in its speedup.**
+**Judgment; confidence 3/5 in D as the next step, conditional on validated KILL
+integration, not in its speedup.**
 The immutable AOF-off configuration eliminates the health/capture dependencies,
 and existing inert-token semantics supply the sequence behavior. The limiter's
 immediate WRITE means A offers no supported AOF-on application advantage over
 D while requiring more design work. B remains the route to the full AOF-on
-target; it need not block D's independent experiment. If D fails its throughput
+target. D's detector must preserve write-bearing attempt continuation, and its
+KILL prerequisite must be delivered before calling the result correct; if pool
+coordination remains unresolved, C supplies the baseline while that work proceeds.
+The full AOF-health request need not block D. If D fails its throughput
 criterion, prefer C and reassess the measured costs. D does not complete the
 AOF-on portion of `firn-script-meta-free`.
 
@@ -607,19 +746,27 @@ first-WRITE admission and grounds its live observation in the full-attempt hold.
 | A | Replace the full-attempt Meta clause with acquisition at necessary first use; immutable declarations, abandonment and sticky whole retry still stand. | Replace full-interpreter Meta lifetime; budget/actual-effect retry rules still stand. | First-WRITE boundary, MISCONF call/pcall behavior and WRITE_DIRTY bypass still stand. The health equivalence stands on different grounds: live acquisition at first WRITE, then the retained hold; replace the full-attempt ground. |
 | B | Replace Meta lifetime with commit-only acquisition; declaration/fallback rules still stand. | Replace full-interpreter Meta lifetime; retain budget/actual-effect retry rules. | Replace “checks held Meta” and “needs no separate changing-status channel.” Retain observable first-WRITE/error/bypass behavior, justified by the newly approved independent observation contract. |
 | C | Keep the entire decision. | Keep the entire decision. | Keep the entire decision and its ground. |
-| D | Narrow the full-attempt Meta clause to AOF-on execution; declaration/fallback rules still stand in both modes. | Narrow the full-interpreter hold to AOF on; AOF-off expiry/reset publication remains inside the same key statement. Retry rules still stand. | Keep the AOF-on decision and its full-attempt ground. Explicitly use immutable AOF-off known health without a shared read; no changing-status channel is needed there. |
+| D | Narrow the full-attempt Meta clause to AOF-on execution; declaration/fallback rules still stand in both modes. Needs owner approval. | Narrow the full-interpreter hold to AOF on; AOF-off expiry/reset publication remains in the key statement. The no-write-bearing-budget-retry rule stands only with D's logging-independent changed detector; replacing sequence.taken alone does not preserve it. Needs owner approval. | Narrow/replace “checks held Meta before first accepted WRITE” for AOF off, with immutable known health as its new ground; needs owner approval. Keep the AOF-on check and its full-attempt ground. |
 
 **Judgment.** A/B also replace the sequence node's token-initialization/stamping
 contract and the capture node's per-command coalescing/reservation contract as
 described above. D keeps their AOF-on decisions and reuses the existing
 AOF-off inert/zero-stamp decision; C keeps both nodes unchanged. All options
 retain frozen time, error-prefix writes, memory admission and expiry semantics.
-These dispositions are proposals; this investigation edits no design tree.
+D extends the token interface with local mutation detection, without changing
+its inert numbering/capture meaning. D's required UNKILLABLE publication also
+replaces the separate existing KILL decision's documented OK-for-written-script
+behavior and its between-attempt-only control mechanism; that needs owner
+approval and the engine/control work's coordination contract. These dispositions
+are proposals; this investigation edits no design tree.
 
 ## Measurement and correctness plan — do not run locally
 
 **Judgment; preregistered plan.** The owner runs CI. Begin only after the pool
-lands and its shared-library state/control semantics are known. Record exact
+lands and its shared-library state/control semantics are validated. D's
+comparison baseline and candidate must use the same validated KILL/control
+integration so its costs are not misattributed to AOF-off metadata removal.
+Record exact
 Firn, compiler, kit and Halo revisions, gate results, workflow/run ID, Linux,
 CPU placement, driver count, client version and AOF policy. Use
 `redis-bench.yml` on an idle, coordinated `14900k`, `make firn-lto` builds,
@@ -677,7 +824,7 @@ and expectations per persistence cell, before running it:
 | AOF cell | Candidate actually compared with baseline/twin | Registered limiter prediction |
 |---|---|---|
 | Off; recommended next experiment | **D (`off-only`)** | Two-core throughput gain greater than max(10%, N); one-core throughput and p99 regression no greater than N. Meta remains needed only for expiry publication in this script. |
-| On, no rewrite; D control | **D (`off-only`)**, whose logged execution is unchanged | About zero gain, within N. A reproducible difference outside N requires explaining an unintended logged-path change or another cause. |
+| On, no rewrite; D control | **D (`off-only`)**, whose logged metadata execution is unchanged, with the same validated KILL integration in both arms | About zero metadata gain, within N. A reproducible difference outside N requires explaining an unintended logged-path change or another cause. |
 | On, rewrite active; D control | **D (`off-only`)**, whose logged capture is unchanged | About zero gain, within N; validate unchanged capture/recovery, not a rewrite scaling claim. |
 | Off, only if A is separately selected | **A (`staged`)** | Same throughput criterion as D; no extra application benefit from the capture redesign is predicted for this cell. |
 | On, with/without rewrite, only if A is selected | **A (`staged`)**, retaining first-WRITE Meta | About zero concurrency gain for the immediate-WRITE limiter. A long synthetic read prefix verifies mechanism only. Any rewrite copying-cost change must be attributed separately and does not establish prefix benefit for this application. |
@@ -740,20 +887,47 @@ revision when code changes, not a local suite for this prose investigation.
    fail; no sequence wraps at exhaustion.
 8. Pool generation/FLUSH across retry gaps and accepted-WRITE KILL arbitration:
    no stale-source execution, no lost running invocation and no false kill of
-   a written script. Verify the available DecisionCell integration separately.
+   a written script. D requires the detector/control cases below; DecisionCell's
+   availability alone is not a pass for their integration or pooled policy.
 9. Late-lock fairness stress: zero stranded waiters after a finite flood;
    report maximum overtakes and the runtime contract tested. Throughput gains
    cannot excuse starvation or an unbounded key-hold regression.
 
+### D's required AOF-off detector and KILL cases
+
+**Judgment; unrun acceptance cases.** Disable AOF and use the candidate's
+unlogged helper path; verify that effect counts remain zero so a passing case
+cannot conceal dependence on internal RESP encoding. Retain diagnostic traces
+of mutation, Budget, retry and continuation for all arms. A correct final value
+alone cannot detect a narrow write that was undone and replayed.
+
+| Case | Check that decides completion |
+|---|---|
+| Narrow write then Budget | Declare the counter, INCR it, then execute enough finite Lua work to exhaust the initial budget. Observe Budget after mutation, zero write-bearing budget restarts, continuation of that same attempt and exactly one increment. A mutant omitting changed must fail the restart trace even if undo/replay preserves the final value. |
+| Whole-mode write then Budget | Use an undeclared operand to enter sticky whole mode before its INCR, then exhaust the initial budget with finite Lua work. Observe zero write-bearing budget restarts and exactly one increment; the old whole branch has no payload undo, so the missing-detector mutant must expose repeated writes. |
+| SCRIPT KILL after real WRITE | Run a finite long script, establish via accepted-WRITE/control tracing that its write claim won before KILL, and require UNKILLABLE, no killed exit and exactly one visible write. Use independently scheduled client/control contexts so KILL can run; do not infer write timing from a blocked GET of the held key. |
+| Read-only script | Use pure Lua or reads of unexpired entries, establish that no WRITE claim/mutation occurred, and request KILL at a budget gap. Require OK followed by the script-killed reply and zero dataset changes; no global sticky Written state may make a fresh invocation unkillable. |
+| Read-only script after lazy expiry | Delete an expired key through a completed read, then continue finite long read-only work with changed true and an Open cell. Require KILL to run and return OK, a dedicated script-killed exit, one retained deletion and no duplicated/discarded staged metadata, with zero restart/replay. Exercise one driver as well as independently scheduled contexts; lack of one-driver progress blocks general KILL compatibility. Counter parity remains owned by `firn-script-expired-count`. |
+| No-effect WRITE and fallback composition | DEL a missing key must claim Written and make KILL answer UNKILLABLE even with changed false. Also test a real write followed by undeclared-key fallback and a later retry gap: narrow undo restores the attempt, the accepted invocation applies the write once, and the persistent Written verdict still prevents cancellation. |
+
+Cover lazy-expiry deletion, FLUSH, each value family, no-effect/failed commands,
+and accepted Lua errors in the mutation-hook audit. Verify the 526/602 HostCall
+budget choices as well as the 510/579 Budget branches. Control races must test
+both claim orders: Killed first executes no WRITE handler; Written first is
+UNKILLABLE. Multiple active invocations additionally need the selected pool
+policy's coordination cases; a per-cell read/claim loop is not sufficient evidence.
+
 ## Follow-ups for filing
 
-**Source-read / judgment.** The owner files these follow-ups from this study:
+**Source-read / judgment.** The responsible session files the conditional
+follow-ups when an option needing them is chosen; the expiry defect already
+has its board item:
 
 | Follow-up | What to file and when it is needed |
 |---|---|
-| AOF-health observation, to Whitefoot | The minimal live-read/recovery trace and acceptance cases above, only when selecting an option such as B that keeps AOF-on execution Meta-free past first WRITE. A and D need no new health channel. Preserve the first-WRITE boundary and error payload; request a semantic answer before choosing an API. |
-| Late-acquisition fairness, already known to Whitefoot | Link this script study and its late-acquisition witness/CI acceptance to the existing runtime work; ask for the fixing revision and stated progress guarantee. Reuse that work rather than file a duplicate. D's final expiry acquisition and A/B's late commits need verification against it. |
-| Script lazy-expiry statistics, to Firn | File the source-inferred counter defect: a script GET can remove an expired key while INFO `expired_keys` fails to rise, unlike plain GET. Plain GET calls `remove_expired` (`firn/commands/strings.wf:214`), which increments the counter (`store/store.wf:190`); script GET deletes/logs locally (`commands/script.wf:483-489`, shared `commands/keys.wf:249-261`) without counting it. Redis 7.2.16's [`db.c:expireIfNeeded` and `deleteExpiredKeyAndPropagate`](https://github.com/redis/redis/blob/7.2.16/src/db.c) count lazy expiry through `server.stat_expiredkeys`, including lookups from scripts. Confirm with INFO before/after a controlled expired-key script and plain-GET oracle case in CI; exclude active expiry from the observation. Fix by staging the expired-count delta, publishing once for accepted Done/Error, and discarding it on fallback. No server fix is part of this document revision. |
+| AOF-health observation, to Whitefoot | The session files the minimal live-read/recovery trace and acceptance cases when selecting an option such as B that keeps AOF-on execution Meta-free past first WRITE. A and D need no new health channel. Preserve the first-WRITE boundary and error payload; request a semantic answer before choosing an API. |
+| Late-acquisition fairness, already known to Whitefoot | When choosing D or another late-acquisition option, the session links this study and its witness/CI acceptance to the existing runtime work and asks for the fixing revision/progress guarantee. Reuse that work rather than file a duplicate. D's final expiry acquisition and A/B's late commits need verification against it. |
+| Script lazy-expiry statistics, already filed as `firn-script-expired-count` | A script GET can remove an expired key while INFO `expired_keys` fails to rise, unlike plain GET. Plain GET calls `remove_expired` (`firn/commands/strings.wf:214`), which increments the counter (`store/store.wf:190`); script GET deletes/logs locally (`commands/script.wf:483-489`, shared `commands/keys.wf:249-261`) without counting it. Redis 7.2.16's [`db.c:expireIfNeeded` and `deleteExpiredKeyAndPropagate`](https://github.com/redis/redis/blob/7.2.16/src/db.c) count lazy expiry through `server.stat_expiredkeys`, including lookups from scripts. The existing item owns the INFO/oracle confirmation and accepted-attempt delta fix; no duplicate filing or server fix belongs in this document revision. |
 
 ## Remaining uncertainty
 
@@ -763,7 +937,8 @@ with `firn-write-meta-free`. The earlier driver-count/KILL needs have current-pi
 facilities; their integration evidence remains with the engine/control work.
 
 Still unverified: the remote main head, compiled witness/lock ledger,
-pool/canonical Lua-state integration, fairness-fix revision, the reusable
+pool/canonical Lua-state integration, coordinated KILL publication and one-driver
+read-only cancellation progress, fairness-fix revision, the reusable
 health API/design, bounded dirty-key/capture representation, timed-history
 counterexample execution, all numerical predictions and all CI acceptance.
 The conditional ordering argument is not a claim of unrestricted serial Redis
