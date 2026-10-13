@@ -208,8 +208,9 @@ and others) keep the Meta form, because `due` is in Meta.
 needs the order Meta provides. Writing it did expose a language limitation.
 An atomic statement's targets are fixed syntax, so a statement cannot hold
 Meta only when a run-time condition (AOF on, an expiry option) holds. Each
-converted command is therefore two atomic statements around an ordinary `if`,
-one with the Meta target and one without. They share the body function but
+converted command was therefore first written as two atomic statements
+around an ordinary `if`, one with the Meta target and one without (the
+one-statement form below later replaced it). They share the body function but
 duplicate 4 to 30 lines of statement scaffolding per command, and drift
 between the two copies is the residual risk. The minimal witness is a
 conditional target,
@@ -566,6 +567,10 @@ so the prediction holds at this resolution: no cost beyond the twin's noise.
 The six passes' mean ratio, 0.994 (standard deviation 0.007), sits at the
 twin's lower bound; a cost under 1% is not excluded by six passes. GET does
 not run this statement and serves as a second control.
+
+[Firn-wf#75](https://github.com/Ming-Research/Firn-wf/pull/75) writes the
+other 39 conditional holds in the same one-statement form, so no
+two-statement copy remains in firn.
 
 ## 5. Whitefoot gaps and witnesses
 
