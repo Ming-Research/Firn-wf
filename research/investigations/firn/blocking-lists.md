@@ -536,6 +536,25 @@ rewrite must finish ok, which separates the fallback from both journaling the
 bytes (the queue's scanned image, taken after the pops, would be popped again
 on replay) and aborting the rewrite.
 
+### Limits of the run-time fallback evidence
+
+The scoped review of the run-time fallback named three limits that remain
+open:
+
+- `firn_rewrite_falls_back_to_images_when_a_blocking_pop_removes_an_expired_key`
+  can detect only one wrong fallback per run, and which one depends on whether
+  the rewrite scan reaches `queue` before or after the pops. A fallback that
+  published the pop's bytes fails it only when the scan reaches `queue` after
+  the pops; a fallback that dropped `queue`'s image fails it only when the scan
+  reaches `queue` before them. `EXISTS early:N` does not discriminate, because
+  the replayed key is already expired. No counter reports that the fallback
+  path ran.
+- The abort branch, where a first key still present meets a second key, has no
+  test. The callers of `sequence_new_key` were read and none reaches it; it is
+  defensive.
+- During a rewrite, every byte-journaled one-key statement now copies its key
+  name, where it previously allocated nothing. That cost is not measured.
+
 ## Contaminated zero-timeout passes
 
 Two of the 26 rows added from run 38457609785, “BLPOP: with zero timeout
