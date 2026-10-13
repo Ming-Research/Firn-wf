@@ -190,7 +190,7 @@ fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     pkg::store::database_context(meta: m, database: store^.database);
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    let appended = pkg::store::command_held_flush_due_log::<fn held_flush>(meta: m, sequence: &sequence, keys: t, logged: store^.logging, input: input, args: args, client: client, budget: &log_budget);
+    let appended = pkg::store::command_held_flush_due_log::<Box<Slots<Span>>, Client, fn held_flush>(meta: m, sequence: &sequence, keys: t, logged: store^.logging, input: input, args: args, client: client, budget: &log_budget);
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   return unit;
@@ -242,7 +242,7 @@ fn run_function(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
       pkg::store::database_context(meta: m, database: store^.database);
       let sequence = pkg::store::sequence_new(meta: m, loading: loading);
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: loading);
-      pkg::store::command_log_command_log::<fn log_command>(meta: m, input: input, args: args, budget: &log_budget);
+      pkg::store::command_log_command_log::<Box<Slots<Span>>, fn log_command>(meta: m, input: input, args: args, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }

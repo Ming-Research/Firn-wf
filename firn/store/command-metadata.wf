@@ -1,3 +1,5 @@
+alias KeyEnv = pkg::bytes::KeyEnv;
+
 fn memory_peak_record(meta: &Meta, used: u64) -> peak: u64 writes(meta.memory_peak) {
   set meta^.memory_peak = imax(meta^.memory_peak, used);
   return meta^.memory_peak;
@@ -141,15 +143,15 @@ fn eviction_pool_take_meta(meta: &Meta) -> key: Option<EvictionCandidate> writes
   return None<EvictionCandidate>();
 }
 
-fn command_set_meta_due_log<T0, T1, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &T0, work: &T1, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, plan: &T0, work: &T1, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(args), reads(key), reads(env), writes(meta.due), writes(meta.log), writes(budget) {
+fn command_set_meta_due_log<T0, T1, A, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &T0, work: &T1, input: &[u8], args: &A, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, plan: &T0, work: &T1, input: &[u8], args: &A, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(args), reads(key), reads(env), writes(meta.due), writes(meta.log), writes(budget) {
   return apply(due: &meta^.due, log: &meta^.log, logged: logged, plan: plan, work: work, input: input, args: args, key: key, env: env, budget: budget);
 }
 
-fn command_getdel_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, kind: u64, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, kind: u64, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(key), writes(meta.log), writes(budget) {
+fn command_getdel_meta_log<S: copy, fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, kind: u64, input: &[u8], key_span: S, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, kind: u64, input: &[u8], key_span: S, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, removed: removed, kind: kind, input: input, key_span: key_span, key: key, budget: budget);
 }
 
-fn command_getex_meta_due_log<T0, T1, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &T0, work: &T1, input: &[u8], key_span: Span, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(key), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, plan: &T0, work: &T1, input: &[u8], key_span: Span, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(key), reads(env), writes(meta.due), writes(meta.log), writes(budget) {
+fn command_getex_meta_due_log<T0, T1, S: copy, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &T0, work: &T1, input: &[u8], key_span: S, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(key), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, plan: &T0, work: &T1, input: &[u8], key_span: S, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(key), reads(env), writes(meta.due), writes(meta.log), writes(budget) {
   return apply(due: &meta^.due, log: &meta^.log, logged: logged, plan: plan, work: work, input: input, key_span: key_span, key: key, env: env, budget: budget);
 }
 
@@ -157,85 +159,85 @@ fn command_mset_lapse_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, laps
   return apply(log: &meta^.log, logged: logged, lapsed: lapsed, key: key, budget: budget);
 }
 
-fn command_mset_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.log), writes(budget) {
+fn command_mset_meta_log<A, fn apply(log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, input: &[u8], args: &A, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, input: input, args: args, budget: budget);
 }
 
-fn command_incr_log_log<T0, fn apply(log: &Box<Slots<u8>>, removed: Bool, counted: &T0, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(counted), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, removed: Bool, counted: &T0, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(counted), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
+fn command_incr_log_log<T0, A, fn apply(log: &Box<Slots<u8>>, removed: Bool, counted: &T0, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(counted), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, removed: Bool, counted: &T0, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(counted), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, removed: removed, counted: counted, input: input, args: args, key: key, budget: budget);
 }
 
-fn command_changed_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
+fn command_changed_meta_log<A, fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: budget);
 }
 
-fn command_incrbyfloat_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, summed: &T0, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(summed), reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, summed: &T0, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(summed), reads(input), reads(key), writes(meta.log), writes(budget) {
+fn command_incrbyfloat_meta_log<T0, S: copy, fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, summed: &T0, input: &[u8], key_span: S, key: &[u8], budget: &LogBudget) -> appended: u64 reads(summed), reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, summed: &T0, input: &[u8], key_span: S, key: &[u8], budget: &LogBudget) -> appended: u64 reads(summed), reads(input), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, removed: removed, summed: summed, input: input, key_span: key_span, key: key, budget: budget);
 }
 
-fn command_hincrbyfloat_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, client: &pkg::protocol::Client, floating: &T0, input: &[u8], key_span: Span, field_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, client: &pkg::protocol::Client, floating: &T0, input: &[u8], key_span: Span, field_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), writes(meta.log), writes(budget) {
+fn command_hincrbyfloat_meta_log<T0, C, S: copy, fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, client: &C, floating: &T0, input: &[u8], key_span: S, field_span: S, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: Bool, client: &C, floating: &T0, input: &[u8], key_span: S, field_span: S, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, removed: removed, client: client, floating: floating, input: input, key_span: key_span, field_span: field_span, key: key, budget: budget);
 }
 
-fn command_zadd_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, plan: &T0, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, plan: &T0, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
+fn command_zadd_meta_log<T0, A, fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, plan: &T0, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, plan: &T0, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, lapsed: lapsed, plan: plan, input: input, args: args, key: key, budget: budget);
 }
 
-fn command_zrem_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
+fn command_zrem_meta_log<A, C, fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &C, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &C, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: budget);
 }
 
-fn command_zpop_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
+fn command_zpop_meta_log<A, C, fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &C, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &C, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: budget);
 }
 
-fn command_held_flush_due<fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(due), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.due), writes(sequence), writes(keys), writes(log), writes(client), writes(budget) {
+fn command_held_flush_due<A, C, fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, client: &C, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(due), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, client: &C, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.due), writes(sequence), writes(keys), writes(log), writes(client), writes(budget) {
   return apply(sequence: sequence, keys: keys, due: &meta^.due, log: log, logged: logged, input: input, args: args, client: client, budget: budget);
 }
 
-fn command_held_randomkey_random<fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 writes(sequence), writes(keys), writes(random), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 writes(meta.random), writes(sequence), writes(keys), writes(log), writes(client), writes(budget) {
+fn command_held_randomkey_random<C, fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &C, now: u64, budget: &LogBudget) -> appended: u64 writes(sequence), writes(keys), writes(random), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, client: &C, now: u64, budget: &LogBudget) -> appended: u64 writes(meta.random), writes(sequence), writes(keys), writes(log), writes(client), writes(budget) {
   return apply(sequence: sequence, keys: keys, random: &meta^.random, log: log, logged: logged, client: client, now: now, budget: budget);
 }
 
-fn command_held_entries_run_due<fn apply(sequence: &WriteSequence, effect_budget: &LogBudget, journal: &Option<AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<AttemptUndo>, fallback: &Bool, due: &ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
+fn command_held_entries_run_due<A, C, fn apply(sequence: &WriteSequence, effect_budget: &LogBudget, journal: &Option<AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<AttemptUndo>, fallback: &Bool, due: &ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, client: &C, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(due), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
-}>(meta: &Meta, sequence: &WriteSequence, effect_budget: &LogBudget, journal: &Option<AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<AttemptUndo>, fallback: &Bool, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(meta.due), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
+}>(meta: &Meta, sequence: &WriteSequence, effect_budget: &LogBudget, journal: &Option<AccessJournal>, kind: u64, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<AttemptUndo>, fallback: &Bool, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, client: &C, env: &KeyEnv, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(env), reads(time), writes(meta.due), writes(sequence), writes(effect_budget), writes(journal), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
   return apply(sequence: sequence, effect_budget: effect_budget, journal: journal, kind: kind, keys: keys, declared: declared, undo: undo, fallback: fallback, due: &meta^.due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
 }
 
-fn command_set_members_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
+fn command_set_members_meta_log<A, C, fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &C, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &C, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: budget);
 }
 
-fn command_spop_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
+fn command_spop_meta_log<A, C, fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &C, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &C, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: budget);
 }
 
-fn command_smove_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(meta.log), writes(budget) {
+fn command_smove_meta_log<T0, A, fn apply(log: &Box<Slots<u8>>, logged: Bool, work: &T0, input: &[u8], args: &A, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, work: &T0, input: &[u8], args: &A, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, work: work, input: input, args: args, budget: budget);
 }
 
-fn command_set_operands_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(removed), reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(removed), reads(input), reads(args), writes(meta.log), writes(budget) {
+fn command_set_operands_meta_log<A, fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &A, budget: &LogBudget) -> appended: u64 reads(removed), reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &A, budget: &LogBudget) -> appended: u64 reads(removed), reads(input), reads(args), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, removed: removed, changed: changed, input: input, args: args, budget: budget);
 }
 
-fn command_held_scan_log<fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.log), writes(sequence), writes(keys), writes(client), writes(budget) {
+fn command_held_scan_log<A, C, fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, client: &C, now: u64, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, logged: Bool, input: &[u8], args: &A, client: &C, now: u64, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.log), writes(sequence), writes(keys), writes(client), writes(budget) {
   return apply(sequence: sequence, keys: keys, log: &meta^.log, logged: logged, input: input, args: args, client: client, now: now, budget: budget);
 }
 
-fn command_held_randomkey_random_log<fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 writes(sequence), writes(keys), writes(random), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, logged: Bool, client: &pkg::protocol::Client, now: u64, budget: &LogBudget) -> appended: u64 writes(meta.random), writes(meta.log), writes(sequence), writes(keys), writes(client), writes(budget) {
+fn command_held_randomkey_random_log<C, fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &C, now: u64, budget: &LogBudget) -> appended: u64 writes(sequence), writes(keys), writes(random), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, logged: Bool, client: &C, now: u64, budget: &LogBudget) -> appended: u64 writes(meta.random), writes(meta.log), writes(sequence), writes(keys), writes(client), writes(budget) {
   return apply(sequence: sequence, keys: keys, random: &meta^.random, log: &meta^.log, logged: logged, client: client, now: now, budget: budget);
 }
 
-fn command_zremrange_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &pkg::protocol::Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
+fn command_zremrange_meta_log<A, C, fn apply(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &C, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, lapsed: Bool, client: &C, input: &[u8], args: &A, key: &[u8], budget: &LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: budget);
 }
 
-fn command_expire_meta_due_log<T0, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &T0, outcome: u64, lapsed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, plan: &T0, outcome: u64, lapsed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(meta.due), writes(meta.log), writes(budget) {
+fn command_expire_meta_due_log<T0, A, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &T0, outcome: u64, lapsed: Bool, input: &[u8], args: &A, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, plan: &T0, outcome: u64, lapsed: Bool, input: &[u8], args: &A, key: &[u8], env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(meta.due), writes(meta.log), writes(budget) {
   return apply(due: &meta^.due, log: &meta^.log, logged: logged, plan: plan, outcome: outcome, lapsed: lapsed, input: input, args: args, key: key, env: env, budget: budget);
 }
 
@@ -243,64 +245,62 @@ fn command_ttl_meta_log<fn apply(log: &Box<Slots<u8>>, logged: Bool, removed: Bo
   return apply(log: &meta^.log, logged: logged, removed: removed, key: key, budget: budget);
 }
 
-fn command_persist_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, expiry: &T0, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(expiry), reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, expiry: &T0, input: &[u8], key_span: Span, key: &[u8], budget: &LogBudget) -> appended: u64 reads(expiry), reads(input), reads(key), writes(meta.log), writes(budget) {
+fn command_persist_meta_log<T0, S: copy, fn apply(log: &Box<Slots<u8>>, logged: Bool, expiry: &T0, input: &[u8], key_span: S, key: &[u8], budget: &LogBudget) -> appended: u64 reads(expiry), reads(input), reads(key), writes(log), writes(budget)>(meta: &Meta, logged: Bool, expiry: &T0, input: &[u8], key_span: S, key: &[u8], budget: &LogBudget) -> appended: u64 reads(expiry), reads(input), reads(key), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, expiry: expiry, input: input, key_span: key_span, key: key, budget: budget);
 }
 
-fn command_transfer_meta_due_log<T0, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(env), writes(meta.due), writes(meta.log), writes(budget) {
+fn command_transfer_meta_due_log<T0, A, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, work: &T0, input: &[u8], args: &A, env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget)>(meta: &Meta, logged: Bool, work: &T0, input: &[u8], args: &A, env: &KeyEnv, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(env), writes(meta.due), writes(meta.log), writes(budget) {
   return apply(due: &meta^.due, log: &meta^.log, logged: logged, work: work, input: input, args: args, env: env, budget: budget);
 }
 
-fn command_record_effects_log<fn apply(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(effects), reads(sequence.effects_first_db), reads(sequence.effects_selected), writes(log), writes(budget)>(meta: &Meta, effects: &Box<Slots<u8>>, appended: u64, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(effects), reads(sequence.effects_first_db), reads(sequence.effects_selected), writes(meta.log), writes(budget) {
-  return apply(log: &meta^.log, effects: effects, appended: appended, sequence: sequence, budget: budget);
+fn command_record_effects_log(meta: &Meta, effects: &Box<Slots<u8>>, appended: u64, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(effects), reads(sequence.effects_first_db), reads(sequence.effects_selected), writes(meta.log), writes(budget) {
+  return record_effects(log: &meta^.log, effects: effects, appended: appended, sequence: sequence, budget: budget);
 }
 
-fn command_lmove_meta_log<T0, fn apply(log: &Box<Slots<u8>>, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, work: &T0, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(meta.log), writes(budget) {
+fn command_lmove_meta_log<T0, A, fn apply(log: &Box<Slots<u8>>, logged: Bool, work: &T0, input: &[u8], args: &A, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, logged: Bool, work: &T0, input: &[u8], args: &A, budget: &LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, logged: logged, work: work, input: input, args: args, budget: budget);
 }
 
-fn command_database_transfer_meta_due_log<T0, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget) contract {
+fn command_database_transfer_meta_due_log<T0, A, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &A, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget) contract {
   requires target_db < 16_u64;
-}>(meta: &Meta, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(meta.due), writes(meta.log), writes(budget) contract {
+}>(meta: &Meta, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &A, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(meta.due), writes(meta.log), writes(budget) contract {
   requires target_db < 16_u64;
 } {
   return apply(due: &meta^.due, log: &meta^.log, budget: budget, work: work, source_key: source_key, target_key: target_key, source_db: source_db, target_db: target_db, logged: logged, input: input, args: args, env: env);
 }
 
-fn command_queue_map_expiry_due<fn apply(keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, database: u64, env: &KeyEnv) -> result: unit reads(keys), reads(env), writes(due) contract {
-  requires database < 16_u64;
-}>(meta: &Meta, keys: &ConcurrentHashMap<Entry>, database: u64, env: &KeyEnv) -> result: unit reads(keys), reads(env), writes(meta.due) contract {
+fn command_queue_map_expiry_due(meta: &Meta, keys: &ConcurrentHashMap<Entry>, database: u64, env: &KeyEnv) -> result: unit reads(keys), reads(env), writes(meta.due) contract {
   requires database < 16_u64;
 } {
-  return apply(keys: keys, due: &meta^.due, database: database, env: env);
+  return queue_map_expiry(keys: keys, due: &meta^.due, database: database, env: env);
 }
 
-fn command_clear_database_expiry_due<fn apply(due: &ExpiryQueue, database: u64) -> result: unit writes(due)>(meta: &Meta, database: u64) -> result: unit writes(meta.due) {
-  return apply(due: &meta^.due, database: database);
+fn command_clear_database_expiry_due(meta: &Meta, database: u64) -> result: unit writes(meta.due) {
+  return clear_database_expiry(due: &meta^.due, database: database);
 }
 
-fn command_database_transfer_meta_due<T0, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget) contract {
+fn command_database_transfer_meta_due<T0, A, fn apply(due: &ExpiryQueue, log: &Box<Slots<u8>>, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &A, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget) contract {
   requires target_db < 16_u64;
-}>(meta: &Meta, log: &Box<Slots<u8>>, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(meta.due), writes(log), writes(budget) contract {
+}>(meta: &Meta, log: &Box<Slots<u8>>, budget: &LogBudget, work: &T0, source_key: &[u8], target_key: &[u8], source_db: u64, target_db: u64, logged: Bool, input: &[u8], args: &A, env: &KeyEnv) -> appended: u64 reads(work), reads(source_key), reads(target_key), reads(input), reads(args), reads(env), writes(meta.due), writes(log), writes(budget) contract {
   requires target_db < 16_u64;
 } {
   return apply(due: &meta^.due, log: log, budget: budget, work: work, source_key: source_key, target_key: target_key, source_db: source_db, target_db: target_db, logged: logged, input: input, args: args, env: env);
 }
 
-fn command_log_removal_log<fn apply(log: &Box<Slots<u8>>, key: &[u8], budget: &LogBudget) -> result: unit reads(key), writes(log), writes(budget)>(meta: &Meta, key: &[u8], budget: &LogBudget) -> result: unit reads(key), writes(meta.log), writes(budget) {
-  return apply(log: &meta^.log, key: key, budget: budget);
+fn command_log_removal_log(meta: &Meta, key: &[u8], budget: &LogBudget) -> result: unit reads(key), writes(meta.log), writes(budget) {
+  return log_removal(log: &meta^.log, key: key, budget: budget);
 }
 
-fn command_held_flush_due_log<fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(due), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &pkg::protocol::Client, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.due), writes(meta.log), writes(sequence), writes(keys), writes(client), writes(budget) {
+fn command_held_flush_due_log<A, C, fn apply(sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &A, client: &C, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(due), writes(log), writes(client), writes(budget)>(meta: &Meta, sequence: &WriteSequence, keys: &ConcurrentHashMap<Entry>, logged: Bool, input: &[u8], args: &A, client: &C, budget: &LogBudget) -> appended: u64 reads(input), reads(args), writes(meta.due), writes(meta.log), writes(sequence), writes(keys), writes(client), writes(budget) {
   return apply(sequence: sequence, keys: keys, due: &meta^.due, log: &meta^.log, logged: logged, input: input, args: args, client: client, budget: budget);
 }
 
-fn command_log_command_log<fn apply(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> result: unit reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> result: unit reads(input), reads(args), writes(meta.log), writes(budget) {
+fn command_log_command_log<A, fn apply(log: &Box<Slots<u8>>, input: &[u8], args: &A, budget: &LogBudget) -> result: unit reads(input), reads(args), writes(log), writes(budget)>(meta: &Meta, input: &[u8], args: &A, budget: &LogBudget) -> result: unit reads(input), reads(args), writes(meta.log), writes(budget) {
   return apply(log: &meta^.log, input: input, args: args, budget: budget);
 }
 
-fn command_attempt_due_commit_due<fn apply(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(staged), writes(target)>(meta: &Meta, staged: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(meta.due), writes(staged) {
-  return apply(staged: staged, target: &meta^.due, env: env);
+fn command_attempt_due_commit_due(meta: &Meta, staged: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(meta.due), writes(staged) {
+  return attempt_due_commit(staged: staged, target: &meta^.due, env: env);
 }
 
 fn aof_rewrite_request(meta: &Meta) -> result: unit writes(meta.aof_rewrite_in_progress), writes(meta.aof_rewrite_requested) {

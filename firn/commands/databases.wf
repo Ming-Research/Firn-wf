@@ -168,7 +168,7 @@ fn run_database_transfer(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = database_transfer_body(sequence: &sequence, journal: &journal, source: source, target: target, source_key: source_key, target_key: target_key, source_db: store^.database, target_db: destination, client: client, copying: copying, replace: replace);
-    let appended = pkg::store::command_database_transfer_meta_due_log::<TransferWork, fn database_transfer_meta>(meta: m, budget: &budget, work: &work, source_key: source_key, target_key: target_key, source_db: store^.database, target_db: destination, logged: store^.logging, input: input, args: args, env: env);
+    let appended = pkg::store::command_database_transfer_meta_due_log::<TransferWork, Box<Slots<Span>>, fn database_transfer_meta>(meta: m, budget: &budget, work: &work, source_key: source_key, target_key: target_key, source_db: store^.database, target_db: destination, logged: store^.logging, input: input, args: args, env: env);
     set outcome = work.outcome;
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &budget);
   }
@@ -202,8 +202,8 @@ fn held_database_swap(sequence: &pkg::store::WriteSequence, source: &ConcurrentH
 } {
   database_swap_body(sequence: sequence, source: source, target: target);
   pkg::store::swap_database_metadata(meta: meta, left_db: left_db, right_db: right_db);
-  pkg::store::command_queue_map_expiry_due::<fn pkg::store::queue_map_expiry>(meta: meta, keys: source, database: left_db, env: env);
-  pkg::store::command_queue_map_expiry_due::<fn pkg::store::queue_map_expiry>(meta: meta, keys: target, database: right_db, env: env);
+  pkg::store::command_queue_map_expiry_due(meta: meta, keys: source, database: left_db, env: env);
+  pkg::store::command_queue_map_expiry_due(meta: meta, keys: target, database: right_db, env: env);
   return unit;
 }
 
@@ -224,7 +224,7 @@ fn run_swapdb(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     if plan.left != plan.right {
       held_database_swap(sequence: &sequence, source: left, target: right, meta: m, left_db: plan.left, right_db: plan.right, env: env);
     }
-    let appended = pkg::store::command_mset_meta_log::<fn mset_meta>(meta: m, logged: store^.logging, input: input, args: args, budget: &budget);
+    let appended = pkg::store::command_mset_meta_log::<Box<Slots<Span>>, fn mset_meta>(meta: m, logged: store^.logging, input: input, args: args, budget: &budget);
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &budget);
   }
   reply_ok(client: client);
@@ -306,37 +306,37 @@ fn held_databases_body(sequence: &pkg::store::WriteSequence, effect_budget: &pkg
       return 0_u64;
     }
     flush_body(sequence: sequence, keys: db0);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 0_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 0_u64);
     flush_body(sequence: sequence, keys: db1);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 1_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 1_u64);
     flush_body(sequence: sequence, keys: db2);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 2_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 2_u64);
     flush_body(sequence: sequence, keys: db3);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 3_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 3_u64);
     flush_body(sequence: sequence, keys: db4);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 4_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 4_u64);
     flush_body(sequence: sequence, keys: db5);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 5_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 5_u64);
     flush_body(sequence: sequence, keys: db6);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 6_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 6_u64);
     flush_body(sequence: sequence, keys: db7);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 7_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 7_u64);
     flush_body(sequence: sequence, keys: db8);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 8_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 8_u64);
     flush_body(sequence: sequence, keys: db9);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 9_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 9_u64);
     flush_body(sequence: sequence, keys: db10);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 10_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 10_u64);
     flush_body(sequence: sequence, keys: db11);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 11_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 11_u64);
     flush_body(sequence: sequence, keys: db12);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 12_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 12_u64);
     flush_body(sequence: sequence, keys: db13);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 13_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 13_u64);
     flush_body(sequence: sequence, keys: db14);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 14_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 14_u64);
     flush_body(sequence: sequence, keys: db15);
-    pkg::store::command_clear_database_expiry_due::<fn pkg::store::clear_database_expiry>(meta: meta, database: 15_u64);
+    pkg::store::command_clear_database_expiry_due(meta: meta, database: 15_u64);
     let appended = mset_meta(log: effects, logged: logged, input: input, args: args, budget: effect_budget);
     reply_ok(client: client);
     return appended;
@@ -519,7 +519,7 @@ fn held_databases_body(sequence: &pkg::store::WriteSequence, effect_budget: &pkg
       }
       let target_key = &input^[target_place.start..target_place.end];
       let work = database_transfer_body(sequence: sequence, journal: journal, source: &selected^[source_key], target: &target^[target_key], source_key: source_key, target_key: target_key, source_db: database, target_db: destination, client: client, copying: copying, replace: replace);
-      let appended = pkg::store::command_database_transfer_meta_due::<TransferWork, fn database_transfer_meta>(meta: meta, log: effects, budget: effect_budget, work: &work, source_key: source_key, target_key: target_key, source_db: database, target_db: destination, logged: logged, input: input, args: args, env: env);
+      let appended = pkg::store::command_database_transfer_meta_due::<TransferWork, Box<Slots<Span>>, fn database_transfer_meta>(meta: meta, log: effects, budget: effect_budget, work: &work, source_key: source_key, target_key: target_key, source_db: database, target_db: destination, logged: logged, input: input, args: args, env: env);
       copy_finish(client: client, error: 0_u64, outcome: work.outcome);
       return appended;
     }
@@ -539,7 +539,7 @@ fn run_flushall(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let appended = held_databases_run(sequence: &sequence, journal: &journal, database: &database, kind: 164_u64, db0: db0, db1: db1, db2: db2, db3: db3, db4: db4, db5: db5, db6: db6, db7: db7, db8: db8, db9: db9, db10: db10, db11: db11, db12: db12, db13: db13, db14: db14, db15: db15, meta: m, effects: &effects, logged: store^.logging, input: input, args: args, client: client, env: env, time: time);
-    pkg::store::command_record_effects_log::<fn pkg::store::record_effects>(meta: m, effects: &effects, appended: appended, sequence: &sequence, budget: &budget);
+    pkg::store::command_record_effects_log(meta: m, effects: &effects, appended: appended, sequence: &sequence, budget: &budget);
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &budget);
   }
   return unit;

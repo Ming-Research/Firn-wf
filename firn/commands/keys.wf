@@ -405,7 +405,7 @@ fn run_del(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
     if removed > 0_u64 {
       if logged {
-        let appended = pkg::store::command_mset_meta_log::<fn mset_meta>(meta: m, logged: logged, input: input, args: args, budget: &log_budget);
+        let appended = pkg::store::command_mset_meta_log::<Box<Slots<Span>>, fn mset_meta>(meta: m, logged: logged, input: input, args: args, budget: &log_budget);
       }
     }
     if logged {
@@ -840,7 +840,7 @@ fn run_expire(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     set outcome = expire_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
     let lapsed = client^.state == state_expired;
-    let appended = pkg::store::command_expire_meta_due_log::<ExpirePlan, fn expire_meta>(meta: m, logged: logged, plan: &plan, outcome: outcome, lapsed: lapsed, input: input, args: args, key: key, env: env, budget: &log_budget);
+    let appended = pkg::store::command_expire_meta_due_log::<ExpirePlan, Box<Slots<Span>>, fn expire_meta>(meta: m, logged: logged, plan: &plan, outcome: outcome, lapsed: lapsed, input: input, args: args, key: key, env: env, budget: &log_budget);
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   expire_finish(client: client, outcome: outcome);
@@ -945,7 +945,7 @@ fn run_persist(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     persist_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, expiry: &expiry);
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      let appended = pkg::store::command_persist_meta_log::<Expiry, fn persist_meta>(meta: m, logged: store^.logging, expiry: &expiry, input: input, key_span: key_span, key: key, budget: &log_budget);
+      let appended = pkg::store::command_persist_meta_log::<Expiry, Span, fn persist_meta>(meta: m, logged: store^.logging, expiry: &expiry, input: input, key_span: key_span, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -1193,7 +1193,7 @@ fn run_rename(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = rename_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: pair.source, target: pair.target, client: client, fresh: fresh);
-    let appended = pkg::store::command_transfer_meta_due_log::<TransferWork, fn transfer_meta>(meta: m, logged: logged, work: &work, input: input, args: args, env: env, budget: &log_budget);
+    let appended = pkg::store::command_transfer_meta_due_log::<TransferWork, Box<Slots<Span>>, fn transfer_meta>(meta: m, logged: logged, work: &work, input: input, args: args, env: env, budget: &log_budget);
     set outcome = work.outcome;
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
@@ -1236,7 +1236,7 @@ fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let work = copy_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: pair.source, target: pair.target, client: client, replace: plan.replace);
-    let appended = pkg::store::command_transfer_meta_due_log::<TransferWork, fn transfer_meta>(meta: m, logged: logged, work: &work, input: input, args: args, env: env, budget: &log_budget);
+    let appended = pkg::store::command_transfer_meta_due_log::<TransferWork, Box<Slots<Span>>, fn transfer_meta>(meta: m, logged: logged, work: &work, input: input, args: args, env: env, budget: &log_budget);
     set outcome = work.outcome;
     pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }

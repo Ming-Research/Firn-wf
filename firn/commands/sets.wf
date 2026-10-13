@@ -167,7 +167,7 @@ fn run_sadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     let lapsed = sadd_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      let appended = pkg::store::command_set_members_meta_log::<fn set_members_meta>(meta: m, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
+      let appended = pkg::store::command_set_members_meta_log::<Box<Slots<Span>>, Client, fn set_members_meta>(meta: m, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -248,7 +248,7 @@ fn run_srem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     let lapsed = srem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      let appended = pkg::store::command_set_members_meta_log::<fn set_members_meta>(meta: m, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
+      let appended = pkg::store::command_set_members_meta_log::<Box<Slots<Span>>, Client, fn set_members_meta>(meta: m, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -375,7 +375,7 @@ fn run_spop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     let lapsed = spop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      let appended = pkg::store::command_spop_meta_log::<fn spop_meta>(meta: m, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
+      let appended = pkg::store::command_spop_meta_log::<Box<Slots<Span>>, Client, fn spop_meta>(meta: m, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -930,7 +930,7 @@ fn run_smove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     let work = smove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: pair.source, destination: pair.target, client: client);
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      let appended = pkg::store::command_smove_meta_log::<SetMoveWork, fn smove_meta>(meta: m, logged: store^.logging, work: &work, input: input, args: args, budget: &log_budget);
+      let appended = pkg::store::command_smove_meta_log::<SetMoveWork, Box<Slots<Span>>, fn smove_meta>(meta: m, logged: store^.logging, work: &work, input: input, args: args, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -1227,7 +1227,7 @@ fn run_combine(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     let work = set_combine_body(sequence: &sequence, journal: &journal, slots: slots, keys: &keys, access_keys: &keys, ranks: &ranks, client: client, env: env, operation: operation, storing: storing, members: &members);
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      let appended = pkg::store::command_set_operands_meta_log::<fn set_operands_meta>(meta: m, logged: store^.logging, removed: &work.removed, changed: work.changed, input: input, args: args, budget: &log_budget);
+      let appended = pkg::store::command_set_operands_meta_log::<Box<Slots<Span>>, fn set_operands_meta>(meta: m, logged: store^.logging, removed: &work.removed, changed: work.changed, input: input, args: args, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -1257,7 +1257,7 @@ fn run_sintercard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     if store^.logging {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let changed = False();
-      let appended = pkg::store::command_set_operands_meta_log::<fn set_operands_meta>(meta: m, logged: store^.logging, removed: &removed, changed: changed, input: input, args: args, budget: &log_budget);
+      let appended = pkg::store::command_set_operands_meta_log::<Box<Slots<Span>>, fn set_operands_meta>(meta: m, logged: store^.logging, removed: &removed, changed: changed, input: input, args: args, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }

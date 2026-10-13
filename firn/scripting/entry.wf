@@ -541,7 +541,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     }
                     lua_to_protocol(vm: &pooled.engine.vm, value: v, client: client, resp: env.resp);
                     if logged {
-                      pkg::store::command_record_effects_log::<fn pkg::store::record_effects>(meta: m, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
+                      pkg::store::command_record_effects_log(meta: m, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
                     }
                     break;
                   }
@@ -551,7 +551,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     let raised = False();
                     reply_error_text(client: client, text: &message, formatted: raised);
                     if logged {
-                      pkg::store::command_record_effects_log::<fn pkg::store::record_effects>(meta: m, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
+                      pkg::store::command_record_effects_log(meta: m, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
                     }
                     break;
                   }
@@ -619,7 +619,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     }
                     lua_to_protocol(vm: &pooled.engine.vm, value: v, client: client, resp: env.resp);
                     if logged {
-                      pkg::store::command_record_effects_log::<fn pkg::store::record_effects>(meta: m, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
+                      pkg::store::command_record_effects_log(meta: m, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
                     }
                     break;
                   }
@@ -629,7 +629,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     let raised = False();
                     reply_error_text(client: client, text: &message, formatted: raised);
                     if logged {
-                      pkg::store::command_record_effects_log::<fn pkg::store::record_effects>(meta: m, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
+                      pkg::store::command_record_effects_log(meta: m, effects: &effects, appended: env.appended, sequence: &sequence, budget: &log_budget);
                     }
                     break;
                   }
@@ -659,7 +659,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                 }
               }
               if bnot(retry) {
-                pkg::store::command_attempt_due_commit_due::<fn pkg::store::attempt_due_commit>(meta: m, staged: &due, env: keys_env);
+                pkg::store::command_attempt_due_commit_due(meta: m, staged: &due, env: keys_env);
                 pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
               }
             }

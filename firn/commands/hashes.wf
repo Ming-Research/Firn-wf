@@ -219,7 +219,7 @@ fn run_hset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if logged {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let changed = client^.state == state_done;
-      let appended = pkg::store::command_changed_meta_log::<fn changed_meta>(meta: m, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
+      let appended = pkg::store::command_changed_meta_log::<Box<Slots<Span>>, fn changed_meta>(meta: m, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -308,7 +308,7 @@ fn run_hsetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       let stored = client^.state == state_done;
       let added = client^.number > 0_u64;
       let changed = band(stored, added);
-      let appended = pkg::store::command_changed_meta_log::<fn changed_meta>(meta: m, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
+      let appended = pkg::store::command_changed_meta_log::<Box<Slots<Span>>, fn changed_meta>(meta: m, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -522,7 +522,7 @@ fn run_hdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     if logged {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let changed = client^.number > 0_u64;
-      let appended = pkg::store::command_changed_meta_log::<fn changed_meta>(meta: m, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
+      let appended = pkg::store::command_changed_meta_log::<Box<Slots<Span>>, fn changed_meta>(meta: m, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -821,7 +821,7 @@ fn run_hincrby(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     if logged {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
       let changed = client^.state == state_done;
-      let appended = pkg::store::command_changed_meta_log::<fn changed_meta>(meta: m, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
+      let appended = pkg::store::command_changed_meta_log::<Box<Slots<Span>>, fn changed_meta>(meta: m, logged: logged, removed: removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
@@ -948,7 +948,7 @@ fn run_hincrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
     let removed = hincrbyfloat_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, floating: &floating);
     if logged {
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      let appended = pkg::store::command_hincrbyfloat_meta_log::<Floating, fn hincrbyfloat_meta>(meta: m, logged: logged, removed: removed, client: client, floating: &floating, input: input, key_span: key_span, field_span: field_span, key: key, budget: &log_budget);
+      let appended = pkg::store::command_hincrbyfloat_meta_log::<Floating, Client, Span, fn hincrbyfloat_meta>(meta: m, logged: logged, removed: removed, client: client, floating: &floating, input: input, key_span: key_span, field_span: field_span, key: key, budget: &log_budget);
       pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
