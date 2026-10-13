@@ -1307,8 +1307,25 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   return unit;
 }
 
+fn promoted_local_control(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> result: Bool reads(input), reads(args) {
+  doc "PING, ECHO, TIME, SELECT, COMMAND and OBJECT HELP observe no dataset in their direct handlers. Their replies need ordinary hub commitment, without the dataset hold; a keyless footprint alone does not establish this property. Other OBJECT subcommands retain dataset execution.";
+  if kind == 171_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    return word_at(input: input, span: sub, word: &object_help_name[0_u64..4_u64]);
+  }
+  let ping = kind == 22_u64;
+  let echo = kind == 23_u64;
+  let time = kind == 162_u64;
+  let select = kind == 163_u64;
+  let command = kind == 166_u64;
+  let local_replies = bor(ping, echo);
+  let session_controls = bor(select, command);
+  let local_controls = bor(time, session_controls);
+  return bor(local_replies, local_controls);
+}
+
 fn execute_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
-  doc "Only the promoted owner's static dispatch reaches this function. Supported dataset commands use their shared EXEC/script bodies under the whole keyspace, metadata and event hub, committing the complete reply before release. Their AOF effects remain ordinary command records without MULTI/EXEC framing. Scripts begin with their existing whole-map/hub attempt. Invalid commands and non-dataset controls retain ordinary dispatch and its error precedence.";
+  doc "Only the promoted owner's static dispatch reaches this function. Supported dataset commands use their shared EXEC/script bodies under the whole keyspace, metadata and event hub, committing the complete reply before release. Their AOF effects remain ordinary command records without MULTI/EXEC framing. Scripts begin with their existing whole-map/hub attempt. Names without held command parts, top-level command-table arity and authentication refusals, and PING, ECHO, TIME, SELECT, COMMAND and OBJECT HELP retain ordinary dispatch and its error precedence. Command-specific dataset parsing and refusals, including unrecognized subcommands of a dataset family, remain inside the protected execution.";
   let name = arg(args: args, index: 0_u64);
   let code = name_code(input: input, start: name.start, length: name.length);
   let evaluating = code == code_eval;
@@ -1328,7 +1345,9 @@ fn execute_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
   let kind = held_kind(input: input, name: name);
   let events = pubsub_command(kind: kind);
   let unsupported = kind == 0_u64;
-  if bor(events, unsupported) {
+  let local_control = promoted_local_control(kind: kind, input: input, args: args);
+  let ordinary = bor(events, unsupported);
+  if bor(ordinary, local_control) {
     execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
     return unit;
   }

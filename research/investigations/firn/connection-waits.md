@@ -989,6 +989,41 @@ retains Lua KEYS and all acceptance, error and budget-abandonment semantics.
 The broader hold reuses the existing transaction/script execution interface;
 its effect on promoted-command contention and latency remains unmeasured.
 
+The direct adapter excludes PING, ECHO, TIME, SELECT, COMMAND and OBJECT
+HELP from the wider hold. Each uses its ordinary handler; the promoted
+command owner then commits the complete reply under the hub as it does for
+other standalone control replies. The exclusion is based on command
+semantics, not on an empty key-argument list: DBSIZE, KEYS, SCAN and
+RANDOMKEY observe the dataset despite having no fixed key operand, and
+FLUSHDB/FLUSHALL change it. These remain protected, as do implemented OBJECT
+key queries. Semantic validation inside a dataset command may still run
+under the wider hold, including unrecognized subcommands of a dataset
+family; names without held command parts and command-table arity or
+authentication refusals retain ordinary dispatch.
+
+| Standalone control | State it observes or changes | Publication-order obligation |
+|---|---|---|
+| PING | Optional request payload and the same connection's RESP/subscription mode; its existing AOF-health admission check remains. | No dataset observation orders its reply with another client's data-triggered publication. RESP2's pong array and RESP3's ordinary reply keep their existing handlers. |
+| ECHO | Request payload only. | Echoing bytes does not observe the dataset, even if the application chose those bytes after a data read. The application/network barriers and existing output order remain effective without a dataset hold. |
+| TIME | The receive-time calendar snapshot already stored on the client. | It neither observes nor changes a dataset version or registry publication; wall-clock values do not create a dataset visibility dependency. |
+| SELECT | Validates the requested database index and changes only this connection's database selection in Redis; Firn currently supports zero only. | It observes no key contents. Subsequent commands use the same command owner, so selection-before-command order needs no dataset hold around SELECT itself. |
+| COMMAND | Command catalogue/argument metadata; Firn's implemented forms retain their existing empty catalogue replies and unsupported-subcommand refusals. | Command metadata does not observe keyspace state or publication recipients. This scope change adds no new COMMAND support or reply expectation. |
+| OBJECT HELP | Static help text. | It has no key lookup. OBJECT IDLETIME/FREQ inspect keys and remain in the data path; excluding the whole OBJECT family would be incorrect. |
+
+The reference command bodies are Redis 7.2.16's
+[controls in server.c](https://github.com/redis/redis/blob/7.2.16/src/server.c),
+[SELECT in db.c](https://github.com/redis/redis/blob/7.2.16/src/db.c) and
+[OBJECT in object.c](https://github.com/redis/redis/blob/7.2.16/src/object.c).
+None of the six standalone exclusions requires the wider dataset/reply
+boundary. Their replies still commit once, and each connection's next
+command starts only after that commitment. A concurrent publication with
+no causal dependency may be ordered before or after such a reply; removing
+the data hold does not allow it to split a complete reply. Pub/sub commands
+retain their own registry/hub boundary. EXEC and EVAL/EVALSHA keep their
+existing enclosing transaction/attempt holds, including controls nested in
+those units; this direct-dispatch exclusion does not split an execution
+unit or change its atomicity.
+
 The promoted direct adapter rechecks AOF health under Meta before the held
 handler parses semantic options. Ordinary SET parses those options before
 its mutation-time recheck. If admission first observes healthy AOF and the
