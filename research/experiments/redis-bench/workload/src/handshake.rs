@@ -110,6 +110,8 @@ mod tests {
         server.join().unwrap();
         assert_eq!(measured.count, 3); // Four replies are still only one operation.
         assert_eq!(measured.csv(&opts).split(',').count(), 7);
+        let fraction = measured.client_work_fraction();
+        assert!(fraction > 0.0 && fraction <= 1.0, "work fraction {fraction}");
     }
 
     #[test]

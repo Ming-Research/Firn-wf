@@ -182,5 +182,6 @@ The recorded client CPU load does not separate client-limited cells: every
 cell, including Redis's 34 thousand CLIENT LIST calls per second, shows a
 client mean busy fraction of 0.998 or more. The workload client polls
 non-blocking sockets and yields in a loop (`workload/src/main.rs`), so its CPUs
-are busy whether or not it is the bottleneck. A client that blocks while
-waiting would make the 0.90 rule meaningful for these workloads.
+are busy whether or not it is the bottleneck. The client therefore reports
+its own `client_work_fraction` (loop time in scans that made progress, over
+all loop time), and the 0.90 rule applies to that.

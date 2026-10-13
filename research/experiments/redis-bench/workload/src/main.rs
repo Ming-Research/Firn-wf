@@ -1,15 +1,13 @@
 //! Depth-one consumer command forms for the deployment-performance investigation.
-//! Loopback RESP2/HELLO RESP3; worker threads multiplex nonblocking connections and block in poll(2) between scans.
+//! Loopback RESP2/HELLO RESP3; worker threads multiplex nonblocking connections using std only.
 mod limiter;
 mod eviction;
 mod handshake;
-mod wait;
 
 use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
-use std::os::fd::AsRawFd;
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -37,6 +35,8 @@ struct Options {
     warmup: Duration,
     sample_interval: Duration,
     maxmemory: Option<u64>,
+    // File that receives client_work_fraction after the measured run.
+    work_file: Option<String>,
 }
 
 impl Options {
@@ -47,7 +47,7 @@ impl Options {
             seconds: None, requests: None, keys: 100_000,
             value: vec![b'x'; 200], workload: String::new(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::from_secs(5),
-            sample_interval: Duration::from_millis(10), maxmemory: None,
+            sample_interval: Duration::from_millis(10), maxmemory: None, work_file: None,
         };
         let (mut keys_given, mut value_given) = (false, false);
         let mut args = env::args().skip(1);
@@ -76,6 +76,7 @@ impl Options {
                 "--warmup-seconds" => opts.warmup = Duration::try_from_secs_f64(value.parse()?)?,
                 "--sample-ms" => opts.sample_interval = Duration::from_millis(value.parse()?),
                 "--maxmemory" => opts.maxmemory = Some(value.parse()?),
+                "--client-work-file" => opts.work_file = Some(value),
                 _ => return Err(format!("unknown option: {flag}").into()),
             }
         }
@@ -287,6 +288,8 @@ struct Connection {
     hit: bool,
     wrote: bool,
     refused_sets: u64,
+    // Whether the last advance wrote or read bytes.
+    moved: bool,
 }
 
 impl Connection {
@@ -315,18 +318,19 @@ impl Connection {
         Ok(Self { socket, sha, rng: (id as u64) ^ opts.seed.wrapping_sub(1), remaining,
             out: Vec::new(), sent: 0, input: Vec::new(), replies: 0,
             started: Instant::now(), cache_key: Vec::new(), cache_set: false, hit: false, wrote: false,
-            refused_sets: 0 })
+            refused_sets: 0, moved: false })
     }
 
     // One whole transaction is buffered as a single logical write. Partial TCP
     // writes resume from sent; no next request is queued until every reply arrives.
     fn advance(&mut self, opts: &Options) -> Result<bool> {
         if self.started.elapsed() > TIMEOUT { return Err("request exceeded 30 seconds".into()); }
+        self.moved = false;
         let socket = self.socket.as_mut().ok_or("active request has no socket")?;
         if self.sent < self.out.len() {
             match socket.write(&self.out[self.sent..]) {
                 Ok(0) => return Err("zero-byte socket write".into()),
-                Ok(n) => self.sent += n,
+                Ok(n) => { self.sent += n; self.moved = true; }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted => (),
                 Err(e) => return Err(e.into()),
             }
@@ -334,7 +338,7 @@ impl Connection {
         // Read even while a large write is incomplete: transaction QUEUED
         // replies may already be available, and must not back up the server.
         match read_more(socket, &mut self.input) {
-            Ok(_) => (),
+            Ok(_) => self.moved = true,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted => (),
             Err(e) => return Err(e.into()),
         }
@@ -401,12 +405,16 @@ fn share(n: u64, total: usize, id: usize) -> u64 {
 // Exact, sparse one-microsecond bins, with no clipped tail or averaged percentiles.
 type Histogram = HashMap<u64, u64>;
 fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
-          cancelled: &AtomicBool, zipf: Option<&eviction::Zipf>) -> Result<(Histogram, Instant, u64, usize, u64)> {
+          cancelled: &AtomicBool, zipf: Option<&eviction::Zipf>) -> Result<(Histogram, Instant, u64, usize, u64, Duration, Duration)> {
     let mut histogram = Histogram::new();
+    // Client accounting: a scan is work when any connection wrote bytes, read
+    // bytes, connected or completed a request; every other scan only polls.
+    let (loop_start, mut work) = (Instant::now(), Duration::ZERO);
     let mut hits = 0;
     loop {
         if cancelled.load(Ordering::Relaxed) { return Err("another worker failed".into()); }
-        let (mut active, mut progressed) = (false, false);
+        let scan_start = Instant::now();
+        let (mut active, mut moved) = (false, false);
         for c in &mut connections {
             if c.replies == 0 {
                 if c.remaining == 0 || opts.seconds.is_some_and(|s| start.elapsed() >= s) { continue; }
@@ -428,39 +436,31 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
                     let socket = connect(opts.port)?;
                     socket.set_nonblocking(true)?;
                     c.socket = Some(socket);
+                    moved = true;
                 }
                 c.remaining -= 1;
             }
             active = true;
-            if c.advance(opts)? {
+            let done = c.advance(opts)?;
+            moved |= c.moved;
+            if done {
                 let us = c.started.elapsed().as_nanos().div_ceil(1000) as u64;
                 // Capture the fourth reply's latency before close overhead, but
                 // close before starting another operation in this slot.
                 if opts.workload == "handshake" { c.socket.take(); }
                 *histogram.entry(us).or_insert(0) += 1;
                 hits += u64::from(c.hit);
-                progressed = true;
+                moved = true;
             }
         }
+        if moved { work += scan_start.elapsed(); }
         if !active { break; }
-        // A completed request leaves its connection to start the next one on
-        // the next scan, so only a scan with no completion waits. The wait
-        // wakes on the first readable or writable socket, so it imposes no
-        // latency floor; it is capped so cancellation and each request's
-        // 30-second limit are still noticed.
-        if !progressed {
-            let mut interests = Vec::new();
-            let mut timeout = Duration::from_millis(50);
-            for c in connections.iter().filter(|c| c.replies > 0) {
-                let Some(socket) = &c.socket else { continue };
-                interests.push(wait::Interest { fd: socket.as_raw_fd(), write: c.sent < c.out.len() });
-                timeout = timeout.min(TIMEOUT.saturating_sub(c.started.elapsed()));
-            }
-            wait::wait(&interests, timeout)?;
-        }
+        // No sleeping timer imposes a latency floor; idle scans yield to peers.
+        thread::yield_now();
     }
+    let total = loop_start.elapsed();
     Ok((histogram, Instant::now(), hits, connections.iter().filter(|c| c.wrote).count(),
-        connections.iter().map(|c| c.refused_sets).sum()))
+        connections.iter().map(|c| c.refused_sets).sum(), work, total))
 }
 
 fn percentile(histogram: &BTreeMap<u64, u64>, count: u64, percent: u64) -> f64 {
@@ -478,12 +478,22 @@ struct Measurement {
     hits: u64,
     writers: usize,
     refused_sets: u64,
+    // Summed over workers: scans with progress, and the whole worker loop.
+    work: Duration,
+    total: Duration,
     seconds: f64,
     p50: f64,
     p99: f64,
 }
 
+// Share of the client's loop time spent in scans that moved bytes or finished
+// a request; the rest is idle scanning for replies.
+fn work_fraction(work: Duration, total: Duration) -> f64 {
+    if total.is_zero() { 0.0 } else { work.as_secs_f64() / total.as_secs_f64() }
+}
+
 impl Measurement {
+    fn client_work_fraction(&self) -> f64 { work_fraction(self.work, self.total) }
     fn csv(&self, opts: &Options) -> String {
         format!("{},{},{},{:.6},{:.3},{:.3},{:.3}", opts.workload, opts.connections,
             self.count, self.seconds, self.count as f64 / self.seconds, self.p50, self.p99)
@@ -543,9 +553,12 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
     let mut hits = 0;
     let mut writers = 0;
     let mut refused_sets = 0;
+    let (mut work, mut total) = (Duration::ZERO, Duration::ZERO);
     for handle in handles {
         match handle.join().unwrap_or_else(|_| Err("worker panicked".into())) {
-            Ok((bins, ended, found, wrote, refused)) => {
+            Ok((bins, ended, found, wrote, refused, worked, looped)) => {
+                work += worked;
+                total += looped;
                 end = end.max(ended);
                 hits += found;
                 writers += wrote;
@@ -564,7 +577,7 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
     // Timed runs stop issuing at the deadline and include draining in-flight work
     // in both the count and elapsed time; setup and histogram merging are excluded.
     let seconds = end.duration_since(begin).as_secs_f64();
-    Ok(Measurement { count, hits, writers, refused_sets, seconds,
+    Ok(Measurement { count, hits, writers, refused_sets, work, total, seconds,
         p50: percentile(&histogram, count, 50), p99: percentile(&histogram, count, 99) })
 }
 
@@ -578,7 +591,11 @@ fn run(opts: Options) -> Result<()> {
         warm.requests = None;
         measure(&warm, None, None)?;
     }
-    println!("{}", measure(&opts, None, None)?.csv(&opts));
+    let measured = measure(&opts, None, None)?;
+    if let Some(path) = &opts.work_file {
+        std::fs::write(path, format!("{:.4}\n", measured.client_work_fraction()))?;
+    }
+    println!("{}", measured.csv(&opts));
     Ok(())
 }
 
@@ -597,7 +614,7 @@ mod tests {
         Options { port, connections: 2, threads: 2, seconds: None, requests: Some(3),
             keys: 1, value: vec![b'x'], workload: workload.into(), fill: None,
             seed: 1, zipf_s: 0.99, warmup: Duration::ZERO,
-            sample_interval: Duration::from_millis(10), maxmemory: None }
+            sample_interval: Duration::from_millis(10), maxmemory: None, work_file: None }
     }
 
     pub(super) fn expect_command(socket: &mut TcpStream, args: &[&[u8]]) {
@@ -606,6 +623,15 @@ mod tests {
         let mut actual = vec![0; expected.len()];
         socket.read_exact(&mut actual).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn work_fraction_is_work_over_loop_time() {
+        let s = Duration::from_secs;
+        assert_eq!(work_fraction(s(3), s(4)), 0.75);
+        assert_eq!(work_fraction(Duration::ZERO, s(4)), 0.0);
+        assert_eq!(work_fraction(s(4), s(4)), 1.0);
+        assert_eq!(work_fraction(s(1), Duration::ZERO), 0.0);
     }
 
     #[test]
