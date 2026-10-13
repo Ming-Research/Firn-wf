@@ -101,6 +101,12 @@ When priorities conflict, first:
   `linux-modules-extra-$(uname -r)` through `apt-get` on Ubuntu to get it.
 - `make pin-ready`, with the readiness check: `whitefoot.pin` names no
   experiment release.
+- `release.yml` is separate from `make check`: packaging pull requests and
+  manual dispatches build `make firn-lto`, check its shared libraries, package
+  the Linux x86-64 program and Docker image, and execute the quickstart's
+  commands against both. Only a pushed `v*` tag publishes the checked tarball,
+  SHA-256 file and image to GitHub Releases and GHCR; write permissions belong
+  only to that publish job.
 
 ## Whitefoot
 

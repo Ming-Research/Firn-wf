@@ -1,0 +1,197 @@
+name: release
+
+on:
+  pull_request:
+    paths:
+      - packaging/**
+      - docs/quickstart.md
+      - .github/workflows/release.yml
+  push:
+    tags:
+      - v*
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and check release packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      package-tag: ${{ steps.package-tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - name: Select the package tag
+        id: package-tag
+        run: |
+          set -euo pipefail
+          package_tag=v-ci
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            package_tag="$GITHUB_REF_NAME"
+          fi
+          if [[ ! "$package_tag" =~ ^v[A-Za-z0-9_.-]*$ ]] || (( ${#package_tag} > 128 )); then
+            echo "Release tags must start with v, use only Docker tag characters and contain at most 128 characters." >&2
+            exit 1
+          fi
+          echo "PACKAGE_TAG=$package_tag" >> "$GITHUB_ENV"
+          echo "tag=$package_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Build firn with full LTO
+        run: make firn-lto
+
+      - name: Require a formal compiler pin
+        run: make pin-ready
+
+      - name: Record the binary architecture and runtime dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p build/release
+          file build/firn-lto > build/release/binary-format.txt
+          cat build/release/binary-format.txt
+          grep -Eq 'ELF 64-bit LSB.*x86-64' build/release/binary-format.txt
+          readelf --version-info build/firn-lto > build/release/symbol-versions.txt
+          grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' build/release/symbol-versions.txt | sort -Vu
+          ldd build/firn-lto > build/release/host-ldd.txt
+          cat build/release/host-ldd.txt
+          if grep -q 'not found' build/release/host-ldd.txt; then
+            exit 1
+          fi
+          # A build toolchain must not hide an extra tarball runtime dependency.
+          readelf --dynamic build/firn-lto > build/release/dynamic.txt
+          python3 - <<'PY'
+          import pathlib
+          import re
+
+          root = pathlib.Path('build/release')
+          needed = set(re.findall(r'\(NEEDED\).*\[([^\]]+)\]', (root / 'dynamic.txt').read_text()))
+          allowed = {'libc.so.6', 'libm.so.6', 'libpthread.so.0', 'libdl.so.2',
+                     'librt.so.1', 'libresolv.so.2', 'libutil.so.1', 'libanl.so.1',
+                     'libgcc_s.so.1', 'ld-linux-x86-64.so.2'}
+          if needed - allowed:
+              raise SystemExit(f'Unpackaged runtime libraries: {sorted(needed - allowed)}')
+          versions = re.findall(r'GLIBC_(\d+(?:\.\d+)+)', (root / 'symbol-versions.txt').read_text())
+          if any(tuple(map(int, version.split('.'))) > (2, 39) for version in versions):
+              raise SystemExit('The tarball exceeds the documented Ubuntu 24.04 glibc baseline')
+          print(f'Tarball runtime libraries: {sorted(needed)}')
+          PY
+
+      - name: Make the tarball and Docker build context
+        run: |
+          set -euo pipefail
+          package_name="firn-${PACKAGE_TAG}-linux-x86_64"
+          package_dir="build/release/$package_name"
+          mkdir -p "$package_dir/commands" "$package_dir/licenses/halo-wf"
+          install -m 0755 build/firn-lto "$package_dir/firn"
+          cp LICENSE "$package_dir/LICENSE"
+          cp firn/commands/redis-license.txt "$package_dir/commands/redis-license.txt"
+          for notice in LICENSE lib/fpconv/dtoa/LICENSE.md lib/halo/compile/LICENSE.md lib/halo/heap/LICENSE.md lib/halo/vm/LICENSE.md; do
+            destination="$package_dir/licenses/halo-wf/$notice"
+            mkdir -p "$(dirname "$destination")"
+            cp "deps/halo-wf/$notice" "$destination"
+          done
+          cat > "$package_dir/README.md" <<EOF
+          # Firn $PACKAGE_TAG
+
+          Linux x86-64 release built on Ubuntu 24.04; requires glibc 2.39 or newer
+          and the GNU runtime library (libgcc_s.so.1).
+          Run ./firn to listen on 127.0.0.1:6379 without persistence.
+          Full startup, persistence, configuration and compatibility instructions:
+          https://github.com/Ming-Research/Firn-wf/blob/$GITHUB_SHA/docs/quickstart.md
+
+          LICENSE, commands/redis-license.txt and licenses/halo-wf contain the
+          project and ported-code notices, including Halo's Arm kernels.
+          EOF
+          tar -C build/release -czf "build/release/$package_name.tar.gz" "$package_name"
+          (cd build/release && sha256sum "$package_name.tar.gz" > "$package_name.tar.gz.sha256")
+          mkdir -p build/release/docker-context
+          cp -a "$package_dir/firn" "$package_dir/LICENSE" "$package_dir/commands" "$package_dir/licenses" build/release/docker-context/
+
+      - name: Build the runtime image
+        run: docker build --platform linux/amd64 --file packaging/Dockerfile --tag firn-release:checked build/release/docker-context
+
+      - name: Check runtime image dependencies
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint ldd firn-release:checked /usr/local/bin/firn > build/release/image-ldd.txt
+          cat build/release/image-ldd.txt
+          if grep -q 'not found' build/release/image-ldd.txt; then
+            exit 1
+          fi
+
+      - name: Check the tarball quickstart
+        run: packaging/quickstart-check.sh tarball "build/release/firn-${PACKAGE_TAG}-linux-x86_64.tar.gz"
+
+      - name: Check the image quickstart
+        run: packaging/quickstart-check.sh image firn-release:checked
+
+      - name: Save the tested image
+        run: |
+          set -euo pipefail
+          docker save firn-release:checked | gzip > build/release/firn-image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firn-release
+          if-no-files-found: error
+          path: |
+            build/release/firn-${{ steps.package-tag.outputs.tag }}-linux-x86_64.tar.gz
+            build/release/firn-${{ steps.package-tag.outputs.tag }}-linux-x86_64.tar.gz.sha256
+            build/release/firn-image.tar.gz
+
+  publish:
+    name: publish the checked tag
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+    env:
+      PACKAGE_TAG: ${{ needs.build.outputs.package-tag }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # No source checkout or build runs in the job with publication access.
+      - uses: actions/download-artifact@v4
+        with:
+          name: firn-release
+          path: release
+
+      - name: Publish the tested image to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          gzip -dc release/firn-image.tar.gz | docker load
+          docker tag firn-release:checked "ghcr.io/ming-research/firn:$PACKAGE_TAG"
+          docker tag firn-release:checked ghcr.io/ming-research/firn:latest
+          docker push "ghcr.io/ming-research/firn:$PACKAGE_TAG"
+          docker push ghcr.io/ming-research/firn:latest
+
+      - name: Publish the tarball and checksum to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tarball="release/firn-${PACKAGE_TAG}-linux-x86_64.tar.gz"
+          (cd release && sha256sum --check "firn-${PACKAGE_TAG}-linux-x86_64.tar.gz.sha256")
+          if gh release view "$PACKAGE_TAG" > /dev/null 2>&1; then
+            gh release upload "$PACKAGE_TAG" "$tarball" "$tarball.sha256" --clobber
+          else
+            gh release create "$PACKAGE_TAG" "$tarball" "$tarball.sha256" --verify-tag \
+              --title "Firn $PACKAGE_TAG" \
+              --notes "Linux x86-64 tarball and SHA-256 checksum. Docker: ghcr.io/ming-research/firn:$PACKAGE_TAG. Quickstart: https://github.com/Ming-Research/Firn-wf/blob/$GITHUB_SHA/docs/quickstart.md"
+          fi
