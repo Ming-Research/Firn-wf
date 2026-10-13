@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Run Lua scripts as Redis 7.2.16 does
+
+Nodes: firn/scripts
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-host72-design, which asked to approve PR #69's three new decisions at head 34c96c2: a script's numbers and double replies are written with Redis 7.2.16's Grisu2 text through Halo's port; the script environment is protected once through Halo's embedding interface as Redis's scriptingInit does; redis.set_repl accepts REPL_AOF and REPL_ALL and refuses the flags firn cannot honor.
+
+Summary: Redis 7.2.16 writes script numbers with Grisu2, whose digits differ from the exact shortest form for 355 of 16,922 recorded values, so firn takes Halo's byte-checked port; command-reply scores keep %.17g until board item firn-score-text-72. Protection through the embedding gives Redis's refusal message at Redis's location. firn records a command's changes and its expiry deletions under one switch, so it refuses REPL_NONE, REPL_SLAVE and REPL_REPLICA rather than honor them partly; this is a deliberate difference from Redis.
+
 ## 2026-10-13 Let AOF-off writes that queue no expiry hold only their keys
 
 Nodes: firn/command-parts, firn/aof-rewrite/sequence

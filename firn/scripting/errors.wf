@@ -107,8 +107,8 @@ fn redis_error_field(engine: &Engine, table: Value) -> r: Value reads(engine) {
   }
 }
 
-fn format_redis_error(engine: &Engine, sha: &Array<u8, 40>, line: u64, locate: Bool) -> r: Box<Slots<u8>> reads(engine), reads(sha) {
-  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE), which follows Redis 7.0.15's eval.c and script_lua.c. Redis 7's EVAL error reply, after eval.c's string-to-error-table handler and script_lua.c's final reply: an error table's err field, or ERR and the message; then the script body's SHA-1, which the caller supplies, and the line. The caller supplies the failing line, or zero if unknown; locate adds Lua's user_script prefix to a VM message not yet located.";
+fn format_redis_error(engine: &Engine, sha: &Array<u8, 40>, line: u64) -> r: Box<Slots<u8>> reads(engine), reads(sha) {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE), which follows Redis 7.2.16's eval.c and script_lua.c. Redis 7's EVAL error reply, after eval.c's string-to-error-table handler and script_lua.c's final reply: an error table's err field, or ERR and the message as the VM raised it, located or not, as a store into a read-only table is located when a script statement makes it and not when rawset or setmetatable does; then the script body's SHA-1, which the caller supplies, and the line. The caller supplies the failing line, or zero if unknown.";
   let out = box_slots_new::<u8>(capacity: 0_u64);
   let error = halo::embed::error_value(engine: engine);
   let tag = halo::embed::kind(value: error);
@@ -117,14 +117,6 @@ fn format_redis_error(engine: &Engine, sha: &Array<u8, 40>, line: u64, locate: B
     redis_value_text(engine: engine, value: message, out: &out);
   } else {
     text_bytes(out: &out, bytes: &redis_err[0_u64..4_u64]);
-    if locate {
-      if line > 0_u64 {
-        text_bytes(out: &out, bytes: &redis_location[1_u64..13_u64]);
-        decimal(out: &out, n: line);
-        push(out: &out, byte: 58_u8);
-        push(out: &out, byte: 32_u8);
-      }
-    }
     redis_value_text(engine: engine, value: error, out: &out);
   }
   if line > 0_u64 {
