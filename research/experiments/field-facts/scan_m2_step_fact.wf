@@ -1,0 +1,31 @@
+alias ExitStatus = std::process::ExitStatus;
+
+fn scan(start: u64, end: u64, total: u64) -> next: u64 pure contract {
+  requires start <= end;
+  ensures next <= end;
+} {
+  let at = start;
+  let remaining = total;
+  loop @scan (
+    invariant upper: at <= end
+  ) {
+    if at < end {
+      let available = end - at;
+      let taken = imin(available, remaining);
+      invariant step: taken <= available;
+      let next = at + taken;
+      set remaining = remaining - taken;
+      set at = next;
+      if remaining == 0_u64 {
+        return at;
+      }
+      continue @scan;
+    }
+    return at;
+  }
+}
+
+fn main() -> status: ExitStatus pure {
+  let reached = scan(start: 0_u64, end: 4_u64, total: 9_u64);
+  return std::process::exit_status(code: 0_u8);
+}
