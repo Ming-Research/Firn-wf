@@ -1,0 +1,99 @@
+alias ExitStatus = std::process::ExitStatus;
+alias Inputs = std::process::Inputs;
+alias Clock = std::time::Clock;
+
+fn held(data: Shared<u64>, written: DecisionCell, stop: DecisionCell) -> result: unit pure waits {
+  atomic value = &data {
+    let verdict = claim_written(cell: &written);
+    set value^ = 1_u64;
+    loop {
+      match decision_cell_read(cell: &stop) {
+        Open() => {
+        }
+        Written() => {
+        }
+        Killed() => {
+          break;
+        }
+      }
+    }
+  }
+  return unit;
+}
+
+fn trial(clock: &Clock, count: u64) -> code: u8 writes(clock) waits {
+  let data = shared_new::<u64>(value: 0_u64);
+  let written = decision_cell_new();
+  let stop = decision_cell_new();
+  let warming = count % 64_u64;
+  for (i in 0_u64..warming) {
+    atomic value = &data {
+      set value^ = 0_u64;
+    }
+  }
+  let start = std::time::now(clock: clock);
+  let deadline = if count < 64_u64 {
+    give start;
+  } else {
+    give std::time::instant_after(instant: start, nanoseconds: 1000000000_u64);
+  }
+  let child_data = shared_share::<u64>(shared: &data);
+  let child_written = decision_cell_share(cell: &written);
+  let child_stop = decision_cell_share(cell: &stop);
+  let never = std::time::cancel_never();
+  let job = spawn held(data: move child_data, written: move child_written, stop: move child_stop);
+  let elapsed = std::time::sleep_until(deadline: deadline, cancel: &never);
+  let began = False();
+  match decision_cell_read(cell: &written) {
+    Open() => {
+    }
+    Written() => {
+      set began = True();
+    }
+    Killed() => {
+    }
+  }
+  let stopped = claim_killed(cell: &stop);
+  let joined = job;
+  std::time::close_cancel_watch(watch: move never);
+  if count >= 64_u64 {
+    if bnot(began) {
+      return 5_u8;
+    }
+  }
+  let observed = 0_u64;
+  atomic value = &data {
+    set observed = value^;
+  }
+  if observed != 1_u64 {
+    return 1_u8;
+  }
+  match decision_cell_read(cell: &written) {
+    Open() => {
+      return 2_u8;
+    }
+    Written() => {
+      return 0_u8;
+    }
+    Killed() => {
+      return 3_u8;
+    }
+  }
+}
+
+fn main(inputs: Inputs) -> status: ExitStatus pure waits {
+  let Inputs(args: arguments, drivers: drivers, cwd: directory, handles: factory, clock: clock, ..) = move inputs;
+  let std::fs::Directory(read: readable, write: writable) = move directory;
+  let total = std::text::args_count(args: &arguments);
+  let code = if drivers != 1_u64 {
+    give 4_u8;
+  } else if total == 0_u64 {
+    give 6_u8;
+  } else {
+    let count = total - 1_u64;
+    give trial(clock: &clock, count: count);
+  }
+  let closed_write = std::fs::close_directory_write(factory: &factory, directory: move writable);
+  let closed_read = std::fs::close_directory(factory: &factory, directory: move readable);
+  return std::process::exit_status(code: code);
+}

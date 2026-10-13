@@ -1,0 +1,69 @@
+# Temporary investigation for firn-bl-01-07. Remove after its witness has
+# established the supported progress boundary and the implementation uses it.
+name: script busy progress witness
+
+on:
+  push:
+    branches: [claude/script-busy]
+  workflow_dispatch:
+
+jobs:
+  progress:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Download the pinned compiler
+        run: make compiler
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+      - name: Compile the isolated witness
+        run: |
+          release=$(sed -n 's/^release = //p' whitefoot.pin)
+          "build/whitefoot/$release/whitefootc" research/experiments/script-busy-progress/witness.wf -o build/script-busy-progress
+      - name: Check progress without a watchdog inside the witness
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          results = []
+          output = Path('build/script-busy-progress.json')
+
+          def run_case(count):
+              case = {'argument_count': count, 'drivers': 1,
+                      'deadline': 'past' if count < 64 else 'future',
+                      'warmup_waits': count % 64}
+              try:
+                  run = subprocess.run(
+                      ['build/script-busy-progress', *(['x'] * count)],
+                      env={**os.environ, 'WF_DRIVERS': '1'},
+                      capture_output=True, text=True, timeout=5,
+                  )
+                  case.update(exit_code=run.returncode, stdout=run.stdout, stderr=run.stderr)
+              except subprocess.TimeoutExpired:
+                  case['timeout_seconds'] = 5
+              results.append(case)
+              output.write_text(json.dumps(results, indent=2) + '\n')
+              print(json.dumps(case), flush=True)
+              return case.get('exit_code') == 0
+
+          # One bounded positive control precedes the suspected failing case.
+          if not run_case(95):
+              raise SystemExit('Pending-deadline control failed; inspect before scaling.')
+          if not run_case(63):
+              raise SystemExit('Expired-deadline sample did not complete successfully.')
+          # Only a successful sample justifies checking other fairness phases.
+          for count in range(63):
+              if not run_case(count):
+                  raise SystemExit('Expired-deadline fairness-phase case failed.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: script-busy-progress-${{ github.sha }}
+          path: build/script-busy-progress.json
