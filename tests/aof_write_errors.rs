@@ -320,7 +320,8 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
 /// real failure (capture.md's first-cause diagnostics): the writer's next
 /// attempted append fails and latches `drain`. A tick on which the append
 /// retry is not yet due attempts nothing and must not abort the rewrite as
-/// `writer_io`. The 5000 keys keep the scan running past the first ticks, so
+/// `writer_io`. The 5000 keys, with rdb-key-save-delay sleeping after each,
+/// keep the scan running past the first ticks and the first due retry, so
 /// the cut's own drain is not what latches the cause. A 1-MiB value written
 /// and deleted before the fault makes the incremental file, and so the file
 /// size limit, larger than the whole base, so the base write cannot latch
@@ -346,6 +347,7 @@ fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
         expected.extend(resp(&["DEL", "padding"]));
         wait_bytes(&path, &expected);
         wait_empty_healthy_buffer(&mut client);
+        rewrite_key_delay(&mut client, "100");
         let old = fault(&child, &mut client, &path);
         rewrite_start(&mut client);
         let info = rewrite_wait(&mut client);

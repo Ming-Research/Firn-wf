@@ -511,9 +511,15 @@ fn aof_rw_release<T: drop>(value: T) -> result: unit pure {
 }
 
 fn aof_rw_pause(clock: &Clock) -> result: unit writes(clock) waits {
-  doc "A nonempty sleep is also used for empty scan steps and chunk cleanup; a zero-byte append would not yield.";
+  doc "A nonempty sleep that yields the driver between scan slices, journal reads and chunk cleanup; a zero-byte append would not yield.";
+  aof_rw_sleep(clock: clock, nanoseconds: 100000_u64);
+  return unit;
+}
+
+fn aof_rw_sleep(clock: &Clock, nanoseconds: u64) -> result: unit writes(clock) waits {
+  doc "Sleeps outside every hold for the given nonzero nanoseconds, which no cancellation shortens.";
   let now = std::time::now(clock: clock);
-  let wake = std::time::instant_after(instant: now, nanoseconds: 100000_u64);
+  let wake = std::time::instant_after(instant: now, nanoseconds: nanoseconds);
   let never = std::time::cancel_never();
   match std::time::sleep_until(deadline: wake, cancel: &never) {
     Ok(..) => {
@@ -575,6 +581,7 @@ fn aof_rw_admit(store: &Keyspace, meter: &std::process::MemoryMeter, manual: Boo
       pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason);
     } else {
       set m^.rewrite.limit = reserve;
+      set m^.rewrite.fixed = fixed;
       set m^.rewrite.used = fixed;
       set m^.rewrite.peak = fixed;
       set m^.aof_rewrite_reserve = reserve;
