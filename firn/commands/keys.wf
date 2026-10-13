@@ -369,33 +369,45 @@ fn run_del(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let keys = named_keys(input: input, args: args, positions: &client^.key_metadata);
   let removed = 0_u64;
   let logged = store^.logging;
-  atomic slots = &store^.keys[keys], m = &store^.meta {
-    if aof_refuse(meta: m, client: client) {
-      return unit;
-    }
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    for @named (at in 0_u64..keys.len) {
-      let found = remove_live_at(sequence: &sequence, capture_keys: &keys, capture_index: at, slot: &slots^[at], now: time^.check);
-      if found == 1_u64 {
-        set removed = removed +wrap 1_u64;
+  if logged {
+    atomic slots = &store^.keys[keys], m = &store^.meta {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
       }
-      if found == 2_u64 {
+      let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      for @named (at in 0_u64..keys.len) {
+        let found = remove_live_at(sequence: &sequence, capture_keys: &keys, capture_index: at, slot: &slots^[at], now: time^.check);
+        if found == 1_u64 {
+          set removed = removed +wrap 1_u64;
+        }
+        if found == 2_u64 {
+          if logged {
+            let payload = key_position(positions: &client^.key_metadata, index: at);
+            let place = named_bounds(input: input, args: args, payload: payload);
+            let key = &input^[place.start..place.end];
+            let lapsed = True();
+            let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key, budget: &log_budget);
+          }
+        }
+      }
+      if removed > 0_u64 {
         if logged {
-          let payload = key_position(positions: &client^.key_metadata, index: at);
-          let place = named_bounds(input: input, args: args, payload: payload);
-          let key = &input^[place.start..place.end];
-          let lapsed = True();
-          let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key, budget: &log_budget);
+          let appended = mset_meta(log: &m^.log, logged: logged, input: input, args: args, budget: &log_budget);
+        }
+      }
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slots = &store^.keys[keys] {
+      let sequence = pkg::store::sequence_inert();
+      for @named (at in 0_u64..keys.len) {
+        let found = remove_live_at(sequence: &sequence, capture_keys: &keys, capture_index: at, slot: &slots^[at], now: time^.check);
+        if found == 1_u64 {
+          set removed = removed +wrap 1_u64;
         }
       }
     }
-    if removed > 0_u64 {
-      if logged {
-        let appended = mset_meta(log: &m^.log, logged: logged, input: input, args: args, budget: &log_budget);
-      }
-    }
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   count_finish(client: client, count: removed);
   return unit;
@@ -421,33 +433,56 @@ fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   set client^.now = time^.check;
   let live = 0_u64;
   let logged = store^.logging;
-  atomic slots = &store^.keys[keys], m = &store^.meta {
-    let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    for @named (
-      index in 1_u64..count,
-      invariant aligned: slots^.len == keys.len
-    ) {
-      if index < client^.key_metadata.inner.len {
-        let rank = client^.key_metadata.inner[index];
-        if rank < slots^.len {
-          if touching {
-            refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
+  if logged {
+    atomic slots = &store^.keys[keys], m = &store^.meta {
+      let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      for @named (
+        index in 1_u64..count,
+        invariant aligned: slots^.len == keys.len
+      ) {
+        if index < client^.key_metadata.inner.len {
+          let rank = client^.key_metadata.inner[index];
+          if rank < slots^.len {
+            if touching {
+              refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
+            }
+            let kind = entry_kind_at(sequence: &sequence, capture_keys: &keys, capture_index: rank, slot: &slots^[rank], client: client);
+            if kind != 0_u64 {
+              set live = live +wrap 1_u64;
+            }
+            if client^.state == state_expired {
+              let place = key_bounds(input: input, args: args, index: index);
+              let key = &input^[place.start..place.end];
+              let lapsed = True();
+              let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key, budget: &log_budget);
+            }
           }
-          let kind = entry_kind_at(sequence: &sequence, capture_keys: &keys, capture_index: rank, slot: &slots^[rank], client: client);
-          if kind != 0_u64 {
-            set live = live +wrap 1_u64;
-          }
-          if client^.state == state_expired {
-            let place = key_bounds(input: input, args: args, index: index);
-            let key = &input^[place.start..place.end];
-            let lapsed = True();
-            let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: lapsed, key: key, budget: &log_budget);
+        }
+      }
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slots = &store^.keys[keys] {
+      let sequence = pkg::store::sequence_inert();
+      for @named (
+        index in 1_u64..count,
+        invariant aligned: slots^.len == keys.len
+      ) {
+        if index < client^.key_metadata.inner.len {
+          let rank = client^.key_metadata.inner[index];
+          if rank < slots^.len {
+            if touching {
+              refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
+            }
+            let kind = entry_kind_at(sequence: &sequence, capture_keys: &keys, capture_index: rank, slot: &slots^[rank], client: client);
+            if kind != 0_u64 {
+              set live = live +wrap 1_u64;
+            }
           }
         }
       }
     }
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
   }
   count_finish(client: client, count: live);
   return unit;
@@ -460,13 +495,20 @@ fn run_type(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   set client^.now = time^.check;
   let kind = 0_u64;
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    set kind = entry_kind(sequence: &sequence, capture_key: key, slot: slot, client: client);
-    let removed = client^.state == state_expired;
-    let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: removed, key: key, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  if logged {
+    atomic slot = &store^.keys[key], m = &store^.meta {
+      let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      set kind = entry_kind(sequence: &sequence, capture_key: key, slot: slot, client: client);
+      let removed = client^.state == state_expired;
+      let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: removed, key: key, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slot = &store^.keys[key] {
+      let sequence = pkg::store::sequence_inert();
+      set kind = entry_kind(sequence: &sequence, capture_key: key, slot: slot, client: client);
+    }
   }
   type_finish(client: client, kind: kind);
   return unit;
@@ -861,12 +903,19 @@ fn run_ttl(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
   let logged = store^.logging;
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    let removed = ttl_body(sequence: &sequence, capture_key: key, slot: slot, remaining: &remaining);
-    let appended = ttl_meta(log: &m^.log, logged: logged, removed: removed, key: key, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  if logged {
+    atomic slot = &store^.keys[key], m = &store^.meta {
+      let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let removed = ttl_body(sequence: &sequence, capture_key: key, slot: slot, remaining: &remaining);
+      let appended = ttl_meta(log: &m^.log, logged: logged, removed: removed, key: key, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    }
+  } else {
+    atomic slot = &store^.keys[key] {
+      let sequence = pkg::store::sequence_inert();
+      let removed = ttl_body(sequence: &sequence, capture_key: key, slot: slot, remaining: &remaining);
+    }
   }
   ttl_finish(client: client, remaining: &remaining, now: time^.check, in_seconds: in_seconds, absolute: absolute);
   return unit;
@@ -879,15 +928,22 @@ fn run_persist(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
   let key_span = arg(args: args, index: 1_u64);
   let place = key_bounds(input: input, args: args, index: 1_u64);
   let key = &input^[place.start..place.end];
-  atomic slot = &store^.keys[key], m = &store^.meta {
-    if aof_refuse(meta: m, client: client) {
-      return unit;
+  if store^.logging {
+    atomic slot = &store^.keys[key], m = &store^.meta {
+      if aof_refuse(meta: m, client: client) {
+        return unit;
+      }
+      let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      persist_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, expiry: &expiry);
+      let appended = persist_meta(log: &m^.log, logged: store^.logging, expiry: &expiry, input: input, key_span: key_span, key: key, budget: &log_budget);
+      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
-    let sequence = pkg::store::sequence_new_key(meta: m, loading: time^.loading);
-    let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-    persist_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, expiry: &expiry);
-    let appended = persist_meta(log: &m^.log, logged: store^.logging, expiry: &expiry, input: input, key_span: key_span, key: key, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+  } else {
+    atomic slot = &store^.keys[key] {
+      let sequence = pkg::store::sequence_inert();
+      persist_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, expiry: &expiry);
+    }
   }
   persist_finish(client: client, expiry: &expiry);
   return unit;

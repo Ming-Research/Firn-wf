@@ -4,6 +4,38 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Write a conditional Meta hold as one statement
+
+Nodes: firn/command-parts
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-one-stmt-design, which asked to approve PR #72's design change at head 0be3c57 (option A, in English: approve; merge #72, then write the other 39 sites as one statement and measure the whole change once on the 14900K).
+
+Summary: A command that holds Meta only on some runs (AOF kept, or an expiry it may queue) is written as one atomic statement naming its keys and Meta, with every use of Meta under the run-time condition, instead of two statements around that condition. The pinned compiler acquires a named target at its first use on a path, so the path that never uses Meta never holds it; SET so written measured within the twin's noise at six passes on 8 P-cores with AOF off ([write-meta](../research/investigations/write-meta/README.md#one-statement-set)). The specification only permits holding less than a statement names, so the form rests on the compiler's behaviour, which Whitefoot's lock ledger (Whitefoot#421) is to check at each site; the owner kept the language without a conditional target.
+
+## 2026-10-13 Describe a short AOF append by the host's no-space text
+
+Nodes: firn/append-only-file
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-enospc-design, which asked to approve PR #70's design change at head 13ba7ed with the pin moved from wf-c52e867cae4f (specification v0.135) to wf-2a785316590a (specification v0.136): a partial AOF append's MISCONF reply ends with the host's description of the no-space class.
+
+Summary: Redis 7.2.16 reports every short AOF write as ENOSPC. Whitefoot v0.136's error_copy_class_description gives the host's text for an error class, so firn's reply now equals Redis's word for word without naming a platform error number, which closes the gap the previous empty suffix recorded.
+
+## 2026-10-13 Run Lua scripts as Redis 7.2.16 does
+
+Nodes: firn/scripts
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-host72-design, which asked to approve PR #69's three new decisions at head 34c96c2: a script's numbers and double replies are written with Redis 7.2.16's Grisu2 text through Halo's port; the script environment is protected once through Halo's embedding interface as Redis's scriptingInit does; redis.set_repl accepts REPL_AOF and REPL_ALL and refuses the flags firn cannot honor.
+
+Summary: Redis 7.2.16 writes script numbers with Grisu2, whose digits differ from the exact shortest form for 355 of 16,922 recorded values, so firn takes Halo's byte-checked port; command-reply scores keep %.17g until board item firn-score-text-72. Protection through the embedding gives Redis's refusal message at Redis's location. firn records a command's changes and its expiry deletions under one switch, so it refuses REPL_NONE, REPL_SLAVE and REPL_REPLICA rather than honor them partly; this is a deliberate difference from Redis.
+
+## 2026-10-13 Let AOF-off writes that queue no expiry hold only their keys
+
+Nodes: firn/command-parts, firn/aof-rewrite/sequence
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-write-meta-design, which asked to approve PR #65's design-tree change at head d82c411: while AOF is off, a write that can queue no expiry and reads nothing else from Meta holds only its keys' entries, and admission's saved-error check skips Meta; such statements take an inert sequence token and INFO leaves firn_aof_rewrite_commit_seq out while AOF is off.
+
+Summary: one exclusive Meta target on every write bounded all writes together; on the i9-14900K main's SET fell to 1.23 M/s on 8 P-cores, 1/17 of GET, with 43% of its time acquiring Meta. Without a file nothing a write records in Meta is read, so those statements now hold their entries alone; on 8 P-cores SET reached 21.4 M/s, 99.6% of GET, and SET and MSET grew 1.74 and 1.73 times from 4 to 8 cores. INFO omits the commit sequence while AOF is off because most writes no longer advance it.
+
 ## 2026-10-12 Bound each AOF rewrite scan step by the reserve and pace it by time slice
 
 Nodes: firn/aof-rewrite/capture

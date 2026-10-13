@@ -54,7 +54,7 @@ public enum Value {
 }
 
 public struct Entry {
-  doc "A key's value, Redis 7.0.15 robj.lru access bits (object.c createObject and db.c lookupKey), its dataset last-write sequence (zero after loading), and its expiry: the calendar time in milliseconds at which it expires, as Redis keeps it, or zero for none.";
+  doc "A key's value, Redis 7.0.15 robj.lru access bits (object.c createObject and db.c lookupKey), its dataset last-write sequence (zero after loading and after a statement that holds no Meta), and its expiry: the calendar time in milliseconds at which it expires, as Redis keeps it, or zero for none.";
   public value: Value;
   public expires: u64;
   public access: u32;
@@ -62,10 +62,10 @@ public struct Entry {
 }
 
 public struct WriteSequence {
-  doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; loading leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed key before the outer statement commits; the inactive path allocates nothing.";
+  doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; an inert token, taken while loading or by a statement that holds no Meta, leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed key before the outer statement commits; the inactive path allocates nothing.";
   public value: u64;
   public taken: Bool;
-  public loading: Bool;
+  public inert: Bool;
   public exhausted: Bool;
   public capturing: Bool;
   public failed: Bool;
@@ -207,9 +207,9 @@ public struct Meta {
   public random: u64;
 }
 
-public fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_described selects the error the refusal describes.";
+public fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_text selects what the refusal describes.";
 
-public fn aof_error_described(meta: &Meta) -> described: Option<std::io::IoError> reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error) doc "The error whose host description follows the MISCONF prefix, as Redis 7.0.15 writeCommandsDeniedByDiskError (server.c:4324-4344) selects aof_last_write_errno: a failed append's own error when nothing of it was written (aof.c:1157-1162); otherwise the sync error (aof_bio_fsync_errno). A partial append reports ENOSPC whatever the host returned (aof.c:1163-1184); std names no host code for that class, so it yields None, pending board item firn-req-enospc-text.";
+public fn aof_error_text(meta: &Meta) -> text: pkg::protocol::AofErrorText reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error) doc "Selects the text for the refusal: Host with a failed append's own error when nothing of it was written (aof.c:1157-1162), else Host with the sync error (aof_bio_fsync_errno), else Absent. A partial append is ShortWrite, which Redis reports as ENOSPC whatever the host returned (aof.c:1163-1184), described by the no-space class rather than a host code.";
 
 public struct MemoryConfig {
   doc "Redis 7.0.15 config.c memory settings; policies use maxmemory_policy_enum order, with noeviction at 7. Access tracking and command admission share each connection read's snapshot, refreshed after its own CONFIG SET.";
@@ -234,7 +234,7 @@ public struct ServerState {
 }
 
 public struct Keyspace {
-  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served.";
+  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
   public keys: Shared<ConcurrentHashMap<Entry>>;
   public meta: Shared<Meta>;
   public server: Shared<ServerState>;
@@ -267,9 +267,11 @@ public fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence re
 
 public fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "sequence_new for a statement holding exactly one key. When that key's previous write lies inside the current rewrite window, the journal already reproduces its state, so the statement journals its own append-only bytes instead of the key's image.";
 
-public fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) doc "Takes one sequence lazily for an actual dataset mutation, reusing it for the rest of the statement. Reaching u64's maximum saturates the counter and permanently refuses future captures until a quiescent reset protocol exists; service mutations continue. Loading takes no sequence.";
+public fn sequence_inert() -> sequence: WriteSequence pure doc "The token of an outer atomic statement that holds no Meta, as a command's statement does while the keyspace keeps no append-only file and the statement queues no expiry: it takes no sequence, stamps changed entries zero, captures nothing and is never committed, as a loading token behaves.";
 
-public fn sequence_stamp(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit reads(slot), writes(sequence), writes(slot.Some.value.last_write) doc "Publishes an actual entry change through the statement's lazy sequence and stamps a surviving entry. Call only for a change; deletion and FLUSH use the same sequence_change contract. Loading stamps zero.";
+public fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) doc "Takes one sequence lazily for an actual dataset mutation, reusing it for the rest of the statement. Reaching u64's maximum saturates the counter and permanently refuses future captures until a quiescent reset protocol exists; service mutations continue. An inert token takes no sequence.";
+
+public fn sequence_stamp(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit reads(slot), writes(sequence), writes(slot.Some.value.last_write) doc "Publishes an actual entry change through the statement's lazy sequence and stamps a surviving entry. Call only for a change; deletion and FLUSH use the same sequence_change contract. An inert token stamps zero.";
 
 public fn sequence_replace(sequence: &WriteSequence, slot: &Option<Entry>, replacement: Option<Entry>) -> result: unit writes(sequence), writes(slot) doc "Records the replaced destination's anchor before installing a fresh or transferred entry. The caller then stamps and captures the final value; no replacement uses the incoming entry's stamp as its anchor.";
 

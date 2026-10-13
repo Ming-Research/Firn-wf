@@ -216,29 +216,6 @@ fn value_bytes(vm: &Vm, v: Value, out: &Box<Slots<u8>>) -> r: unit reads(vm), wr
   return unit;
 }
 
-fn readonly_message(vm: &Vm, value: Value) -> r: Bool reads(vm) {
-  match halo::heap::string_of(heap: &vm^.heap, value: value) {
-    None() => {
-      return False();
-    }
-    Some(value: view) => {
-      let h = cvt::<u32, u64>(view.handle);
-      if h < vm^.heap.strings.inner.len {
-        if vm^.heap.strings.inner[h].payload.bytes.inner.len == 34_u64 {
-          for (i in 0_u64..34_u64) {
-            let b = vm^.heap.strings.inner[h].payload.bytes.inner[i];
-            if b != readonly_error[i] {
-              return False();
-            }
-          }
-          return True();
-        }
-      }
-    }
-  }
-  return False();
-}
-
 fn callback_line(vm: &Vm) -> r: u64 reads(vm) {
   doc "Global slow paths keep their continuation PC. Direct redis.member calls use the member lookup's line; this is not a general failing-PC API.";
   let pc = vm^.callback_plan.pc;
@@ -254,6 +231,7 @@ fn callback_line(vm: &Vm) -> r: u64 reads(vm) {
 fn host_call(env: &Env, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64, id: u32) -> r: HostOutcome writes(env), writes(vm), writes(stack) contract {
   ensures stack^.inner.len == entry(stack)^.inner.len;
 } {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Runs the host function id names, as the redis table's builtins; redis.set_repl checks its argument as Halo-wf's test host does.";
   if id == 4102_u32 {
     if argc != 1_u64 {
       let message = literal(vm: vm, text: &sha_arity[0_u64..29_u64]);
@@ -304,6 +282,26 @@ fn host_call(env: &Env, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64
       set env^.resp = 3_u8;
     } else {
       return raise(vm: vm, text: &host_text_4[0_u64..32_u64]);
+    }
+    return HostOutcome::Returned(count: 0_u64);
+  }
+  if id == 4104_u32 {
+    if argc != 1_u64 {
+      return raise(vm: vm, text: &set_repl_arity[0_u64..43_u64]);
+    }
+    let flag_value = arg(stack: stack, func: func, argc: argc, index: 0_u64);
+    let flag_number = number(vm: vm, v: flag_value);
+    let flags = ftrunc(flag_number);
+    let low = fle(0.0_f64, flags);
+    let high = fle(flags, 3.0_f64);
+    let valid = band(low, high);
+    if bnot(valid) {
+      return raise(vm: vm, text: &set_repl_flags[0_u64..81_u64]);
+    }
+    let no_flags = feq(flags, 0.0_f64);
+    let replica = feq(flags, 2.0_f64);
+    if bor(no_flags, replica) {
+      return raise(vm: vm, text: &set_repl_without_aof[0_u64..63_u64]);
     }
     return HostOutcome::Returned(count: 0_u64);
   }
@@ -378,3 +376,9 @@ const host_text_3: Array<u8, 42> = "ERR redis.setresp() requires one argument.";
 const host_text_4: Array<u8, 32> = "ERR RESP version must be 2 or 3.";
 
 const host_text_5: Array<u8, 37> = "ERR wrong number or type of arguments";
+
+const set_repl_arity: Array<u8, 43> = "ERR redis.set_repl() requires one argument.";
+
+const set_repl_flags: Array<u8, 81> = "ERR Invalid replication flags. Use REPL_AOF, REPL_REPLICA, REPL_ALL or REPL_NONE.";
+
+const set_repl_without_aof: Array<u8, 63> = "ERR firn does not support redis.set_repl flags without REPL_AOF";

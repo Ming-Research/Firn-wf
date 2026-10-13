@@ -25,10 +25,12 @@ fn configure(client: &mut TcpStream, pairs: &[&str]) {
 }
 
 fn start(clients: &[u8]) -> (ProgramChild, TcpStream, u16) {
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = firn().spawn_on_route(true, &[text.as_bytes(), clients]);
-    (child, connect_when_ready(port), port)
+    let child = firn().spawn_on_route(true, &[text.as_bytes(), clients]).with_port(&port_lease);
+    let client = connect_when_ready(port, &child);
+    (child, client, port)
 }
 
 /// processCommand rejects DENYOOM even for a write that would be a no-op,
@@ -95,12 +97,13 @@ fn noeviction_refuses_denyoom_but_allows_reads_and_deletes() {
 /// returns OOM instead of OK.
 #[test]
 fn noeviction_reclaims_map_reserve_before_refusing_a_write() {
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
     let child = firn().spawn_on_route_with(
         true, &[("WF_DRIVERS", "1"), ("WF_WORKERS", "1")], &[text.as_bytes(), b"1"],
-    );
-    let mut client = connect_when_ready(port);
+    ).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["FLUSHDB"]), "+OK\r\n");
 
     let keys: Vec<String> = (0..4097).map(|index| format!("reserve:{index}")).collect();
@@ -269,7 +272,7 @@ fn random_lfu_and_ttl_policies_evict_their_eligible_keys() {
 #[test]
 fn multi_queue_time_oom_aborts_with_previous_errors() {
     let (child, mut client, port) = start(b"2");
-    let mut other = connect_when_ready(port);
+    let mut other = connect_when_ready(port, &child);
     configure(&mut other, &["maxmemory", "1"]);
     for command in [
         vec!["SET", "queued", "q"], vec!["GET", "queued"],
@@ -313,7 +316,7 @@ fn multi_queue_time_oom_aborts_with_previous_errors() {
 #[test]
 fn multi_oom_refusal_exec_flags_and_control_exemptions() {
     let (child, mut client, port) = start(b"2");
-    let mut other = connect_when_ready(port);
+    let mut other = connect_when_ready(port, &child);
     configure(&mut other, &["maxmemory", "1"]);
     assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
     assert_eq!(memory_request(&mut client, &["EXEC"]), "*0\r\n");
@@ -463,10 +466,11 @@ fn info_memory_fields_peak_and_resetstat_are_live() {
 #[test]
 fn aof_capacity_is_excluded_and_eviction_survives_replay() {
     let program = CompiledProgram::from_environment();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"memory.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"memory.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let value = "a".repeat(VALUE_BYTES);
     assert_eq!(memory_request(&mut client, &["SET", "victim", &value]), "+OK\r\n");
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -488,10 +492,11 @@ fn aof_capacity_is_excluded_and_eviction_survives_replay() {
     let file = std::fs::read(aof_incremental_path(program.working_directory(), "memory.aof")).unwrap();
     let removal = resp(&["DEL", "victim"]);
     assert!(!file.windows(removal.len()).any(|window| window == removal), "preflight errors must not evict");
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"memory.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"memory.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["STRLEN", "victim"]), format!(":{VALUE_BYTES}\r\n"));
     configure(&mut client, &["maxmemory", "1", "maxmemory-policy", "allkeys-random", "maxmemory-eviction-tenacity", "100"]);
     assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n");
@@ -499,10 +504,11 @@ fn aof_capacity_is_excluded_and_eviction_survives_replay() {
     assert_eq!(number(&info(&mut client, "stats"), "evicted_keys"), 1);
     drop(client);
     assert_eq!(finished(child).0, 0);
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"memory.aof"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"memory.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["GET", "victim"]), "$-1\r\n");
     drop(client);
     assert_eq!(finished(child).0, 0);
@@ -531,7 +537,7 @@ fn info_counts_registered_scripts_and_flush() {
 #[test]
 fn unlimited_eviction_does_not_block_script_kill() {
     let (child, mut looping, port) = start(b"2");
-    let mut other = connect_when_ready(port);
+    let mut other = connect_when_ready(port, &child);
     let value = "k".repeat(VALUE_BYTES);
     assert_eq!(memory_request(&mut other, &["SET", "permanent", &value]), "+OK\r\n");
     configure(&mut other, &["maxmemory", "1", "maxmemory-policy", "volatile-lru", "maxmemory-eviction-tenacity", "100"]);
