@@ -96,8 +96,13 @@ default), firn without an append-only file.
 - rate-limiter-flexible: `limiter-script` (`EVALSHA` of its consume script).
 
 **Metrics.** Throughput (requests or transactions a second, over the
-client's wall time); p99 latency (the client's, merged over all its
-processes or threads); memory: the server's resident set (`VmRSS`, summed
+client's wall time); p99 latency, exact over all the client's requests:
+the multi-process redis-benchmark client that throughput uses can only bound
+the merged p99 (the largest of its processes' p99), and a bound cannot decide
+a p99 verdict, so every redis-benchmark cell also runs one pass with the
+single-process threaded client, whose histogram is merged, and the p99
+verdict uses that pass; the workload client merges its own histograms;
+memory: the server's resident set (`VmRSS`, summed
 over its processes) after `session-get`'s fill of 1,000,000 sessions, and
 `VmHWM` at the end of each redis-benchmark line, recorded.
 
@@ -212,7 +217,8 @@ spread:
 - **behind** when r < 1 − s.
 - **p99:** firn's median p99 above the same competitor's by more than the
   p99 twin spread (the same definition on p99) is a p99 loss, reported
-  whatever the throughput verdict.
+  whatever the throughput verdict. Only exact merged p99s decide it (see
+  Metrics); an upper bound is reported but decides nothing.
 - **Client-limited cells** (client measure above 0.90 in any pass of firn
   or the fastest competitor) can only be level or behind: they pass if not
   behind.
