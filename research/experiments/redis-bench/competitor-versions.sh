@@ -6,8 +6,15 @@
 # in for missing immutable archive pins. Probes expose that gap; full runs fail.
 
 # Match a complete formal-release token, not a prefix (2.0.20), prerelease
-# (2.0.2-rc1), or build suffix (2.0.2+local). Accept the v/v= forms printed by
-# Redis, Valkey and Dragonfly as well as Garnet's plain version token.
+# (2.0.2-rc1), or build suffix (2.0.2+local). Accept complete v/v= forms
+# printed by Redis/Valkey and a plain token when another server provides it.
+# Dragonfly v2.0.2 dfly_main.cc constructs colored kGitTag-kGitSha output:
+# https://github.com/dragonflydb/dragonfly/blob/v2.0.2/src/server/dfly_main.cc#L994-L997
+# The exact Git SHA generation is not yet verified. Do not invent a permitted
+# suffix: a probe records the real output as mismatched until that format is
+# established. Garnet v2.2.1's --version parser is also still unverified: its
+# entry point only passes args into GarnetServer, without handling --version:
+# https://github.com/microsoft/garnet/blob/v2.2.1/main/GarnetServer/Program.cs#L12-L23
 version_release_matches() {
     printf '%s\n' "$2" | awk -v release="$1" '
         {
@@ -19,6 +26,16 @@ version_release_matches() {
         }
         END { exit !found }
     '
+}
+
+# Compare canonical paths supplied by realpath at runtime. Merely fetching the
+# pinned archive does not establish that redis-server on PATH is its build.
+# Keep this part pure so the wrong executable and failed resolution have cases
+# without fetching/building the reference or touching a real installation.
+reference_origin_matches() {
+    case $1 in /*) ;; *) return 1 ;; esac
+    case $2 in /*) ;; *) return 1 ;; esac
+    [ "$1" = "$2" ]
 }
 
 # A probe records unsupported version/provenance without certifying it. A full
@@ -55,12 +72,17 @@ compare_versions() (
                 cv_failed=1
                 continue ;;
         esac
+        case $cv_name in
+            dragonfly) cv_version_support=build-suffix-unverified ;;
+            garnet) cv_version_support=version-command-unverified ;;
+            *) cv_version_support=formal-release-token ;;
+        esac
         case $cv_seen in *" $cv_name "*) continue ;; esac
         cv_seen="$cv_seen$cv_name "
         cv_path=$(command -v "$cv_bin" 2>/dev/null) || cv_path=
         if [ -z "$cv_path" ] || [ ! -f "$cv_path" ] || [ ! -x "$cv_path" ]; then
-            printf 'server-version,%s,expected=%s,executable=%s,version_status=missing,archive_sha256=unavailable,archive_provenance=unverified\n' \
-                "$cv_name" "$cv_expected" "$cv_bin" >>"$OUT/host.txt"
+            printf 'server-version,%s,expected=%s,executable=%s,version_status=missing,version_support=%s,archive_sha256=unavailable,archive_hash_status=unverified,executable_origin=missing,archive_provenance=unverified\n' \
+                "$cv_name" "$cv_expected" "$cv_bin" "$cv_version_support" >>"$OUT/host.txt"
             case ${COMPARE_PROBE:-false}:$cv_name in
                 true:dragonfly|true:garnet) ;;
                 *)
@@ -68,6 +90,40 @@ compare_versions() (
                     cv_failed=1 ;;
             esac
             continue
+        fi
+        cv_archive_sha=unavailable
+        cv_archive_hash_status=unverified
+        cv_executable_origin=unverified
+        cv_archive_status=unverified
+        cv_reference_executable=unavailable
+        if [ "$cv_name" = reference ]; then
+            if cv_archive_sha=$(bash "$ROOT/tests/redis-suite/reference.sh" sha256) && \
+                bash "$ROOT/tests/redis-suite/reference.sh" archive >/dev/null; then
+                cv_archive_hash_status=verified
+            else
+                cv_archive_hash_status=check-failed
+            fi
+            # bin is invoked only at measurement runtime in CI. The workflow
+            # normally built this already; obtain its actual location rather
+            # than inferring that PATH points at the reference build. Do this
+            # before reading version/hash in case bin repairs a stale cache.
+            if cv_reference_bin=$(bash "$ROOT/tests/redis-suite/reference.sh" bin); then
+                cv_selected_realpath=$(realpath -- "$cv_path" 2>/dev/null) || cv_selected_realpath=
+                cv_reference_executable=$(realpath -- "$cv_reference_bin/redis-server" 2>/dev/null) || cv_reference_executable=
+                if reference_origin_matches "$cv_selected_realpath" "$cv_reference_executable"; then
+                    cv_executable_origin=matched-reference-build
+                elif [ -n "$cv_selected_realpath" ] && [ -n "$cv_reference_executable" ]; then
+                    cv_executable_origin=path-mismatch
+                else
+                    cv_executable_origin=check-failed
+                fi
+            else
+                cv_executable_origin=check-failed
+            fi
+            if [ "$cv_archive_hash_status" = verified ] && \
+                [ "$cv_executable_origin" = matched-reference-build ]; then
+                cv_archive_status=verified
+            fi
         fi
         if cv_output=$(timeout --signal=TERM --kill-after=2s 5s "$cv_path" --version </dev/null 2>&1); then
             cv_exit=0
@@ -84,27 +140,16 @@ compare_versions() (
         fi
         cv_executable_sha=$(sha256sum "$cv_path" 2>/dev/null | awk '{print $1}')
         [ -n "$cv_executable_sha" ] || cv_executable_sha=unavailable
-        cv_archive_sha=unavailable
-        cv_archive_status=unverified
-        if [ "$cv_name" = reference ]; then
-            # archive only fetches/checks the source; it never builds. The
-            # workflow puts reference.sh's own build on PATH before measuring.
-            if cv_archive_sha=$(bash "$ROOT/tests/redis-suite/reference.sh" sha256) && \
-                bash "$ROOT/tests/redis-suite/reference.sh" archive >/dev/null; then
-                cv_archive_status=verified
-            else
-                cv_archive_status=check-failed
-            fi
-        fi
         {
-            printf 'server-version,%s,expected=%s,executable=%s,version_status=%s,version_command_exit=%s,executable_sha256=%s,archive_sha256=%s,archive_provenance=%s\n' \
-                "$cv_name" "$cv_expected" "$cv_path" "$cv_version_status" "$cv_exit" \
-                "$cv_executable_sha" "$cv_archive_sha" "$cv_archive_status"
+            printf 'server-version,%s,expected=%s,executable=%s,version_status=%s,version_support=%s,version_command_exit=%s,executable_sha256=%s,archive_sha256=%s,archive_hash_status=%s,executable_origin=%s,reference_executable=%s,archive_provenance=%s\n' \
+                "$cv_name" "$cv_expected" "$cv_path" "$cv_version_status" "$cv_version_support" "$cv_exit" \
+                "$cv_executable_sha" "$cv_archive_sha" "$cv_archive_hash_status" \
+                "$cv_executable_origin" "$cv_reference_executable" "$cv_archive_status"
             printf 'server-version-output-begin,%s\n%s\nserver-version-output-end,%s\n' \
                 "$cv_name" "$cv_output" "$cv_name"
         } >>"$OUT/host.txt"
         if ! compare_version_acceptable "${COMPARE_PROBE:-false}" "$cv_version_status" "$cv_archive_status"; then
-            echo "versions: $cv_name expected $cv_expected; version=$cv_version_status archive=$cv_archive_status (see host.txt)" >&2
+            echo "versions: $cv_name expected $cv_expected; version=$cv_version_status archive=$cv_archive_hash_status origin=$cv_executable_origin provenance=$cv_archive_status (see host.txt)" >&2
             cv_failed=1
         fi
     done
@@ -134,9 +179,20 @@ versions_selftest() (
     versions_expect_reject 2.0.2 'dragonfly version v2.0.20'
     versions_expect_reject 2.0.2 'dragonfly version v2.0.2-rc1'
     versions_expect_reject 2.0.2 'dragonfly version v2.0.2+local'
+    # A SHA suffix remains rejected until its exact pinned build format is
+    # established; it must not accidentally reopen prerelease acceptance.
+    versions_expect_reject 2.0.2 'dragonfly v2.0.2-01234567'
     versions_expect_reject 2.0.2 'dragonfly version v2.0.2.1'
     versions_expect_reject 2.0.2 'dragonfly version prefix2.0.2'
     versions_expect_reject 2.2.1 'GarnetServer 2.1.9'
+    reference_origin_matches /cache/reference/bin/redis-server /cache/reference/bin/redis-server || exit 1
+    if reference_origin_matches /usr/bin/redis-server /cache/reference/bin/redis-server || \
+        reference_origin_matches '' /cache/reference/bin/redis-server || \
+        reference_origin_matches /cache/reference/bin/redis-server '' || \
+        reference_origin_matches redis-server redis-server; then
+        echo 'versions-selftest: accepted a wrong or unresolved reference executable' >&2
+        exit 1
+    fi
     compare_version_acceptable true mismatched unverified || exit 1
     compare_version_acceptable true command-failed unverified || exit 1
     compare_version_acceptable false matched verified || exit 1

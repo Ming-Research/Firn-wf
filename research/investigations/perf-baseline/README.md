@@ -177,7 +177,11 @@ and its twin, and every competitor, see the same drift.
 - `host.txt` records each server's `--version`, the redis-benchmark
   version, the firn revision and `whitefoot.pin`, the placement lines and
   the settings. The full baseline fails unless every version line names
-  the pinned release; the probe only records them.
+  the pinned release; the probe only records them. A checked source-archive
+  hash alone does not establish which executable PATH selects: the instrument
+  also requires the selected Redis server's real path to match the server
+  in the build directory returned by `reference.sh bin` before recording
+  verified reference provenance.
 - Dragonfly and Garnet are not installed on the 14900K; their install
   workflow waits on an owner card. The probe may run without them (each
   absent line printed as `skip,<line>,no executable`). The full baseline

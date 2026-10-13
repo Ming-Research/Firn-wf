@@ -110,8 +110,20 @@
 #                                 fourteen times 3). Process CSV quantiles
 #                                 cannot merge: retain all process p50/p99,
 #                                 label their maximum as an upper bound.
-#                                 COMPARE_CLIENT=threads instead uses one
-#                                 process and Redis's merged histogram.
+#                                 compare.csv appends quantiles=exact or
+#                                 upper_bound without moving its ten columns;
+#                                 stdout and pilots carry the same label.
+#                                 COMPARE_CLIENT=threads uses one process and
+#                                 Redis's merged histogram; one process in
+#                                 procs mode also has exact quantiles.
+#                                 A competitor comparison adds one threads
+#                                 pass=exact for every line/test/depth/CPU,
+#                                 with the next ordinal's reversed order and
+#                                 client-busy records. This supplies the p99
+#                                 verdict; numbered passes supply throughput.
+#                                 It reuses fixed request counts and may run
+#                                 longer than COMPARE_SECONDS near the earlier
+#                                 ~6.7M requests/s threaded-client ceiling.
 #                                 compare-memory.csv records used_memory,
 #                                 RSS (INFO or /proc fallback), and VmHWM
 #                                 after each measured server's pass, in bytes.
@@ -633,6 +645,153 @@ placement_selftest() (
     echo 'placement-selftest: passed'
 )
 
+# Validate the actual sample format before extracting the summary tail used
+# by compare-percentiles.csv. Numeric positions in compare.csv stay stable.
+compare_sample_tail() {
+    printf '%s\n' "$1" | awk -F, '
+        function number(s) { return s ~ /^[0-9]+([.][0-9]+)?$/ }
+        {
+            if (NR != 1 || NF != 5 || !number($1) || $1 <= 0 || !number($2) ||
+                !number($3) || !number($4) || $3 > $4 ||
+                ($5 != "exact" && $5 != "upper_bound")) bad = 1
+            tail = $3 "," $4 "," $5
+        }
+        END {
+            if (bad || NR != 1) {
+                print "compare: malformed client sample" > "/dev/stderr"
+                exit 1
+            }
+            print tail
+        }'
+}
+
+# Build all companion rows from the same allocation and latency files the
+# client used. Buffer output until each expected process and the totals have
+# been checked, so missing rows cannot produce plausible partial evidence.
+compare_percentile_rows() (
+    row_tail=$(compare_sample_tail "$6") || exit 1
+    case $3 in procs|threads) ;; *) echo "compare: invalid client mode" >&2; exit 1 ;; esac
+    awk -v key="$1" -v requested="$2" -v mode="$3" -v tail="$row_tail" '
+        function reject(message) {
+            print "compare percentiles: " message > "/dev/stderr"
+            bad = 1
+            exit 1
+        }
+        function integer(s) { return s ~ /^[0-9]+$/ }
+        function number(s) { return s ~ /^[0-9]+([.][0-9]+)?$/ }
+        BEGIN {
+            if (split(key, fields, ",") != 5) reject("invalid sample key")
+            for (i = 1; i <= 5; i++) if (fields[i] == "") reject("empty key field")
+            if (!integer(requested) || requested < 50) reject("invalid total requests")
+            split(tail, summary, ",")
+        }
+        FILENAME == ARGV[1] {
+            if (NF != 4 || !integer($1) || $1 != allocations || !integer($2) ||
+                cpu[$2]++ || !integer($3) || $3 < 1 || !integer($4) || $4 < 1)
+                reject("invalid process allocation")
+            connections[$1] = $3
+            requests[$1] = $4
+            total_connections += $3
+            total_requests += $4
+            allocations++
+            next
+        }
+        FILENAME == ARGV[2] {
+            count = split($0, values, ",")
+            if (FNR == 1) {
+                if (count != 2 || !number(values[1]) || !number(values[2]) ||
+                    values[1] != summary[1] || values[2] != summary[2])
+                    reject("summary differs from client sample")
+                next
+            }
+            if (count != 3 || !integer(values[1]) || values[1] != rows ||
+                !number(values[2]) || !number(values[3]) || values[2] > values[3])
+                reject("invalid or duplicate process latency row")
+            process_index = values[1]
+            if (mode == "threads") {
+                if (process_index != 0) reject("unexpected threaded process")
+                connection_count = 50
+                request_count = requested
+                kind = "merged_histogram"
+            } else {
+                if (!(process_index in connections)) reject("latency row has no allocation")
+                connection_count = connections[process_index]
+                request_count = requests[process_index]
+                kind = "process_histogram"
+            }
+            if (values[2] > max_p50) max_p50 = values[2]
+            if (values[3] > max_p99) max_p99 = values[3]
+            output[rows] = key "," process_index "," connection_count "," request_count "," \
+                sprintf("%.3f,%.3f", values[2], values[3]) "," kind
+            rows++
+        }
+        END {
+            if (bad) exit 1
+            if (!allocations || allocations > 50 || total_connections != 50 || total_requests != requested)
+                reject("allocation totals differ from sample")
+            expected = mode == "threads" ? 1 : allocations
+            if (rows != expected) reject("missing process latency row")
+            if (max_p50 != summary[1] || max_p99 != summary[2]) reject("summary is not process maximum")
+            quantiles = expected == 1 ? "exact" : "upper_bound"
+            if (summary[3] != quantiles) reject("wrong quantile classification")
+            for (i = 0; i < rows; i++) print output[i]
+            print key ",all,50," requested "," tail
+        }' "$4" "$5"
+)
+
+compare_rows_selftest() (
+    fixture=$(mktemp -d)
+    trap 'rm -rf "$fixture"' EXIT
+    sample=1000,0.125,4.000,9.000,upper_bound
+    actual=$(compare_sample_tail "$sample")
+    [ "$actual" = 4.000,9.000,upper_bound ] || exit 1
+    for bad in '1000,0.125,4,9' '1000,0.125,4,9,merged_histogram' \
+        '0,0.125,4,9,exact' '1000,nan,4,9,exact' '1000,0.125,10,9,exact' \
+        '1000,0.125,4,9,exact,extra'; do
+        if compare_sample_tail "$bad" >"$fixture/rows" 2>/dev/null; then
+            echo "compare-rows-selftest: accepted malformed sample $bad" >&2; exit 1
+        fi
+        [ ! -s "$fixture/rows" ] || exit 1
+    done
+    printf '0 16 25 50\n1 17 25 50\n' >"$fixture/allocation"
+    printf '4.000,9.000\n0,2.000,7.000\n1,4.000,9.000\n' >"$fixture/latencies"
+    actual=$(compare_percentile_rows firn,1,2,set,16 100 procs "$fixture/allocation" "$fixture/latencies" "$sample")
+    expected=$(printf 'firn,1,2,set,16,0,25,50,2.000,7.000,process_histogram\nfirn,1,2,set,16,1,25,50,4.000,9.000,process_histogram\nfirn,1,2,set,16,all,50,100,4.000,9.000,upper_bound')
+    [ "$actual" = "$expected" ] || { echo "compare-rows-selftest: wrong process rows" >&2; exit 1; }
+    printf '4.000,9.000\n0,4.000,9.000\n' >"$fixture/latencies"
+    actual=$(compare_percentile_rows firn,exact,2,set,16 100 threads "$fixture/allocation" "$fixture/latencies" 1000,0.125,4.000,9.000,exact)
+    expected=$(printf 'firn,exact,2,set,16,0,50,100,4.000,9.000,merged_histogram\nfirn,exact,2,set,16,all,50,100,4.000,9.000,exact')
+    [ "$actual" = "$expected" ] || { echo "compare-rows-selftest: wrong threaded rows" >&2; exit 1; }
+    # The production row builder must reject a missing process, bad summary,
+    # wrong classification, duplicate row, and allocation/sample mismatch.
+    for fault in missing summary classification duplicate allocation requests malformed; do
+        printf '0 16 25 50\n1 17 25 50\n' >"$fixture/allocation"
+        printf '4.000,9.000\n0,2.000,7.000\n1,4.000,9.000\n' >"$fixture/latencies"
+        checked_sample=$sample
+        case $fault in
+            missing) printf '4.000,9.000\n0,2.000,7.000\n' >"$fixture/latencies" ;;
+            summary) checked_sample=1000,0.125,4.000,8.000,upper_bound ;;
+            classification) checked_sample=1000,0.125,4.000,9.000,exact ;;
+            duplicate) printf '1,4.000,9.000\n' >>"$fixture/latencies" ;;
+            allocation) printf '0 16 25 50\n1 17 24 50\n' >"$fixture/allocation" ;;
+            requests) printf '0 16 25 50\n1 17 25 49\n' >"$fixture/allocation" ;;
+            malformed) checked_sample=1000,0.125,4.000,9.000 ;;
+        esac
+        if compare_percentile_rows firn,1,2,set,16 100 procs "$fixture/allocation" "$fixture/latencies" "$checked_sample" \
+            >"$fixture/rows" 2>/dev/null; then
+            echo "compare-rows-selftest: accepted $fault" >&2; exit 1
+        fi
+        [ ! -s "$fixture/rows" ] || { echo "compare-rows-selftest: partial $fault rows" >&2; exit 1; }
+    done
+    # One ordinary process has an exact histogram too.
+    printf '0 16 50 100\n' >"$fixture/allocation"
+    printf '4.000,9.000\n0,4.000,9.000\n' >"$fixture/latencies"
+    compare_percentile_rows firn,1,1,set,1 100 procs "$fixture/allocation" "$fixture/latencies" 1000,0.125,4.000,9.000,exact \
+        >"$fixture/rows"
+    grep -q ',all,50,100,4.000,9.000,exact$' "$fixture/rows" || exit 1
+    echo 'compare-rows-selftest: passed'
+)
+
 # Keep pure competitor/client checks on the gate's existing selftest path.
 # These helpers are sourced before ROOT/build initialization and start nothing.
 BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -640,6 +799,7 @@ BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
 . "$BENCH_DIR/competitor-versions.sh"
 if [ "${1:-}" = placement-selftest ]; then
     placement_selftest
+    compare_rows_selftest
     competitors_selftest
     versions_selftest
     python3 "$BENCH_DIR/compare-client.py" selftest
@@ -1250,7 +1410,8 @@ server_ticks() {
 # One redis-benchmark run of <test> at depth <depth> for <requests> against
 # the started server, its client threads on CLIENT_CPUS; prints the rate over
 # the run's wall time, the server's CPU microseconds per request, and the
-# client's p50 and p99. redis-benchmark's own rate divides by a clock that
+# client p50/p99 and exact or upper_bound quantile classification. The first
+# four fields retain their positions. redis-benchmark own rate divides by a clock that
 # ticks every 250 ms, a step of 5% in a five-second run, so it is not used.
 # COMPARE_CLIENT=threads runs one redis-benchmark with CLIENT_THREADS
 # threads instead of one process per client CPU. With cpu_record set, it copies
@@ -1317,18 +1478,21 @@ compare_client() {
     fi
     python3 "$ROOT/research/experiments/redis-bench/compare-client.py" csv "$cmp_test" "$@" \
         >"$OUT/compare-latencies.txt" || return 1
+    if [ "$#" -eq 1 ]; then cmp_kind=exact; else cmp_kind=upper_bound; fi
     cmp_quantiles=$(sed -n '1p' "$OUT/compare-latencies.txt")
     cmp_hz=$(getconf CLK_TCK) || return 1
-    awk -v n="$cmp_requests" -v ns=$((cmp_end - cmp_begin)) -v ticks="$cmp_ticks" -v hz="$cmp_hz" \
-        -v quantiles="$cmp_quantiles" 'BEGIN {
+    cmp_sample=$(awk -v n="$cmp_requests" -v ns=$((cmp_end - cmp_begin)) -v ticks="$cmp_ticks" -v hz="$cmp_hz" \
+        -v quantiles="$cmp_quantiles" -v kind="$cmp_kind" 'BEGIN {
             if (ns <= 0 || hz <= 0 || ticks < 0) exit 1
-            printf "%.0f,%.3f,%s\n", n / (ns / 1e9), ticks / hz * 1e6 / n, quantiles
-        }'
+            printf "%.0f,%.3f,%s,%s\n", n / (ns / 1e9), ticks / hz * 1e6 / n, quantiles, kind
+        }') || return 1
+    compare_sample_tail "$cmp_sample" >/dev/null || return 1
+    printf '%s\n' "$cmp_sample"
 }
 
 # The comparison of prebuilt images. A line whose replies fail verify stops
 # the run; every sample is kept as compare.csv's line,pass,cpus,test,depth,
-# requests,rps,server_cpu_us_per_request,p50_ms,p99_ms, and each test's
+# requests,rps,server_cpu_us_per_request,p50_ms,p99_ms,quantiles, and each test's
 # request count is sized from the
 # fastest image's pilot so that every image runs the same count. Where
 # /proc/stat exists, each measured sample also gives compare-cpu.csv one
@@ -1436,17 +1600,13 @@ if [ "$MODE" = compare ]; then
         compare_versions $competitor_names || exit 1
     fi
     echo "setting,compare_connections=50,client=${COMPARE_CLIENT:-procs}"
-    if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
-        quantile_kind=merged_histogram
-    else
-        quantile_kind=max_process_upper_bound
-    fi
+    quantile_kind=exact_if_threads_or_single_process_otherwise_upper_bound
     echo "setting,compare_quantiles=$quantile_kind"
     if [ -f "$OUT/host.txt" ]; then
         echo "setting,compare_connections=50,client=${COMPARE_CLIENT:-procs}" >>"$OUT/host.txt"
         echo "setting,compare_quantiles=$quantile_kind" >>"$OUT/host.txt"
     fi
-    echo 'line,pass,cpus,test,depth,requests,rps,server_cpu_us_per_request,p50_ms,p99_ms' >"$OUT/compare.csv"
+    echo 'line,pass,cpus,test,depth,requests,rps,server_cpu_us_per_request,p50_ms,p99_ms,quantiles' >"$OUT/compare.csv"
     echo 'line,pass,cpus,test,depth,process,connections,requests,p50_ms,p99_ms,quantile_kind' >"$OUT/compare-percentiles.csv"
     echo 'line,pass,cpus,used_memory_bytes,rss_bytes,rss_source,vmhwm_bytes' >"$OUT/compare-memory.csv"
     for n in ${COMPARE_CPUS:-1 2}; do
@@ -1500,6 +1660,7 @@ if [ "$MODE" = compare ]; then
                     arg=$(compare_arg "$name") || exit 1
                     start "$arg"
                     pilot=$(compare_client "$test" "$depth" 1000000) || exit 1
+                    echo "pilot,$name,$n,$test,$depth,$pilot"
                     rate=${pilot%%,*}
                     compare_affinity_check "$arg" || exit 1
                     stop
@@ -1509,7 +1670,22 @@ if [ "$MODE" = compare ]; then
             done
         done
         pass=1
-        while [ "$pass" -le "${COMPARE_PASSES:-6}" ]; do
+        ordinary_client=${COMPARE_CLIENT:-procs}
+        final_pass=${COMPARE_PASSES:-6}
+        # Competitor selections add one exact merged-histogram pass. Its
+        # disjoint identity keeps this slower client out of throughput medians.
+        if [ -n "$cell_competitors" ]; then final_pass=$((final_pass + 1)); fi
+        while [ "$pass" -le "$final_pass" ]; do
+            sample_pass=$pass
+            COMPARE_CLIENT=$ordinary_client
+            if [ "$pass" -gt "${COMPARE_PASSES:-6}" ]; then
+                sample_pass=exact
+                COMPARE_CLIENT=threads
+                echo "setting,exact_pass,cpus=$n,ordinal=$pass,client=threads,throughput=diagnostic_only"
+                echo "setting,exact_pass,cpus=$n,ordinal=$pass,client=threads,throughput=diagnostic_only" >>"$OUT/host.txt"
+                echo "warning,exact_client,previous 14900K single-process client saturated near 6.7M requests/s; this is an observation, not a cutoff; use recorded client busy; fixed request counts may run longer"
+                echo "warning,exact_client,previous 14900K single-process client saturated near 6.7M requests/s; this is an observation, not a cutoff; use recorded client busy; fixed request counts may run longer" >>"$OUT/host.txt"
+            fi
             order=$names
             if [ $((pass % 2)) -eq 0 ]; then
                 order=$reversed
@@ -1519,37 +1695,28 @@ if [ "$MODE" = compare ]; then
                 start "$arg"
                 while read -r test depth requests; do
                     sample=$(compare_client "$test" "$depth" "$requests") || exit 1
-                    echo "$name,$pass,$n,$test,$depth,$requests,$sample" |
+                    echo "$name,$sample_pass,$n,$test,$depth,$requests,$sample" |
                         tee -a "$OUT/compare.csv"
-                    if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
-                        sed -n '2p' "$OUT/compare-latencies.txt" | awk -F, \
-                            -v key="$name,$pass,$n,$test,$depth" -v requests="$requests" \
-                            '{ print key ",0,50," requests "," $2 "," $3 ",merged_histogram" }' \
-                            >>"$OUT/compare-percentiles.csv"
-                    else
-                        awk -F, -v key="$name,$pass,$n,$test,$depth" '
-                            NR == FNR { split($0, a, " "); connections[a[1]] = a[3]; requests[a[1]] = a[4]; next }
-                            FNR > 1 { print key "," $1 "," connections[$1] "," requests[$1] "," $2 "," $3 ",process_histogram" }
-                        ' "$OUT/compare-allocation.txt" "$OUT/compare-latencies.txt" >>"$OUT/compare-percentiles.csv"
-                    fi
-                    echo "$name,$pass,$n,$test,$depth,all,50,$requests,${sample#*,*,},$quantile_kind" \
-                        >>"$OUT/compare-percentiles.csv"
+                    compare_percentile_rows "$name,$sample_pass,$n,$test,$depth" "$requests" \
+                        "${COMPARE_CLIENT:-procs}" "$OUT/compare-allocation.txt" "$OUT/compare-latencies.txt" "$sample" \
+                        >>"$OUT/compare-percentiles.csv" || exit 1
                     if [ -n "$cpu_record" ]; then
                         cpu_busy "$OUT/compare-stat-before" "$OUT/compare-stat-after" \
                             "$SERVER_CPUS" "$CLIENT_CPUS" >"$OUT/compare-busy"
                         limit=$(client_limited "$OUT/compare-busy") || exit 1
-                        echo "$name,$pass,$n,$test,$depth,$limit" >>"$OUT/compare-limited.csv"
-                        awk -v key="$name,$pass,$n,$test,$depth" '{ print key "," $0 }' \
+                        echo "$name,$sample_pass,$n,$test,$depth,$limit" >>"$OUT/compare-limited.csv"
+                        awk -v key="$name,$sample_pass,$n,$test,$depth" '{ print key "," $0 }' \
                             "$OUT/compare-busy" >>"$cpu_record"
                     fi
                 done <"$sizes"
                 compare_affinity_check "$arg" || exit 1
-                compare_memory "$name" "$pass" "$n" || exit 1
+                compare_memory "$name" "$sample_pass" "$n" || exit 1
                 stop
-                cp "$OUT/server.log" "$OUT/compare-server-$name-$n-$pass.txt"
+                cp "$OUT/server.log" "$OUT/compare-server-$name-$n-$sample_pass.txt"
             done
             pass=$((pass + 1))
         done
+        COMPARE_CLIENT=$ordinary_client
         if [ -n "$PERF" ]; then
             # COMPARE_PROFILE lists test and depth pairs, separated by ';'.
             echo "${COMPARE_PROFILE:-mset 16}" | tr ';' '\n' | while read -r ptest pdepth; do

@@ -277,7 +277,6 @@ the same checks; the script fails unless `redis-server --version` reads
 7.2.16. It records `setting,reference=true` (`false` when off) in its output
 and in `host.txt`.
 
-
 **Competitor selection.** The existing `workload_servers` workflow input is
 reused by mode `compare` as `COMPARE_LINES`; no dispatch input was added.
 It accepts an ordered, space-separated selection of `reference`,
@@ -340,16 +339,39 @@ is timed, since Redis's built-in test also measures its LPUSH setup.
 
 CSV percentiles cannot be merged into an exact distribution. The process
 client therefore keeps every process's p50 and p99 and reports the maximum
-of each as an **upper bound on the combined quantile**, never the first
-process's latency. `compare.csv` retains its existing p50/p99 column names;
-`host.txt` and `compare-percentiles.csv` identify their meaning. The latter
-has `line,pass,cpus,test,depth,process,connections,requests,p50_ms,p99_ms,quantile_kind`;
-individual process rows are `process_histogram`, and the `all` row is
-`max_process_upper_bound` (both are `merged_histogram` in threads mode).
-`COMPARE_CLIENT=threads` retains one process, exactly 50 connections and
-Redis's shared latency histogram, so its p50/p99 are merged quantiles.
-Changing client mode changes the experiment: bounds alone cannot settle
-the exact p99 verdict required by baseline rule 6.
+of each as an upper bound on the combined quantile. `compare.csv` preserves
+its first ten columns and appends `quantiles`: `exact` for the threaded
+client or one client process, `upper_bound` for multiple processes. Every
+row, pilot and profiled stdout sample carries this label. The companion
+`compare-percentiles.csv` retains
+`line,pass,cpus,test,depth,process,connections,requests,p50_ms,p99_ms,quantile_kind`;
+individual process rows are `process_histogram` (or `merged_histogram` for
+the threaded client), and the `all` row ends in `exact` or `upper_bound`. `COMPARE_CLIENT=threads` uses one process, exactly 50
+connections and Redis's shared latency histogram, so its quantiles are exact
+over that pass's requests at redis-benchmark's histogram precision.
+
+Every compare run with selected competitor lines, including the optional
+`COMPARE_REFERENCE` line, adds one threaded pass for each CPU/test/depth
+cell on every line, images and twins included. It starts fresh servers and
+uses the line-order reversal of the next numbered pass; the recorded pass
+label is `exact`. The ordinary numbered passes remain the throughput series:
+filter `pass != exact` for throughput and noise sizing. Only `pass = exact`
+with `quantiles = exact` supplies the baseline p99 verdict; upper bounds
+are reported but decide nothing. An image-only comparison adds no pass.
+
+The exact pass uses the same request counts selected by the throughput
+pilot, so its cost is one additional complete pass plus fresh-server setup
+and LRANGE fills. For example, 19 tests at two depths on eight lines would
+add 25 minutes 20 seconds if every added sample lasted five seconds, before
+startup overhead. Its duration is the request count divided by the threaded
+client's observed rate, which can exceed `COMPARE_SECONDS`. Earlier runs
+put that client's ceiling near 6.7 million requests per second on the
+14900K; this is an empirical estimate, not a universal rate threshold. Above
+that ceiling the exact pass measures a client-limited system rather than
+server capacity. The instrument records its actual client CPU busy fraction
+in `compare-cpu.csv` and `compare-limited.csv`, under `pass=exact`, using
+the same mean-busy-above-0.90 rule as numbered passes. The exact pass's
+throughput is diagnostic and must not enter the throughput comparison.
 
 **Version and archive evidence.** A nonempty compare selection records
 selected server versions, expected versions, executable SHA-256 values and
@@ -358,7 +380,22 @@ or unavailable archive provenance. A probe records these problems; only
 missing Dragonfly or Garnet may be skipped (`skip,<line>,no executable`).
 Missing Redis or Valkey is always an error. Executable hashes are labelled
 separately and never substituted for archive hashes. Redis's archive pin
-and verified archive come from `tests/redis-suite/reference.sh`.
+and archive hash check come from `tests/redis-suite/reference.sh`. Reference
+provenance is verified only when that archive passes its hash check and the
+real path of the selected `redis-server` matches the server in the build
+directory that `reference.sh bin` returns. A same-version binary elsewhere
+on PATH is recorded as an origin mismatch and fails a full run.
+
+Version-output support remains a probe prerequisite. The [Dragonfly v2.0.2
+version printer](https://github.com/dragonflydb/dragonfly/blob/v2.0.2/src/server/dfly_main.cc)
+prints a colored tag followed by a build suffix. The complete suffix
+constraints have not been established from its version-generation source,
+so the matcher retains strict complete-release tokens and may reject that
+legitimate build format. Garnet v2.2.1 `--version` support is also
+unverified. Before a full run, the hosted probe must retain the real output
+and exit status for both; unsupported output or a failed version command
+remains visible and cannot certify a release. No arbitrary suffix is
+accepted merely because it begins with the expected release.
 
 There is a blocking installer-interface gap for a full competitor run:
 the supplied `origin/claude/install-competitors` workflow resolves the
@@ -391,7 +428,7 @@ start any server. Runtime startup, logging and memory checks require CI.
 | Gap | Instrument disposition |
 |---|---|
 | 1. Compare lacks competitors | Selected lines join image/twin verification, pilots and reversed passes; scale mode is not the baseline path. |
-| 2. 48 connections and first-process p99 | Exactly 50; all process quantiles retained, with labelled upper bounds. Exact multi-process p99 remains unavailable from CSV. |
+| 2. 48 connections and first-process p99 | Exactly 50; all process quantiles retained, with explicit CSV bounds. A separate threaded exact pass supplies p99 verdicts. |
 | 3. Selected workloads omit AOF | Compare now starts Valkey/Garnet with AOF. The separate application `workloads` selector remains non-AOF; application baseline integration is still required. |
 | 4. Garnet lacks Lua/AOF flags | Lua enabled; compare AOF has commit frequency 1000 ms. Disk synchronization remains unverified. |
 | 5. Dragonfly affinity unchecked | Startup and post-run checks; fresh restart with affinity off when startup escapes. |

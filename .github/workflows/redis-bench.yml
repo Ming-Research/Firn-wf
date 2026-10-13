@@ -270,10 +270,12 @@ jobs:
             done
             # Initial inventory only. Compare with workload_servers also validates
             # selected versions and archive provenance before starting servers.
+            # Bound unverified competitor --version commands even in this
+            # initial inventory, so the probe reaches the full status record.
             redis-server --version || true
             valkey-server --version 2>/dev/null || true
-            { dragonfly --version 2>/dev/null | head -1; } || true
-            { garnet-server --version 2>/dev/null | head -1; } || true
+            { timeout --signal=TERM --kill-after=2s 5s dragonfly --version 2>/dev/null | head -1; } || true
+            { timeout --signal=TERM --kill-after=2s 5s garnet-server --version 2>/dev/null | head -1; } || true
             redis-benchmark --version || true
             { clang --version | head -1; } || true
             ld.lld --version || true
@@ -343,7 +345,9 @@ jobs:
             images="$images $name=$OUT/$name"
           done
           echo "IMAGES=$images" >> "$GITHUB_ENV"
-          cat "$OUT/revisions.csv" >> "$OUT/host.txt"
+          if [ -f "$OUT/revisions.csv" ]; then
+            cat "$OUT/revisions.csv" >> "$OUT/host.txt"
+          fi
 
       - name: Keep the images
         if: ${{ inputs.mode == 'build' }}
