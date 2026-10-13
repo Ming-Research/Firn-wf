@@ -144,7 +144,12 @@
 # threads of a physical core, so n counts logical CPUs; no client CPU may
 # share a physical core with a server CPU. The client thread count is the
 # client list's length. Each selected placement is recorded once per mode,
-# also in host.txt when present. Nothing else should run on the host meanwhile.
+# also in host.txt when present, with each CPU's core class (cpu:P for a
+# performance core, cpu:E for an efficiency core, cpu:- when the host has no
+# hybrid topology). The class is recorded, never enforced: keeping the shape of
+# the owner's placement (servers on P-cores, clients on E-cores) is the
+# dispatcher's job through the CPU lists, because hosts without a hybrid
+# topology must still run. Nothing else should run on the host meanwhile.
 set -e
 # The workflow passes an empty WF_SCHED_REPORT when its input is off; unset
 # it so firn runs exactly as it does without the variable.
@@ -218,15 +223,23 @@ def choose():
     candidates = set(cores)
     performance = root / "devices/cpu_core/cpus"
     efficiency = root / "devices/cpu_atom/cpus"
+    # Core class of every online CPU for the record: P, E, or - when the host
+    # has no hybrid topology. It is recorded, never enforced (see the header).
+    core_class = {cpu: "-" for cpu in cores}
     if performance.exists():
-        candidates &= set(cpu_list(performance.read_text()))
+        performance_cpus = set(cpu_list(performance.read_text()))
+        candidates &= performance_cpus
         source = "hybrid"
+        core_class = {cpu: "P" if cpu in performance_cpus else "E" for cpu in cores}
     elif efficiency.exists():
-        candidates -= set(cpu_list(efficiency.read_text()))
+        efficiency_cpus = set(cpu_list(efficiency.read_text()))
+        candidates -= efficiency_cpus
         source = "hybrid"
+        core_class = {cpu: "E" if cpu in efficiency_cpus else "P" for cpu in cores}
     elif len(capacities) == len(cores) and len(set(capacities.values())) > 1:
         candidates = {cpu for cpu in cores if capacities[cpu] == max(capacities.values())}
         source = "hybrid"
+        core_class = {cpu: "P" if cpu in candidates else "E" for cpu in cores}
     # Representatives are ordered by logical CPU number, one per physical
     # core. Do not fill a large request with second threads or efficiency cores.
     representatives, seen = [], set()
@@ -260,7 +273,8 @@ def choose():
         print(f"warning,placement,requested {requested} client threads,only {len(clients)} client CPUs remain; using {len(clients)}", file=sys.stderr)
     if overrides:
         source = "override"
-    print(",".join(map(str, servers)), ",".join(map(str, clients)), len(clients), source)
+    classes = [",".join(f"{cpu}:{core_class[cpu]}" for cpu in cpus) for cpus in (servers, clients)]
+    print(",".join(map(str, servers)), ",".join(map(str, clients)), len(clients), source, *classes)
     return 0
 
 try:
@@ -280,7 +294,7 @@ select_placement() {
         SERVER_CPUS=$1
         CLIENT_CPUS=$2
         CLIENT_THREADS=$3
-        placement_record="placement,server=$1,client=$2,threads=$3,source=$4"
+        placement_record="placement,server=$1,client=$2,threads=$3,source=$4,server_class=$5,client_class=$6"
         case "|$placements_seen|" in
             *"|$placement_record|"*) ;;
             *)
@@ -349,6 +363,19 @@ except (OSError, ValueError) as error:
 PY
 }
 
+# Whether a sample was limited by its client, from cpu_busy's output in <file>:
+# prints the mean busy fraction over the client CPUs and 1 when it is above
+# 0.90 (the owner's client-limited line, and a sample at exactly 0.90 is not
+# limited), else 0. Such a cell only requires firn not to fall behind.
+client_limited() {
+    awk -F, '$2 == "client" { sum += $3; count++ }
+        END {
+            if (count == 0) { print "client_limited: no client CPU" > "/dev/stderr"; exit 1 }
+            mean = sum / count
+            printf "%.4f,%d\n", mean, (sprintf("%.4f", mean) + 0 > 0.9) ? 1 : 0
+        }' "$1"
+}
+
 placement_selftest() (
     fixture=$(mktemp -d)
     trap 'rm -rf "$fixture"' EXIT
@@ -363,9 +390,17 @@ placement_selftest() (
         echo "$3" >"$topology/thread_siblings_list"
     }
     expect_placement() {
-        actual=$(placement "$1" "$2" 2>"$fixture/stderr")
+        actual=$(placement "$1" "$2" 2>"$fixture/stderr" | cut -d' ' -f1-4)
         [ "$actual" = "$3" ] || {
             echo "placement-selftest: expected '$3', got '$actual'" >&2
+            exit 1
+        }
+    }
+    # The core classes, fields 5 and 6 of the placement output.
+    expect_classes() {
+        actual=$(placement "$1" "$2" 2>"$fixture/stderr" | cut -d' ' -f5-6)
+        [ "$actual" = "$3" ] || {
+            echo "placement-selftest: expected classes '$3', got '$actual'" >&2
             exit 1
         }
     }
@@ -395,6 +430,7 @@ placement_selftest() (
     grep -q 'requested 16 client threads,only 12' "$fixture/stderr"
     expect_placement 2 16 '2,4 6,7,8,9,10,11,12,13,14,15 10 hybrid'
     expect_placement 4 16 '2,4,6,8 10,11,12,13,14,15 6 hybrid'
+    expect_classes 2 16 '2:P,4:P 6:P,7:P,8:P,9:P,10:P,11:P,12:P,13:P,14:P,15:P'
     expect_failure 7 16 2 'no distinct client core'
     expect_failure 8 16 2 'only 7 eligible physical cores'
     SERVER_CPU_LIST=2,4 CLIENT_CPU_LIST=10,12 expect_placement 2 16 '2,4 10,12 2 override'
@@ -403,6 +439,14 @@ placement_selftest() (
     SERVER_CPU_LIST=2 expect_failure 2 16 1 'exactly 2 CPUs'
     SERVER_CPU_LIST=0-15 CLIENT_CPU_LIST=16-31 expect_failure 8 16 1 'exactly 8 CPUs'
     SERVER_CPU_LIST=32 expect_failure 1 16 1 'SERVER_CPU_LIST names a CPU without'
+    CLIENT_CPU_LIST=32 expect_failure 1 16 1 'CLIENT_CPU_LIST names a CPU without'
+    # A CPU twice in one list would pin two workers to one CPU.
+    SERVER_CPU_LIST=2,2 expect_failure 2 16 1 'duplicate CPU in list'
+    SERVER_CPU_LIST=2,4 CLIENT_CPU_LIST=10,10 expect_failure 2 16 1 'duplicate CPU in list'
+    # The record carries each CPU's class, so a swapped placement shows.
+    SERVER_CPU_LIST=0,2,4,6,8,10,12,14 CLIENT_CPU_LIST=16-19 expect_classes 8 4 \
+        '0:P,2:P,4:P,6:P,8:P,10:P,12:P,14:P 16:E,17:E,18:E,19:E'
+    SERVER_CPU_LIST=16,17 CLIENT_CPU_LIST=2,4 expect_classes 2 2 '16:E,17:E 2:P,4:P'
     # An explicit server list may name core_id 0 and both threads of a core.
     SERVER_CPU_LIST=2,3 expect_placement 2 16 '2,3 4,5,6,7,8,9,10,11,12,13,14,15 12 override'
     SERVER_CPU_LIST=0,2,4,6,8,10,12,14 CLIENT_CPU_LIST=16-31 expect_placement 8 16 \
@@ -423,6 +467,7 @@ placement_selftest() (
         cpu=$((cpu + 1))
     done
     expect_placement 2 16 '2,4 6,7,8,9,10,11,12,13,14,15 10 hybrid'
+    CLIENT_CPU_LIST=16,17 expect_classes 2 2 '2:P,4:P 16:E,17:E'
     # Non-hybrid four-core SMT host: second threads are numbered after firsts.
     rm -rf "$SYSFS_ROOT"
     cpu=0
@@ -434,6 +479,7 @@ placement_selftest() (
     expect_placement 1 16 '1 2,3,6,7 4 fallback'
     expect_placement 2 16 '1,2 3,7 2 fallback'
     expect_failure 3 16 2 'no distinct client core'
+    expect_classes 2 16 '1:-,2:- 3:-,7:-'
     # Equal capacities are not hybrid information; core_cpus_list is accepted.
     cpu=0
     while [ "$cpu" -lt 8 ]; do
@@ -454,6 +500,21 @@ placement_selftest() (
         echo "placement-selftest: cpu_busy gave '$actual'" >&2
         exit 1
     }
+    # client_limited: two client CPUs of 1000 ticks each, busy 905 and 900
+    # (mean 0.9025, limited), 895 and 900 (0.8975, not), 900 and 900 (exactly
+    # 0.90, not). The server CPU is idle and must not count.
+    printf 'cpu0 0 0 0 0 0 0 0 0\ncpu1 0 0 0 0 0 0 0 0\ncpu2 0 0 0 0 0 0 0 0\n' >"$fixture/limit-before"
+    for pair in '905 900 0.9025,1' '895 900 0.8975,0' '900 900 0.9000,0'; do
+        set -- $pair
+        printf 'cpu0 0 0 0 1000 0 0 0 0\ncpu1 %s 0 0 %s 0 0 0 0\ncpu2 %s 0 0 %s 0 0 0 0\n' \
+            "$1" "$((1000 - $1))" "$2" "$((1000 - $2))" >"$fixture/limit-after"
+        cpu_busy "$fixture/limit-before" "$fixture/limit-after" 0 1,2 >"$fixture/limit-busy"
+        actual=$(client_limited "$fixture/limit-busy")
+        [ "$actual" = "$3" ] || {
+            echo "placement-selftest: client_limited gave '$actual' for busy $1 $2, expected '$3'" >&2
+            exit 1
+        }
+    done
     status=0
     cpu_busy "$fixture/stat-before" "$fixture/stat-after" 0 3 >/dev/null 2>"$fixture/stderr" || status=$?
     [ "$status" = 1 ] && grep -q 'no line for cpu3' "$fixture/stderr" || {
@@ -1050,7 +1111,10 @@ compare_client() {
 # /proc/stat exists, each measured sample also gives compare-cpu.csv one
 # line,pass,cpus,test,depth,cpu,role,busy,user,system row per server and
 # client CPU: the fraction of that CPU's time not idle over the client's run,
-# and its user and kernel shares. Each image's server log, which holds the
+# and its user and kernel shares. compare-limited.csv has one
+# line,pass,cpus,test,depth,client_busy_mean,client_limited row per sample: the
+# mean busy fraction over the client CPUs, and 1 when it is above 0.90, which
+# marks the cell client-limited. Each image's server log, which holds the
 # Whitefoot runtime's per-driver counts when WF_SCHED_REPORT is set, is kept
 # per pass as compare-server-<line>-<cpus>-<pass>.txt.
 if [ "$MODE" = compare ]; then
@@ -1082,6 +1146,7 @@ if [ "$MODE" = compare ]; then
     if [ -r /proc/stat ]; then
         cpu_record="$OUT/compare-cpu.csv"
         echo 'line,pass,cpus,test,depth,cpu,role,busy,user,system' >"$cpu_record"
+        echo 'line,pass,cpus,test,depth,client_busy_mean,client_limited' >"$OUT/compare-limited.csv"
     else
         echo "skip,compare-cpu.csv,no /proc/stat"
     fi
@@ -1127,6 +1192,7 @@ if [ "$MODE" = compare ]; then
                     if [ -n "$cpu_record" ]; then
                         cpu_busy "$OUT/compare-stat-before" "$OUT/compare-stat-after" \
                             "$SERVER_CPUS" "$CLIENT_CPUS" >"$OUT/compare-busy"
+                        echo "$name,$pass,$n,$test,$depth,$(client_limited "$OUT/compare-busy")" >>"$OUT/compare-limited.csv"
                         awk -v key="$name,$pass,$n,$test,$depth" '{ print key "," $0 }' \
                             "$OUT/compare-busy" >>"$cpu_record"
                     fi
