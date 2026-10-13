@@ -6,6 +6,14 @@
 //! The MISCONF suffix is strerror(aof_last_write_errno) (server.c:4346-4355):
 //! the text below is glibc's on Linux x86-64 in the C locale. A short write is
 //! described as ENOSPC whatever the host returned (aof.c:1163-1184).
+//!
+//! The initial SELECT 0 added to the seed bytes follows Redis 7.2.16
+//! [server.c initServerConfig](https://github.com/redis/redis/blob/7.2.16/src/server.c)
+//! and [aof.c feedAppendOnlyFile](https://github.com/redis/redis/blob/7.2.16/src/aof.c).
+//! File limits are relative to the resulting seed length. The
+//! [database oracle recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856)
+//! has no incremental file bytes or injected write failures; it does not
+//! re-record these seed bytes, fault replies or rollback behavior.
 
 use super::*;
 use std::path::Path;

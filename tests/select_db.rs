@@ -1,6 +1,8 @@
 //! Database compatibility derives from Redis 7.2.16's src/db.c,
 //! src/object.c, src/aof.c, src/script.c and tests/unit/{keyspace,scripting,
 //! multi}.tcl. These cases belong to board item firn-scope-select-db.
+//! Recorded Redis 7.2.16 replies and the rewrite base: https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856.
+//! Each case below identifies its recorded batch and missing fixture context.
 //! SCAN cursors and dictionary order are deliberately checked on their own
 //! server; deterministic replies and controlled incremental AOFs are exact.
 
@@ -8,6 +10,9 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 const DEADLINE: &str = "99999999999000";
+// Raw command-format base from the recorded aof-mixed-databases-rewrite batch.
+const REDIS_7216_REWRITE_BASE: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$7\r\nfifteen\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\ncopy\r\n$5\r\nseven\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$6\r\nscript\r\n*2\r\n$6\r\nSELECT\r\n$1\r\n7\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$5\r\nseven\r\n*3\r\n$9\r\nPEXPIREAT\r\n$4\r\nsame\r\n$14\r\n99999999999000\r\n*3\r\n$3\r\nSET\r\n$11\r\nscript-only\r\n$1\r\ns\r\n*2\r\n$6\r\nSELECT\r\n$2\r\n15\r\n*3\r\n$3\r\nSET\r\n$4\r\nsame\r\n$4\r\nzero\r\n";
+
 const DB_RANGE: &str = "-ERR DB index is out of range\r\n";
 const INTEGER: &str = "-ERR value is not an integer or out of range\r\n";
 const INT_RANGE: &str = "-ERR value is out of range, value must between -2147483648 and 2147483647\r\n";
@@ -114,6 +119,10 @@ fn stop(mut client: TcpStream, child: ProgramChild) {
 
 /// A cached handle must follow every pipelined SELECT, including database 15;
 /// a new peer and RESET start in database zero independently of other peers.
+/// Oracle recording: sixteen-database-isolation-resp2/resp3 records the reply values, CLIENT INFO
+/// framing and RESET. The pipelined history, later reread and fresh second connection are not in
+/// the recording.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn all_sixteen_databases_are_isolated_and_selection_is_connection_local() {
     for protocol in [2, 3] {
@@ -159,6 +168,9 @@ fn all_sixteen_databases_are_isolated_and_selection_is_connection_local() {
 
 /// db.c parses database ids as signed int before range checking or looking up
 /// a key. SWAPDB supplies its own parse errors, in first/second-id order.
+/// Oracle recording: database-errors-resp2/resp3 records every error below. The final
+/// SET/SELECT/GET selection-retention check is not in the recording.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn database_command_errors_match_redis_integer_rules_and_precedence() {
     for protocol in [2, 3] {
@@ -213,6 +225,9 @@ fn database_command_errors_match_redis_integer_rules_and_precedence() {
 /// MOVE retains the absolute deadline and removes only its source. COPY
 /// allows the same name in another database, preserves TTL, deep-copies a
 /// collection, and REPLACE removes an old destination's expiry when needed.
+/// Oracle recording: move-copy-values-and-ttl-resp2/resp3 records this command history. Expired-
+/// destination cleanup may be lazy or active; no cleanup scheduling is claimed.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn move_and_copy_cross_database_values_and_absolute_expiries() {
     for protocol in [2, 3] {
@@ -265,6 +280,9 @@ fn move_and_copy_cross_database_values_and_absolute_expiries() {
 
 /// A swap changes the contents visible through handles held by existing
 /// peers. The exchanged deadline must not later delete the old db's value.
+/// Oracle recording: Related SWAPDB replies appear in the mixed-database AOF batches; this two-
+/// connection swap fixture is absent from the recording.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn swapdb_exchanges_contents_seen_by_existing_connections() {
     for protocol in [2, 3] {
@@ -319,6 +337,9 @@ fn scan(client: &mut TcpStream, pattern: &str, kind: Option<&str>) -> BTreeSet<S
 
 /// Enumeration and INFO use the selected database; FLUSHDB affects exactly
 /// that database and FLUSHALL empties every database without changing SELECT.
+/// Oracle recording: Related commands appear in other batches; this enumeration, INFO and
+/// successful FLUSH fixture is absent from the recording.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn database_enumeration_info_and_flush_have_database_scope() {
     for protocol in [2, 3] {
@@ -378,6 +399,9 @@ fn database_enumeration_info_and_flush_have_database_scope() {
 /// db.c expiry belongs to the database containing the value after MOVE or
 /// SWAPDB. DBSIZE does no lookup, so this also observes active expiry in an
 /// otherwise idle database rather than passing by lazy GET cleanup.
+/// Oracle recording: This TIME-derived deadline and active-expiry observation fixture is absent
+/// from the recording.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn active_expiry_follows_database_moves_and_swaps() {
     let program = CompiledProgram::from_environment();
@@ -408,6 +432,9 @@ fn active_expiry_follows_database_moves_and_swaps() {
 /// EXEC must run SELECT in queue order and leave that selection on the
 /// network client. A runtime SELECT error does not abort later queued work;
 /// DISCARD and a queue-time arity error must never perform queued selections.
+/// Oracle recording: multi-database-context-resp2/resp3 records this command history and both
+/// EXEC replies.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn transactions_execute_database_changes_in_order_and_keep_final_selection() {
     for protocol in [2, 3] {
@@ -439,6 +466,9 @@ fn transactions_execute_database_changes_in_order_and_keep_final_selection() {
 /// script.c initializes the script client from its caller. Script SELECT is
 /// local, including on a final error; a later
 /// attempt begins afresh in its own caller's database.
+/// Oracle recording: script-database-context-resp2/resp3 records this command history, including
+/// script errors, local selection and the declared-key APPEND result.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn scripts_start_in_the_callers_database_and_select_only_the_script_client() {
     for protocol in [2, 3] {
@@ -477,6 +507,9 @@ fn scripts_start_in_the_callers_database_and_select_only_the_script_client() {
 /// An impossible limit exhausts every eligible key regardless of the
 /// requesting client's database; a volatile policy preserves permanent keys.
 /// Each database's eviction DEL must persist in that database's AOF context.
+/// Oracle recording: This allkeys-random/volatile-ttl admission, eviction statistics and restart
+/// fixture is absent from the recording.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn eviction_searches_all_databases_with_global_policy_and_statistics() {
     for policy in ["allkeys-random", "volatile-ttl"] {
@@ -514,6 +547,9 @@ fn eviction_searches_all_databases_with_global_policy_and_statistics() {
 
 /// feedAppendOnlyFile emits the first SELECT even for db zero, and emits
 /// later SELECTs only when a propagated effect targets a different db.
+/// Oracle recording: aof-first-select-and-database-changes records command replies, restart reads
+/// and FUNCTION FLUSH. Incremental file bytes are source-derived and absent from the recording.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn incremental_aof_records_first_select_and_only_effect_database_changes() {
     let program = CompiledProgram::from_environment();
@@ -596,10 +632,76 @@ fn check_persisted_databases(client: &mut TcpStream) {
     check(client, &["GET", "script-only"], "$1\r\ns\r\n");
 }
 
+/// Keeps exact records and their order for each (database,key), permitting
+/// only independent keys' dictionary traversal order to differ from Redis.
+fn rewrite_key_records(bytes: &[u8]) -> BTreeMap<(Vec<u8>, Vec<u8>), Vec<Vec<u8>>> {
+    let mut database = None;
+    let mut grouped: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    let mut complete = Vec::new();
+    for record in file_records(bytes) {
+        let mut wire = format!("*{}\r\n", record.len()).into_bytes();
+        for argument in &record {
+            wire.extend_from_slice(format!("${}\r\n", argument.len()).as_bytes());
+            wire.extend_from_slice(argument);
+            wire.extend_from_slice(b"\r\n");
+        }
+        complete.extend_from_slice(&wire);
+        if record[0] == b"SELECT" {
+            assert_eq!(record.len(), 2, "SELECT database arity");
+            database = Some(record[1].clone());
+        } else {
+            assert!(record.len() >= 2, "rewrite record names a key: {record:?}");
+            let key = (database.clone().expect("SELECT precedes rewritten data"), record[1].clone());
+            grouped.entry(key).or_default().push(wire);
+        }
+    }
+    assert_eq!(complete, bytes, "rewrite records use exact RESP array/bulk framing");
+    grouped
+}
+
+/// CI checks the comparison machinery against representative wrong results:
+/// independent-key order may differ, but data, expiry and RESP framing may not.
+/// The input is the raw Redis base recorded in
+/// [this oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
+#[test]
+fn rewrite_oracle_comparison_preserves_per_key_records_and_rejects_wrong_results() {
+    let expected = rewrite_key_records(REDIS_7216_REWRITE_BASE);
+    let records = file_records(REDIS_7216_REWRITE_BASE);
+    let wire = |rows: &[Vec<Vec<u8>>]| -> Vec<u8> {
+        rows.iter().flat_map(|row| {
+            let args: Vec<_> = row.iter().map(|arg| std::str::from_utf8(arg).unwrap()).collect();
+            resp(&args)
+        }).collect()
+    };
+    let copy = records.iter().position(|row| row[0] == b"SET" && row[1] == b"copy").unwrap();
+    let script = records.iter().position(|row| row[0] == b"SET" && row[2] == b"script").unwrap();
+    let mut reordered = records.clone();
+    reordered.swap(copy, script);
+    assert_eq!(rewrite_key_records(&wire(&reordered)), expected, "independent db1 keys may traverse in either order");
+    let expiry = records.iter().position(|row| row[0] == b"PEXPIREAT").unwrap();
+    let mut missing_expiry = records.clone();
+    missing_expiry.remove(expiry);
+    assert_ne!(rewrite_key_records(&wire(&missing_expiry)), expected, "missing expiry must be detected");
+    let mut changed_value = records.clone();
+    changed_value[copy][2] = b"wrong".to_vec();
+    assert_ne!(rewrite_key_records(&wire(&changed_value)), expected, "changed payload must be detected");
+    let mut reversed_expiry = records;
+    reversed_expiry.swap(expiry - 1, expiry);
+    assert_ne!(rewrite_key_records(&wire(&reversed_expiry)), expected, "SET then PEXPIREAT order within one key must be retained");
+    let mut malformed = REDIS_7216_REWRITE_BASE.to_vec();
+    malformed[0] = b'+';
+    assert!(std::panic::catch_unwind(|| rewrite_key_records(&malformed)).is_err(), "non-array RESP framing must be rejected");
+}
+
 /// Effects nested in transactions/scripts, COPY DB, MOVE, SWAPDB and
 /// FLUSHDB must replay once in their original databases. Rewriting must
 /// retain every nonempty db and absolute TTL, and its post-rewrite suffix
 /// must begin with a new SELECT context.
+/// Oracle recording: aof-mixed-databases-restart/rewrite records seed/restart replies and the raw
+/// rewritten base. Pre-restart verification, DEL suffix and its subsequent verification,
+/// incremental bytes, rewrite status and manifest are absent. The equal-context suffix-reset
+/// mutation below also needs recording; it preserves the recorded rewritten dataset.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn several_databases_survive_aof_restart_rewrite_and_post_rewrite_suffix() {
     let program = CompiledProgram::from_environment();
@@ -623,33 +725,24 @@ fn several_databases_survive_aof_restart_rewrite_and_post_rewrite_suffix() {
     assert_eq!(std::fs::read(aof_incremental_path(program.working_directory(), "appendonly.aof")).unwrap(), expected, "transaction and script AOF contexts follow Redis 7.2.16 effects");
     let (child, mut client, _) = start(&program, b"0", Some(b"appendonly.aof"));
     check_persisted_databases(&mut client);
+    // Establish db seven as the last emitted context on this writer without
+    // changing the dataset. Otherwise the seed's final FLUSHDB in db three
+    // would require SELECT seven even if rewrite forgot no context.
+    select(&mut client, 7);
+    check(&mut client, &["SET", "script-only", "s"], "+OK\r\n");
     rewrite_start(&mut client);
     assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
     let directory = program.working_directory().join("appendonlydir");
     let manifest = std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap();
     let base_name = manifest.lines().find(|line| line.ends_with("type b")).unwrap().split_whitespace().nth(1).unwrap();
     let base = std::fs::read(directory.join(base_name)).unwrap();
-    // Full reference base bytes are ORACLE in the recording batch
-    // aof-mixed-databases-rewrite; dictionary traversal is not a byte-order
-    // contract. Check each SELECT, record and reconstructed value instead.
+    // The recorded base preserves Redis's observed traversal order. Firn
+    // may traverse independent keys differently; compare each (db,key)'s
+    // ordered raw records, including the presence and position of expiry.
+    assert_eq!(rewrite_key_records(&base), rewrite_key_records(REDIS_7216_REWRITE_BASE));
     let records = aof_records(&base);
     let selected: Vec<_> = records.iter().filter(|record| record[0] == "SELECT").map(|record| record[1].clone()).collect();
     assert_eq!(selected, ["0", "1", "7", "15"], "rewrite selects every nonempty database in db order");
-    let mut db = None;
-    let mut reconstructed = BTreeMap::new();
-    for record in records {
-        match record[0].as_str() {
-            "SELECT" => db = Some(record[1].parse::<usize>().unwrap()),
-            "SET" => { assert_eq!(record.len(), 3); reconstructed.insert((db.expect("SELECT precedes data"), record[1].clone()), record[2].clone()); }
-            "PEXPIREAT" => { assert_eq!(db, Some(7)); assert_eq!(record[1], "same"); assert_eq!(record[2], DEADLINE); }
-            other => panic!("unexpected base record {other}: {record:?}"),
-        }
-    }
-    assert_eq!(reconstructed, BTreeMap::from([
-        ((0, "same".to_owned()), "fifteen".to_owned()), ((1, "same".to_owned()), "script".to_owned()),
-        ((1, "copy".to_owned()), "seven".to_owned()), ((7, "same".to_owned()), "seven".to_owned()),
-        ((7, "script-only".to_owned()), "s".to_owned()), ((15, "same".to_owned()), "zero".to_owned()),
-    ]));
     // Rotation forgets the old incremental context, including when the last
     // propagated pre-rewrite write and the first suffix write use db seven.
     select(&mut client, 7);
@@ -672,6 +765,9 @@ fn several_databases_survive_aof_restart_rewrite_and_post_rewrite_suffix() {
 /// AOF loading uses a private connection; SELECT in a completed MULTI
 /// changes subsequent replay context, while an unfinished MULTI is discarded.
 /// Opening an ordinary client after either replay always starts at db zero.
+/// Oracle recording: This hand-written committed/unfinished MULTI AOF startup fixture is absent
+/// from the recording.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn aof_replay_applies_committed_database_selection_and_discards_unfinished_selection() {
     for committed in [false, true] {
@@ -706,6 +802,9 @@ fn aof_replay_applies_committed_database_selection_and_discards_unfinished_selec
 /// Replacement images and subsequent journal effects distinguish (db,key).
 /// Repeated writes to the same name in two databases must not coalesce into
 /// one image or attach one database's commands to the other's rewrite state.
+/// Oracle recording: This paced concurrent rewrite, journal-image count and restart fixture is
+/// absent from the recording; the image counter is Firn-specific.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn aof_rewrite_journal_keeps_same_named_keys_in_distinct_databases() {
     let program = CompiledProgram::from_environment();
@@ -743,6 +842,10 @@ fn aof_rewrite_journal_keeps_same_named_keys_in_distinct_databases() {
 /// A script/EXEC stores an already-expired key and looks it up with OBJECT
 /// in the same frozen execution unit. Active expiry cannot interpose, so the
 /// DEL is necessarily OBJECT's lazy-expiry effect in the selected database.
+/// Oracle recording: exec-object-lazy-expiry-selected-database and script-object-lazy-expiry-
+/// selected-database record this command history and restart replies. Incremental file bytes are
+/// source-derived and absent.
+/// [https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856).
 #[test]
 fn object_lazy_expiry_after_select_logs_the_selected_database() {
     for scripted in [false, true] {

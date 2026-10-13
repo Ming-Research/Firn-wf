@@ -1,4 +1,15 @@
 //! firn's Redis compatibility cases over loopback TCP.
+//!
+//! Initial AOF SELECT expectations derive from Redis 7.2.16
+//! [server.c](https://github.com/redis/redis/blob/7.2.16/src/server.c)
+//! (`initServerConfig`, `propagatePendingCommands`) and
+//! [aof.c](https://github.com/redis/redis/blob/7.2.16/src/aof.c)
+//! (`feedAppendOnlyFile`): the writer starts without a selected database;
+//! MULTI/EXEC have database -1, so SELECT precedes the first enclosed effect.
+//! The [database oracle recording](https://github.com/Ming-Research/Firn-wf/actions/runs/38400985856)
+//! contains command replies and one rewritten base, not incremental AOF
+//! bytes or these legacy fixtures. It does not re-record the expectations
+//! below, whose earlier Redis 7.0.15 provenance is retained where applicable.
 
 #![cfg(target_os = "linux")]
 
