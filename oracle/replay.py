@@ -86,6 +86,15 @@ def run(server, batch, port):
             res["replies"].append({"cmd": c, "reply": rewrite(s, f, d) or ""}); continue
         s.sendall(enc(c))
         r = read_reply(f)
+        if batch.get("drain"):
+            s.settimeout(0.3)
+            try:
+                while True:
+                    r += read_reply(f)
+            except (socket.timeout, TimeoutError, OSError):
+                pass
+            s.settimeout(None)
+            f = s.makefile("rb")
         res["replies"].append({"cmd": c, "reply": r.decode("latin-1")})
     if batch.get("rewrite_aof"):
         res["aof_base"] = rewrite(s, f, d)
