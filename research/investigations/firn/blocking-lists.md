@@ -173,3 +173,82 @@ the repository. The fixture actions are the maintained multi-client source:
 Send parks, WaitBlocked uses an INFO barrier, Read collects the recorded frame,
 Quiet checks no output, and Close exercises cleanup. Test-harness observation
 polling is a registration barrier; production scheduling never polls.
+
+
+## Target layout of heap-resident host handles
+
+The owner supplied CI run 38453196432 for revision
+`f28e683aa93e48dffa5ea6af9e11f4c55498dd12`: source checking accepts both
+server builds, then code generation reports
+`TargetLayout(Unrepresentable(RuntimeSizedAllocation))` without a source
+location. The pub/sub base `6b3bc20` builds. No compiler ran locally.
+
+The strongest source-derived culprit is the new
+`hash_map_new::<u64, BlockedList, extent>` in `connection_events/owners.wf`.
+Its bucket is `HashMapSlot<u64, BlockedList>`, which stores the blocked
+request's entire Client, including `Option<std::process::MemoryMeter>`.
+The pinned compiler represents an opaque host value as 32 bytes aligned to
+16 (`compiler/src/target.rs:1730–1734`); enum and struct layout retain the
+largest field alignment. The standard HashMap allocates its buckets with
+`box_slots_new`, so the bucket's 16-byte alignment reaches
+`runtime_capacity_layout`. The x86-64 Linux target declares ordinary heap
+alignment of only 8 (`target.rs:99–105`); its check at 1248–1251 produces
+exactly the reported failure. The base Client already contains the meter,
+but the new registry places that Client in ordinary heap element storage.
+The error label names an allocation category; the specific problem here is
+alignment, not a value whose size is unknown where fixed storage is required.
+
+This is a legal source form under TYPE-9: MemoryMeter is not placement
+restricted and `nocopy` does not forbid dropping or storing it. STOR-6
+explicitly separates source acceptance from target qualification and allows
+the latter to stop without a language-rule citation. No checker rejection
+has been demonstrated missing, and DIAG-1 does not require a source coordinate
+for this failure category. A diagnostic naming the allocation, instantiated
+element type and alignment mismatch would make it actionable.
+
+The opaque alignment is real in this pin: LLVM emits `{ i128, i128 }`
+(`backend/emitter.rs:3603–3604`) and the C host ABI uses
+`alignas(16) uint64_t words[4]` (`backend/ordinary_values.h:15`). The ordinary
+heap returns malloc/realloc pointers without shifting them
+(`backend/heap.c:25–58`). Source inspection establishes the declared 8-byte
+minimum, not that the supported platform allocator actually cannot supply
+16. Whitefoot must establish the allocator guarantees on each supported ABI
+or change representation/allocation consistently; Firn does not substitute a
+second representation to conceal the target-support gap. Capacity zero also
+uses a static 64-aligned empty header, yet the current qualifier checks the
+element alignment independently of capacity.
+
+The full type/allocation audit found no new bare runtime-capacity field,
+recursive inline type, Shared inside Frozen, or unsupported by-value held
+map. Boxed runtime buffers keep fixed pointer fields. Map ceiling `extent`
+is not an inline allocation bound, and the base already uses that ceiling.
+Other new ordinary heap elements (keys, spans, ids and deadline records) have
+alignment at most 8. Adding WallClock changes Keyspace's inline alignment,
+but does not introduce another new ordinary heap element allocation in this
+diff. These exclusions and the culprit are static deductions; witness CI
+must confirm the isolated failures.
+
+The following minimal instruments live under
+`research/experiments/blocking-lists/` and are compiled, never executed, by
+the temporary `blocking-layout-witness.yml` workflow:
+
+| Witness | Prediction from the pin, not an executed result |
+|---|---|
+| `u64-slots-control.wf` | Source check and code generation succeed. |
+| `memory-meter-value-control.wf` | By-value Option<MemoryMeter> succeeds without an ordinary heap allocation. |
+| `memory-meter-slots.wf` | Source accepts; capacity-one MemoryMeter window fails target allocator alignment. |
+| `memory-meter-empty-slots.wf` | Source accepts; capacity-zero window reaches the same conservative qualification. |
+| `memory-meter-map.wf` | Source accepts; HashMap<u64, Option<MemoryMeter>, 8> reproduces the registry composition. |
+| `memory-meter-box.wf` | Source accepts; even a fixed-size Box<Option<MemoryMeter>> fails BoxNew's ordinary allocator alignment check. |
+
+The workflow runs `--check` and `-o` separately for every witness, prints and
+retains their direct statuses and output even after failures, and uploads
+provenance and logs. It also searches the downloaded language archive for
+the diagnostic spelling; local investigation read the exact pinned Git
+commit because no downloaded release language directory was present.
+Expected failures keep the temporary job red after all attempts; this job is
+an instrument for filing and verifying the Whitefoot gap, not compatibility
+acceptance. Remove it before the branch is marked ready. Retain the witnesses
+until their corresponding Whitefoot regression coverage and Firn build have
+verified the fix. No production code, design decision or pin changes for this
+investigation.

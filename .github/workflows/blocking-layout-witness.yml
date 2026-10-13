@@ -1,0 +1,110 @@
+# Temporary evidence for blocking-list layout witnesses. Remove this workflow
+# before the blocking-list task's pull request is marked ready.
+name: blocking layout witnesses
+
+on:
+  push:
+    branches:
+      - claude/blocking-lists
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blocking-layout-witness-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile-witnesses:
+    runs-on: ubuntu-24.04
+    # Six witnesses, two modes each, at 120 seconds per invocation need
+    # 24 minutes; leave time for compiler/toolchain setup and log upload.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Check and compile every layout witness
+        shell: bash
+        run: |
+          witness_release=$(sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$/\1/p' whitefoot.pin)
+          witness_compiler="$GITHUB_WORKSPACE/build/whitefoot/$witness_release/whitefootc"
+          witness_output="$GITHUB_WORKSPACE/build/blocking-layout-witness"
+          witness_logs="$witness_output/logs"
+          mkdir -p "$witness_logs" "$witness_output/bin"
+          cp whitefoot.pin "$witness_logs/whitefoot.pin"
+          cp "build/whitefoot/$witness_release/whitefoot-release.json" "$witness_logs/whitefoot-release.json"
+          cp "build/whitefoot/$witness_release/SHA256SUMS" "$witness_logs/SHA256SUMS"
+          printf 'revision\t%s\ncompiler\t%s\n' "$GITHUB_SHA" "$witness_compiler" > "$witness_logs/provenance.txt"
+          /usr/bin/clang --version >> "$witness_logs/provenance.txt"
+          ld.lld --version >> "$witness_logs/provenance.txt"
+          cat "$witness_logs/provenance.txt"
+          witness_language="$GITHUB_WORKSPACE/build/whitefoot/$witness_release/language"
+          if [[ -d "$witness_language" ]]; then
+            if grep -R -n -F -- 'RuntimeSizedAllocation' "$witness_language" > "$witness_logs/language-diagnostic-search.log" 2>&1; then
+              :
+            else
+              witness_search_status=$?
+              if (( witness_search_status == 1 )); then
+                echo 'No literal RuntimeSizedAllocation matches in the release language archive.' >> "$witness_logs/language-diagnostic-search.log"
+              else
+                printf 'Language archive search failed: exit %s\n' "$witness_search_status" >> "$witness_logs/language-diagnostic-search.log"
+              fi
+            fi
+          else
+            echo 'Release language directory absent.' > "$witness_logs/language-diagnostic-search.log"
+          fi
+          cat "$witness_logs/language-diagnostic-search.log"
+          printf 'witness\tmode\texit_status\n' > "$witness_logs/status.tsv"
+          printf '| Witness | Check status | Code generation status |\n| --- | --- | --- |\n' >> "$GITHUB_STEP_SUMMARY"
+          shopt -s nullglob
+          witness_sources=(research/experiments/blocking-lists/*.wf)
+          if (( ${#witness_sources[@]} == 0 )); then
+            echo 'No layout witness sources were found.' >&2
+            echo 'No layout witness sources were found.' > "$witness_logs/missing-sources.txt"
+            exit 1
+          fi
+          witness_failed=0
+          for witness_source in "${witness_sources[@]}"; do
+            witness_name=${witness_source##*/}
+            witness_name=${witness_name%.wf}
+            if timeout 120s "$witness_compiler" --check "$witness_source" > "$witness_logs/$witness_name.check.log" 2>&1; then
+              witness_check_status=0
+            else
+              witness_check_status=$?
+            fi
+            printf '%s\n' "$witness_check_status" > "$witness_logs/$witness_name.check.status"
+            printf '%s\tcheck\t%s\n' "$witness_name" "$witness_check_status" >> "$witness_logs/status.tsv"
+            printf '%s --check: exit %s\n' "$witness_source" "$witness_check_status"
+            cat "$witness_logs/$witness_name.check.log"
+            if timeout 120s "$witness_compiler" "$witness_source" -o "$witness_output/bin/$witness_name" > "$witness_logs/$witness_name.codegen.log" 2>&1; then
+              witness_codegen_status=0
+            else
+              witness_codegen_status=$?
+            fi
+            printf '%s\n' "$witness_codegen_status" > "$witness_logs/$witness_name.codegen.status"
+            printf '%s\tcodegen\t%s\n' "$witness_name" "$witness_codegen_status" >> "$witness_logs/status.tsv"
+            printf '%s -o: exit %s\n' "$witness_source" "$witness_codegen_status"
+            cat "$witness_logs/$witness_name.codegen.log"
+            printf '| %s | %s | %s |\n' "$witness_name" "$witness_check_status" "$witness_codegen_status" >> "$GITHUB_STEP_SUMMARY"
+            if (( witness_check_status != 0 || witness_codegen_status != 0 )); then
+              witness_failed=1
+            fi
+          done
+          exit "$witness_failed"
+
+      - name: Upload compiler output and exit statuses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blocking-layout-witness-${{ github.sha }}
+          path: build/blocking-layout-witness/logs
+          if-no-files-found: warn
