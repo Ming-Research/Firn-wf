@@ -5,6 +5,9 @@
 
 use super::*;
 
+#[path = "pubsub_oracle.rs"]
+mod oracle;
+
 fn start(connections: usize) -> (ProgramChild, TcpStream, u16) {
     let lease = support::lease_port();
     let port = lease.port();
@@ -107,6 +110,59 @@ fn pattern_message(version: u8, pattern: &str, channel: &str, value: &str) -> Ve
     bytes
 }
 
+/// Redis iterates a dictionary for UNSUBSCRIBE without arguments. Only the
+/// two channel names may exchange positions; frame types, counts, the EXEC
+/// header and any trailing PING reply must still match byte for byte.
+fn assert_unsubscribe_all_recording(actual: &[u8], recorded: &[u8], version: u8, in_exec: bool) {
+    let transcript = |first, second| {
+        let mut bytes = if in_exec { b"*2\r\n".to_vec() } else { Vec::new() };
+        bytes.extend(acknowledgment(version, "unsubscribe", Some(first), 1));
+        bytes.extend(acknowledgment(version, "unsubscribe", Some(second), 0));
+        if in_exec { bytes.extend_from_slice(b"$4\r\ntail\r\n"); }
+        bytes
+    };
+    let first_second = transcript("first", "second");
+    let second_first = transcript("second", "first");
+    assert!(recorded == first_second || recorded == second_first,
+        "recorded unsubscribe-all bytes changed: {recorded:?}");
+    assert!(actual == first_second || actual == second_first,
+        "unsubscribe-all bytes differ: expected {recorded:?}, got {actual:?}");
+}
+
+/// All twelve batches were recorded on Redis 7.2.16 at
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// Read exact byte lengths instead of parsing frames: multi-channel EXEC
+/// produces more acknowledgment frames than its aggregate header counts.
+#[test]
+fn all_twelve_recorded_pubsub_batches_match_redis_bytes() {
+    for batch in oracle::BATCHES {
+        let (child, mut client, _) = start(1);
+        hello(&mut client, batch.resp);
+        for &(arguments, expected) in batch.replies {
+            send(&mut client, &[arguments]);
+            let mut actual = vec![0; expected.len()];
+            client.read_exact(&mut actual).unwrap_or_else(|error|
+                panic!("{} {arguments:?}: reading {} recorded bytes: {error}", batch.name, expected.len()));
+            match (batch.name, arguments) {
+                ("ORACLE-step4-multichannel-subscription-exec-resp2" |
+                 "ORACLE-step4-multichannel-subscription-exec-resp3", ["UNSUBSCRIBE"]) =>
+                    assert_unsubscribe_all_recording(&actual, expected, batch.resp, false),
+                ("ORACLE-step4-unsubscribe-all-exec-resp3", ["EXEC"]) =>
+                    assert_unsubscribe_all_recording(&actual, expected, batch.resp, true),
+                _ => assert_eq!(actual, expected, "{} {arguments:?}", batch.name),
+            }
+        }
+        // Every batch ends with no memberships (or RESET). This ordinary
+        // reply barrier detects output left beyond the last recorded bytes.
+        send(&mut client, &[&["PING"]]);
+        let mut barrier = [0; 7];
+        client.read_exact(&mut barrier).expect("recorded pub/sub final PING barrier");
+        assert_eq!(&barrier, b"+PONG\r\n", "{} left extra output", batch.name);
+        drop(client);
+        assert_eq!(finished(child).0, 0, "{} server exit", batch.name);
+    }
+}
+
 // Step 4: direct channels and the common connection lifecycle.
 
 /// Subscription identities and publication bodies are binary lengths, not
@@ -133,6 +189,9 @@ fn binary_channels_and_messages_preserve_every_byte() {
 
 /// The first receive contains a complete subscription and an incomplete next
 /// bulk argument. Promotion must preserve that parser/input suffix exactly.
+/// Recorded basic SUBSCRIBE/UNSUBSCRIBE and post-unsubscribe PING bytes at
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// Fragmented input and the PING fragment payload remain source-derived.
 #[test]
 fn promotion_keeps_fragmented_pipeline_suffix() {
     for version in [2, 3] {
@@ -155,6 +214,9 @@ fn promotion_keeps_fragmented_pipeline_suffix() {
 
 /// A queued classic subscription can perform first promotion during EXEC.
 /// Unlike SSUBSCRIBE, Redis exempts SUBSCRIBE from EXEC's DENY_BLOCKING flag.
+/// MULTI/QUEUED literals and subscription frame fields are independently
+/// recorded at https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// Its two-channel EXEC differs from this single-channel aggregate.
 #[test]
 fn queued_classic_subscription_promotes_during_exec() {
     for version in [2, 3] {
@@ -174,6 +236,9 @@ fn queued_classic_subscription_promotes_during_exec() {
 
 /// Duplicate memberships acknowledge every argument but receive one copy;
 /// unsolicited output arrives while the receiver has no command to execute.
+/// Basic news subscription and zero-recipient PUBLISH literals recorded at
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// Two-client counts and duplicate direct subscriptions remain source-derived.
 #[test]
 fn direct_channels_multiple_subscribers_and_introspection() {
     for version in [2, 3] {
@@ -206,6 +271,9 @@ fn direct_channels_multiple_subscribers_and_introspection() {
 
 /// Arity/name checks precede RESP2 subscriber admission; its PING is an
 /// ordinary array of two bulk strings, never a push, and RESET clears mode.
+/// All commands/expected bytes in this case were recorded at
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253
+/// (step4-resp2-mode-and-precedence).
 #[test]
 fn resp2_subscriber_restrictions_error_precedence_ping_and_reset() {
     let (child, mut subscriber, _) = start(1);
@@ -233,6 +301,9 @@ fn resp2_subscriber_restrictions_error_precedence_ping_and_reset() {
 
 /// Promotion retains earlier reply bytes and the complete pipeline suffix;
 /// unsubscribe-all always replies, including its protocol-specific null.
+/// Every expected frame was recorded in step4-promotion-resp2/resp3 at
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// The recorder sent commands separately; pipeline ownership is tested here.
 #[test]
 fn promotion_preserves_pipeline_prefix_suffix_and_unsubscribe_all() {
     for version in [2, 3] {
@@ -253,6 +324,9 @@ fn promotion_preserves_pipeline_prefix_suffix_and_unsubscribe_all() {
 
 /// Dictionary iteration order is unspecified, but every membership must
 /// appear exactly once, with the count decreasing at each removal.
+/// First/second subscription frame fields and empty UNSUBSCRIBE bytes were
+/// recorded at https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// Three-member cleanup/count progression remains source-derived.
 #[test]
 fn unsubscribe_all_returns_every_membership_and_empty_acknowledgment() {
     for version in [2, 3] {
@@ -280,6 +354,9 @@ fn unsubscribe_all_returns_every_membership_and_empty_acknowledgment() {
 
 /// PUBSUB subcommand table arity is checked before execution; excess CHANNELS
 /// arguments are a handler syntax error. Wrong PUBLISH arity dirties MULTI.
+/// Only the zero-recipient PUBLISH footer is covered by
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// These PUBSUB/PUBLISH arity errors and EXECABORT remain source-derived.
 #[test]
 fn pubsub_admission_errors_abort_transaction_without_publication() {
     let (child, mut client, _) = start(1);
@@ -298,6 +375,9 @@ fn pubsub_admission_errors_abort_transaction_without_publication() {
 /// self-publication must follow the command's full reply. Redis's Tcl tests
 /// "publish to self inside multi" and "publish to self inside script" supply
 /// the transaction/script expectations, including ordered pushes afterward.
+/// Command/EXEC/script self-delivery and single unsubscribe inside EXEC
+/// recorded at https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// Additional Lua PING/ECHO/PUBSUB calls remain source-derived.
 #[test]
 fn resp3_self_publication_follows_complete_command_transaction_and_script_reply() {
     let (child, mut client, _) = start(1);
@@ -331,6 +411,10 @@ fn resp3_self_publication_follows_complete_command_transaction_and_script_reply(
 
 /// A publish before undeclared-key fallback is not delivered twice; the
 /// accepted final Lua error retains preceding publications just like writes.
+/// Publisher bulk/error/count and NOSCRIPT bytes recorded at
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// That batch used RESP3 self-delivery; this separate RESP2 subscriber
+/// framing and retry behavior remain source-derived.
 #[test]
 fn script_retry_stages_publications_and_final_error_keeps_them() {
     let (child, mut publisher, port) = start(2);
@@ -350,6 +434,9 @@ fn script_retry_stages_publications_and_final_error_keeps_them() {
 /// Restarting for the first hub use after INCR must restore the declared
 /// mutation; whole attempts retain their original dataset and hub execution.
 /// A publication with no dataset writes must survive a later budget boundary.
+/// Only the initial news subscription frame is covered by
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// INCR rollback, whole-map and budget boundaries are not recorded there.
 #[test]
 fn script_hub_restart_rollback_whole_attempt_and_budget_preserve_once() {
     let (child, mut publisher, port) = start(2);
@@ -377,6 +464,9 @@ fn script_hub_restart_rollback_whole_attempt_and_budget_preserve_once() {
 
 /// All six membership commands are NOSCRIPT; their table arity is checked
 /// before NOSCRIPT. PUBLISH and PUBSUB introspection use separate allowed paths.
+/// The SUBSCRIBE NOSCRIPT pcall result is recorded at
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// Other families, wrong arity and introspection calls remain source-derived.
 #[test]
 fn every_subscription_family_is_noscript_after_arity_validation() {
     let (child, mut client, _) = start(1);
@@ -402,6 +492,9 @@ fn every_subscription_family_is_noscript_after_arity_validation() {
 /// Black-box TCP EOF cleanup: a new connection subscribing to the same name
 /// receives no earlier delivery. This does not force an in-flight generation
 /// reuse race, which requires a controllable dispatcher pause in a CI witness.
+/// The initial news subscription and live NUMSUB count-1 bytes agree with
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// EOF removal, replacement identity and QUIT are not recorded there.
 #[test]
 fn disconnect_cleanup_and_new_connection_do_not_keep_old_membership() {
     let (child, mut control, port) = start(3);
@@ -432,6 +525,9 @@ fn disconnect_cleanup_and_new_connection_do_not_keep_old_membership() {
 /// Redis 7.2.16 timeout.c:clientsCronHandleTimeout excludes CLIENT_PUBSUB
 /// under both protocols. pubsub.c clears that flag when the last membership
 /// disappears. The controller also subscribes so it survives the fixed wait.
+/// Basic news acknowledgment bytes are recorded at
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// The timeout, all-family lifetime and still-alive payload are not recorded.
 #[test]
 fn active_subscription_families_exempt_idle_timeout_then_last_unsubscribe_closes() {
     for version in [2, 3] {
@@ -471,6 +567,10 @@ fn active_subscription_families_exempt_idle_timeout_then_last_unsubscribe_closes
 
 /// Redis networking.c closes a QUIT/protocol-error connection after buffered
 /// output drains. One connection's graceful stop cannot cancel another owner.
+/// Only the initial news subscribe frame is covered by
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// Graceful close, protocol errors and independent-connection lifetime remain
+/// source-derived; no such drain was captured by those twelve batches.
 #[test]
 fn promoted_quit_and_protocol_error_drain_pipeline_and_leave_other_subscriber_live() {
     for quit in [true, false] {
@@ -530,6 +630,10 @@ fn slow_subscriber_does_not_delay_other_subscribers() {
 
 /// One direct and two pattern matches deliver three frames and count three
 /// recipients; NUMPAT counts distinct registered patterns across clients.
+/// RESP3 news/n* acknowledgments, unique NUMPAT and the first client
+/// delivery frames recorded at https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// That batch has one client (:2); this two-client fanout correctly uses :3.
+/// Its empty PUNSUBSCRIBE retains a channel (:1); this second client uses :0.
 #[test]
 fn patterns_count_each_delivery_and_unique_registry_patterns() {
     for version in [2, 3] {
@@ -559,6 +663,10 @@ fn patterns_count_each_delivery_and_unique_registry_patterns() {
 /// Redis 7.2.16 server.c:genRedisInfoString derives these fields from the
 /// three server registries, so shared names and repeated memberships each
 /// contribute one registry entry until its last subscriber leaves.
+/// Duplicate SSUBSCRIBE acknowledgment bytes are recorded at
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// INFO framing/counts, shared memberships and last-member cleanup remain
+/// source-derived; INFO was not sent in those batches.
 #[test]
 fn info_stats_counts_unique_pubsub_registries_and_last_membership_cleanup() {
     fn counts(control: &mut TcpStream, version: u8, expected: [usize; 3]) {
@@ -661,6 +769,10 @@ fn pattern_recursion_depth_matches_redis_boundary() {
 
 /// Shard channels occupy a separate registry and acknowledge their own count;
 /// removing global channels alone leaves RESP2 subscriber mode active.
+/// RESP3 shard acknowledgments, query bytes and publication frames recorded
+/// at https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253.
+/// Recorder deliveries are self-pushes; these use separate publisher/receiver
+/// sockets. RESP2 mode lifetime and empty query variants remain source-derived.
 #[test]
 fn shard_channels_are_separate_with_independent_counts_and_mode_lifetime() {
     for version in [2, 3] {
@@ -692,6 +804,9 @@ fn shard_channels_are_separate_with_independent_counts_and_mode_lifetime() {
 
 /// EXEC sets DENY_BLOCKING: Redis permits regular SUBSCRIBE there but refuses
 /// SSUBSCRIBE unconditionally. SPUBLISH remains legal in EXEC and scripts.
+/// DENY BLOCKING and EXEC/Lua self-SPUBLISH bytes recorded at
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253
+/// (step5-shard-exec-and-script).
 #[test]
 fn shard_subscribe_inside_exec_refuses_and_shard_publication_composes() {
     let (child, mut client, _) = start(1);

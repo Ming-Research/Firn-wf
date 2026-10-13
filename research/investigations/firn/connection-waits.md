@@ -2,14 +2,17 @@
 
 ## Status, question and evidence
 
-This is a read-only design study, not an implementation or an approved design.
+The original analysis is a read-only design study, not an approved design.
+Pub/sub now has a draft implementation and recorded reference evidence in
+[the implementation section](#pubsub-implementation-evidence); blocking lists,
+WATCH and databases remain proposals.
 It asks whether Firn can add Redis 7.2.16 blocking lists, pub/sub, WATCH and
 databases 0–15 without losing its concurrent keyed fast path. The database
 cost question is answered first below. Every mechanism described as proposed
 needs implementation evidence and owner approval before becoming a design
 commitment. No compiler, build, test, Redis process or measurement was run for
-this study; CI is driven by the owner. No pin, submodule or design node changes
-are part of it, and no approval log is written.
+this study; CI is driven by the owner. The original study changed no pin, submodule or design node; its proposed
+mechanisms remain subject to owner approval.
 
 The inspected Firn revision is `c6f6058fb17277d4d44d364a45efad1eae01a22b`.
 Its compiler pin, `wf-d75f318d5631`, resolves in the Whitefoot repository to
@@ -98,8 +101,9 @@ ownership in server. A proposed connection-events module may own request
 identities, registries and event records; it must not depend on commands and
 then require commands to depend back on it. Command replay remains a commands
 helper over already-held state, as script callbacks already respect their
-module dependency boundary. This is an interface proposal, not an edit to
-[modules.wfg](../../../firn/modules.wfg).
+module dependency boundary. The pub/sub implementation registers this boundary in
+[modules.wfg](../../../firn/modules.wfg); the other feature adapters remain
+interface proposals.
 
 ### Ownership and delivery
 
@@ -628,7 +632,7 @@ or script reply precedes its pushed messages. Stage those self-pushes after
 the entire outer reply, never between its array elements. Subscription
 acknowledgments have historical exceptions: multiple SUBSCRIBE acknowledgments
 inside EXEC can make irregular framing. Preserve 7.2.16's transcript rather
-than silently regularizing it; the ORACLE batches below cover it. Subscription
+than silently regularizing it; the recorded batches below establish it. Subscription
 commands are NOSCRIPT. SSUBSCRIBE additionally refuses a no-blocking client
 inside EXEC, unlike classic SUBSCRIBE/PSUBSCRIBE's historical exception.
 SUBSCRIBE, PSUBSCRIBE and SSUBSCRIBE also carry DENYOOM; removal commands
@@ -896,10 +900,177 @@ claim that the proposed feature set closes Firn's other existing differences
 (for example its transaction queue ceiling, current memory-accounting basis
 or unsupported persistence modes). Keep those separate from new failures.
 
+## Pub/sub implementation evidence
+
+The draft implementation of steps 4 and 5 follows the proposed
+[connection ownership](../../../design/firn/connection-ownership.md),
+[pub/sub registries](../../../design/firn/pubsub-registries.md) and
+[script external effects](../../../design/firn/script-attempt-external-effects.md)
+nodes. The network cases live in [tests/pubsub.rs](../../../tests/pubsub.rs).
+Reference recordings establish Redis's replies; they do not establish that
+Firn compiles, passes those cases or meets the performance criteria below.
+
+### Pub/sub connection ownership
+
+A first successful subscription creates a connection record and commits the
+existing reply prefix and subscription acknowledgment under the same hub
+hold. The original server loops then end and transfer both TCP halves,
+client/parser buffers and transaction state once. The receiver owns input
+and EOF observation, the command owner runs one command at a time, and the
+output owner alone sends complete frames, retaining its partial-send offset.
+An independent hub dispatcher publishes committed actions to retained
+inboxes in order and performs no network I/O. Publication bodies use frozen
+shared storage; recipient headers remain separate. Disconnect, send failure,
+query overflow and pressure cleanup remove all memberships and cancel every
+owner. An ordered finish marker allows QUIT and protocol errors to drain
+preceding replies before cleanup.
+
+Query bytes include both queued chunks and the command owner's retained
+incomplete input until consumption is reported; a receiver closes above one
+GiB rather than waiting for private queue space and stranding EOF. Active
+subscriptions exempt the connection from the idle timeout. Membership,
+configuration and completed I/O activity changes wake receives directly. Final
+idle expiry checks authoritative hub membership and latest activity together
+with registration removal; a delayed dispatcher notification cannot expire
+an already subscribed client. Each parsed promoted command also checks its
+live registration and cancellation together before execution, so queued
+pressure cancellation cannot admit a later command on an invalidated id.
+An admitted command may finish if removal happens after that boundary.
+A guarded forwarding context combines those cancellation generations with
+connection shutdown into the single watch accepted by the host receive;
+its owner disarms it before joining after every receive.
+
+A never-subscribed GET/SET still receives, executes and sends in the original
+context. Its dataset atomic statements retain their existing key and optional
+Meta targets. Added work is local command classification/admission, a local
+promotion check, a larger client record and one retained hub handle created
+at connection setup; there is no hub target or queue transfer on these
+commands. RESP3 subscribers' ordinary commands use committed queued output
+and pay the promoted-path cost. No unused-path timing result is claimed.
+
+Channel and pattern registries are server-wide and separate from shard
+channels. Duplicate membership acknowledges without adding another path.
+NUMSUB/SHARDNUMSUB preserve operand order and duplicates; NUMPAT counts unique
+patterns. RESP2 subscriber admission permits the six subscription commands,
+PING, QUIT and RESET, after the reference's earlier admission checks. RESP3
+allows ordinary commands. Shared protocol writers own framing, including
+push headers; the event module owns membership and delivery, not sockets.
+
+The shared glob matcher now follows Redis 7.2.16's recursive algorithm,
+including signed-char range handling, malformed classes, empty-name behavior,
+shared suffix-search pruning and refusal above depth 1000. Its existing
+public interface remains unchanged. This also corrects the former greedy
+matcher's missing reference depth refusal for other glob consumers. The
+source's BSD notice is retained beside the port. Stack-ledger evidence is
+still required for the maximum 1002 active calls including a rejected call.
+
+### Pub/sub script attempts
+
+A declared-entry attempt encountering PUBLISH, SPUBLISH or PUBSUB introspection
+abandons through the existing uncatchable whole-map retry before observing
+membership. Its existing journal restores preceding writes and access stamps.
+Every whole-map attempt holds the hub from its start together with keys and
+Meta, including nonpublishing whole-map scripts, because those attempts have
+no general rollback boundary for a later wider hold. This adds possible hub
+contention only on that broad path; its cost is unmeasured.
+
+Publication counts and recipients use the held membership snapshot. Frames
+remain in an attempt-local stage until the final Lua result or error reply
+is formed; accepted errors retain preceding publications. Actual staged
+recipient deliveries prevent interpreter-budget abandonment; a zero-recipient
+publication has no external delivery to duplicate and can retry. Publications
+add no AOF dataset records and do not set script WRITE_DIRTY. The complete
+outer script or EXEC reply commits before self-publication frames. Script
+callbacks retain the real subscriber protocol in the hub while using Lua's
+selected response protocol, and ordinary callbacks temporarily clear the
+network client's membership counts to model Redis's unsubscribed script
+client for PING.
+
+The existing busy-script limitation remains: once an attempt must continue
+without releasing its holds, SCRIPT KILL cannot observe it through the pool
+between attempts. The implementation does not introduce an in-attempt publication
+channel to solve the already-recorded Whitefoot requirement. Its expanded
+external-effect path needs that limitation included in acceptance reporting.
+A minimal three-session example is A: `SUBSCRIBE news`; B: `EVAL
+"redis.call('PUBLISH','news','once'); while true do end" 0`; C: `SCRIPT KILL`.
+Redis's dataset-unwritten publisher remains killable after its busy boundary;
+Firn's selected delivery prevents budget abandonment, so it cannot reach its
+between-attempt kill check. This part remains dependent on the existing
+Whitefoot request `firn-req-attempt-publish`, not claimed as reference-complete.
+A zero-recipient publication remains retryable. No new compiler diagnosis was
+produced on this machine.
+
+### Pub/sub output accounting
+
+Active pub/sub connections enforce the reference numeric defaults: hard at
+at least 33,554,432 charged bytes and soft at at least 8,388,608 charged bytes
+continuously for more than 60 observed Unix seconds. Falling below the soft
+threshold, or leaving subscriber mode, clears the interval. A deadline queue
+and cancellable timer generation drive closure without periodic polling.
+Each frame charges its prefix and body reserved byte capacities until the
+whole frame owner is released, including hub, dispatcher, inbox and partially
+sent ownership. A shared body is charged in full to each recipient's limit;
+physical process heap accounting retains one allocation while references
+share it.
+
+This accounting excludes allocator rounding, reference-control and queue
+storage overhead, whereas Redis includes dynamic reply-allocation and
+block/list overhead. Exact allocation values and the publication number at
+which a slow client closes therefore differ; no allocator-equivalence claim
+is made. The numerical thresholds, interval reset and independent output
+progress still require CI observations. The slow-client network case checks
+progress only. A controlled accounting witness must hold a backlog above the
+soft threshold without reaching the hard threshold, then exercise a drop
+below and re-entry. Compare the reference and Firn without assuming identical
+kernel socket buffering.
+
+The timer reads Unix time and arms a monotonic sleep for the next observed
+threshold. Strict response to a forward calendar jump without another hub
+wake retains the research note's missing host-notification limitation; no
+periodic poll was introduced. Cancellation/partial-send races, old-id retained
+envelopes after cleanup, query overflow and idle exemption also need runtime
+evidence. The existing host calendar-jump notification and script
+attempt-publication requirements remain open; this design does not close them.
+
+CLIENT INFO uses local sub/psub/ssub counts. The hub exports a nonwaiting
+`client_counts` observation keyed by the network client id; CLIENT LIST can
+hold its existing table and the hub together and obtain consistent counts
+and subscriber classification. This avoids delayed client-table count
+publication and adds no table/hub target to ordinary GET/SET. A combined client table must use that observation for its formatting and
+subscriber classification; hardcoded zero counts do not compose with this
+interface.
+
+### Recorded pub/sub transcripts
+
+[Redis 7.2.16 recording run 38399914253](https://github.com/Ming-Research/Firn-wf/actions/runs/38399914253)
+recorded all 12 [input batches](../../experiments/pubsub/oracle-batches.json).
+Each command's reply is every byte received within 0.3 seconds, decoded as
+Latin-1: ordinary replies, pushes and acknowledgments are concatenated in
+wire order. The [test fixture](../../../tests/pubsub_oracle.rs) preserves all
+89 command drains and 3,410 reply bytes. Its batch names retain the original
+ORACLE prefix as identifiers; their expectations are now recorded bytes.
+
+The ordinary promotion, RESP2 restrictions, self-publication after command,
+EXEC and Lua replies, accepted script error, direct-plus-pattern fanout and
+shard namespace results agree with the source-derived expectations within
+the recorded command contexts. A two-client fanout count is not compared as
+if it had the recorder's single client. RESP2 deliveries on a separate socket
+are not claimed byte-identical to RESP3 self-pushes. Other network cases still
+use the reference source and require their own execution evidence.
+
+The raw replay case consumes known transcript lengths instead of interpreting
+an EXEC header as a complete framing boundary. All fields and frame markers
+are compared byte for byte; only dictionary iteration order in no-argument
+UNSUBSCRIBE is allowed to permute its two member names. The fixture retains
+the actual observed order. Count progression, channel identity, aggregate
+header and following PING bytes are unchanged. This is the same unordered
+enumeration rule used by the original membership tests and registry node.
+
 ## Acceptance cases and ORACLE recordings
 
-No tests were added in this study. The following are proposed independent
-acceptance cases, using upstream
+The original study proposed the following independent acceptance cases;
+pub/sub now has registered cases and recorded replies as linked above. The
+remaining proposals use upstream
 [multi tests](https://github.com/redis/redis/blob/7.2.16/tests/unit/multi.tcl),
 [list tests](https://github.com/redis/redis/blob/7.2.16/tests/unit/type/list.tcl),
 [pub/sub tests](https://github.com/redis/redis/blob/7.2.16/tests/unit/pubsub.tcl),
@@ -928,36 +1099,73 @@ for its intended defect before acceptance.
 | Pub/sub from an abandoned script attempt and from a final script error | Duplicate publication on retry or dropping accepted pre-error effects. |
 | Slow subscriber, disconnect during fanout, reused connection slot, idle exemption | Publisher stalls, stale delivery, leaked queued bytes or closing a legitimate blocked/subscribed client for idleness. |
 
-The following raw transcripts deliberately have expected output **ORACLE**.
-Record each on Redis 7.2.16 in owner-driven CI before putting expected bytes
-in a test. Commands below are command batches, not shell invocations. Use
+The pub/sub transcripts below are recorded. The later blocking-timeout and
+WATCH transcripts still have expected output **ORACLE** and need a Redis
+7.2.16 recording in owner-driven CI before their bytes enter tests. Commands below are command batches, not shell invocations. Use
 fresh connections/databases, raw RESP capture and explicit barriers.
 
-**O1 — subscription acknowledgments within EXEC.** Each sub-batch uses a
-fresh connection; repeat the first with RESP2 and after HELLO 3:
+**O1 — recorded subscription acknowledgments within EXEC.** Each batch uses
+a fresh connection; RESP3 negotiation precedes the batch. These bytes come
+from the linked Redis 7.2.16 run, with literal CR/LF escaped below. The complete
+command/reply sequences are in the test fixture.
+
+`ORACLE-step4-multichannel-subscription-exec-resp2` (RESP2):
 
 ```text
 MULTI
-SUBSCRIBE a b
+SUBSCRIBE first second
+PING tail
 EXEC
+UNSUBSCRIBE
 ```
+
+Recorded EXEC drain:
 
 ```text
-HELLO 3
-SUBSCRIBE a b
-MULTI
-UNSUBSCRIBE a b
-EXEC
+"*2\r\n*3\r\n$9\r\nsubscribe\r\n$5\r\nfirst\r\n:1\r\n*3\r\n$9\r\nsubscribe\r\n$6\r\nsecond\r\n:2\r\n*2\r\n$4\r\npong\r\n$4\r\ntail\r\n"
 ```
+
+`ORACLE-step4-multichannel-subscription-exec-resp3` (RESP3):
 
 ```text
 MULTI
-SSUBSCRIBE a
+SUBSCRIBE first second
+PING tail
+EXEC
+UNSUBSCRIBE
+```
+
+Recorded EXEC drain:
+
+```text
+"*2\r\n>3\r\n$9\r\nsubscribe\r\n$5\r\nfirst\r\n:1\r\n>3\r\n$9\r\nsubscribe\r\n$6\r\nsecond\r\n:2\r\n$4\r\ntail\r\n"
+```
+
+`ORACLE-step4-unsubscribe-all-exec-resp3` (RESP3):
+
+```text
+SUBSCRIBE first second
+MULTI
+UNSUBSCRIBE
+PING tail
 EXEC
 ```
 
-Expected raw transcripts: **ORACLE**. They guard the documented historical
-framing exception rather than assuming one acknowledgment per queued member.
+Recorded EXEC drain:
+
+```text
+"*2\r\n>3\r\n$11\r\nunsubscribe\r\n$5\r\nfirst\r\n:1\r\n>3\r\n$11\r\nunsubscribe\r\n$6\r\nsecond\r\n:0\r\n$4\r\ntail\r\n"
+```
+
+The additional MULTI; SSUBSCRIBE news; EXEC batch records:
+
+```text
+"*1\r\n-ERR SSUBSCRIBE isn't allowed for a DENY BLOCKING client\r\n"
+```
+
+These aggregates retain Redis's historical multiple-acknowledgment framing.
+No-argument UNSUBSCRIBE traversal differs across recorded connections; its
+wire types, member set and integer countdown remain fixed.
 
 **O2 — timeout syntax and range.** Start with an empty database. Queueing
 inside MULTI prevents a rounded-to-zero timeout from hanging:
@@ -1104,8 +1312,9 @@ connection ownership/output ordering; blocked-command service ordering and
 timeout semantics; script attempt external effects; AOF database context;
 memory/output-limit accounting. The command-parts, transactions, scripts,
 enumeration, protocol, memory, shutdown and AOF trees named above need
-correspondence review. This study changes **no** design node because the
-requested artifact is one research file and the alternatives remain proposals.
+correspondence review. The original study changed no design nodes. The pub/sub implementation now
+proposes the three nodes linked above; the remaining alternatives are still
+research proposals.
 
 ## Remaining uncertainty and disposition
 
@@ -1114,7 +1323,9 @@ interfaces, timeout numeric/clock facilities, single-db and WATCH measured
 cost, and the raw transcripts marked ORACLE. The broader list-producer hold
 is correct in intent but its full admission/eviction helper composition and
 performance are unverified. The hub's one-to-many throughput and connection
-promotion complexity are also unmeasured. None is described as implemented.
+promotion complexity are also unmeasured. The pub/sub draft implementation
+and its reference-recording boundary are described separately above; the
+other feature families remain unimplemented proposals.
 
 The design examination found three concrete integration obligations beyond
 new command names: preserve the AOF-off no-Meta fast path; include externally
