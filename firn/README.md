@@ -512,8 +512,19 @@ reports `No space left on device` whatever the host returned
 (`aof.c:1163-1184`); firn describes the short write by the host's text for the
 no-space class, which leaves the suffix empty only when the host cannot
 describe an error.
-The command that exposed the failure can already have succeeded, since replies
-do not wait for everysec durability. Partial appends attempt rollback to the
+Healthy commands that append AOF records hold their replies until the sole
+writer has written the covering batch to the file, without waiting for fsync.
+Collecting records wake the writer immediately; concurrent connections share
+its batch. Reads and commands that append nothing take no new barrier, and
+replies on one connection stay in order. Unlike Redis 7.2.16's everysec
+background-fsync postponement (`aof.c:1100-1117`), firn keeps this barrier
+while its writer syncs. This protects acknowledged healthy appends against
+SIGKILL, which preserves the kernel page cache, not against power loss.
+On append failure, replies already produced are sent unchanged, as Redis
+7.2.16 sends them after its failed everysec flush (`aof.c:1200-1213`;
+`server.c:1738-1739`); the command exposing the fault can therefore still
+receive success. Later writes receive MISCONF as above.
+Partial appends attempt rollback to the
 pre-flush incremental size, retaining all bytes on successful rollback and only
 the unwritten suffix otherwise (`aof.c:1146-1230`). Failed appends retry every
 100 ms, Redis's idle cadence at its default hz of 10; Redis also retries on
@@ -543,19 +554,23 @@ collecting bytes plus bytes retained by the writer, excluding already appended
 bytes awaiting sync (`server.c:5596-5650`). `aof_pending_bio_fsync` and
 `aof_delayed_fsync` are zero: firn's sole writer performs sync itself, with no
 background BIO queue or append postponement behind a background sync. The firn-only field
-`firn_aof_rewrite_commit_seq` is the actual dataset statement sequence while
-AOF is enabled. With AOF disabled a command that queues no expiry holds only
+`firn_aof_rewrite_commit_seq` is the actual sequence of statements that mutate
+the dataset or append AOF records while AOF is enabled. With AOF disabled a command that queues no expiry holds only
 its keys and takes no sequence, so the field is left out, following the
 [reported-facts rule](../design/firn/reported-facts.md).
 It starts at zero after loading, advances once for an atomic statement that
-changes the dataset, and is shared by every write in an `EXEC` or script
+changes the dataset or appends AOF records, and is shared by every write in an `EXEC` or script
 attempt. Expiry and eviction removals count; reads and access refreshes do
 not. Failed or no-effect commands take no sequence unless their lookup
-removes expired data. Both flush commands advance it even on
+removes expired data or they append a record, as FUNCTION FLUSH does.
+Both database flush commands advance it even on
 an empty database. Accepted overwrites remain writes, even when their value
 is equal. The counter saturates at u64's maximum and records that later
 reconciled-scan captures must be refused; it never wraps. This sequencing
-support now orders capture and the S1 end cut.
+support orders capture, the S1 end cut and reply release after append.
+At the saturated maximum, a reply with new records conservatively waits for
+both AOF buffers to drain, or a current append error, rather than trusting
+an older equal sequence. Later traffic can delay that drain.
 
 `firn_aof_rewrite_reserve` and `firn_aof_rewrite_scan_peak` report the
 admitted allowance and the largest PRE-2 heap increase observed across

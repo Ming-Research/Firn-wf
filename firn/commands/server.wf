@@ -194,7 +194,8 @@ fn run_flush(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
     let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
     let appended = held_flush(sequence: &sequence, keys: t, due: &m^.due, log: &m^.log, logged: store^.logging, input: input, args: args, client: client, budget: &log_budget);
-    pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+    set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
   }
   return unit;
 }
@@ -245,7 +246,8 @@ fn run_function(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
       let sequence = pkg::store::sequence_new(meta: m, loading: loading);
       let log_budget = pkg::store::log_budget_begin(meta: m, loading: loading);
       log_command(log: &m^.log, input: input, args: args, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      let aof_sequence = pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      set client^.aof_sequence = imax(client^.aof_sequence, aof_sequence);
     }
   }
   reply_ok(client: client);

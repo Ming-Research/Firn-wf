@@ -289,13 +289,16 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
     if force {
       if pending^.inner.len == 0_u64 {
         swap(first: &m^.log, second: pending);
+        set m^.aof_pending_sequence = m^.commit_seq;
       } else {
         let length = m^.log.inner.len;
         pkg::store::log_append_plain(log: pending, bytes: &m^.log.inner[0_u64..length]);
         set m^.log = box_slots_new::<u8>(capacity: 65536_u64);
+        set m^.aof_pending_sequence = m^.commit_seq;
       }
     } else if pending^.inner.len == 0_u64 {
       swap(first: &m^.log, second: pending);
+      set m^.aof_pending_sequence = m^.commit_seq;
     }
     set m^.aof_pending_capacity = pending^.inner.cap;
     set m^.aof_pending_length = pending^.inner.len;
@@ -686,6 +689,7 @@ fn aof_rw_cut(store: &Keyspace, pending: &Box<Slots<u8>>) -> accepted: Bool read
       set m^.rewrite.active = False();
       set m^.rewrite.rotating = True();
       swap(first: pending, second: &m^.log);
+      set m^.aof_pending_sequence = m^.commit_seq;
       set m^.aof_pending_capacity = pending^.inner.cap;
       set m^.aof_pending_length = pending^.inner.len;
       set cut = True();
@@ -737,7 +741,9 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
           let rebuilt = spawn aof_rw_worker(store: move worker_store, factory: move worker_factory, file: move opened, journal: move journal_read, clock: move worker_clock, meter: move worker_meter);
           let closed_size = 0_u64;
           loop @rebuilding {
-            aof_rw_pause(clock: clock);
+            atomic wake_meta = &store^.meta when aof_rebuilding_ready(meta: wake_meta) {
+              set wake_meta^.aof_tick = False();
+            }
             let done = False();
             let scan_done = False();
             let cut_done = False();
@@ -931,10 +937,12 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
     set m^.aof_current_size = m^.aof_current_size +wrap progress;
     set m^.aof_incr_size = m^.aof_incr_size +wrap progress;
     if drained {
+      set m^.aof_written_sequence = imax(m^.aof_written_sequence, m^.aof_pending_sequence);
       set m^.aof_append_error = None<std::io::IoError>();
       set m^.aof_append_partial = False();
       set pending^ = box_slots_new::<u8>(capacity: 65536_u64);
     } else {
+      set m^.aof_failed_sequence = imax(m^.aof_failed_sequence, m^.commit_seq);
       set m^.aof_append_error = appended.error;
       set m^.aof_append_partial = partial;
       if progress > 0_u64 {
