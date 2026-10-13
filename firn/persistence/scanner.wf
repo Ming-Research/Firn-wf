@@ -133,6 +133,7 @@ fn aof_syntax_next(syntax: &AofSyntax, input: &[u8], start: u64, end: u64, eof: 
         if syntax^.index == 0_u64 {
           let room = 5_u64 - syntax^.probe;
           let count = imin(room, taken);
+          invariant probe_step: count <= room;
           for (index in 0_u64..count) {
             let source = at + index;
             let target = syntax^.probe + index;
