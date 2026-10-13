@@ -300,3 +300,43 @@ now-completed block's values to survive. The apostrophe appendfilename case
 expects a quoted, reloadable manifest. These cases await CI; no local build,
 check or test was run for these review fixes. No performance result is
 claimed.
+
+## Acceptance under write load (criteria registered before measuring)
+
+The owner approved these criteria on 2026-10-13 (status board card
+firn-q-rw-accept-criteria, option A) before any acceptance measurement.
+Every comparison is against Redis 7.2.16 built by
+`tests/redis-suite/reference.sh`, run interleaved with firn in the same
+`redis-bench.yml` workloads run on the i9-14900K, with AOF on and
+`appendfsync everysec` on both servers. The instrument and its CSV columns
+are described in
+[deployment-performance](../deployment-performance/README.md).
+
+**Workload A, throughput during a rewrite** (`rewrite-during`, server on 1
+CPU): 1,000,000 keys of 64-byte values, 50 connections writing continuously,
+one BGREWRITEAOF sent mid-run. Normal throughput is the phase before the
+rewrite (`before_rate`); rewrite duration is client-observed, from sending
+BGREWRITEAOF until INFO reports the rewrite finished, measured the same way
+on both servers.
+
+1. firn's rewrite completes, and its duration is at most 5 times Redis's
+   duration in the same pass.
+2. firn's throughput during the rewrite is at least firn's normal throughput
+   times Redis's ratio of throughput during the rewrite to its normal
+   throughput in the same pass.
+3. firn's throughput during the rewrite is at least Redis's throughput during
+   its rewrite in the same pass.
+
+**Workload B, cache with a memory limit** (`evict-zipf-rewrite`):
+1,000,000 keys, Zipf-distributed access, maxmemory set to the empty server's
+memory plus half the dataset increment, automatic rewrites disabled, one
+BGREWRITEAOF mid-window, traffic kept until the rewrite completes or fails;
+firn without AOF runs as the control in the same run.
+
+4. firn refuses 0 writes.
+5. firn's hit rate is at most 0.01 below the hit rate of firn without AOF.
+
+Each criterion is judged per pass; the result reports every pass and
+states pass or fail per criterion. A rewrite that fails or does not finish
+within the workload's 120 s bound fails criteria 1 to 3 (workload A) or
+the run (workload B), with firn's INFO abort reason recorded.
