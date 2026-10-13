@@ -290,6 +290,17 @@ engine's pool already has, so a script adds no lock of its own;
   `firn_script_engine_held_ns`.
 - `firn_script_collections` sums the garbage collections the engine completed
   while held (Halo's `collection_count` after minus before).
+- `firn_script_collect_runs` counts takes during which the engine completed
+  at least one garbage collection, including each take of a retried script.
+- `firn_script_collect_held_ns` sums the held time of those takes.
+- `firn_script_collect_held_max_ns` gives the largest held time of those takes.
+- `firn_script_collect_halo_max_ns` gives the largest Halo time of those takes.
+- `firn_script_collect_over_100us` counts those takes whose held time exceeds
+  100000 nanoseconds.
+- `firn_script_plain_held_max_ns` gives the largest held time of takes during
+  which no garbage collection completed.
+- `firn_script_plain_halo_max_ns` gives the largest Halo time of takes during
+  which no garbage collection completed.
 
 `INFO`, with no section, `default`, `all`, `everything` or named sections,
 answers Redis's sections in Redis's order and form. Its fields carry real

@@ -4695,6 +4695,8 @@ fn firn_keeps_a_script_error_reply_on_one_line() {
 /// (SCRIPT LOAD and a refused EVAL do not count), and the time the engine was
 /// held covers the time spent inside Halo plus the time spent running
 /// redis.call commands, both nonzero after scripts that did work.
+/// Collection-bearing takes report a held maximum at least their mean, and
+/// the scripts here also establish a nonzero held maximum without collection.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_reports_script_engine_timing_in_info() {
@@ -4717,6 +4719,13 @@ fn firn_reports_script_engine_timing_in_info() {
         "firn_script_halo_ns",
         "firn_script_command_ns",
         "firn_script_collections",
+        "firn_script_collect_runs",
+        "firn_script_collect_held_ns",
+        "firn_script_collect_held_max_ns",
+        "firn_script_collect_halo_max_ns",
+        "firn_script_collect_over_100us",
+        "firn_script_plain_held_max_ns",
+        "firn_script_plain_halo_max_ns",
     ] {
         assert_eq!(field(&mut client, name), 0, "{name} before any script");
     }
@@ -4735,12 +4744,20 @@ fn firn_reports_script_engine_timing_in_info() {
     let halo = field(&mut client, "firn_script_halo_ns");
     let command = field(&mut client, "firn_script_command_ns");
     let _collections = field(&mut client, "firn_script_collections");
+    let collect_runs = field(&mut client, "firn_script_collect_runs");
+    let collect_held = field(&mut client, "firn_script_collect_held_ns");
+    let collect_held_max = field(&mut client, "firn_script_collect_held_max_ns");
+    let plain_held_max = field(&mut client, "firn_script_plain_held_max_ns");
     assert_eq!(runs, 3, "two EVALs and one EVALSHA took the engine, SCRIPT LOAD did not");
     assert!(halo > 0, "halo_ns {halo}");
     assert!(command > 0, "command_ns {command}");
     assert!(held > 0, "held_ns {held}");
     assert!(held >= halo, "held {held} < halo {halo}");
     assert!(held >= halo + command, "held {held} < halo {halo} + command {command}");
+    assert!(plain_held_max > 0, "plain_held_max_ns {plain_held_max}");
+    assert!(collect_runs <= runs, "collect_runs {collect_runs} > runs {runs} for these scripts");
+    let collect_held_mean = collect_held / collect_runs.max(1);
+    assert!(collect_held_max >= collect_held_mean, "collect_held_max {collect_held_max} < collect_held_mean {collect_held_mean}");
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);

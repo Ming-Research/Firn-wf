@@ -92,7 +92,7 @@ fn new_pooled(generation: u64) -> pooled: PooledEngine pure {
 }
 
 fn return_engine(store: &Keyspace, pooled: PooledEngine, held_ns: u64, halo_ns: u64, command_ns: u64, collections: u64) -> r: unit reads(store) waits {
-  doc "Puts the engine back for the next script, which then may take it, and adds the nanoseconds the script held it, spent in Halo and spent running commands, and the collections the engine completed meanwhile, to the pool's diagnostic sums in the statement that gives the engine back; SCRIPT LOAD passes zeros.";
+  doc "Puts the engine back for the next script, which then may take it, and adds the nanoseconds the script held it, spent in Halo and spent running commands, and the collections the engine completed meanwhile, to the pool's diagnostic sums in the statement that gives the engine back. A take with collections above zero increments script_collect_runs, adds its held nanoseconds to script_collect_held_ns, updates script_collect_held_max_ns and script_collect_halo_max_ns, and increments script_collect_over_100us if its held nanoseconds exceed 100000; a take with no collection updates script_plain_held_max_ns and script_plain_halo_max_ns. SCRIPT LOAD passes zeros and changes none of these diagnostics.";
   halo::embed::reset(engine: &pooled.engine);
   atomic p = &store^.scripts {
     set p^.out = 0_u64;
@@ -100,6 +100,18 @@ fn return_engine(store: &Keyspace, pooled: PooledEngine, held_ns: u64, halo_ns: 
     set p^.script_halo_ns = p^.script_halo_ns +sat halo_ns;
     set p^.script_command_ns = p^.script_command_ns +sat command_ns;
     set p^.script_collections = p^.script_collections +sat collections;
+    if collections > 0_u64 {
+      set p^.script_collect_runs = p^.script_collect_runs +sat 1_u64;
+      set p^.script_collect_held_ns = p^.script_collect_held_ns +sat held_ns;
+      set p^.script_collect_held_max_ns = imax(p^.script_collect_held_max_ns, held_ns);
+      set p^.script_collect_halo_max_ns = imax(p^.script_collect_halo_max_ns, halo_ns);
+      if held_ns > 100000_u64 {
+        set p^.script_collect_over_100us = p^.script_collect_over_100us +sat 1_u64;
+      }
+    } else {
+      set p^.script_plain_held_max_ns = imax(p^.script_plain_held_max_ns, held_ns);
+      set p^.script_plain_halo_max_ns = imax(p^.script_plain_halo_max_ns, halo_ns);
+    }
     if p^.idle.inner.len == p^.idle.inner.cap {
       let room = p^.idle.inner.cap +sat 1_u64;
       let twice = p^.idle.inner.cap +sat p^.idle.inner.cap;
