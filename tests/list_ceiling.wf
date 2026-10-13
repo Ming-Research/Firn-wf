@@ -551,7 +551,7 @@ fn case_move_lookup(from_head: Bool, to_head: Bool, scenario: u64) -> passed: Bo
       if scenario != 0_u64 {
         set slots^[source] = case_entry(length: 8_u64, capacity: 8_u64);
         if scenario == 2_u64 {
-          match slots^[source] {
+          match &slots^[source] {
             Some(value: live_source) => {
               set live_source^.expires = 1000_u64;
             }
@@ -618,7 +618,7 @@ fn case_move_lookup(from_head: Bool, to_head: Bool, scenario: u64) -> passed: Bo
       }
       if source < slots^.len {
         if scenario == 0_u64 {
-          match slots^[source] {
+          match &slots^[source] {
             Some(..) => {
               set passed = False();
             }
