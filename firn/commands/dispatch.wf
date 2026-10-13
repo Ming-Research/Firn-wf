@@ -228,7 +228,8 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       }
     } else {
       let arity = held_arity(kind: events);
-      if bnot(arity_holds(arity: arity, count: count)) {
+      let arity_fits = arity_holds(arity: arity, count: count);
+      if bnot(arity_fits) {
         reply_arity(client: client, input: input, name: name);
         return unit;
       }

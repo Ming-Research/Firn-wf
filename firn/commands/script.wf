@@ -2066,7 +2066,8 @@ fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8]
       reply_error(client: client, word: &text_script_unknown[0_u64..44_u64]);
       return 0_u64;
     }
-    if bnot(arity_holds(arity: pubsub_count, count: count)) {
+    let arity_fits = arity_holds(arity: pubsub_count, count: count);
+    if bnot(arity_fits) {
       reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
       return 0_u64;
     }

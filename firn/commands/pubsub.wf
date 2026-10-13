@@ -202,7 +202,8 @@ fn pubsub_refused(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> ref
     return True();
   }
   let arity = pubsub_arity(input: input, args: args);
-  if bnot(arity_holds(arity: arity, count: count)) {
+  let arity_fits = arity_holds(arity: arity, count: count);
+  if bnot(arity_fits) {
     if planned == 3_u64 {
       reply_arity_word(client: client, word: &pubsub_numpat_full[0_u64..13_u64]);
     } else {
@@ -236,7 +237,8 @@ fn subscriber_refused(kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: 
   if client^.resp != 2_u64 {
     return False();
   }
-  if bnot(subscriber_mode(client: client)) {
+  let in_subscriber_mode = subscriber_mode(client: client);
+  if bnot(in_subscriber_mode) {
     return False();
   }
   let ping = kind == 22_u64;
