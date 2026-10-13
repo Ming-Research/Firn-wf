@@ -140,6 +140,20 @@ timeout --kill-after=5s 180s bash -euo pipefail -c \
     'PS4="+quickstart:\${LINENO}: "; set -x; source "$1"' bash "$scratch/run.sh" \
     >"$scratch/output.log" 2>"$scratch/trace.log"
 
+# Independently verify the final stop, allowing the prior connections' TIME_WAIT
+# without allowing another listener on the quickstart's address and port.
+python3 - <<'PY'
+import socket
+
+try:
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(('127.0.0.1', 6379))
+        listener.listen(1)
+except OSError as error:
+    raise SystemExit(f'After the quickstart stopped, 127.0.0.1:6379 could not bind and listen: {error}')
+PY
+
 # Check execution evidence as well as state: dropping a read/assertion from
 # the document must not pass merely because the AOF still contains the SET.
 python3 - "$scratch/trace.log" "$mode" <<'PY'
@@ -153,6 +167,7 @@ def require(pattern, count, description):
         raise SystemExit(f'Quickstart did not execute {description}: expected {count}, found {found}')
 require(r'redis-cli .* --raw SET firn:quickstart survives-restart$', 1, 'one SET')
 require(r'redis-cli .* --raw GET firn:quickstart$', 2, 'GET before and after restart')
+require(r': assert_port_free$', 3, 'port probes before startup and after both stops')
 require(r'\[\[ OK == OK \]\]$', 1, 'the OK assertion')
 require(r'\[\[ survives-restart == survives-restart \]\]$', 2, 'both value assertions')
 if not re.search(r'\[\[ PONG == PONG \]\]$', trace, re.MULTILINE):
@@ -170,6 +185,9 @@ stop_pattern = r'redis-cli .* SHUTDOWN NOSAVE$' if mode == 'tarball' else r': do
 stops = [match.start() for match in re.finditer(stop_pattern, trace, re.MULTILINE)]
 if not (set_at < gets[0] < stops[0] < gets[1] < stops[1]):
     raise SystemExit('Quickstart must GET once before the first stop and once after restart')
+probes = [match.start() for match in re.finditer(r': assert_port_free$', trace, re.MULTILINE)]
+if not (probes[0] < set_at < gets[0] < stops[0] < probes[1] < gets[1] < stops[1] < probes[2]):
+    raise SystemExit('Quickstart must probe the port before SET, between the first stop and restarted GET, and after the final stop')
 PY
 
 if [[ $mode == image ]]; then

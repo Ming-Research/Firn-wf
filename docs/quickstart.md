@@ -15,6 +15,10 @@ replies are `PONG`, `OK`, and `survives-restart`; each is asserted because
 
 ## Prepare the client and workspace
 
+The port probes bind and listen with address reuse enabled, as firn does.
+They reject a remaining listener while allowing closed connections to finish
+their TCP TIME_WAIT interval after the server has exited.
+
 ```sh quickstart-common
 set -euo pipefail
 if ! command -v curl >/dev/null || ! command -v redis-cli >/dev/null || ! command -v python3 >/dev/null; then
@@ -26,11 +30,16 @@ mkdir -p "$QUICKSTART_WORKDIR"
 [[ -z $(ls -A "$QUICKSTART_WORKDIR") ]]
 cd "$QUICKSTART_WORKDIR"
 QUICKSTART_WORKDIR=$PWD
+assert_port_free() {
 python3 - <<'PY'
 import socket
 with socket.socket() as listener:
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(('127.0.0.1', 6379))
+    listener.listen(1)
 PY
+}
+assert_port_free
 server_pid=
 container_name=
 cleanup() {
@@ -130,6 +139,7 @@ the server exited before the new one starts in the same data directory.
 ```sh quickstart-tarball
 redis-cli -h 127.0.0.1 -p 6379 SHUTDOWN NOSAVE
 wait "$server_pid"
+assert_port_free
 server_pid=
 "$FIRN_BIN" --port 6379 --bind 127.0.0.1 --appendonly yes >../second.log 2>&1 &
 server_pid=$!
@@ -146,6 +156,7 @@ docker stop --time 20 "$container_name"
 [[ $(docker inspect --format '{{.State.ExitCode}}' "$container_name") == 0 ]]
 docker logs "$container_name" >first.log 2>&1
 docker rm "$container_name"
+assert_port_free
 docker run --detach --name "$container_name" --publish 127.0.0.1:6379:6379 \
     --mount "type=volume,src=$volume_name,dst=/data" "$FIRN_IMAGE" >second-container.id
 ```
@@ -182,6 +193,7 @@ container_name=
 ```
 
 ```sh quickstart-common
+assert_port_free
 printf 'Data retained in %s\n' "$QUICKSTART_WORKDIR"
 ```
 
