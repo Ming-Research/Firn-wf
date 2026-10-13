@@ -900,6 +900,17 @@ fn mset_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   return lapsed;
 }
 
+fn msetnx_body(sequence: &pkg::store::WriteSequence, client: &Client, slot: &Option<Entry>, input: &[u8], args: &Box<Slots<Span>>, value_index: u64) -> result: unit reads(client), reads(input), reads(args), writes(sequence), writes(slot) {
+  doc "MSETNX's successful store after every existence probe found no live key and removed any expired entry, as Redis 7.2.16 msetGenericCommand uses setKey with SETKEY_DOESNT_EXIST for the first store and SETKEY_ADD_OR_UPDATE thereafter. Stores the argument's value without expiry or another lookup refresh; repeated keys keep the first insertion's LFU stamp and the last pair's value. The caller sets client.now to its statement's time.";
+  let key_index = value_index -sat 1_u64;
+  let key_place = key_bounds(input: input, args: args, index: key_index);
+  let access_key = &input^[key_place.start..key_place.end];
+  let value_span = arg(args: args, index: value_index);
+  let value = bytes_new(input: input, start: value_span.start, length: value_span.length);
+  put_text(sequence: sequence, capture_key: access_key, client: client, slot: slot, value: move value, expires: 0_u64);
+  return unit;
+}
+
 fn bump_value(env: &Counted, value: &Entry) -> result: u64 writes(env), writes(value) {
   doc "Adds env's delta to a live stored decimal in place, keeping its expiry. State 1 is done, 3 marks another kind, 5 a string that is not a number, 6 a sum past the range of i64, and 2 an expired entry.";
   let reached = expired(expires: value^.expires, now: env^.now);
@@ -1522,7 +1533,7 @@ fn run_mget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
 }
 
 fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "MSETNX key value [key value ...]: stores every pair, without expiries, when none of the keys is live, answering 1, and stores nothing otherwise, answering 0, in one statement on the keys' entries, as Redis 7.0.15 does; a key named twice keeps its last value. As Redis's msetGenericCommand does, the statement looks the keys up in the order they are named and stops at the first live one, so a key named after it is not looked up; each key it finds expired is removed, and the file records its removal as log_removal does, then the command as it was sent when it stored. The preliminary existence check visits distinct keys in first-insertion order; stores visit every pair in argument order, including duplicate keys, so each setKey lookup updates LFU.";
+  doc "MSETNX key value [key value ...]: stores every pair, without expiries, when none of the keys is live, answering 1, and stores nothing otherwise, answering 0, in one statement on the keys' entries, as Redis 7.2.16 does; a key named twice keeps its last value. As Redis's msetGenericCommand does, the statement looks the keys up in the order they are named and stops at the first live one, so a key named after it is not looked up; each key it finds expired is removed, and the file records its removal as log_removal does, then the command as it was sent when it stored. The preliminary existence check visits distinct keys in first-insertion order and refreshes a live key; successful stores visit every pair in argument order through msetnx_body without another lookup, so a repeated key retains LFU_INIT_VAL (5).";
   let journal = None<pkg::store::AccessJournal>();
   let count = args^.inner.len;
   let pairs = count / 2_u64;
@@ -1596,7 +1607,7 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
           if at < slots^.len {
             let doubled = pair *wrap 2_u64;
             let position = doubled +wrap 2_u64;
-            let replaced = mset_body(sequence: &sequence, journal: &journal, client: client, slot: &slots^[at], input: input, args: args, value_index: position, now: time^.check);
+            msetnx_body(sequence: &sequence, client: client, slot: &slots^[at], input: input, args: args, value_index: position);
           }
         }
       }

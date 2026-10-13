@@ -2597,7 +2597,7 @@ fn script_msetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
   requires keys^.len == declared^.len;
   ensures keys^.len == entry(keys)^.len;
 } {
-  doc "MSETNX probes entries in argument order, stopping at the first live entry, then stores each pair through mset_body only if all were absent.";
+  doc "MSETNX probes entries in argument order with ordinary lookup refreshes, stopping at the first live entry, then stores each pair through msetnx_body without another lookup only if all were absent, as Redis 7.2.16 msetGenericCommand does.";
   let unlimited_log_budget = pkg::store::log_budget_new();
   let count = args^.inner.len;
   let rejected = mset_pairs_refused(input: input, args: args, client: client);
@@ -2646,7 +2646,7 @@ fn script_msetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
       return 0_u64;
     }
     let slot = &keys^[rank];
-    let replaced = mset_body(sequence: sequence, journal: journal, client: client, slot: slot, input: input, args: args, value_index: value_index, now: time^.check);
+    msetnx_body(sequence: sequence, client: client, slot: slot, input: input, args: args, value_index: value_index);
   }
   let recorded = mset_meta(log: effects, logged: logged, input: input, args: args, budget: &unlimited_log_budget);
   set appended = appended +wrap recorded;
