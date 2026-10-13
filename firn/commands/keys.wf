@@ -382,10 +382,10 @@ fn run_del(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
     let log_budget = if logged {
       let begun = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      give move begun;
+      give begun;
     } else {
       let none = pkg::store::log_budget_new();
-      give move none;
+      give none;
     }
     for @named (at in 0_u64..keys.len) {
       let found = remove_live_at(sequence: &sequence, capture_keys: &keys, capture_index: at, slot: &slots^[at], now: time^.check);
@@ -445,10 +445,10 @@ fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     }
     let log_budget = if logged {
       let begun = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      give move begun;
+      give begun;
     } else {
       let none = pkg::store::log_budget_new();
-      give move none;
+      give none;
     }
     for @named (
       index in 1_u64..count,

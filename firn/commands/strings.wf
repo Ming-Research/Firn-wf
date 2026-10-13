@@ -832,10 +832,10 @@ fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let log_budget = if logged {
       let begun = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      give move begun;
+      give begun;
     } else {
       let none = pkg::store::log_budget_new();
-      give move none;
+      give none;
     }
     for @stored (pair in 0_u64..pairs) {
       if pair < client^.key_lookups.inner.len {
@@ -1489,10 +1489,10 @@ fn run_mget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let log_budget = if logged {
       let begun = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      give move begun;
+      give begun;
     } else {
       let none = pkg::store::log_budget_new();
-      give move none;
+      give none;
     }
     for @answers (step in 0_u64..client^.key_metadata.inner.len) {
       if step < client^.key_metadata.inner.len {
@@ -1559,10 +1559,10 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     }
     let log_budget = if logged {
       let begun = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
-      give move begun;
+      give begun;
     } else {
       let none = pkg::store::log_budget_new();
-      give move none;
+      give none;
     }
     let blocked = False();
     for @checked (
