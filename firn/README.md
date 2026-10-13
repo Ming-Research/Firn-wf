@@ -396,6 +396,20 @@ left the file inside an unfinished MULTI, the rewrite cuts the sealed file
 before that MULTI; the new base holds the live writes appended after it, as
 Redis's rewrite does.
 
+When a sync of the append-only file fails, firn refuses writes and `PING`
+with Redis's `MISCONF` reply, still answers reads, and INFO reports
+`aof_last_write_status:err`, as Redis does. firn keeps syncing once a second
+while idle. A sync that succeeds again does not end the failure, because
+Linux does not write again the pages whose writeback failed: it starts a
+rewrite of the dataset from memory, and firn accepts writes again only once
+that rewrite's new base, incremental file and manifest are installed and the
+directory synced. Meanwhile INFO shows `aof_rewrite_in_progress:1` with
+`aof_last_write_status:err`. A recovery rewrite that cannot start or fails
+reports `aof_last_bgrewrite_status:err`, stops automatic rewrites as any
+failed attempt does, and is tried again after the next successful sync;
+recovery rewrites run even while automatic rewrites are stopped. An idle
+Redis 7.2.16 instead keeps refusing writes until it is restarted.
+
 The scan currently uses count hint 1 and charges the returned KeySet before
 copying payloads. This permits one scan step's allocation before charging,
 under board item `firn-gap-scan-bound`; count is a hint, and collisions can

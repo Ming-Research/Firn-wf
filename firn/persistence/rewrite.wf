@@ -53,7 +53,7 @@ fn aof_rw_manifest(original: &AofManifest) -> made: AofManifest reads(original) 
 }
 
 fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> accepted: Bool reads(store), writes(factory), writes(log), writes(clock) waits {
-  doc "Flush is complete before entry. Validate the sealed current file without executing commands; if it ends inside an unfinished block, as a startup-retained MULTI leaves it, cut it before that block's first MULTI, whose writes base(S1) holds as live state, then sync it before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts. Rotation resets incremental size but preserves error status, as Redis 7.0.15 aof.c:790-852 does; actual successful synchronization clears sync error.";
+  doc "Flush is complete before entry. Validate the sealed current file without executing commands; if it ends inside an unfinished block, as a startup-retained MULTI leaves it, cut it before that block's first MULTI, whose writes base(S1) holds as live state, then sync it before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts. Rotation resets incremental size but preserves error status, as Redis 7.0.15 aof.c:790-852 does. A successful sync of the sealed file clears no saved sync error: after a failed sync Linux leaves the pages whose writeback failed clean, so this sync can succeed without writing them; only a durable installation, in aof_rw_complete, clears it.";
   let boundary = aof_rw_boundary(store: store, factory: factory, log: log, clock: clock);
   if boundary.whole {
   } else {
@@ -79,9 +79,6 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
   }
   match std::fs::sync_file(factory: factory, file: &log^.file) {
     Ok(value: synced) => {
-      atomic m = &store^.meta {
-        set m^.aof_sync_error = None<std::io::IoError>();
-      }
     }
     Err(error: problem) => {
       let counted = aof_sync_counts(error: &problem);
@@ -92,9 +89,6 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
         let reason_writer_io_4 = pkg::store::RewriteAbortReason::WriterIo();
         aof_rw_abort(store: store, reason: reason_writer_io_4);
         return False();
-      }
-      atomic m = &store^.meta {
-        set m^.aof_sync_error = None<std::io::IoError>();
       }
     }
   }
@@ -156,7 +150,11 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
 }
 
 fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool) -> result: unit reads(store) waits {
+  doc "Ends an attempt; accepted means its manifest was published and the directory synced. A durable installation clears a saved sync error in the same Meta statement that ends the attempt, so writes are admitted again only once the new base, written from memory and synced, and its manifest are on the device. Any sync error saved while the attempt ran aborted it, through aof_rw_flush or aof_rw_switch, so an accepted attempt clears only an error saved before it started, whose lost pages the new base replaces.";
   atomic m = &store^.meta {
+    if accepted {
+      set m^.aof_sync_error = None<std::io::IoError>();
+    }
     set m^.aof_rewrite_in_progress = False();
     set m^.aof_rewrite_ok = accepted;
     set m^.aof_rewrite_retry_blocked = bnot(accepted);
@@ -273,8 +271,8 @@ fn aof_sync_counts(error: &std::io::IoError) -> counted: Bool reads(error) {
   }
 }
 
-fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, force: Bool) -> failed: Bool reads(store), writes(factory), writes(file), writes(pending), writes(clock), writes(last_sync), writes(last_append) waits {
-  doc "Take collecting bytes only after retained bytes drain; shutdown instead combines both for its one forced attempt. Publish retained length/capacity with each exchange and append result. Returns true only when this call attempted an append that did not drain or a sync whose failure counts; a deferred retry attempts nothing and is not a failure. Failed appends retry every 100 ms without client writes, the cadence at which Redis 7.0.15's event loop, woken at least hz (10) times a second by serverCron, calls flushAppendOnlyFile from beforeSleep (server.c:1660-1666) while the buffer is retained; failed syncs retry once per second while idle, deliberately unlike Redis's new-byte-dependent schedule (aof.c:1067-1089,1255-1261).";
+fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, force: Bool, healed: &Bool) -> failed: Bool reads(store), writes(factory), writes(file), writes(pending), writes(clock), writes(last_sync), writes(last_append), writes(healed) waits {
+  doc "Take collecting bytes only after retained bytes drain; shutdown instead combines both for its one forced attempt. Publish retained length/capacity with each exchange and append result. Returns true only when this call attempted an append that did not drain or a sync whose failure counts; a deferred retry attempts nothing and is not a failure. Failed appends retry every 100 ms without client writes, the cadence at which Redis 7.0.15's event loop, woken at least hz (10) times a second by serverCron, calls flushAppendOnlyFile from beforeSleep (server.c:1660-1666) while the buffer is retained; syncs run once per second while idle, deliberately unlike Redis's new-byte-dependent schedule (aof.c:1067-1089,1255-1261). A sync that succeeds, or fails with EINVAL, never clears a saved sync error, because Linux leaves the pages whose writeback failed clean and the retried sync does not write them; when no append error or retained byte remains, it sets healed so that the writer starts the recovery rewrite, whose durable installation alone clears the error. A counted failure resets healed.";
   let append_failed = False();
   atomic m = &store^.meta {
     if force {
@@ -317,9 +315,6 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pen
     set last_sync^ = reading;
     match std::fs::sync_file(factory: factory, file: file) {
       Ok(value: synced) => {
-        atomic m = &store^.meta {
-          set m^.aof_sync_error = None<std::io::IoError>();
-        }
       }
       Err(error: problem) => {
         let counted = aof_sync_counts(error: &problem);
@@ -327,14 +322,38 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, file: &WriteFile, pen
           atomic m = &store^.meta {
             set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
           }
+          set healed^ = False();
           let reason_writer_io_10 = pkg::store::RewriteAbortReason::WriterIo();
           aof_rw_abort(store: store, reason: reason_writer_io_10);
           return True();
         }
-        atomic m = &store^.meta {
-          set m^.aof_sync_error = None<std::io::IoError>();
+      }
+    }
+    let sync_saved = False();
+    let append_saved = False();
+    atomic m = &store^.meta {
+      match m^.aof_sync_error {
+        Some(..) => {
+          set sync_saved = True();
+        }
+        None() => {
         }
       }
+      match m^.aof_append_error {
+        Some(..) => {
+          set append_saved = True();
+        }
+        None() => {
+        }
+      }
+    }
+    let retained = pending^.inner.len;
+    let drained = retained == 0_u64;
+    let appended = bnot(append_saved);
+    let settled = band(appended, drained);
+    let recoverable = band(sync_saved, settled);
+    if recoverable {
+      set healed^ = True();
     }
   }
   return failed;
@@ -634,8 +653,10 @@ fn aof_rw_cut(store: &Keyspace, pending: &Box<Slots<u8>>) -> accepted: Bool read
 }
 
 fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, manual: Bool, meter: &std::process::MemoryMeter) -> continued: AofLog reads(store), writes(factory), writes(pending), writes(clock), writes(last_sync), writes(last_append), writes(meter) waits {
+  doc "One rewrite attempt, manual, automatic or recovering from a saved sync error. A sync that succeeds during the attempt does not start another recovery: write_log needs a successful sync after this attempt ends.";
   let yes = True();
   let no = False();
+  let healed_during = False();
   if log.manifest.base_sequence == 9223372036854775807_i64 {
     atomic exhausted = &store^.meta {
       set exhausted^.rewrite = pkg::store::rewrite_capture_new();
@@ -734,7 +755,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
             }
             if final_stop {
             } else {
-              let flush_failed = aof_rw_flush(store: store, factory: factory, file: &log.file, pending: pending, clock: clock, last_sync: last_sync, last_append: last_append, force: no);
+              let flush_failed = aof_rw_flush(store: store, factory: factory, file: &log.file, pending: pending, clock: clock, last_sync: last_sync, last_append: last_append, force: no, healed: &healed_during);
               if flush_failed {
                 let reason_writer_io_22 = pkg::store::RewriteAbortReason::WriterIo();
                 aof_rw_abort(store: store, reason: reason_writer_io_22);

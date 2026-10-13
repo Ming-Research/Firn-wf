@@ -16,23 +16,29 @@
 //! Redis resubmits a sync only after new bytes reach the file (aof.c:1071-
 //! 1094,1261-1267) and serverCron retries only failed writes (server.c:1447-
 //! 1457), so once writes are refused an idle Redis keeps refusing them after
-//! the device heals, as the case observes. firn retries its sync once a
-//! second while idle, the deliberate difference
-//! design/firn/append-only-file.md records, and so accepts writes again
-//! without a restart.
+//! the device heals, as the case observes. firn keeps syncing once a second
+//! while idle and recovers without a restart, the deliberate difference
+//! design/firn/append-only-file.md records.
 //!
 //! When Linux fails to write a file's dirty pages back, it leaves them clean
 //! and records the error for the next fsync of the file to report once; a
 //! later fsync that succeeds does not write those pages again. So bytes a
 //! server acknowledged before a failed sync reach the device afterwards only
 //! if a later write dirties their page (with a filesystem block smaller than
-//! a page, their block) again. In the first case the write after recovery
-//! does. The second case, aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end,
-//! pads the file so that the write acknowledged during the failure ends at a
-//! page end and the write after recovery starts on the next page, then
-//! reads what a restart finds once the filesystem is remounted. It records
-//! Redis 7.2.16's outcome as an observation and requires firn to keep every
-//! write it acknowledged.
+//! a page, their block) again. firn therefore does not take a successful
+//! sync after a failed one as recovery: it rewrites the file from memory into
+//! a new base, incremental file and manifest, and accepts writes again only
+//! once that rewrite is installed and its directory synced. Until then it
+//! keeps refusing writes with the same MISCONF and INFO keeps reporting
+//! aof_last_write_status:err. The first case also holds the recovery rewrite
+//! back, by refusing its start through maxmemory, and checks that firn keeps
+//! refusing for as long as the rewrite cannot run. The second case,
+//! aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end, pads the file
+//! so that the write acknowledged during the failure ends at a page end and
+//! the write after recovery starts on the next page, where no later write
+//! dirties the failed page again, then reads what a restart finds once the
+//! filesystem is remounted. It records Redis 7.2.16's outcome as an
+//! observation and requires firn to keep every write it acknowledged.
 //!
 //! The cases are ignored in `make check`, which has no such device; the
 //! `aof-sync-fault` job of .github/workflows/check.yml makes it and runs both
@@ -49,8 +55,10 @@ const POLL_LIMIT: Duration = Duration::from_secs(10);
 /// Two of firn's and Redis's once-a-second syncs and a margin, so the seed is
 /// on the device before it fails.
 const SETTLE: Duration = Duration::from_millis(2500);
-/// How long Redis is watched still refusing after the device heals: three of
-/// firn's idle sync retries.
+/// How long Redis is watched still refusing after the device heals, and firn
+/// while its recovery rewrite cannot start: three of firn's once-a-second
+/// syncs, each of which succeeds once the device heals and so starts another
+/// recovery attempt.
 const IDLE_WATCH: Duration = Duration::from_secs(3);
 const MISCONF: &str = "-MISCONF Errors writing to the AOF file: ";
 /// The persistence fields a failed sync sets or must leave as they were, the
@@ -153,6 +161,30 @@ fn wait_status(client: &mut TcpStream, expected: &str) -> String {
         assert!(Instant::now() < deadline, "wanted AOF status {expected} with nothing buffered: {info}");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Waits until firn has recovered from the failed sync, checking on every
+/// INFO sample that it does not report the AOF healthy while a rewrite is
+/// still running: the recovery rewrite clears the saved error in the same
+/// metadata statement that ends it, so a server that accepted writes again
+/// before its new files were installed would show both.
+fn wait_recovered(client: &mut TcpStream, route: &str) -> String {
+    let deadline = Instant::now() + POLL_LIMIT;
+    loop {
+        let info = persistence(client);
+        let healthy = info_field(&info, "aof_last_write_status").as_deref() == Some("ok");
+        let rewriting = info_field(&info, "aof_rewrite_in_progress").as_deref() == Some("1");
+        assert!(!(healthy && rewriting), "{route}: writes accepted again before the recovery rewrite ended: {info}");
+        if healthy && info_field(&info, "aof_buffer_length").as_deref() == Some("0") {
+            return info;
+        }
+        assert!(Instant::now() < deadline, "{route}: no recovery: {info}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn count(info: &str, name: &str) -> u64 {
+    info_field(info, name).unwrap_or_else(|| panic!("INFO lacks {name}: {info}")).parse().unwrap()
 }
 
 /// The branch a server took for the write made once the device failed, named
@@ -279,15 +311,19 @@ fn redis_failure(device: &Device) -> Failure {
 
 /// (a) firn refuses writes and PING with Redis's MISCONF while answering
 /// reads as Redis does; (b) its INFO reports the failure with Redis's
-/// fields; (c) it accepts writes again once the device heals, with no
-/// restart and no client write to prompt it; (d) everything it acknowledged
-/// is in the file a restart reads from the device.
+/// fields; (c) once the device heals it keeps refusing writes for as long as
+/// its recovery rewrite cannot start, here because maxmemory 1 refuses the
+/// rewrite's admission; (d) it accepts writes again once that rewrite is
+/// installed, with no restart and no client write to prompt it; (e)
+/// everything it acknowledged is in the file a restart reads from the
+/// device.
 ///
-/// (d) reads after a remount, so only what reached the device counts. The
-/// write acknowledged while the device was failing reaches it only because
-/// the write after recovery dirties the same page again: Linux leaves the
-/// pages whose writeback failed clean, so firn's successful retry alone
-/// would not rewrite them. The page-end case below takes that write away.
+/// (c) is what a server that took its successful retried sync as recovery
+/// fails: its sync succeeds within a second of the heal, so it would accept
+/// writes during the watch. (e) reads after a remount, so only what reached
+/// the device counts. Here the write after recovery would also dirty the
+/// page of the write acknowledged during the failure again; the page-end
+/// case below takes that rescue away.
 #[test]
 #[ignore = "needs the faulty device the aof-sync-fault job of .github/workflows/check.yml makes"]
 fn aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device() {
@@ -316,11 +352,42 @@ fn aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device() {
         let info = persistence(&mut client);
         assert_eq!(info_field(&info, "firn_aof_rewrite_abort_reason").as_deref(), Some(""),
             "{route}: (b) a failed sync with no rewrite running aborts none: {info}");
+        let rewrites = count(&info, "aof_rewrites");
+        // maxmemory 1 refuses every rewrite's admission (R plus its headroom
+        // exceeds it) without touching a key: the policy stays noeviction,
+        // and PING and DEL are not DENYOOM, so they meet MISCONF, not OOM.
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory", "1"]), "+OK\r\n", "{route}");
+        let misconf = &redis.refused[0];
         device.run("heal");
-        let recovered = wait_status(&mut client, "ok");
-        assert_eq!(info_field(&recovered, "aof_buffer_length").as_deref(), Some("0"), "{route}");
-        assert_eq!(memory_request(&mut client, &["SET", "after", "p"]), "+OK\r\n", "{route}: (c) writes accepted again");
-        assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n", "{route}: (c)");
+        let deadline = Instant::now() + POLL_LIMIT;
+        loop {
+            let info = persistence(&mut client);
+            assert_eq!(info_field(&info, "aof_last_write_status").as_deref(), Some("err"),
+                "{route}: (c) no recovery before its rewrite: {info}");
+            if info_field(&info, "firn_aof_rewrite_abort_reason").as_deref() == Some("admission") {
+                assert_eq!(info_field(&info, "aof_last_bgrewrite_status").as_deref(), Some("err"), "{route}: {info}");
+                assert_eq!(info_field(&info, "aof_rewrite_in_progress").as_deref(), Some("0"), "{route}: {info}");
+                assert_eq!(count(&info, "aof_rewrites"), rewrites, "{route}: a refused start is not a rewrite: {info}");
+                break;
+            }
+            assert!(Instant::now() < deadline, "{route}: the healed sync started no recovery rewrite: {info}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let watch = Instant::now() + IDLE_WATCH;
+        while Instant::now() < watch {
+            assert_eq!(&memory_request(&mut client, &["PING"]), misconf, "{route}: (c) PING refused while recovery cannot run");
+            assert_eq!(&memory_request(&mut client, &["DEL", "k1"]), misconf, "{route}: (c) DEL refused while recovery cannot run");
+            let info = persistence(&mut client);
+            assert_eq!(info_field(&info, "aof_last_write_status").as_deref(), Some("err"), "{route}: (c) {info}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory", "0"]), "+OK\r\n", "{route}");
+        let recovered = wait_recovered(&mut client, route);
+        assert_eq!(info_field(&recovered, "aof_last_bgrewrite_status").as_deref(), Some("ok"), "{route}: (d) {recovered}");
+        assert_eq!(info_field(&recovered, "firn_aof_rewrite_abort_reason").as_deref(), Some(""), "{route}: (d) {recovered}");
+        assert!(count(&recovered, "aof_rewrites") > rewrites, "{route}: (d) recovery rewrote the file: {recovered}");
+        assert_eq!(memory_request(&mut client, &["SET", "after", "p"]), "+OK\r\n", "{route}: (d) writes accepted again");
+        assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n", "{route}: (d)");
         stop(&mut client, child);
         device.run("remount");
         let (child, mut client) = start_firn(&program, native);
@@ -331,7 +398,7 @@ fn aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device() {
             (&["GET", "during"][..], during), (&["GET", "after"][..], "$1\r\np\r\n"),
             (&["EXISTS", "n"][..], ":0\r\n"),
         ] {
-            assert_eq!(memory_request(&mut client, command), expected, "{route}: (d) {command:?} after a restart");
+            assert_eq!(memory_request(&mut client, command), expected, "{route}: (e) {command:?} after a restart");
         }
         stop(&mut client, child);
     }
@@ -403,6 +470,18 @@ fn on_disk(incremental: &Path) -> u64 {
     std::fs::metadata(incremental)
         .unwrap_or_else(|error| panic!("the incremental file {}: {error}", incremental.display()))
         .len()
+}
+
+/// The incremental file the manifest in `directory`'s appendonlydir names
+/// last. firn's recovery rewrite moves appends to a new one and removes the
+/// file the failure happened in.
+fn active_incremental(directory: &Path) -> PathBuf {
+    let directory = directory.join("appendonlydir");
+    let manifest = std::fs::read_to_string(directory.join("sync.aof.manifest")).expect("the manifest");
+    let name = manifest.lines().rev().find(|line| line.ends_with(" type i"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or_else(|| panic!("no incremental file in the manifest {manifest:?}"));
+    directory.join(name)
 }
 
 /// The value of `SET pad VALUE` whose record, appended to a file of `size`
@@ -558,15 +637,18 @@ fn firn_page_end(device: &Device, native: bool) -> PageEnd {
     let (child, mut client) = start_firn(&program, native);
     let (during, layout, pad) = fail_at_page_end(device, &mut client, &incremental, server);
     device.run("heal");
-    wait_status(&mut client, "ok");
-    let before = on_disk(&incremental);
+    wait_recovered(&mut client, server);
+    // Recovery rewrote the file, so AFTER goes to the incremental file the
+    // new manifest names.
+    let active = active_incremental(program.working_directory());
+    let before = on_disk(&active);
     let after = memory_request(&mut client, AFTER);
     // The periodic sync, not the one at shutdown, carries AFTER to the
     // device, so a lost DURING cannot be blamed on the stop.
     std::thread::sleep(SETTLE);
     wait_status(&mut client, "ok");
-    eprintln!("layout: {server} the write after recovery took the file from {before} to {} bytes",
-        on_disk(&incremental));
+    eprintln!("layout: {server} recovery moved appends from {} to {}; the write after recovery took it from {before} to {} bytes",
+        incremental.display(), active.display(), on_disk(&active));
     stop(&mut client, child);
     device.run("remount");
     let (child, port) = spawn_firn(&program, native);
@@ -576,7 +658,7 @@ fn firn_page_end(device: &Device, native: bool) -> PageEnd {
 
 /// A write acknowledged while the device fails, whose record ends exactly
 /// at a page end, is in the file a restart reads from the device once the
-/// device has healed, the server has synced again and a later write has
+/// device has healed, the server has recovered and a later write has
 /// started on the next page.
 ///
 /// Linux leaves the pages whose writeback failed clean and reports the
@@ -585,7 +667,9 @@ fn firn_page_end(device: &Device, native: bool) -> PageEnd {
 /// the same page (or filesystem block) brings their bytes to the device. In
 /// the case above AFTER dirties DURING's page; here the seed is padded so
 /// that DURING's record ends at a page end and AFTER starts on the next
-/// page, which leaves DURING's page as the failed writeback left it. The
+/// page, which leaves DURING's page as the failed writeback left it, so the
+/// file the failure happened in has lost DURING and only firn's recovery
+/// rewrite, which writes DURING from memory into a new base, keeps it. The
 /// case then stops the server, remounts so that only what reached the
 /// device counts, restarts it and reads every key.
 ///
