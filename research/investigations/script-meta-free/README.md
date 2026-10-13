@@ -3,7 +3,7 @@
 Board item: `firn-script-meta-free`, step 2 of the owner's two-step study.
 This is research, not an implementation or an approved replacement design.
 
-**Source-read.** Baseline: the worktree's `origin/main` and HEAD both resolve to
+**Source-read.** Server baseline: the worktree's `origin/main` resolves to
 `e91c4887f84a672ce61c9108bb6ef5932e2fac55`. All Firn `file:line` anchors below
 refer to that revision, not the older revisions cited by the related studies.
 The remote freshness check failed because this environment could not resolve
@@ -28,27 +28,36 @@ expiry, memory, error and persistence contracts? Does removing the full-attempt
 hold materially improve the real scripted limiter, or merely move waiting to
 another shared resource?
 
-Compare the same engine-pool source with its existing early Meta use against a
-candidate whose Lua path takes no Meta until a semantically necessary read or
-final publication. Use the same compiler, Halo, workload, settings and machine,
-plus an independently built twin of the baseline. Distinguish AOF off, AOF on,
-and AOF rewrite; an AOF-off gain does not answer the AOF-on question.
+Compare the same engine-pool source with its existing early Meta use against
+the specific candidate selected for each AOF cell below. Use the same compiler,
+Halo, workload, settings and machine, plus an independently built twin of the
+baseline. An AOF-off gain does not answer the AOF-on question.
 
-Prediction: with disjoint keys on two physical cores, the pooled baseline
-spends at least 20% of summed in-server script residence time waiting for Meta;
-a fully commit-only candidate halves that fraction, improves throughput
-by at least 10% beyond the twin/spread threshold defined below, and regresses
-neither one-core throughput nor p99 by more than that threshold. These are
-proposed decision thresholds, not estimates derived from existing measurements.
+**Source-read.** The primary limiter script begins with a WRITE:
+`redis.call('set', KEYS[1], 0, 'EX', ARGV[2], 'NX')`
+(`research/experiments/redis-bench/workload/src/limiter.rs:21`). Option A's live
+disk check therefore takes Meta at the first redis.call when AOF is on and
+holds it through essentially the entire script. Removing sequence/capture
+setup before that call frees no substantial read prefix in this workload.
 
-Reject the performance premise if the Meta fraction is below 20%, if a
-repeatable throughput gain fails the 10% threshold outside noise, or if the
-queue is simply replaced by engine, key, allocator or commit waiting without
-the required end-to-end gain. A noisy result is inconclusive. Reject the
-unqualified correctness proposal on any reply, accepted-effect, recovery or
-capture counterexample, or if it requires weakening an existing contract.
-The source study already rejects the claim that moving two setup calls alone
-makes every script's execution Meta-free: first-WRITE disk admission remains.
+**Judgment; predictions by option.** Option D, the AOF-off-only change, is
+predicted to improve the two-core limiter's throughput by more than max(10%, N),
+where N is the twin/spread noise bound defined below, without one-core throughput
+or p99 regressions exceeding N. It predicts no AOF-on gain because that path is
+unchanged. Option A is predicted to gain about nothing on this AOF-on limiter;
+its AOF-off result has the same gain criterion as D. Only option B, after a
+live-health contract permits staying Meta-free past first WRITE, has the proposed
+AOF-on throughput-gain criterion. These are unmeasured predictions, not results.
+
+For cells that predict a gain, a repeatable throughput gain failing
+max(10%, N), or a regression exceeding N, rejects the performance premise.
+Meta wait share is attribution evidence, not an acceptance threshold: a
+two-core pooled baseline can approach 50% simply from serialization, so “at
+least 20%” would not distinguish useful proposals. Moving waiting elsewhere
+without the required end-to-end gain also rejects the premise. A noisy result
+is inconclusive. Any reply, accepted-effect, recovery or capture discrepancy
+rejects the correctness proposal. AOF-on results near baseline for A and D
+are expected controls, not evidence of AOF-on Meta-free execution.
 
 ## Governing decisions and scope
 
@@ -76,17 +85,24 @@ demonstrates simultaneous Lua execution.
 **Source-read.** Following the kit's
 [language-reading procedure](../../../whitefoot-kit/downstream.md#reading-the-language),
 the pinned [SHARE-2/3 rules](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2322-L2363)
-and [writing guide](../../../whitefoot-kit/docs/writing.md#how-do-i-lock-an-object-only-on-paths-that-use-it)
-support the runtime team's reported answer. One keys-plus-Meta statement is
-expressible. Key-set targets acquire early; the later Meta type group can
+permit the runtime team's reported answer. One keys-plus-Meta statement is
+expressible; SHARE-3's last sentence permits holding fewer states where outcomes
+remain equivalent to exclusive execution. The following acquisition timing is
+**current-compiler policy**, documented in the
+[writing guide, lines 1664-1752](../../../whitefoot-kit/docs/writing.md#how-do-i-lock-an-object-only-on-paths-that-use-it),
+rather than a mandatory timing rule of the specification: key-set targets
+acquire early; the later Meta type group can
 acquire at its first use and remains held to statement end. Helper footprints,
 a later type group or a target-free guard can force acquisition early. Header
-order is not lock order. Nested atomic statements and waiting calls inside
-the block are forbidden. The actual refactor needs the CI lock ledger;
-source acceptance alone does not prove acquisition timing.
+order is not lock order under this policy. The actual refactor needs the CI
+lock ledger; source acceptance alone does not prove acquisition timing.
+
+**Source-read; SHARE-2 requirement.** Nested atomic statements and waiting
+calls inside the block are forbidden, independently of acquisition policy.
 
 **Source-read.** More specifically, the pinned compiler's
-[`expression_bindings` and `take_units_for`](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/lowering/builder/atomic.rs#L947-L970)
+[`expression_bindings`, lines 947-970](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/lowering/builder/atomic.rs#L947-L970)
+and [`take_units_for`, lines 399-421](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/compiler/src/lowering/builder/atomic.rs#L399-L421)
 count a bare target binding passed as a call argument as a use before that
 call. Passing `m` to the Lua execution helper therefore takes Meta even if a
 particular callback path never reads a field. The execution interface itself
@@ -121,6 +137,7 @@ Classification:
 | Both attempt entries `entry.wf:504-505,571-572`; `store/sequence.wf:1-10` | Reads `commit_seq`, `aof_rewrite_seq_exhausted`, `rewrite.active/limit/used/start`, `log.inner.len`. | **(a)** replace early snapshot with local mutation tracking, then construct a fresh commit token. Reusing this snapshot after concurrent commits is wrong. |
 | `store/store.wf:544-550`, called at those entries | `rewrite.rotating/limit/used` initialize LogBudget. | **(a)** initialize just before final append, against the current rotation and reserve. |
 | Callback propagation `entry.wf:265-347,529,605`; `commands/script.wf:2033,2130-2168` | Whole callback has `writes(meta)`; narrow callback declares reads of disk-error fields. Passing the target into the call exposes this footprint before dynamic admission. | **(a)** remove bookkeeping Meta arguments from execution; **(b)** retain a real first-WRITE health boundary. Merely moving explicit field reads does not prove the callback avoids the lock. |
+| Whole-mode finite dispatch `commands/script.wf:1546-1561` | `held_run` passes `due: &meta^.due` to every finite `held_entries_run` call. Expiry creation/transfer therefore writes the shared queue during Lua in whole-map fallback; it is not staged as in narrow mode. | **(a)** give whole mode a local expiry queue too, then apply insertions at accepted commit. Remove this borrowed Meta descendant from the ordinary execution boundary even for commands that queue nothing. Whole FLUSH must stage an ordered reset plus later insertions. |
 | First accepted WRITE admission `commands/script.wf:2069-2084`; `commands/admission.wf:35-44`; `store/store.wf:553` onward | Reads `aof_append_error`, `aof_sync_error`, `aof_append_partial`, including error selection. Later accepted WRITEs bypass it via local WRITE_DIRTY. | **(b)** when AOF is enabled. It changes a call exception/pcall result before Lua continues. AOF off has no writer and can use the known healthy condition without Meta; this is an explicit configuration fact, not a stale snapshot. |
 | OOM command check `commands/script.wf:2076-2084`; `entry.wf:439,492` | Local `pre_command_oom` and WRITE_DIRTY only. | **(c)** preserve the original captured OOM state across retries; no per-redis.call memory measurement or eviction. |
 | All mutation helpers `store/sequence.wf:28-99,126-190`; `store/rewrite-capture.wf:59-167` | Entry stamps and local WriteSequence fields/images; their initial values currently came from Meta. | **(a)** track actual mutations independently of the eventual sequence. Assign final stamps/capture at commit. Do not use an inert token as the mutation detector. |
@@ -151,7 +168,7 @@ accounts for additional family-specific work. Anchors in this table are in
 | HSET, HMSET, HSETNX, HGET, HMGET, HDEL, HEXISTS, HSTRLEN, HLEN, HGETALL, HKEYS, HVALS, HINCRBY, HINCRBYFLOAT, HRANDFIELD | `2709-3075` | **(a)** effects/stamps only. Random-field/access draws use client-local random state, not Meta.random. |
 | LPUSH, RPUSH, LPUSHX, RPUSHX, LPOP, RPOP, LRANGE, LLEN, LINDEX, LSET, LREM, LTRIM, LINSERT, LPOS, LMOVE, RPOPLPUSH | `3077-3405`; dispatch `1564-2030` | **(a)** effects/stamps, including both move operands; no direct Meta field. These are the nonblocking admitted forms. |
 | SADD, SREM, SPOP, SCARD, SMEMBERS, SISMEMBER, SMISMEMBER, SRANDMEMBER, SMOVE, SINTER, SUNION, SDIFF, SINTERCARD, SINTERSTORE, SUNIONSTORE, SDIFFSTORE | `3407-3673` | **(a)** effects/stamps. SPOP selects through client.random (`firn/commands/sets.wf:1394` onward), not Meta.random despite Meta's older field description. Stores hold every source and destination. |
-| ZADD, ZINCRBY, ZREM, ZPOPMIN/MAX, ZCARD, ZSCORE, ZMSCORE, ZRANK/ZREVRANK, ZRANGE and reverse/score/lex variants, ZCOUNT, ZLEXCOUNT, ZREMRANGEBYRANK/BYSCORE/BYLEX | `3674-4018` | **(a)** effects/stamps; scores, members and reply errors are entry/local calculations. No direct Meta field. |
+| ZADD, ZINCRBY, ZREM, ZPOPMIN/MAX, ZCARD, ZSCORE, ZMSCORE, ZRANK/ZREVRANK, ZRANGE and reverse/score/lex variants, ZCOUNT, ZLEXCOUNT, ZREMRANGEBYRANK/BYSCORE/BYLEX | `3674-4010` | **(a)** effects/stamps; scores, members and reply errors are entry/local calculations. No direct Meta field. |
 | OBJECT supported subcommands | `434`, plus `firn/commands/object.wf` | **(c)** entry access metadata and client memory-policy snapshot; lazy expiry takes the common **(a)** path. No Meta statistics read. |
 | PING, ECHO, TIME, SELECT, implemented COMMAND forms | `held_entries_run:1564-2030`, especially `2018-2029` | **(c)** client/input/table data. TIME uses the captured client clock; no Meta. Script PING does not run network PING's outer disk admission. |
 | FLUSHALL, FLUSHDB | `1525-1529`; `firn/commands/server.wf:159-188` | Whole-map fallback. **(a)** clear due queue and publish flush/capture-abort with effects at commit; preserve eligibility invalidation semantics. Whole-map locking already prevents disjoint-key concurrency. |
@@ -217,10 +234,13 @@ single-threaded Redis history. The qualifications below are part of the result.
 4. Done **and Lua Error** accept preceding effects. Only internal abandonment
    rolls back, restoring entries, access and last-write stamps, client reply
    position/random state and engine-visible state before releasing keys.
-5. While keys are still held, one Meta acquisition assigns one sequence to an
-   actual mutating statement, stamps surviving changed entries, captures final
-   images/tombstones if required, appends its entire effects block, applies due
-   changes and publishes counters. No sequence/capture is published for aborts.
+5. With AOF on, while keys are still held, one Meta acquisition assigns one
+   sequence to an actual mutating statement, stamps surviving changed entries,
+   captures final images/tombstones if required and appends its entire effects
+   block. With AOF off, use an inert token, with no sequence or capture publication
+   and zero final write stamps. In either mode, apply staged expiry/reset changes
+   in the same statement before releasing keys; Meta need not be used at all if
+   no shared metadata operation is needed. Abandonment publishes none of these.
 6. Plain writes, EXEC, expiry/eviction and writer cuts preserve that same
    publication invariant. No write releases keys and later queues its AOF.
 7. Replies are buffered until the accepted statement completes; reads cannot
@@ -229,19 +249,31 @@ single-threaded Redis history. The qualifications below are part of the result.
 8. Time, memory-policy/OOM inputs and shared Lua library/random state obey
    their explicitly approved contracts. Engine pooling must settle its shared
    Lua state; separate engines alone do not make scripts independent.
-9. AOF health is checked at the first accepted WRITE under an approved live
-   observation contract. Today this premise acquires Meta then and keeps it;
-   full commit-only acquisition cannot simply assume it away.
+9. With AOF on, health is checked at the first accepted WRITE under an approved
+   live observation contract. Today this acquires Meta then and keeps it;
+   full commit-only acquisition cannot simply assume it away. With AOF off,
+   health is known from immutable startup configuration and needs no Meta read.
 
-**Judgment, from premises 1-9 and SHARE-3.** Order accepted mutating statements
-by Meta publication. Conflicting key operations cannot pass an earlier holder;
-independent dataset operations commute. Read-only statements can be inserted
-at their atomic points. A client that reads A's write then invokes B cannot
-put B's record before A's, because A's publication preceded release/observation.
-This covers cross-key causality through reads, not merely per-key log ordering.
-Each complete execution-unit prefix replays a permitted state in that order;
-MULTI/EXEC framing preserves multi-effect units at truncation. This proves no
-new durability guarantee beyond the existing AOF policy.
+**Source-read / judgment, from premises 1-9 and SHARE-3.** SHARE-3 supplies one
+effect point per atomic statement and one total order of shared effects,
+including statements that acquire their targets lazily and AOF-off scripts
+that never acquire Meta. All target reads and writes of an accepted attempt
+take effect at that single point. Conflicting entry observations therefore
+fit that order; independent dataset operations can commute. An abandoned
+attempt restores its state before completion and contributes no surviving
+dataset transition. This reasoning does not derive the dataset order from
+the presence of a metadata object.
+
+**Judgment.** With AOF on, Meta's publication order orders log appends, sequence
+allocation and capture cuts. Because each append and its entry changes belong
+to the same atomic statement, that order agrees with the restriction of
+SHARE-3's total order to the logged mutations. A client that reads A's write
+then invokes B cannot put B's record before A's: the shared-effect order respects
+completed-before-begun effects and the causal read. This covers cross-key
+causality, not merely per-key log ordering. Each complete execution-unit prefix
+replays a permitted state in that order; MULTI/EXEC framing preserves units at
+truncation. AOF-off scripts need no log-order proof or Meta sequence to retain
+their atomic dataset transition. No new durability guarantee follows.
 
 ### Time and expiry: what the proof does and does not say
 
@@ -320,7 +352,9 @@ expiry, sequence, random-state or capture deltas from the abandoned attempt.
 
 ### AOF rewrite capture
 
-**Judgment.** A script need not inspect capture state while interpreting Lua.
+**Judgment; A/B only.** This AOF-on redesign is unnecessary for D, which keeps
+the logged path unchanged. A script need not inspect capture state while
+interpreting Lua.
 Track its changed entries locally; at commit inspect the current capture state
 under Meta, construct one fresh token and capture final replacements, including
 deletion. Scripts retain image capture, even for one declared key; this proposal
@@ -360,12 +394,14 @@ Lua computation may nevertheless benefit from moving bookkeeping out of its
 hold; this study must measure that rather than reuse a plain-SET conclusion.
 
 SET/MSET and every writer need only preserve premises 5-7 while scripts change.
-Shared command parts must expose mutation/effect information without depending
-on an already assigned sequence; ordinary callers can retain their existing
-token wrapper. Do not convert all callers to inert tokens or defer plain AOF
-publication past key release. Coordinate any changed token/capture contract
-with the plain-command owner; EXEC uses `held_run` and must remain correct too.
-No new plain-command benchmark or duplicate redesign belongs here.
+Option D reuses the already owned AOF-off inert-token behavior and needs no
+general sequence/capture redesign. Options A/B require shared command parts
+to expose mutation/effect information without depending on an already assigned
+sequence; ordinary callers can retain their existing token wrapper. Do not
+convert logged callers to inert tokens or defer plain AOF publication past key
+release. Coordinate changed token/capture contracts with the plain-command
+owner; EXEC uses `held_run` and must remain correct too. No new plain-command
+benchmark or duplicate redesign belongs here.
 
 ## Whitefoot needs and minimal witnesses
 
@@ -448,7 +484,9 @@ order. A later recovery can be observed; an accepted WRITE prevents inappropriat
 later refusal; error/cell state cannot tear; no partial dataset is observable.
 Test failure and recovery races with pcall and plain commands in CI. There is
 no compiler output or diagnostic from this investigation. This is a semantic
-request candidate, not a confirmed new missing API or a filed request.
+request candidate, not a confirmed new missing API. It is needed only for an
+option that keeps AOF-on scripts Meta-free past first WRITE, such as B; A and D
+retain the existing AOF-on first-WRITE check.
 
 **Source-read.** This tempting fragment is forbidden by SHARE-2, rather than a
 solution (illustrative fragment; no diagnostic was run):
@@ -506,29 +544,77 @@ publish that accepted-WRITE state during execution.
 **Source-read / judgment.** Per the kit's downstream gap rules, Whitefoot owns
 any language/runtime fix; Firn keeps semantic witnesses and verifies the pinned
 fix in CI. No workaround, native shim or silent contract weakening is proposed.
-No board connector is available in this session, so no new request/card has
-been filed; the proposed request and fairness follow-up remain dispositions
-for `firn-script-meta-free`, not falsely reported board actions.
 
 ## Owner options
 
-**Judgment.** The decision is whether to pursue fully commit-only Meta access
-for AOF-enabled scripts now, or first establish the smaller improvement with
-the present live-check boundary. No choice is made by this document.
+**Source-read.** AOF-off service cannot start a rewrite
+(`firn/commands/aof-rewrite.wf:14-18`), and CONFIG SET cannot change whether
+AOF is enabled (`commands/server.wf:862,930-938`). Plain commands already use
+`sequence_inert()` on the unlogged path (`commands/keys.wf:373-390`). This
+configuration therefore needs no new commit sequence, log budget or capture
+representation for script execution.
+
+**Judgment.** D still needs to remove `m` and `&m^.due` from unlogged ordinary
+command dispatch and stage expiry/reset work in whole mode as well as narrow
+mode. Keep the existing private effect records/counts used to detect actual
+writes even with AOF off: `sequence_inert()` never sets `taken`, so replacing
+the token alone would lose part of the attempt's written-state detection.
+These changes do not require the AOF-on final-image capture redesign.
+
+**Source-read.** The deployment-performance workload inventory
+(`research/investigations/deployment-performance/README.md:192-205`) includes
+one measured Lua workload, the immediate-WRITE limiter, plus rate-limiter and
+Django transactions and session SET/GET. Its client loads exactly that limiter
+source (`redis-bench/workload/src/main.rs:301-304`). None of these inspected
+workloads has a long Lua read prefix before first WRITE. Other recorded consumer
+test scripts have not all been retrieved; this is a conclusion about the
+selected deployment workloads, not every possible application.
+
+**Judgment.** General AOF-on sequence/capture redesign while retaining the
+first-WRITE hold (A) would need an application with substantial Lua/read work
+before that WRITE to justify its cost. No selected workload currently supplies
+that reason. A synthetic prefix may verify the mechanism but cannot substitute
+for application benefit. The choice is therefore between a small AOF-off study,
+resolving the stronger AOF-on contract, and waiting for pooled evidence.
 
 | Option | Deliverable / what it unblocks | Cost and risk |
 |---|---|---|
-| **A — Stage metadata, retain necessary live checks; recommended** | Refactor expiry/effects/sequence/capture publication after engine pooling, retaining Meta from first WRITE where required. AOF-off finite scripts can avoid the execution hold; AOF-on scripts can at best avoid it before first WRITE. Obtain the attribution measurements and pursue the health request openly. | Moderate Firn/interface/design work and capture validation. Early-WRITE scripts may gain little; this is explicitly **not completion of the full Meta-free target**. No snapshot workaround or omitted failure behavior. |
+| A — General staged metadata, retain live checks | Refactor expiry/effects/sequence/capture publication after pooling, retaining Meta from first WRITE with AOF on. Frees a substantial pre-WRITE prefix if a workload has one. | Moderate interface/design work, new mutation tracking and final-image/reserve validation. Expected AOF-on limiter gain is about zero; no selected deployment workload currently justifies this redesign solely for prefix concurrency. Not recommended now. |
 | B — Resolve the full observation contract first | Whitefoot/Firn joint design for live persistence status, plus an explicit ruling on the timed-history claim and accepted memory exception, before implementing commit-only AOF-on execution. | Larger, uncertain language/semantic scope; strongest concurrency target, but no existing API/diagnostic proves its final shape. May uncover a fundamental shared dependency rather than an optimization. |
-| C — Keep full-attempt Meta and measure only after pooling | A clean measured baseline with no token/capture refactor yet. | Lowest immediate change cost; retains long-script serialization and delays the scaling experiment. Appropriate if the baseline falsifies the 20% queueing prediction. |
+| C — Keep full-attempt Meta and measure only after pooling | A clean pooled baseline with no token/capture refactor yet. | Lowest immediate change cost; retains script serialization. Prefer if D's end-to-end throughput comparison rejects its benefit. |
+| **D — AOF-off-only execution change; recommended** | Use an inert token, no outer AOF log budget, the known-healthy disk condition, and local expiry staging in both attempt modes. Acquire Meta at accepted `attempt_due_commit` only when expiry/reset work exists; finite attempts without it take no Meta. Keep AOF-on execution unchanged. | Small configuration-scoped script/command-interface change, with rollback and expiry-publication cases. Retain local actual-effect tracking: an inert sequence never sets `taken`. Whole-map RANDOMKEY keeps its existing shared draw; whole FLUSH stages its queue reset. No capture/sequence redesign, live-health API or AOF-on gain claim. |
 
-**Judgment; confidence 4/5 in A as the next bounded step, not in its speedup.**
-The source identifies removable bookkeeping and a necessary first-write
-decision, while a same-statement commit needs no new nesting capability.
-Low Meta queueing, dominant first-WRITE suffix cost, capture overhead or an
-unresolved semantic witness would favor C or B. Approval of A must retain the
-full target as unfinished and record the live-status need, not close the item
-on an AOF-off-only result.
+**Judgment; confidence 4/5 in D as the next bounded step, not in its speedup.**
+The immutable AOF-off configuration eliminates the health/capture dependencies,
+and existing inert-token semantics supply the sequence behavior. The limiter's
+immediate WRITE means A offers no supported AOF-on application advantage over
+D while requiring more design work. B remains the route to the full AOF-on
+target; it need not block D's independent experiment. If D fails its throughput
+criterion, prefer C and reassess the measured costs. D does not complete the
+AOF-on portion of `firn-script-meta-free`.
+
+### Design decisions retained or replaced by each option
+
+**Source-read for existing commitments; judgment for proposed dispositions.**
+The [script node](../../../design/firn/scripts.md) contains three relevant
+decisions: line 7 combines declared entries with full-attempt Meta and specifies
+undeclared-key abandonment/whole retry; line 11 keeps Meta throughout the
+correctness step and specifies budget retry behavior; line 29 requires held-Meta
+first-WRITE admission and grounds its live observation in the full-attempt hold.
+
+| Option | Declared-key/Meta decision (line 7) | Interpreter-hold decision (line 11) | First-WRITE health decision (line 29) |
+|---|---|---|---|
+| A | Replace the full-attempt Meta clause with acquisition at necessary first use; immutable declarations, abandonment and sticky whole retry still stand. | Replace full-interpreter Meta lifetime; budget/actual-effect retry rules still stand. | First-WRITE boundary, MISCONF call/pcall behavior and WRITE_DIRTY bypass still stand. The health equivalence stands on different grounds: live acquisition at first WRITE, then the retained hold; replace the full-attempt ground. |
+| B | Replace Meta lifetime with commit-only acquisition; declaration/fallback rules still stand. | Replace full-interpreter Meta lifetime; retain budget/actual-effect retry rules. | Replace “checks held Meta” and “needs no separate changing-status channel.” Retain observable first-WRITE/error/bypass behavior, justified by the newly approved independent observation contract. |
+| C | Keep the entire decision. | Keep the entire decision. | Keep the entire decision and its ground. |
+| D | Narrow the full-attempt Meta clause to AOF-on execution; declaration/fallback rules still stand in both modes. | Narrow the full-interpreter hold to AOF on; AOF-off expiry/reset publication remains inside the same key statement. Retry rules still stand. | Keep the AOF-on decision and its full-attempt ground. Explicitly use immutable AOF-off known health without a shared read; no changing-status channel is needed there. |
+
+**Judgment.** A/B also replace the sequence node's token-initialization/stamping
+contract and the capture node's per-command coalescing/reservation contract as
+described above. D keeps their AOF-on decisions and reuses the existing
+AOF-off inert/zero-stamp decision; C keeps both nodes unchanged. All options
+retain frozen time, error-prefix writes, memory admission and expiry semantics.
+These dispositions are proposals; this investigation edits no design tree.
 
 ## Measurement and correctness plan — do not run locally
 
@@ -569,10 +655,13 @@ available by virtue of this plan.
 
 ### Workload cells and comparison
 
-Use three arms: pooled baseline B; independently rebuilt same-source twin T;
-candidate C, all with the same pin. If a runtime fix is required, first compare
-same-source B/T on that runtime; do not attribute the compiler change to Firn.
-Interleave B,T,C and C,T,B per round, rotating the first arm between rounds.
+Use three arms in each selected comparison: `baseline`, the pooled source with
+existing full-attempt Meta; `twin`, an independent build of that same source;
+and the explicitly named option candidate, all with the same pin. These arm
+names are distinct from owner-option letters. If a runtime fix is required,
+first compare same-source baseline/twin on that runtime; do not attribute the
+compiler change to Firn. Interleave baseline,twin,candidate and
+candidate,twin,baseline per round, rotating the first arm between rounds.
 
 Primary workload: the existing `limiter-script` application script, random
 100,000-key domain, 8 and 50 connections, pipeline depth 1, 1 and 2 physical
@@ -582,12 +671,25 @@ as a negative control; identical finite Lua computation before versus after
 first WRITE; expiry on every write; error after a write; and an undeclared-key
 fallback. These are workload inputs, never server-selected code paths.
 
-Run AOF off and on as separate cells; AOF on must use the normal recorded
-fsync policy and a real file. Existing workload-image mode must be extended
-and verified if it cannot enable AOF; never label its AOF-off result AOF-on.
-Add rewrite-active cells with the same dataset and script, documenting scan
-progress and complete/aborted capture. Use a fixed finite memory limit well
-above the primary workload's use; add near-limit correctness cells separately.
+The primary limiter's first call is the SET WRITE cited above. Select candidates
+and expectations per persistence cell, before running it:
+
+| AOF cell | Candidate actually compared with baseline/twin | Registered limiter prediction |
+|---|---|---|
+| Off; recommended next experiment | **D (`off-only`)** | Two-core throughput gain greater than max(10%, N); one-core throughput and p99 regression no greater than N. Meta remains needed only for expiry publication in this script. |
+| On, no rewrite; D control | **D (`off-only`)**, whose logged execution is unchanged | About zero gain, within N. A reproducible difference outside N requires explaining an unintended logged-path change or another cause. |
+| On, rewrite active; D control | **D (`off-only`)**, whose logged capture is unchanged | About zero gain, within N; validate unchanged capture/recovery, not a rewrite scaling claim. |
+| Off, only if A is separately selected | **A (`staged`)** | Same throughput criterion as D; no extra application benefit from the capture redesign is predicted for this cell. |
+| On, with/without rewrite, only if A is selected | **A (`staged`)**, retaining first-WRITE Meta | About zero concurrency gain for the immediate-WRITE limiter. A long synthetic read prefix verifies mechanism only. Any rewrite copying-cost change must be attributed separately and does not establish prefix benefit for this application. |
+| On, no rewrite, only after B's contract is resolved | **B (`commit-only`)**, with approved live health observation | Two-core throughput gain greater than max(10%, N), without regressions above N; the stronger AOF-on prediction applies to this candidate alone. |
+| On, rewrite active, only after B's contract is resolved | **B (`commit-only`)**, with final-image capture | Same proposed gain/regression criteria; retain scan/capture progress and abort evidence because capture may falsify the performance premise. |
+
+AOF on must use the normal recorded fsync policy and a real file. Existing
+workload-image mode must be extended and verified if it cannot enable AOF;
+never label its AOF-off result AOF-on. There is no AOF-off rewrite cell: the
+command is refused. For rewrite-active cells use the same dataset/script and
+document scan progress and complete/aborted capture. Use a fixed finite memory
+limit well above the primary workload's use; add near-limit correctness cells separately.
 After the 1/2-core question is resolved, 4/8-core cells can locate the remaining
 global commit ceiling, without changing the primary acceptance criterion.
 
@@ -596,12 +698,14 @@ duration. On the 14900K, first sample one 5-second run per arm in the primary
 two-core cell, then a reversed round to expose spread. Choose only inconclusive
 cells for longer runs, provisionally three interleaved 10-second rounds. Do not
 start a long matrix before inspecting duration/spread. For each cell define
-noise N as the maximum of 5%, the absolute B/T median ratio deviation and the
+noise N as the maximum of 5%, the absolute baseline/twin median ratio deviation and the
 largest arm's `(maximum - minimum) / median` across interleaved rounds.
-The required throughput gain is greater than max(10%, N), Meta queue share
-falls by at least half from a baseline of at least 20%, and one-core throughput
-loss/p99 increase are at most N. If the partial AOF-on option retains most of
-the suffix hold, report rejection for that cell, not a Meta-free success.
+For cells predicting a gain, require throughput improvement greater than
+max(10%, N), with one-core throughput loss/p99 increase at most N. Throughput
+and regression checks are the rejecting criteria; Meta wait/hold share explains
+the result and has no 20% acceptance gate. An unchanged-path control or A's
+AOF-on limiter result near baseline meets its no-gain prediction and cannot
+be reported as successful AOF-on Meta-free execution.
 
 ### Semantic acceptance and falsifiers
 
@@ -641,20 +745,22 @@ revision when code changes, not a local suite for this prose investigation.
    report maximum overtakes and the runtime contract tested. Throughput gains
    cannot excuse starvation or an unbounded key-hold regression.
 
-## Dispositions and remaining uncertainty
+## Follow-ups for filing
 
-**Source-read / judgment.** This research leaves all implementation unchanged.
-It identifies one proposed Whitefoot semantic request (live reusable AOF-health
-observation), one reported runtime fairness follow-up, and current-pin facilities
-for the older driver-count/KILL needs. None was newly filed from this session.
-Capture finalization and mutation-token separation are Firn design work, not
-proven language gaps. Plain-command publication stays with `firn-write-meta-free`.
+**Source-read / judgment.** The owner files these follow-ups from this study:
 
-The missing script lazy-expiry counter increment is a source-inferred defect:
-confirm with INFO expired_keys before/after a script that lazily removes an
-expired key, compared with Redis, with active expiry controlled by the test
-schedule. Defer its fix to the command/accounting owner; do not silently label
-it an implemented staged counter. No server fix belongs in this research PR.
+| Follow-up | What to file and when it is needed |
+|---|---|
+| AOF-health observation, to Whitefoot | The minimal live-read/recovery trace and acceptance cases above, only when selecting an option such as B that keeps AOF-on execution Meta-free past first WRITE. A and D need no new health channel. Preserve the first-WRITE boundary and error payload; request a semantic answer before choosing an API. |
+| Late-acquisition fairness, already known to Whitefoot | Link this script study and its late-acquisition witness/CI acceptance to the existing runtime work; ask for the fixing revision and stated progress guarantee. Reuse that work rather than file a duplicate. D's final expiry acquisition and A/B's late commits need verification against it. |
+| Script lazy-expiry statistics, to Firn | File the source-inferred counter defect: a script GET can remove an expired key while INFO `expired_keys` fails to rise, unlike plain GET. Plain GET calls `remove_expired` (`firn/commands/strings.wf:214`), which increments the counter (`store/store.wf:190`); script GET deletes/logs locally (`commands/script.wf:483-489`, shared `commands/keys.wf:249-261`) without counting it. Redis 7.2.16's [`db.c:expireIfNeeded` and `deleteExpiredKeyAndPropagate`](https://github.com/redis/redis/blob/7.2.16/src/db.c) count lazy expiry through `server.stat_expiredkeys`, including lookups from scripts. Confirm with INFO before/after a controlled expired-key script and plain-GET oracle case in CI; exclude active expiry from the observation. Fix by staging the expired-count delta, publishing once for accepted Done/Error, and discarding it on fallback. No server fix is part of this document revision. |
+
+## Remaining uncertainty
+
+**Source-read / judgment.** Capture finalization and mutation-token separation
+are Firn design work, not proven language gaps. Plain-command publication stays
+with `firn-write-meta-free`. The earlier driver-count/KILL needs have current-pin
+facilities; their integration evidence remains with the engine/control work.
 
 Still unverified: the remote main head, compiled witness/lock ledger,
 pool/canonical Lua-state integration, fairness-fix revision, the reusable
