@@ -3593,7 +3593,7 @@ fn firn_listens_again_on_its_port_after_a_restart() {
 /// A connection accepted while no password is set has authenticated too, and
 /// stays in once it sets one. The expected bytes are redis-server 7.0.15's
 /// with the same password, the connection's id aside; HELLO's version and
-/// NOAUTH wording follow Redis 7.2.16 networking.c:3613-3631 and version.h.
+/// NOAUTH wording follow Redis 7.2.16 networking.c:3611-3618 and version.h.
 /// The pipelined WRONGPASS expectations remain the recorded 7.0.15 behavior;
 /// Firn deliberately keeps complete errors where 7.2.16 suppresses them
 /// when replies are pending, as design/firn/transactions.md records.

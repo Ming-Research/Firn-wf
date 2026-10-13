@@ -1,0 +1,55 @@
+# Temporary evidence for connection-command holds; remove before PR readiness.
+name: lock ledger
+
+on:
+  push:
+    branches:
+      - claude/hello-auth-multi
+
+jobs:
+  ledger:
+    name: lock ledger (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: branch
+            revision: ${{ github.sha }}
+          - name: parent
+            revision: de6d7b53a2352cb8139d8c65b74867467fe5468d
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.revision }}
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Compile and show connection-command lock groups
+        shell: bash
+        run: |
+          git rev-parse HEAD
+          cat whitefoot.pin
+          ledger_release=$(sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$/\1/p' whitefoot.pin)
+          ledger_compiler="$PWD/build/whitefoot/$ledger_release/whitefootc"
+          export WHITEFOOT_LANGUAGE="$PWD/build/whitefoot/$ledger_release/language"
+          "$ledger_compiler" --help
+          ledger_log="$PWD/build/lock-ledger.log"
+          if "$ledger_compiler" --lock-ledger --graph "$PWD/firn/modules.wfg" --entry firn --cache "$PWD/build/firn-cache" -o "$PWD/build/firn" >"$ledger_log" 2>&1; then
+            for ledger_function in run_exec run_auth run_hello; do
+              if ! grep -E "^LOCK .*${ledger_function}[[:space:]]" "$ledger_log"; then
+                echo "Missing LOCK lines for $ledger_function" >&2
+                cat "$ledger_log"
+                exit 1
+              fi
+            done
+          else
+            ledger_status=$?
+            cat "$ledger_log"
+            exit "$ledger_status"
+          fi
