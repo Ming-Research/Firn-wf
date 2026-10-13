@@ -7,6 +7,9 @@ alias KeyHash = pkg::bytes::KeyHash;
 alias byte_at = pkg::bytes::byte_at;
 alias bytes_order = pkg::bytes::bytes_order;
 alias bytes_new = pkg::bytes::bytes_new;
+alias bytes_boxed = pkg::bytes::bytes_boxed;
+alias bytes_copy = pkg::bytes::bytes_copy;
+alias Client = pkg::protocol::Client;
 alias priority_queue_len = std::collections::priority_queue::priority_queue_len;
 alias priority_queue_new = std::collections::priority_queue::priority_queue_new;
 alias priority_queue_peek = std::collections::priority_queue::priority_queue_peek;
@@ -72,7 +75,10 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   let beside = shared_new::<ServerState>(value: move server);
   let pool = pkg::script_pool::new_pool();
   let scripts = shared_new::<pkg::script_pool::EnginePool>(value: move pool);
-  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, logging: logging);
+  let records = box_slots_new::<ClientRecord>(capacity: 16_u64);
+  let table = ClientTable(records: move records);
+  let clients = shared_new::<ClientTable>(value: move table);
+  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, clients: move clients, logging: logging);
 }
 
 fn keyspace_share(store: &Keyspace) -> made: Keyspace reads(store) {
@@ -87,7 +93,8 @@ fn keyspace_logging(store: &Keyspace, logging: Bool) -> made: Keyspace reads(sto
   let kept = shared_share::<Meta>(shared: &store^.meta);
   let beside = shared_share::<ServerState>(shared: &store^.server);
   let scripts = shared_share::<pkg::script_pool::EnginePool>(shared: &store^.scripts);
-  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, logging: logging);
+  let clients = shared_share::<ClientTable>(shared: &store^.clients);
+  return Keyspace(keys: move keys, meta: move kept, server: move beside, scripts: move scripts, clients: move clients, logging: logging);
 }
 
 fn expired(expires: u64, now: u64) -> reached: Bool pure {
@@ -455,6 +462,75 @@ fn request_shutdown(store: &Keyspace) -> result: unit reads(store) waits {
       std::time::cancel_fire(source: &source);
     }
     None() => {
+    }
+  }
+  return unit;
+}
+
+fn client_table_position(table: &ClientTable, id: u64) -> position: u64 reads(table) {
+  doc "Where the record of the connection numbered id is, or would be inserted to keep the records in the order of their numbers: the index of the first record numbered id or more, the table's length when there is none.";
+  let count = table^.records.inner.len;
+  for @find (index in 0_u64..count) {
+    if index < table^.records.inner.len {
+      if table^.records.inner[index].id >= id {
+        return index;
+      }
+    }
+  }
+  return count;
+}
+
+fn client_record(client: &Client) -> made: ClientRecord reads(client) {
+  doc "The facts of a connection that CLIENT LIST shows to the other connections, copied into a record of their own.";
+  let addr_copy = bytes_copy(bytes: &client^.addr);
+  let addr = bytes_boxed(bytes: move addr_copy);
+  let laddr_copy = bytes_copy(bytes: &client^.laddr);
+  let laddr = bytes_boxed(bytes: move laddr_copy);
+  let name_copy = bytes_copy(bytes: &client^.name);
+  let name = bytes_boxed(bytes: move name_copy);
+  let lib_name_copy = bytes_copy(bytes: &client^.lib_name);
+  let lib_name = bytes_boxed(bytes: move lib_name_copy);
+  let lib_ver_copy = bytes_copy(bytes: &client^.lib_ver);
+  let lib_ver = bytes_boxed(bytes: move lib_ver_copy);
+  return ClientRecord(id: client^.id, since_us: client^.since_us, resp: client^.resp, addr: move addr, laddr: move laddr, name: move name, lib_name: move lib_name, lib_ver: move lib_ver);
+}
+
+fn client_sync(store: &Keyspace, client: &Client) -> result: unit reads(store), reads(client) waits {
+  doc "Publishes the facts of a connection that CLIENT LIST shows to the other connections, replacing the record the connection published before and keeping the records in the order of their numbers. The record is made before the statement, so the table is held only to place it.";
+  let record = client_record(client: client);
+  atomic t = &store^.clients {
+    let position = client_table_position(table: t, id: record.id);
+    if position < t^.records.inner.len {
+      if t^.records.inner[position].id == record.id {
+        let replaced = remove_at(window: &t^.records.inner, index: position);
+      }
+    }
+    if t^.records.inner.len >= t^.records.inner.cap {
+      let doubled = t^.records.inner.cap +wrap t^.records.inner.cap;
+      let target = imax(doubled, 16_u64);
+      if target <= 1073741824_u64 {
+        if target >= t^.records.inner.cap {
+          grow(cell: &t^.records, capacity: target);
+        }
+      }
+    }
+    if position <= t^.records.inner.len {
+      if t^.records.inner.len < t^.records.inner.cap {
+        insert_at(window: &t^.records.inner, index: position, value: move record);
+      }
+    }
+  }
+  return unit;
+}
+
+fn client_forget(store: &Keyspace, id: u64) -> result: unit reads(store) waits {
+  doc "Removes the record of the connection numbered id, if the table holds one.";
+  atomic t = &store^.clients {
+    let position = client_table_position(table: t, id: id);
+    if position < t^.records.inner.len {
+      if t^.records.inner[position].id == id {
+        let gone = remove_at(window: &t^.records.inner, index: position);
+      }
     }
   }
   return unit;

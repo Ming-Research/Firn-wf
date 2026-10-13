@@ -69,7 +69,8 @@ clients send on their own:
 - connection: `PING`, `ECHO`, `QUIT`, `RESET`, `AUTH`, `HELLO` with no version,
   version 2 or version 3, which switches the connection to RESP3,
   `SELECT 0`, firn having one database, and `CLIENT ID`, `CLIENT GETNAME`,
-  `CLIENT SETNAME` and `CLIENT INFO`, described below;
+  `CLIENT SETNAME`, `CLIENT INFO`, `CLIENT SETINFO`, `CLIENT LIST` and
+  `CLIENT NO-TOUCH`, described below;
 - transactions: `MULTI`, `EXEC` and `DISCARD`. `EXEC` runs the queued
   commands in order in one atomic statement, their time frozen at its start,
   for the commands written as parts: every keys, strings, hashes, lists, sets
@@ -284,11 +285,24 @@ so its CPU, Commandstats, Errorstats and Latencystats sections are empty
 and its keyspace line gives `keys` alone, without the `expires` and
 `avg_ttl` firn does not count.
 
-`CLIENT INFO` answers the connection's line in Redis's form, with real
-values for the id, the name, the age and the protocol, and values fixed and
-true of firn for the others it gives. It leaves out what firn cannot report:
-the peer's and its own address, which Whitefoot's socket address does not
-show, the descriptor, the events and the sizes of Redis's buffers.
+`CLIENT INFO` and `CLIENT LIST` answer the connections' lines in Redis
+7.2.16's form, with real values for the id, the peer's and the server's
+address (`ip:port`, an IPv6 address in brackets; empty where the host refuses
+to report one, as Redis leaves it), the name, the age, the protocol and the
+library name and version `CLIENT SETINFO` set, and values fixed and true of
+firn for the others they give. They leave out what firn cannot report: the
+descriptor, the events and the sizes of Redis's buffers. The line of the
+connection that runs the command also gives idle, flags (`T` while
+`CLIENT NO-TOUCH ON` holds), multi and cmd; the lines of the other
+connections in `CLIENT LIST` leave those four out, firn keeping no
+per-command state of one connection where the others can read it. `CLIENT
+LIST` takes `TYPE normal|master|replica|slave|pubsub`, listing nothing for a
+type but normal, and `ID id...`. `CLIENT NO-TOUCH ON` makes the
+connection's reads leave the access stamps of keys alone, except `TOUCH`.
+The other `CLIENT` subcommands of Redis 7.2.16 (`CACHING`, `GETREDIR`,
+`HELP`, `KILL`, `NO-EVICT`, `PAUSE`, `REPLY`, `TRACKING`, `TRACKINGINFO`,
+`UNBLOCK` and `UNPAUSE`) are answered as unknown subcommands, and no `CLIENT`
+subcommand runs inside `MULTI`, where `EXEC` refuses the transaction.
 
 `HELLO` and `INFO` report the server as `redis` version 7.0.15, though the
 reference firn follows is Redis 7.2.16, whose own reports give 7.2.16: the

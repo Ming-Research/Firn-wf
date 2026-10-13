@@ -452,6 +452,8 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     let empty_name = slots_new::<u8, 24>();
     set client^.name = pkg::bytes::Bytes::Short(bytes: move empty_name);
     set client^.resp = 2_u64;
+    set client^.no_touch = False();
+    set client^.changed = True();
     atomic reset_server = &store^.server {
       let password_length = pkg::bytes::bytes_length(bytes: &reset_server^.password);
       set client^.authenticated = password_length == 0_u64;

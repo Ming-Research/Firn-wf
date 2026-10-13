@@ -3809,7 +3809,7 @@ fn firn_answers_connection_commands_as_redis_does() {
     let hello = "*14\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:2\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let hello3 = "%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.0.15\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n";
     let expected = format!(
-        ":1\r\n$-1\r\n+OK\r\n$6\r\nconn-1\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$6\r\nconn-1\r\n+OK\r\n$-1\r\n-ERR unknown subcommand 'SETINFO'. Try CLIENT HELP.\r\n-ERR wrong number of arguments for 'client|id' command\r\n-ERR wrong number of arguments for 'client' command\r\n{hello}{hello3}-NOPROTO unsupported protocol version\r\n-ERR Protocol version is not an integer or out of range\r\n{hello}$9\r\nvia-hello\r\n-ERR Syntax error in HELLO option 'FOO'\r\n{hello}$8\r\nvia-zero\r\n{hello}-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n+OK\r\n+OK\r\n-ERR DB index is out of range\r\n-ERR value is not an integer or out of range\r\n-ERR value is out of range, value must between -2147483648 and 2147483647\r\n*0\r\n:0\r\n-ERR wrong number of arguments for 'command|count' command\r\n-ERR unknown subcommand 'DOCS'. Try COMMAND HELP.\r\n-ERR wrong number of arguments for 'time' command\r\n$12\r\n# Keyspace\r\n\r\n"
+        ":1\r\n$-1\r\n+OK\r\n$6\r\nconn-1\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$6\r\nconn-1\r\n+OK\r\n$-1\r\n+OK\r\n-ERR wrong number of arguments for 'client|id' command\r\n-ERR wrong number of arguments for 'client' command\r\n{hello}{hello3}-NOPROTO unsupported protocol version\r\n-ERR Protocol version is not an integer or out of range\r\n{hello}$9\r\nvia-hello\r\n-ERR Syntax error in HELLO option 'FOO'\r\n{hello}$8\r\nvia-zero\r\n{hello}-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n+OK\r\n+OK\r\n-ERR DB index is out of range\r\n-ERR value is not an integer or out of range\r\n-ERR value is out of range, value must between -2147483648 and 2147483647\r\n*0\r\n:0\r\n-ERR wrong number of arguments for 'command|count' command\r\n-ERR unknown subcommand 'DOCS'. Try COMMAND HELP.\r\n-ERR wrong number of arguments for 'time' command\r\n$12\r\n# Keyspace\r\n\r\n"
     );
     expect_replies(&mut client, expected.as_bytes(), "the connection batch");
     let before = std::time::SystemTime::now()
@@ -4207,8 +4207,8 @@ fn firn_answers_zrank_withscore_as_redis_does() {
 /// 7.0.15's form, a bulk string under RESP2 and a verbatim string under RESP3,
 /// the name CLIENT SETNAME gave and the protocol HELLO selected in it, and
 /// CLIENT INFO with an argument is Redis's arity error. The line is
-/// redis-server 7.0.15's but for the fields firn leaves out, the addresses,
-/// descriptor, events and buffer sizes, and for the age, 0 or 1 as the second
+/// redis-server 7.2.16's but for the fields firn leaves out, the descriptor,
+/// events and buffer sizes, and for the age, 0 or 1 as the second
 /// may turn between the connection and the command, and at least 2 after
 /// more than two seconds, though no more than firn has run.
 #[cfg(target_os = "linux")]
@@ -4234,9 +4234,14 @@ fn firn_answers_client_info_as_redis_does() {
     client
         .write_all(&batch)
         .expect("send the CLIENT INFO batch");
+    // The addresses are the ones the Rust client sees: firn's addr is the
+    // client's own address and its laddr the address the client connected to
+    // (Redis 7.2.16 catClientInfoString: getClientPeerId, getClientSockname).
+    let addr = client.local_addr().expect("the client's address");
+    let laddr = client.peer_addr().expect("the server's address");
     let line = |name: &str, protocol: u32| {
         format!(
-            "id=1 name={name} age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|info user=default redir=-1 resp={protocol}\n"
+            "id=1 addr={addr} laddr={laddr} name={name} age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|info user=default redir=-1 resp={protocol} lib-name= lib-ver=\n"
         )
     };
     let first = line("", 2);
@@ -10909,4 +10914,327 @@ fn firn_restores_access_stamps_when_a_read_only_script_is_killed() {
     drop(looping);
     drop(other);
     assert_eq!(finished(child).0, 0);
+}
+
+/// Writes every age in the lines of a CLIENT LIST or CLIENT INFO reply as 0,
+/// the whole seconds between a connection and the command turning with the
+/// clock.
+#[cfg(target_os = "linux")]
+fn zero_ages(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find(" age=") {
+        let (before, after) = rest.split_at(at + " age=".len());
+        out.push_str(before);
+        let digits = after.chars().take_while(char::is_ascii_digit).count();
+        out.push('0');
+        rest = &after[digits..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Reads one RESP3 verbatim string reply, `=` then its length, then `txt:` and
+/// the text, and returns the text.
+#[cfg(target_os = "linux")]
+fn verbatim_reply(stream: &mut TcpStream, what: &str) -> String {
+    let header = reply_line(stream, what);
+    let length = header
+        .strip_prefix('=')
+        .and_then(|rest| rest.strip_suffix("\r\n"))
+        .and_then(|digits| digits.parse::<usize>().ok())
+        .unwrap_or_else(|| panic!("{what}: not a verbatim string reply: {header:?}"));
+    let mut body = vec![0_u8; length + 2];
+    stream
+        .read_exact(&mut body)
+        .unwrap_or_else(|error| panic!("{what}: {error}"));
+    assert!(body.ends_with(b"\r\n"), "{what}: {body:?}");
+    body.truncate(length);
+    let body = String::from_utf8(body).unwrap_or_else(|error| panic!("{what}: {error}"));
+    body.strip_prefix("txt:")
+        .unwrap_or_else(|| panic!("{what}: not txt: {body:?}"))
+        .to_string()
+}
+
+/// firn answers CLIENT SETINFO as Redis 7.2.16 does (networking.c
+/// clientSetinfoCommand): LIB-NAME and LIB-VER in either case are stored and
+/// shown as lib-name= and lib-ver= in CLIENT INFO; a value holding a byte
+/// outside ! to ~ and an attribute of another name are refused with the
+/// attribute as typed, leaving the stored values; the arity error is
+/// client|setinfo's (src/commands/client-setinfo.json, arity 4); RESET keeps
+/// the library name and version (networking.c clearClientConnectionState does
+/// not touch lib_name, and Redis's own suite asserts it); and the empty value
+/// removes the stored one. Before the change firn answered every SETINFO as an
+/// unknown subcommand.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_answers_client_setinfo_as_redis_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["CLIENT", "SETINFO", "lib-name", "redis.py"],
+        vec!["CLIENT", "SETINFO", "LIB-VER", "1.2.3"],
+        vec!["CLIENT", "SETINFO", "lib-name"],
+        vec!["CLIENT", "SETINFO", "lib-name", "redis py"],
+        vec!["CLIENT", "SETINFO", "Lib-Ver", "1.2\n3"],
+        vec!["CLIENT", "SETINFO", "badger", "hamster"],
+        vec!["CLIENT", "INFO"],
+        vec!["RESET"],
+        vec!["CLIENT", "INFO"],
+        vec!["CLIENT", "SETINFO", "lib-name", ""],
+        vec!["CLIENT", "INFO"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the SETINFO batch");
+    expect_replies(
+        &mut client,
+        b"+OK\r\n+OK\r\n-ERR wrong number of arguments for 'client|setinfo' command\r\n-ERR lib-name cannot contain spaces, newlines or special characters.\r\n-ERR Lib-Ver cannot contain spaces, newlines or special characters.\r\n-ERR Unrecognized option 'badger'\r\n",
+        "the SETINFO replies",
+    );
+    // networking.c catClientInfoString ends the line with lib-name, lib-ver.
+    let line = bulk_reply(&mut client, "CLIENT INFO after SETINFO");
+    assert!(line.ends_with(" lib-name=redis.py lib-ver=1.2.3\n"), "{line:?}");
+    assert_eq!(reply_line(&mut client, "RESET"), "+RESET\r\n");
+    let line = bulk_reply(&mut client, "CLIENT INFO after RESET");
+    assert!(line.ends_with(" lib-name=redis.py lib-ver=1.2.3\n"), "{line:?}");
+    assert_eq!(reply_line(&mut client, "SETINFO with an empty value"), "+OK\r\n");
+    let line = bulk_reply(&mut client, "CLIENT INFO after clearing");
+    assert!(line.ends_with(" lib-name= lib-ver=1.2.3\n"), "{line:?}");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers CLIENT LIST as Redis 7.2.16 does (networking.c clientCommand,
+/// getAllClientsInfoString, catClientInfoString): every connection's line in
+/// the order of the connections, a connection's own line carrying the
+/// per-interaction fields idle, flags, multi and cmd=client|list, the others
+/// leaving those four out (design/firn/reported-facts.md), addr and laddr the
+/// addresses the Rust client sees, the name, library name and protocol a
+/// connection set showing in the other connection's list; TYPE normal lists
+/// them all and the other types none; ID lists the named connections in the
+/// order named, once for each name; and the errors are clientCommand's. Before
+/// the change firn answered CLIENT LIST as an unknown subcommand.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_lists_clients_as_redis_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]).with_port(&port_lease);
+    let mut first = connect_when_ready(port, &child);
+    first
+        .write_all(&[resp(&["CLIENT", "SETNAME", "alpha"]), resp(&["CLIENT", "SETINFO", "lib-name", "lib-a"])].concat())
+        .expect("name the first connection");
+    expect_replies(&mut first, b"+OK\r\n+OK\r\n", "naming the first connection");
+    let mut second = connect_when_ready(port, &child);
+    let first_addr = first.local_addr().expect("the first client's address");
+    let second_addr = second.local_addr().expect("the second client's address");
+    let server = first.peer_addr().expect("the server's address");
+    let own = |id: u32, addr: SocketAddr, name: &str, protocol: u32, lib: &str| {
+        format!(
+            "id={id} addr={addr} laddr={server} name={name} age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|list user=default redir=-1 resp={protocol} lib-name={lib} lib-ver=\n"
+        )
+    };
+    let other = |id: u32, addr: SocketAddr, name: &str, protocol: u32, lib: &str| {
+        format!(
+            "id={id} addr={addr} laddr={server} name={name} age=0 db=0 sub=0 psub=0 ssub=0 user=default redir=-1 resp={protocol} lib-name={lib} lib-ver=\n"
+        )
+    };
+    // The second connection sees both; its own line is complete.
+    second.write_all(&resp(&["CLIENT", "LIST"])).expect("list from the second connection");
+    let listed = zero_ages(&bulk_reply(&mut second, "CLIENT LIST from the second connection"));
+    assert_eq!(
+        listed,
+        other(1, first_addr, "alpha", 2, "lib-a") + &own(2, second_addr, "", 2, ""),
+        "the second connection's list"
+    );
+    // The first connection sees both; its own line is complete.
+    first.write_all(&resp(&["CLIENT", "LIST"])).expect("list from the first connection");
+    let listed = zero_ages(&bulk_reply(&mut first, "CLIENT LIST from the first connection"));
+    let first_own = own(1, first_addr, "alpha", 2, "lib-a");
+    let second_other = other(2, second_addr, "", 2, "");
+    assert_eq!(listed, first_own.clone() + &second_other, "the first connection's list");
+    // TYPE and ID filters (clientCommand's list branch).
+    let mut batch = Vec::new();
+    for request in [
+        vec!["CLIENT", "LIST", "TYPE", "NORMAL"],
+        vec!["CLIENT", "LIST", "TYPE", "pubsub"],
+        vec!["CLIENT", "LIST", "TYPE", "replica"],
+        vec!["CLIENT", "LIST", "ID", "2", "1", "99", "2"],
+        vec!["CLIENT", "LIST", "ID", "x"],
+        vec!["CLIENT", "LIST", "TYPE", "bogus"],
+        vec!["CLIENT", "LIST", "FOO"],
+        vec!["CLIENT", "LIST", "ID"],
+        vec!["CLIENT", "LIST", "TYPE"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    first.write_all(&batch).expect("send the filters");
+    let both = first_own.clone() + &second_other;
+    assert_eq!(zero_ages(&bulk_reply(&mut first, "TYPE NORMAL")), both, "TYPE NORMAL");
+    assert_eq!(bulk_reply(&mut first, "TYPE pubsub"), "", "TYPE pubsub");
+    assert_eq!(bulk_reply(&mut first, "TYPE replica"), "", "TYPE replica");
+    assert_eq!(
+        zero_ages(&bulk_reply(&mut first, "ID 2 1 99 2")),
+        second_other.clone() + &first_own + &second_other,
+        "ID 2 1 99 2"
+    );
+    expect_replies(
+        &mut first,
+        b"-ERR Invalid client ID\r\n-ERR Unknown client type 'bogus'\r\n-ERR syntax error\r\n-ERR syntax error\r\n-ERR syntax error\r\n",
+        "the list errors",
+    );
+    // HELLO 3 and the protocol show in the other connection's list, and the
+    // list is a verbatim string under RESP3.
+    first.write_all(&resp(&["HELLO", "3"])).expect("switch to RESP3");
+    let hello = whole_reply(&mut first, "HELLO 3");
+    assert!(hello.starts_with("%7\r\n"), "{hello:?}");
+    let first_resp3 = own(1, first_addr, "alpha", 3, "lib-a");
+    first.write_all(&resp(&["CLIENT", "LIST", "ID", "1"])).expect("list under RESP3");
+    assert_eq!(
+        zero_ages(&verbatim_reply(&mut first, "CLIENT LIST under RESP3")),
+        first_resp3,
+        "the verbatim string under RESP3"
+    );
+    second.write_all(&resp(&["CLIENT", "LIST", "ID", "1"])).expect("list the first from the second");
+    assert_eq!(
+        zero_ages(&bulk_reply(&mut second, "the first connection under RESP3")),
+        other(1, first_addr, "alpha", 3, "lib-a"),
+        "a RESP3 connection in another's list"
+    );
+    // A closed connection leaves the list.
+    drop(second);
+    let mut remaining = String::new();
+    for _ in 0..50 {
+        first.write_all(&resp(&["CLIENT", "LIST"])).expect("list after the close");
+        remaining = zero_ages(&verbatim_reply(&mut first, "CLIENT LIST after the close"));
+        if remaining.lines().count() == 1 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(remaining, first_resp3, "the list after the close");
+    drop(first);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// firn answers CLIENT NO-TOUCH as Redis 7.2.16 does (networking.c
+/// clientCommand, arity 3 in src/commands/client-no-touch.json): ON and OFF in
+/// either case answer OK and show as the flag T in CLIENT INFO; another
+/// argument is a syntax error; while it is on, reads leave a key's access time
+/// alone (db.c lookupKey, CLIENT_NO_TOUCH) but TOUCH refreshes it
+/// (touchCommand); and RESET turns it off (networking.c
+/// clearClientConnectionState clears CLIENT_NO_TOUCH). Before the change firn
+/// answered CLIENT NO-TOUCH as an unknown subcommand.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_keeps_access_times_in_no_touch_mode_as_redis_does() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["SET", "foo", "bar"],
+        vec!["CLIENT", "NO-TOUCH"],
+        vec!["CLIENT", "NO-TOUCH", "maybe"],
+        vec!["CLIENT", "no-touch", "on"],
+        vec!["CLIENT", "INFO"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the NO-TOUCH batch");
+    expect_replies(
+        &mut client,
+        b"+OK\r\n-ERR wrong number of arguments for 'client|no-touch' command\r\n-ERR syntax error\r\n+OK\r\n",
+        "the NO-TOUCH replies",
+    );
+    let line = bulk_reply(&mut client, "CLIENT INFO in no-touch mode");
+    assert!(line.contains(" flags=T "), "{line:?}");
+    std::thread::sleep(Duration::from_millis(2200));
+    let mut batch = Vec::new();
+    for request in [
+        vec!["GET", "foo"],
+        vec!["OBJECT", "IDLETIME", "foo"],
+        vec!["TOUCH", "foo"],
+        vec!["OBJECT", "IDLETIME", "foo"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("read in no-touch mode");
+    assert_eq!(bulk_reply(&mut client, "GET"), "bar");
+    assert!(integer_reply(&mut client, "IDLETIME after GET in no-touch mode") >= 2, "GET touched the key");
+    assert_eq!(integer_reply(&mut client, "TOUCH"), 1);
+    assert!(integer_reply(&mut client, "IDLETIME after TOUCH") <= 1, "TOUCH did not refresh the key");
+    let mut batch = Vec::new();
+    for request in [
+        vec!["RESET"],
+        vec!["CLIENT", "INFO"],
+        vec!["CLIENT", "NO-TOUCH", "ON"],
+        vec!["CLIENT", "NO-TOUCH", "OFF"],
+        vec!["CLIENT", "INFO"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("turn the mode off");
+    assert_eq!(reply_line(&mut client, "RESET"), "+RESET\r\n");
+    let line = bulk_reply(&mut client, "CLIENT INFO after RESET");
+    assert!(line.contains(" flags=N "), "{line:?}");
+    expect_replies(&mut client, b"+OK\r\n+OK\r\n", "NO-TOUCH ON and OFF");
+    let line = bulk_reply(&mut client, "CLIENT INFO after OFF");
+    assert!(line.contains(" flags=N "), "{line:?}");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// Inside MULTI firn queues CLIENT SETINFO, CLIENT LIST and CLIENT NO-TOUCH as
+/// it queues every CLIENT subcommand, and EXEC refuses the transaction whole
+/// as one holding a command firn does not run in transactions, where Redis
+/// 7.2.16 runs them (multi.c execCommand calls each queued command); the
+/// stored library name is unchanged. Outside the transaction the same
+/// commands answer as before.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_refuses_client_subcommands_in_a_transaction_whole() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut batch = Vec::new();
+    for request in [
+        vec!["MULTI"],
+        vec!["CLIENT", "SETINFO", "lib-name", "inside"],
+        vec!["CLIENT", "LIST"],
+        vec!["CLIENT", "NO-TOUCH", "ON"],
+        vec!["EXEC"],
+        vec!["CLIENT", "INFO"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).expect("send the transaction");
+    expect_replies(
+        &mut client,
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n",
+        "the transaction",
+    );
+    let line = bulk_reply(&mut client, "CLIENT INFO after the refused transaction");
+    assert!(line.ends_with(" lib-name= lib-ver=\n"), "{line:?}");
+    assert!(line.contains(" flags=N "), "{line:?}");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
 }

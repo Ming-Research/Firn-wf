@@ -430,6 +430,10 @@ fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
   let name = arg(args: args, index: 0_u64);
   let command = name_code(input: input, start: name.start, length: name.length);
   let touching = command == code_touch;
+  let held_no_touch = client^.no_touch;
+  if touching {
+    set client^.no_touch = False();
+  }
   set client^.now = time^.check;
   let live = 0_u64;
   let logged = store^.logging;
@@ -484,6 +488,7 @@ fn run_exists(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       }
     }
   }
+  set client^.no_touch = held_no_touch;
   count_finish(client: client, count: live);
   return unit;
 }

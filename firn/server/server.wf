@@ -5,6 +5,8 @@ alias Client = pkg::protocol::Client;
 alias Clock = std::time::Clock;
 alias ExitStatus = std::process::ExitStatus;
 alias HandleFactory = std::io::HandleFactory;
+alias IpAddress = std::net::IpAddress;
+alias SocketAddress = std::net::SocketAddress;
 alias Inputs = std::process::Inputs;
 alias Instant = std::time::Instant;
 alias IoError = std::io::IoError;
@@ -51,6 +53,9 @@ alias send_once = std::net::send_once;
 alias settings_copy = pkg::protocol::settings_copy;
 alias sleep_until = std::time::sleep_until;
 alias socket_address_v4 = std::net::socket_address_v4;
+alias socket_address_ip = std::net::socket_address_ip;
+alias socket_address_port = std::net::socket_address_port;
+alias local_address = std::net::local_address;
 alias stop_listen = std::process::stop_listen;
 alias stop_next = std::process::stop_next;
 alias keyspace_logging = pkg::store::keyspace_logging;
@@ -286,7 +291,202 @@ fn read_time(wall: &WallClock) -> result: Reading reads(wall) {
   return Reading(time: time, unix_us: unix_us);
 }
 
-fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter, shutdown: CancelSource) -> result: unit pure waits {
+fn address_put(text: &Box<Slots<u8>>, byte: u8) -> result: unit writes(text) {
+  doc "Appends one byte to an address's text, whose room of 64 bytes holds the longest, [ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535, and which ignores a byte past it.";
+  if text^.inner.len < text^.inner.cap {
+    place_back(window: &text^.inner, value: byte);
+  }
+  return unit;
+}
+
+fn address_digits(text: &Box<Slots<u8>>, value: u64, base: u64) -> result: unit writes(text) contract {
+  requires base >= 2_u64;
+} {
+  doc "Appends a number in base 10 or 16, in lower case and without leading zeros, as C's %d and %x write it.";
+  let digits = array_filled::<u8, 20>(value: 0_u8);
+  let count = 0_u64;
+  let rest = value;
+  loop @digits {
+    let low = rest % base;
+    let narrow = cvt.wrap::<u64, u8>(low);
+    let glyph = narrow +wrap 48_u8;
+    if narrow > 9_u8 {
+      set glyph = narrow +wrap 87_u8;
+    }
+    if count < 20_u64 {
+      set digits[count] = glyph;
+      set count = count +wrap 1_u64;
+    }
+    set rest = rest / base;
+    if rest == 0_u64 {
+      break @digits;
+    }
+  }
+  for @emit (index in 0_u64..count) {
+    let back = count -wrap index;
+    let from = back -wrap 1_u64;
+    let glyph = 48_u8;
+    if from < 20_u64 {
+      set glyph = digits[from];
+    }
+    address_put(text: text, byte: glyph);
+  }
+  return unit;
+}
+
+fn address_v4(text: &Box<Slots<u8>>, a: u64, b: u64, c: u64, d: u64) -> result: unit writes(text) {
+  doc "Appends four octets as a dotted quad, as inet_ntop writes an IPv4 address.";
+  address_digits(text: text, value: a, base: 10_u64);
+  address_put(text: text, byte: 46_u8);
+  address_digits(text: text, value: b, base: 10_u64);
+  address_put(text: text, byte: 46_u8);
+  address_digits(text: text, value: c, base: 10_u64);
+  address_put(text: text, byte: 46_u8);
+  address_digits(text: text, value: d, base: 10_u64);
+  return unit;
+}
+
+fn address_v6(text: &Box<Slots<u8>>, groups: &Array<u16, 8>) -> result: unit reads(groups), writes(text) {
+  doc "Appends eight groups as glibc's inet_ntop writes an IPv6 address: lower-case hexadecimal without leading zeros, the first longest run of two or more zero groups written as two colons, and an address that is IPv4-mapped or IPv4-compatible with its last two groups as a dotted quad.";
+  let none = 8_u64;
+  let best_base = none;
+  let best_len = 0_u64;
+  let run_base = none;
+  let run_len = 0_u64;
+  for @runs (index in 0_u64..9_u64) {
+    let word = 1_u16;
+    if index < 8_u64 {
+      set word = groups^[index];
+    }
+    if word == 0_u16 {
+      if run_base == none {
+        set run_base = index;
+        set run_len = 1_u64;
+      } else {
+        set run_len = run_len +wrap 1_u64;
+      }
+    } else {
+      if run_base != none {
+        if best_base == none {
+          set best_base = run_base;
+          set best_len = run_len;
+        } else if run_len > best_len {
+          set best_base = run_base;
+          set best_len = run_len;
+        }
+        set run_base = none;
+      }
+    }
+  }
+  if best_base != none {
+    if best_len < 2_u64 {
+      set best_base = none;
+    }
+  }
+  for @written (index in 0_u64..8_u64) {
+    let inside = False();
+    if best_base != none {
+      let end = best_base +wrap best_len;
+      let from = index >= best_base;
+      let until = index < end;
+      set inside = band(from, until);
+    }
+    if inside {
+      if index == best_base {
+        address_put(text: text, byte: 58_u8);
+      }
+    } else {
+      if index != 0_u64 {
+        address_put(text: text, byte: 58_u8);
+      }
+      let embedded = False();
+      if index == 6_u64 {
+        if best_base == 0_u64 {
+          let six = best_len == 6_u64;
+          let seven_long = best_len == 7_u64;
+          let seven_word = groups^[7_u64] != 1_u16;
+          let seven = band(seven_long, seven_word);
+          let five_long = best_len == 5_u64;
+          let five_word = groups^[5_u64] == 65535_u16;
+          let five = band(five_long, five_word);
+          set embedded = bor(six, bor(seven, five));
+        }
+      }
+      if embedded {
+        let high = cvt::<u16, u64>(groups^[6_u64]);
+        let low = cvt::<u16, u64>(groups^[7_u64]);
+        let first = high / 256_u64;
+        let second = high % 256_u64;
+        let third = low / 256_u64;
+        let fourth = low % 256_u64;
+        address_v4(text: text, a: first, b: second, c: third, d: fourth);
+        return unit;
+      }
+      let group = cvt::<u16, u64>(groups^[index]);
+      address_digits(text: text, value: group, base: 16_u64);
+    }
+  }
+  if best_base != none {
+    let end = best_base +wrap best_len;
+    if end == 8_u64 {
+      address_put(text: text, byte: 58_u8);
+    }
+  }
+  return unit;
+}
+
+fn address_text(address: &SocketAddress) -> made: Bytes reads(address) {
+  doc "A socket address as Redis writes it in CLIENT LIST: an IPv4 address as a.b.c.d:port, an IPv6 address in brackets, as inet_ntop writes it, then :port.";
+  let text = box_slots_new::<u8>(capacity: 64_u64);
+  let port = socket_address_port(address: address);
+  let wide = cvt::<u16, u64>(port);
+  match socket_address_ip(address: address) {
+    Ipv4(a: first, b: second, c: third, d: fourth) => {
+      let a = cvt::<u8, u64>(first);
+      let b = cvt::<u8, u64>(second);
+      let c = cvt::<u8, u64>(third);
+      let d = cvt::<u8, u64>(fourth);
+      address_v4(text: &text, a: a, b: b, c: c, d: d);
+    }
+    Ipv6(a: g0, b: g1, c: g2, d: g3, e: g4, f: g5, g: g6, h: g7) => {
+      let groups = array_filled::<u16, 8>(value: 0_u16);
+      set groups[0_u64] = g0;
+      set groups[1_u64] = g1;
+      set groups[2_u64] = g2;
+      set groups[3_u64] = g3;
+      set groups[4_u64] = g4;
+      set groups[5_u64] = g5;
+      set groups[6_u64] = g6;
+      set groups[7_u64] = g7;
+      address_put(text: &text, byte: 91_u8);
+      address_v6(text: &text, groups: &groups);
+      address_put(text: &text, byte: 93_u8);
+    }
+  }
+  address_put(text: &text, byte: 58_u8);
+  address_digits(text: &text, value: wide, base: 10_u64);
+  let length = text.inner.len;
+  let made = bytes_new(input: &text.inner[0_u64..length], start: 0_u64, length: length);
+  return move made;
+}
+
+fn address_of(result: Result<SocketAddress, IoError>) -> made: Bytes pure {
+  doc "The text of an address the host reported, or, where the host refused, the empty text. Redis 7.2.16 genClientAddrString leaves its zeroed buffer unwritten when connAddr fails, though its comment promises ?:0, so CLIENT LIST shows addr= and laddr= with nothing after them, and firn invents no address.";
+  match move result {
+    Ok(value: address) => {
+      let text = address_text(address: &address);
+      return move text;
+    }
+    Err(error: refused) => {
+      let dropped = move refused;
+      let nothing = array_filled::<u8, 1>(value: 0_u8);
+      let empty = bytes_new(input: &nothing[0_u64..1_u64], start: 0_u64, length: 0_u64);
+      return move empty;
+    }
+  }
+}
+
+fn serve(connection: TcpConnection, peer: SocketAddress, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, origin: Instant, required: Bool, settings: Settings, id: u64, meter: std::process::MemoryMeter, shutdown: CancelSource) -> result: unit pure waits {
   doc "Serves one client, the id-th the server accepted, in a context of its own: reads requests into its input, which grows to hold a request larger than it, answers every complete request the input holds with one send, sending sooner once 16,384 bytes of replies are waiting, and keeps an incomplete one for the next read. Every command of one read, including EXEC and script commands, uses the memory settings read once beside the calendar clock after that read, refreshed after this connection executes CONFIG SET; a racing CONFIG SET may leave an old-policy stamp, accepted as Redis leaves stale stamps after a policy switch. Every command of one read sees the calendar clock as read once after it, and the clock is read once before the first, for the time the server began serving the client. A client silent for the idle limit the server's state holds, when it is not zero, is closed, its silence measured on the monotonic clock from the program's origin and counted from its last request or the replies to it, whichever came later, as Redis counts it from a client's last read or write: a receive has no deadline at zero and otherwise waits for the remaining idle interval. It keeps a watch of a receive wake generation across requests. A changed limit installs a fresh generation and fires the old one; shutdown fires the current generation. After cancellation or a deadline the client reads shutdown and the limit again, replacing a fired watch only while still running, and waits again unless stopping or expired. Active clients also re-read the state at most once a second while processing requests; these reads observe shutdown and close after held replies are sent. When command dispatch reports an accepted shutdown request, the receive generation has already been fired and the client context fires its separate shutdown source before another wait, without reading server state again. Sends keep their never-firing watch and retry one-second deadlines until shutdown requests closure. A client that sends a malformed request is closed after its error, and one that sends QUIT after its reply. A client accepted while a password is required, when required is true, has not authenticated until it gives the password, as AUTH and HELLO record; until then it reads the password again before each request and must give it before other commands while one is set, as Redis's clients must.";
   let env = KeyEnv();
   let client = client_new(capacity: 16384_u64);
@@ -300,12 +500,18 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let input = input_new(capacity: 16384_u64);
   let transaction = transaction_new();
   set client.id = id;
+  let bound = local_address(receive: &connection.receive);
+  let local_text = address_of(result: move bound);
+  set client.laddr = move local_text;
+  let peer_text = address_text(address: &peer);
+  set client.addr = move peer_text;
   set client.authenticated = bnot(required);
   set client.locked = required;
   set client.settings = move settings;
   let opened = read_time(wall: &wall);
   set client.unix_us = opened.unix_us;
   set client.since_us = opened.unix_us;
+  pkg::store::client_sync(store: &store, client: &client);
   let limits = idle_limit(store: &store);
   let idle = limits.idle;
   set client.closing = limits.shutdown;
@@ -421,6 +627,10 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
           std::time::cancel_fire(source: &shutdown);
         }
         pkg::commands::record_memory_peak(store: &store, client: &client);
+        if client.changed {
+          set client.changed = False();
+          pkg::store::client_sync(store: &store, client: &client);
+        }
         if client.closing {
           set closing = True();
           break @commands;
@@ -453,6 +663,7 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
     }
     set held = keep_rest(input: &input, from: consumed, held: held);
   }
+  pkg::store::client_forget(store: &store, id: id);
   std::time::close_cancel_watch(watch: move limits.cancel);
   std::time::close_cancel_source(source: move shutdown);
   let TcpConnection(receive: closing_receive, send: closing_send) = move connection;
@@ -1085,7 +1296,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
           let limit = None<Instant>();
           match tcp_accept(factory: &handles, listener: &listener, deadline: limit, cancel: &cancel) {
             Ok(value: next) => {
-              let AcceptedConnection(connection: connection, peer: unused_peer) = move next;
+              let AcceptedConnection(connection: connection, peer: peer) = move next;
               if shutdown_requested(store: &keyspace) {
                 let TcpConnection(receive: receiver, send: sender) = move connection;
                 close_receive(factory: &handles, receive: move receiver);
@@ -1110,7 +1321,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
               }
               set accepted = accepted +wrap 1_u64;
               let serving_shutdown = std::time::cancel_share(source: &shutdown);
-              spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown);
+              spawn serve(connection: move connection, peer: move peer, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown);
             }
             Err(error: problem) => {
               break @accepting;
