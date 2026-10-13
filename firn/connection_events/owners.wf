@@ -54,6 +54,8 @@ fn queue_push<T: drop>(queue: &Box<Ring<T>>, value: T) -> result: unit writes(qu
   }
   if queue^.inner.len < queue^.inner.cap {
     place_back(window: &queue^.inner, value: move value);
+  } else {
+    let dropped = move value;
   }
   return unit;
 }
@@ -67,6 +69,8 @@ fn slots_push<T: drop>(values: &Box<Slots<T>>, value: T) -> result: unit writes(
   }
   if values^.inner.len < values^.inner.cap {
     place_back(window: &values^.inner, value: move value);
+  } else {
+    let dropped = move value;
   }
   return unit;
 }
