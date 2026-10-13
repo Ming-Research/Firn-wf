@@ -302,6 +302,28 @@ What is not there yet is listed on the [shared status board](https://claude.ai/a
 measurements and the design are in
 [research/investigations/firn](../research/investigations/firn/DESIGN.md).
 
+## Accept-error diagnostics
+
+An operational accept failure leaves firn's listener open. Descriptor or
+memory exhaustion, including the runtime's handle-acquisition limit, waits
+100 ms before retrying; other accept errors retry immediately. The delay
+uses the orderly-stop cancellation watch, so shutdown does not wait for the
+timer to expire. Recovery after resources become available can take up to
+that retry interval, apart from scheduling and bounded diagnostic writes.
+
+Firn writes accept-error diagnostics to stderr, beginning with
+`Accepting client connection: ` and the host's error description. The
+first error is eligible immediately; all error classes then share a limit
+of one diagnostic attempt per second, including across successful accepts.
+A later diagnostic appends ` (suppressed N accept errors)` when failures
+were suppressed since the previous attempt. The count saturates at the
+unsigned 64-bit maximum; success alone does not flush it. A fixed 512-byte
+buffer uses a generic description when the host description does not fit
+or is unavailable. Writes are best-effort, share one absolute 100 ms
+deadline and stop on shutdown, write failure or no progress. This is an
+operational diagnostic sink; `DEBUG LOG` still returns OK and discards its
+message.
+
 ## Build and run
 
 From the repository root, on Linux x86-64 or macOS arm64 with `/usr/bin/clang`

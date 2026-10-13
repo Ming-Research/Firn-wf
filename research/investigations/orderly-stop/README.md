@@ -328,158 +328,269 @@ probe's noise. The result is reported as no measured loss, not as a gain.
 
 ## Accept errors keep serving
 
-### Question and acceptance criterion
+### Question and acceptance criteria
 
-An operational `tcp_accept` error currently breaks firn's accept loop,
-closes its listener and, once existing clients leave, returns status 0.
-Can firn recover from Linux EMFILE without changing orderly stop or hiding a
-Whitefoot limitation? Board item `firn-accept-error-keeps-serving` requires a
-new client to receive `+PONG` within ten seconds after descriptor exhaustion
-and the release of four admitted connections. The same case must fail with
-the previous unconditional break. This is a correctness deadline with CI
-scheduling margin, not a throughput or recovery-latency measurement.
+Before the accept-recovery fix, every operational `tcp_accept` error broke
+firn's accept loop, closed its listener and, once clients left, returned
+status 0. Board item `firn-accept-error-keeps-serving` requires recovery
+without changing orderly stop or hiding a Whitefoot limitation. After
+Linux EMFILE and the release of four admitted connections, a fresh client
+must receive `+PONG` within ten seconds on each I/O route. The old
+unconditional break must fail the regression for an accept-loop failure,
+with the point of failure reported rather than presumed to be recovery.
 
-### Redis reference and retry policy
+The pacing extension additionally requires an exhausted listener with no
+pending peer to remain quiet: over at least one second, its process CPU
+must be at most 25% of one core, rounded up to one accounting tick, and its
+new diagnostic count must be at most the whole elapsed seconds plus two
+boundary/drain lines. A retained client must be able to request successful
+orderly exit within one second while exhaustion persists. These are coarse
+CI regression bounds with scheduling margin, not precise CPU or
+cancellation-latency measurements. They are stated before this extension's
+CI run.
+
+### Redis reference
 
 Redis 7.2.16's
 [`connSocketAcceptHandler`](https://github.com/redis/redis/blob/7.2.16/src/socket.c#L311-L330)
 tries at most
 [1,000 accepts per callback](https://github.com/redis/redis/blob/7.2.16/src/connection.h#L43).
-On EMFILE it logs `Accepting client connection: %s` and returns from the
-callback without closing the listener or removing its readable registration.
+On EMFILE it logs `Accepting client connection: %s` and returns without
+closing the listener or removing its readable registration.
 [`anetGenericAccept`](https://github.com/redis/redis/blob/7.2.16/src/anet.c#L521-L548)
 retries EINTR internally and formats an `accept:` description; the
 [retryable network-error list](https://github.com/redis/redis/blob/7.2.16/src/anet.c#L715-L730)
 excludes EMFILE. The
 [epoll registration](https://github.com/redis/redis/blob/7.2.16/src/ae_epoll.c#L74-L89)
-is level-triggered. A pending client therefore makes a persistent EMFILE
-readable again on a later event-loop turn. The callback cap and returning
-on the first EMFILE let the loop service other events; they do not impose
-backoff or promise low CPU under persistent exhaustion.
+is level-triggered. With a pending peer, a persistent EMFILE can make the
+listener readable on later loop turns. Returning on the first EMFILE and
+capping each callback permit other events to run; they provide no timed
+backoff or low-CPU promise in that state. With no peer pending, Redis's
+readiness callback does not keep issuing idle accept calls.
 
-Firn submits one `tcp_accept` per iteration. The pinned Whitefoot release
-`wf-af7665be672d` provides a
+Firn retains its listener after operational errors. The pinned Whitefoot
+release `wf-af7665be672d` provides a
 [distinct Cancelled result and a supplied watch](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/lib/std/net/module.wfm#L44),
-so only that orderly-stop cancellation, a recorded shutdown or the existing
-accepted-client limit ends the loop. Every other accept error gets a
-best-effort stderr diagnostic and another attempt. An operation already
-completed can win over cancellation; the shutdown check at the loop head
-and after each outcome retains the existing stop policy.
+so only orderly-stop cancellation, recorded shutdown or the existing
+accepted-client limit ends the loop. A completed operation can win a race
+with cancellation; shutdown checks at the loop head and after each outcome
+preserve the stop policy. Retaining the listener matches Redis; the pacing
+and diagnostic limits below are deliberate differences required by firn's
+blocking-accept structure.
 
-The pinned runtime
+### Resource errors and pacing
+
+A blocking accept need not wait for a connection before returning EMFILE.
+Linux 6.8
+[`__sys_accept4_file`](https://github.com/torvalds/linux/blob/v6.8/net/socket.c#L1841-L1863)
+reserves a descriptor before calling `do_accept`; the
+[protocol accept](https://github.com/torvalds/linux/blob/v6.8/net/socket.c#L1819)
+happens later. Its
+[descriptor allocator](https://github.com/torvalds/linux/blob/v6.8/fs/file.c#L465-L527)
+returns EMFILE when no permitted slot remains. The
+[io_uring accept path](https://github.com/torvalds/linux/blob/v6.8/io_uring/net.c#L1231-L1298)
+also reserves the descriptor before `do_accept`. These source paths
+establish the mechanism; they do not identify the kernel version of a
+particular CI run.
+
+The pinned Whitefoot
+[adapter path](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/completion/file_posix.c#L410-L432)
+issues `accept4` directly, and its
+[native path](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/completion/linux_io_uring.c#L609-L621)
+submits `IORING_OP_ACCEPT`. A
+[watched accept disables the separate readiness route](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/completion/bridge.c#L5576-L5618)
+and dispatches through the native ring or helpers. Firn therefore issues
+its next accept after the last successful admission fills the table, even
+without another queued peer. Immediate retry can busy loop in this idle
+state, unlike Redis's readiness-triggered callback.
+
+The runtime
 [yields after 64 immediately answered waits](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/completion/bridge.c#L1958-L1988)
-when another context is ready on its driver. Its
+when another context is ready on its driver; its
 [host-call lowering](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/emitter/frames.rs#L368-L428)
-applies that handoff even when a call finishes synchronously, including
-[factory-credit exhaustion before host submission](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1718-L1762).
-Client contexts can therefore run and release descriptors during repeated
-accept failures. No short sleep is added: Redis introduces no timed pause,
-and a pause would delay recovery after a descriptor becomes free. Firn,
-like Redis, can consume CPU and produce repeated diagnostics while EMFILE
-persists. The fairness mechanism is not an idle-CPU guarantee.
+includes synchronous completions. This ensures a scheduler handoff to ready
+clients, not low CPU when no other context is ready. It is not a substitute
+for retry pacing.
 
-Before this change, firn had no operational logger: main discarded stderr,
-while `DEBUG LOG` is documented as a no-op. The diagnostic uses Redis's phrase, the host
-error-description API already used for append-only-file errors, and LF.
-On Linux EMFILE this produces
-`Accepting client connection: Too many open files\n`; it does not reproduce
-Redis's process/time prefix or its `accept:` wrapper. A fixed 512-byte
-buffer reserves one byte for LF and uses a generic description when the
-host description is unavailable or too long. Partial writes share one
-absolute 100 ms deadline and the orderly-stop watch; errors and zero
-progress abandon the remaining bytes. Logging failure leaves the accept
-retry policy intact. A completed host write can win over deadline expiry;
-the finite message and strictly advancing endpoint also bound retry count.
+Firn now waits 100 ms after `ResourceExhausted`, on the same orderly-stop
+watch as accept and diagnostics. The pinned
+[error mapping](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L563)
+puts EMFILE, ENFILE, ENOMEM and ENOBUFS in this class, as does
+[factory-credit exhaustion](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L594-L601).
+A cancelled sleep ends acceptance; an elapsed sleep returns to the ordinary
+shutdown checks. Other error classes add no artificial pause. The 100 ms
+delay limits repeated resource failures to at most ten retries per second,
+apart from the initial attempt; logging or scheduling can reduce that rate.
+Once resources become available, retry can be delayed by the remaining
+100 ms interval, apart from bounded logging and scheduling.
 
-### Regression assumptions and unverified results
+A client-close-only notification was not selected: global descriptor or
+memory resources can recover without a firn client closing. A cancellation-
+aware timer handles those cases without adding a timer context or a new
+shared notification protocol. This is an application policy using the
+pinned time interface, not a workaround for a missing Whitefoot capability.
+The former immediate-retry proposal is replaced because it conflated
+scheduler fairness with the absence of idle CPU spin.
 
-The Linux network case `firn_accept_recovers_after_emfile_on_both_routes`
-uses the existing child/port/output harness. It runs once through the shared
-file adapter and once through the default native route, each with one
-worker and one driver, no append-only file, no client-count limit and no
-idle timeout. It relies on Linux `/proc`, util-linux `prlimit` and permission
-to lower the soft limit of its own child through `prlimit64`.
+### Bounded accept-error diagnostics
 
-A tiny limit set only before exec can exhaust Whitefoot's factory credits
-before the operating system returns EMFILE. The case instead starts with
-soft and hard limits of 256, verifies that limit and the live child
-descriptor set after a successful readiness PING, then lowers only the soft
-limit to the highest open descriptor plus one plus eight. Every startup
-descriptor remains below the new limit, including inherited high-numbered
-descriptors. The number of additional admitted clients is the new soft
-limit minus the startup descriptor count; holes below the highest startup
-descriptor count as available slots. Sequential PONG-admitted peers consume
-those slots. Each admission must add exactly one child descriptor and
-preserve its startup descriptors, and the failing attempt requires every
-descriptor below the new soft limit to be occupied.
+Before this change, firn had no operational logger; main discarded stderr
+and `DEBUG LOG` was a no-op. Accept errors now use a bounded stderr sink,
+Redis's phrase, the host error-description API already used for AOF errors,
+and LF. The first Linux EMFILE diagnostic remains
+`Accepting client connection: Too many open files\n`. Firn does not
+reproduce Redis's process/time prefix or its `accept:` wrapper.
+
+All accept-error classes share main's one limiter. The first error can
+attempt a diagnostic immediately. Further attempts occur at least one
+second after the preceding bounded attempt finishes, including across
+successful accepts. Ineligible errors increment a saturating u64 count;
+the next eligible error appends ` (suppressed N accept errors)` when that
+count is nonzero and resets the count after the attempt. The suffix counts
+preceding omitted failures, not only failures of the current error class.
+Success does not reset the limiter or flush the count. If no later error
+occurs, that count remains unreported. A failed diagnostic attempt still
+consumes the interval and clears its preceding count, consistent with a
+best-effort sink rather than a reliable event log.
+
+A fixed 512-byte buffer reserves room for the largest 20-digit suppression
+count, its framing and LF; unavailable or oversized host descriptions use
+a generic fallback. Partial writes share one absolute 100 ms deadline and
+the orderly-stop watch. Error or zero progress abandons the remaining
+bytes. A completed write can win over expiry; finite message length and
+strictly advancing endpoints also bound retry count. Diagnostics cannot
+change the listener-retention policy, and `DEBUG LOG` continues to return
+OK while discarding its message.
+
+### Regression assumptions
+
+Separate adapter and native-route cases use the existing child, port and
+output harness, one worker and one driver, no AOF, unlimited clients and
+no idle timeout. They rely on Linux `/proc`, util-linux `prlimit` and
+permission to lower the child's soft limit through `prlimit64`.
+
+A tiny limit set only before exec can exhaust factory credits before native
+EMFILE. The cases instead start with soft and hard limits of 256, verify
+that limit and the child descriptor set after readiness PING, then lower
+only the soft limit to the highest open descriptor plus one plus eight.
+All startup descriptors stay below that limit, including inherited high
+ones. Available slots are the new soft limit minus the startup descriptor
+count; holes below the highest descriptor are included. Sequential
+PONG-admitted peers must each add exactly one descriptor and preserve the
+startup set. Before the failing attempt, every descriptor below the new
+soft limit must be occupied.
 
 The pinned runtime reads the initial soft limit once,
 [clips it at 1,048,576 and subtracts a reserve of 64](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1947-L1973),
-so the initial 256 supplies 192 factory credits. Its
+so 256 initially supplies 192 credits. Its
 [shared acquisition counter](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L594-L617)
-counts outstanding acquisitions through related factories; it does not
-track descriptor numbers or a live kernel limit. Lowering the child's
-RLIMIT_NOFILE therefore restricts new native descriptor allocation without
-shrinking that counter. The
+counts outstanding acquisitions, not descriptor numbers or the live kernel
+limit. Lowering RLIMIT_NOFILE constrains new native allocation without
+shrinking this counter. The
 [TCP listener](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1641),
 [stop listener](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1848)
 and [each accepted connection](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1723)
-consume one credit each. A native
+each consume one credit. A
 [failed accept returns its credit](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1749);
 closing both connection halves
-[returns one credit on the final descriptor-close attempt](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1478-L1482).
+[returns one credit on the final close](https://github.com/Ming-Research/Whitefoot/blob/af7665be672d/compiler/src/backend/ordinary_values.c#L1478-L1482).
 
-The case conservatively budgets two fixed acquisitions for the stop and
-TCP listeners, one readiness connection, every additional connection and
-one in-flight failing accept. It requires `additional_clients + 4 <= 192`,
-instead of imposing a fixed maximum soft limit of 64. This calculation
-ignores credits returned when startup closes its two directory handles;
-those can only provide more room. With AOF disabled and the checked
-one-descriptor-per-admission behavior, exhaustion can therefore reach the
-native accept instead of being refused earlier by the factory.
+The conservative requirement is two fixed listeners, one readiness client,
+every additional admitted client and one failing in-flight accept:
+`additional_clients + 4 <= 192`. It ignores credits returned by closing
+the two startup directory handles; these can only add room. With no AOF
+and the checked admission behavior, this permits native exhaustion rather
+than an earlier factory refusal. A very sparse inherited descriptor range
+can still fail this precondition. For highest descriptor H and startup
+count C, the requirement is `H + 13 - C <= 192`. With ten startup
+descriptors, H=189 fits exactly and H=190 fails; H=183 still fits. There is
+no universal highest-descriptor threshold independent of the count. This
+residual limitation is retained and diagnosed rather than changing the
+initial limit or removing inherited descriptors speculatively.
 
-Admission shares a 15-second deadline. A queued peer connects and sends
-PING, but must remain unserved for 500 ms while all slots are occupied.
-The case then retains every peer and waits at most five seconds for either
-the live captured EMFILE diagnostic or a change from the previously full
-child descriptor set, which exposes the old listener teardown. Only after
-this barrier does it close the queued peer and four admitted peers. This
-prevents delayed CI scheduling from freeing slots before the server's
-accept attempt has encountered exhaustion. A fresh peer must then receive
-PONG within ten seconds. Other clients stay open while SHUTDOWN NOSAVE
-must complete with status 0 within five seconds, and captured stderr must
-contain the EMFILE diagnostic above. Socket operations consume their
-remaining absolute deadline. On the previous unconditional break, EMFILE
-closes the listener while admitted clients still exist; releasing peers
-cannot restore it, so the fresh-client PONG requirement fails.
+Admission has a 15-second deadline. Once all slots are occupied, each case
+waits at most five seconds for the first exact EMFILE diagnostic while
+retaining every admitted peer and creating no new pending peer. It checks
+that the full descriptor set stays unchanged. This observes the idle
+accept failure before any recovery step can free resources.
+
+The quiet phase retains that state for 1.1 seconds and reads process
+`utime + stime` from `/proc/<pid>/stat` before and after. `getconf CLK_TCK`
+supplies the CI host's accounting frequency. CPU ticks are compared with
+25% of one core over the actual elapsed wall time, rounded up to one tick;
+new diagnostic prefixes are compared with whole elapsed seconds plus two
+boundary/drain lines. After process exit, each case also compares the full
+captured diagnostic count with whole elapsed seconds plus two, measured
+from just before the last admission through exit. This includes errors
+around queued-peer recovery and successful accepts, which must not reset
+the limiter. Loaded CI can mask CPU spin by starving the child,
+so this coarse CPU bound is not a precise idle-cost attribution. The log
+bound independently checks output growth, not scheduler behavior.
+
+The two recovery cases then queue a peer whose PING must stay unserved for
+500 ms, close it and four admitted peers, and require a fresh PONG within
+ten seconds. Other clients remain open through a five-second successful
+SHUTDOWN NOSAVE deadline. The two saturated-stop cases instead free no
+slots or queued peer: a retained client requests SHUTDOWN NOSAVE and the
+process must exit successfully within one second. This bounds overall stop;
+the timing alone cannot isolate whether the 100 ms retry sleep was
+cancelled. Socket operations use remaining absolute deadlines, and stderr
+must retain the EMFILE evidence.
+
+### Results and remaining evidence
 
 The initial
 [fixed-server CI run](https://github.com/Ming-Research/Firn-wf/actions/runs/38417574158)
-on revision `1d12de7beb1097bfc7304b14e23437018ed2d1eb` and the
-[unchanged-accept-loop control](https://github.com/Ming-Research/Firn-wf/actions/runs/38417578518)
-on revision `1204bec9b794a50dc77a29e37b5e25440bf44e77` both failed the old
-`soft <= 64` precondition before exercising exhaustion or recovery. Each
-observed startup descriptors `{0, 1, 2, 3, 4, 5, 6, 7, 142, 145}`: ten open
-descriptors, highest 145, new soft limit 154, and 144 available slots.
-The conservative credit requirement is 148, below the initial 192, so this
-observed layout fits the corrected precondition without changing the
-initial limit or dropping inherited descriptors.
+on `1d12de7beb1097bfc7304b14e23437018ed2d1eb` and
+[control](https://github.com/Ming-Research/Firn-wf/actions/runs/38417578518)
+on `1204bec9b794a50dc77a29e37b5e25440bf44e77` failed the former `soft <= 64`
+precondition before testing recovery. Both observed ten descriptors
+`{0, 1, 2, 3, 4, 5, 6, 7, 142, 145}`, giving soft limit 154, 144 additional
+clients and a conservative need for 148 of the initial 192 credits.
 
-The targets and origins of descriptors 142 and 145 were not recorded in
-those runs. They do not establish a test-harness descriptor leak. Cargo's
-intentionally inherited jobserver descriptors are a plausible explanation;
-ordinary Rust standard-library pipes and sockets use close-on-exec, but
-that mechanism alone does not identify these child descriptors. The
-repaired case records the child's descriptor targets and fdinfo, matching
-parent descriptors and jobserver authentication tokens for the next CI
-run. Until those observations exist, the source of the high descriptor
-numbers remains unknown.
+After replacing that precondition with the credit calculation,
+[the full gate and AOF sync-fault job passed](https://github.com/Ming-Research/Firn-wf/actions/runs/38420646489)
+on `6229b9b1510258def3485aedbd94c7789dff738a`. Its combined recovery case
+ran both I/O routes. The
+[old-accept-loop control](https://github.com/Ming-Research/Firn-wf/actions/runs/38420652184)
+on `1d08c2ee5f36528030a002f9a76b360a29a3ef95` failed on the adapter route
+at the last admission's descriptor-preservation check, not at the later
+fresh-client PONG check. Descriptor 153 was admitted and replied, but the
+next accept returned idle EMFILE and closed listener descriptor 6: the
+before set was 0 through 152, and the after set added 153 while losing 6.
+No additional peer had been queued. The control's combined case stopped
+there, so native-route failure before the fix remains unverified. Splitting
+the routes gives each future control an independent result.
 
-No local compiler, build, test or measurement was run. The precondition
-repair remains uncommitted and has no CI result; neither of the initial
-runs establishes EMFILE recovery or the required failing control. Both
-Linux routes and the full gate still need evidence on the repaired
-revision. The source and interfaces expose no Whitefoot gap needed for
-this fix: cancellation is distinct, host errors retain their native
-descriptions, and immediate waiting calls already provide scheduler
-fairness. No pin or submodule moves are required.
+The quiet CPU/log checks are predicted to fail on `6229b9b` by source
+reasoning: after the descriptor table fills with no peer pending, Linux's
+allocation-before-wait order returns EMFILE immediately, and that revision
+immediately retries and attempts a diagnostic for every failure. Its
+fairness handoff is not a pause. Given enough scheduled CPU, this produces
+busy retry CPU above the quiet bound and diagnostic growth above the
+one-per-second allowance. A heavily loaded runner can mask the CPU result
+by starving the child; unbounded diagnostic growth provides an independent
+output check. This is a prediction from the inspected paths, not a measured
+CPU/log control result on that revision or a universal timing guarantee.
+
+The passing run recorded ten startup descriptors on the adapter and
+thirteen on the native route, both with highest descriptor 145 and soft
+limit 154. Descriptor 142 was a nonblocking read pipe and 145 a write pipe
+with a different inode; neither had close-on-exec. Both matched the parent
+Rust test process by descriptor number, device, inode and flags, confirming
+inherited pipes rather than Whitefoot ring descriptors. The native route
+separately recorded its ring, eventpoll, eventfd and signalfd as descriptors
+5 through 8. No jobserver authentication tokens were present in the
+recorded Cargo/make environment. The earlier jobserver hypothesis is not
+established by these observations; the upstream producer of the two
+inherited pipes remains unknown. The diagnostics retain targets, fdinfo,
+parent matches and authentication tokens for subsequent runs.
+
+No local compiler, build, test or measurement was run. The current 100 ms
+resource pacing, one-second diagnostic limiter and separate quiet/stop
+cases are uncommitted and have no CI result. The earlier green gate
+validates listener retention and recovery before this pacing extension;
+it does not validate the new CPU, log-rate or saturated-stop criteria.
+Compiler acceptance, both revised routes, their controls and the full gate
+remain to be established on the new revision. No required Whitefoot gap,
+pin movement or submodule change was found.
