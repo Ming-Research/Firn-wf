@@ -441,5 +441,5 @@ Results: the case passed for both servers in the aof-sync-fault job of
 [run 38470333829](https://github.com/Ming-Research/Firn-wf/actions/runs/38470333829).
 The same case without the firn change failed in
 [run 38470344113](https://github.com/Ming-Research/Firn-wf/actions/runs/38470344113)
-after the trace showed the injected EIO on the directory's `fdatasync`,
-because firn never reported `aof_last_write_status:err` and kept admitting writes.
+after the trace showed the injected EIO on Redis's directory `fdatasync`
+and on firn's directory `fsync`, because firn never reported `aof_last_write_status:err` and kept admitting writes.

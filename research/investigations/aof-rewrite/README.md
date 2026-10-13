@@ -301,7 +301,8 @@ fixtures establish restart expectations,
 not execution of a failing directory sync. The aof-sync-fault job now
 fails the switch's directory sync after its rename ([switch manifest whose
 directory sync fails](rewrite-faults.md#switch-manifest-whose-directory-sync-fails));
-the installation's remains without a fault case. Startup's history-removal case covers the
+the installation's remains without a fault case (board item
+`firn-rw-install-dirsync-case`). Startup's history-removal case covers the
 successful cleanup path, but neither proves syscall ordering nor portably
 injects failure of the new pre-cleanup directory sync; that failure remains
 unverified and must retain both history files and manifest entries. The
