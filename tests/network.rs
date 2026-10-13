@@ -183,24 +183,41 @@ fn time_reply(stream: &mut TcpStream, what: &str) -> u64 {
     parts[0] * 1000 + parts[1] / 1000
 }
 
-/// Reads one whole RESP reply, a bulk string's or an array's elements
-/// included, and returns its bytes.
+/// Reads one whole RESP2 or RESP3 reply, including length-prefixed strings
+/// and aggregate children, and returns its bytes. A map's count is pairs.
 #[cfg(target_os = "linux")]
 fn whole_reply(stream: &mut TcpStream, what: &str) -> String {
     let mut reply = reply_line(stream, what);
     let count = reply[1..reply.len() - 2].parse::<i64>().unwrap_or(-1);
-    if reply.starts_with('$') && count >= 0 {
+    if matches!(reply.as_bytes()[0], b'$' | b'=' | b'!') && count >= 0 {
         let mut body = vec![0_u8; count as usize + 2];
         stream
             .read_exact(&mut body)
             .unwrap_or_else(|error| panic!("{what}: {error}"));
         reply.push_str(&String::from_utf8_lossy(&body));
-    } else if reply.starts_with('*') {
-        for _ in 0..count.max(0) {
+    } else if matches!(reply.as_bytes()[0], b'*' | b'%' | b'~' | b'>') {
+        let children = count.max(0) * if reply.starts_with('%') { 2 } else { 1 };
+        for _ in 0..children {
             reply.push_str(&whole_reply(stream, what));
         }
     }
     reply
+}
+
+/// A RESP3 map must consume both halves of every pair, including nested
+/// aggregates and verbatim/blob payloads, before the following reply. The
+/// old reader returned only %2 and misread HELLO's first key as CLIENT LIST.
+#[cfg(target_os = "linux")]
+#[test]
+fn whole_reply_consumes_resp3_children_before_the_next_reply() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind reader fixture");
+    let mut reader = bounded_stream(TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+    let (mut writer, _) = listener.accept().expect("accept reader fixture");
+    let first = "%2\r\n$6\r\nserver\r\n$5\r\nredis\r\n+data\r\n*3\r\n=7\r\ntxt:one\r\n~2\r\n:1\r\n_\r\n!3\r\nERR\r\n";
+    writer.write_all(format!("{first}>2\r\n+event\r\n*0\r\n+OK\r\n").as_bytes()).unwrap();
+    assert_eq!(whole_reply(&mut reader, "RESP3 map"), first);
+    assert_eq!(whole_reply(&mut reader, "RESP3 push"), ">2\r\n+event\r\n*0\r\n");
+    assert_eq!(whole_reply(&mut reader, "reply after the aggregates"), "+OK\r\n");
 }
 
 /// Reads exactly the bytes of the expected replies and compares them.
@@ -11213,42 +11230,299 @@ fn firn_keeps_access_times_in_no_touch_mode_as_redis_does() {
     assert_eq!(status, 0);
 }
 
-/// Inside MULTI firn queues CLIENT SETINFO, CLIENT LIST and CLIENT NO-TOUCH as
-/// it queues every CLIENT subcommand, and EXEC refuses the transaction whole
-/// as one holding a command firn does not run in transactions, where Redis
-/// 7.2.16 runs them (multi.c execCommand calls each queued command); the
-/// stored library name is unchanged. Outside the transaction the same
-/// commands answer as before.
+/// Redis 7.2.16 server.c processCommand queues these CLIENT subcommands:
+/// none of their src/commands/client-*.json flags contains NO_MULTI. Its
+/// multi.c execCommand returns the replies in order and keeps CLIENT_MULTI
+/// and the full queue count until all commands finish. Before this repair
+/// firn ran CLIENT SETINFO immediately, so its +QUEUED assertion fails; the
+/// former EXECABORT expectation also disagreed with Redis's source.
 #[cfg(target_os = "linux")]
 #[test]
-fn firn_refuses_client_subcommands_in_a_transaction_whole() {
+fn firn_executes_client_subcommands_in_transactions_as_redis_does() {
     let program = firn();
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
-    let mut batch = Vec::new();
-    for request in [
-        vec!["MULTI"],
-        vec!["CLIENT", "SETINFO", "lib-name", "inside"],
-        vec!["CLIENT", "LIST"],
-        vec!["CLIENT", "NO-TOUCH", "ON"],
-        vec!["EXEC"],
-        vec!["CLIENT", "INFO"],
-    ] {
-        batch.extend(resp(&request));
+    let mut observer = connect_when_ready(port, &child);
+    let queue = |client: &mut TcpStream, requests: &[Vec<&str>]| {
+        let mut batch = resp(&["MULTI"]);
+        for request in requests {
+            batch.extend(resp(request));
+        }
+        client.write_all(&batch).expect("queue CLIENT commands");
+        // multi.c multiCommand answers OK; server.c processCommand answers
+        // QUEUED after queueMultiCommand, without invoking clientCommand.
+        assert_eq!(reply_line(client, "MULTI"), "+OK\r\n");
+        for request in requests {
+            assert_eq!(reply_line(client, &request.join(" ")), "+QUEUED\r\n");
+        }
+    };
+    let fields = |line: &str, expected: &[&str]| {
+        assert_eq!(line.lines().count(), 1, "{line:?}");
+        for field in expected {
+            assert!(line.split_ascii_whitespace().any(|value| value == *field), "missing {field:?}: {line:?}");
+        }
+    };
+    for protocol in ["2", "3"] {
+        let read_text = |client: &mut TcpStream, what: &str| {
+            // networking.c clientCommand uses addReplyVerbatim for INFO
+            // and LIST: bulk in RESP2, =length/txt: in RESP3.
+            if protocol == "2" { bulk_reply(client, what) } else { verbatim_reply(client, what) }
+        };
+        client.write_all(&resp(&["HELLO", protocol])).expect("select protocol");
+        // networking.c helloCommand uses addReplyMapLen(7), whose RESP2
+        // form is *14 and whose RESP3 form is %7.
+        let hello = whole_reply(&mut client, "HELLO");
+        assert!(hello.starts_with(if protocol == "2" { "*14\r\n" } else { "%7\r\n" }), "{hello:?}");
+        // CLIENT's OK replies come from clientCommand/clientSetinfoCommand;
+        // t_string.c setGenericCommand answers shared.ok for plain SET.
+        for request in [
+            vec!["CLIENT", "SETNAME", ""],
+            vec!["CLIENT", "SETINFO", "lib-name", ""],
+            vec!["CLIENT", "NO-TOUCH", "OFF"],
+            vec!["SET", "foo", "bar"],
+            vec!["SET", "untouched", "bar"],
+        ] {
+            assert_eq!(memory_request(&mut client, &request), "+OK\r\n");
+        }
+        std::thread::sleep(Duration::from_millis(2200));
+        queue(&mut client, &[
+            vec!["CLIENT", "ID"],
+            vec!["CLIENT", "GETNAME"],
+            vec!["CLIENT", "SETNAME", "inside"],
+            vec!["CLIENT", "GETNAME"],
+            vec!["CLIENT", "SETINFO", "lib-name", "inside"],
+            vec!["CLIENT", "INFO"],
+            vec!["CLIENT", "LIST", "ID", "1"],
+            vec!["CLIENT", "NO-TOUCH", "ON"],
+            vec!["CLIENT", "INFO"],
+            vec!["CLIENT", "LIST", "ID", "1"],
+            vec!["GET", "foo"],
+            vec!["OBJECT", "IDLETIME", "foo"],
+        ]);
+        // A second connection observes the old name and library: the queued
+        // setters have not run. Other-client volatile fields are omitted by
+        // design/firn/reported-facts.md, so do not invent an observer flag.
+        observer.write_all(&resp(&["CLIENT", "LIST", "ID", "1"])).expect("inspect queued setters");
+        let line = bulk_reply(&mut observer, "client before EXEC");
+        fields(&line, &["id=1", "name=", "lib-name="]);
+
+        client.write_all(&resp(&["EXEC"])).expect("execute CLIENT commands");
+        // multi.c execCommand emits one array with mstate.count elements.
+        assert_eq!(reply_line(&mut client, "EXEC"), "*12\r\n");
+        // networking.c clientCommand: ID is c->id; absent GETNAME uses
+        // addReplyNull; SETNAME uses clientSetNameOrReply then shared.ok;
+        // GETNAME returns the name just set as a bulk string.
+        assert_eq!(integer_reply(&mut client, "queued CLIENT ID"), 1);
+        assert_eq!(reply_line(&mut client, "unnamed CLIENT GETNAME"), if protocol == "2" { "$-1\r\n" } else { "_\r\n" });
+        assert_eq!(reply_line(&mut client, "queued CLIENT SETNAME"), "+OK\r\n");
+        assert_eq!(bulk_reply(&mut client, "named CLIENT GETNAME"), "inside");
+        // networking.c clientSetinfoCommand stores lib-name, then shared.ok.
+        assert_eq!(reply_line(&mut client, "queued CLIENT SETINFO"), "+OK\r\n");
+        // networking.c catClientInfoString gives x while CLIENT_MULTI,
+        // mstate.count (not remaining commands), and lastcmd. server.c
+        // processCommand set lastcmd to EXEC; execCommand changes cmd only.
+        for what in ["queued CLIENT INFO", "queued CLIENT LIST"] {
+            let line = read_text(&mut client, what);
+            fields(&line, &["id=1", "name=inside", "lib-name=inside", "flags=x", "multi=12", "cmd=exec"]);
+        }
+        // networking.c clientCommand's no-touch branch sets CLIENT_NO_TOUCH
+        // and answers shared.ok; catClientInfoString appends T after x.
+        assert_eq!(reply_line(&mut client, "queued CLIENT NO-TOUCH"), "+OK\r\n");
+        for what in ["queued INFO after NO-TOUCH", "queued LIST after NO-TOUCH"] {
+            let line = read_text(&mut client, what);
+            fields(&line, &["id=1", "name=inside", "lib-name=inside", "flags=xT", "multi=12", "cmd=exec"]);
+        }
+        // db.c lookupKey sees NO-TOUCH set by an earlier EXEC command; GET
+        // must leave the stamp intact. object.c objectCommand's IDLETIME
+        // branch reads that stamp without touching it; t_string.c
+        // getCommand/getGenericCommand gives the stored value as a bulk.
+        assert_eq!(bulk_reply(&mut client, "GET inside no-touch EXEC"), "bar");
+        assert!(integer_reply(&mut client, "IDLETIME inside no-touch EXEC") >= 2, "GET in EXEC touched the key");
+        client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect applied setters");
+        let line = read_text(&mut client, "CLIENT INFO after EXEC");
+        // multi.c discardTransaction clears MULTI, but does not undo the
+        // setters. networking.c catClientInfoString now gives T and -1.
+        fields(&line, &["name=inside", "lib-name=inside", "flags=T", "multi=-1", "cmd=client|info"]);
+        observer.write_all(&resp(&["CLIENT", "LIST", "ID", "1"])).expect("inspect published setters");
+        fields(&bulk_reply(&mut observer, "client after EXEC"), &["id=1", "name=inside", "lib-name=inside"]);
+        assert_eq!(memory_request(&mut client, &["GET", "foo"]), "$3\r\nbar\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", "foo") >= 2, "NO-TOUCH did not survive EXEC");
+
+        // db.c lookupKey tests server.current_client->cmd, which remains the
+        // real EVAL caller. script.c scriptCall changes the fake client's cmd;
+        // server.c call switches executing_client, not current_client. Thus
+        // Lua TOUCH counts the key (expire.c touchCommand) without exempting
+        // this NO-TOUCH caller from its access-stamp suppression.
+        assert_eq!(memory_request(&mut client, &["EVAL", "return redis.call('TOUCH','foo')", "0"]), ":1\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", "foo") >= 2, "Lua TOUCH refreshed a NO-TOUCH caller's key");
+
+        queue(&mut client, &[
+            vec!["TOUCH", "foo"],
+            vec!["OBJECT", "IDLETIME", "foo"],
+            vec!["CLIENT", "INFO"],
+        ]);
+        client.write_all(&resp(&["EXEC"])).expect("execute TOUCH in no-touch mode");
+        // db.c lookupKey exempts touchCommand from CLIENT_NO_TOUCH;
+        // expire.c touchCommand returns the number of existing keys touched.
+        expect_replies(&mut client, b"*3\r\n:1\r\n", "TOUCH inside no-touch EXEC");
+        assert!(integer_reply(&mut client, "IDLETIME after TOUCH in EXEC") <= 1, "TOUCH in EXEC did not refresh the key");
+        fields(&read_text(&mut client, "INFO after TOUCH in EXEC"), &["flags=xT", "multi=3", "cmd=exec"]);
+        client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect mode after TOUCH");
+        fields(&read_text(&mut client, "INFO after TOUCH EXEC"), &["flags=T", "multi=-1"]);
+
+        queue(&mut client, &[
+            vec!["CLIENT", "NO-TOUCH", "OFF"],
+            vec!["GET", "untouched"],
+            vec!["OBJECT", "IDLETIME", "untouched"],
+            vec!["CLIENT", "INFO"],
+        ]);
+        client.write_all(&resp(&["EXEC"])).expect("execute NO-TOUCH OFF");
+        expect_replies(&mut client, b"*4\r\n+OK\r\n$3\r\nbar\r\n", "NO-TOUCH OFF and GET in EXEC");
+        // clientCommand clears the flag before GET; lookupKey refreshes this
+        // key, untouched since before the sleep (unlike foo after TOUCH).
+        assert!(integer_reply(&mut client, "IDLETIME after OFF in EXEC") <= 1, "GET after OFF did not touch the key");
+        fields(&read_text(&mut client, "INFO after OFF in EXEC"), &["flags=x", "multi=4", "cmd=exec"]);
+
+        // These are handler errors, not lookup/arity errors. processCommand
+        // queues them; execCommand puts their errors in its array and keeps
+        // executing. Sources: clientSetNameOrReply, clientSetinfoCommand,
+        // clientCommand's no-touch/list branches, then its ID branch.
+        queue(&mut client, &[
+            vec!["CLIENT", "SETNAME", "bad name"],
+            vec!["CLIENT", "SETINFO", "lib-name", "bad library"],
+            vec!["CLIENT", "NO-TOUCH", "maybe"],
+            vec!["CLIENT", "LIST", "TYPE", "bogus"],
+            vec!["CLIENT", "ID"],
+        ]);
+        client.write_all(&resp(&["EXEC"])).expect("execute runtime errors");
+        expect_replies(&mut client, b"*5\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n-ERR lib-name cannot contain spaces, newlines or special characters.\r\n-ERR syntax error\r\n-ERR Unknown client type 'bogus'\r\n:1\r\n", "runtime errors continue the EXEC array");
+
+        // server.c commandCheckArity/commandCheckExistence reject immediately;
+        // rejectCommandSds calls multi.c flagTransaction. execCommand answers
+        // shared.execaborterr and applies none of the queued setters.
+        for (invalid, error) in [
+            (vec!["CLIENT", "SETINFO", "lib-name"], "-ERR wrong number of arguments for 'client|setinfo' command\r\n"),
+            (vec!["CLIENT", "NOPE"], "-ERR unknown subcommand 'NOPE'. Try CLIENT HELP.\r\n"),
+        ] {
+            let mut batch = resp(&["MULTI"]);
+            batch.extend(resp(&["CLIENT", "SETINFO", "lib-name", "aborted"]));
+            batch.extend(resp(&invalid));
+            batch.extend(resp(&["CLIENT", "NO-TOUCH", "ON"]));
+            batch.extend(resp(&["EXEC"]));
+            client.write_all(&batch).expect("send malformed CLIENT transaction");
+            expect_replies(&mut client, format!("+OK\r\n+QUEUED\r\n{error}+QUEUED\r\n-EXECABORT Transaction discarded because of previous errors.\r\n").as_bytes(), "malformed CLIENT dirties the queue");
+            client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect aborted setters");
+            fields(&read_text(&mut client, "INFO after EXECABORT"), &["name=inside", "lib-name=inside", "flags=N", "multi=-1"]);
+        }
+
+        queue(&mut client, &[
+            vec!["CLIENT", "SETNAME", "discarded"],
+            vec!["CLIENT", "SETINFO", "lib-name", "discarded"],
+            vec!["CLIENT", "NO-TOUCH", "ON"],
+        ]);
+        // multi.c discardCommand discards the queue, then answers shared.ok;
+        // the connection setters never run and NO-TOUCH stays off.
+        assert_eq!(memory_request(&mut client, &["DISCARD"]), "+OK\r\n");
+        client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect discarded setters");
+        fields(&read_text(&mut client, "INFO after DISCARD"), &["name=inside", "lib-name=inside", "flags=N", "multi=-1"]);
     }
-    client.write_all(&batch).expect("send the transaction");
-    expect_replies(
-        &mut client,
-        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n-EXECABORT Transaction discarded because it holds a command firn does not run in transactions\r\n",
-        "the transaction",
-    );
-    let line = bulk_reply(&mut client, "CLIENT INFO after the refused transaction");
-    assert!(line.ends_with(" lib-name= lib-ver=\n"), "{line:?}");
-    assert!(line.contains(" flags=N "), "{line:?}");
     drop(client);
+    drop(observer);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// A transaction's published connection metadata and key writes become
+/// visible together. Redis 7.2.16 multi.c execCommand runs clientSetinfoCommand
+/// and t_string.c setCommand without another client running between them.
+/// After GET observes version n, a later CLIENT LIST must report a library
+/// version at least n (networking.c clientCommand/catClientInfoString).
+/// Publishing the client record after releasing the transaction's holds
+/// permits GET(new marker), LIST(old library). This concurrent case can catch
+/// that interleaving; scheduling does not guarantee it on every faulty run.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_publishes_exec_client_metadata_with_its_key_writes() {
+    const VERSIONS: u32 = 32;
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]).with_port(&port_lease);
+    let mut writer = connect_when_ready(port, &child);
+    writer.write_all(&resp(&["CLIENT", "ID"])).expect("read the writer's ID");
+    // networking.c clientCommand's ID branch returns c->id.
+    let writer_id = integer_reply(&mut writer, "writer ID").to_string();
+    writer.write_all(&[
+        resp(&["CLIENT", "SETINFO", "lib-name", "0"]),
+        resp(&["SET", "client-version", "0"]),
+    ].concat()).expect("initialize matching versions");
+    // networking.c clientSetinfoCommand and t_string.c setGenericCommand.
+    expect_replies(&mut writer, b"+OK\r\n+OK\r\n", "initial versions");
+    let mut observer = connect_when_ready(port, &child);
+    let (announced_tx, announced_rx) = std::sync::mpsc::channel();
+    let (sampled_tx, sampled_rx) = std::sync::mpsc::channel();
+    let writer_thread = std::thread::spawn(move || {
+        for version in 1..=VERSIONS {
+            // Announce before sending, so the observer races with every
+            // transaction instead of merely checking the final state.
+            announced_tx.send(version).expect("announce the next transaction");
+            let version_text = version.to_string();
+            let batch = [
+                resp(&["MULTI"]),
+                resp(&["CLIENT", "SETINFO", "lib-name", &version_text]),
+                resp(&["SET", "client-version", &version_text]),
+                resp(&["EXEC"]),
+            ].concat();
+            writer.write_all(&batch).expect("commit matching versions");
+            // multiCommand/processCommand give OK/QUEUED; execCommand emits
+            // *2, then clientSetinfoCommand/setGenericCommand each give OK.
+            expect_replies(&mut writer, b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n+OK\r\n", "version transaction");
+            assert_eq!(sampled_rx.recv_timeout(Duration::from_secs(10)).expect("observer samples each committed version"), version);
+        }
+        writer
+    });
+    let sample = |observer: &mut TcpStream| {
+        // Separate commands deliberately allow a newer transaction between
+        // GET and LIST: monotone versions permit >= rather than equality.
+        observer.write_all(&resp(&["GET", "client-version"])).expect("sample committed marker");
+        // t_string.c getGenericCommand returns the stored bulk value.
+        let marker = bulk_reply(observer, "committed marker").parse::<u32>().expect("numeric marker");
+        observer.write_all(&resp(&["CLIENT", "LIST", "ID", &writer_id])).expect("sample published client metadata");
+        // networking.c clientCommand uses addReplyVerbatim (RESP2 bulk);
+        // catClientInfoString reads the connection's stored lib_name.
+        let line = bulk_reply(observer, "published library version");
+        assert_eq!(line.lines().count(), 1, "{line:?}");
+        let library = line.split_ascii_whitespace()
+            .find_map(|field| field.strip_prefix("lib-name="))
+            .expect("library field")
+            .parse::<u32>().expect("numeric library version");
+        assert!(library >= marker, "GET saw version {marker}, but CLIENT LIST saw older version {library}: {line:?}");
+        marker
+    };
+    let mut samples = 0;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    for expected in 1..=VERSIONS {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert_eq!(announced_rx.recv_timeout(remaining).expect("writer starts each transaction before the overall deadline"), expected);
+        loop {
+            assert!(Instant::now() < deadline, "writer did not commit version {expected} before the overall deadline");
+            let observed = sample(&mut observer);
+            samples += 1;
+            if observed >= expected {
+                sampled_tx.send(expected).expect("acknowledge sampled progress");
+                break;
+            }
+        }
+    }
+    assert!(samples >= VERSIONS, "every progressing version must be sampled");
+    let writer = writer_thread.join().expect("version writer finishes");
+    assert_eq!(sample(&mut observer), VERSIONS, "final matching versions");
+    drop(writer);
+    drop(observer);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
 }

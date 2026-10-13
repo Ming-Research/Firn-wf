@@ -495,34 +495,47 @@ fn client_record(client: &Client) -> made: ClientRecord reads(client) {
   return ClientRecord(id: client^.id, since_us: client^.since_us, resp: client^.resp, addr: move addr, laddr: move laddr, name: move name, lib_name: move lib_name, lib_ver: move lib_ver);
 }
 
+fn client_publish(table: &ClientTable, record: ClientRecord) -> result: unit writes(table) {
+  doc "Places a connection's owned record into the caller-held table, replacing its earlier record and preserving client-number order.";
+  let position = client_table_position(table: table, id: record.id);
+  if position < table^.records.inner.len {
+    if table^.records.inner[position].id == record.id {
+      let replaced = remove_at(window: &table^.records.inner, index: position);
+    }
+  }
+  if table^.records.inner.len >= table^.records.inner.cap {
+    let doubled = table^.records.inner.cap +wrap table^.records.inner.cap;
+    let target = imax(doubled, 16_u64);
+    if target <= 1073741824_u64 {
+      if target >= table^.records.inner.cap {
+        grow(cell: &table^.records, capacity: target);
+      }
+    }
+  }
+  let inside = position <= table^.records.inner.len;
+  let room = table^.records.inner.len < table^.records.inner.cap;
+  let possible = band(inside, room);
+  if possible {
+    insert_at(window: &table^.records.inner, index: position, value: move record);
+  } else {
+    let dropped = move record;
+  }
+  return unit;
+}
+
 fn client_sync(store: &Keyspace, client: &Client) -> result: unit reads(store), reads(client) waits {
   doc "Publishes the facts of a connection that CLIENT LIST shows to the other connections, replacing the record the connection published before and keeping the records in the order of their numbers. The record is made before the statement, so the table is held only to place it.";
   let record = client_record(client: client);
-  atomic t = &store^.clients {
-    let position = client_table_position(table: t, id: record.id);
-    if position < t^.records.inner.len {
-      if t^.records.inner[position].id == record.id {
-        let replaced = remove_at(window: &t^.records.inner, index: position);
-      }
-    }
-    if t^.records.inner.len >= t^.records.inner.cap {
-      let doubled = t^.records.inner.cap +wrap t^.records.inner.cap;
-      let target = imax(doubled, 16_u64);
-      if target <= 1073741824_u64 {
-        if target >= t^.records.inner.cap {
-          grow(cell: &t^.records, capacity: target);
-        }
-      }
-    }
-    let inside = position <= t^.records.inner.len;
-    let room = t^.records.inner.len < t^.records.inner.cap;
-    let possible = band(inside, room);
-    if possible {
-      insert_at(window: &t^.records.inner, index: position, value: move record);
-    } else {
-      let dropped = move record;
-    }
+  atomic table = &store^.clients {
+    client_publish(table: table, record: move record);
   }
+  return unit;
+}
+
+fn client_sync_held(table: &ClientTable, client: &Client) -> result: unit reads(client), writes(table) {
+  doc "Publishes the connection's current facts into the caller-held table without waiting, so EXEC publishes changed names and library metadata before releasing the same statement that commits its key changes.";
+  let record = client_record(client: client);
+  client_publish(table: table, record: move record);
   return unit;
 }
 

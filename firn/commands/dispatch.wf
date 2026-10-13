@@ -1243,7 +1243,9 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if code == code_client {
     let fits = count >= 2_u64;
     if fits {
-      run_client(store: store, input: input, args: args, client: client);
+      atomic table = &store^.clients {
+        run_client(table: table, input: input, args: args, client: client, multi: -1_i64);
+      }
     } else {
       reply_arity(client: client, input: input, name: name);
     }

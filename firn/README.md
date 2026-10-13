@@ -77,8 +77,10 @@ clients send on their own:
   and sorted sets command this list names, including `SCAN`, `KEYS` and
   `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
   `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`; `INFO` is not among
-  them. These same command parts run in scripts.
-  A command without parts, or any name firn does not run, is queued and makes
+  them. These same command parts run in scripts. The supported `CLIENT`
+  subcommands also run in the transaction's statement, using the connection's
+  state and the shared table of clients; they remain unavailable to scripts.
+  Any other command without parts, or any name firn does not run, is queued and makes
   `EXEC` refuse the whole transaction without running any of it, where Redis
   refuses a name it lacks when it is sent; unknown subcommands and commands
   outside their table arity are refused when sent and make `EXEC` abort, as
@@ -286,23 +288,34 @@ and its keyspace line gives `keys` alone, without the `expires` and
 `avg_ttl` firn does not count.
 
 `CLIENT INFO` and `CLIENT LIST` answer the connections' lines in Redis
-7.2.16's form, with real values for the id, the peer's and the server's
+7.2.16's form, as bulk strings under RESP2 and verbatim text under RESP3,
+with real values for the id, the peer's and the server's
 address (`ip:port`, an IPv6 address in brackets; empty where the host refuses
 to report one, as Redis leaves it), the name, the age, the protocol and the
 library name and version `CLIENT SETINFO` set, and values fixed and true of
 firn for the others they give. They leave out what firn cannot report: the
 descriptor, the events and the sizes of Redis's buffers. The line of the
 connection that runs the command also gives idle, flags (`T` while
-`CLIENT NO-TOUCH ON` holds), multi and cmd; the lines of the other
+`CLIENT NO-TOUCH ON` holds), multi and cmd. During `EXEC`, the calling
+connection shows `x` before `T` when present, the full queued command count
+in multi, and `cmd=exec`, as Redis's `catClientInfoString` reports them;
+outside a transaction it shows multi=-1. The lines of the other
 connections in `CLIENT LIST` leave those four out, firn keeping no
 per-command state of one connection where the others can read it. `CLIENT
 LIST` takes `TYPE normal|master|replica|slave|pubsub`, listing nothing for a
 type but normal, and `ID id...`. `CLIENT NO-TOUCH ON` makes the
-connection's reads leave the access stamps of keys alone, except `TOUCH`.
+connection's reads leave the access stamps of keys alone, except `TOUCH`
+sent directly or queued in `MULTI`. A script's `redis.call('TOUCH', ...)`
+still leaves them alone while NO-TOUCH is on, because Redis checks the
+outer connection's command, which remains `EVAL` or `EVALSHA`.
 The other `CLIENT` subcommands of Redis 7.2.16 (`CACHING`, `GETREDIR`,
 `HELP`, `KILL`, `NO-EVICT`, `PAUSE`, `REPLY`, `TRACKING`, `TRACKINGINFO`,
-`UNBLOCK` and `UNPAUSE`) are answered as unknown subcommands, and no `CLIENT`
-subcommand runs inside `MULTI`, where `EXEC` refuses the transaction.
+`UNBLOCK` and `UNPAUSE`) are answered as unknown subcommands. Supported
+`CLIENT` subcommands inside `MULTI` answer `QUEUED` and run in order during
+`EXEC`, with their replies in its array. Name, library and NO-TOUCH changes
+apply to later queued commands and remain after `EXEC`. Invalid subcommands
+or command-table arities dirty the transaction when sent; option and value
+errors occur in the `EXEC` array and leave subsequent commands running.
 
 `HELLO` and `INFO` report the server as `redis` version 7.2.16, the
 reference firn follows.
