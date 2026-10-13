@@ -16,7 +16,11 @@ Decision: Dragonfly is refused in AOF cells because it supports snapshots but no
 
 Decision: Garnet's AOF results remain labelled durability not equal until the pinned commit path establishes disk synchronization, because the instrument's committed-offset and file checks establish logging but do not prove fsync, instead of treating a millisecond commit setting as evidence of equal durability ([persistence parity](../../research/investigations/perf-baseline/README.md#rule-2-persistence-parity-in-the-aof-cells)).
 
-Decision: The compare client divides exactly 50 connections across its assigned CPUs, reports multi-process quantiles as explicit upper bounds, and runs an additional single-process threaded pass for every line in a competitor comparison so that only its exact merged p99 decides the latency verdict, because redis-benchmark CSV percentiles cannot reconstruct a merged distribution, instead of treating the first process's p99, an average of percentiles or the maximum process p99 as an exact combined p99 ([measurement policy](../../research/investigations/perf-baseline/README.md#workloads-and-settings)).
+Decision: The compare client divides exactly 50 connections across its assigned CPUs, because the baseline rules fix 50 client connections for every line, instead of three connections per client CPU, which gave 48.
+
+Decision: Multi-process compare rows label their quantiles as upper bounds, because redis-benchmark CSV percentiles cannot reconstruct a merged distribution and their maximum only bounds the combined p99, instead of reporting the first process's p99 or an average of percentiles as the combined value.
+
+Decision: A competitor comparison runs one additional single-process threaded pass for every line and only its exact merged p99 decides the latency verdict, because a bound cannot decide whether firn's p99 is above a competitor's ([measurement policy](../../research/investigations/perf-baseline/README.md#workloads-and-settings)), instead of judging p99 from the multi-process bounds.
 
 Rejected:
 - Matching leftovers by command name: rejected because other projects run the same servers on the machine.

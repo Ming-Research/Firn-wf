@@ -616,7 +616,9 @@ jobs:
           stages+=("$valkey_stage")
           make -C "$work/valkey-source" -j2
           make -C "$work/valkey-source" PREFIX="$valkey_stage" install
-          [ -x "$valkey_stage/bin/valkey-server" ] && [ -x "$valkey_stage/bin/valkey-cli" ]
+          # Each check exits on its own: set -e ignores a failure before && .
+          [ -x "$valkey_stage/bin/valkey-server" ] || { echo "valkey-server missing after build" >&2; exit 1; }
+          [ -x "$valkey_stage/bin/valkey-cli" ] || { echo "valkey-cli missing after build" >&2; exit 1; }
           valkey_dest="$opt/valkey-$VALKEY_VERSION"
           replace_release "$valkey_stage" "$valkey_dest"
           receipt "$valkey_dest" "$VALKEY_VERSION" "$VALKEY_URL" "$VALKEY_SHA256" \
@@ -687,7 +689,8 @@ jobs:
             stages+=("$runtime_stage")
             curl --fail --location --retry 3 https://dot.net/v1/dotnet-install.sh -o "$work/dotnet-install.sh"
             bash "$work/dotnet-install.sh" --runtime dotnet --channel "$channel" --install-dir "$runtime_stage"
-            [ -x "$runtime_stage/dotnet" ] && runtime_compatible "$runtime_stage/dotnet"
+            [ -x "$runtime_stage/dotnet" ] || { echo "dotnet missing after install" >&2; exit 1; }
+            runtime_compatible "$runtime_stage/dotnet" || { echo "installed dotnet runtime incompatible" >&2; exit 1; }
             replace_release "$runtime_stage" "$opt/dotnet"
             runtime="$opt/dotnet/dotnet"
           fi
