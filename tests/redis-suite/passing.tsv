@@ -187,6 +187,11 @@ unit/scripting	EVALSHA - Can we call a SHA1 in uppercase?	1
 unit/scripting	EVALSHA - Do we get an error on invalid SHA1?	1
 unit/scripting	EVALSHA - Do we get an error on non defined SHA1?	1
 unit/scripting	INCRBYFLOAT: We can call scripts expanding client->argv from Lua	1
+unit/scripting	LUA redis.error_reply API with CRLF injection attempt	1
+unit/scripting	LUA redis.status_reply API	1
+unit/scripting	LUA test pcall	1
+unit/scripting	LUA test pcall with error	1
+unit/scripting	LUA test pcall with non string/integer arg	1
 unit/scripting	LUA test trim string as expected	1
 unit/scripting	SCRIPT EXISTS - can detect already defined scripts?	1
 unit/scripting	SCRIPT LOAD - is able to register scripts in the scripting cache	1

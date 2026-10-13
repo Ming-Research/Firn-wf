@@ -45,8 +45,9 @@ clients send on their own:
   `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count, `ZREMRANGEBYRANK`,
   `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores read as Redis reads
   them and written as Redis 7.0.15 writes them, in C's `%.17g`, which
-  differs from the shortest form of Redis 7.2.16 for some values, such as
-  0.1 (board item firn-score-text-72);
+  differs from Redis 7.2.16's text, which comes from Grisu2 (`fpconv_dtoa`)
+  without an exact fallback and so is not always the shortest, for some
+  values, such as 0.1 (board item firn-score-text-72);
 - scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
   `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
   has written nothing, running Lua 5.1 scripts on the Halo engine
@@ -58,7 +59,13 @@ clients send on their own:
   written as parts, those `MULTI` runs, inside the script's statement,
   through Halo's resumable host call; any other command is answered with
   Redis's error for an unknown one, noting that firn may not run it from
-  scripts yet;
+  scripts yet. A Lua number passed to a command and a script's `{double=x}`
+  reply are written as Redis 7.2.16 writes them, through Halo-wf's port of
+  `fpconv_dtoa`; the globals, every table reachable from them and the string
+  metatable are read-only, as in Redis 7.2.16, while `KEYS` and `ARGV` stay
+  writable; `redis.REDIS_VERSION` is 7.2.16; `redis.set_repl` accepts
+  `REPL_AOF` and `REPL_ALL` and refuses `REPL_NONE`, `REPL_SLAVE` and
+  `REPL_REPLICA`, whose partial propagation firn does not implement;
 - connection: `PING`, `ECHO`, `QUIT`, `RESET`, `AUTH`, `HELLO` with no version,
   version 2 or version 3, which switches the connection to RESP3,
   `SELECT 0`, firn having one database, and `CLIENT ID`, `CLIENT GETNAME`,
@@ -495,9 +502,9 @@ host's description of the error, `strerror`'s C-locale text on Linux, such as
 (`server.c:3881-3905,4324-4355`). A failed append is described when nothing
 of it was written; otherwise the sync error is. After a short write Redis
 reports `No space left on device` whatever the host returned
-(`aof.c:1163-1184`); firn leaves that suffix empty until Whitefoot can name
-the host's ENOSPC (board item `firn-req-enospc-text`), as it does when the
-host cannot describe an error.
+(`aof.c:1163-1184`); firn describes the short write by the host's text for the
+no-space class, which leaves the suffix empty only when the host cannot
+describe an error.
 The command that exposed the failure can already have succeeded, since replies
 do not wait for everysec durability. Partial appends attempt rollback to the
 pre-flush incremental size, retaining all bytes on successful rollback and only
