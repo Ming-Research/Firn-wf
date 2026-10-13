@@ -55,7 +55,7 @@ of the current compiler/runtime. The rules above are cited at Firn's current
 pin.
 
 The audit also found an accept error that can stop service with status zero
-([pending correction in PR #104][accept-pr]), and unknown AOF commands whose error replies are
+([pending correction in PR #104][accept-pr]), and, read from source but not yet confirmed by a run, unknown AOF commands whose error replies are
 discarded ([board item `firn-bl-01-10`][board]). These are operational and
 persisted-state correctness gaps; memory safety does not establish their
 recovery policy or Redis semantics. Their source evidence is in the
@@ -71,7 +71,7 @@ kernel must honor their interfaces ([SCOPE-3][scope], [PRE-1, PRE-2][host],
 code still need ordinary application-correctness evidence.
 
 **Runtime census, 2026-10-13:** Linux x86-64, for both CI's ordinary cached
-Firn build and its `--par` test build ([Makefile](../Makefile#L49)). The pinned
+Firn build and its `--par` test build ([Makefile](../Makefile#L51-L60)). The pinned
 [driver's source lists][driver-lists] and [selection function][driver-select]
 select the same ordinary library, scheduler and completion units in both;
 Firn's boxed storage also requires `heap.c`. There are **14 independent C
