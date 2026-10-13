@@ -89,6 +89,8 @@ jobs:
     name: network tests
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,6 +109,15 @@ jobs:
 
       - name: Select the Rust toolchain
         run: rustup default stable && cargo --version
+
+      - name: Install syscall fault instrumentation
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
+
+      - name: Cache the pinned Redis oracle for rewrite crash cases
+        uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
       - name: Build firn for the network cases and run them
         run: make test
@@ -146,11 +157,11 @@ jobs:
   # The append-only file's sync failing on a real device:
   # tests/aof_sync_fault_device.sh makes a device-mapper device whose writes
   # and flushes fail on command, under an ext4 filesystem the case runs firn
-  # and Redis 7.2.16, its oracle, on. The case is ignored in `make check`,
-  # which has no such device; here it runs alone, and a device that cannot be
+  # and Redis 7.2.16, its oracle, on. The cases are ignored in `make check`,
+  # which has no such device; here they run serially, and a device that cannot be
   # made, a missing oracle or a run that passes no case fails the job.
   aof-sync-fault:
-    name: AOF sync failure on a faulty device
+    name: AOF sync and rewrite failures
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -165,7 +176,7 @@ jobs:
       - name: Install the host toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dmsetup
+          sudo apt-get install -y --no-install-recommends dmsetup strace
           make toolchain
           ld.lld --version
           /usr/bin/clang --version
@@ -213,8 +224,8 @@ jobs:
         run: sudo tests/aof_sync_fault_device.sh check-writeback "$FIRN_SYNC_FAULT_MOUNT"
 
       # The target fails without FIRN_SYNC_FAULT_MOUNT and REDIS_SERVER, set
-      # by the steps above, and unless both of its cases ran and passed.
-      - name: Run the sync-failure cases
+      # by the steps above, and unless all five of its cases ran and passed.
+      - name: Run the sync and rewrite fault cases
         run: make aof-sync-fault
 
       - name: Show the kernel's account of the device
