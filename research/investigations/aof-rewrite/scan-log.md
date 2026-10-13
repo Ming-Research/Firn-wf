@@ -994,9 +994,18 @@ after reducing maxmemory to one byte, while checking normal SET OOM and
 restart equality. That expectation changes because ordinary pressure no
 longer cancels the independent rewrite allowance. It also checks pre-cut
 INFO exclusion includes the live rewrite ledger and completion clears it.
-The old implementation should fail the new start assertion and the updated
-pressure/exclusion assertions. Before/after CI execution and compilation
-remain pending; no passing result is claimed. Pins and submodules are unchanged.
+The primary agent reports that a temporary branch containing only the new
+cache case on main failed with "rewrite refused at the eviction limit", so
+the case detects the original admission refusal. The modified implementation
+has not yet passed: [PR #86's gate run 38396947945](https://github.com/Ming-Research/Firn-wf/actions/runs/38396947945)
+failed compilation because aof_rw_cycle still declared writes(meter) after
+admission stopped reading the heap. Its remaining meter_share call only
+reads the meter. The follow-up changes that effect to reads(meter), exactly
+as the EFF-2 diagnostic requires; its caller owns the meter and needs no
+signature change. The scan worker still reads the heap through its own
+meter, so its dataset function's writes(meter) remains required. Compilation
+and new-behavior CI results after this correction remain pending. Pins and
+submodules are unchanged.
 
 A separate read-only GPT-6.1 Sol review inspected the complete uncommitted
 change against 24df67f1c45cb234dd37c8a212733778f6a3f924, affected consumers,

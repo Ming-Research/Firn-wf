@@ -684,7 +684,7 @@ fn aof_rw_cut(store: &Keyspace, pending: &Box<Slots<u8>>) -> accepted: Bool read
   return cut;
 }
 
-fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, manual: Bool, meter: &std::process::MemoryMeter) -> continued: AofLog reads(store), writes(factory), writes(pending), writes(clock), writes(last_sync), writes(last_append), writes(meter) waits {
+fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, manual: Bool, meter: &std::process::MemoryMeter) -> continued: AofLog reads(store), reads(meter), writes(factory), writes(pending), writes(clock), writes(last_sync), writes(last_append) waits {
   doc "One rewrite attempt, manual, automatic or recovering from a saved sync error. A sync that succeeds during the attempt does not start another recovery: write_log needs a successful sync after this attempt ends.";
   let yes = True();
   let no = False();
