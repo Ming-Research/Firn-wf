@@ -1,15 +1,17 @@
-{
- "name": "legacy-write-error-seed-before",
- "resp": 2,
- "appendonly": true,
- "commands": [
-  [
-   "SET",
-   "before",
-   "b"
-  ],
-  [
-   "__AOF__"
+[
+ {
+  "name": "legacy-write-error-seed-before",
+  "resp": 2,
+  "appendonly": true,
+  "commands": [
+   [
+    "SET",
+    "before",
+    "b"
+   ],
+   [
+    "__AOF__"
+   ]
   ]
- ]
-}
+ }
+]

@@ -1,11 +1,13 @@
-{
- "name": "immutable-sixteen-databases-config",
- "resp": 2,
- "commands": [
-  [
-   "CONFIG",
-   "GET",
-   "databases"
+[
+ {
+  "name": "immutable-sixteen-databases-config",
+  "resp": 2,
+  "commands": [
+   [
+    "CONFIG",
+    "GET",
+    "databases"
+   ]
   ]
- ]
-}
+ }
+]
