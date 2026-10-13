@@ -1,0 +1,4 @@
+pkg::scanner: [];
+pkg::caller: [pkg::scanner, std::process];
+
+entry field_facts = pkg::caller::main;

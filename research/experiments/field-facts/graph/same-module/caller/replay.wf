@@ -1,0 +1,52 @@
+alias ExitStatus = std::process::ExitStatus;
+alias exit_status = std::process::exit_status;
+
+struct Reader {
+  bytes: Box<Array<u8>>;
+  cursor: u64;
+  held: u64;
+  position: u64;
+  eof: Bool;
+  syntax: Syntax;
+  invariant window(reader): reader.cursor <= reader.held;
+  invariant capacity(reader): reader.held <= reader.bytes.inner.len;
+  invariant header_room(reader): reader.syntax.line.len < 1023_u64;
+  invariant probe_bound(reader): reader.syntax.probe <= 5_u64;
+}
+
+fn probe(reader: &Reader) -> result: unit writes(reader) {
+  let iterations = 0_u64;
+  loop @events (
+    invariant window: reader^.cursor <= reader^.held,
+    invariant capacity: reader^.held <= reader^.bytes.inner.len,
+    invariant header_room: reader^.syntax.line.len < 1023_u64,
+    invariant probe_bound: reader^.syntax.probe <= 5_u64
+  ) {
+    let cursor = reader^.cursor;
+    let held = reader^.held;
+    let input = &reader^.bytes.inner[0_u64..held];
+    let event = syntax_next(syntax: &reader^.syntax, input: input, start: cursor, end: held, eof: reader^.eof);
+    let next = event.next;
+    let position = reader^.syntax.position;
+    set reader^.cursor = next;
+    set reader^.held = held;
+    set reader^.position = position;
+    if event.state == 1_u64 {
+    } else {
+      return unit;
+    }
+    set iterations = iterations +wrap 1_u64;
+    if iterations == 2_u64 {
+      return unit;
+    }
+  }
+}
+
+fn main() -> status: ExitStatus pure {
+  let bytes = box_array_filled::<u8>(count: 4_u64, value: 0_u8);
+  let syntax = syntax_new();
+  let eof = False();
+  let state = Reader(bytes: move bytes, cursor: 0_u64, held: 4_u64, position: 0_u64, eof: eof, syntax: move syntax);
+  probe(reader: &state);
+  return exit_status(code: 0_u8);
+}

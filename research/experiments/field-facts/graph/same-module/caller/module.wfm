@@ -1,0 +1,3 @@
+alias ExitStatus = std::process::ExitStatus;
+
+public fn main() -> status: ExitStatus pure doc "Checks a loop that consumes a private scanner summary from another implementation record.";

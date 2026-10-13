@@ -125,6 +125,29 @@ jobs:
             printf '\nEXIT=%s\n' "$status"
             printf '%s\t%s\t%s\n' "$source" "$status" "$setup" >> "$results/summary.tsv"
           done
+          graphs=(research/experiments/field-facts/graph/modules.wfg research/experiments/field-facts/graph/same-module/modules.wfg)
+          for graph in "${graphs[@]}"; do
+            if [[ "$graph" == */same-module/* ]]; then
+              witness=graph_same_module
+            else
+              witness=graph_exported
+            fi
+            log="$results/$witness.compiler.log"
+            printf 'WITNESS=%s\nENTRY=field_facts\nSETUP=%s\n' "$graph" "$setup"
+            if [ -x "$compiler" ]; then
+              if "$compiler" --graph "$graph" --entry field_facts -o "$binaries/$witness" > "$log" 2>&1; then
+                status=0
+              else
+                status=$?
+              fi
+            else
+              status=NOT_RUN
+              printf 'SETUP_ERROR=compiler executable is unavailable; graph was not compiled\n' > "$log"
+            fi
+            cat "$log"
+            printf '\nEXIT=%s\n' "$status"
+            printf '%s\t%s\t%s\n' "$graph" "$status" "$setup" >> "$results/summary.tsv"
+          done
           cat "$results/summary.tsv"
           exit 0
 

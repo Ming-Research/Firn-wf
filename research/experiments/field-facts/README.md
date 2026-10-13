@@ -54,8 +54,9 @@ revision, release manifest, toolchain versions and per-file summary.
 The observation job is intentionally always green: only the individual
 compiler exits and diagnostics are evidence of acceptance or rejection.
 `SETUP_ERROR`, an untrusted setup, or unrelated parsing/toolchain errors do
-not establish a field-proof defect. CI results for the additional shape
-witnesses are pending; record their run and outcomes when available. Remove the temporary
+not establish a field-proof defect. The owner reported compiler exit 0 for
+all 24 original and shape witnesses on revision `eccfd7b`, on `tmp/field-facts`.
+Results for the extraction and graph witnesses below are pending. Remove the temporary
 workflow after collecting evidence, before the branch becomes ready. Retain
 these witnesses as the downstream semantic reproductions for any filed gap.
 
@@ -92,8 +93,9 @@ No new checker gap is classified or filed without a failing standalone case.
 
 Each row starts from its listed parent and changes the indicated feature.
 The inert storage and capacity steps separate representation changes from
-the nested write and slice-borrow changes. All new cases are predicted to
-compile under the same pinned specification; their CI outcomes are pending.
+the nested write and slice-borrow changes. All 19 shape cases were predicted
+to compile under the same pinned specification and the owner reported exit 0
+for every one on revision `eccfd7b`.
 They remain small standalone programs, not alternate Firn implementations.
 
 | Witness | Parent | Difference isolated |
@@ -150,3 +152,76 @@ it is not evidence of the original backedge failure. If every step passes,
 the remaining differences in the real parser and surrounding call context
 still need reduction. No new attribution follows merely from having added
 these cases.
+
+## Module lookup and graph witnesses
+
+`firn/modules.wfg` registers `pkg::persistence` at the persistence directory.
+By MOD-2, both its direct files `scanner.wf` and `replay.wf` are implementation
+records of that one module. MOD-3 gives them a shared declaration inventory:
+`aof_syntax_next`, `AofSyntax` and `AofEvent` are private declarations visible
+to `aof_record`, whose call is unqualified. It does not use an alias or cross
+another package or module boundary.
+
+`firn/persistence/module.wfm` does not declare `aof_syntax_next`; it exports
+the external persistence API. Therefore it has no copy of the scanner's
+endpoint postcondition, and none is needed for this private call. The real
+definition in `scanner.wf` declares `ensures event.next <= end`, the lower
+endpoint guarantee, and the header-length guarantee. A missing exported
+interface clause does not explain the failure. MOD-7 requires exported
+definitions to repeat their complete interface contracts; MOD-8 makes
+cross-module clients use the interface instead of the implementation.
+
+Two graph witnesses separately test the exported and actual private-call
+arrangements, both with entry `field_facts`:
+
+| Graph | Question | Spec prediction |
+| --- | --- | --- |
+| [graph/modules.wfg](graph/modules.wfg) | Two modules: scanner exports its types and functions; caller invokes the scanner through an alias. The `.wfm` repeats all six scanner clauses, including `ensures event.next <= end`. | Accept: MOD-4/7/8 preserve the function identity and declared guarantees; TYPE-11 supplies the probe bound. FN-9, ENT-3.S12 and INV-1 establish the window backedge. |
+| [graph/same-module/modules.wfg](graph/same-module/modules.wfg) | One module: private scanner types/functions in `scanner.wf`, private replay loop in `replay.wf`, with only main exported. This mirrors Firn's cross-record private lookup. | Accept: MOD-2/3 make the private declarations visible across implementation records; the same endpoint contract and invariant proof apply. |
+
+Both graph callers keep the four-invariant header, byte slice, nested syntax
+writer, EOF argument, event-field copy and pair writeback. The exported
+case exposes readonly Syntax fields because TYPE-11 requires this at a
+public type boundary; the private control has private fields. They remain
+reduced loops, not the full replay extraction.
+
+The workflow now compiles each graph with
+`whitefootc --graph <modules.wfg> --entry field_facts -o <binary>`.
+It records separate full diagnostics in `graph_exported.compiler.log` and
+`graph_same_module.compiler.log`, and includes both direct exit statuses in
+the existing summary. Rejections still do not stop later compilation or
+turn the observation job red.
+
+## Real loop extraction
+
+[real_extract.wf](real_extract.wf) contains the real `AofReader`, `AofSyntax`,
+`AofEvent` and `AofRecord` declarations unchanged, including field order and
+type invariants. It copies the entire `aof_fill` body and uses the real
+standard-library Clock, HandleFactory and ReadFile types. The scanner's
+signature, effect row and all three requires/three ensures clauses are
+unchanged; only its body is reduced to bounded events and syntax updates.
+
+The `aof_record` signature and body are copied verbatim **except one
+packaging adaptation**: `pkg::protocol::push_arg` becomes local `push_arg`.
+PROG-1/2 gives a single-file bundle only the root module `pkg` and standard
+library; MOD-5 does not permit an unregistered `pkg::protocol` namespace.
+The local helper retains the real argument-collection implementation and
+effect row. Span has the same fields but becomes private, as MOD-6 requires
+in a source bundle. Keyspace is reduced to cancellation state and the
+cancellation reader is correspondingly reduced; no server keyspace behavior
+is modeled. The pause/sleep helpers retain their real bodies.
+
+The copied loop has no artificial iteration counter and retains its real
+state-one-through-six branch chain, `Result<AofRecord, u8>` returns and
+collection ownership. Its original doc string is also copied; its old
+attribution to the known field-image item is preserved source text, not a
+conclusion of this investigation. FN-7 makes source acceptance independent
+of entry reachability, so a trivial main allows checking every ordinary body
+without acquiring or executing file I/O.
+
+The extraction is predicted to compile under the pin: the scanner boundary
+supplies the same N <= B relation, TYPE-11 preserves the fill's exit bounds,
+and INV-1 checks the fully written backedge. This is not a claim that the
+reduced scanner performs valid replay. A failure would provide a much closer
+standalone reproducer; acceptance would leave the real keyspace/dependency
+context and scanner internals outside this extraction to investigate.

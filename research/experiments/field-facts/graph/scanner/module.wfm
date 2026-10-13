@@ -1,0 +1,24 @@
+public struct Syntax {
+  public readonly line: Slots<u8, 1023>;
+  public readonly position: u64;
+  public readonly probe: u64;
+  invariant probe_bound(syntax): syntax.probe <= 5_u64;
+}
+
+public struct Event {
+  public readonly state: u64;
+  public readonly next: u64;
+}
+
+public fn syntax_new() -> made: Syntax pure contract {
+  ensures made.line.len == 0_u64;
+} doc "Constructs empty scanner state with its probe type invariant.";
+
+public fn syntax_next(syntax: &Syntax, input: &[u8], start: u64, end: u64, eof: Bool) -> event: Event reads(input), writes(syntax) contract {
+  requires syntax^.line.len < 1023_u64;
+  requires start <= end;
+  requires end <= input^.len;
+  ensures syntax^.line.len < 1023_u64;
+  ensures event.next >= start;
+  ensures event.next <= end;
+} doc "Publishes scanner endpoint bounds across an exported module interface.";

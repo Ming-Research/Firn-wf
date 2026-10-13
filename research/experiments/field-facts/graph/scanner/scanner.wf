@@ -1,0 +1,24 @@
+fn syntax_new() -> made: Syntax pure contract {
+  ensures made.line.len == 0_u64;
+} {
+  let line = slots_new::<u8, 1023>();
+  return Syntax(line: move line, position: 0_u64, probe: 0_u64);
+}
+
+fn syntax_next(syntax: &Syntax, input: &[u8], start: u64, end: u64, eof: Bool) -> event: Event reads(input), writes(syntax) contract {
+  requires syntax^.line.len < 1023_u64;
+  requires start <= end;
+  requires end <= input^.len;
+  ensures syntax^.line.len < 1023_u64;
+  ensures event.next >= start;
+  ensures event.next <= end;
+} {
+  let length = input^.len;
+  set syntax^.line = slots_new::<u8, 1023>();
+  set syntax^.probe = 0_u64;
+  set syntax^.position = syntax^.position +wrap 1_u64;
+  if eof {
+    return Event(state: 3_u64, next: end);
+  }
+  return Event(state: 1_u64, next: end);
+}
