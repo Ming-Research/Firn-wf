@@ -12,6 +12,22 @@ Owner-approved: On the shared status board on 2026-10-13, the owner chose option
 
 Summary: Redis 7.2.16 writes script numbers with Grisu2, whose digits differ from the exact shortest form for 355 of 16,922 recorded values, so firn takes Halo's byte-checked port; command-reply scores keep %.17g until board item firn-score-text-72. Protection through the embedding gives Redis's refusal message at Redis's location. firn records a command's changes and its expiry deletions under one switch, so it refuses REPL_NONE, REPL_SLAVE and REPL_REPLICA rather than honor them partly; this is a deliberate difference from Redis.
 
+## 2026-10-13 Let AOF-off writes that queue no expiry hold only their keys
+
+Nodes: firn/command-parts, firn/aof-rewrite/sequence
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-write-meta-design, which asked to approve PR #65's design-tree change at head d82c411: while AOF is off, a write that can queue no expiry and reads nothing else from Meta holds only its keys' entries, and admission's saved-error check skips Meta; such statements take an inert sequence token and INFO leaves firn_aof_rewrite_commit_seq out while AOF is off.
+
+Summary: one exclusive Meta target on every write bounded all writes together; on the i9-14900K main's SET fell to 1.23 M/s on 8 P-cores, 1/17 of GET, with 43% of its time acquiring Meta. Without a file nothing a write records in Meta is read, so those statements now hold their entries alone; on 8 P-cores SET reached 21.4 M/s, 99.6% of GET, and SET and MSET grew 1.74 and 1.73 times from 4 to 8 cores. INFO omits the commit sequence while AOF is off because most writes no longer advance it.
+
+## 2026-10-12 Bound each AOF rewrite scan step by the reserve and pace it by time slice
+
+Nodes: firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A (approve) on card firn-q-approve-57-tree, which asked to approve PR #57's design-tree changes at head 27e7c34, carrying out the owner's earlier choice of option A on card firn-q-rw-pace; the ruling adds that the merge waits for a formal Whitefoot release fixing the 2-core MSET regression and a passing before-and-after comparison on the 14900K.
+
+Summary: Each live scan step calls map_scan_within with the reserve left after the step buffer as its limit and charges the growth key_set_bytes reports, so a step never exceeds R; copies and buffer growth are charged before allocation, and a one-position step that does not fit is discarded, waits outside every hold and retries while it could fit, or aborts with reserve when it never can. The scan runs steps back to back and yields about every millisecond, with a per-step key hint starting at 64 that halves or doubles by the bytes a step writes and falls back to one position when several do not fit, because a 100-microsecond sleep per one-key step cost about a millisecond per key and a million-key rewrite could not finish under write load. CONFIG answers Redis 7.0.15's hidden rdb-key-save-delay so cases can keep a rewrite in progress without a firn-only hook. The post-call charging limitation and its rejection entry are replaced by three rejected alternatives ([scan pacing](../research/investigations/aof-rewrite/scan-pace.md#design)).
+
 ## 2026-10-13 Recover from an AOF sync failure only through a durable rewrite, and sync only after new bytes
 
 Nodes: firn/append-only-file, firn/aof-rewrite/capture

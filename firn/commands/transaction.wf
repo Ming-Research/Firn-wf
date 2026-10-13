@@ -426,7 +426,9 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     set writing = transaction^.write_commands;
   }
   let ping = kind == 22_u64;
-  let disk_sensitive = bor(writing, ping);
+  let refusable = bor(writing, ping);
+  let logged = store^.logging;
+  let disk_sensitive = band(logged, refusable);
   if disk_sensitive {
     let failed = False();
     atomic disk_meta = &store^.meta {
