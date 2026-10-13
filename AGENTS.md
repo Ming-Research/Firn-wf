@@ -88,12 +88,12 @@ When priorities conflict, first:
   takes the redis-server 7.2.16 that `tests/redis-suite/reference.sh` builds
   as the oracle, runs `make aof-sync-fault` and
   removes the device with `teardown MOUNT` even when a step failed. The
-  target runs the sync-failure case of `tests/aof_sync_fault.rs`, ignored in
-  `make check`, against firn and the oracle, and fails unless
-  `FIRN_SYNC_FAULT_MOUNT` names that mount, `REDIS_SERVER` names the oracle
-  and the case passed. It needs Linux with passwordless sudo, `dmsetup` and
-  the dm-flakey module; `setup` may install `linux-modules-extra-$(uname -r)`
-  through `apt-get` on Ubuntu to get it.
+  target runs the two sync-failure cases of `tests/aof_sync_fault.rs`,
+  ignored in `make check`, against firn and the oracle, one after the other,
+  and fails unless `FIRN_SYNC_FAULT_MOUNT` names that mount, `REDIS_SERVER`
+  names the oracle and both cases passed. It needs Linux with passwordless
+  sudo, `dmsetup` and the dm-flakey module; `setup` may install
+  `linux-modules-extra-$(uname -r)` through `apt-get` on Ubuntu to get it.
 - `make pin-ready`, with the readiness check: `whitefoot.pin` names no
   experiment release.
 
