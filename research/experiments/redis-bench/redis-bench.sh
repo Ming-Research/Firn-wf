@@ -801,6 +801,7 @@ compare_rows_selftest() (
 BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
 . "$BENCH_DIR/competitors.sh"
 . "$BENCH_DIR/competitor-versions.sh"
+. "$BENCH_DIR/host-info.sh"
 if [ "${1:-}" = placement-selftest ]; then
     placement_selftest
     compare_rows_selftest
@@ -830,12 +831,24 @@ SECONDS_PER_RUN=${SECONDS_PER_RUN:-12}
 PORT=${PORT:-$((10000 + $$ % 400 * 50))}
 MODE=${1:-bench}
 
+mkdir -p "$OUT"
+# CI already wrote its build/tool inventory here; append a fresh settings
+# block for the measurement itself. Standalone runs create the same record.
+record_host_system >>"$OUT/host.txt"
+{
+    echo "measurement-mode: $MODE"
+    host_revision=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || host_revision=
+    echo "firn-checkout: ${host_revision:-unknown}"
+    echo 'whitefoot-pin-begin'
+    host_read_file "$ROOT/whitefoot.pin"
+    echo 'whitefoot-pin-end'
+    host_benchmark_version=$(redis-benchmark --version 2>/dev/null) || host_benchmark_version=
+    echo "redis-benchmark: ${host_benchmark_version:-unknown}"
+} >>"$OUT/host.txt"
 case $MODE in
     compare|scale|workloads|quick) ;;
     *) select_placement 2 "$DEFAULT_CLIENT_THREADS" ;;
 esac
-
-mkdir -p "$OUT"
 # firn is linked as a server would be, its module and the runtime's units
 # optimized together; FIRN_LINK names other link options, or none.
 if [ "$MODE" != compare ]; then
@@ -1574,7 +1587,7 @@ if [ "$MODE" = compare ]; then
     image_names=$(sed -n '2p' "$OUT/compare-selection.txt")
     competitor_names=$(sed -n '3p' "$OUT/compare-selection.txt")
     for pair in $IMAGES; do
-        sha256sum "${pair#*=}" | sed "s/^/image,${pair%%=*},/"
+        sha256sum "${pair#*=}" | sed "s/^/image,${pair%%=*},/" | tee -a "$OUT/host.txt"
     done
     if [ -n "${COMPARE_LINES:-}" ]; then
         echo "setting,compare_run=$([ "$COMPARE_PROBE" = true ] && echo probe || echo full)"
