@@ -11,6 +11,7 @@ alias log_append = pkg::store::log_append;
 alias log_count = pkg::store::log_count;
 alias log_word = pkg::store::log_word;
 alias name_code = pkg::bytes::name_code;
+alias name_is = pkg::bytes::name_is;
 alias push_arg = pkg::protocol::push_arg;
 alias reply_array = pkg::protocol::reply_array;
 alias reply_arity = pkg::protocol::reply_arity;
