@@ -553,7 +553,17 @@ when both append and sync errors are clear, otherwise `err`, independently of
 collecting bytes plus bytes retained by the writer, excluding already appended
 bytes awaiting sync (`server.c:5596-5650`). `aof_pending_bio_fsync` and
 `aof_delayed_fsync` are zero: firn's sole writer performs sync itself, with no
-background BIO queue or append postponement behind a background sync. The firn-only field
+background BIO queue or append postponement behind a background sync.
+With AOF enabled, `firn_aof_append_batches` counts nonempty batch append attempts,
+including failures and retries; `firn_aof_written_batches` counts batches completely
+written; and `firn_aof_appended_commands` counts their AOF-producing outer executions.
+A SET or MSET counts once, an EXEC or script counts once for its complete effect
+block, and an internal expiry execution counts once. Reads and no-effect commands
+count only when they cause an AOF effect such as expiry. These lifetime counters
+start at zero after loading and saturate at u64's maximum. For a healthy SET/MSET
+interval, the difference in appended commands divided by the difference in written
+batches reports commands per append; attempts may exceed written batches on errors.
+The firn-only field
 `firn_aof_rewrite_commit_seq` is the actual sequence of statements that mutate
 the dataset or append AOF records while AOF is enabled. With AOF disabled a command that queues no expiry holds only
 its keys and takes no sequence, so the field is left out, following the

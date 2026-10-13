@@ -282,116 +282,133 @@ fn aof_sync_counts(error: &std::io::IoError) -> counted: Bool reads(error) {
   }
 }
 
-fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, force: Bool, healed: &Bool) -> failed: Bool reads(store), writes(factory), writes(log), writes(pending), writes(clock), writes(last_sync), writes(last_append), writes(healed) waits {
-  doc "Take collecting bytes only after retained bytes drain; shutdown instead combines both for its one forced attempt. Publish retained length/capacity with each exchange and append result. Returns true only when this call attempted an append that did not drain or a sync whose failure counts; a deferred retry attempts nothing and is not a failure. Failed appends retry every 100 ms without client writes, the cadence at which Redis 7.0.15's event loop, woken at least hz (10) times a second by serverCron, calls flushAppendOnlyFile from beforeSleep (server.c:1660-1666) while the buffer is retained. Outside shutdown a sync runs at most once a second, and only when nothing is retained and the active file's incremental size differs from its size at the last successful sync, as Redis 7.2.16 flushAppendOnlyFile reaches try_fsync only after a complete write or, with an empty buffer, when aof_last_incr_fsync_offset differs from aof_last_incr_size (aof.c:1071-1094,1236-1267); or when a sync error is saved, the deliberate idle retry that starts recovery. last_sync advances only when a sync is attempted, as aof_last_fsync does. A sync that succeeds, or fails with EINVAL, records the incremental size it covered. A sync that succeeds, or fails with EINVAL, never clears a saved sync error, because Linux leaves the pages whose writeback failed clean and the retried sync does not write them; when no append error or retained byte remains, it sets healed so that the writer starts the recovery rewrite, whose durable installation alone clears the error. A counted failure resets healed.";
+struct AofWork {
+  doc "The sole writer's owned snapshot taken with the collecting-buffer exchange. Only that writer changes active-file sizes and persistence health; appending commands can change collecting bytes and their sequence while host I/O runs.";
+  before: u64;
+  synced: u64;
+  append_failed: Bool;
+  sync_saved: Bool;
+  sequence: u64;
+  commands: u64;
+}
+
+fn aof_work_empty() -> work: AofWork pure {
+  let no = False();
+  return AofWork(before: 0_u64, synced: 0_u64, append_failed: no, sync_saved: no, sequence: 0_u64, commands: 0_u64);
+}
+
+fn aof_work_snapshot(meta: &pkg::store::Meta) -> work: AofWork reads(meta.aof_incr_size), reads(meta.aof_synced_size), reads(meta.aof_append_error), reads(meta.aof_sync_error), reads(meta.aof_pending_sequence), reads(meta.aof_pending_commands) {
   let append_failed = False();
-  atomic m = &store^.meta {
-    if force {
-      if pending^.inner.len == 0_u64 {
-        swap(first: &m^.log, second: pending);
-        set m^.aof_pending_sequence = m^.commit_seq;
-      } else {
-        let length = m^.log.inner.len;
-        pkg::store::log_append_plain(log: pending, bytes: &m^.log.inner[0_u64..length]);
-        set m^.log = box_slots_new::<u8>(capacity: 65536_u64);
-        set m^.aof_pending_sequence = m^.commit_seq;
-      }
-    } else if pending^.inner.len == 0_u64 {
-      swap(first: &m^.log, second: pending);
-      set m^.aof_pending_sequence = m^.commit_seq;
+  let sync_saved = False();
+  match meta^.aof_append_error {
+    Some(..) => {
+      set append_failed = True();
     }
-    set m^.aof_pending_capacity = pending^.inner.cap;
-    set m^.aof_pending_length = pending^.inner.len;
-    match m^.aof_append_error {
-      Some(..) => {
-        set append_failed = True();
-      }
-      None() => {
-      }
+    None() => {
     }
   }
+  match meta^.aof_sync_error {
+    Some(..) => {
+      set sync_saved = True();
+    }
+    None() => {
+    }
+  }
+  return AofWork(before: meta^.aof_incr_size, synced: meta^.aof_synced_size, append_failed: append_failed, sync_saved: sync_saved, sequence: meta^.aof_pending_sequence, commands: meta^.aof_pending_commands);
+}
+
+fn aof_take(meta: &pkg::store::Meta, pending: &Box<Slots<u8>>, force: Bool) -> work: AofWork reads(meta.commit_seq), reads(meta.aof_incr_size), reads(meta.aof_synced_size), reads(meta.aof_append_error), reads(meta.aof_sync_error), writes(meta.log), writes(meta.aof_pending_sequence), writes(meta.aof_pending_commands), writes(meta.aof_collecting_commands), writes(meta.aof_pending_capacity), writes(meta.aof_pending_length), writes(pending) {
+  doc "Runs inside the writer's readiness hold. Take collecting bytes only after retained bytes drain; shutdown instead combines both for its one forced attempt. Snapshot file size and health with that exchange, without another pre-I/O hold.";
+  if force {
+    if pending^.inner.len == 0_u64 {
+      swap(first: &meta^.log, second: pending);
+      set meta^.aof_pending_commands = meta^.aof_collecting_commands;
+    } else {
+      let length = meta^.log.inner.len;
+      pkg::store::log_append_plain(log: pending, bytes: &meta^.log.inner[0_u64..length]);
+      set meta^.log = box_slots_new::<u8>(capacity: 65536_u64);
+      set meta^.aof_pending_commands = meta^.aof_pending_commands +sat meta^.aof_collecting_commands;
+    }
+    set meta^.aof_collecting_commands = 0_u64;
+    set meta^.aof_pending_sequence = meta^.commit_seq;
+  } else if pending^.inner.len == 0_u64 {
+    swap(first: &meta^.log, second: pending);
+    set meta^.aof_pending_sequence = meta^.commit_seq;
+    set meta^.aof_pending_commands = meta^.aof_collecting_commands;
+    set meta^.aof_collecting_commands = 0_u64;
+  }
+  set meta^.aof_pending_capacity = pending^.inner.cap;
+  set meta^.aof_pending_length = pending^.inner.len;
+  return aof_work_snapshot(meta: meta);
+}
+
+fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, force: Bool, maintenance: Bool, healed: &Bool) -> failed: Bool reads(store), writes(factory), writes(log), writes(pending), writes(clock), writes(last_sync), writes(last_append), writes(healed) waits {
+  doc "Cold rewrite path whose rotation may have changed the active file after its wake: exchange and snapshot afresh before appending.";
+  let work = aof_work_empty();
+  atomic m = &store^.meta {
+    set work = aof_take(meta: m, pending: pending, force: force);
+  }
+  return aof_rw_flush_taken(store: store, factory: factory, log: log, pending: pending, clock: clock, last_sync: last_sync, last_append: last_append, force: force, maintenance: maintenance, work: &work, healed: healed);
+}
+
+fn aof_rw_flush_taken(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, force: Bool, maintenance: Bool, work: &AofWork, healed: &Bool) -> failed: Bool reads(store), writes(factory), writes(log), writes(pending), writes(clock), writes(last_sync), writes(last_append), writes(work), writes(healed) waits {
+  doc "Append an already exchanged batch and publish its result in one hold. A failed append retries after 100 ms. Only control or maintenance wakes consider everysec sync: new bytes with nothing retained, or a saved sync error; shutdown forces its final attempt. A successful sync (including EINVAL) records covered size, but only a later durable rewrite may clear a saved sync error and its potentially lost pages.";
   let reading = std::time::now(clock: clock);
-  let append_elapsed = std::time::nanoseconds_from(earlier: last_append^, later: reading);
-  let append_due = append_elapsed >= 100000000_u64;
-  let retry = bor(append_due, force);
-  let healthy = bnot(append_failed);
-  let append_now = bor(healthy, retry);
+  let append_now = True();
+  if work^.append_failed {
+    let append_elapsed = std::time::nanoseconds_from(earlier: last_append^, later: reading);
+    let append_due = append_elapsed >= 100000000_u64;
+    set append_now = bor(append_due, force);
+  }
   let failed = False();
   if append_now {
     set last_append^ = reading;
-    let drained = aof_rw_drain(store: store, factory: factory, log: log, pending: pending);
+    let drained = aof_rw_drain_taken(store: store, factory: factory, log: log, pending: pending, work: work);
     set failed = bnot(drained);
   }
-  let elapsed = std::time::nanoseconds_from(earlier: last_sync^, later: reading);
-  let due = elapsed >= 1000000000_u64;
-  let written = 0_u64;
-  let unsynced = False();
-  let retry_saved = False();
-  atomic m = &store^.meta {
-    set written = m^.aof_incr_size;
-    set unsynced = m^.aof_synced_size != written;
-    match m^.aof_sync_error {
-      Some(..) => {
-        set retry_saved = True();
-      }
-      None() => {
-      }
-    }
-  }
-  let unretained = pending^.inner.len == 0_u64;
-  let fresh = band(unsynced, unretained);
-  let wanted = bor(fresh, retry_saved);
-  let timed = band(due, wanted);
-  let sync_now = bor(timed, force);
-  if sync_now {
-    set last_sync^ = reading;
-    match std::fs::sync_file(factory: factory, file: &log^.file) {
-      Ok(value: synced) => {
-        atomic m = &store^.meta {
-          set m^.aof_synced_size = written;
+  let scheduling = bor(maintenance, force);
+  if scheduling {
+    let elapsed = std::time::nanoseconds_from(earlier: last_sync^, later: reading);
+    let due = elapsed >= 1000000000_u64;
+    let unsynced = work^.synced != work^.before;
+    let unretained = pending^.inner.len == 0_u64;
+    let fresh = band(unsynced, unretained);
+    let wanted = bor(fresh, work^.sync_saved);
+    let timed = band(due, wanted);
+    let sync_now = bor(timed, force);
+    if sync_now {
+      set last_sync^ = reading;
+      let problem_saved = None<std::io::IoError>();
+      match std::fs::sync_file(factory: factory, file: &log^.file) {
+        Ok(..) => {
         }
-      }
-      Err(error: problem) => {
-        let counted = aof_sync_counts(error: &problem);
-        if counted {
-          atomic m = &store^.meta {
-            set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
+        Err(error: problem) => {
+          let counted = aof_sync_counts(error: &problem);
+          if counted {
+            set problem_saved = Some<std::io::IoError>(value: problem);
           }
-          set healed^ = False();
-          let reason_writer_io_10 = pkg::store::RewriteAbortReason::WriterIo();
-          aof_rw_abort(store: store, reason: reason_writer_io_10);
-          return True();
-        }
-        atomic m = &store^.meta {
-          set m^.aof_synced_size = written;
         }
       }
-    }
-    let sync_saved = False();
-    let append_saved = False();
-    atomic m = &store^.meta {
-      match m^.aof_sync_error {
-        Some(..) => {
-          set sync_saved = True();
-        }
-        None() => {
+      atomic m = &store^.meta {
+        match problem_saved {
+          Some(value: problem) => {
+            set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
+            let reason = pkg::store::RewriteAbortReason::WriterIo();
+            pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason);
+            set healed^ = False();
+            set failed = True();
+          }
+          None() => {
+            set m^.aof_synced_size = work^.before;
+            let appended = bnot(work^.append_failed);
+            let settled = band(appended, unretained);
+            let recoverable = band(work^.sync_saved, settled);
+            if recoverable {
+              set healed^ = True();
+            }
+          }
         }
       }
-      match m^.aof_append_error {
-        Some(..) => {
-          set append_saved = True();
-        }
-        None() => {
-        }
-      }
-    }
-    let retained = pending^.inner.len;
-    let drained = retained == 0_u64;
-    let appended = bnot(append_saved);
-    let settled = band(appended, drained);
-    let recoverable = band(sync_saved, settled);
-    if recoverable {
-      set healed^ = True();
     }
   }
   return failed;
@@ -690,6 +707,8 @@ fn aof_rw_cut(store: &Keyspace, pending: &Box<Slots<u8>>) -> accepted: Bool read
       set m^.rewrite.rotating = True();
       swap(first: pending, second: &m^.log);
       set m^.aof_pending_sequence = m^.commit_seq;
+      set m^.aof_pending_commands = m^.aof_collecting_commands;
+      set m^.aof_collecting_commands = 0_u64;
       set m^.aof_pending_capacity = pending^.inner.cap;
       set m^.aof_pending_length = pending^.inner.len;
       set cut = True();
@@ -741,23 +760,35 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
           let rebuilt = spawn aof_rw_worker(store: move worker_store, factory: move worker_factory, file: move opened, journal: move journal_read, clock: move worker_clock, meter: move worker_meter);
           let closed_size = 0_u64;
           loop @rebuilding {
-            atomic wake_meta = &store^.meta when aof_rebuilding_ready(meta: wake_meta) {
-              set wake_meta^.aof_tick = False();
-            }
+            let maintenance = False();
             let done = False();
             let scan_done = False();
             let cut_done = False();
             let aborted = False();
-            let stopping = aof_rw_cancelled(store: store);
-            atomic m = &store^.meta {
-              set done = m^.aof_worker_done;
-              set scan_done = m^.rewrite.scan_done;
-              set cut_done = m^.rewrite.cut_done;
-              if stopping {
-                let reason_cancelled_20 = pkg::store::RewriteAbortReason::Cancelled();
-                pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_cancelled_20);
+            let final_stop = False();
+            let work = aof_work_empty();
+            atomic wake_meta = &store^.meta when aof_rebuilding_ready(meta: wake_meta) {
+              let notified = bor(wake_meta^.aof_tick, wake_meta^.aof_control);
+              set maintenance = bor(notified, wake_meta^.stopping);
+              set wake_meta^.aof_tick = False();
+              set wake_meta^.aof_control = False();
+              set done = wake_meta^.aof_worker_done;
+              set scan_done = wake_meta^.rewrite.scan_done;
+              set cut_done = wake_meta^.rewrite.cut_done;
+              set aborted = wake_meta^.rewrite.aborted;
+              set final_stop = wake_meta^.stopping;
+              let uncut_wake = bnot(cut_done);
+              let cutting_wake = band(scan_done, uncut_wake);
+              let ending = bor(done, final_stop);
+              let defer_take = bor(ending, cutting_wake);
+              if defer_take {
+              } else {
+                set work = aof_take(meta: wake_meta, pending: pending, force: no);
               }
-              set aborted = m^.rewrite.aborted;
+            }
+            if maintenance {
+              let stopping = aof_rw_cancelled(store: store);
+              set aborted = bor(aborted, stopping);
             }
             if done {
               break @rebuilding;
@@ -797,13 +828,14 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
               }
             }
             let journal_drained = aof_rw_journal_drain(store: store, factory: factory, file: &journal_write, decoder: &journal_count, maximum: 16_u64);
-            let final_stop = False();
-            atomic stop_meta = &store^.meta {
-              set final_stop = stop_meta^.stopping;
-            }
             if final_stop {
             } else {
-              let flush_failed = aof_rw_flush(store: store, factory: factory, log: &log, pending: pending, clock: clock, last_sync: last_sync, last_append: last_append, force: no, healed: &healed_during);
+              let flush_failed = False();
+              if needs_cut {
+                set flush_failed = aof_rw_flush(store: store, factory: factory, log: &log, pending: pending, clock: clock, last_sync: last_sync, last_append: last_append, force: no, maintenance: maintenance, healed: &healed_during);
+              } else {
+                set flush_failed = aof_rw_flush_taken(store: store, factory: factory, log: &log, pending: pending, clock: clock, last_sync: last_sync, last_append: last_append, force: no, maintenance: maintenance, work: &work, healed: &healed_during);
+              }
               if flush_failed {
                 let reason_writer_io_22 = pkg::store::RewriteAbortReason::WriterIo();
                 aof_rw_abort(store: store, reason: reason_writer_io_22);
@@ -896,15 +928,21 @@ fn aof_rw_discard(store: &Keyspace, clock: &Clock) -> result: unit reads(store),
 }
 
 fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending: &Box<Slots<u8>>) -> drained: Bool reads(store), writes(factory), writes(log), writes(pending) waits {
+  doc "Cold sealed-prefix drain during rotation; snapshot without exchanging collecting bytes, which belong after the cut.";
+  let work = aof_work_empty();
+  atomic m = &store^.meta {
+    set work = aof_work_snapshot(meta: m);
+  }
+  return aof_rw_drain_taken(store: store, factory: factory, log: log, pending: pending, work: &work);
+}
+
+fn aof_rw_drain_taken(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending: &Box<Slots<u8>>, work: &AofWork) -> drained: Bool reads(store), writes(factory), writes(log), writes(pending), writes(work) waits {
   doc "Redis 7.0.15 aof.c:1146-1230: roll back a failed partial append to its pre-flush incremental length. Successful rollback retains every byte; failed rollback accounts the accepted prefix and retains only its suffix. Keep the real terminal IoError and partial flag: MISCONF describes a zero-progress append's error, and a partial append is described as ENOSPC by its class. Only a complete nonempty append clears append failure. Advance syntax state after that complete append; successful rollback leaves the prior state unchanged. Every other failed append leaves it unknown because the host contract does not promise an unchanged file on Err.";
   let length = pending^.inner.len;
   if length == 0_u64 {
     return True();
   }
-  let before = 0_u64;
-  atomic m = &store^.meta {
-    set before = m^.aof_incr_size;
-  }
+  let before = work^.before;
   let appended = append_all(factory: factory, file: &log^.file, source: pending);
   let progress = appended.written;
   let drained = progress == length;
@@ -934,10 +972,16 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
       let reason_drain_25 = pkg::store::RewriteAbortReason::Drain();
       pkg::store::rewrite_abort(capture: &m^.rewrite, reason: reason_drain_25);
     }
+    set m^.aof_append_batches = m^.aof_append_batches +sat 1_u64;
     set m^.aof_current_size = m^.aof_current_size +wrap progress;
     set m^.aof_incr_size = m^.aof_incr_size +wrap progress;
+    set work^.before = m^.aof_incr_size;
+    set work^.append_failed = failed;
     if drained {
-      set m^.aof_written_sequence = imax(m^.aof_written_sequence, m^.aof_pending_sequence);
+      set m^.aof_written_sequence = imax(m^.aof_written_sequence, work^.sequence);
+      set m^.aof_written_batches = m^.aof_written_batches +sat 1_u64;
+      set m^.aof_appended_commands = m^.aof_appended_commands +sat work^.commands;
+      set m^.aof_pending_commands = 0_u64;
       set m^.aof_append_error = None<std::io::IoError>();
       set m^.aof_append_partial = False();
       set pending^ = box_slots_new::<u8>(capacity: 65536_u64);

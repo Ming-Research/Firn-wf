@@ -163,7 +163,7 @@ public struct EvictionCandidate {
 }
 
 public struct Meta {
-  doc "What the keyspace keeps beside its keys: the queued expiries, the mutation or AOF-only command statement sequence and capture-exhaustion state, the append-only file's collecting buffer, published retained length/capacity and its covering commit sequence, written-through and append-failure reply-release sequences, a coalesced housekeeping timer wake, saved append/sync IoErrors and partial-append marker, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the total active-file and current incremental byte counts, the incremental byte count at its last successful sync, and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion, automatic thresholds and the rdb-key-save-delay testing delay the scan reads at each step, the clients connected, whether the server is stopping, and the state SPOP draws from. aof_rewrite_journal_leftover records the latest failed removal of an unlisted temporary journal until a later removal or absence is observed; admission does not reset it and it is not a filesystem stat.";
+  doc "What the keyspace keeps beside its keys: the queued expiries, the mutation or AOF-only command statement sequence and capture-exhaustion state, the append-only file's collecting buffer, published retained length/capacity and its covering commit sequence, written-through and append-failure reply-release sequences, coalesced housekeeping and control wakes, collecting and retained counts of AOF-producing outer commit units, nonempty append attempt and completed batch counters, completed commit units (all counters saturate), saved append/sync IoErrors and partial-append marker, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the total active-file and current incremental byte counts, the incremental byte count at its last successful sync, and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion, automatic thresholds and the rdb-key-save-delay testing delay the scan reads at each step, the clients connected, whether the server is stopping, and the state SPOP draws from. aof_rewrite_journal_leftover records the latest failed removal of an unlisted temporary journal until a later removal or absence is observed; admission does not reset it and it is not a filesystem stat.";
   public due: ExpiryQueue;
   public commit_seq: u64;
   public aof_rewrite_seq_exhausted: Bool;
@@ -180,6 +180,12 @@ public struct Meta {
   public aof_written_sequence: u64;
   public aof_failed_sequence: u64;
   public aof_tick: Bool;
+  public aof_control: Bool;
+  public aof_collecting_commands: u64;
+  public aof_pending_commands: u64;
+  public aof_append_batches: u64;
+  public aof_written_batches: u64;
+  public aof_appended_commands: u64;
   public aof_append_error: Option<std::io::IoError>;
   public aof_sync_error: Option<std::io::IoError>;
   public aof_append_partial: Bool;
@@ -285,7 +291,7 @@ public fn sequence_entry(sequence: &WriteSequence, value: &Entry) -> result: uni
 
 public fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit writes(sequence), writes(slot) doc "Removes a present entry and takes the statement's sequence; an absent entry changes nothing. Expiry, eviction and command deletion share this contract.";
 
-public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> appended_sequence: u64 reads(meta.log), reads(meta.aof_append_error), reads(budget), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite), writes(meta.aof_failed_sequence), writes(sequence) doc "Takes a sequence for appended records if the statement has no dataset mutation, returns that sequence only when records were appended (zero otherwise), and publishes a taken sequence, its journal unit (after-images, or a one-key statement's own append-only bytes) and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
+public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> appended_sequence: u64 reads(meta.log), reads(meta.aof_append_error), reads(budget), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite), writes(meta.aof_failed_sequence), writes(meta.aof_collecting_commands), writes(sequence) doc "Takes a sequence for appended records if the statement has no dataset mutation, returns that sequence only when records were appended (zero otherwise), and publishes a taken sequence, its journal unit (after-images, or a one-key statement's own append-only bytes) and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Counts one non-inert AOF-producing outer commit unit in the collecting buffer, including one whole EXEC or script. Loading takes no sequence and has no active rotation budget.";
 
 public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
 

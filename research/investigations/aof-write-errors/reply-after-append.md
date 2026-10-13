@@ -648,3 +648,215 @@ provenance, batch/wake attribution and the proposed resource facility's
 soundness and implementation evidence unverified. Only source reads and
 small git commands ran; `git diff --check` passed. This is review of an
 analysis, not approval or validation of the proposed protocol.
+
+## Firn-only batch overhead reduction
+
+This separate, uncommitted change is intended to be measured against
+`5ded2213758d6d2ba2d20af909074e8ad934d3bc`, retaining its single writer,
+reply barrier, boundary parser and compiler pin. It does not implement
+leader/follower election or bypass either filed P0 Whitefoot request:
+`firn-req-helper-guard-wake-filter` and `firn-req-linear-resource-lease`.
+The earlier proposal remains conditional on those language/runtime changes.
+
+### Eight-core evidence and scope
+
+The owner supplied the following additional results from
+[run 38419950603](https://github.com/Ming-Research/Firn-wf/actions/runs/38419950603):
+server on eight P-cores, clients on E-cores, AOF everysec, four five-second
+rounds, revision `5ded221` (#97).
+
+| Workload | Main ops/s | #97/main | Main → #97 p99 |
+| --- | ---: | ---: | --- |
+| SET, pipeline 1 | 1.76M | 0.201 | 0.039 → approximately 0.21 ms |
+| SET, pipeline 16 | 1.05M | 0.606 | not supplied |
+| MSET, pipeline 1 | 861k | 0.319 | not supplied |
+| MSET, pipeline 16 | 825k | 0.592 | not supplied |
+
+Depth-one throughput retains only 20–32% of main on eight cores. A single
+global collecting buffer can merge records from different drivers; these
+ratios alone do not prove that it never merges them. They do show that the
+current coordination/batching cost is much worse there. Batch density and
+runtime wake evidence must separate tiny groups from false wakes and
+contention. The supplied eight-core data lacks twin ranges, so no eight-core
+numerical veto line can yet be calculated. Main's SET pipeline-16 scaling
+regression from two to eight cores is a separate baseline issue.
+
+### Changes and invariant
+
+For an ordinary healthy nonempty append outside rewrite, control and
+maintenance wakes, the source now enters Meta twice rather than seven times:
+
+1. The guarded readiness statement also exchanges collecting/pending
+   buffers and snapshots incremental size, synced size, append/sync health,
+   covering sequence and outer-execution count into owned `AofWork`
+   (`firn/persistence/persistence.wf:132–140`,
+   `firn/persistence/rewrite.wf:285–342`).
+2. After append and the unchanged boundary parser, one completion statement
+   publishes byte accounting, health, written-through and counters
+   (`firn/persistence/rewrite.wf:969–1001`).
+
+Only the sole writer changes active-file size and persistence health.
+Commands may add collecting records during I/O, but do not invalidate this
+file snapshot. The pending covering sequence and count travel together;
+completion uses that snapshot, not the later collecting commit sequence.
+On append failure the existing failure-release sequence still covers the
+then-current commit sequence without claiming it was written. Retained
+bytes/counts survive retry and partial rollback; their complete drain
+counts once. Saturated sequences retain the previous conservative barrier.
+There is no Meta hold across append, truncate, sync or network I/O.
+
+Sync eligibility, cancellation and automatic/recovery rewrite scheduling
+run on the existing coalesced 10-ms maintenance tick or actual control
+notifications, rather than after every append. Shutdown and changes to
+automatic-rewrite thresholds publish a control pulse in their existing
+holds; a manual rewrite request is itself a readiness notification.
+A sync attempt adds one combined error/size/recovery publication. The
+everysec eligibility/new-byte rule, 100-ms append retry rule and final
+forced append/sync remain. Maintenance scheduling can add up to one tick
+to the previous eager eligibility check; it does not delay healthy appends
+or their replies until a tick.
+
+Rewrite wakes likewise combine their state snapshot and ordinary buffer
+exchange. Cut/rotation paths take a fresh snapshot after file identity and
+size can change. Journal-drain coordination and cold cancellation/scheduling
+holds remain; this is not a claim that an entire rewrite iteration takes
+two holds. Cancellation still publishes an abort through the existing
+`aof_rw_cancelled` helper. Background expiry uses the same eager collecting
+notification. The helper-guard compiler gap remains visible and unfixed.
+
+### Counters and their limits
+
+INFO persistence reports three saturating lifetime counters when AOF is on:
+
+- `firn_aof_append_batches`: nonempty `append_all` attempts, including
+  failures and retries; one attempt can make multiple host writes after
+  short writes, so this is not a syscall counter.
+- `firn_aof_written_batches`: attempts that completely drain their retained
+  batch, including a finally successful retry.
+- `firn_aof_appended_commands`: outer AOF-producing executions covered by
+  those complete drains. SET and MSET each contribute one; a script or
+  EXEC contributes one for its complete effect block; an internal expiry
+  execution also contributes one. No-effect commands contribute zero.
+
+Collecting counts advance within the existing sequence-commit hold, and
+batch counters publish within completion. INFO reads its existing snapshot.
+No additional global lock is taken per command. Before saturation,
+`Δappended_commands / Δwritten_batches` measures complete-drain group
+density for the proposed SET/MSET workloads. Attempts minus complete drains
+identifies retries/failures; it does not measure parked contexts. Counter
+publication overhead is included in this candidate and must be reported
+as part of the attribution, not assumed zero.
+
+### Two additional Whitefoot gaps
+
+**Constant-cost pending-buffer reset.** The representation remains
+`Box<Slots<u8>>`: initialized prefix length plus backing capacity. After a
+complete append it still replaces pending with a fresh 64-KiB allocation
+inside completion so its memory accounting remains consistent. At pin
+`af7665be672d29912d878dd5da8c3932bb6f296c`, WIN-1
+(`spec/kernel-spec.md:831–835`) forbids assigning the initialized length
+directly. OP-10 (`:1198–1207`) and the published window operations
+(`:2518–2555`) have no native reset. `take_back` removes one element, and
+stdlib vector truncate (`lib/std/collections/vector/grow-vector.wf:117–150`)
+loops per element. No constant-cost guarantee follows from that loop.
+
+The missing capability has this minimal interface witness (a required
+primitive, not an implemented or compiler-tested function):
+
+```whitefoot
+fn clear(bytes: &Box<Slots<u8>>) -> result: unit writes(bytes) contract {
+  ensures bytes^.inner.len == 0_u64;
+  ensures bytes^.inner.cap == entry(bytes)^.inner.cap;
+}
+```
+
+For byte slots it must preserve backing without allocation, copying or
+traversing each byte. Switching encoders to `Box<Array<u8>>` plus a used
+length just to escape this restriction would hide the gap and is not done.
+Reuse therefore remains blocked; no per-byte clearing loop is presented
+as free.
+
+**Actual connection-park observation.** The pinned `std::process` interface
+(`lib/std/process/module.wfm:29–57`) offers no context scheduling counter,
+and guarded atomic completion offers no suspension outcome. SHARE-3
+(`spec/kernel-spec.md:2350–2359`) makes guard evaluation count unobservable.
+The minimal semantic witness is:
+
+```whitefoot
+fn wait_written(mark: Shared<u64>, target: u64) -> result: unit pure waits {
+  atomic value = &mark when value^ >= target {
+  }
+  return unit;
+}
+```
+
+The caller needs to distinguish immediate completion from this statement
+suspending at least once because its guard was false. A separate failed
+readiness check can race with publication before the atomic, falsely
+counting a park that never occurred. Repeated false wake/repark events and
+lock-contention suspension also need distinct definitions. A context-local
+runtime observation or wait outcome would permit this without a per-command
+global lock. The requested actual-park INFO field is omitted until that
+capability exists; no fabricated zero or attempt counter substitutes for it.
+These are source/interface gaps, not observed compiler rejections: no
+compiler was run locally.
+
+### Expected direction and next comparison
+
+These are directional hypotheses for this Firn-only change, not numerical
+predictions or claims of passing the veto line:
+
+| Cores | Workload | Current #97/main | Expected direction; remaining constraint |
+| ---: | --- | ---: | --- |
+| 2 | SET p1 | 0.613 | Throughput up, p99 down from fewer Meta transitions; writer round trip and fresh allocation remain. |
+| 2 | SET p16 | 0.657 | Throughput up as batch overhead falls; parser, input grouping and send boundaries unchanged. |
+| 2 | MSET p1 | 0.597 | Throughput up; larger encoding and key acquisition limit relative benefit. |
+| 2 | MSET p16 | 0.673 | Throughput up; amortized holds save less if record work dominates. |
+| 8 | SET p1 | 0.201 | Strongest opportunity to reduce shared Meta/wake demand and latency; separate writer and broken wake filtering can still dominate. |
+| 8 | SET p16 | 0.606 | Throughput up if Meta coordination dominates; separate main scaling regression remains outside this change. |
+| 8 | MSET p1 | 0.319 | Throughput up and latency down if coordination dominates; no promise of recovery to the two-core ratio. |
+| 8 | MSET p16 | 0.592 | Throughput up from fewer holds; larger records and cross-driver coordination remain. |
+
+Interleave this candidate and `5ded221` on the same pinned compiler,
+LTO build and 14900K settings, alongside main and its twin. Retain four
+five-second rounds initially, two/eight server P-cores, E-core clients,
+approximately 50 clients (confirm the exact count in the artifacts),
+SET/MSET and pipelines 1/16. Record exact affinities and
+heads, AOF everysec, no rewrite during the throughput window, key/value
+sizes, per-round ops/s and p50/p99, user/system CPU. Read counters before
+and after each round. Compare complete drains per second, outer commands
+per drain and append attempts per drain; exclude saturation. A faster
+writer may make smaller groups, so improved throughput alone does not
+establish better grouping. Use separate runtime/profile diagnostics for
+actual parks, false wakes and syscall counts until the API gap is closed.
+
+The attribution is falsified if fewer source holds do not reduce relevant
+CPU/coordination cost or candidate throughput is indistinguishable from or
+worse than `5ded221` within twin noise. Overall acceptance still requires
+`candidate/main >= min(twin/main) - 0.05` independently for every row;
+the supplied two-core lines remain 0.929, 0.940, 0.893 and 0.895. Eight-core
+lines require its own twin data. Neither this partial optimization nor
+its two-hold count promises those lines. Preserve kill durability, ordered
+pipeline, script/EXEC, failed-write replies/recovery, sync-fault, rewrite
+backlog and shutdown cases.
+
+The added counter case checks both socket routes, zero initialization,
+SET/MSET versus key count, no-effect/read exclusion, one EXEC unit and
+16 pipeline executions with 1–16 possible complete batches. It checks
+acknowledged file bytes before INFO so polling cannot conceal an early
+reply. The pre-change revision lacks these fields and fails this case.
+Existing failed-append cases additionally distinguish failed attempts
+from complete drains and require retained execution counts to publish
+once on recovery. Existing coverage, not changed expected replies, guards
+the scheduling/refactoring semantics. All compilation, gate, fault and
+performance evidence for this worktree remains pending CI; no local
+build, test suite or benchmark ran.
+
+An independent read-only GPT-6.1-Sol review inspected all 13 changed files
+against `b4d1f79bd82930480233464da5998aff7debe067`, including affected
+writer/rotation paths, interfaces, sequence consumers, counter cases and
+design correspondence. It found no remaining defect within scope; one
+source-line citation was corrected. Checklist source checks passed or were
+not applicable; compiler acceptance, CI correctness, measurement provenance
+and candidate performance remain unverified. Pins and submodules did not
+move. Only reads/searches and `git diff --check` ran.

@@ -88,6 +88,87 @@ fn assert_appended_prefix(path: &std::path::Path, expected: &[u8], context: &str
         "{context}: acknowledged AOF prefix is not written: expected={expected:?}, actual={actual:?}");
 }
 
+fn append_counts(client: &mut TcpStream) -> [u64; 3] {
+    client.write_all(&resp(&["INFO", "persistence"])).unwrap();
+    let info = bulk_reply(client, "append counters");
+    ["firn_aof_append_batches", "firn_aof_written_batches", "firn_aof_appended_commands"]
+        .map(|field| info_field(&info, field)
+            .unwrap_or_else(|| panic!("missing {field}: {info}"))
+            .parse().unwrap_or_else(|error| panic!("invalid {field}: {error}; {info}")))
+}
+
+/// Firn's attribution counters count complete outer AOF-producing executions,
+/// not keys or effect records. Redis 7.2.16 t_string.c and multi.c define the
+/// SET/MSET/EXEC replies and transaction effect block checked here. INFO is
+/// requested only after the file-prefix checks so it cannot hide an early reply.
+#[test]
+fn aof_append_counters_count_batches_and_outer_executions_on_both_routes() {
+    for native in [false, true] {
+        let program = CompiledProgram::from_environment();
+        let lease = support::lease_port();
+        let (child, mut client) = start_aof_route(&program, &lease, native);
+        let path = aof_incremental_path(program.working_directory(), AOF_NAME);
+        let mut expected_aof = Vec::new();
+        assert_eq!(append_counts(&mut client), [0, 0, 0], "native={native}: fresh counters");
+
+        for args in [&["SET", "count:first", "one"][..],
+            &["MSET", "count:second", "two", "count:third", "three"]] {
+            assert_eq!(memory_request(&mut client, args), "+OK\r\n");
+            expected_aof.extend(resp(args));
+            assert_appended_prefix(&path, &expected_aof, "sequential counted append");
+        }
+        assert_eq!(append_counts(&mut client), [2, 2, 2],
+            "native={native}: sequential SET and multi-key MSET each count once");
+        for (args, reply) in [(&["GET", "count:first"][..], "$3\r\none\r\n"),
+            (&["SETNX", "count:first", "ignored"], ":0\r\n"),
+            (&["DEL", "count:absent"], ":0\r\n")] {
+            assert_eq!(memory_request(&mut client, args), reply);
+        }
+        assert_eq!(append_counts(&mut client), [2, 2, 2],
+            "native={native}: reads and no-effect commands do not count");
+
+        let transaction: &[&[&str]] = &[
+            &["MULTI"], &["SET", "count:tx:first", "alpha"],
+            &["SET", "count:tx:second", "beta"], &["EXEC"],
+        ];
+        let requests: Vec<_> = transaction.iter().flat_map(|args| resp(args)).collect();
+        client.write_all(&requests).unwrap();
+        expect_replies(&mut client, b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n+OK\r\n",
+            "counter transaction replies");
+        for args in transaction {
+            expected_aof.extend(resp(args));
+        }
+        assert_appended_prefix(&path, &expected_aof, "counted EXEC complete effects");
+        let before = append_counts(&mut client);
+        assert_eq!(before, [3, 3, 3],
+            "native={native}: EXEC counts one outer execution, not its four records");
+
+        let writes = 16_u64;
+        let mut pipeline = Vec::new();
+        for index in 0..writes {
+            let key = format!("count:pipeline:{index}");
+            let record = resp(&["SET", &key, "value"]);
+            pipeline.extend(&record);
+            expected_aof.extend(record);
+        }
+        client.write_all(&pipeline).unwrap();
+        for _ in 0..writes {
+            assert_eq!(whole_reply(&mut client, "counter pipeline reply"), "+OK\r\n");
+        }
+        assert_appended_prefix(&path, &expected_aof, "counted pipeline complete effects");
+        let after = append_counts(&mut client);
+        let batches = after[1] - before[1];
+        assert_eq!(after[2] - before[2], writes, "native={native}: pipeline executions");
+        assert!((1..=writes).contains(&batches),
+            "native={native}: pipeline full batches must be 1..={writes}, got {batches}");
+        assert_eq!(after[0] - before[0], batches,
+            "native={native}: healthy append attempts equal complete batches");
+        assert_eq!(std::fs::read(&path).unwrap(), expected_aof,
+            "counter observations and no-effect commands produce no records");
+        stop(child, &mut client);
+    }
+}
+
 /// Redis 7.2.16 server.c:1723-1739 flushes before sending pending replies;
 /// t_string.c's SETNX refusal and db.c's absent DEL produce no propagation.
 /// The byte checks expose the old reply-before-10-ms-writer window. Reply

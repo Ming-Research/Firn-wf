@@ -71,6 +71,13 @@ fn persistence(client: &mut TcpStream) -> String {
     bulk_reply(client, "AOF health INFO")
 }
 
+fn append_counters(info: &str) -> [u64; 3] {
+    ["firn_aof_append_batches", "firn_aof_written_batches", "firn_aof_appended_commands"]
+        .map(|field| info_field(info, field)
+            .unwrap_or_else(|| panic!("missing {field}: {info}"))
+            .parse().unwrap_or_else(|error| panic!("invalid {field}: {error}; {info}")))
+}
+
 fn wait_status(client: &mut TcpStream, expected: &str) -> String {
     let deadline = Instant::now() + POLL_LIMIT;
     loop {
@@ -148,7 +155,13 @@ fn aof_failure_refuses_write_flags_and_ping_and_recovers_without_new_writes() {
         let (child, mut client, _) = start(&program, native);
         let path = incremental(&program);
         let mut expected = seed(&mut client, &path);
+        let before = append_counters(&persistence(&mut client));
+        assert_eq!(before, [1, 1, 1], "native={native}: seed counted once");
         let old = fault(&child, &mut client, &path);
+        let failed = append_counters(&persistence(&mut client));
+        assert!(failed[0] > before[0], "native={native}: failed append counts an attempt");
+        assert_eq!(failed[1..], before[1..],
+            "native={native}: released failure reply does not count a complete append");
         let writes: &[&[&str]] = &[
             &["SET", "absent", "v"], &["SETNX", "readable", "v"],
             &["SETEX", "absent", "30", "v"], &["PSETEX", "absent", "30000", "v"],
@@ -185,12 +198,22 @@ fn aof_failure_refuses_write_flags_and_ping_and_recovers_without_new_writes() {
         assert_eq!(memory_request(&mut client, &["SET", "absent", "v"]), "-NOAUTH Authentication required.\r\n");
         assert_eq!(memory_request(&mut client, &["AUTH", "secret"]), "+OK\r\n");
         misconf(&memory_request(&mut client, &["SET", "absent", "v"]), MISCONF);
+        let retained = append_counters(&persistence(&mut client));
+        assert!(retained[0] >= failed[0], "native={native}: attempt count is monotone");
+        assert_eq!(retained[1..], before[1..],
+            "native={native}: retries and refused commands cannot publish unwritten executions");
         file_limit(&child, old.soft);
         // INFO is the only traffic during recovery: Redis retries a retained
         // buffer from beforeSleep (server.c:1660-1666) and serverCron
         // (server.c:1384-1393), so recovery needs no client write.
         let recovered = wait_status(&mut client, "ok");
         assert_eq!(info_field(&recovered, "aof_buffer_length").as_deref(), Some("0"));
+        let healed = append_counters(&recovered);
+        assert!(healed[0] > retained[0], "native={native}: recovery counts its retry attempt");
+        assert_eq!(healed[1], before[1] + 1,
+            "native={native}: retained bytes publish one fully written batch after recovery");
+        assert_eq!(healed[2], before[2] + 1,
+            "native={native}: retained SET counts once despite failed attempts");
         expected.extend(resp(&["SET", "retained", "r"]));
         wait_bytes(&path, &expected);
         assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n");
@@ -292,6 +315,8 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
         let mut expected = resp(&["RPUSH", "events", "before"]);
         wait_bytes(&path, &expected);
         wait_empty_healthy_buffer(&mut client);
+        let before = append_counters(&persistence(&mut client));
+        assert_eq!(before, [1, 1, 1], "native={native}: seed list append counted once");
         let old = file_limit(&child, expected.len() as u64 + 7);
         let retained = resp(&["RPUSH", "events", "during", "last"]);
         assert!(retained.len() > 7);
@@ -299,12 +324,20 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
         let failed = wait_status(&mut client, "err");
         assert_eq!(info_field(&failed, "aof_buffer_length").unwrap().parse::<usize>().unwrap(), retained.len());
         assert_eq!(info_field(&failed, "aof_current_size").unwrap().parse::<u64>().unwrap(), expected.len() as u64);
+        let failed_counts = append_counters(&failed);
+        assert!(failed_counts[0] > before[0], "native={native}: partial write counts an attempt");
+        assert_eq!(failed_counts[1..], before[1..],
+            "native={native}: a rolled-back prefix cannot publish a batch or execution");
         // A retry can briefly expose a prefix between append and truncate;
         // poll for rollback rather than racing that in-flight retry.
         wait_bytes(&path, &expected);
         ignored_xfsz(&child);
         file_limit(&child, old.soft);
-        wait_status(&mut client, "ok");
+        let recovered = wait_status(&mut client, "ok");
+        let healed = append_counters(&recovered);
+        assert!(healed[0] > failed_counts[0], "native={native}: partial rollback retries count attempts");
+        assert_eq!(healed[1], before[1] + 1, "native={native}: recovered batch counts once");
+        assert_eq!(healed[2], before[2] + 1, "native={native}: recovered RPUSH counts once");
         expected.extend(retained);
         wait_bytes(&path, &expected);
         stop(&mut client, child);

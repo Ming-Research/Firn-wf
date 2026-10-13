@@ -58,8 +58,10 @@ fn append_all(factory: &HandleFactory, file: &WriteFile, source: &Box<Slots<u8>>
   return AofAppend(written: written, error: error);
 }
 
-fn aof_writer_ready(meta: &pkg::store::Meta) -> ready: Bool reads(meta.stopping), reads(meta.aof_tick), reads(meta.log), reads(meta.aof_append_error) {
-  let control = bor(meta^.stopping, meta^.aof_tick);
+fn aof_writer_ready(meta: &pkg::store::Meta) -> ready: Bool reads(meta.stopping), reads(meta.aof_tick), reads(meta.aof_control), reads(meta.aof_rewrite_requested), reads(meta.log), reads(meta.aof_append_error) {
+  let periodic = bor(meta^.stopping, meta^.aof_tick);
+  let requested = bor(meta^.aof_control, meta^.aof_rewrite_requested);
+  let control = bor(periodic, requested);
   if control {
     return True();
   }
@@ -73,7 +75,7 @@ fn aof_writer_ready(meta: &pkg::store::Meta) -> ready: Bool reads(meta.stopping)
   }
 }
 
-fn aof_rebuilding_ready(meta: &pkg::store::Meta) -> ready: Bool reads(meta.stopping), reads(meta.aof_tick), reads(meta.log), reads(meta.aof_append_error), reads(meta.aof_worker_done), reads(meta.rewrite.scan_done), reads(meta.rewrite.cut_done) {
+fn aof_rebuilding_ready(meta: &pkg::store::Meta) -> ready: Bool reads(meta.stopping), reads(meta.aof_tick), reads(meta.aof_control), reads(meta.aof_rewrite_requested), reads(meta.log), reads(meta.aof_append_error), reads(meta.aof_worker_done), reads(meta.rewrite.scan_done), reads(meta.rewrite.cut_done) {
   if meta^.aof_worker_done {
     return True();
   }
@@ -125,14 +127,20 @@ fn write_log(store: Keyspace, factory: HandleFactory, log: AofLog, clock: Clock,
   spawn aof_writer_timer(store: move timer_store, clock: move timer_clock);
   loop @writing {
     let stop = False();
+    let maintenance = False();
+    let work = aof_work_empty();
     atomic m = &store.meta when aof_writer_ready(meta: m) {
       set stop = m^.stopping;
+      let notified = bor(m^.aof_tick, m^.aof_control);
+      set maintenance = bor(notified, m^.aof_rewrite_requested);
       set m^.aof_tick = False();
+      set m^.aof_control = False();
+      set work = aof_take(meta: m, pending: &pending, force: stop);
     }
-    aof_rw_flush(store: &store, factory: &factory, log: &log, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, force: stop, healed: &healed);
+    aof_rw_flush_taken(store: &store, factory: &factory, log: &log, pending: &pending, clock: &clock, last_sync: &last_sync, last_append: &last_append, force: stop, maintenance: maintenance, work: &work, healed: &healed);
     if stop {
       break @writing;
-    } else {
+    } else if maintenance {
       let cancelled = aof_rw_cancelled(store: &store);
       if cancelled {
         atomic m = &store.meta {

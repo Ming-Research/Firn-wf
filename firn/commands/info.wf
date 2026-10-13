@@ -59,6 +59,12 @@ const info_aof_buffer_length: Array<u8, 20> = "\r\naof_buffer_length:";
 
 const info_aof_sync_counts: Array<u8, 46> = "\r\naof_pending_bio_fsync:0\r\naof_delayed_fsync:0";
 
+const info_aof_append_batches: Array<u8, 26> = "\r\nfirn_aof_append_batches:";
+
+const info_aof_written_batches: Array<u8, 27> = "\r\nfirn_aof_written_batches:";
+
+const info_aof_appended_commands: Array<u8, 29> = "\r\nfirn_aof_appended_commands:";
+
 const info_rw_current: Array<u8, 19> = "\r\naof_current_size:";
 
 const info_rw_base: Array<u8, 16> = "\r\naof_base_size:";
@@ -386,6 +392,12 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
           let buffered = persistence^.log.inner.len +sat persistence^.aof_pending_length;
           text_number(text: &text, value: buffered);
           text_word(text: &text, word: &info_aof_sync_counts[0_u64..46_u64]);
+          text_word(text: &text, word: &info_aof_append_batches[0_u64..26_u64]);
+          text_number(text: &text, value: persistence^.aof_append_batches);
+          text_word(text: &text, word: &info_aof_written_batches[0_u64..27_u64]);
+          text_number(text: &text, value: persistence^.aof_written_batches);
+          text_word(text: &text, word: &info_aof_appended_commands[0_u64..29_u64]);
+          text_number(text: &text, value: persistence^.aof_appended_commands);
         }
         text_word(text: &text, word: &info_rw_tail[0_u64..29_u64]);
       } else if which == 4_u64 {
