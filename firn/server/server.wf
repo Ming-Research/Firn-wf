@@ -501,8 +501,8 @@ fn serve(connection: TcpConnection, peer: SocketAddress, factory: HandleFactory,
   let input = input_new(capacity: 16384_u64);
   let transaction = transaction_new();
   set client.id = id;
-  let bound = local_address(receive: &connection.receive);
-  let local_text = address_of(result: move bound);
+  let own_end = local_address(receive: &connection.receive);
+  let local_text = address_of(result: move own_end);
   set client.laddr = move local_text;
   let peer_text = address_text(address: &peer);
   set client.addr = move peer_text;
