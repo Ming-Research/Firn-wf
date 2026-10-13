@@ -329,10 +329,14 @@ arguments are removed. Command-line directives follow the file and override
 its values; repeated directives take the last value. Each argument starting
 with `--` begins a directive, whose values run up to the next such argument.
 
-These argument boundaries have three differences from Redis's complete
+These argument boundaries have four differences from Redis's complete
 command-line parser: firn always treats a `--` argument as a new directive,
 accepts stdin `-` only in the initial configuration position, and treats a
 first argument beginning with a single dash as a configuration filename.
+Firn also refuses naked arguments after the configuration file and before
+any `--` directive: `firn startup.conf timeout 3` is an error, while Redis
+quotes those arguments into a configuration line and accepts it. Use
+`firn startup.conf --timeout 3` instead.
 Redis can consume a `--` argument as a preceding directive's first value,
 also accepts a trailing stdin `-`, and classifies a single-dash first argument
 as an option.
@@ -352,7 +356,11 @@ Supported directives, in files or after `--`, are:
   with status 1 because firn has no other listener;
 - `bind`, one dotted IPv4 address or `*` for all IPv4 addresses. The default
   is 127.0.0.1; firn keeps its loopback default rather than Redis's default
-  bind and protected-mode combination. More than one address is refused;
+  bind and protected-mode combination. More than one address and space-split
+  address forms are refused. IPv6 and multiple listeners are firn limitations;
+  Whitefoot's standard library supports both. `bind` with no values or one
+  empty value disables the listener; with no other listener, startup exits 1
+  with `Configured to not listen anywhere, exiting.`;
 - `appendonly yes` or `no` (the default), and `appendfilename`, the prefix
   of the append-only files below `appendonlydir` in the working directory,
   `appendonly.aof` by default. Naming the prefix alone does not enable AOF;

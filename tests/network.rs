@@ -3183,6 +3183,66 @@ fn firn_splits_quoted_inline_arguments_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// Redis 7.2.16's processInlineBuffer finds LF with strchr before calling
+/// sdssplitargs, so a raw NUL hides the LF and leaves the request pending.
+/// A NUL decoded from a quoted `\x00` escape is instead part of the value.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_handles_inline_nul_bytes_as_redis_does() {
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+
+    let mut servers = vec![("firn", PathBuf::from(std::env::var_os("FIRN").expect("FIRN")))];
+    if let Some(binary) = std::env::var_os("REDIS_SERVER") {
+        let binary = PathBuf::from(binary);
+        let version = support::run_command(Command::new(&binary).arg("--version"));
+        assert!(version.status.success(), "Redis version: {version:?}");
+        assert!(String::from_utf8_lossy(&version.stdout).contains(" v=7.2.16 "),
+            "REDIS_SERVER must name Redis 7.2.16: {version:?}");
+        servers.push(("Redis 7.2.16", binary));
+    }
+    let fixture = fixture_directory();
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    let mut firn_replies = None;
+    for (label, binary) in servers {
+        let mut command = Command::new(binary);
+        command.current_dir(fixture.path())
+            .args(["--port", &port, "--bind", "127.0.0.1", "--appendonly", "no"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .env_remove("WF_REQUIRE_WINDOWS_IOCP");
+        if label == "Redis 7.2.16" {
+            command.args(["--save", ""]);
+        }
+        let child = ProgramChild::spawn(&mut command).expect("spawn inline NUL subject").with_port(&lease);
+        let mut blocked = connect_when_ready(lease.port(), &child);
+        blocked.write_all(b"SET k v\0x\r\nGET k\r\n").expect("send raw inline NUL and following GET");
+        expect_silence(&mut blocked, &format!("{label}: raw NUL hides both inline newlines"));
+
+        let mut observer = connect_when_ready(lease.port(), &child);
+        observer.write_all(b"GET k\r\n").expect("observe whether raw NUL SET was applied");
+        let absent = whole_reply(&mut observer, &format!("{label}: pending SET leaves k absent"));
+        assert_eq!(absent, "$-1\r\n", "{label}: raw NUL SET must not execute");
+        observer.write_all(b"SET k \"v\\x00x\"\r\nGET k\r\n").expect("send escaped inline NUL");
+        let set = whole_reply(&mut observer, &format!("{label}: escaped NUL SET"));
+        let get = whole_reply(&mut observer, &format!("{label}: escaped NUL GET"));
+        assert_eq!(set, "+OK\r\n", "{label}: escaped NUL SET");
+        assert_eq!(get, "$3\r\nv\0x\r\n", "{label}: decoded NUL must retain the suffix");
+        let replies = vec![absent, set, get];
+        if let Some(expected) = &firn_replies {
+            assert_eq!(&replies, expected, "{label}: every inline NUL reply must match firn");
+        } else {
+            firn_replies = Some(replies);
+        }
+        drop(blocked);
+        observer.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop inline NUL subject");
+        expect_closed(&mut observer, &format!("{label}: shutdown"));
+        let output = child.wait_with_output().expect("bounded inline NUL shutdown");
+        assert_eq!(output.status.code(), Some(0), "{label}: {output:?}");
+        assert!(output.stderr.is_empty(), "{label}: {output:?}");
+    }
+}
+
 /// firn reads a request's count and length lines as Redis 7.0 reads them. A
 /// carriage return ends a line whatever byte follows it, which is skipped
 /// unread; a negative count is skipped; and an array of 2,147,483,647
@@ -3437,6 +3497,11 @@ fn firn_listens_where_its_options_by_name_say() {
         let output = child.wait_with_output().expect("wait for rejected startup");
         assert_eq!(output.status.code(), Some(1), "{arguments:?}: {output:?}");
         assert!(!output.stderr.is_empty(), "startup error has no diagnostic: {arguments:?}");
+        if arguments[0] == text.as_bytes() {
+            let expected = format!("Fatal error, can't open config file '{text}': ");
+            assert!(output.stderr.starts_with(expected.as_bytes()),
+                "legacy positional port must be treated as an unopened config file: {output:?}");
+        }
     }
 }
 
