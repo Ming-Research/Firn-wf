@@ -47,6 +47,24 @@ jobs:
             exit 1
           fi
 
+      - name: Compile firn variants of the AOF record loop
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          release=$(sed -n -E 's/^release = (wf-(exp-)?[0-9a-f]{12})$/\1/p' whitefoot.pin)
+          compiler="$GITHUB_WORKSPACE/build/whitefoot/$release/whitefootc"
+          python3 research/experiments/field-facts/variants/make.py . "$RUNNER_TEMP/variants"
+          for d in "$RUNNER_TEMP"/variants/*/; do
+            name=$(basename "$d")
+            set +e
+            "$compiler" --graph "$d/firn/modules.wfg" --entry firn -o "$RUNNER_TEMP/$name.bin" > "$RUNNER_TEMP/$name.log" 2>&1
+            status=$?
+            set -e
+            echo "VARIANT $name exit $status"
+            grep -A3 "error\[" "$RUNNER_TEMP/$name.log" | head -20
+          done
+
       - name: Compile every module-graph witness entry
         if: always()
         continue-on-error: true
