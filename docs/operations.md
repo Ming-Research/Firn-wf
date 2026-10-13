@@ -4,7 +4,9 @@ This guide covers firn's current startup, connection and append-only
 persistence behavior. firn remains a research server; check the
 [command reference](../firn/README.md) against the application you intend to
 run. The gate executes every marked configuration and shell block below
-literally, checking the exit status and output stated in its fence.
+literally, checking the exit status and output stated in its fence; a fence
+tagged `untested-example` instead is not run, and the gate rejects any other
+fence.
 
 ## Run as a service
 
@@ -71,12 +73,9 @@ source line, its line number and the reason, then exits 1 before serving
 clients. A missing configuration file or a refused configuration path also
 exits 1, with its own startup diagnostic.
 
-Common Redis directives that are still refused include `daemonize`,
-`supervised`, `pidfile`, `loglevel`, `logfile`, `databases`, `save`,
-`appendfsync`, `protected-mode`, `tcp-backlog`, `tcp-keepalive` and
-`aof-use-rdb-preamble`. Their usual Redis default values are refused too.
-The [invocation reference](../firn/README.md#build-and-run) lists the accepted
-directives and their validation.
+The [invocation reference](../firn/README.md#build-and-run) lists the
+accepted directives, their validation and the common Redis directives that
+are still refused.
 
 For example, save this deliberately unsupported directive in `refused.conf`:
 
@@ -253,6 +252,23 @@ redis-cli --raw --no-auth-warning -a ops-example-secret -p 6379 SHUTDOWN NOSAVE
 The gate checks this stop-copy-restore sequence after a successful rewrite
 and verifies the restored value. It does not simulate a power loss during
 the backup, validate storage hardware, or exercise service-manager startup.
+
+### Damaged state
+
+A malformed manifest makes startup fail with status 4 and no diagnostic.
+This example, run with firn stopped, builds a data directory whose
+manifest gives its base file sequence number 0, which firn does not accept,
+and starts firn in it. The command exits 4 and prints nothing:
+
+```sh firn-check exit=4
+mkdir damaged
+cp redis.conf damaged/
+cd damaged
+mkdir appendonlydir
+: > appendonlydir/appendonly.aof.1.base.aof
+printf 'file appendonly.aof.1.base.aof seq 0 type b\n' > appendonlydir/appendonly.aof.manifest
+firn redis.conf
+```
 
 ## Logs
 

@@ -1,4 +1,10 @@
 //! Runs the operator guide's marked examples literally through the gate.
+//!
+//! Every fenced block in the guide must be either tagged `firn-check`, which
+//! this test runs and checks, or tagged `untested-example` (for instance
+//! ```` ```ini untested-example ````), which states that nothing checks it.
+//! Any other fence, including an untagged one, fails the test; shell and
+//! config fences cannot be untested.
 
 use super::*;
 use std::collections::HashMap;
@@ -36,9 +42,12 @@ fn blocks(document: &str) -> Vec<Block> {
         };
         let mut words = header.split_whitespace();
         let kind = words.next().unwrap_or_default();
-        let checked = words.next() == Some("firn-check");
+        let marker = words.next();
+        let checked = marker == Some("firn-check");
         assert!(!matches!(kind, "sh" | "bash" | "shell" | "conf") || checked,
             "line {}: every shell/config example needs firn-check", line + 1);
+        assert!(checked || marker == Some("untested-example"),
+            "line {}: a fence must be tagged firn-check or untested-example", line + 1);
         if !checked {
             // Skip other fenced material so its closing fence is not treated
             // as the start of another block.
@@ -208,7 +217,13 @@ fn guide_checker_rejects_wrong_exit_reply_and_missing_marker() {
     let shortened_error = support::run_command(Command::new("/bin/sh")
         .args(["-c", "printf FATAL >&2"]));
     assert!(!matches_output(&expected_error, &shortened_error), "shortened refusal frame must fail");
+    let both = blocks("```text untested-example\nnot run\n```\n```sh firn-check exit=0\ntrue\n```\n");
+    assert_eq!(both.len(), 1, "an explicitly untested fence is skipped, not run");
     for invalid in [
+        "```console\n$ printf PONG\n```\n```sh firn-check exit=0\ntrue\n```\n",
+        "```\nplain\n```\n```sh firn-check exit=0\ntrue\n```\n",
+        "```ini\n[Service]\n```\n```sh firn-check exit=0\ntrue\n```\n",
+        "```sh untested-example\nprintf PONG\n```\n```sh firn-check exit=0\ntrue\n```\n",
         "```sh\nprintf PONG\n```\n",
         "```sh firn-check stdout=PONG\nprintf PONG\n```\n",
         "```sh firn-check exit=0 ignored=value\nprintf PONG\n```\n",
