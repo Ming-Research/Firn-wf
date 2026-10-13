@@ -207,6 +207,7 @@ jobs:
         run: |
           if ! command -v sudo >/dev/null || ! sudo -n true; then
             echo 'disk_faults=skipped: passwordless sudo unavailable; full acceptance incomplete' >> "$CHAOS_OUT/infrastructure.txt"
+            echo 'CHAOS_FAULT_SKIP_REASON=passwordless sudo unavailable' >> "$GITHUB_ENV"
             exit 0
           fi
           # The helper uses one global device/state and machine-wide sysctls.

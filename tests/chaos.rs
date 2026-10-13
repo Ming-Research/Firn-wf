@@ -8,12 +8,12 @@ mod support;
 use chaos_check::{Event, Findings, KEYS, Kind, Outcome, State};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 const IO_LIMIT: Duration = Duration::from_secs(3);
@@ -241,6 +241,9 @@ fn connect(port: u16) -> io::Result<TcpStream> {
     stream.set_nodelay(true)?;
     Ok(stream)
 }
+fn epoch_seconds(seed: &mut u64) -> u64 {
+    15 + random(seed) % 11
+}
 fn random(seed: &mut u64) -> u64 {
     *seed = seed.wrapping_add(0x9e3779b97f4a7c15);
     let mut n = *seed;
@@ -258,6 +261,7 @@ struct Config {
     out: PathBuf,
     mount: Option<PathBuf>,
     fix: String,
+    fault_skip_reason: String,
 }
 impl Config {
     fn read() -> Self {
@@ -275,6 +279,8 @@ impl Config {
             out: PathBuf::from(std::env::var_os("CHAOS_OUT").expect("CHAOS_OUT required")),
             mount: std::env::var_os("CHAOS_FAULT_MOUNT").map(PathBuf::from),
             fix: std::env::var("CHAOS_FIRN_APPEND_BEFORE_REPLY").unwrap_or("unknown".into()),
+            fault_skip_reason: std::env::var("CHAOS_FAULT_SKIP_REASON")
+                .unwrap_or("CHAOS_FAULT_MOUNT not provided".into()),
         };
         assert!(
             c.seconds > 0 && c.seconds <= 604800 && c.clients > 0 && c.clients <= 256,
@@ -377,15 +383,140 @@ impl Drop for Device<'_> {
     }
 }
 
+#[derive(Clone, Debug)]
+struct FaultRecord {
+    kind: &'static str,
+    epoch: usize,
+    at_ns: u128,
+}
+
+#[derive(Debug)]
+struct Coverage {
+    epochs_started: usize,
+    epochs_completed: usize,
+    sigkill_sent: usize,
+    sigkill_reaped: usize,
+    restart_attempts: usize,
+    sigkill_restarts_completed: usize,
+    write_eio_injected_windows: usize,
+    flush_eio_injected_windows: usize,
+    enospc_injected_windows: usize,
+    connection_drops: usize,
+    ack_adjacent_sigkills_within_10ms: usize,
+    skipped_faults: Vec<String>,
+    faults: Vec<FaultRecord>,
+}
+impl Default for Coverage {
+    fn default() -> Self {
+        Self { epochs_started:0, epochs_completed:0, sigkill_sent:0, sigkill_reaped:0,
+            restart_attempts:0, sigkill_restarts_completed:0, write_eio_injected_windows:0,
+            flush_eio_injected_windows:0, enospc_injected_windows:0, connection_drops:0,
+            ack_adjacent_sigkills_within_10ms:0,
+            skipped_faults:vec!["ENOSPC not selected: this experiment uses the failing-disk alternative".into(),"flush-only failure not isolated: write EIO and flush EIO share one combined injection window".into()],
+            faults:Vec::new() }
+    }
+}
+impl Coverage {
+    fn report(&self) -> String {
+        self.report_with_skips(&[])
+    }
+    fn report_with_skips(&self, additional: &[String]) -> String {
+        let mut skips = self.skipped_faults.clone();
+        skips.extend_from_slice(additional);
+        format!(
+            "coverage.epochs_started={}\ncoverage.epochs_completed={}\ncoverage.sigkill_sent={}\ncoverage.sigkill_reaped={}\ncoverage.restart_attempts={}\ncoverage.sigkill_restarts_completed={}\ncoverage.write_eio_injected_windows={}\ncoverage.flush_eio_injected_windows={}\ncoverage.enospc_injected_windows={}\ncoverage.connection_drops={}\ncoverage.ack_adjacent_sigkills_within_10ms={}\ncoverage.skipped_faults={:?}\ncoverage.faults={:?}\ncoverage.eio_definition=injected windows armed for failing writes/flushes; not observed syscall failures\n",
+            self.epochs_started,
+            self.epochs_completed,
+            self.sigkill_sent,
+            self.sigkill_reaped,
+            self.restart_attempts,
+            self.sigkill_restarts_completed,
+            self.write_eio_injected_windows,
+            self.flush_eio_injected_windows,
+            self.enospc_injected_windows,
+            self.connection_drops,
+            self.ack_adjacent_sigkills_within_10ms,
+            skips,
+            self.faults
+        )
+    }
+    fn smoke_gaps(&self, seconds: u64, device: bool) -> Vec<&'static str> {
+        let mut gaps = Vec::new();
+        if self.connection_drops == 0 {
+            gaps.push("no completed injected connection drop");
+        }
+        if seconds >= 120 {
+            if self.sigkill_restarts_completed == 0 {
+                gaps.push("no completed SIGKILL restart");
+            }
+            if device && self.write_eio_injected_windows == 0 {
+                gaps.push("no write-EIO injection window");
+            }
+            if device && self.flush_eio_injected_windows == 0 {
+                gaps.push("no flush-EIO injection window");
+            }
+        }
+        gaps
+    }
+}
+
+#[derive(Clone, Debug)]
+struct StartupFailure {
+    server: String,
+    kind: &'static str,
+    reason: String,
+    lifetime: usize,
+    preceding_faults: Vec<FaultRecord>,
+    stdout_tail: String,
+    stderr_tail: String,
+}
+fn file_tail(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let length = file.metadata()?.len();
+    file.seek(SeekFrom::Start(length.saturating_sub(4096)))?;
+    let mut bytes = Vec::new();
+    file.take(4096).read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+impl StartupFailure {
+    fn capture(c: &Config, shared: &Shared, lifetime: usize, reason: String) -> Self {
+        Self {
+            server: c.server.clone(),
+            kind: if lifetime == 0 {
+                "failed startup"
+            } else {
+                "refused restart"
+            },
+            reason,
+            lifetime,
+            preceding_faults: locked(&shared.fault_coverage).faults.clone(),
+            stdout_tail: file_tail(&c.out.join(format!("server-{lifetime}.stdout")))
+                .expect("read startup stdout artifact"),
+            stderr_tail: file_tail(&c.out.join(format!("server-{lifetime}.stderr")))
+                .expect("read startup stderr artifact"),
+        }
+    }
+}
+fn record_startup_failure(shared: &Shared, failure: StartupFailure) -> String {
+    problem(shared, &format!("SERVER_FINDING {failure:?}"));
+    locked(&shared.fault_coverage).skipped_faults.push(format!(
+        "remaining planned epochs/faults/checkpoints not executed after {} for {} lifetime {}",
+        failure.kind, failure.server, failure.lifetime
+    ));
+    locked(&shared.server_failures).push(failure);
+    "failed".into()
+}
+
 fn start(
     c: &Config,
     binary: &Path,
     data: &Path,
     lease: &support::PortLease,
     number: usize,
-    log: &Mutex<File>,
-    origin: Instant,
-) -> support::ProgramChild {
+    shared: &Shared,
+) -> Result<support::ProgramChild, StartupFailure> {
+    let log = &shared.wire;
+    let origin = shared.origin;
     let port = lease.port().to_string();
     let mut args: Vec<String> = match c.server.as_str() {
         "firn" => vec![
@@ -467,69 +598,139 @@ fn start(
         .stdin(Stdio::null())
         .stdout(File::create(c.out.join(format!("server-{number}.stdout"))).unwrap())
         .stderr(File::create(c.out.join(format!("server-{number}.stderr"))).unwrap());
-    let child =
-        support::ProgramChild::spawn_with_limit(&mut cmd, Duration::from_secs(c.seconds + 3600))
-            .expect("start server")
-            .with_port(lease);
-    let deadline = Instant::now() + Duration::from_secs(c.restart_seconds);
-    let mut stream = support::connect_to_when_ready_with_limit(
-        SocketAddr::from(([127, 0, 0, 1], lease.port())),
-        &child,
-        Duration::from_secs(c.restart_seconds),
-    );
-    loop {
-        child.assert_running(lease.port());
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(
-            !remaining.is_zero(),
-            "startup did not answer PONG within {} seconds",
-            c.restart_seconds
-        );
-        stream
-            .set_read_timeout(Some(remaining))
-            .expect("startup read deadline");
-        stream
-            .set_write_timeout(Some(remaining))
-            .expect("startup write deadline");
-        let bytes = resp(&["PING"]);
-        let invoked = Instant::now();
-        let mut raw = Vec::new();
-        let result = stream
-            .write_all(&bytes)
-            .and_then(|_| frame(&mut stream, &mut raw, 0));
-        note(
-            log,
-            origin,
-            &format!(
-                "STARTUP_PING begin={} end={} request={} reply={} result={result:?}",
-                invoked.duration_since(origin).as_nanos(),
-                origin.elapsed().as_nanos(),
-                hex(&bytes),
-                hex(&raw)
-            ),
-        );
-        match result.expect("startup PING transport/protocol") {
-            Frame::Simple(value) if value == "PONG" => break,
-            Frame::Error(error) if error.starts_with("LOADING ") => {
-                std::thread::sleep(Duration::from_millis(100))
-            }
-            other => panic!("startup PING unexpected reply: {other:?}"),
+    let child = match support::ProgramChild::spawn_with_limit(
+        &mut cmd,
+        Duration::from_secs(c.seconds + 3600),
+    ) {
+        Ok(child) => child.with_port(lease).with_name(&c.server),
+        Err(error) => {
+            return Err(StartupFailure::capture(
+                c,
+                shared,
+                number,
+                format!("spawn {}: {error}", c.server),
+            ));
         }
+    };
+    let ready = (|| -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(c.restart_seconds);
+        let mut stream = support::try_connect_to_when_ready_with_limit(
+            SocketAddr::from(([127, 0, 0, 1], lease.port())),
+            &child,
+            Duration::from_secs(c.restart_seconds),
+        )
+        .map_err(|error| error.to_string())?;
+        loop {
+            child
+                .ensure_running(lease.port())
+                .map_err(|error| error.to_string())?;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "{} did not answer PONG within {} seconds",
+                    c.server, c.restart_seconds
+                ));
+            }
+            stream
+                .set_read_timeout(Some(remaining))
+                .and_then(|_| stream.set_write_timeout(Some(remaining)))
+                .map_err(|error| format!("{} startup socket: {error}", c.server))?;
+            let bytes = resp(&["PING"]);
+            let invoked = Instant::now();
+            let mut raw = Vec::new();
+            let result = stream
+                .write_all(&bytes)
+                .and_then(|_| frame(&mut stream, &mut raw, 0));
+            note(
+                log,
+                origin,
+                &format!(
+                    "STARTUP_PING server={} lifetime={number} begin={} end={} request={} reply={} result={result:?}",
+                    c.server,
+                    invoked.duration_since(origin).as_nanos(),
+                    origin.elapsed().as_nanos(),
+                    hex(&bytes),
+                    hex(&raw)
+                ),
+            );
+            match result
+                .map_err(|error| format!("{} startup PING transport/protocol: {error}", c.server))?
+            {
+                Frame::Simple(value) if value == "PONG" => break,
+                Frame::Error(error) if error.starts_with("LOADING ") => {
+                    std::thread::sleep(Duration::from_millis(100))
+                }
+                other => {
+                    return Err(format!(
+                        "{} startup PING unexpected reply: {other:?}",
+                        c.server
+                    ));
+                }
+            }
+        }
+        child
+            .ensure_running(lease.port())
+            .map_err(|error| error.to_string())
+    })();
+    if let Err(reason) = ready {
+        // Stop/reap first: direct-file tails include the final diagnostic, and
+        // no still-running startup process survives a typed early return.
+        drop(child);
+        return Err(StartupFailure::capture(c, shared, number, reason));
     }
-    child.assert_running(lease.port());
     note(
         log,
         origin,
-        &format!("READY lifetime={number} pid={}", child.id()),
+        &format!(
+            "READY server={} lifetime={number} pid={}",
+            c.server,
+            child.id()
+        ),
     );
-    child
+    Ok(child)
 }
-fn kill(child: support::ProgramChild, log: &Mutex<File>, origin: Instant, label: &str) {
-    note(log, origin, &format!("SIGKILL {label} pid={}", child.id()));
+
+fn kill(
+    child: support::ProgramChild,
+    shared: &Shared,
+    epoch: usize,
+    label: &str,
+    trigger: Option<(bool, bool)>,
+) {
+    let intended = Instant::now();
     unsafe extern "C" {
         fn kill(pid: i32, signal: i32) -> i32;
     }
+    // Exclude replies published after the signal from the adjacency metric.
+    // Hold only across the syscall and timestamp, never across network or file I/O.
+    let progress = locked(&shared.ack_progress);
     assert_eq!(unsafe { kill(child.id() as i32, 9) }, 0, "send SIGKILL");
+    let sent = Instant::now();
+    let last_ack_age = progress.last.map(|last| sent.duration_since(last));
+    drop(progress);
+    {
+        let mut coverage = locked(&shared.fault_coverage);
+        coverage.sigkill_sent += 1;
+        coverage.faults.push(FaultRecord {
+            kind: "SIGKILL sent",
+            epoch,
+            at_ns: sent.duration_since(shared.origin).as_nanos(),
+        });
+        if last_ack_age.is_some_and(|age| age <= Duration::from_millis(10)) {
+            coverage.ack_adjacent_sigkills_within_10ms += 1;
+        }
+    }
+    note(
+        &shared.wire,
+        shared.origin,
+        &format!(
+            "SIGKILL sent epoch={epoch} {label} pid={} intended_ns={} at_ns={} last_ack_age_ns={:?} trigger_fresh_ack_and_disk_cycle={trigger:?}",
+            child.id(),
+            intended.duration_since(shared.origin).as_nanos(),
+            sent.duration_since(shared.origin).as_nanos(),
+            last_ack_age.map(|age| age.as_nanos())
+        ),
+    );
     let output = child.wait_with_output().expect("reap killed server");
     use std::os::unix::process::ExitStatusExt;
     assert_eq!(
@@ -538,11 +739,89 @@ fn kill(child: support::ProgramChild, log: &Mutex<File>, origin: Instant, label:
         "server exited before injected kill: {:?}",
         output.status
     );
+    locked(&shared.fault_coverage).sigkill_reaped += 1;
     note(
-        log,
-        origin,
-        &format!("REAP {label} status={}", output.status),
+        &shared.wire,
+        shared.origin,
+        &format!("REAP epoch={epoch} {label} status={}", output.status),
     );
+}
+
+#[derive(Default)]
+struct AckProgress {
+    sequence: u64,
+    last: Option<Instant>,
+}
+impl AckProgress {
+    fn record(&mut self, completed: Instant) {
+        self.sequence += 1;
+        self.last = Some(
+            self.last
+                .map_or(completed, |previous| previous.max(completed)),
+        );
+    }
+}
+fn wait_for_ack_after(
+    progress: &Mutex<AckProgress>,
+    changed: &Condvar,
+    sequence: u64,
+    completed_after: Instant,
+    limit: Duration,
+) -> bool {
+    let deadline = Instant::now() + limit;
+    let mut state = locked(progress);
+    loop {
+        if state.sequence > sequence && state.last.is_some_and(|time| time >= completed_after) {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        state = changed
+            .wait_timeout(state, remaining)
+            .unwrap_or_else(|error| error.into_inner())
+            .0;
+    }
+}
+fn prepare_kill(shared: &Shared, epoch: usize, disk_cycle: bool) -> (bool, bool) {
+    prepare_kill_with_limit(shared, epoch, disk_cycle, IO_LIMIT)
+}
+fn prepare_kill_with_limit(
+    shared: &Shared,
+    epoch: usize,
+    disk_cycle: bool,
+    limit: Duration,
+) -> (bool, bool) {
+    let progress = locked(&shared.ack_progress);
+    let previous = progress.sequence;
+    let completed_after = Instant::now();
+    drop(progress);
+    let fresh = wait_for_ack_after(
+        &shared.ack_progress,
+        &shared.ack_changed,
+        previous,
+        completed_after,
+        limit,
+    );
+    // On success, do no artifact I/O between the new reply and the signal.
+    if !fresh {
+        note(
+            &shared.wire,
+            shared.origin,
+            &format!(
+                "KILL_TRIGGER epoch={epoch} fresh_ack=false disk_cycle={disk_cycle} reason=no fresh acknowledgment within {} seconds; kill fallback",
+                limit.as_secs_f64()
+            ),
+        );
+        if !disk_cycle {
+            problem(
+                shared,
+                &format!("NO_PROGRESS epoch={epoch} no fresh acknowledgment at kill trigger"),
+            );
+        }
+    }
+    (fresh, disk_cycle)
 }
 
 struct StopOnUnwind<'a>(&'a AtomicBool);
@@ -550,6 +829,13 @@ impl Drop for StopOnUnwind<'_> {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
     }
+}
+
+#[derive(Clone)]
+struct RunPlan {
+    seconds: u64,
+    device_configured: bool,
+    fault_skip_reason: String,
 }
 
 struct Shared {
@@ -561,11 +847,40 @@ struct Shared {
     repeats: AtomicUsize,
     seen: Mutex<HashSet<String>>,
     coverage: Mutex<Vec<[usize; 4]>>,
+    fault_coverage: Mutex<Coverage>,
+    server_failures: Mutex<Vec<StartupFailure>>,
+    run_plan: Mutex<Option<RunPlan>>,
+    ack_progress: Mutex<AckProgress>,
+    ack_changed: Condvar,
     acks: AtomicUsize,
     wire: Mutex<File>,
     findings: Mutex<File>,
     origin: Instant,
 }
+impl Shared {
+    fn new(out: &Path, origin: Instant) -> Self {
+        Self {
+            stop: AtomicBool::new(false),
+            killing: AtomicBool::new(false),
+            disk: AtomicBool::new(false),
+            drops: AtomicUsize::new(0),
+            errors: AtomicUsize::new(0),
+            repeats: AtomicUsize::new(0),
+            seen: Mutex::new(HashSet::new()),
+            coverage: Mutex::new(Vec::new()),
+            fault_coverage: Mutex::new(Coverage::default()),
+            server_failures: Mutex::new(Vec::new()),
+            run_plan: Mutex::new(None),
+            ack_progress: Mutex::new(AckProgress::default()),
+            ack_changed: Condvar::new(),
+            acks: AtomicUsize::new(0),
+            wire: Mutex::new(append_file(&out.join("history.log"))),
+            findings: Mutex::new(append_file(&out.join("findings.log"))),
+            origin,
+        }
+    }
+}
+
 fn problem(shared: &Shared, message: &str) {
     shared.errors.fetch_add(1, Ordering::Relaxed);
     note(&shared.findings, shared.origin, message);
@@ -600,8 +915,9 @@ fn writer(c: &Config, shared: &Shared, port: u16, epoch: usize, client: usize) -
             let socket = stream.as_mut().unwrap();
             socket.write_all(&bytes)?;
             if dropped {
-                shared.drops.fetch_add(1, Ordering::Relaxed);
                 socket.shutdown(Shutdown::Both)?;
+                shared.drops.fetch_add(1, Ordering::Relaxed);
+                locked(&shared.fault_coverage).connection_drops += 1;
                 return Ok(None);
             }
             let frames = (0..count)
@@ -652,6 +968,11 @@ fn writer(c: &Config, shared: &Shared, port: u16, epoch: usize, client: usize) -
         };
         if matches!(outcome, Outcome::Applied { .. }) {
             shared.acks.fetch_add(1, Ordering::Relaxed);
+            {
+                let mut progress = locked(&shared.ack_progress);
+                progress.record(completed);
+            }
+            shared.ack_changed.notify_one();
             locked(&shared.coverage)[client][kind_code(kind) as usize] += 1;
         }
         // A single artifact line contains complete wire bytes, including partial replies.
@@ -947,6 +1268,10 @@ fn checkpoint(
 
 fn execute(c: &Config, shared: &Shared) -> String {
     let Some(binary) = c.binary() else {
+        locked(&shared.fault_coverage).skipped_faults.push(format!(
+            "all planned faults skipped: {} executable missing",
+            c.server
+        ));
         if matches!(c.server.as_str(), "firn" | "redis") {
             panic!("required {} binary missing", c.server);
         }
@@ -1004,6 +1329,10 @@ fn execute(c: &Config, shared: &Shared) -> String {
     };
     device.run("heal");
     if !device.enabled {
+        locked(&shared.fault_coverage).skipped_faults.push(format!(
+            "write EIO and flush EIO skipped: {}",
+            c.fault_skip_reason
+        ));
         note(
             &shared.findings,
             shared.origin,
@@ -1011,6 +1340,7 @@ fn execute(c: &Config, shared: &Shared) -> String {
         );
     }
     if c.server == "dragonfly" {
+        locked(&shared.fault_coverage).skipped_faults.push("restart durability not applicable: Dragonfly has no AOF; SIGKILL follows the volatile checkpoint".into());
         note(
             &shared.findings,
             shared.origin,
@@ -1025,15 +1355,10 @@ fn execute(c: &Config, shared: &Shared) -> String {
         );
     }
     let lease = support::lease_port();
-    let mut child = Some(start(
-        c,
-        &binary,
-        &data,
-        &lease,
-        0,
-        &shared.wire,
-        shared.origin,
-    ));
+    let mut child = Some(match start(c, &binary, &data, &lease, 0, shared) {
+        Ok(child) => child,
+        Err(failure) => return record_startup_failure(shared, failure),
+    });
     let deadline = Instant::now() + Duration::from_secs(c.seconds);
     let mut schedule = c.seed;
     let mut epoch = 0;
@@ -1041,10 +1366,11 @@ fn execute(c: &Config, shared: &Shared) -> String {
     let mut workload_seconds = 0.0;
     loop {
         epoch += 1;
+        locked(&shared.fault_coverage).epochs_started += 1;
         shared.stop.store(false, Ordering::Release);
         shared.killing.store(false, Ordering::Release);
         shared.disk.store(false, Ordering::Release);
-        let seconds = 15 + random(&mut schedule) % 11;
+        let seconds = epoch_seconds(&mut schedule);
         let active = Instant::now();
         let end = (active + Duration::from_secs(seconds)).min(deadline);
         let disk_cycle = epoch % 3 == 0
@@ -1069,6 +1395,17 @@ fn execute(c: &Config, shared: &Shared) -> String {
                     shared.disk.store(true, Ordering::Release);
                     note(&shared.wire, shared.origin, "DISK_FAIL intention");
                     device.run("fail");
+                    {
+                        let at_ns = shared.origin.elapsed().as_nanos();
+                        let mut coverage = locked(&shared.fault_coverage);
+                        coverage.write_eio_injected_windows += 1;
+                        coverage.flush_eio_injected_windows += 1;
+                        coverage.faults.push(FaultRecord {
+                            kind: "combined write/flush EIO active",
+                            epoch,
+                            at_ns,
+                        });
+                    }
                     note(&shared.wire, shared.origin, "DISK_FAIL active");
                     failed = true;
                     failed_at = Some(Instant::now());
@@ -1076,6 +1413,11 @@ fn execute(c: &Config, shared: &Shared) -> String {
                 }
                 if failed && !healed && failed_at.unwrap().elapsed() >= Duration::from_secs(3) {
                     device.run("heal");
+                    locked(&shared.fault_coverage).faults.push(FaultRecord {
+                        kind: "combined write/flush EIO healed",
+                        epoch,
+                        at_ns: shared.origin.elapsed().as_nanos(),
+                    });
                     note(
                         &shared.wire,
                         shared.origin,
@@ -1086,12 +1428,14 @@ fn execute(c: &Config, shared: &Shared) -> String {
                 std::thread::sleep(Duration::from_millis(25));
             }
             if c.server != "dragonfly" {
+                let trigger = prepare_kill(shared, epoch, disk_cycle);
                 shared.killing.store(true, Ordering::Release);
                 kill(
                     child.take().unwrap(),
-                    &shared.wire,
-                    shared.origin,
+                    shared,
+                    epoch,
                     "injected while writers active",
+                    Some(trigger),
                 );
             }
             shared.stop.store(true, Ordering::Release);
@@ -1122,25 +1466,26 @@ fn execute(c: &Config, shared: &Shared) -> String {
             checkpoint(c, shared, lease.port(), epoch..=epoch, disks > 0);
             kill(
                 child.take().unwrap(),
-                &shared.wire,
-                shared.origin,
+                shared,
+                epoch,
                 "injected after volatile checkpoint",
+                None,
             );
         }
         // Device is healed without resetting its files; retained data remains evidence.
         device.run("heal");
-        child = Some(start(
-            c,
-            &binary,
-            &data,
-            &lease,
-            epoch,
-            &shared.wire,
-            shared.origin,
-        ));
+        locked(&shared.fault_coverage).restart_attempts += 1;
+        child = Some(match start(c, &binary, &data, &lease, epoch, shared) {
+            Ok(child) => {
+                locked(&shared.fault_coverage).sigkill_restarts_completed += 1;
+                child
+            }
+            Err(failure) => return record_startup_failure(shared, failure),
+        });
         if c.server != "dragonfly" {
             checkpoint(c, shared, lease.port(), 1..=epoch, disks > 0);
         }
+        locked(&shared.fault_coverage).epochs_completed += 1;
         note(
             &shared.wire,
             shared.origin,
@@ -1155,8 +1500,9 @@ fn execute(c: &Config, shared: &Shared) -> String {
     if c.server != "dragonfly" {
         checkpoint(c, shared, lease.port(), 1..=epoch, disks > 0);
     }
-    if shared.drops.load(Ordering::Relaxed) == 0 {
-        problem(shared, "COVERAGE no injected connection drops");
+    let gaps = locked(&shared.fault_coverage).smoke_gaps(c.seconds, device.enabled);
+    for gap in gaps {
+        problem(shared, &format!("COVERAGE {gap}"));
     }
     for (client, counts) in locked(&shared.coverage).iter().enumerate() {
         note(
@@ -1202,31 +1548,89 @@ fn execute(c: &Config, shared: &Shared) -> String {
     }
 }
 
+fn render_report(shared: &Shared, status: &str, panic: Option<&str>) -> String {
+    let mut report = format!(
+        "status={status}\nelapsed_seconds={}\nfindings={}\nacknowledged={}\nconnection_drops={}\npanic={panic:?}\nacceptance=requires_review_of_full_duration_hardware_coverage_and_findings\n",
+        shared.origin.elapsed().as_secs_f64(),
+        shared.errors.load(Ordering::Relaxed),
+        shared.acks.load(Ordering::Relaxed),
+        shared.drops.load(Ordering::Relaxed)
+    );
+    let plan = locked(&shared.run_plan).clone();
+    report.push_str(&format!(
+        "requested_seconds={:?}\nconfigured_fault_device={:?}\n",
+        plan.as_ref().map(|p| p.seconds),
+        plan.as_ref().map(|p| p.device_configured)
+    ));
+    let failures = locked(&shared.server_failures);
+    let coverage = locked(&shared.fault_coverage);
+    let mut unexecuted = Vec::new();
+    if panic.is_some() {
+        unexecuted.push(
+            "remaining planned faults and checks aborted by harness error; see panic field".into(),
+        );
+    }
+    if coverage.write_eio_injected_windows == 0 || coverage.flush_eio_injected_windows == 0 {
+        let missing = match (
+            coverage.write_eio_injected_windows == 0,
+            coverage.flush_eio_injected_windows == 0,
+        ) {
+            (true, true) => "combined write/flush EIO",
+            (true, false) => "write EIO",
+            _ => "flush EIO",
+        };
+        let reason = if panic.is_some() {
+            "harness error stopped execution before this injection; see panic field".into()
+        } else if let Some(failure) = failures.last() {
+            format!(
+                "{} stopped execution for {} lifetime {}",
+                failure.kind, failure.server, failure.lifetime
+            )
+        } else if status == "skipped" {
+            "requested server unavailable; all planned faults were skipped".into()
+        } else if let Some(plan) = &plan {
+            if !plan.device_configured {
+                plan.fault_skip_reason.clone()
+            } else {
+                format!(
+                    "no eligible third disk-failure epoch reached before the {}-second run deadline (checkpoint and restart time included)",
+                    plan.seconds
+                )
+            }
+        } else {
+            "run configuration unavailable; setup did not reach the injection schedule".into()
+        };
+        unexecuted.push(format!("{missing} not injected: {reason}"));
+    }
+    report.push_str(&coverage.report_with_skips(&unexecuted));
+    drop(coverage);
+    drop(failures);
+    for (index, failure) in locked(&shared.server_failures).iter().enumerate() {
+        report.push_str(&format!(
+            "server_finding[{index}].recovery_check=not_executed_server_unavailable\n"
+        ));
+        report.push_str(&format!("server_finding[{index}].kind={:?}\nserver_finding[{index}].server={:?}\nserver_finding[{index}].lifetime={}\nserver_finding[{index}].reason={:?}\nserver_finding[{index}].preceding_faults={:?}\nserver_finding[{index}].stdout_tail={:?}\nserver_finding[{index}].stderr_tail={:?}\n",failure.kind,failure.server,failure.lifetime,failure.reason,failure.preceding_faults,failure.stdout_tail,failure.stderr_tail));
+    }
+    report
+}
+
 #[test]
 #[ignore = "explicit CI chaos experiment; see chaos.yml"]
-fn chaos_run() {
+fn chaos_run() -> Result<(), String> {
     // Establish reporting before parsing all settings, so setup panics leave a report too.
     let out = PathBuf::from(
         std::env::var_os("CHAOS_OUT").expect("CHAOS_OUT must name healthy artifact directory"),
     );
     fs::create_dir_all(&out).expect("create artifact directory");
     let origin = Instant::now();
-    let shared = Shared {
-        stop: AtomicBool::new(false),
-        killing: AtomicBool::new(false),
-        disk: AtomicBool::new(false),
-        drops: AtomicUsize::new(0),
-        errors: AtomicUsize::new(0),
-        repeats: AtomicUsize::new(0),
-        seen: Mutex::new(HashSet::new()),
-        coverage: Mutex::new(Vec::new()),
-        acks: AtomicUsize::new(0),
-        wire: Mutex::new(append_file(&out.join("history.log"))),
-        findings: Mutex::new(append_file(&out.join("findings.log"))),
-        origin,
-    };
+    let shared = Shared::new(&out, origin);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let c = Config::read();
+        *locked(&shared.run_plan) = Some(RunPlan {
+            seconds: c.seconds,
+            device_configured: c.mount.is_some(),
+            fault_skip_reason: c.fault_skip_reason.clone(),
+        });
         *locked(&shared.coverage) = vec![[0; 4]; c.clients];
         note(
             &shared.wire,
@@ -1260,15 +1664,13 @@ fn chaos_run() {
             shared.repeats.load(Ordering::Relaxed)
         ),
     );
-    let report = format!(
-        "status={status}\nelapsed_seconds={}\nfindings={}\nacknowledged={}\nconnection_drops={}\npanic={panic:?}\nacceptance=requires_review_of_full_duration_hardware_coverage_and_findings\n",
-        origin.elapsed().as_secs_f64(),
-        shared.errors.load(Ordering::Relaxed),
-        shared.acks.load(Ordering::Relaxed),
-        shared.drops.load(Ordering::Relaxed)
-    );
+    let report = render_report(&shared, &status, panic.as_deref());
     fs::write(out.join("report.txt"), report).expect("write final report");
-    assert_ne!(status, "failed", "chaos failed; see {}", out.display());
+    if status == "failed" {
+        Err(format!("chaos failed; see {}", out.display()))
+    } else {
+        Ok(())
+    }
 }
 
 #[test]
@@ -1394,5 +1796,262 @@ fn snapshot_reply_references_preserve_changes_and_reject_missing_or_stale_files(
     assert!(
         retain_reply(out, 1, b"$1\r\nb\r\n").is_err(),
         "missing referenced bytes must fail history retention"
+    );
+}
+
+#[test]
+fn refused_restart_report_retains_partial_coverage_fault_context_and_bounded_tails() {
+    let directory = support::fixture_directory();
+    let out = directory.path();
+    let shared = Shared::new(out, Instant::now());
+    let c = Config {
+        server: "redis".into(),
+        seconds: 120,
+        restart_seconds: 300,
+        seed: 1,
+        clients: 32,
+        out: out.to_path_buf(),
+        mount: None,
+        fix: "unknown".into(),
+        fault_skip_reason: "CHAOS_FAULT_MOUNT not provided".into(),
+    };
+    let mut stderr = vec![b'x'; 5000];
+    stderr.extend_from_slice(b"\nREDIS_AOF_FAILURE\n");
+    fs::write(out.join("server-3.stdout"), b"REDIS_STARTUP_STDOUT").unwrap();
+    fs::write(out.join("server-3.stderr"), &stderr).unwrap();
+    {
+        let mut coverage = locked(&shared.fault_coverage);
+        coverage.epochs_started = 3;
+        coverage.epochs_completed = 2;
+        coverage.sigkill_sent = 3;
+        coverage.sigkill_reaped = 3;
+        coverage.restart_attempts = 3;
+        coverage.sigkill_restarts_completed = 2;
+        coverage.write_eio_injected_windows = 1;
+        coverage.flush_eio_injected_windows = 1;
+        coverage.connection_drops = 5;
+        coverage.faults.push(FaultRecord {
+            kind: "combined write/flush EIO active",
+            epoch: 3,
+            at_ns: 100,
+        });
+        coverage.faults.push(FaultRecord {
+            kind: "SIGKILL sent",
+            epoch: 3,
+            at_ns: 200,
+        });
+    }
+    let failure = StartupFailure::capture(
+        &c,
+        &shared,
+        3,
+        "redis refused to load its append-only file".into(),
+    );
+    assert_eq!(
+        failure.stderr_tail.len(),
+        4096,
+        "tail must be bounded, not the whole file"
+    );
+    assert!(failure.stderr_tail.ends_with("REDIS_AOF_FAILURE\n"));
+    let status = record_startup_failure(&shared, failure);
+    let report = render_report(&shared, &status, None);
+    for expected in [
+        "status=failed",
+        "panic=None",
+        "findings=1",
+        "kind=\"refused restart\"",
+        "recovery_check=not_executed_server_unavailable",
+        "server=\"redis\"",
+        "coverage.epochs_started=3",
+        "coverage.epochs_completed=2",
+        "coverage.sigkill_sent=3",
+        "coverage.sigkill_reaped=3",
+        "coverage.restart_attempts=3",
+        "coverage.sigkill_restarts_completed=2",
+        "coverage.write_eio_injected_windows=1",
+        "coverage.flush_eio_injected_windows=1",
+        "coverage.enospc_injected_windows=0",
+        "combined write/flush EIO active",
+        "SIGKILL sent",
+        "REDIS_AOF_FAILURE",
+        "REDIS_STARTUP_STDOUT",
+    ] {
+        assert!(report.contains(expected), "missing {expected}: {report}");
+    }
+    assert!(
+        !report.contains("firn exited"),
+        "Redis failure must retain its identity"
+    );
+    {
+        let mut coverage = locked(&shared.fault_coverage);
+        coverage.write_eio_injected_windows = 0;
+        coverage.flush_eio_injected_windows = 0;
+    }
+    let before_disk = render_report(&shared, &status, None);
+    assert!(before_disk.contains("combined write/flush EIO not injected: refused restart stopped execution for redis lifetime 3"));
+    assert!(
+        !before_disk.contains("no eligible third disk-failure epoch"),
+        "an aborted run must not be labeled normal schedule expiry"
+    );
+}
+
+#[test]
+fn smoke_coverage_rejects_missing_fault_kinds_and_preserves_unwind_progress() {
+    let directory = support::fixture_directory();
+    let shared = Shared::new(directory.path(), Instant::now());
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut coverage = locked(&shared.fault_coverage);
+        coverage.epochs_started = 1;
+        coverage.sigkill_sent = 1;
+        coverage.sigkill_reaped = 1;
+        coverage.restart_attempts = 1;
+        coverage.connection_drops = 1;
+        panic!("injected harness error after first kill");
+    }));
+    assert!(result.is_err());
+    let report = render_report(
+        &shared,
+        "failed",
+        Some("injected harness error after first kill"),
+    );
+    assert!(report.contains("coverage.sigkill_sent=1"));
+    assert!(report.contains("coverage.sigkill_restarts_completed=0"));
+    assert!(report.contains("panic=Some("));
+    assert!(report.contains("remaining planned faults and checks aborted by harness error"));
+    assert!(report.contains("combined write/flush EIO not injected: harness error"));
+    assert!(report.contains("coverage.write_eio_injected_windows=0"));
+    assert!(report.contains("coverage.flush_eio_injected_windows=0"));
+    *locked(&shared.run_plan) = Some(RunPlan {
+        seconds: 20,
+        device_configured: true,
+        fault_skip_reason: String::new(),
+    });
+    let short = render_report(&shared, "passed-functional-probe", None);
+    assert!(short.contains("combined write/flush EIO not injected: no eligible third disk-failure epoch reached before the 20-second run deadline"));
+    let mut coverage = locked(&shared.fault_coverage);
+    assert_eq!(
+        coverage.smoke_gaps(120, true).len(),
+        3,
+        "kill alone is not a restart or either EIO window"
+    );
+    coverage.sigkill_restarts_completed = 1;
+    coverage.write_eio_injected_windows = 1;
+    assert_eq!(
+        coverage.smoke_gaps(120, true),
+        vec!["no flush-EIO injection window"]
+    );
+    coverage.flush_eio_injected_windows = 1;
+    assert!(coverage.smoke_gaps(120, true).is_empty());
+    drop(coverage);
+    let injected = render_report(&shared, "passed-functional-probe", None);
+    assert!(
+        !injected.contains("EIO not injected:"),
+        "actual injected windows must not be called skipped"
+    );
+    let mut coverage = locked(&shared.fault_coverage);
+    coverage.write_eio_injected_windows = 0;
+    coverage.flush_eio_injected_windows = 0;
+    assert!(
+        coverage.smoke_gaps(120, false).is_empty(),
+        "missing device is an explicit skip, not a synthetic injection"
+    );
+    coverage.connection_drops = 0;
+    assert_eq!(
+        coverage.smoke_gaps(120, false),
+        vec!["no completed injected connection drop"]
+    );
+}
+
+#[test]
+fn seeded_schedule_reaches_first_combined_eio_epoch_within_75_active_seconds() {
+    for seed in [0, 1, 2, 42, 147, u64::MAX] {
+        let mut schedule = seed;
+        let mut seconds = 0;
+        for _ in 1..=3 {
+            let epoch = epoch_seconds(&mut schedule);
+            assert!((15..=25).contains(&epoch));
+            seconds += epoch;
+        }
+        assert!(
+            seconds <= 75,
+            "120-second smoke has room for the third epoch before checkpoint overhead"
+        );
+    }
+}
+
+#[test]
+fn kill_trigger_requires_fresh_ack_and_timeout_retains_prior_faults() {
+    let now = Instant::now();
+    let progress = Mutex::new(AckProgress {
+        sequence: 7,
+        last: Some(now),
+    });
+    let changed = Condvar::new();
+    assert!(
+        !wait_for_ack_after(&progress, &changed, 7, now, Duration::ZERO),
+        "old acknowledgment is not fresh"
+    );
+    locked(&progress).sequence = 8;
+    assert!(
+        !wait_for_ack_after(
+            &progress,
+            &changed,
+            7,
+            now + Duration::from_millis(1),
+            Duration::ZERO
+        ),
+        "a newly published reply completed before the cutoff is still stale"
+    );
+    assert!(
+        wait_for_ack_after(&progress, &changed, 7, now, Duration::ZERO),
+        "new acknowledgment should trigger immediately"
+    );
+    let directory = support::fixture_directory();
+    let shared = Shared::new(directory.path(), now);
+    locked(&shared.fault_coverage).faults.push(FaultRecord {
+        kind: "combined write/flush EIO active",
+        epoch: 3,
+        at_ns: 100,
+    });
+    prepare_kill_with_limit(&shared, 3, true, Duration::ZERO);
+    assert_eq!(
+        shared.errors.load(Ordering::Relaxed),
+        0,
+        "disk refusal permits the explicit kill fallback"
+    );
+    let coverage = locked(&shared.fault_coverage);
+    assert_eq!(
+        coverage.sigkill_sent, 0,
+        "waiting does not count a signal that was never sent"
+    );
+    assert_eq!(coverage.sigkill_restarts_completed, 0);
+    assert!(
+        coverage
+            .report()
+            .contains("combined write/flush EIO active")
+    );
+    drop(coverage);
+    prepare_kill_with_limit(&shared, 4, false, Duration::ZERO);
+    assert_eq!(
+        shared.errors.load(Ordering::Relaxed),
+        1,
+        "healthy silence at kill trigger is no progress"
+    );
+}
+
+#[test]
+fn ack_publication_keeps_latest_completion_when_an_older_reply_is_published_last() {
+    let now = Instant::now();
+    let mut progress = AckProgress::default();
+    progress.record(now + Duration::from_millis(2));
+    progress.record(now);
+    assert_eq!(
+        progress.sequence, 2,
+        "every complete acknowledgment advances freshness"
+    );
+    assert_eq!(
+        progress.last,
+        Some(now + Duration::from_millis(2)),
+        "late publication must not move the latest completion backwards"
     );
 }

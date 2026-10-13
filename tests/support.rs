@@ -43,41 +43,64 @@ pub(crate) fn connect_to_when_ready_with_limit(
     connect_to_when_ready_using_limit(address, child, limit, TcpStream::connect_timeout)
 }
 
+#[derive(Debug)]
+pub(crate) struct ReadinessError(pub String);
+
+impl std::fmt::Display for ReadinessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f,"{}",self.0) }
+}
+impl std::error::Error for ReadinessError {}
+
 fn connect_to_when_ready_using_limit(
     address: SocketAddr,
     child: &ProgramMonitor,
     limit: Duration,
-    mut connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
+    connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
 ) -> TcpStream {
+    try_connect_to_when_ready_using_limit(address, child, limit, connect)
+        .unwrap_or_else(|error| panic!("{error}{}", child.diagnostic_block(Some(address.port()))))
+}
+
+/// Expected readiness failures are data for fault experiments. Existing test
+/// wrappers still panic with the same bounded process diagnostics.
+pub(crate) fn try_connect_to_when_ready_with_limit(
+    address: SocketAddr,
+    child: &ProgramMonitor,
+    limit: Duration,
+) -> Result<TcpStream, ReadinessError> {
+    try_connect_to_when_ready_using_limit(address, child, limit, TcpStream::connect_timeout)
+}
+
+fn try_connect_to_when_ready_using_limit(
+    address: SocketAddr,
+    child: &ProgramMonitor,
+    limit: Duration,
+    mut connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
+) -> Result<TcpStream, ReadinessError> {
     let port = address.port();
     let deadline = Instant::now() + limit;
     loop {
-        child.assert_running(port);
+        child.ensure_running(port)?;
         let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(
-            !remaining.is_zero(),
-            "connect to program at {address} exceeded the {}-second deadline{}",
-            limit.as_secs(), child.diagnostic_block(Some(port))
-        );
-        // Keep a bound even if the local listen backlog is full, but avoid
-        // imposing a short timeout on a handshake delayed by runner load.
+        if remaining.is_zero() {
+            return Err(ReadinessError(format!("{} connect at {address} exceeded the {}-second deadline",child.name(),limit.as_secs())));
+        }
         match connect(&address, remaining) {
             Ok(stream) => {
-                child.assert_running(port);
-                return bounded_stream(stream);
+                child.ensure_running(port)?;
+                stream.set_nonblocking(false)
+                    .and_then(|_|stream.set_read_timeout(Some(Duration::from_secs(10))))
+                    .and_then(|_|stream.set_write_timeout(Some(Duration::from_secs(10))))
+                    .map_err(|error|ReadinessError(format!("{} configure readiness socket: {error}",child.name())))?;
+                return Ok(stream);
             }
-            // Other errors, notably timeouts, can follow a completed
-            // handshake. Retrying would spend another accepted-client slot.
+            // A timeout can follow admission. Retrying could consume another
+            // client slot, so only a refused handshake gets another attempt.
             Err(error) if retry_refused_connection(&error, deadline) => {
-                child.assert_running(port);
+                child.ensure_running(port)?;
                 std::thread::sleep(Duration::from_millis(10));
             }
-            Err(error) => {
-                panic!(
-                    "connect to program at {address} failed: {error}{}",
-                    child.diagnostic_block(Some(port))
-                );
-            }
+            Err(error) => return Err(ReadinessError(format!("{} connect at {address} failed: {error}",child.name()))),
         }
     }
 }
@@ -505,6 +528,7 @@ struct MonitoredProgram {
     output: CapturedOutput,
     errors: CapturedOutput,
     program: OsString,
+    name: Mutex<OsString>,
     pid: u32,
     diagnostic_deadline: OnceLock<Instant>,
 }
@@ -531,7 +555,8 @@ impl ProgramMonitor {
         self.stop_for_diagnostics(deadline);
         let port = port.map_or_else(|| "unknown".to_owned(), |port| port.to_string());
         format!(
-            "\n----- BEGIN TEST CHILD DIAGNOSTICS -----\nprogram: {}\nPID: {}\nport: {port}\n{status}\nstderr (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}\nstdout (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}\n----- END TEST CHILD DIAGNOSTICS -----\n",
+            "\n----- BEGIN TEST CHILD DIAGNOSTICS -----\nprogram: {}\nexecutable: {}\nPID: {}\nport: {port}\n{status}\nstderr (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}\nstdout (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}\n----- END TEST CHILD DIAGNOSTICS -----\n",
+            self.name(),
             self.program.program.to_string_lossy(),
             self.program.pid,
             self.program.errors.diagnostic_tail(deadline),
@@ -539,28 +564,24 @@ impl ProgramMonitor {
         )
     }
 
-    /// Fails with the child's stderr tail if it exited before readiness.
-    /// This checks the actual child even when another server accepts this port.
-    pub fn assert_running(&self, port: u16) {
+    pub(crate) fn name(&self) -> String {
+        locked(&self.program.name).to_string_lossy().into_owned()
+    }
+
+    /// Reports the actual child status even if another server accepts the port.
+    pub(crate) fn ensure_running(&self, port: u16) -> Result<(), ReadinessError> {
         let deadline = self.program.diagnostic_deadline.get().copied()
             .unwrap_or_else(|| Instant::now() + DIAGNOSTIC_LIMIT);
-        let status = self.status_until(deadline);
-        match status {
-            Ok(Some(status)) => {
-                let deadline = *self.program.diagnostic_deadline.get_or_init(|| deadline);
-                self.stop_for_diagnostics(deadline);
-                panic!(
-                    "firn exited before listening on {port}: {status}\nstderr (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}",
-                    self.program.errors.diagnostic_tail(deadline)
-                );
-            }
-            Ok(None) => {}
-            Err(error) => {
-                let deadline = *self.program.diagnostic_deadline.get_or_init(|| deadline);
-                self.stop_for_diagnostics(deadline);
-                panic!("check firn while waiting for port {port}: {error}");
-            }
+        match self.status_until(deadline) {
+            Ok(Some(status)) => Err(ReadinessError(format!("{} exited before listening on {port}: {status}",self.name()))),
+            Ok(None) => Ok(()),
+            Err(error) => Err(ReadinessError(format!("check {} while waiting for port {port}: {error}",self.name()))),
         }
+    }
+
+    /// Existing test callers retain their panic-and-diagnostic contract.
+    pub fn assert_running(&self, port: u16) {
+        self.ensure_running(port).unwrap_or_else(|error| panic!("{error}{}",self.diagnostic_block(Some(port))));
     }
 
     /// Probes without applying the normal program timeout or blocking on a
@@ -657,6 +678,7 @@ impl ProgramChild {
                     output,
                     errors,
                     program: command.get_program().to_os_string(),
+                    name: Mutex::new(command.get_program().to_os_string()),
                     pid,
                     diagnostic_deadline: OnceLock::new(),
                 }),
@@ -664,6 +686,12 @@ impl ProgramChild {
             deadline: Instant::now() + limit,
             port: None,
         })
+    }
+
+    /// Identifies the server even when its executable is a registration wrapper.
+    pub(crate) fn with_name(self, name: impl AsRef<OsStr>) -> Self {
+        *locked(&self.monitor.program.name) = name.as_ref().to_os_string();
+        self
     }
 
     /// Retains the port reservation until this child has stopped and supplies
@@ -1084,7 +1112,7 @@ mod tests {
             .expect("string panic message");
         assert!(
             message.contains(&format!(
-                "firn exited before listening on {}: exit status: 7",
+                "/bin/sh exited before listening on {}: exit status: 7",
                 lease.port()
             )),
             "readiness panic lost exit status: {message}"
@@ -1094,4 +1122,37 @@ mod tests {
             "readiness panic lost stderr: {message}"
         );
     }
+    #[test]
+    fn readiness_result_preserves_named_server_exit_without_panicking() {
+        let lease=lease_port();
+        let child=shell_child("echo REDIS_AOF_FAILURE >&2; exit 7",&lease).with_name("redis");
+        wait_for_witness_exit(&child);
+        let error=try_connect_to_when_ready_with_limit(
+            SocketAddr::from(([127,0,0,1],lease.port())),&child,Duration::from_secs(20))
+            .expect_err("an exited server must return a readiness failure");
+        assert!(error.0.contains("redis exited"),"{error}");
+        assert!(error.0.contains("exit status: 7"),"{error}");
+        assert!(!error.0.contains("firn"),"competitor error mislabeled: {error}");
+        let diagnostic=child.monitor.diagnostic_block(Some(lease.port()));
+        assert!(diagnostic.contains("program: redis"),"{diagnostic}");
+        assert!(diagnostic.contains("executable: /bin/sh"),"{diagnostic}");
+        assert!(diagnostic.contains("REDIS_AOF_FAILURE"),"{diagnostic}");
+    }
+
+    #[test]
+    fn readiness_result_does_not_retry_nonrefusal_or_panic() {
+        let lease=lease_port();
+        let child=shell_child("exec sleep 30",&lease).with_name("valkey");
+        let mut attempts=0;
+        let error=try_connect_to_when_ready_using_limit(
+            SocketAddr::from(([127,0,0,1],lease.port())),&child,Duration::from_secs(20),|_,_| {
+                attempts+=1;
+                Err(std::io::Error::new(std::io::ErrorKind::TimedOut,"injected admitted-connection timeout"))
+            }).expect_err("timeout must return an error");
+        assert_eq!(attempts,1,"nonrefusal must not reconnect");
+        assert!(error.0.contains("valkey"),"{error}");
+        assert!(error.0.contains("injected admitted-connection timeout"),"{error}");
+        assert!(child.ensure_running(lease.port()).is_ok(),"typed failure must leave cleanup to its owner");
+    }
+
 }
