@@ -570,7 +570,22 @@ not run this statement and serves as a second control.
 
 [Firn-wf#75](https://github.com/Ming-Research/Firn-wf/pull/75) writes the
 other 39 conditional holds in the same one-statement form, so no
-two-statement copy remains in firn.
+two-statement copy remains in firn. Run
+[38376297156](https://github.com/Ming-Research/Firn-wf/actions/runs/38376297156),
+with the setup above: main d3d25fa (two statements at 39 sites), its twin
+(identical image) and Firn-wf#75 at 576df40; MSET at 50 connections like
+SET and GET. The same prior criterion applies: each test's median per-pass
+ratio to main within the twin's range.
+
+| test | twin ratio, median (range) | one statement, median (range) | one statement, mean (sd) |
+|---|---|---|---|
+| SET | 1.005 (0.986-1.009) | 0.9962 (0.990-1.004) | 0.9965 (0.005) |
+| MSET | 1.021 (1.000-1.045) | 1.004 (0.959-1.020) | 0.998 (0.021) |
+| GET | 1.001 (0.978-1.003) | 0.9995 (0.988-1.008) | 0.999 (0.007) |
+
+Each median lies inside the twin's range, so the criterion holds for all
+three tests. One MSET pass (0.959) fell below the twin's lowest pass; MSET's
+spread is the widest for both twin and change at six passes.
 
 ## 5. Whitefoot gaps and witnesses
 
