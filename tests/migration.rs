@@ -136,7 +136,7 @@ fn start_redis(binary: &Path, directory: &Path, aof: bool) -> (ProgramChild, Cli
     command.current_dir(directory)
         .args(["--bind", "127.0.0.1", "--port", &lease.port().to_string(),
             "--save", "", "--appendonly", if aof { "yes" } else { "no" },
-            "--appendfilename", "migration.aof", "--appenddirname", "appendonlydir",
+            "--appendfilename", "appendonly.aof", "--appenddirname", "appendonlydir",
             "--aof-use-rdb-preamble", "no", "--auto-aof-rewrite-percentage", "0", "--dir"])
         .arg(directory).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = ProgramChild::spawn(&mut command).expect("start Redis migration oracle").with_port(&lease);
@@ -147,12 +147,12 @@ fn start_redis(binary: &Path, directory: &Path, aof: bool) -> (ProgramChild, Cli
 fn start_firn(program: &CompiledProgram, native: bool, aof: bool) -> (ProgramChild, Client) {
     let lease = support::lease_port();
     let port = lease.port().to_string();
-    // The third positional argument enables AOF; omitting it keeps the online
-    // destination in memory. Both routes use the same supported commands.
+    // Exercise the documented named AOF options. With only --port, the
+    // online destination keeps the default AOF-off configuration.
     let arguments: &[&[u8]] = if aof {
-        &[port.as_bytes(), b"0", b"migration.aof"]
+        &[b"--port", port.as_bytes(), b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]
     } else {
-        &[port.as_bytes(), b"0"]
+        &[b"--port", port.as_bytes()]
     };
     let child = program.spawn_on_route(native, arguments).with_port(&lease);
     let client = Client::connect(lease.port(), &child);
@@ -346,7 +346,7 @@ fn incremental_writes(source: &mut Client) {
 }
 
 fn copy_appenddir(source: &Path, destination: &Path) {
-    let manifest = std::fs::read_to_string(source.join("migration.aof.manifest")).expect("Redis AOF manifest");
+    let manifest = std::fs::read_to_string(source.join("appendonly.aof.manifest")).expect("Redis AOF manifest");
     let mut bases = 0;
     let mut increments = 0;
     for line in manifest.lines() {

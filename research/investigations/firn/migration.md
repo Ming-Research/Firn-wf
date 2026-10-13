@@ -30,7 +30,12 @@ The file path sets `appendonly yes` and `aof-use-rdb-preamble no`, requests
 `aof_last_bgrewrite_status:ok`, and includes writes in the incremental file
 after the rewrite. Redis stops cleanly before the entire append directory
 is copied unchanged to a fresh firn working directory. firn loads the copied
-manifest, base and incremental files with the same appendfilename.
+manifest, base and incremental files with the same appendfilename. Redis
+restarts in its original directory and uses its own loader to reconstruct
+the live comparison oracle from the source files. The two servers have
+separate directories: Redis never loads the copy that firn can modify. The
+zeroed-increment negative control in [Result](#result) demonstrates that
+missing incremental contents are detected against this oracle.
 
 The online path keeps both servers running but makes no concurrent source
 mutations. firn's command table has no `MIGRATE`, `DUMP` or `RESTORE`, so the
@@ -52,10 +57,26 @@ scheduling delay; the allowance covers rounding and small clock differences.
 
 ## Result
 
-Pending CI. No local build or test was run, and no commit was made. The gate
-must establish both cases on the edited revision before either path is
-claimed to work. The planned cutover path is the command-only AOF import,
-because the existing loader and multipart layout provide the mechanism
+The owner-supplied CI evidence records both migration cases passing in
+[gate run 38415877392](https://github.com/Ming-Research/Firn-wf/actions/runs/38415877392)
+at revision `0f775cb`. In
+[negative-control run 38417367903](https://github.com/Ming-Research/Firn-wf/actions/runs/38417367903),
+a temporary branch zeroed the destination's copied incremental AOF contents
+while retaining its filename and manifest entry. The AOF comparison failed
+at `database 0: complete key sets` because `incremental-only` was missing.
+The online control changed one byte of `list:persistent`; its complete-value
+comparison identified that key and reported `complete exact bytes differ`.
+An earlier control
+omitted the incremental file and made firn exit with status 4 before
+listening. It tested loader refusal rather than the comparison, so the
+zeroed-increment control replaced it.
+
+The current edit changes firn's test invocation from positional arguments
+to the documented named options and changes the AOF filename to
+`appendonly.aof`. Those changes postdate the passing run and need new CI;
+the earlier result does not validate the revised invocation. No local build
+or test was run for these edits. The planned cutover path is the command-only
+AOF import, because the existing loader and multipart layout provide the mechanism
 without adding firn commands or shipping a separate copy utility. The
 README records the steps and the online helper's limits.
 
@@ -82,7 +103,7 @@ README records the steps and the online helper's limits.
   elapsed time plus 1 ms does not guarantee an identical absolute deadline.
   The test checks the requested sampled PTTL bounds, which can fail under
   asymmetric delays and can miss an extension smaller than the interval
-  between samples. CI under gate load remains unverified. A production
+  between samples. A production
   client needing exact deadlines could use the already supported
   `PEXPIRETIME` and `PEXPIREAT`, with synchronized source/destination clocks.
 - A dump-based online path would need Redis-compatible `DUMP` serialization

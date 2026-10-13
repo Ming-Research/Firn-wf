@@ -1,0 +1,7 @@
+Decision: Firn's supported cutover from Redis 7.2.16, for database 0 and its five supported value types with application writes paused, uses Redis's command-only multipart AOF produced with `aof-use-rdb-preamble no`, copied after a successful rewrite and clean shutdown, because the existing loader imports the unchanged manifest, base and incremental files and the migration gate passed while an empty-increment control failed the key comparison ([results](../../research/investigations/firn/migration.md#result)), instead of adding an RDB loader or `DUMP`, `RESTORE` or `MIGRATE` to firn for this cutover.
+
+Decision: The gate's network job runs the pinned Redis 7.2.16 reference as the migration oracle, reading complete values from Redis and firn and using Redis's own loader for the AOF reference, because the empty-increment and one-byte list-corruption controls failed the independent comparisons ([results](../../research/investigations/firn/migration.md#result)), instead of treating the copy helper's output or fixture values as the migration oracle.
+
+Rejected:
+- Importing Redis's default RDB-preamble AOF: rejected because firn has no RDB loader, while a command-only rewrite uses its existing tested loader.
+- Adding `DUMP`, `RESTORE` or `MIGRATE` to firn for this cutover: rejected because firn implements none of them and the tested AOF path already provides the required transfer without a new serialization or server-to-server protocol.

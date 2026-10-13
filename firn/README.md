@@ -629,7 +629,7 @@ default.
 ## Moving data from Redis
 
 The migration cases in `tests/migration.rs` cover Redis **7.2.16** and firn's
-five supported types in **database 0 only**. Their results are pending CI
+five supported types in **database 0 only**
 ([method and limits](../research/investigations/firn/migration.md)). firn
 has no other databases, streams, RDB reader, `MIGRATE`, `DUMP` or `RESTORE`.
 Do not import an AOF containing other databases or unsupported types.
