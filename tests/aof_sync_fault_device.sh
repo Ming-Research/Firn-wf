@@ -269,8 +269,8 @@ setup() {
     # (about 11 days) is far below the overflow of the kernel's conversion
     # to milliseconds.
     printf '\n%s\n%s\n%s\n%s\n' "$image" "$wb" "$exp" "$owner" >"$state"
-    : # TEMP echo 0 >"$writeback"
-    : # TEMP echo 100000000 >"$expire"
+    echo 0 >"$writeback"
+    echo 100000000 >"$expire"
     truncate -s 64M "$image"
     loop=$(losetup --find --show "$image")
     printf '%s\n%s\n%s\n%s\n%s\n' "$loop" "$image" "$wb" "$exp" "$owner" >"$state"
