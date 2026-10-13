@@ -34,11 +34,14 @@
 //! back, by refusing its start through maxmemory, and checks that firn keeps
 //! refusing for as long as the rewrite cannot run. The second case,
 //! aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end, pads the file
-//! so that the write acknowledged during the failure ends at a page end and
-//! the write after recovery starts on the next page, where no later write
+//! so that the write acknowledged just before the failure ends at a page end
+//! and the write after recovery starts on the next page, where no later write
 //! dirties the failed page again, then reads what a restart finds once the
 //! filesystem is remounted. It records Redis 7.2.16's outcome as an
-//! observation and requires firn to keep every write it acknowledged.
+//! observation and requires firn to keep every write it acknowledged. So that
+//! the server's sync of that write fails, the case acknowledges the write on
+//! the healthy device, stops the server with SIGSTOP so that it cannot sync,
+//! fails the device, and continues the server with SIGCONT.
 //!
 //! The cases are ignored in `make check`, which has no such device; the
 //! `aof-sync-fault` job of .github/workflows/check.yml makes it and runs both
@@ -71,7 +74,8 @@ const FIELDS: &[&str] = &[
 const SEED: &[&[&str]] = &[
     &["SET", "k1", "v1"], &["SET", "k2", "v2"], &["RPUSH", "l", "a", "b"],
 ];
-/// Written once the device fails, before the server can know it has.
+/// The write whose record the page-end case ends at a page end, and which the
+/// first case writes once the device fails, before the server can know it has.
 const DURING: &[&str] = &["SET", "during", "w"];
 /// Write commands and PING, each refused while the sync is failing.
 const REFUSED: &[&[&str]] = &[
@@ -419,9 +423,7 @@ const KEPT: &[(&str, &[&str])] = &[
 /// What one server did in the page-end case, and what it kept.
 struct PageEnd {
     server: String,
-    /// Which try of the server's run this is, counted from 1.
-    attempt: usize,
-    /// The reply to DURING.
+    /// The reply to DURING, sent before the device failed.
     during: String,
     /// The incremental file's size once DURING's record was in it, a page
     /// end, or why the layout the case is for was not reached.
@@ -436,22 +438,14 @@ struct PageEnd {
 }
 
 impl PageEnd {
-    /// Whether the layout was missed only because the server refused the
-    /// write sent as the device failed, with MISCONF, which leaves nothing
-    /// in the page to lose. A layout missed for any other reason, the file's
-    /// sizes not lining up, is not this.
-    fn refused_during(&self) -> bool {
-        self.layout.is_err() && self.during.starts_with(MISCONF)
-    }
-
     /// One line per try of a server, in a stable form for the research record.
     fn observation(&self) -> String {
         let layout = match &self.layout {
             Ok(end) => format!("page-end@{end}"),
             Err(why) => format!("missed({why:?})"),
         };
-        let mut line = format!("observation: {} attempt={} during-write={:?} layout={layout} pad-length={} after-write={:?}",
-            self.server, self.attempt, self.during, self.pad, self.after);
+        let mut line = format!("observation: {} during-write={:?} layout={layout} pad-length={} after-write={:?}",
+            self.server, self.during, self.pad, self.after);
         match &self.restart {
             Ok(replies) => {
                 line.push_str(" loaded=yes");
@@ -526,13 +520,92 @@ fn check_page_layout(device: &Device) {
     assert!(block > 0 && PAGE % block == 0, "block size {block} does not divide the page");
 }
 
+/// Signals the running program alone, named as kill(1) names the signal. It
+/// reports a failure instead of panicking, so that the guard below can send
+/// SIGCONT while the test is already unwinding.
+fn signal(child: &ProgramChild, name: &str) -> Result<(), String> {
+    let status = Command::new("/bin/kill").args([format!("-{name}"), "--".to_string(), child.id().to_string()])
+        .status().map_err(|error| format!("run kill: {error}"))?;
+    if status.success() { Ok(()) } else { Err(format!("kill -{name} {}: {status}", child.id())) }
+}
+
+/// Whether every thread of the process is in the stopped state (T, which
+/// SIGSTOP sets) in /proc, so that none of them, Redis's background fsync
+/// thread included, can still sync.
+fn all_threads_stopped(child: &ProgramChild) -> bool {
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{}/task", child.id())) else { return false };
+    tasks.flatten().all(|task| {
+        // A thread that has exited since the listing is gone, not running.
+        let Ok(stat) = std::fs::read_to_string(task.path().join("stat")) else { return true };
+        // "pid (comm) S ...": the state follows the last closing parenthesis.
+        stat.rsplit_once(')').and_then(|(_, rest)| rest.trim_start().chars().next()) == Some('T')
+    })
+}
+
+/// A server process stopped with SIGSTOP. Dropping the guard sends SIGCONT
+/// unless `resume` did, so that a failure between the stop and the
+/// continuation cannot leave the server stopped, where a SHUTDOWN or the
+/// reaping of its child would wait on a process that never runs. The guard
+/// borrows the child, so it cannot outlive it and signal a reused pid.
+struct Stopped<'a> {
+    child: &'a ProgramChild,
+    resumed: bool,
+}
+
+impl<'a> Stopped<'a> {
+    /// Stops the process and waits until all of its threads are stopped.
+    fn stop(child: &'a ProgramChild, server: &str) -> Self {
+        // Built first, so that a failure to stop, or to see it, still continues.
+        let stopped = Self { child, resumed: false };
+        signal(child, "STOP").unwrap_or_else(|why| panic!("{server}: {why}"));
+        let deadline = Instant::now() + POLL_LIMIT;
+        while !all_threads_stopped(child) {
+            assert!(Instant::now() < deadline, "{server}: not stopped after SIGSTOP");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        stopped
+    }
+
+    fn resume(mut self, server: &str) {
+        // Marked only once the signal went out, so that a failed one is tried
+        // again by the drop that follows its panic.
+        signal(self.child, "CONT").unwrap_or_else(|why| panic!("{server}: {why}"));
+        self.resumed = true;
+    }
+}
+
+impl Drop for Stopped<'_> {
+    fn drop(&mut self) {
+        if !self.resumed {
+            let _ = signal(self.child, "CONT");
+        }
+    }
+}
+
 /// Seeds the server and pads its incremental file so that DURING's record
-/// will end at a page end, lets both reach the device, fails the device and
-/// sends DURING at once, then waits until the sync has failed after DURING
-/// was in the file. Returns the reply to DURING, the layout reached and the
-/// padding's length.
-fn fail_at_page_end(device: &Device, client: &mut TcpStream, incremental: &Path, server: &str)
-    -> (String, Result<u64, String>, usize) {
+/// will end at a page end, lets both reach the device, sends DURING while the
+/// device is healthy and requires +OK, stops the server with SIGSTOP, fails
+/// the device, continues the server with SIGCONT and waits until its sync has
+/// failed. Returns the reply to DURING, the layout reached and the padding's
+/// length.
+///
+/// The server cannot sync while it is stopped, so DURING's page is still
+/// dirty, in the page cache and not on the device, when the device fails, and
+/// the first sync after the continuation tries to write that page back and
+/// fails: Linux then leaves the page clean and reports the error once, which
+/// is the case the page-end layout is for. Failing the device first and
+/// writing afterwards cannot do this reliably: a sync the server issues while
+/// the device is being swapped is queued and, when the device resumes, goes to
+/// the failing table, so the server's sync fails before the write arrives and
+/// it refuses the write, leaving nothing to lose.
+///
+/// One race remains: the server's own sync can fall between its +OK and the
+/// SIGSTOP. That window is well under a millisecond against a sync period of
+/// one second, about 1 run in 1000. DURING's page was then already written to
+/// the device, so the run does not exercise a failed writeback of it and
+/// passes without testing what the case is for; the case does not detect this.
+fn fail_at_page_end(device: &Device, client: &mut TcpStream, child: &ProgramChild, incremental: &Path,
+    server: &str) -> (String, Result<u64, String>, usize) {
     seed(client);
     let seeded = on_disk(incremental);
     let pad = padding(seeded);
@@ -541,34 +614,30 @@ fn fail_at_page_end(device: &Device, client: &mut TcpStream, incremental: &Path,
     std::thread::sleep(SETTLE);
     let padded_info = wait_status(client, "ok");
     let padded = on_disk(incremental);
-    // Sent the moment the device fails: firn's sync runs once a second
-    // whatever was written, and one that fails before DURING arrives makes
-    // firn refuse it, which leaves nothing in the page to lose.
-    device.run("fail");
     let during = memory_request(client, DURING);
-    wait_status(client, "err");
-    // firn may append DURING just after a failed sync; two more of its
-    // once-a-second syncs, still failing, make sure a writeback of DURING's
-    // page was tried and failed before the device heals, or a healed sync
-    // could write the page that never failed and the case pass for that.
-    // Redis 7.2.16 reports the failure only from the sync of the new bytes.
-    std::thread::sleep(SETTLE);
+    // The device is healthy and the last sync succeeded, so a refusal is a
+    // fault, not a race.
+    assert_eq!(during, "+OK\r\n", "{server}: the write before the failure is acknowledged");
+    let stopped = Stopped::stop(child, server);
+    device.run("fail");
+    stopped.resume(server);
+    // The first sync after the continuation covers DURING, so the status turns
+    // err only once a writeback of DURING's page was tried and failed. Redis
+    // 7.2.16 reports the failure from the sync of the new bytes.
     let failed = wait_status(client, "err");
     let written = on_disk(incremental);
     let during_record = resp(DURING).len() as u64;
     let counted = size(&failed) as i128 - size(&padded_info) as i128;
-    let layout = if during != "+OK\r\n" {
-        Err(format!("the write during the failure was {}", branch(&during)))
-    } else if padded != seeded + pad_record {
+    let layout = if padded != seeded + pad_record {
         Err(format!("the padding of {pad_record} bytes took the file from {seeded} to {padded} bytes"))
     } else if written != padded + during_record || written % PAGE != 0 {
-        Err(format!("the write during the failure took the file from {padded} to {written} bytes, not to a page end"))
+        Err(format!("the write before the failure took the file from {padded} to {written} bytes, not to a page end"))
     } else if counted != during_record as i128 {
-        Err(format!("INFO counts {counted} bytes for the write during the failure, the file {during_record}"))
+        Err(format!("INFO counts {counted} bytes for the write before the failure, the file {during_record}"))
     } else {
         Ok(written)
     };
-    eprintln!("layout: {server} seed ends at {seeded}, padding at {padded}, the write during the failure at {written}");
+    eprintln!("layout: {server} seed ends at {seeded}, padding at {padded}, the write before the failure at {written}");
     (during, layout, pad.len())
 }
 
@@ -616,15 +685,15 @@ fn restart(child: ProgramChild, port: u16, server: &str) -> Result<BTreeMap<Stri
 
 /// Redis 7.2.16 through the page-end case. It refuses AFTER while idle once
 /// the device heals, so its restart shows only what became of DURING.
-fn redis_page_end(device: &Device, attempt: usize) -> PageEnd {
+fn redis_page_end(device: &Device) -> PageEnd {
     let server = "redis-7.2.16";
     let binary = oracle();
-    let directory = device.mount.join(format!("redis-page-end-{}-{attempt}", std::process::id()));
+    let directory = device.mount.join(format!("redis-page-end-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
-    let log = std::env::temp_dir().join(format!("firn-sync-fault-redis-page-end-{}-{attempt}.log", std::process::id()));
+    let log = std::env::temp_dir().join(format!("firn-sync-fault-redis-page-end-{}.log", std::process::id()));
     let incremental = aof_incremental_path(&directory, "sync.aof");
     let (child, mut client) = start_redis(&binary, &directory, &log);
-    let (during, layout, pad) = fail_at_page_end(device, &mut client, &incremental, server);
+    let (during, layout, pad) = fail_at_page_end(device, &mut client, &child, &incremental, server);
     device.run("heal");
     std::thread::sleep(IDLE_WATCH);
     let after = memory_request(&mut client, AFTER);
@@ -636,17 +705,17 @@ fn redis_page_end(device: &Device, attempt: usize) -> PageEnd {
         eprintln!("{server} log: {}", std::fs::read_to_string(&log).unwrap_or_default());
     }
     let _ = std::fs::remove_dir_all(&directory);
-    PageEnd { server: server.to_string(), attempt, during, layout, pad, after, restart }
+    PageEnd { server: server.to_string(), during, layout, pad, after, restart }
 }
 
 /// firn on one route through the page-end case. Every call runs a fresh
 /// server process on a fresh directory.
-fn firn_page_end(device: &Device, native: bool, attempt: usize) -> PageEnd {
+fn firn_page_end(device: &Device, native: bool) -> PageEnd {
     let server = if native { "firn-native-ring" } else { "firn-file-adapter" };
     let program = CompiledProgram::from_environment_under(&device.mount);
     let incremental = aof_incremental_path(program.working_directory(), "sync.aof");
     let (child, mut client) = start_firn(&program, native);
-    let (during, layout, pad) = fail_at_page_end(device, &mut client, &incremental, server);
+    let (during, layout, pad) = fail_at_page_end(device, &mut client, &child, &incremental, server);
     device.run("heal");
     wait_recovered(&mut client, server);
     // Recovery rewrote the file, so AFTER goes to the incremental file the
@@ -664,36 +733,13 @@ fn firn_page_end(device: &Device, native: bool, attempt: usize) -> PageEnd {
     device.run("remount");
     let (child, port) = spawn_firn(&program, native);
     let restart = restart(child, port, server);
-    PageEnd { server: server.to_string(), attempt, during, layout, pad, after, restart }
+    PageEnd { server: server.to_string(), during, layout, pad, after, restart }
 }
 
-/// The most tries of one server's run.
-const ATTEMPTS: usize = 3;
-
-/// Runs a server through the page-end case again, from a fresh directory and
-/// a fresh server process, while the write sent as the device failed was
-/// refused. firn's sync runs once a second whatever was written, so one that
-/// fails before the write arrives makes it refuse the write, which is a race
-/// and not a fault in the fix. Each try ends with the device healed and its
-/// server stopped, so the next starts on a working device. Every missed try
-/// is printed with its attempt number; the last try is returned whatever it
-/// observed, for the caller to print and judge, and a layout missed for
-/// another reason is returned at once.
-fn until_not_refused(mut run: impl FnMut(usize) -> PageEnd) -> PageEnd {
-    for attempt in 1..ATTEMPTS {
-        let outcome = run(attempt);
-        if !outcome.refused_during() {
-            return outcome;
-        }
-        eprintln!("{}", outcome.observation());
-    }
-    run(ATTEMPTS)
-}
-
-/// A write acknowledged while the device fails, whose record ends exactly
-/// at a page end, is in the file a restart reads from the device once the
-/// device has healed, the server has recovered and a later write has
-/// started on the next page.
+/// A write acknowledged just before the device fails, whose record ends
+/// exactly at a page end and whose sync then fails, is in the file a restart
+/// reads from the device once the device has healed, the server has recovered
+/// and a later write has started on the next page.
 ///
 /// Linux leaves the pages whose writeback failed clean and reports the
 /// error once to the next fsync, so the first successful sync after the
@@ -707,19 +753,31 @@ fn until_not_refused(mut run: impl FnMut(usize) -> PageEnd) -> PageEnd {
 /// case then stops the server, remounts so that only what reached the
 /// device counts, restarts it and reads every key.
 ///
+/// For each server the order is: seed and pad the file and let them sync;
+/// send DURING on the healthy device and require +OK; stop the server with
+/// SIGSTOP, so that it cannot sync and DURING's page stays dirty; fail the
+/// device; continue the server with SIGCONT, whose next sync fails writing
+/// that page back; wait for the failed status; heal the device and go on as
+/// above. The stop is lifted by a guard even if the case fails in between. The
+/// order replaces failing the device first and writing then, in which a sync
+/// the server issued while the device was swapped failed on its resume and
+/// the server refused the write (CI run 38327248463, all six firn tries).
+/// Since the device is healthy and the last sync succeeded when DURING is
+/// sent, no refusal can arise from the server's own sync, so the case no
+/// longer repeats a run, and a reply other than +OK fails it.
+///
+/// The one remaining race is the server's own sync falling between its +OK and
+/// the SIGSTOP, a window well under a millisecond against a sync period of one
+/// second, about 1 run in 1000: DURING's page is then already on the device,
+/// the run does not exercise a failed writeback of it, and the case passes
+/// without testing what it is for. The case does not detect this.
+///
 /// Redis 7.2.16 goes through the same steps as an observation for the
 /// research record, not as an oracle: it refuses AFTER while idle, and its
 /// restart shows whether DURING survived. firn runs on both routes, and the
 /// case prints every server's observation before it asserts firn's: the
 /// file loads, DURING and AFTER read back, and the seed and padding are
-/// intact. When firn refused DURING, because its once-a-second sync failed
-/// first, the layout was not exercised. That is a race, since firn syncs once
-/// a second whatever was written and its sync can fail before the write
-/// arrives, so the server's whole run is repeated from a fresh directory and
-/// process, up to three times in all, each missed try printed with its
-/// attempt number. A layout missed for any other reason fails at once, and
-/// one still refused on the last try fails saying the layout was not
-/// exercised.
+/// intact.
 #[test]
 #[ignore = "needs the faulty device the aof-sync-fault job of .github/workflows/check.yml makes"]
 fn aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end() {
@@ -733,9 +791,9 @@ fn aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end() {
         eprintln!("{}", outcome.observation());
         outcomes.push(outcome);
     };
-    record(until_not_refused(|attempt| redis_page_end(&device, attempt)));
-    record(until_not_refused(|attempt| firn_page_end(&device, false, attempt)));
-    record(until_not_refused(|attempt| firn_page_end(&device, true, attempt)));
+    record(redis_page_end(&device));
+    record(firn_page_end(&device, false));
+    record(firn_page_end(&device, true));
     for outcome in outcomes.iter().filter(|outcome| outcome.server.starts_with("firn")) {
         let server = &outcome.server;
         if let Err(why) = &outcome.layout {
