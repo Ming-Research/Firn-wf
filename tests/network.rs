@@ -3342,7 +3342,8 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
 /// The options --timeout and --appendfilename set the values reported. Every
 /// reply holds what redis-server 7.0.15 answers for these parameters with the
 /// same settings, in firn's stable parameter order, one of Redis's possible
-/// orders. Memory settings and automatic rewrite thresholds join glob results.
+/// orders. Memory settings, automatic rewrite thresholds and maxclients, with
+/// its default 10000, join glob results.
 /// Redis's *o*t matches only port and timeout among these parameters: the
 /// final t must end the name, so neither automatic rewrite threshold matches.
 /// set-max-listpack-entries and set-max-listpack-value, with their Redis
@@ -3395,7 +3396,7 @@ fn firn_matches_config_get_patterns_as_redis_does() {
     let memory_fields = "$9\r\nmaxmemory\r\n$1\r\n0\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n$17\r\nmaxmemory-samples\r\n$1\r\n5\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$14\r\nlfu-decay-time\r\n$1\r\n1\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n";
     let rewrite_fields = "$27\r\nauto-aof-rewrite-percentage\r\n$3\r\n100\r\n$25\r\nauto-aof-rewrite-min-size\r\n$8\r\n67108864\r\n";
     let expected = format!(
-        "*64\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}\
+        "*66\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}$10\r\nmaxclients\r\n$5\r\n10000\r\n\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n{rewrite_fields}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n{rewrite_fields}\
          *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\
