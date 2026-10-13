@@ -435,5 +435,11 @@ Then:
 
 Rejected if firn acknowledges a write between the failed directory sync and
 a durable recovery installation, if either selection lacks an acknowledged
-write or holds a refused one, or if the restart differs. Results: pending
-the aof-sync-fault job on this change.
+write or holds a refused one, or if the restart differs.
+
+Results: the case passed for both servers in the aof-sync-fault job of
+[run 38470333829](https://github.com/Ming-Research/Firn-wf/actions/runs/38470333829).
+The same case without the firn change failed in
+[run 38470344113](https://github.com/Ming-Research/Firn-wf/actions/runs/38470344113)
+after the trace showed the injected EIO on the directory's `fdatasync`,
+so it detects the acknowledged write.
