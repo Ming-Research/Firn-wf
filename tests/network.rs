@@ -1042,21 +1042,20 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes_with_lists_a
     }
 }
 
-/// [PRE-2] firn records its writes in its append-only file as Redis 7.0.15
+/// [PRE-2] firn records its writes in its append-only file as Redis 7.2.16
 /// propagates them, which a replay does not show where two forms replay to the
-/// same state: a key `MSET` or `GET` finds expired is recorded as its `DEL`
-/// before the command, and so is each key `MSETNX` finds expired before its
-/// first live one, and each key `DEL` or `EXISTS` finds expired, once, in the
-/// order named; `GETDEL` is recorded as `DEL`,
-/// `GETSET` as `SET`, `INCRBYFLOAT` as `SET` with `KEEPTTL`, `GETEX` as
-/// `PEXPIREAT` or `PERSIST`, `EXAT` as `PXAT` and `EXPIREAT` as `PEXPIREAT`,
-/// both in milliseconds, a `PEXPIREAT` its LT refused not at all, and the
-/// other commands as they were sent. The expected file is redis-server
-/// 7.0.15's for the same requests but for the `SELECT 0` it writes first and
-/// the `MULTI` and `EXEC` it brackets one command's records in. The expiring
-/// context, which records the same `DEL` when it removes an expired key
-/// first, could change the file only by removing `zz` or `aa` between their
-/// `SET` and `MSETNX`, a window of microseconds.
+/// same state. A command's lazy expiry DELs precede its own effect, and more
+/// than one effect is wrapped in MULTI/EXEC, including a refused MSETNX whose
+/// only effects are two expired-key removals. GETDEL becomes DEL, GETSET
+/// becomes SET, INCRBYFLOAT becomes SET with KEEPTTL, GETEX becomes
+/// PEXPIREAT or PERSIST, and EXAT and EXPIREAT become millisecond deadlines.
+/// The complete 1418-byte expected incremental file, including SELECT 0,
+/// was recorded by Redis 7.2.16 for the same requests in
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843
+/// (legacy-direct-propagation-forms). Only SELECT 0 frames are ignored in
+/// the comparison, keeping it independent of database-selection placement.
+/// The pipeline must reach expired keys before active expiry removes them;
+/// active expiry propagates its removals independently of command effects.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_its_writes_as_redis_propagates_them() {
@@ -1121,13 +1120,166 @@ fn firn_records_its_writes_as_redis_propagates_them() {
     assert!(output.status.success(), "firn: {:?}", output.status);
     let file =
         std::fs::read(aof_incremental_path(fixture.path(), "forms.aof")).expect("read firn's file");
+    let expected: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$6\r\nmset:k\r\n$3\r\nold\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$6\r\nmset:k\r\n*3\r\n$4\r\nMSET\r\n$6\r\nmset:k\r\n$3\r\nnew\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$3\r\nSET\r\n$4\r\nread\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$4\r\nread\r\n*3\r\n$3\r\nSET\r\n$2\r\ngd\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\ngd\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\na\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\nb\r\n*3\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.5\r\n*4\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.6\r\n$7\r\nKEEPTTL\r\n*3\r\n$3\r\nSET\r\n$2\r\nge\r\n$1\r\nv\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nge\r\n$14\r\n99999999999999\r\n*2\r\n$7\r\nPERSIST\r\n$2\r\nge\r\n*5\r\n$3\r\nSET\r\n$2\r\nat\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$14\r\n99999999999000\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nat\r\n$14\r\n99999999998000\r\n*3\r\n$5\r\nSETNX\r\n$2\r\nnx\r\n$1\r\nv\r\n*3\r\n$6\r\nAPPEND\r\n$2\r\nap\r\n$1\r\nx\r\n*4\r\n$8\r\nSETRANGE\r\n$2\r\nap\r\n$1\r\n3\r\n$1\r\ny\r\n*3\r\n$6\r\nINCRBY\r\n$2\r\nib\r\n$1\r\n5\r\n*2\r\n$4\r\nDECR\r\n$2\r\nib\r\n*5\r\n$3\r\nSET\r\n$2\r\nzz\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\naa\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\nlive\r\n$1\r\nv\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nzz\r\n*2\r\n$3\r\nDEL\r\n$2\r\naa\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$6\r\nMSETNX\r\n$2\r\nm1\r\n$1\r\na\r\n$2\r\nm2\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$2\r\nm1\r\n$2\r\nm3\r\n*3\r\n$4\r\nCOPY\r\n$2\r\nm3\r\n$2\r\nm4\r\n*2\r\n$6\r\nUNLINK\r\n$2\r\nm4\r\n*5\r\n$3\r\nSET\r\n$2\r\ny2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\ny1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny2\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny1\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$3\r\nSET\r\n$2\r\nx2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx2\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n*1\r\n$4\r\nEXEC\r\n";
     assert_eq!(
-        String::from_utf8_lossy(&file),
-        String::from_utf8_lossy(
-            b"*5\r\n$3\r\nSET\r\n$6\r\nmset:k\r\n$3\r\nold\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$6\r\nmset:k\r\n*3\r\n$4\r\nMSET\r\n$6\r\nmset:k\r\n$3\r\nnew\r\n*5\r\n$3\r\nSET\r\n$4\r\nread\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$4\r\nread\r\n*3\r\n$3\r\nSET\r\n$2\r\ngd\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\ngd\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\na\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\nb\r\n*3\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.5\r\n*4\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.6\r\n$7\r\nKEEPTTL\r\n*3\r\n$3\r\nSET\r\n$2\r\nge\r\n$1\r\nv\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nge\r\n$14\r\n99999999999999\r\n*2\r\n$7\r\nPERSIST\r\n$2\r\nge\r\n*5\r\n$3\r\nSET\r\n$2\r\nat\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$14\r\n99999999999000\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nat\r\n$14\r\n99999999998000\r\n*3\r\n$5\r\nSETNX\r\n$2\r\nnx\r\n$1\r\nv\r\n*3\r\n$6\r\nAPPEND\r\n$2\r\nap\r\n$1\r\nx\r\n*4\r\n$8\r\nSETRANGE\r\n$2\r\nap\r\n$1\r\n3\r\n$1\r\ny\r\n*3\r\n$6\r\nINCRBY\r\n$2\r\nib\r\n$1\r\n5\r\n*2\r\n$4\r\nDECR\r\n$2\r\nib\r\n*5\r\n$3\r\nSET\r\n$2\r\nzz\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\naa\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\nlive\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\nzz\r\n*2\r\n$3\r\nDEL\r\n$2\r\naa\r\n*5\r\n$6\r\nMSETNX\r\n$2\r\nm1\r\n$1\r\na\r\n$2\r\nm2\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$2\r\nm1\r\n$2\r\nm3\r\n*3\r\n$4\r\nCOPY\r\n$2\r\nm3\r\n$2\r\nm4\r\n*2\r\n$6\r\nUNLINK\r\n$2\r\nm4\r\n*5\r\n$3\r\nSET\r\n$2\r\ny2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\ny1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny2\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx2\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n"
-        ),
+        aof_record_bytes(&aof_records_without_select_zero(&file)),
+        aof_record_bytes(&aof_records_without_select_zero(expected)),
         "firn's append-only file"
     );
+}
+
+/// Redis 7.2.16 preserves SET's argument vector when PXAT was supplied,
+/// including NX and XX GET, but rewrites EX, PX and EXAT to SET key val PXAT
+/// milliseconds. The first two byte expectations and PX rewrite are recorded
+/// in https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583;
+/// mixed-case/reordered arguments and EX/EXAT follow src/t_string.c's
+/// setGenericCommand and getExpireMillisecondsOrReply in tag 7.2.16.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_set_pxat_arguments_and_rewrites_other_expiries() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let name = "set-expiry-arguments.aof";
+    let child = program.spawn_in_directory(
+        fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()],
+    ).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    client.write_all(&resp(&["TIME"])).unwrap();
+    let before = time_reply(&mut client, "before relative SET expiries");
+    let mut batch = Vec::new();
+    for request in [
+        vec!["SET", "k", "v", "NX", "PXAT", "9999999999999"],
+        vec!["SET", "k", "w", "XX", "GET", "PXAT", "9999999999999"],
+        vec!["sEt", "k", "last", "pXaT", "9999999999999", "gEt", "xX"],
+        vec!["SET", "j", "v", "PX", "100000"],
+        vec!["SET", "ex", "v", "NX", "EX", "100"],
+        vec!["SET", "k", "final", "XX", "GET", "EXAT", "9999999999"],
+        vec!["TIME"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).unwrap();
+    expect_replies(
+        &mut client,
+        b"+OK\r\n$1\r\nv\r\n$1\r\nw\r\n+OK\r\n+OK\r\n$4\r\nlast\r\n",
+        "SET expiry argument forms",
+    );
+    let after = time_reply(&mut client, "after relative SET expiries");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+    let file = std::fs::read(aof_incremental_path(fixture.path(), name)).unwrap();
+    let records = aof_records_without_select_zero(&file);
+    assert_eq!(records.len(), 6, "only the six successful SETs propagate");
+    let mut expected = [
+        resp(&["SET", "k", "v", "NX", "PXAT", "9999999999999"]),
+        resp(&["SET", "k", "w", "XX", "GET", "PXAT", "9999999999999"]),
+        resp(&["sEt", "k", "last", "pXaT", "9999999999999", "gEt", "xX"]),
+    ].concat();
+    for (record, key) in records[3..5].iter().zip(["j", "ex"]) {
+        assert_eq!(record.len(), 5, "{key}: canonical SET has five arguments");
+        assert_eq!(&record[..4], &["SET", key, "v", "PXAT"]);
+        let expires: u64 = record[4].parse().expect("absolute expiry milliseconds");
+        assert!(
+            (before + 100000..=after + 100000).contains(&expires),
+            "{key}: relative 100 seconds must become command time + 100000 ms: {expires}, TIME {before}..{after}"
+        );
+        expected.extend(resp(&["SET", key, "v", "PXAT", &expires.to_string()]));
+    }
+    expected.extend(resp(&["SET", "k", "final", "PXAT", "9999999999000"]));
+    assert_eq!(aof_record_bytes(&records), expected, "SET propagation bytes");
+}
+
+/// Redis 7.2.16 writes SPOP COUNT's partial removals in SREM batches of at
+/// most 1024 members, wraps multiple effects in MULTI/EXEC, and writes DEL
+/// when the entire set is popped. The 2500/3000 and 2/3 cases were recorded
+/// in https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583;
+/// the 1024 boundary and whole-set rule follow src/t_set.c's
+/// spopWithCountCommand in tag 7.2.16. Members are random, so the AOF's
+/// removed members must equal the popped reply, in its order, rather than
+/// a particular oracle's draw.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_spop_count_in_redis_srem_batches() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let name = "spop-count-batches.aof";
+    let child = program.spawn_in_directory(
+        fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()],
+    ).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let cases: &[(&str, usize, usize, &[usize], bool)] = &[
+        ("s", 3000, 2500, &[1024, 1024, 452], false),
+        ("t", 3, 2, &[2], false),
+        ("limit", 1025, 1024, &[1024], false),
+        ("over-limit", 1026, 1025, &[1024, 1], false),
+        ("all", 3, 3, &[], false),
+        ("queued", 3000, 2500, &[1024, 1024, 452], true),
+    ];
+    let mut seeds = Vec::new();
+    let mut replies = Vec::new();
+    for &(key, size, count, _, queued) in cases {
+        let members: Vec<String> = (0..size).map(|i| format!("m{i}")).collect();
+        let mut seed = vec!["SADD", key];
+        seed.extend(members.iter().map(String::as_str));
+        client.write_all(&resp(&seed)).unwrap();
+        assert_eq!(integer_reply(&mut client, "seed SPOP set"), size as i64);
+        seeds.push(seed.into_iter().map(str::to_owned).collect::<Vec<_>>());
+        let request = resp(&["SPOP", key, &count.to_string()]);
+        if queued {
+            client.write_all(&[resp(&["MULTI"]), request, resp(&["EXEC"])].concat()).unwrap();
+            expect_replies(&mut client, b"+OK\r\n+QUEUED\r\n", "queue counted SPOP");
+            assert_eq!(reply_line(&mut client, "SPOP transaction"), "*1\r\n");
+        } else {
+            client.write_all(&request).unwrap();
+        }
+        let popped = bulk_strings(&mut client, "counted SPOP reply");
+        assert_eq!(popped.len(), count, "{key}: requested members");
+        let mut sorted = popped.clone();
+        sorted.sort();
+        assert!(sorted.windows(2).all(|pair| pair[0] != pair[1]), "{key}: no duplicate pop");
+        assert!(popped.iter().all(|member| members.contains(member)), "{key}: only seeded members pop");
+        client.write_all(&resp(&["SCARD", key])).unwrap();
+        assert_eq!(integer_reply(&mut client, "remaining SPOP members"), (size - count) as i64);
+        replies.push(popped);
+    }
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+    let file = std::fs::read(aof_incremental_path(fixture.path(), name)).unwrap();
+    let records = aof_records_without_select_zero(&file);
+    let mut at = 0;
+    for ((&(key, _, _, batch_sizes, _), seed), popped) in cases.iter().zip(seeds).zip(replies) {
+        assert_eq!(records.get(at), Some(&seed), "{key}: setup SADD propagates unchanged");
+        at += 1;
+        if batch_sizes.is_empty() {
+            assert_eq!(records.get(at).map(Vec::as_slice), Some(["DEL".to_owned(), key.to_owned()].as_slice()), "{key}: whole-set pop is DEL");
+            at += 1;
+            continue;
+        }
+        if batch_sizes.len() > 1 {
+            assert_eq!(records.get(at).map(Vec::as_slice), Some(["MULTI".to_owned()].as_slice()), "{key}: multiple SREM effects open one block");
+            at += 1;
+        }
+        let mut removed = Vec::new();
+        for &size in batch_sizes {
+            let record = records.get(at).expect("SREM batch must be present");
+            assert_eq!(record.len(), size + 2, "{key}: SREM frame argument count");
+            assert_eq!(&record[..2], &["SREM", key], "{key}: partial pop is SREM");
+            removed.extend_from_slice(&record[2..]);
+            at += 1;
+        }
+        assert_eq!(removed, popped, "{key}: AOF removes exactly the popped members in reply order");
+        if batch_sizes.len() > 1 {
+            assert_eq!(records.get(at).map(Vec::as_slice), Some(["EXEC".to_owned()].as_slice()), "{key}: multiple SREM effects close one block");
+            at += 1;
+        }
+    }
+    assert_eq!(at, records.len(), "no extra SPOP, SREM, DEL or transaction frames");
 }
 
 /// [PRE-2] firn applies append-only blocks only after their EXEC, including
@@ -7951,6 +8103,22 @@ fn aof_records(bytes: &[u8]) -> Vec<Vec<String>> {
         }
         records.push(record);
     }
+    records
+}
+
+/// Canonical RESP bytes for complete AOF command frames.
+fn aof_record_bytes(records: &[Vec<String>]) -> Vec<u8> {
+    records.iter().flat_map(|record| {
+        resp(&record.iter().map(String::as_str).collect::<Vec<_>>())
+    }).collect()
+}
+
+/// Checks every byte, including framing and the file's end, before ignoring
+/// only SELECT 0 frames. Its placement is covered by separate database tests.
+fn aof_records_without_select_zero(bytes: &[u8]) -> Vec<Vec<String>> {
+    let mut records = aof_records(bytes);
+    assert_eq!(aof_record_bytes(&records), bytes, "AOF must contain complete canonical RESP frames");
+    records.retain(|record| record != &["SELECT", "0"]);
     records
 }
 
