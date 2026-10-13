@@ -31,7 +31,7 @@ and pcall returning an error (`script_lua.c:988-994,1711-1722`).
 health. Shutdown forces a flush and sync and exits even when these fail
 (`server.c:4239-4247,4301-4308`).
 
-## Close-fsync status in Redis 7.2.16 (2026-10-13)
+## Close-fsync status in Redis 7.2.16
 
 Source investigation for board item `firn-aof-close-sync-status`; no runtime
 validation is claimed. The following findings concern Redis 7.2.16, whereas
