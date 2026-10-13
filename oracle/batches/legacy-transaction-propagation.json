@@ -1,0 +1,61 @@
+{
+ "name": "legacy-transaction-propagation",
+ "resp": 2,
+ "appendonly": true,
+ "commands": [
+  [
+   "MULTI"
+  ],
+  [
+   "SET",
+   "a",
+   "1"
+  ],
+  [
+   "SET",
+   "b",
+   "2"
+  ],
+  [
+   "EXEC"
+  ],
+  [
+   "MULTI"
+  ],
+  [
+   "SET",
+   "c",
+   "3"
+  ],
+  [
+   "EXEC"
+  ],
+  [
+   "MULTI"
+  ],
+  [
+   "GET",
+   "a"
+  ],
+  [
+   "EXEC"
+  ],
+  [
+   "MULTI"
+  ],
+  [
+   "INCR",
+   "a"
+  ],
+  [
+   "GET",
+   "a"
+  ],
+  [
+   "EXEC"
+  ],
+  [
+   "__AOF__"
+  ]
+ ]
+}

@@ -1,0 +1,35 @@
+{
+ "name": "legacy-value-type-global-flush-prefix",
+ "resp": 2,
+ "appendonly": true,
+ "commands": [
+  [
+   "FLUSHALL"
+  ],
+  [
+   "SET",
+   "flushed",
+   "v"
+  ],
+  [
+   "FLUSHALL"
+  ],
+  [
+   "RPUSH",
+   "flushed-list",
+   "a"
+  ],
+  [
+   "FLUSHDB",
+   "ASYNC"
+  ],
+  [
+   "FUNCTION",
+   "FLUSH",
+   "ASYNC"
+  ],
+  [
+   "__AOF__"
+  ]
+ ]
+}
