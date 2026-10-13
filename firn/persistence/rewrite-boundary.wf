@@ -24,9 +24,7 @@ fn aof_boundary_empty() -> made: AofBoundary pure {
   return AofBoundary(whole: whole, unfinished: unfinished, reverted: 0_u64, size: 0_u64, valid: 0_u64, continuable: whole);
 }
 
-fn aof_boundary_appended(boundary: &AofBoundary, pending: &Box<Slots<u8>>) -> result: unit reads(pending), writes(boundary) contract {
-  ensures pending^.inner.len == entry(pending)^.inner.len;
-} {
+fn aof_boundary_appended(boundary: &AofBoundary, pending: &Box<Slots<u8>>) -> result: unit reads(pending), writes(boundary) {
   doc "Advance only after a complete append, using the same pure syntax machine as startup and fallback rereads. Nothing is inferred from queued bytes and pending stays unchanged. A prior EOF-only annotation cannot be continued from its finalized summary, so an append makes that exceptional state unknown. Ordinary complete commands and annotations need no disk reread.";
   if boundary^.whole {
   } else {

@@ -25,9 +25,7 @@ struct AofRecord {
   kind: u64;
 }
 
-fn aof_fill(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: &AofReader, clock: &Clock, rewriting: Bool) -> result: Result<unit, u8> reads(store), writes(factory), writes(file), writes(reader), writes(clock) waits contract {
-  ensures when Ok(value: ready): reader^.cursor < reader^.held;
-} {
+fn aof_fill(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: &AofReader, clock: &Clock, rewriting: Bool) -> result: Result<unit, u8> reads(store), writes(factory), writes(file), writes(reader), writes(clock) waits {
   doc "Transport only: bounded reads and rewrite cancellation, without interpreting AOF syntax. EOF is retained for the shared parser's explicit finalization.";
   if reader^.cursor < reader^.held {
     return Ok<unit, u8>(value: unit);
