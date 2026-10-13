@@ -372,5 +372,6 @@ passed all four signal and server combinations. The same case without the
 firn change failed in
 [run 38479346275](https://github.com/Ming-Research/Firn-wf/actions/runs/38479346275):
 Redis passed both signals, and firn, sent SIGTERM during its replay, ended by
-signal 15. The second layout and the last-record check were added after
-review; their result is the next gate run on this change.
+signal 15. The second layout and the last-record check, added after review,
+passed with the first in
+[run 38480647161](https://github.com/Ming-Research/Firn-wf/actions/runs/38480647161).
