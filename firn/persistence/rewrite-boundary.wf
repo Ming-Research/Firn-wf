@@ -2,14 +2,6 @@ alias Clock = std::time::Clock;
 alias HandleFactory = std::io::HandleFactory;
 alias Keyspace = pkg::store::Keyspace;
 
-struct AofBoundary {
-  doc "Whether the sealed file reads whole, and, when it ends inside an unfinished block, the offset of that block's first MULTI and the bytes read.";
-  whole: Bool;
-  unfinished: Bool;
-  reverted: u64;
-  size: u64;
-}
-
 fn aof_block_word(input: &[u8], start: u64, length: u64, count: u64) -> kind: u64 reads(input) {
   doc "Shared loader and syntax-only boundary rule: only a one-argument MULTI or EXEC changes block state; nested MULTI retains the first unfinished boundary while advancing Redis's latest-MULTI truncation boundary.";
   if count != 1_u64 {
@@ -26,12 +18,86 @@ fn aof_block_word(input: &[u8], start: u64, length: u64, count: u64) -> kind: u6
   return 0_u64;
 }
 
-fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> result: AofBoundary reads(store), reads(log), writes(factory), writes(clock) waits {
-  doc "Validate with the startup scanner without retaining argument positions or executing commands. Charge 65536 bytes for its read buffer and a conservative 4096 bytes for two 1023-byte line windows, the five-byte command probe and reader, record and window descriptors before allocation. Each new bounded read checks rewrite cancellation and yields between chunks. Clean EOF inside a block reports its first MULTI for the caller to cut.";
+fn aof_boundary_empty() -> made: AofBoundary pure {
+  let whole = True();
+  let unfinished = False();
+  return AofBoundary(whole: whole, unfinished: unfinished, reverted: 0_u64, size: 0_u64, valid: 0_u64, continuable: whole);
+}
+
+fn aof_boundary_appended(boundary: &AofBoundary, pending: &Box<Slots<u8>>) -> result: unit reads(pending), writes(boundary) contract {
+  ensures pending^.inner.len == entry(pending)^.inner.len;
+} {
+  doc "Advance only after a complete append, using the same pure syntax machine as startup and fallback rereads. Nothing is inferred from queued bytes and pending stays unchanged. A prior EOF-only annotation cannot be continued from its finalized summary, so an append makes that exceptional state unknown. Ordinary complete commands and annotations need no disk reread.";
+  if boundary^.whole {
+  } else {
+    return unit;
+  }
+  let length = pending^.inner.len;
+  if length == 0_u64 {
+    return unit;
+  }
+  if boundary^.continuable {
+  } else {
+    set boundary^.whole = False();
+    return unit;
+  }
+  let input = &pending^.inner[0_u64..length];
+  let syntax = aof_syntax_new(position: boundary^.size, valid: boundary^.valid);
+  let consumed = 0_u64;
+  let eof = True();
+  loop @events (
+    invariant input_bound: consumed <= length,
+    invariant header_room: syntax.line.len < 1023_u64
+  ) {
+    let event = aof_syntax_next(syntax: &syntax, input: input, start: consumed, end: length, eof: eof);
+    set consumed = event.next;
+    if event.state == 2_u64 {
+      if event.kind == 1_u64 {
+        if boundary^.unfinished {
+        } else {
+          set boundary^.reverted = event.start;
+        }
+        set boundary^.unfinished = True();
+      } else if event.kind == 2_u64 {
+        set boundary^.unfinished = False();
+      }
+    } else if event.state == 3_u64 {
+      set boundary^.size = syntax.position;
+      set boundary^.valid = syntax.valid;
+      set boundary^.continuable = syntax.continuable;
+      return unit;
+    } else if event.state != 1_u64 {
+      set boundary^.whole = False();
+      return unit;
+    }
+  }
+}
+
+fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> result: AofBoundary reads(store), writes(factory), writes(log), writes(clock) waits {
+  doc "Reuse startup and acknowledged-append syntax state. Only an uncertain append or truncate outcome, an existing increment not selected for startup replay, an append after an EOF-only annotation, or unexpected generated syntax needs the charged historical reader. Authoritative files have the same sole-writer assumption as ordinary append accounting. Cache successful recovery even when a later switch step fails.";
+  let cancelled = aof_rw_cancelled(store: store);
+  if cancelled {
+    let refused = False();
+    return AofBoundary(whole: refused, unfinished: refused, reverted: 0_u64, size: 0_u64, valid: 0_u64, continuable: refused);
+  }
+  if log^.boundary.whole {
+    return log^.boundary;
+  }
+  let scanned = aof_rw_boundary_read(store: store, factory: factory, log: log, clock: clock);
+  if scanned.whole {
+    set log^.boundary = scanned;
+  }
+  return scanned;
+}
+
+fn aof_rw_boundary_read(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> result: AofBoundary reads(store), reads(log), writes(factory), writes(clock) waits {
+  doc "Validate with the startup scanner without retaining argument positions or executing commands. Charge 65536 bytes for its read buffer and a conservative 4096 bytes for the fixed 1023-byte header window, five-byte command probe, parser scalars and reader, record and window descriptors before allocation. Each new bounded read checks rewrite cancellation and yields between chunks. Clean EOF inside a block reports its first MULTI for the caller to cut.";
   let accepted = False();
   let unfinished = False();
   let reverted = 0_u64;
   let size = 0_u64;
+  let retained_valid = 0_u64;
+  let continuable = True();
   let allocated = 69632_u64;
   for (index in 0_u64..log^.manifest.parts.inner.len) {
     let part = &log^.manifest.parts.inner[index];
@@ -46,7 +112,7 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
       if charged {
       } else {
         let refused = False();
-        return AofBoundary(whole: refused, unfinished: refused, reverted: 0_u64, size: 0_u64);
+        return AofBoundary(whole: refused, unfinished: refused, reverted: 0_u64, size: 0_u64, valid: 0_u64, continuable: refused);
       }
       let length = part^.name.inner.len;
       let name = &part^.name.inner[0_u64..length];
@@ -54,7 +120,8 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
         Ok(value: file) => {
           let bytes = box_array_filled::<u8>(count: 65536_u64, value: 0_u8);
           let no_eof = False();
-          let reader = AofReader(bytes: move bytes, cursor: 0_u64, held: 0_u64, position: 0_u64, size: 0_u64, eof: no_eof);
+          let syntax = aof_syntax_new(position: 0_u64, valid: 0_u64);
+          let reader = AofReader(bytes: move bytes, cursor: 0_u64, held: 0_u64, position: 0_u64, size: 0_u64, eof: no_eof, syntax: move syntax);
           let scanning = False();
           let first_multi = 0_u64;
           let valid = 0_u64;
@@ -71,6 +138,8 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
                   set unfinished = scanning;
                   set reverted = first_multi;
                   set size = reader.size;
+                  set retained_valid = reader.syntax.valid;
+                  set continuable = reader.syntax.continuable;
                 }
                 break @records;
               }
@@ -115,5 +184,5 @@ fn aof_rw_boundary(store: &Keyspace, factory: &HandleFactory, log: &AofLog, cloc
       }
     }
   }
-  return AofBoundary(whole: accepted, unfinished: unfinished, reverted: reverted, size: size);
+  return AofBoundary(whole: accepted, unfinished: unfinished, reverted: reverted, size: size, valid: retained_valid, continuable: continuable);
 }

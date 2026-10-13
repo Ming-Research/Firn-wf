@@ -410,6 +410,17 @@ left the file inside an unfinished MULTI, the rewrite cuts the sealed file
 before that MULTI; the new base holds the live writes appended after it, as
 Redis's rewrite does.
 
+The writer keeps the increment's syntax and unfinished-block boundary from
+startup and advances it after successful appends with the same AOF parser,
+so a healthy switch does not reread accumulated history. Successful append
+rollback preserves the previous boundary. An uncertain append or truncation
+outcome invalidates it; the next switch then uses the charged streaming
+reader and the same parser to recover the state. An annotation accepted at
+EOF without LF remains part of that physical line when bytes are appended;
+its next append also invalidates the cache rather than assuming a new record.
+Collecting-buffer growth during rotation still consumes R and can abort a
+rewrite when storage or this exceptional reread delays ordinary draining.
+
 When a sync of the append-only file fails, firn refuses writes and `PING`
 with Redis's `MISCONF` reply, still answers reads, and INFO reports
 `aof_last_write_status:err`, as Redis does. firn then keeps syncing once a

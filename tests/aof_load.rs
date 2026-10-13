@@ -217,6 +217,128 @@ fn imported_annotations_and_noncanonical_headers_survive_rewrite_and_restart() {
     rewrite_stop(&mut client, child);
 }
 
+fn boundary_fixture(program: &CompiledProgram, listed: bool, contents: &[u8]) -> std::path::PathBuf {
+    let directory = program.working_directory().join("appendonlydir");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join(format!("{NAME}.1.base.aof")), resp(&["SET", "before", "1"])).unwrap();
+    let increment = directory.join(format!("{NAME}.1.incr.aof"));
+    std::fs::write(&increment, contents).unwrap();
+    let mut manifest = format!("file {NAME}.1.base.aof seq 1 type b\n");
+    if listed { manifest.push_str(&format!("file {NAME}.1.incr.aof seq 1 type i\n")); }
+    std::fs::write(directory.join(format!("{NAME}.manifest")), manifest).unwrap();
+    increment
+}
+
+#[test]
+fn retained_open_blocks_advance_on_appends_without_reopening_history() {
+    use std::os::unix::fs::PermissionsExt;
+    let prefix = [b"# \"ignored annotation\n".to_vec(), resp(&["SET", "before", "1"])].concat();
+    let retained = [prefix.clone(), b"# annotation before first MULTI\n".to_vec(),
+        b"* +1suffix\n$05suffix\nMULTI!!".to_vec(),
+        resp(&["SET", "ghost", "never-applied"])].concat();
+    let endings = [
+        // EOF inside a command retains the previous complete command and its
+        // open MULTI; clean nested EOF cuts only the latest MULTI.
+        b"*3\r\n$3\r\nSET\r\n$7\r\npartial".to_vec(),
+        [b"# annotation before nested MULTI\n".to_vec(),
+            b"*01suffix\n$ +5suffix\nMULTI!!".to_vec(), resp(&["SET", "nested", "discarded"])].concat(),
+    ];
+    let payload = "*1\r\n$5\r\nMULTI\r\n# \"unterminated\n*0\r\n\0";
+    for ending in endings {
+        for close_block in [false, true] {
+            let program = CompiledProgram::from_environment();
+            let content = [retained.clone(), ending.clone()].concat();
+            let path = boundary_fixture(&program, true, &content);
+            let lease = support::lease_port();
+            let text = lease.port().to_string();
+            let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", NAME.as_bytes()]).with_port(&lease);
+            let mut client = connect_when_ready(lease.port(), &child);
+            multipart_values(&mut client, &[("before", Some("1")), ("ghost", None), ("nested", None)]);
+            assert_eq!(std::fs::read(&path).unwrap(), retained, "startup retains the first unfinished block after either cut");
+            let mut sealed = std::fs::File::open(&path).unwrap();
+            // Changing permissions preserves authoritative bytes and the
+            // writer's open descriptor. A fresh historical read must fail.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0)).unwrap();
+            assert_eq!(std::fs::File::open(&path).unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+            let mut appended = Vec::new();
+            if close_block { appended.extend(resp(&["MULTI"])); }
+            appended.extend(resp(&["SET", "after", "2"]));
+            appended.extend(resp(&["SET", "payload", payload]));
+            if close_block { appended.extend(resp(&["EXEC"])); }
+            client.write_all(&appended).unwrap();
+            let replies: &[u8] = if close_block {
+                b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n+OK\r\n+OK\r\n"
+            } else { b"+OK\r\n+OK\r\n" };
+            expect_replies(&mut client, replies, "ordinary appends update retained AOF state and skip syntax-looking bulk bytes");
+            rewrite_start(&mut client);
+            assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok", "known boundary needs no historical reopen");
+            let mut sealed_bytes = Vec::new();
+            sealed.read_to_end(&mut sealed_bytes).unwrap();
+            let expected = if close_block { [retained.clone(), appended].concat() } else { prefix.clone() };
+            assert_eq!(sealed_bytes, expected, "an unmatched block cuts through the preceding whole command, excluding its leading annotation; appended EXEC closes it");
+            rewrite_stop(&mut client, child);
+
+            let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", NAME.as_bytes()]).with_port(&lease);
+            let mut client = connect_when_ready(lease.port(), &child);
+            multipart_values(&mut client, &[("before", Some("1")), ("after", Some("2")),
+                ("payload", Some(payload)), ("ghost", None), ("nested", None)]);
+            assert_eq!(memory_request(&mut client, &["DBSIZE"]), ":3\r\n");
+            rewrite_stop(&mut client, child);
+        }
+    }
+}
+
+#[test]
+fn an_unlisted_existing_increment_uses_aof_grammar_for_fallback() {
+    // Startup loads only the canonical base. Its preexisting, unlisted
+    // increment is opened for appends with unknown syntax state, so switching
+    // must actually read it. This SET is idempotent with the base's value.
+    let content = b"# \"unterminated\n* +3suffix\n$03suffix\nSET!!$ +6suffix\nbefore??$01suffix\n1xy";
+    let program = CompiledProgram::from_environment();
+    let path = boundary_fixture(&program, false, content);
+    let lease = support::lease_port();
+    let text = lease.port().to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", NAME.as_bytes()]).with_port(&lease);
+    let mut client = connect_when_ready(lease.port(), &child);
+    multipart_values(&mut client, &[("before", Some("1")), ("after", None)]);
+    assert_eq!(std::fs::read(&path).unwrap(), content);
+    assert_eq!(memory_request(&mut client, &["SET", "after", "2"]), "+OK\r\n");
+    rewrite_start(&mut client);
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok", "fallback accepts Redis annotations and decimal-prefix headers");
+    rewrite_stop(&mut client, child);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", NAME.as_bytes()]).with_port(&lease);
+    loaded_checks(child, lease.port());
+}
+
+#[test]
+fn appending_after_an_eof_comment_invalidates_cached_and_unknown_boundaries() {
+    let content = [resp(&["SET", "before", "1"]), b"# annotation without LF".to_vec()].concat();
+    for listed in [true, false] {
+        let program = CompiledProgram::from_environment();
+        let path = boundary_fixture(&program, listed, &content);
+        let lease = support::lease_port();
+        let text = lease.port().to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", NAME.as_bytes()]).with_port(&lease);
+        let mut client = connect_when_ready(lease.port(), &child);
+        multipart_values(&mut client, &[("before", Some("1")), ("after", None)]);
+        assert_eq!(memory_request(&mut client, &["SET", "after", "2"]), "+OK\r\n");
+        // At the next load, fgets consumes '*3\r\n' as the remainder of the
+        // annotation, so the following '$3' starts a bad-format record.
+        // Resetting the cached append parser to a fresh record misses this.
+        rewrite_start(&mut client);
+        let info = rewrite_wait(&mut client);
+        assert_eq!(info["aof_last_bgrewrite_status"], "err");
+        assert_eq!(info["firn_aof_rewrite_abort_reason"], "boundary");
+        let expected = [content.clone(), resp(&["SET", "after", "2"])].concat();
+        assert_eq!(std::fs::read(&path).unwrap(), expected, "failed validation neither truncates nor seals the bad increment");
+        rewrite_stop(&mut client, child);
+        let output = program.spawn_on_route(true, &[text.as_bytes(), b"1", NAME.as_bytes()])
+            .with_port(&lease).wait_with_output().unwrap();
+        assert_bad_format(&output);
+        assert_eq!(std::fs::read(&path).unwrap(), expected, "restart refuses the same actual format fault");
+    }
+}
+
 #[test]
 fn comments_follow_redis_fgets_chunks_and_preserve_loaded_file() {
     let before = resp(&["SET", "before", "1"]);
