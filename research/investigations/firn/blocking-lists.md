@@ -38,8 +38,9 @@ command; abandoned attempts discard readiness. An accepted Lua error retains
 preceding mutations and services them. In EXEC/scripts these four commands
 never register: empty pops use a RESP2 nil array and empty moves use nil bulk;
 actual timeout/UNBLOCK TIMEOUT uses nil array for all four. RESP3 uses null.
-All test byte constants await recording rather than encoding these deductions
-as an observed transcript.
+Recorded expectation provenance is cited in the network fixture; uncovered
+transcripts remain pending rather than presenting these deductions as observed
+bytes.
 
 The producer's promoted reply and staged publications commit before ready
 replies, under the same hold that protects visible dataset changes. Each
@@ -183,8 +184,9 @@ case alone cannot detect omission of clearing on take because registration
 also clears any stale completion. This is coverage for the new handoff
 protocol, not a claimed failure on the old implementation's private PRNG
 loss; no deterministic network PRNG probe or test-specific execution path is
-introduced. Runtime random-continuation evidence remains unverified. All
-fixed bytes remain ORACLE-pending until Redis 7.2.16 CI recording.
+introduced. Runtime random-continuation evidence remains unverified. This case still
+needs its exact Redis 7.2.16 recording; any fixed bytes without that evidence
+remain ORACLE-pending.
 
 ## Admission cost
 
@@ -264,17 +266,27 @@ conversion and clock-jump acceptance must be settled with the timeout gap.
 
 `tests/blocking_lists.rs` is included by the existing network target. Its
 named-client scenarios in `tests/blocking_lists_oracle.rs` run on one and four
-Whitefoot drivers after recordings are supplied. Every fixed response, INFO
-value and AOF byte expectation is deliberately `ORACLE-pending`; a preflight
-assertion stops each case before starting a server when a recording is absent.
-No test is ignored or weakened to accept the current capability error.
+Whitefoot drivers. Exact covered wire bytes and selected INFO fields now cite
+Redis 7.2.16 runs [38453128755](https://github.com/Ming-Research/Firn-wf/actions/runs/38453128755)
+and [38453804021](https://github.com/Ming-Research/Firn-wf/actions/runs/38453804021)
+by batch and operation/frame or command index. Uncovered bytes remain
+`ORACLE-pending`; a preflight assertion stops each such case before starting
+a server. Numeric timeout cases are explicitly ignored with
+`firn-req-extended-float`, as the owner authorized, because the network gate
+does not tolerate deliberate failures. Their Redis expectations are retained,
+never changed to Firn's capability error. Independent arity/direction cases
+remain active rather than being hidden by the numeric deferral.
 
-The existing oracle recorder on `claude/oracle-replies` opens one connection
-and immediately reads after each command. It supports RESP selection, config,
-drain mode, AOF capture and restart, but cannot express a parked command,
-separate send/read or another client. Single-connection request batches and
-precise multi-client recording instructions are handed to the owner outside
-the repository. The fixture actions are the maintained multi-client source:
+The extended `oracle/replay.py` on `claude/oracle-replies` now accepts ordered
+named-client `operations`, including open/send/pipeline/read/quiet/poll_info,
+scalar identity capture, AOF and restart. Remaining recording batches use
+that exact format outside the repository. Its earlier single-connection
+`commands` format is still supported. A failed batch supplies no expectation;
+notably the finite-negative correction batches polled for a blocked count
+instead of reading their immediate error, so they have no client-error frame
+and need corrected send/read recordings. The successful `-0.001`/`-0.0005`
+recordings show infinite waits until a push; they cannot supply an immediate
+negative-timeout error or be used as synchronous commands on missing keys. The fixture actions are the maintained multi-client source:
 Send parks, WaitBlocked uses an INFO barrier, Read collects the recorded frame,
 Quiet checks no output, and Close exercises cleanup. Test-harness observation
 polling is a registration barrier; production scheduling never polls.
@@ -339,7 +351,7 @@ by-value MemoryMeter and u64 Slots compiled. The owner filed
 support gap by choosing different ownership.
 
 The following minimal instruments live under
-`research/experiments/blocking-lists/` and are compiled, never executed, by
+`research/experiments/blocking-lists/` and were compiled, never executed, by
 the temporary `blocking-layout-witness.yml` workflow:
 
 | Witness | Owner-supplied result from run 38455091065 |
@@ -351,18 +363,75 @@ the temporary `blocking-layout-witness.yml` workflow:
 | `memory-meter-map.wf` | Source accepts; HashMap<u64, Option<MemoryMeter>, 8> reproduces the registry composition. |
 | `memory-meter-box.wf` | Source accepts; even a fixed-size Box<Option<MemoryMeter>> fails BoxNew's ordinary allocator alignment check. |
 
-The workflow runs `--check` and `-o` separately for every witness, prints and
-retains their direct statuses and output even after failures, and uploads
-provenance and logs. It also searches the downloaded language archive for
+The workflow ran `--check` and `-o` separately for every witness, printed and
+retained their direct statuses and output even after failures, and uploaded
+provenance and logs. It also searched the downloaded language archive for
 the diagnostic spelling; local investigation read the exact pinned Git
 commit because no downloaded release language directory was present.
 Expected failures keep the temporary job red after all attempts; this job is
 an instrument for filing and verifying the Whitefoot gap, not compatibility
-acceptance. It stays until the gap is resolved or Firn's independently chosen
-ownership design no longer needs the unsupported allocation. Keep it during
-this request-only change until CI qualifies the resulting server. The six
-witnesses stay as evidence for the Whitefoot request even if this server no
+acceptance. It was retained until the gap was resolved or Firn's independently chosen
+ownership design no longer needed the unsupported allocation. The owner
+subsequently supplied [CI run 38457609785](https://github.com/Ming-Research/Firn-wf/actions/runs/38457609785)
+for request-only revision `33ca7bcccf4e1788992e5cec911dbdf44e550076`: both server
+builds compile, so this ownership design no longer needs the unsupported
+heap allocation and the temporary workflow is removed. The six witnesses
+stay as evidence for the Whitefoot request even if this server no
 longer needs heap-resident meter storage. The earlier layout investigation
 changed no production representation or pin; the separate proposed ownership
 change above is grounded in request/session lifetimes and scalar continuity,
 not target qualification. No compiler was run locally.
+
+## Failed-fixture isolation
+
+Owner-supplied run 38457609785 compiled request-only revision `33ca7bc`
+and reported 26 candidate list tests. Its `tests.tsv` contains exactly one
+passed row for each candidate; all 26 are added to the sorted ratchet, raising
+the required named tests from 670 to 696. No required or unstable row is
+removed. The run also reported but the existing RPOPLPUSH
+quicklist-source/existing-quicklist-target case lost its source `a b`.
+The source trace explains exactly those two missing values without a new
+pop/move mutation defect: Redis 7.2.16 `tests/unit/type/list.tcl`'s preceding
+“PUSH resulting from BRPOPLPUSH affect WATCH” and “BRPOPLPUSH does not affect
+WATCH while still blocked” each first register an infinite BRPOPLPUSH on
+`srclist{t}` and only then read WATCH on another connection. Firn does not
+implement WATCH outside MULTI. `tests/support/redis.tcl` converts its error
+reply to a Tcl exception; durable `tests/support/test.tcl` catches the body
+exception and continues, skipping both auxiliary clients' close calls.
+
+The later fixture separately pushes `a`, `b`, `c`, and a large value into
+that source. Two surviving blocked clients can consume the first two values;
+the fixture's explicit moves then return the large value and `c`, leaving
+an empty source. Both entry paths still use the same `lmove_body`, and the
+removed-source test uses the remaining length from `take_element`. This is
+a contamination diagnosis supported by both source and the supplied artifact:
+`shard-1/logs/unit/type/list.1.log` reports the two WATCH read errors before
+the later missing-source assertion, and `tests.tsv` classifies both as
+unknown-command errors. The repaired full-unit run must still show the
+retained source. No standalone list-body bug is established by this trace.
+
+The proposed fix gives those two fixtures exception-safe closure, preserving
+the body result and the complete Tcl error options and leaving the unsupported
+WATCH errors visible. Both closes are followed by a bounded INFO barrier
+waiting for the fixture's original blocked-client count before returning or
+rethrowing. Original body errors keep their Tcl options and priority even
+when cleanup also fails; extra barrier failure is separately reported. It
+runs on every target, changes no expected response, adds no Firn-only path
+and excludes no test. A native contextual patch check
+rejects stale/missing/repeated input. Stubbed Tcl exercises success and failure,
+both closures and preservation of the original error; deliberately missing
+cleanup must fail this check. These instruments run through the existing suite
+runner in CI only. Socket close is local teardown, so the INFO barrier supplies the observable
+server-side registration-removal boundary. The subsequent full-unit result
+remains required runtime evidence that the abandoned waiters no longer
+consume setup values; it does not claim every socket owner has joined.
+
+The separate concurrent rewrite network failure has not yet been attributed.
+Its first startup loads 16,000 SET records; its second startup loads files
+produced by rewrite plus concurrent INCR/APPEND/LPUSH. Replay precedes writer,
+event-hub workers and listening. During loading there are no blocked clients
+and maxmemory is zero, so the added producer's readiness guard is true and
+its waiter service is empty. Source inspection found no new startup wait
+cycle and does not prove the failure was harmless timing. Phase diagnostics
+retain the existing 20-second acceptance threshold; CI must distinguish first
+load, worker connections and restart before any production repair is claimed.

@@ -1,6 +1,7 @@
 //! Blocking-list witnesses use Redis 7.2.16 recordings, never Firn output.
 //! The fixture intentionally fails before server startup while any required
-//! expectation is ORACLE-pending. No recording or local pass is claimed.
+//! expectation is ORACLE-pending; successful Redis recordings are cited at
+//! each completed expectation. No Firn validation run is claimed.
 
 use super::*;
 use std::collections::BTreeMap;
@@ -247,6 +248,7 @@ fn blocking_lists_client_unblock_and_info_lifecycle() { run("client-unblock"); }
 fn blocking_lists_aof_records_delayed_effects_and_replays_state() { run("aof"); }
 
 #[test]
+#[ignore = "firn-req-extended-float: finite and noncanonical timeout conversion is not implemented"]
 fn blocking_lists_fractional_timeouts_require_oracle_and_whitefoot_gap_resolution() { run("fractional-timeout"); }
 
 #[test]
@@ -278,3 +280,46 @@ fn blocking_lists_promoted_unblock_reply_precedes_targets_later_publication() { 
 
 #[test]
 fn blocking_lists_script_error_drains_and_declared_fallback_preserves_one_increment() { run("script-error-and-declared-fallback"); }
+
+#[test]
+fn blocking_lists_argument_errors_precede_timeout_conversion() { run("blocking-argument-precedence"); }
+
+#[test]
+#[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
+fn blocking_lists_rounded_negative_zero_blpop_timeout_0_001_resp2() { run("rounded-negative-zero-blpop-timeout--0.001-resp2"); }
+
+#[test]
+#[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
+fn blocking_lists_rounded_negative_zero_blpop_timeout_0_0005_resp2() { run("rounded-negative-zero-blpop-timeout--0.0005-resp2"); }
+
+#[test]
+#[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
+fn blocking_lists_rounded_negative_zero_blpop_timeout_0_001_resp3() { run("rounded-negative-zero-blpop-timeout--0.001-resp3"); }
+
+#[test]
+#[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
+fn blocking_lists_rounded_negative_zero_blpop_timeout_0_0005_resp3() { run("rounded-negative-zero-blpop-timeout--0.0005-resp3"); }
+
+#[test]
+#[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
+fn blocking_lists_rounded_negative_zero_brpop_timeout_0_001_resp2() { run("rounded-negative-zero-brpop-timeout--0.001-resp2"); }
+
+#[test]
+#[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
+fn blocking_lists_rounded_negative_zero_brpop_timeout_0_0005_resp2() { run("rounded-negative-zero-brpop-timeout--0.0005-resp2"); }
+
+#[test]
+#[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
+fn blocking_lists_rounded_negative_zero_brpop_timeout_0_001_resp3() { run("rounded-negative-zero-brpop-timeout--0.001-resp3"); }
+
+#[test]
+#[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
+fn blocking_lists_rounded_negative_zero_brpop_timeout_0_0005_resp3() { run("rounded-negative-zero-brpop-timeout--0.0005-resp3"); }
+
+#[test]
+#[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
+fn blocking_lists_negative_finite_errors_resp2() { run("negative-finite-errors-resp2"); }
+
+#[test]
+#[ignore = "firn-req-extended-float: Redis extended timeout rounding and validation are not implemented"]
+fn blocking_lists_negative_finite_errors_resp3() { run("negative-finite-errors-resp3"); }
