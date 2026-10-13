@@ -314,6 +314,11 @@ marks each sample with `line,pass,cpus,test,depth,client_busy_mean,client_limite
   server after it starts, read back with `CONFIG GET`; empty sets none.
 - `aof`: described above.
 - `compare_reference`: described above.
+- The correctness pass of scale and suite modes runs Redis 7.0's
+  redis-benchmark default suite, its 19 tests named explicitly
+  (`SUITE_DEFAULT`), on every line. Redis 7.2.16's default suite adds XADD;
+  it is left out only because firn has no streams yet, and goes back in when
+  firn's minimal streams (board item `firn-scope-min-streams`) land.
 - `drivers`: sets the Whitefoot driver count of each image, apart from the
   number of server CPUs; empty gives one driver per server CPU.
 - `c2c`: with `profile`, also records `perf c2c` on each profiled test,
