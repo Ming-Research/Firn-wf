@@ -103,8 +103,9 @@
 #                                 Its log-write check replaces Redis's INFO/
 #                                 CONFIG check; durability is not yet equal.
 #                                 Version/archive records go to host.txt;
-#                                 the supplied installer lacks immutable
-#                                 competitor archive pins, blocking full runs.
+#                                 install receipts must match fixed archive
+#                                 pins and the PATH executable's path/hash;
+#                                 full runs refuse missing/mismatched receipts.
 #                                 50 total client connections: quotient and
 #                                 remainder over CPU processes (16: 4,4, then
 #                                 fourteen times 3). Process CSV quantiles
@@ -680,6 +681,9 @@ compare_percentile_rows() (
         function integer(s) { return s ~ /^[0-9]+$/ }
         function number(s) { return s ~ /^[0-9]+([.][0-9]+)?$/ }
         BEGIN {
+            # An uninitialized awk subscript is "", not numeric zero. Set
+            # this before buffering so process 0 is stored at output[0].
+            rows = 0
             if (split(key, fields, ",") != 5) reject("invalid sample key")
             for (i = 1; i <= 5; i++) if (fields[i] == "") reject("empty key field")
             if (!integer(requested) || requested < 50) reject("invalid total requests")

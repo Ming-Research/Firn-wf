@@ -166,9 +166,10 @@ and its twin, and every competitor, see the same drift.
 
 ### Rule 4: versions
 
-- Each competitor is its latest formal release, read from its releases page
-  on the day the install workflow runs and pinned there by archive SHA-256.
-  On 2026-10-13 these were Valkey 9.1.2
+- The baseline fixes each competitor's formal release and archive SHA-256
+  in the install workflow and instrument; repeated installs use those pins,
+  and adopting a newer release requires updating both. On 2026-10-13 the
+  selected releases were Valkey 9.1.2
   ([releases](https://github.com/valkey-io/valkey/releases); 9.2.0-rc1 is a
   release candidate), Dragonfly v2.0.2
   ([releases](https://github.com/dragonflydb/dragonfly/releases)) and Garnet
@@ -181,9 +182,17 @@ and its twin, and every competitor, see the same drift.
   hash alone does not establish which executable PATH selects: the instrument
   also requires the selected Redis server's real path to match the server
   in the build directory returned by `reference.sh bin` before recording
-  verified reference provenance.
-- Dragonfly and Garnet are not installed on the 14900K; their install
-  workflow waits on an owner card. The probe may run without them (each
+  verified reference provenance. For Valkey, Dragonfly and Garnet, the
+  installer writes a receipt with version, archive URL and SHA-256,
+  executable real path and SHA-256. The instrument checks the receipt's
+  version/URL/archive hash against its own fixed pins and checks the selected
+  executable against that receipt before recording verified provenance.
+  A Garnet .NET wrapper also binds its payload and runtime host.
+  [Installation evidence and remaining pin checks](../deployment-performance/README.md#compare-baseline-instrument)
+  state how the pins were obtained and what remains unverified.
+- Installation on the 14900K is performed only by the dispatch-only install
+  workflow; its current receipts and executable checks establish availability,
+  not an assumed machine state. The probe may run without Dragonfly or Garnet (each
   absent line printed as `skip,<line>,no executable`). The full baseline
   may not: a competitor set short of all four leaves the comparison
   unverified, and no verdict is drawn from it.

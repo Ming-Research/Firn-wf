@@ -27,11 +27,8 @@ single-threaded client process per client CPU. "firn twin" is the same image
 measured again as `firn-base`; its distance from firn shows the noise, up to
 5%.
 
-Dragonfly and Garnet are installed on the 14900K by the dispatch-only
-`install-competitors.yml` workflow: the latest stable releases, unpacked
-under the runner user's home directory (`~/.local/opt`) and linked from
-`~/.local/bin`, without root. Each `redis-bench.yml` run prints the versions it
-used in its host record.
+The current pinned installation method and its receipts are described
+under the [baseline instrument](#compare-baseline-instrument).
 
 The last column is the scale probe [37456575942](https://github.com/Ming-Research/Firn-wf/actions/runs/37456575942)
 of 2026-10-06. It measured Firn-wf 2c774fb9b, before RESP3, transactions,
@@ -403,16 +400,56 @@ and exit status for both; unsupported output or a failed version command
 remains visible and cannot certify a release. No arbitrary suffix is
 accepted merely because it begins with the expected release.
 
-There is a blocking installer-interface gap for a full competitor run:
-the supplied `origin/claude/install-competitors` workflow resolves the
-latest releases and their GitHub asset digests at dispatch time, deletes
-the downloaded archives, and records no immutable pins in its source or
-installation. It contains no v2.0.2/v2.2.1 archive hashes to reuse. It also
-does not install Valkey. The instrument therefore records unavailable
-archive provenance and refuses a full run with those competitors instead
-of inventing a pin. The installer must supply immutable version/archive
-pins and verifiable installed-artifact provenance before this check can
-be completed. The installer branch is not merged by this change.
+**Pinned installations and receipts.** The dispatch-only
+`install-competitors.yml` job installs the baseline releases under the
+runner user's `~/.local/opt`, with executable symlinks in `~/.local/bin`.
+It uses fixed archive URLs and SHA-256 values, checks every download before
+installing it, and writes a JSON `firn-install-receipt` in each installation.
+It uses no sudo. Valkey is built from its release source with the runner's
+compiler; Dragonfly and Garnet use the named Linux x86-64 release assets.
+Rerunning replaces the selected release installation and receipt after
+staging succeeds, rather than silently adopting the latest release.
+
+The instrument pins the same version, URL and archive SHA-256 values. It
+parses receipts as data, checks those three fields against its own pins,
+and requires the real path and SHA-256 of the PATH-selected executable to
+match the receipt. A missing, malformed or mismatched receipt fails a full
+run; a probe records the failure. The receipt is evidence supplied by the
+trusted installer, not an independent reconstruction of an executable from
+its archive. Garnet v2.2.1's [release packaging](https://github.com/microsoft/garnet/blob/v2.2.1/.azure/pipelines/createbinaries.ps1)
+contains both `net8.0` and `net10.0` framework-dependent single-file apphosts,
+as specified by its [Linux publish profile](https://github.com/microsoft/garnet/blob/v2.2.1/main/GarnetServer/Properties/PublishProfiles/linux-x64-based.pubxml).
+The installer explicitly selects the `net8.0` apphost and a compatible
+.NET 8 runtime, using the profile's first/default framework rather than
+archive enumeration order. It writes a canonical wrapper that sets
+`DOTNET_ROOT` and executes that apphost. The receipt binds the wrapper,
+apphost payload and runtime-locator paths and hashes. The apphost loads
+runtime libraries from that location rather than executing the `dotnet`
+locator. These checks do not freeze every shared library or framework
+assembly. Selection of the .NET 10 variant would be a different measured
+configuration and must be recorded explicitly.
+
+| Release | Archive | SHA-256 pin |
+|---|---|---|
+| Dragonfly v2.0.2 | `dragonfly-x86_64.tar.gz` | `eb9dfe654c69ab190cb3aa329ed3599ebe19c5e9a3a437bb7bc38ef52f665c88` |
+| Garnet v2.2.1 | `linux-x64-based.tar.xz` | `605d91a6ba4c3f4f416b74e676e945b983cf73fdd28e8cad569aa84e699d3903` |
+| Valkey 9.1.2 | GitHub source `9.1.2.tar.gz` | `19c23908e7d57e8d91ef85b41f5646307582f10f4f0fb999bbf89ed24ec9c983` |
+
+The two binary-archive pins above were obtained from GitHub's recorded
+release-asset `digest` through the connected GitHub reader on 2026-10-13:
+[Dragonfly release](https://github.com/dragonflydb/dragonfly/releases/tag/v2.0.2)
+and [Garnet release](https://github.com/microsoft/garnet/releases/tag/v2.2.1).
+Valkey's exact source URL and digest come from the [Homebrew formula at a
+fixed commit](https://github.com/Homebrew/homebrew-core/blob/b4bfd41d027c1161d55ceeb5246a4bb02f619392/Formula/v/valkey.rb).
+This is third-party checksum evidence for the official GitHub source archive.
+Local curl downloads of all three archives failed DNS resolution, so none
+of these pins was independently computed from archive bytes on this machine.
+Installation CI still downloads the actual bytes with curl and checks
+`sha256sum` against the fixed pins before any installation. The requested
+local download/hash evidence remains unavailable; successful installation
+CI provides the byte-level checks. The measurement workflow places the
+reference Redis tools first on PATH, then `~/.local/bin`, so Ubuntu's older
+Valkey cannot shadow the pinned installation.
 
 **Memory and verification.** `compare-memory.csv` records each measured
 line after all its tests in a pass, before shutdown:
@@ -439,7 +476,7 @@ start any server. Runtime startup, logging and memory checks require CI.
 | 4. Garnet lacks Lua/AOF flags | Lua enabled; compare AOF has commit frequency 1000 ms. Disk synchronization remains unverified. |
 | 5. Dragonfly affinity unchecked | Startup and post-run checks; fresh restart with affinity off when startup escapes. |
 | 6. Missing Redis I/O line and Valkey no-op | Both I/O lines in compare at n >= 2; no deprecated Valkey reads flag. |
-| 7. Unchecked versions, absent hashes | Full compare validates versions and refuses missing archive provenance; installer pins/provenance are still missing. |
+| 7. Unchecked versions, absent hashes | Full compare validates versions and receipts against fixed archive pins; the pins are fixed; installation evidence remains outstanding. |
 | 8. Redis-only AOF check | Compare uses Redis/Valkey/firn INFO and configuration checks, Garnet log observation. Application-workload version enforcement is not extended. |
 | 9. No redis-benchmark memory | End-of-pass allocator memory, RSS and VmHWM CSV; session-fill measurements remain in workloads mode. |
 

@@ -207,6 +207,7 @@ jobs:
           bin=$(tests/redis-suite/reference.sh)
           "$bin/redis-server" --version
           echo "$bin" >> "$GITHUB_PATH"
+          echo "REFERENCE_REDIS_BIN=$bin" >> "$GITHUB_ENV"
 
       - name: Save the Redis build
         if: ${{ runner.environment == 'github-hosted' && steps.redis-cache.outputs.cache-hit != 'true' }}
@@ -218,8 +219,9 @@ jobs:
       - name: Check the host's tools
         run: |
           if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
-            # Append competitor paths so reference Redis stays first.
-            export PATH="$HOME/.cargo/bin:$PATH:$HOME/.local/bin"
+            # Prefer pinned user-space competitors over Ubuntu's Valkey;
+            # the reference Redis tools remain ahead of both.
+            export PATH="$REFERENCE_REDIS_BIN:$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           fi
           echo "OUT=$RUNNER_TEMP/redis-bench" >> "$GITHUB_ENV"
@@ -411,7 +413,7 @@ jobs:
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"
-          export PATH="$PATH:$HOME/.local/bin"
+          export PATH="$REFERENCE_REDIS_BIN:$HOME/.local/bin:$PATH"
           if [ "$MODE" = compare ] || [ "$MODE" = workloads ]; then
             if [ "$PROFILE" = true ]; then
               # The first perf that can count a task: the one on PATH, as the
