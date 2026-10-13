@@ -11,9 +11,10 @@
 #                 them, on each server CPU count in `cpus`
 #                 (redis-bench.sh scale)
 #   mode workloads  this checkout's firn and Redis, without and with AOF,
-#                   on consumer command forms or opt-in memory-limit workloads;
+#                   on consumer command forms or opt-in memory/connection workloads;
 #                   with workload_images, instead the image each revision
 #                   builds and Redis, interleaved, without AOF
+#                   workload_servers selects competitors alongside all firn images
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
 #
@@ -53,7 +54,7 @@ on:
         type: string
         default: "1 2"
       tests:
-        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits"
+        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits handshake client-list"
         type: string
         default: ""
       depths:
@@ -73,15 +74,19 @@ on:
         type: string
         default: "50"
       workload_options:
-        description: "Memory workloads only: space-separated --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Empty keeps workload defaults; seed is the pass."
+        description: "Memory workloads: --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Handshake/client-list: --warmup-seconds SEC (default 5); --sample-ms MS accepted but no auxiliary sampling. Space-separated; seed is the pass."
         type: string
         default: ""
       workload_images:
         description: "Workloads only: measure the images `revisions` names (a -twin as a noise control) against Redis, instead of this checkout's firn"
         type: boolean
         default: false
+      workload_servers:
+        description: "Workloads only: ordered selection from reference firn valkey valkey-io dragonfly garnet, without AOF; firn expands all images with workload_images. Empty preserves defaults."
+        type: string
+        default: ""
       profile:
-        description: "Record a perf profile of each image (compare), or rerun each firn line's first pass under perf (original consumer workloads only; memory workloads have no perf pass)"
+        description: "Record a perf profile of each image (compare), or rerun each firn line's first pass under perf (original consumer workloads only; memory/connection workloads have no perf pass)"
         type: boolean
         default: true
       profile_test:
@@ -345,6 +350,7 @@ jobs:
           WORKLOADS: ${{ inputs.tests }}
           WORKLOAD_OPTIONS: ${{ inputs.workload_options }}
           WORKLOAD_IMAGES: ${{ inputs.workload_images && '1' || '' }}
+          WORKLOAD_SERVERS: ${{ inputs.workload_servers }}
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"
