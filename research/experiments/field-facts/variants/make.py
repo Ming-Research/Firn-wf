@@ -12,6 +12,9 @@ variants = {
 for name, f in variants.items():
     d = out / name
     shutil.copytree(root / "firn", d / "firn")
+    for entry in root.resolve().iterdir():
+        if entry.name not in ("firn", ".git", "build"):
+            (d / entry.name).symlink_to(entry)
     p = d / "firn/persistence/replay.wf"
     s = p.read_text(); t = f(s)
     if name != "v0_unchanged" and t == s:
