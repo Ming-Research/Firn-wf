@@ -513,3 +513,14 @@ blocked client; both follow from the deliberate timeout deferral, and their
 ratchet rows were added on contaminated evidence. Both rows are removed from
 `passing.tsv`; they return when firn-req-extended-float lets the preceding
 non-integer-timeout case serve its waiter.
+
+### Incremental AOF SELECT
+
+Run 38480614566 matched every recorded AOF byte of the `aof` and
+`expiry-before-ready` scenarios except one line: Redis 7.2.16 resets its
+selected database when it opens a new incremental file, so the first command
+written there is preceded by `SELECT 0`, and firn, which has one database,
+writes no SELECT. The lazy SELECT encoder belongs to database selection
+(status board item firn-scope-select-db), which is blocked on a Whitefoot gap.
+The recorded bytes stay unchanged; both tests are ignored citing that item and
+return when it lands.
