@@ -36,7 +36,7 @@ fn run_list_producer(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots
 }
 
 fn run_blocking_list(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client), writes(clock) waits {
-  doc "Validates directions and timeout once before its first key lookup. An immediately served command commits its ordinary effects and reply before draining list readiness. An empty result promotes the connection only at actual suspension, retains the original parsed deadline, registers the request under the same hold as its failed lookup and commits any earlier pipelined replies. The connection owner handles waiting and EOF after this function returns.";
+  doc "Validates directions and timeout once before its first key lookup. An immediately served command commits its ordinary effects and reply before draining list readiness. An empty result promotes the connection only at actual suspension, retains the original parsed deadline, registers the request under the same hold as its failed lookup and commits any earlier pipelined replies. The connection owner handles waiting and EOF after this function returns. A command whose every key argument names one key opens the one-key sequence, so during a rewrite a list already journaled in the window records only the served LPOP, RPOP, RPOPLPUSH or LMOVE bytes, not a further complete image.";
   let parsed = blocking_parse(input: input, args: args, client: client, time: time, kind: kind);
   let deadline = match parsed {
     Some(value: accepted) => {
@@ -56,7 +56,13 @@ fn run_blocking_list(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots
       pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
       return unit;
     }
-    let sequence = pkg::store::sequence_new(meta: meta, loading: time^.loading);
+    let sequence = if blocking_one_key(kind: kind, input: input, args: args) {
+      let one_key = pkg::store::sequence_new_key(meta: meta, loading: time^.loading);
+      give move one_key;
+    } else {
+      let several = pkg::store::sequence_new(meta: meta, loading: time^.loading);
+      give move several;
+    }
     let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
     let (completed, appended) = blocking_try(sequence: &sequence, journal: &journal, kind: kind, keys: keys, effects: &effects, logged: logged, input: input, args: args, client: client, time: time);
     let length = effects.inner.len;

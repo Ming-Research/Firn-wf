@@ -238,6 +238,26 @@ fn blocking_move_try(sequence: &pkg::store::WriteSequence, journal: &Option<pkg:
   return False(), appended;
 }
 
+fn blocking_one_key(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> result: Bool reads(input), reads(args) {
+  doc "Whether every key a served or attempted blocking list command can change and its append-only bytes can name is one key: BLPOP or BRPOP whose key arguments are all equal, or BRPOPLPUSH or BLMOVE whose source equals its destination. Several distinct BLPOP or BRPOP keys can remove an earlier expired key before serving a later one, and a move between two keys changes both, so those keep complete images.";
+  let first_place = key_bounds(input: input, args: args, index: 1_u64);
+  let first = &input^[first_place.start..first_place.end];
+  let end = if kind < 202_u64 {
+    give args^.inner.len -sat 1_u64;
+  } else {
+    give 3_u64;
+  }
+  for (index in 2_u64..end) {
+    let place = key_bounds(input: input, args: args, index: index);
+    let other = &input^[place.start..place.end];
+    let order = pkg::bytes::windows_order(left: first, right: other);
+    if order != 0_i32 {
+      return False();
+    }
+  }
+  return True();
+}
+
 fn blocking_try(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> (completed: Bool, appended: u64) reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(effects), writes(client) {
   doc "One attempt at an admitted and timeout-validated blocking list command under the caller's whole-map hold. True means a complete reply or error; false means no key was ready and no reply was emitted; appended counts every emitted expiry or mutation record. The caller retains the original parsed deadline, publishes accumulated expiry and mutation effects, and either registers or continues its wait.";
   if kind == 200_u64 {

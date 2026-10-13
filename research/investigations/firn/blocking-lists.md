@@ -453,6 +453,48 @@ paths did. A network case pushes 200 times onto a 20,032-element list inside
 a rewrite window and bounds the rewritten base at 12 MiB; one image per push
 would add about 28 MB to its 9 MB dataset.
 
+Served blocking commands had the same cost: the immediate attempt and the
+waiter retry both opened the general sequence, so every served pop on a list
+already journaled in the window journaled another complete image. The
+one-key sequence is correct for a statement exactly when it can change only
+one key and its logged bytes name only that key. The capture code needs both:
+it decides per statement whether to journal bytes from the anchor of the
+first entry the statement changes (whether that entry's previous write lies
+inside the window), and once it journals bytes it records no image of any
+later key, so a second changed key would enter the journal only through bytes
+whose effect on it was never anchored, and the scanned image of that key may
+already hold the change, which replay would then apply twice. Per command:
+
+- BLPOP and BRPOP whose key arguments are all one key K: the attempt visits K
+  only. It can remove K when K has expired, logged as a removal of K, and it
+  can pop from K, logged as `LPOP K` or `RPOP K` without count, as Redis
+  7.2.16's blockingPopGenericCommand propagates it; an emptied list is removed
+  by that pop on replay too. Nothing else changes, so the bytes replayed on
+  K's exact state reproduce K.
+- BLPOP and BRPOP over several distinct keys: the attempt visits keys in
+  argument order and removes each expired one it reaches before serving a
+  later ready key, logging that removal before the pop. Such a statement can
+  change two keys while its anchor covers only the first, so it keeps
+  complete images. When no earlier key has expired only the served key
+  changes, but the sequence is chosen before the attempt, so this case pays
+  images; a worker that waits on several queues at once, as Sidekiq's BRPOP
+  does, keeps paying one image per served pop during a rewrite.
+- BRPOPLPUSH and BLMOVE with source equal to destination: the move rotates K,
+  and removal of an expired K is the only other change; the logged
+  `RPOPLPUSH K K` or `LMOVE K K from to` replays on K alone.
+- BRPOPLPUSH and BLMOVE between two keys: they change source and destination
+  and their bytes read the source, so they keep complete images, as LMOVE
+  and RPOPLPUSH do.
+
+A waiter's retry re-runs its retained original arguments through the same
+attempt, after its own eviction and AOF admission and with a statement
+opened after them, so its bytes are exactly the attempt's and the same
+choice applies. A network case registers 100 BLPOP waiters on an absent
+list, installs a 20,000-element list with RENAME inside a delayed rewrite
+window, which serves them, then pops 50 times from each end at once and
+bounds the rewritten base at 12 MiB; with an image per pop, about 0.25 MB
+each, the base would grow by about 49 MB.
+
 ## Contaminated zero-timeout passes
 
 Two of the 26 rows added from run 38457609785, “BLPOP: with zero timeout

@@ -85,7 +85,7 @@ fn clients_info(control: &mut TcpStream) -> String {
 /// This count is a causal setup barrier, not a sleep that assumes the waiter
 /// registered. Selected INFO expectations are checked separately against the
 /// recording. Polling has a finite bound and missing fields fail explicitly.
-fn wait_blocked(control: &mut TcpStream, count: usize, scenario: &str) {
+pub(super) fn wait_blocked(control: &mut TcpStream, count: usize, scenario: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let info = clients_info(control);
