@@ -450,6 +450,7 @@ fn forget_idle(hub: &Shared<Hub>, connection: &Connection, last: Instant, now: I
           forget_client(hub: state, client_id: record.client_id);
           remove_record(hub: state, record: &record);
           set expired = True();
+          let dropped = move record;
         } else {
           put_record(hub: state, record: move record);
         }
@@ -488,6 +489,7 @@ fn queue_frame(hub: &Hub, id: u64, frame: Frame, time: u64) -> result: unit writ
       let hard = record.pending >= 33554432_u64;
       if band(subscribed, hard) {
         close_record(hub: hub, record: move record);
+        let dropped = move frame;
       } else {
         arm_soft(hub: hub, record: &record, time: time);
         let connection = connection_share(connection: &record.connection);
@@ -497,6 +499,7 @@ fn queue_frame(hub: &Hub, id: u64, frame: Frame, time: u64) -> result: unit writ
       }
     }
     None() => {
+      let dropped = move frame;
     }
   }
   return unit;

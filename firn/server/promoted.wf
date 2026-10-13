@@ -245,7 +245,7 @@ fn promoted_input(input: &Box<Slots<u8>>, held: u64, chunk: Box<Slots<u8>>) -> n
   return Some<u64>(value: next);
 }
 
-fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown: &CancelSource, connection: &EventConnection, client: Client, args: Box<Slots<Span>>, input: Box<Slots<u8>>, initial: u64, transaction: Transaction) -> graceful: Bool reads(store), reads(wall), reads(shutdown), reads(connection), writes(clock) waits {
+fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown: &CancelSource, connection: &EventConnection, client: Client, args: Box<Slots<Span>>, input: Box<Slots<u8>>, initial: u64, transaction: Transaction) -> graceful: Bool reads(store), reads(wall), reads(connection), writes(clock), writes(shutdown) waits {
   doc "Owns parsing, client settings and the transaction after promotion. The unconsumed pipeline suffix enters unchanged. Every command completes before the suffix runs; its entire output group is committed before another command is parsed. Input bytes remain charged until parsing consumes them. QUIT and protocol errors request an ordered output finish; receive, send, pressure or shutdown cancellation abandons pending commands.";
   let env = KeyEnv();
   let held = initial;
@@ -397,6 +397,10 @@ fn serve_promoted(connection: TcpConnection, factory: HandleFactory, store: Keys
     None() => {
       std::net::close_receive(factory: &factory, receive: move receive);
       std::net::close_send(factory: &factory, send: move send);
+      let dropped_client = move client;
+      let dropped_args = move args;
+      let dropped_input = move input;
+      let dropped_transaction = move transaction;
     }
   }
   return unit;

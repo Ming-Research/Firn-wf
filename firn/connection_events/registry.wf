@@ -39,6 +39,9 @@ fn member_remove(map: &HashMap<Key, Box<Slots<u64>>, extent>, key: &Key, id: u64
       }
       if members.inner.len > 0_u64 {
         let inserted = hash_map_put::<KeyHash, Box<Slots<u64>>, extent>(map: map, key: move previous_key, value: move members, env: &env);
+      } else {
+        let dropped_key = move previous_key;
+        let dropped_members = move members;
       }
     }
     None() => {
