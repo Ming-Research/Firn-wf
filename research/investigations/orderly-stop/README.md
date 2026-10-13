@@ -325,3 +325,39 @@ The prediction's stronger half, that head is at least base, is not resolved:
 the twins differ by up to 3%, so a gain from dropping the per-receive timer
 (at most 1.25% at depth 1 in the polling measurement above) is below this
 probe's noise. The result is reported as no measured loss, not as a gain.
+
+## Stop signals during the replay
+
+### Question and comparison, stated before measuring
+
+Until this change firn opened its stop listener just before it listened, so a
+SIGTERM or SIGINT that came while it replayed its append-only file met the
+host default and ended firn by the signal. Redis 7.2.16 installs its handler
+in `initServer` (`server.c:2561-2566`), before it loads. Its loader serves
+events every 1024 commands (`aof.c:1480-1485`); there `whileBlockedCron`, at
+most once a millisecond, finds a stop signal's request while loading and
+calls `prepareForShutdown(SHUTDOWN_NOSAVE)` and `exit(0)`
+(`server.c:1592-1599`). It opens the file for appending and removes history
+only after loading (`server.c:7332-7333`), so nothing in `appendonlydir`
+changes. Its upgrade of an old-style file runs before loading
+(`aof.c:1668-1676`) and is not part of this question.
+
+firn now opens the listener before the replay, and the replay reads the
+shutdown request the signal context records in the server's state before
+every 1024th command it parses; a request seen there makes main exit with
+status 0 before any step after the replay.
+
+The case `firn_stops_its_replay_on_sigterm_and_sigint_as_redis_does`
+(`tests/network.rs`) gives each server, Redis 7.2.16 and firn, a base file of
+3,000,000 `SET` records under a manifest that lists no increment, which is
+expected to take well over a second to load on a hosted runner. It waits until
+the server holds the base file open while it does not yet serve, then sends
+one signal, recording whether the process took SIGTERM and SIGINT at that
+moment (caught by Redis's handler, blocked for firn's signal reader). A server
+that serves before the case sees its replay fails the case as a missed window.
+**Rejection rule.** The change is rejected if, for either signal,
+firn does not exit with status 0, if `appendonlydir`'s file names or bytes
+differ afterwards, or if a restart does not load every key. The same case on
+the previous main must fail: there the signal finds the host default and ends
+firn by it. Redis must pass the same checks, or the case does not describe
+Redis.

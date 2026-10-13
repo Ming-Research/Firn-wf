@@ -8913,6 +8913,287 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
     }
 }
 
+/// How many `SET` records the replay-stop cases' base file holds. Redis
+/// 7.2.16 and firn each apply AOF records at no more than a few million a
+/// second on a hosted runner, so loading these takes well over a second,
+/// while the cases find the replay within milliseconds of its start; firn's
+/// restart that replays them all must also fit in the harness's 60-second
+/// child deadline. Nothing here was timed on the developer's machine.
+#[cfg(target_os = "linux")]
+const REPLAY_STOP_RECORDS: usize = 3_000_000;
+
+/// How many keys those records cycle over, `key:00000` to `key:65535`.
+#[cfg(target_os = "linux")]
+const REPLAY_STOP_KEYS: usize = 65_536;
+
+/// A base append-only file of `REPLAY_STOP_RECORDS` `SET` records, record `i`
+/// setting key `i % REPLAY_STOP_KEYS` to the eight decimal digits of `i`, so
+/// the last record of a key decides its value after a whole replay.
+#[cfg(target_os = "linux")]
+fn replay_stop_base() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(REPLAY_STOP_RECORDS * 42);
+    for index in 0..REPLAY_STOP_RECORDS {
+        write!(
+            bytes,
+            "*3\r\n$3\r\nSET\r\n$9\r\nkey:{:05}\r\n$8\r\n{index:08}\r\n",
+            index % REPLAY_STOP_KEYS
+        )
+        .expect("build the base file");
+    }
+    bytes
+}
+
+/// The value a whole replay of `replay_stop_base` leaves at key `key`.
+#[cfg(target_os = "linux")]
+fn replay_stop_value(key: usize) -> String {
+    let last = key + (REPLAY_STOP_RECORDS - 1 - key) / REPLAY_STOP_KEYS * REPLAY_STOP_KEYS;
+    format!("{last:08}")
+}
+
+/// Every file of a directory by name, with its length and a SipHash of its
+/// bytes, so that two snapshots are equal only for the same names holding
+/// the same bytes, up to a 64-bit hash collision.
+#[cfg(target_os = "linux")]
+fn directory_snapshot(directory: &std::path::Path) -> std::collections::BTreeMap<String, (usize, u64)> {
+    use std::hash::Hasher as _;
+    std::fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("list {}: {error}", directory.display()))
+        .map(|entry| {
+            let path = entry.expect("read a directory entry").path();
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            hasher.write(&bytes);
+            let name = path.file_name().expect("entry name").to_string_lossy().into_owned();
+            (name, (bytes.len(), hasher.finish()))
+        })
+        .collect()
+}
+
+/// Whether a running process holds `file`, an absolute path without
+/// symbolic links, open, as Linux's /proc/PID/fd lists its descriptors.
+#[cfg(target_os = "linux")]
+fn holds_open(pid: u32, file: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| std::fs::read_link(entry.path()).is_ok_and(|target| target.as_path() == file))
+}
+
+/// Whether the process takes SIGINT and SIGTERM instead of leaving them to
+/// the host default: Redis catches them with a handler (SigCgt in Linux's
+/// /proc/PID/status), while Whitefoot's runtime blocks them on the process's
+/// first thread and reads them from a signalfd while its stop listener is
+/// open (SigBlk). Bit `n - 1` of either mask stands for signal `n`.
+#[cfg(target_os = "linux")]
+fn takes_stop_signals(pid: u32) -> bool {
+    let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+        return false;
+    };
+    let mask = |name: &str| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+            .unwrap_or(0)
+    };
+    let both = (1_u64 << (2 - 1)) | (1_u64 << (15 - 1));
+    (mask("SigCgt:") | mask("SigBlk:")) & both == both
+}
+
+/// Whether a server serves on the port yet. firn listens only after its
+/// replay, so a refused connection means it has not; Redis 7.2.16 accepts
+/// while it loads and answers -LOADING, which means the same.
+#[cfg(target_os = "linux")]
+fn serves(port: u16, what: &str) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    match TcpStream::connect_timeout(&address, Duration::from_secs(5)) {
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => false,
+        Err(error) => panic!("{what}: connect to {address}: {error}"),
+        Ok(stream) => {
+            let mut stream = bounded_stream(stream);
+            stream.write_all(&resp(&["PING"])).expect("send the readiness PING");
+            let line = reply_line(&mut stream, what);
+            if line == "+PONG\r\n" {
+                return true;
+            }
+            assert!(line.starts_with("-LOADING "), "{what}: PING answered {line:?}");
+            false
+        }
+    }
+}
+
+/// One server under the replay-stop cases: Redis 7.2.16, or firn on the
+/// route `native_ring` names.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+enum ReplayServer {
+    Redis,
+    Firn { native_ring: bool },
+}
+
+/// Starts a server with appendonly on in `directory`, where its
+/// appendonlydir lies. Redis is started as the rewrite crash cases start it.
+#[cfg(target_os = "linux")]
+fn replay_server_start(
+    server: ReplayServer,
+    program: &CompiledProgram,
+    directory: &std::path::Path,
+    lease: &support::PortLease,
+) -> ProgramChild {
+    let port = lease.port().to_string();
+    match server {
+        ReplayServer::Redis => {
+            let mut command = std::process::Command::new(support::redis_oracle());
+            command
+                .current_dir(directory)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .args([
+                    "--port", &port, "--bind", "127.0.0.1", "--save", "", "--appendonly", "yes",
+                    "--appendfilename", "appendonly.aof", "--appendfsync", "everysec",
+                    "--aof-use-rdb-preamble", "no", "--auto-aof-rewrite-percentage", "0", "--dir",
+                ])
+                .arg(directory);
+            ProgramChild::spawn(&mut command)
+                .expect("spawn redis-server")
+                .with_port(lease)
+        }
+        ReplayServer::Firn { native_ring } => program
+            .spawn_on_route(
+                native_ring,
+                &[port.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-percentage", b"0"],
+            )
+            .with_port(lease),
+    }
+}
+
+/// A SIGTERM or SIGINT that comes while the server replays its append-only
+/// file ends it with status 0 and leaves appendonlydir as it was, file names
+/// and bytes, as Redis 7.2.16 does: it takes the signals from `initServer`,
+/// before it loads, finds the request every 1024 commands while it loads and
+/// exits there (`aof.c:1480-1485`, `server.c:1592-1599`), and opens its file
+/// for appending only after loading (`server.c:7332`). The manifest lists a
+/// base and no increment, so a server that finished its replay would create
+/// and list an increment, changing the directory. The case finds the replay
+/// by the server holding its base file open while it does not yet serve,
+/// sends the signal then, and a restart must still load every key. firn
+/// before this case opened its stop listener only once its replay was done,
+/// so the signal met the host default and ended firn by the signal, a status
+/// this case refuses. Redis runs first, so that a case which does not
+/// describe Redis fails on Redis.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_stops_its_replay_on_sigterm_and_sigint_as_redis_does() {
+    use std::os::unix::process::ExitStatusExt;
+    let base = replay_stop_base();
+    let manifest = "file appendonly.aof.1.base.aof seq 1 type b\n";
+    for (server, signal) in [
+        (ReplayServer::Redis, "TERM"),
+        (ReplayServer::Redis, "INT"),
+        (ReplayServer::Firn { native_ring: false }, "TERM"),
+        (ReplayServer::Firn { native_ring: true }, "INT"),
+    ] {
+        let what = format!("{server:?} on SIG{signal}");
+        let program = CompiledProgram::from_environment();
+        let fixture = fixture_directory();
+        let directory = match server {
+            ReplayServer::Redis => fixture.path().to_path_buf(),
+            ReplayServer::Firn { .. } => program.working_directory().to_path_buf(),
+        };
+        let aof = directory.join("appendonlydir");
+        std::fs::create_dir(&aof).expect("create appendonlydir");
+        std::fs::write(aof.join("appendonly.aof.1.base.aof"), &base).expect("write the base file");
+        std::fs::write(aof.join("appendonly.aof.manifest"), manifest).expect("write the manifest");
+        let before = directory_snapshot(&aof);
+        let base_path = aof
+            .join("appendonly.aof.1.base.aof")
+            .canonicalize()
+            .expect("resolve the base file");
+
+        let lease = support::lease_port();
+        let mut child = replay_server_start(server, &program, &directory, &lease);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(status) = child.try_wait().expect("poll the server") {
+                panic!("{what}: exited before its replay was seen: {status:?}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what}: the replay was not seen within 30 seconds"
+            );
+            if holds_open(child.id(), &base_path) {
+                assert!(
+                    !serves(lease.port(), &what),
+                    "{what}: the server already serves while it holds its base file open"
+                );
+                break;
+            }
+            assert!(
+                !serves(lease.port(), &what),
+                "{what}: the server served before its replay was seen; the base \
+                 file is too small for this runner, so the case missed the replay"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let taken = takes_stop_signals(child.id());
+        send_signal(&child, signal);
+        let output = child.wait_with_output().expect("wait for the server");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{what}: a signal during the replay must end it with status 0, not {:?} \
+             (signal {:?}; SIGINT and SIGTERM taken when sent: {taken}); stdout tail: {}",
+            output.status,
+            output.status.signal(),
+            String::from_utf8_lossy(&output.stdout[output.stdout.len().saturating_sub(2048)..])
+        );
+        assert_eq!(
+            directory_snapshot(&aof),
+            before,
+            "{what}: appendonlydir must be left as it was"
+        );
+
+        let lease = support::lease_port();
+        let restarted = replay_server_start(server, &program, &directory, &lease);
+        let deadline = Instant::now() + Duration::from_secs(50);
+        while !serves(lease.port(), &what) {
+            restarted.assert_running(lease.port());
+            assert!(
+                Instant::now() < deadline,
+                "{what}: the restart did not serve within 50 seconds"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut client = connect_when_ready(lease.port(), &restarted);
+        client.write_all(&resp(&["DBSIZE"])).expect("count the keys");
+        assert_eq!(
+            integer_reply(&mut client, "keys after the restart"),
+            REPLAY_STOP_KEYS as i64,
+            "{what}"
+        );
+        for key in [0, 1, REPLAY_STOP_KEYS / 2, REPLAY_STOP_KEYS - 1] {
+            client
+                .write_all(&resp(&["GET", &format!("key:{key:05}")]))
+                .expect("read a replayed key");
+            assert_eq!(
+                bulk_reply(&mut client, "a replayed key"),
+                replay_stop_value(key),
+                "{what}: key {key}"
+            );
+        }
+        client
+            .write_all(&resp(&["SHUTDOWN", "NOSAVE"]))
+            .expect("stop the restarted server");
+        assert_eq!(client.read(&mut [0]).expect("the restarted server closes"), 0);
+        let output = restarted.wait_with_output().expect("wait for the restart");
+        assert_eq!(output.status.code(), Some(0), "{what}: restart {output:?}");
+    }
+}
+
 /// CONFIG SET must reach a receive that began with timeout zero, which must
 /// remain usable through an idle interval before the limit is set.
 #[cfg(target_os = "linux")]
