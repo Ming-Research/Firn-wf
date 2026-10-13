@@ -54,7 +54,7 @@ compare_version_acceptable() {
 }
 
 # Version, archive URL and immutable SHA-256, one field per line. These pins
-# must agree with install-competitors.yml's installation step. "unavailable"
+# must agree with redis-bench.yml's install-competitors job. "unavailable"
 # is an explicit blocker, never a digest accepted from a receipt or environment.
 competitor_pin() {
     case $1 in

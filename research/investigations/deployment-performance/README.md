@@ -401,7 +401,7 @@ remains visible and cannot certify a release. No arbitrary suffix is
 accepted merely because it begins with the expected release.
 
 **Pinned installations and receipts.** The dispatch-only
-`install-competitors.yml` job installs the baseline releases under the
+`redis-bench.yml` mode `install-competitors` (runner 14900k) installs the baseline releases under the
 runner user's `~/.local/opt`, with executable symlinks in `~/.local/bin`.
 It uses fixed archive URLs and SHA-256 values, checks every download before
 installing it, and writes a JSON `firn-install-receipt` in each installation.
