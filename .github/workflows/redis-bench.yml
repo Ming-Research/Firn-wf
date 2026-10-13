@@ -53,6 +53,26 @@ on:
         description: Server CPU counts
         type: string
         default: "1 2"
+      server_cpus:
+        description: "Server CPUs, comma-separated numbers or ranges such as 0-15; both threads of a core may be named, and the list must hold exactly as many CPUs as each count in cpus, so give one count. Empty places servers automatically"
+        type: string
+        default: ""
+      client_cpus:
+        description: "Client CPUs, comma-separated numbers or ranges, none on a server CPU's physical core; one client process or thread per CPU. Empty places clients automatically"
+        type: string
+        default: ""
+      drivers:
+        description: "Whitefoot drivers for each measured image; empty gives one per server CPU"
+        type: string
+        default: ""
+      c2c:
+        description: "With profile, also record perf c2c on each profiled test: the cache lines several cores contend for"
+        type: boolean
+        default: false
+      sched_report:
+        description: "Set WF_SCHED_REPORT=2 on firn images, so each compare pass's kept server log ends with the Whitefoot runtime's per-driver scheduling counts"
+        type: boolean
+        default: false
       tests:
         description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits handshake client-list"
         type: string
@@ -85,6 +105,14 @@ on:
         description: "Workloads only: ordered selection from reference firn valkey valkey-io dragonfly garnet, without AOF; firn expands all images with workload_images. Empty preserves defaults."
         type: string
         default: ""
+      maxmemory:
+        description: "Compare only: maxmemory in bytes set with CONFIG SET on every measured server after it starts; empty sets none"
+        type: string
+        default: ""
+      aof:
+        description: "Compare only: start every measured server with the append-only file on (appendfsync everysec), automatic rewrites off and a fresh directory per run, so the cost measured is the steady-state append path; the run fails unless INFO reports aof_enabled:1"
+        type: boolean
+        default: false
       profile:
         description: "Record a perf profile of each image (compare), or rerun each firn line's first pass under perf (original consumer workloads only; memory/connection workloads have no perf pass)"
         type: boolean
@@ -106,9 +134,6 @@ defaults:
   run:
     shell: bash
 
-concurrency:
-  group: redis-bench-${{ github.ref }}-${{ inputs.runner }}
-  cancel-in-progress: true
 
 permissions:
   actions: read
@@ -329,11 +354,18 @@ jobs:
         if: ${{ inputs.mode != 'build' }}
         timeout-minutes: 110
         env:
+          SERVER_CPU_LIST: ${{ inputs.server_cpus }}
+          CLIENT_CPU_LIST: ${{ inputs.client_cpus }}
+          WF_SCHED_REPORT: ${{ inputs.sched_report && '2' || '' }}
+          IMAGE_DRIVERS: ${{ inputs.drivers }}
+          PERF_C2C: ${{ inputs.c2c && '1' || '' }}
           COMPARE_CPUS: ${{ inputs.cpus }}
           COMPARE_TESTS: ${{ inputs.tests || 'mset set get' }}
           COMPARE_DEPTHS: ${{ inputs.depths }}
           COMPARE_PASSES: ${{ inputs.passes }}
           COMPARE_SECONDS: ${{ inputs.seconds }}
+          COMPARE_MAXMEMORY: ${{ inputs.maxmemory }}
+          COMPARE_AOF: ${{ inputs.aof && 'true' || 'false' }}
           PROFILE: ${{ inputs.profile }}
           COMPARE_PROFILE: ${{ inputs.profile_test }}
           PERF_ANNOTATE: ${{ inputs.annotate }}
@@ -356,14 +388,25 @@ jobs:
           . "$RUNNER_TEMP/redis-bench-session.sh"
           if [ "$MODE" = compare ] || [ "$MODE" = workloads ]; then
             if [ "$PROFILE" = true ]; then
-              PERF=$(ls /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf 2>/dev/null | head -1 || true)
+              # The first perf that can count a task: the one on PATH, as the
+              # self-hosted machine installs it, then Ubuntu's per-kernel
+              # linux-tools builds; Ubuntu's PATH wrapper fails without one.
+              PERF=
+              for candidate in $(command -v perf 2>/dev/null) \
+                $(ls /usr/lib/linux-tools/*/perf /usr/lib/linux-tools-*/perf 2>/dev/null); do
+                if "$candidate" stat -e task-clock true >/dev/null 2>&1; then
+                  PERF=$candidate
+                  break
+                fi
+              done
+              echo "perf: ${PERF:-none} $(${PERF:-false} --version 2>/dev/null) paranoid=$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null)" | tee -a "$OUT/host.txt"
               if [ -n "$PERF" ]; then
                 if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
                   sudo sysctl -w kernel.perf_event_paranoid=-1 kernel.kptr_restrict=0
                 fi
                 export PERF
               else
-                echo "no perf for this kernel; profiles skipped" | tee -a "$OUT/host.txt"
+                echo "no perf that can count a task; profiles skipped" | tee -a "$OUT/host.txt"
               fi
             fi
           fi
