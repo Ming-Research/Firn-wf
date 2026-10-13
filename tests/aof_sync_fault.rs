@@ -100,7 +100,11 @@ impl Device {
             "FIRN_SYNC_FAULT_MOUNT must name the mount aof_sync_fault_device.sh setup made");
         assert!(mount.is_absolute() && mount.is_dir(), "no mount at {}", mount.display());
         let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("aof_sync_fault_device.sh");
-        Self { mount, script }
+        let device = Self { mount, script };
+        // A new filesystem, so that metadata an earlier case lost cannot
+        // break this one.
+        device.run("reset");
+        device
     }
 
     fn run(&self, action: &str) {

@@ -206,6 +206,12 @@ jobs:
           sudo tests/aof_sync_fault_device.sh setup "$mount" "$(id -u):$(id -g)"
           echo "FIRN_SYNC_FAULT_MOUNT=$mount" >> "$GITHUB_ENV"
 
+      # Shows before the cases that the kernel's periodic writeback no longer
+      # reaches the failing device: a file made and never synced survives 40 s
+      # of failure. It fails if the flusher writes metadata during the window.
+      - name: Check that no periodic writeback reaches the faulty device
+        run: sudo tests/aof_sync_fault_device.sh check-writeback "$FIRN_SYNC_FAULT_MOUNT"
+
       # The target fails without FIRN_SYNC_FAULT_MOUNT and REDIS_SERVER, set
       # by the steps above, and unless both of its cases ran and passed.
       - name: Run the sync-failure cases
@@ -213,7 +219,12 @@ jobs:
 
       - name: Show the kernel's account of the device
         if: always()
-        run: sudo dmesg | grep -E 'dm-|EXT4-fs|I/O error|flakey|loop' | tail -n 100 || true
+        run: |
+          sudo dmesg | grep -E 'dm-|EXT4-fs|I/O error|flakey|loop' | tail -n 100 || true
+          echo '--- space and metadata loss'
+          df -h "$FIRN_SYNC_FAULT_MOUNT" || true
+          df -i "$FIRN_SYNC_FAULT_MOUNT" || true
+          sudo dmesg | grep -E 'lost async|checksum|doubly|EXT4-fs error' | tail -n 50 || true
 
       - name: Show Redis's log
         if: failure()
