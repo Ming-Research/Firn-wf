@@ -224,15 +224,124 @@ fn whole_reply_consumes_resp3_children_before_the_next_reply() {
 /// Reads exactly the bytes of the expected replies and compares them.
 #[cfg(target_os = "linux")]
 fn expect_replies(stream: &mut TcpStream, expected: &[u8], what: &str) {
-    let mut returned = vec![0_u8; expected.len()];
-    stream
-        .read_exact(&mut returned)
-        .unwrap_or_else(|error| panic!("{what}: {error}"));
+    let returned = read_reply_bytes(stream, expected.len(), what, None)
+        .unwrap_or_else(|failure| panic!("{failure}"));
     assert_eq!(
         String::from_utf8_lossy(&returned),
         String::from_utf8_lossy(expected),
         "{what}"
     );
+}
+
+/// The same reply check, with bounded child diagnostics in the read-error
+/// panic rather than only in Drop's direct stderr output.
+#[cfg(target_os = "linux")]
+fn expect_replies_with_child(stream: &mut TcpStream, expected: &[u8], what: &str, child: &mut ProgramChild) {
+    let returned = read_reply_bytes(stream, expected.len(), what, Some(child))
+        .unwrap_or_else(|failure| panic!("{failure}"));
+    assert_eq!(
+        String::from_utf8_lossy(&returned),
+        String::from_utf8_lossy(expected),
+        "{what}"
+    );
+}
+
+/// Returns the read result without panicking, so the diagnostic failure path
+/// can be checked using an injected socket error without catching a panic.
+#[cfg(target_os = "linux")]
+fn read_reply_bytes(stream: &mut impl Read, length: usize, what: &str, child: Option<&mut ProgramChild>) -> Result<Vec<u8>, String> {
+    let mut returned = vec![0_u8; length];
+    stream.read_exact(&mut returned).map_err(|error| match child {
+        Some(child) => child.reply_read_failure(what, &error),
+        None => format!("{what}: {error}"),
+    })?;
+    Ok(returned)
+}
+
+/// The read-error result contains the diagnostics that the caller puts in
+/// its panic payload. A reset reports a naturally exited child and its stderr;
+/// an EOF while the child is alive identifies the harness's forced stop.
+/// Both fixtures use the real capture/cleanup machinery, without panic hooks.
+#[cfg(target_os = "linux")]
+#[test]
+fn reply_read_failures_include_child_exit_or_forced_stop_in_the_message() {
+    struct ResetReply;
+    impl Read for ResetReply {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "RESET-MARK"))
+        }
+    }
+    for naturally_exited in [true, false] {
+        let lease = support::lease_port();
+        let mut command = std::process::Command::new("/bin/sh");
+        let script = if naturally_exited {
+            "echo OUT-MARK; echo ERR-MARK >&2; exit 7"
+        } else {
+            "sleep 30"
+        };
+        command.args(["-c", script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = ProgramChild::spawn(&mut command).expect("spawn reply diagnostic witness").with_port(&lease);
+        let pid = child.id();
+        if naturally_exited {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while child.try_wait().expect("probe exited witness").is_none() {
+                assert!(Instant::now() < deadline, "witness did not exit promptly");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        } else {
+            assert!(child.try_wait().expect("probe live witness").is_none());
+        }
+        let started = Instant::now();
+        let failure = if naturally_exited {
+            read_reply_bytes(&mut ResetReply, 1, "loaded", Some(&mut child)).unwrap_err()
+        } else {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", lease.port())).expect("bind closed-peer witness");
+            let mut reader = bounded_stream(TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+            let (peer, _) = listener.accept().expect("accept closed-peer witness");
+            drop(peer);
+            read_reply_bytes(&mut reader, 1, "GET key", Some(&mut child)).unwrap_err()
+        };
+        assert!(failure.contains("BEGIN TEST CHILD DIAGNOSTICS"), "{failure}");
+        assert!(failure.contains("program: /bin/sh"), "{failure}");
+        assert!(failure.contains(&format!("PID: {pid}")), "{failure}");
+        assert!(failure.contains(&format!("port: {}", lease.port())), "{failure}");
+        if naturally_exited {
+            assert!(failure.starts_with("loaded: RESET-MARK"), "{failure}");
+            assert!(failure.contains("already exited: yes"), "{failure}");
+            assert!(failure.contains("exit status: 7"), "{failure}");
+            assert!(failure.contains("OUT-MARK"), "{failure}");
+            assert!(failure.contains("ERR-MARK"), "{failure}");
+        } else {
+            assert!(failure.starts_with("GET key:"), "{failure}");
+            assert!(failure.contains("already exited: no; killed by harness"), "{failure}");
+            assert!(child.try_wait().expect("probe stopped witness").is_some());
+        }
+        drop(child);
+        assert!(started.elapsed() < Duration::from_secs(8), "diagnostics and Drop exceeded the existing fixture budget: {failure}");
+    }
+}
+
+/// libtest must receive the diagnostic in the panic payload itself; a block
+/// written only to stderr by ProgramChild::drop cannot satisfy should_panic.
+#[cfg(target_os = "linux")]
+#[test]
+#[should_panic(expected = "already exited: no; killed by harness")]
+fn reply_read_failure_carries_child_diagnostics_in_the_panic_payload() {
+    let lease = support::lease_port();
+    let mut command = std::process::Command::new("/bin/sh");
+    command.args(["-c", "sleep 30"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = ProgramChild::spawn(&mut command).expect("spawn panic-payload witness").with_port(&lease);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", lease.port())).expect("bind closed panic-payload peer");
+    let mut reader = bounded_stream(TcpStream::connect(listener.local_addr().unwrap()).unwrap());
+    let (peer, _) = listener.accept().expect("accept panic-payload peer");
+    drop(peer);
+    expect_replies_with_child(&mut reader, b"+PONG\r\n", "loaded", &mut child);
 }
 
 /// [SHARE-1, SHARE-3] firn serves every client over one
@@ -9027,13 +9136,20 @@ fn multipart_files(program: &CompiledProgram, files: &[(&str, &[&[&str]])], mani
 }
 
 fn multipart_values(client: &mut TcpStream, values: &[(&str, Option<&str>)]) {
+    multipart_values_reporting(client, values, None);
+}
+
+fn multipart_values_reporting(client: &mut TcpStream, values: &[(&str, Option<&str>)], mut child: Option<&mut ProgramChild>) {
     for (key, value) in values {
         client.write_all(&resp(&["GET", key])).unwrap();
         let expected = match value {
             Some(text) => format!("${}\r\n{text}\r\n", text.len()),
             None => "$-1\r\n".to_owned(),
         };
-        expect_replies(client, expected.as_bytes(), key);
+        match child.as_deref_mut() {
+            Some(child) => expect_replies_with_child(client, expected.as_bytes(), key, child),
+            None => expect_replies(client, expected.as_bytes(), key),
+        }
     }
 }
 
@@ -9041,12 +9157,12 @@ fn multipart_load(program: &CompiledProgram, name: &str, values: &[(&str, Option
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let mut child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
-    multipart_values(&mut client, values);
+    multipart_values_reporting(&mut client, values, Some(&mut child));
     // Also make an empty expected-values case prove that startup completed.
     client.write_all(&resp(&["PING"])).unwrap();
-    expect_replies(&mut client, b"+PONG\r\n", "loaded");
+    expect_replies_with_child(&mut client, b"+PONG\r\n", "loaded", &mut child);
     drop(client);
     assert_eq!(finished(child).0, 0);
 }
