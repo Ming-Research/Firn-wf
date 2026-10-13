@@ -177,11 +177,24 @@ unit/protocol	raw protocol response - multiline	1
 unit/quit	Pipelined commands after QUIT must not be executed	1
 unit/quit	Pipelined commands after QUIT that exceed read buffer size	1
 unit/quit	QUIT returns OK	1
+unit/scan	HSCAN with PATTERN	1
+unit/scan	HSCAN with encoding hashtable	1
+unit/scan	HSCAN with encoding listpack	1
 unit/scan	SCAN COUNT	1
 unit/scan	SCAN MATCH	1
 unit/scan	SCAN TYPE	1
 unit/scan	SCAN basic	1
 unit/scan	SCAN guarantees check under write load	1
+unit/scan	SCAN regression test for issue #4906	1
+unit/scan	SSCAN with PATTERN	1
+unit/scan	SSCAN with encoding hashtable	1
+unit/scan	SSCAN with encoding intset	1
+unit/scan	SSCAN with encoding listpack	1
+unit/scan	SSCAN with integer encoded object (issue #1345)	1
+unit/scan	ZSCAN scores: regression test for issue #2175	1
+unit/scan	ZSCAN with PATTERN	1
+unit/scan	ZSCAN with encoding listpack	1
+unit/scan	ZSCAN with encoding skiplist	1
 unit/scripting	EVALSHA - Can we call a SHA1 if already defined?	1
 unit/scripting	EVALSHA - Can we call a SHA1 in uppercase?	1
 unit/scripting	EVALSHA - Do we get an error on invalid SHA1?	1
