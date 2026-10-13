@@ -16,8 +16,8 @@
 use super::*;
 use std::collections::HashSet;
 use std::os::unix::process::ExitStatusExt;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Barrier;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Barrier, Mutex};
 
 const CLIENTS: usize = 8;
 const SHARED_KEYS: usize = 4;
@@ -25,6 +25,7 @@ const TOKEN_BYTES: usize = 16;
 const CONCURRENT_DURATION: Duration = Duration::from_secs(2);
 const WRITE_PAUSE: Duration = Duration::from_millis(2);
 const IO_LIMIT: Duration = Duration::from_secs(3);
+const ACK_WAIT_LIMIT: Duration = Duration::from_secs(3);
 const KILL_ROUNDS: usize = 5;
 const KILL_MIN_MS: u64 = 150;
 const KILL_JITTER_MS: u64 = 150;
@@ -219,59 +220,166 @@ struct Acknowledged {
     value: String,
 }
 
+/// The crash workload uses only simple SET replies and bulk GET replies.
+/// Unlike network.rs's assertion reader, an incomplete frame returns its
+/// I/O error: a partially received +OK is never an acknowledgment.
+fn read_crash_reply(reader: &mut impl Read) -> std::io::Result<String> {
+    use std::io::{Error, ErrorKind};
+    let mut bytes = Vec::new();
+    while !bytes.ends_with(b"\r\n") {
+        if bytes.len() == 128 {
+            return Err(Error::new(ErrorKind::InvalidData, "crash reply header too long"));
+        }
+        let mut byte = [0_u8; 1];
+        reader.read_exact(&mut byte)?;
+        bytes.push(byte[0]);
+    }
+    if bytes.starts_with(b"$") {
+        let length = std::str::from_utf8(&bytes[1..bytes.len() - 2])
+            .ok().and_then(|digits| digits.parse::<i64>().ok())
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, "invalid crash bulk length"))?;
+        if !(-1..=1024).contains(&length) {
+            return Err(Error::new(ErrorKind::InvalidData, "unexpected crash bulk length"));
+        }
+        if length >= 0 {
+            // All crash values are short ASCII strings; bound a corrupt
+            // length before allocating, and require the complete terminator.
+            let mut body = vec![0_u8; length as usize + 2];
+            reader.read_exact(&mut body)?;
+            if !body.ends_with(b"\r\n") {
+                return Err(Error::new(ErrorKind::InvalidData, "invalid crash bulk terminator"));
+            }
+            bytes.extend(body);
+        }
+    } else if !bytes.starts_with(b"+") && !bytes.starts_with(b"-") {
+        return Err(Error::new(ErrorKind::InvalidData, "unexpected crash reply type"));
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| Error::new(ErrorKind::InvalidData, error))
+}
+
+fn interrupted_by_kill(error: &std::io::Error, killed: bool) -> bool {
+    use std::io::ErrorKind;
+    killed && matches!(error.kind(),
+        ErrorKind::ConnectionReset | ErrorKind::UnexpectedEof | ErrorKind::BrokenPipe)
+}
+
+#[test]
+fn crash_reader_requires_complete_replies_and_transport_errors_require_a_kill() {
+    use std::io::{Cursor, Error, ErrorKind};
+    struct InterruptedReader<'a> {
+        prefix: &'a [u8],
+        kind: ErrorKind,
+    }
+    impl Read for InterruptedReader<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.prefix.is_empty() {
+                Err(Error::from(self.kind))
+            } else {
+                self.prefix.read(buffer)
+            }
+        }
+    }
+    let ack = b"+OK\r\n";
+    assert_eq!(read_crash_reply(&mut Cursor::new(ack)).unwrap(), "+OK\r\n");
+    for length in 0..ack.len() {
+        let error = read_crash_reply(&mut Cursor::new(&ack[..length])).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof, "prefix length {length}");
+        assert!(!interrupted_by_kill(&error, false));
+        assert!(interrupted_by_kill(&error, true));
+    }
+    for kind in [ErrorKind::ConnectionReset, ErrorKind::BrokenPipe] {
+        let error = read_crash_reply(&mut InterruptedReader { prefix: &ack[..3], kind })
+            .unwrap_err();
+        assert_eq!(error.kind(), kind);
+        assert!(!interrupted_by_kill(&error, false));
+        assert!(interrupted_by_kill(&error, true));
+    }
+    for kind in [ErrorKind::TimedOut, ErrorKind::WouldBlock, ErrorKind::InvalidData] {
+        assert!(!interrupted_by_kill(&Error::from(kind), true));
+    }
+    assert_eq!(read_crash_reply(&mut Cursor::new(b"$-1\r\n")).unwrap(), "$-1\r\n");
+    assert_eq!(read_crash_reply(&mut Cursor::new(b"$1\r\nv\r\n")).unwrap(), "$1\r\nv\r\n");
+    assert_eq!(read_crash_reply(&mut Cursor::new(b"$1\r\nv\r")).unwrap_err().kind(),
+        ErrorKind::UnexpectedEof);
+}
+
 fn kill_during_writes(child: ProgramChild, peers: Vec<TcpStream>, round: usize, delay: Duration)
     -> Vec<Acknowledged>
 {
     let killed = AtomicBool::new(false);
+    // Error handling and signal publication share a gate: a reader reset
+    // caused by kill cannot race ahead of the successful kill's flag store.
+    let kill_gate = Mutex::new(());
+    let acknowledgment_count = AtomicUsize::new(0);
     let barrier = Barrier::new(CLIENTS + 1);
     std::thread::scope(|scope| {
         let handles: Vec<_> = peers.into_iter().enumerate().map(|(client, mut stream)| {
             let killed = &killed;
+            let kill_gate = &kill_gate;
+            let acknowledgment_count = &acknowledgment_count;
             let barrier = &barrier;
             scope.spawn(move || {
                 barrier.wait();
                 let mut acknowledged = Vec::new();
                 let mut sequence = 0_u64;
+                let deadline = Instant::now() + ACK_WAIT_LIMIT + delay + IO_LIMIT;
                 while !killed.load(Ordering::Acquire) {
+                    assert!(Instant::now() < deadline, "round {round} writer exceeded deadline");
                     // Never reuse a key, even across restarts. A completed
                     // unacknowledged SET cannot overwrite an acknowledged one.
                     let key = format!("kill:{round}:{client}:{sequence}");
                     let value = format!("value:{round}:{client}:{sequence}:acknowledged");
-                    let mut reply = [0_u8; 5];
                     let outcome = stream.write_all(&resp(&["SET", &key, &value]))
-                        .and_then(|()| stream.read_exact(&mut reply));
+                        .and_then(|()| read_crash_reply(&mut stream));
                     match outcome {
-                        Ok(()) => {
-                            assert_eq!(&reply, b"+OK\r\n", "unexpected SET reply for {key}");
+                        Ok(reply) => {
+                            assert_eq!(reply, "+OK\r\n", "unexpected SET reply for {key}");
                             // Record success even if SIGKILL raced with reading
                             // the buffered reply; all threads join before checking.
                             acknowledged.push(Acknowledged { key, value });
+                            acknowledgment_count.fetch_add(1, Ordering::Release);
                         }
                         Err(error) => {
-                            assert!(killed.load(Ordering::Acquire),
-                                "client {client} failed before SIGKILL in round {round}: {error}");
+                            let _gate = kill_gate.lock().expect("lock crash signal gate");
+                            assert!(interrupted_by_kill(&error, killed.load(Ordering::Acquire)),
+                                "client {client} unexpected transport error in round {round}: {error}");
                             break;
                         }
                     }
                     sequence += 1;
                     std::thread::sleep(WRITE_PAUSE);
                 }
-                assert!(!acknowledged.is_empty(), "client {client} got no ack in round {round}");
                 acknowledged
             })
         }).collect();
         barrier.wait();
+        let ack_deadline = Instant::now() + ACK_WAIT_LIMIT;
+        while acknowledgment_count.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < ack_deadline,
+                "round {round} received no acknowledgments before the kill deadline");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         std::thread::sleep(delay);
-        killed.store(true, Ordering::Release);
+        assert!(acknowledgment_count.load(Ordering::Acquire) > 0,
+            "round {round} must acknowledge writes before SIGKILL");
         unsafe extern "C" {
             fn kill(pid: i32, signal: i32) -> i32;
         }
-        assert_eq!(unsafe { kill(child.id() as i32, 9) }, 0,
-            "SIGKILL firn: {}", std::io::Error::last_os_error());
+        {
+            let _gate = kill_gate.lock().expect("lock crash signal gate");
+            assert_eq!(unsafe { kill(child.id() as i32, 9) }, 0,
+                "SIGKILL firn: {}", std::io::Error::last_os_error());
+            killed.store(true, Ordering::Release);
+        }
         let output = child.wait_with_output().expect("reap SIGKILLed firn");
         assert_eq!(output.status.signal(), Some(9), "firn must exit from SIGKILL: {output:?}");
-        handles.into_iter().flat_map(|handle| handle.join().expect("crash writer panicked"))
-            .collect()
+        let acknowledged: Vec<_> = handles.into_iter()
+            .flat_map(|handle| handle.join().expect("crash writer panicked")).collect();
+        assert!(!acknowledged.is_empty(), "round {round} must check acknowledged writes");
+        assert_eq!(acknowledged.len(), acknowledgment_count.load(Ordering::Acquire),
+            "every complete acknowledgment must be retained for reload checks");
+        acknowledged
     })
 }
 
@@ -290,7 +398,10 @@ fn check_acknowledged(control: &mut TcpStream, acknowledged: &[Acknowledged],
         let requests: Vec<_> = batch.iter().flat_map(|ack| resp(&["GET", &ack.key])).collect();
         control.write_all(&requests).expect("send acknowledgment reload checks");
         for ack in batch {
-            let actual = whole_reply(control, &ack.key);
+            let actual = read_crash_reply(control).unwrap_or_else(|error| {
+                panic!("{context}: reload GET {} failed: {error}; acknowledgment must still be checked",
+                    ack.key)
+            });
             let expected = format!("${}\r\n{}\r\n", ack.value.len(), ack.value);
             if actual != expected {
                 failures.observations += 1;
