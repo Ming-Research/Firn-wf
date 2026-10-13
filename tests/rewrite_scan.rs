@@ -127,29 +127,12 @@ fn start(program: &CompiledProgram) -> (ProgramChild, TcpStream, u16) {
 
 #[track_caller]
 fn start_with_minimum(program: &CompiledProgram, minimum: &[u8]) -> (ProgramChild, TcpStream, u16) {
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let mut child = program.spawn_on_route_with(true, &[("WF_WORKERS", "2"), ("WF_DRIVERS", "2")], &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", minimum]);
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        if let Ok(stream) = TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
-            return (child, bounded_stream(stream), port);
-        }
-        // A program that exits while starting, such as one refusing its AOF,
-        // reports its own output instead of a refused connection.
-        if child.try_wait().expect("poll starting firn").is_some() {
-            let output = child.wait_with_output().expect("collect firn output");
-            panic!(
-                "firn exited before listening on {port} ({:?})\nstdout:\n{}\nstderr:\n{}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        assert!(Instant::now() < deadline, "firn never listened on {port} and is still running");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let child = program.spawn_on_route_with(true, &[("WF_WORKERS", "2"), ("WF_DRIVERS", "2")], &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", minimum]).with_port(&port_lease);
+    let client = connect_when_ready(port, &child);
+    (child, client, port)
 }
 
 // Decode only complete temporary-file records, tolerating an append in flight.
@@ -354,8 +337,9 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
     let worker_running = running.clone();
     let worker_keys = keys.clone();
     let worker_unobserved = unobserved.clone();
+    let monitor = child.monitor();
     let worker = std::thread::spawn(move || {
-        let mut client = connect_when_ready(port);
+        let mut client = connect_when_ready(port, &monitor);
         request(&mut client, &[b"DEL", &worker_keys[5]]);
         request(&mut client, &[b"RENAME", &worker_keys[6], b"renamed\0\xff"]);
         request(&mut client, &[b"PERSIST", &worker_keys[3]]);
