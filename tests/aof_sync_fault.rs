@@ -419,6 +419,8 @@ const KEPT: &[(&str, &[&str])] = &[
 /// What one server did in the page-end case, and what it kept.
 struct PageEnd {
     server: String,
+    /// Which try of the server's run this is, counted from 1.
+    attempt: usize,
     /// The reply to DURING.
     during: String,
     /// The incremental file's size once DURING's record was in it, a page
@@ -434,14 +436,22 @@ struct PageEnd {
 }
 
 impl PageEnd {
-    /// One line per server, in a stable form for the research record.
+    /// Whether the layout was missed only because the server refused the
+    /// write sent as the device failed, with MISCONF, which leaves nothing
+    /// in the page to lose. A layout missed for any other reason, the file's
+    /// sizes not lining up, is not this.
+    fn refused_during(&self) -> bool {
+        self.layout.is_err() && self.during.starts_with(MISCONF)
+    }
+
+    /// One line per try of a server, in a stable form for the research record.
     fn observation(&self) -> String {
         let layout = match &self.layout {
             Ok(end) => format!("page-end@{end}"),
             Err(why) => format!("missed({why:?})"),
         };
-        let mut line = format!("observation: {} during-write={:?} layout={layout} pad-length={} after-write={:?}",
-            self.server, self.during, self.pad, self.after);
+        let mut line = format!("observation: {} attempt={} during-write={:?} layout={layout} pad-length={} after-write={:?}",
+            self.server, self.attempt, self.during, self.pad, self.after);
         match &self.restart {
             Ok(replies) => {
                 line.push_str(" loaded=yes");
@@ -606,12 +616,12 @@ fn restart(child: ProgramChild, port: u16, server: &str) -> Result<BTreeMap<Stri
 
 /// Redis 7.2.16 through the page-end case. It refuses AFTER while idle once
 /// the device heals, so its restart shows only what became of DURING.
-fn redis_page_end(device: &Device) -> PageEnd {
+fn redis_page_end(device: &Device, attempt: usize) -> PageEnd {
     let server = "redis-7.2.16";
     let binary = oracle();
-    let directory = device.mount.join(format!("redis-page-end-{}", std::process::id()));
+    let directory = device.mount.join(format!("redis-page-end-{}-{attempt}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
-    let log = std::env::temp_dir().join(format!("firn-sync-fault-redis-page-end-{}.log", std::process::id()));
+    let log = std::env::temp_dir().join(format!("firn-sync-fault-redis-page-end-{}-{attempt}.log", std::process::id()));
     let incremental = aof_incremental_path(&directory, "sync.aof");
     let (child, mut client) = start_redis(&binary, &directory, &log);
     let (during, layout, pad) = fail_at_page_end(device, &mut client, &incremental, server);
@@ -626,11 +636,12 @@ fn redis_page_end(device: &Device) -> PageEnd {
         eprintln!("{server} log: {}", std::fs::read_to_string(&log).unwrap_or_default());
     }
     let _ = std::fs::remove_dir_all(&directory);
-    PageEnd { server: server.to_string(), during, layout, pad, after, restart }
+    PageEnd { server: server.to_string(), attempt, during, layout, pad, after, restart }
 }
 
-/// firn on one route through the page-end case.
-fn firn_page_end(device: &Device, native: bool) -> PageEnd {
+/// firn on one route through the page-end case. Every call runs a fresh
+/// server process on a fresh directory.
+fn firn_page_end(device: &Device, native: bool, attempt: usize) -> PageEnd {
     let server = if native { "firn-native-ring" } else { "firn-file-adapter" };
     let program = CompiledProgram::from_environment_under(&device.mount);
     let incremental = aof_incremental_path(program.working_directory(), "sync.aof");
@@ -653,7 +664,30 @@ fn firn_page_end(device: &Device, native: bool) -> PageEnd {
     device.run("remount");
     let (child, port) = spawn_firn(&program, native);
     let restart = restart(child, port, server);
-    PageEnd { server: server.to_string(), during, layout, pad, after, restart }
+    PageEnd { server: server.to_string(), attempt, during, layout, pad, after, restart }
+}
+
+/// The most tries of one server's run.
+const ATTEMPTS: usize = 3;
+
+/// Runs a server through the page-end case again, from a fresh directory and
+/// a fresh server process, while the write sent as the device failed was
+/// refused. firn's sync runs once a second whatever was written, so one that
+/// fails before the write arrives makes it refuse the write, which is a race
+/// and not a fault in the fix. Each try ends with the device healed and its
+/// server stopped, so the next starts on a working device. Every missed try
+/// is printed with its attempt number; the last try is returned whatever it
+/// observed, for the caller to print and judge, and a layout missed for
+/// another reason is returned at once.
+fn until_not_refused(mut run: impl FnMut(usize) -> PageEnd) -> PageEnd {
+    for attempt in 1..ATTEMPTS {
+        let outcome = run(attempt);
+        if !outcome.refused_during() {
+            return outcome;
+        }
+        eprintln!("{}", outcome.observation());
+    }
+    run(ATTEMPTS)
 }
 
 /// A write acknowledged while the device fails, whose record ends exactly
@@ -679,7 +713,13 @@ fn firn_page_end(device: &Device, native: bool) -> PageEnd {
 /// case prints every server's observation before it asserts firn's: the
 /// file loads, DURING and AFTER read back, and the seed and padding are
 /// intact. When firn refused DURING, because its once-a-second sync failed
-/// first, the layout was not exercised and the case fails saying so.
+/// first, the layout was not exercised. That is a race, since firn syncs once
+/// a second whatever was written and its sync can fail before the write
+/// arrives, so the server's whole run is repeated from a fresh directory and
+/// process, up to three times in all, each missed try printed with its
+/// attempt number. A layout missed for any other reason fails at once, and
+/// one still refused on the last try fails saying the layout was not
+/// exercised.
 #[test]
 #[ignore = "needs the faulty device the aof-sync-fault job of .github/workflows/check.yml makes"]
 fn aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end() {
@@ -693,9 +733,9 @@ fn aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end() {
         eprintln!("{}", outcome.observation());
         outcomes.push(outcome);
     };
-    record(redis_page_end(&device));
-    record(firn_page_end(&device, false));
-    record(firn_page_end(&device, true));
+    record(until_not_refused(|attempt| redis_page_end(&device, attempt)));
+    record(until_not_refused(|attempt| firn_page_end(&device, false, attempt)));
+    record(until_not_refused(|attempt| firn_page_end(&device, true, attempt)));
     for outcome in outcomes.iter().filter(|outcome| outcome.server.starts_with("firn")) {
         let server = &outcome.server;
         if let Err(why) = &outcome.layout {
