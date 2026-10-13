@@ -31,7 +31,7 @@ const text_auth_unset: Array<u8, 124> =[69_u8, 82_u8, 82_u8, 32_u8, 65_u8, 85_u8
 
 const text_wrongpass: Array<u8, 61> =[87_u8, 82_u8, 79_u8, 78_u8, 71_u8, 80_u8, 65_u8, 83_u8, 83_u8, 32_u8, 105_u8, 110_u8, 118_u8, 97_u8, 108_u8, 105_u8, 100_u8, 32_u8, 117_u8, 115_u8, 101_u8, 114_u8, 110_u8, 97_u8, 109_u8, 101_u8, 45_u8, 112_u8, 97_u8, 115_u8, 115_u8, 119_u8, 111_u8, 114_u8, 100_u8, 32_u8, 112_u8, 97_u8, 105_u8, 114_u8, 32_u8, 111_u8, 114_u8, 32_u8, 117_u8, 115_u8, 101_u8, 114_u8, 32_u8, 105_u8, 115_u8, 32_u8, 100_u8, 105_u8, 115_u8, 97_u8, 98_u8, 108_u8, 101_u8, 100_u8, 46_u8];
 
-const text_hello_noauth: Array<u8, 205> =[78_u8, 79_u8, 65_u8, 85_u8, 84_u8, 72_u8, 32_u8, 72_u8, 69_u8, 76_u8, 76_u8, 79_u8, 32_u8, 109_u8, 117_u8, 115_u8, 116_u8, 32_u8, 98_u8, 101_u8, 32_u8, 99_u8, 97_u8, 108_u8, 108_u8, 101_u8, 100_u8, 32_u8, 119_u8, 105_u8, 116_u8, 104_u8, 32_u8, 116_u8, 104_u8, 101_u8, 32_u8, 99_u8, 108_u8, 105_u8, 101_u8, 110_u8, 116_u8, 32_u8, 97_u8, 108_u8, 114_u8, 101_u8, 97_u8, 100_u8, 121_u8, 32_u8, 97_u8, 117_u8, 116_u8, 104_u8, 101_u8, 110_u8, 116_u8, 105_u8, 99_u8, 97_u8, 116_u8, 101_u8, 100_u8, 44_u8, 32_u8, 111_u8, 116_u8, 104_u8, 101_u8, 114_u8, 119_u8, 105_u8, 115_u8, 101_u8, 32_u8, 116_u8, 104_u8, 101_u8, 32_u8, 72_u8, 69_u8, 76_u8, 76_u8, 79_u8, 32_u8, 65_u8, 85_u8, 84_u8, 72_u8, 32_u8, 60_u8, 117_u8, 115_u8, 101_u8, 114_u8, 62_u8, 32_u8, 60_u8, 112_u8, 97_u8, 115_u8, 115_u8, 62_u8, 32_u8, 111_u8, 112_u8, 116_u8, 105_u8, 111_u8, 110_u8, 32_u8, 99_u8, 97_u8, 110_u8, 32_u8, 98_u8, 101_u8, 32_u8, 117_u8, 115_u8, 101_u8, 100_u8, 32_u8, 116_u8, 111_u8, 32_u8, 97_u8, 117_u8, 116_u8, 104_u8, 101_u8, 110_u8, 116_u8, 105_u8, 99_u8, 97_u8, 116_u8, 101_u8, 32_u8, 116_u8, 104_u8, 101_u8, 32_u8, 99_u8, 108_u8, 105_u8, 101_u8, 110_u8, 116_u8, 32_u8, 97_u8, 110_u8, 100_u8, 32_u8, 115_u8, 101_u8, 108_u8, 101_u8, 99_u8, 116_u8, 32_u8, 116_u8, 104_u8, 101_u8, 32_u8, 82_u8, 69_u8, 83_u8, 80_u8, 32_u8, 112_u8, 114_u8, 111_u8, 116_u8, 111_u8, 99_u8, 111_u8, 108_u8, 32_u8, 118_u8, 101_u8, 114_u8, 115_u8, 105_u8, 111_u8, 110_u8, 32_u8, 97_u8, 116_u8, 32_u8, 116_u8, 104_u8, 101_u8, 32_u8, 115_u8, 97_u8, 109_u8, 101_u8, 32_u8, 116_u8, 105_u8, 109_u8, 101_u8];
+const text_hello_noauth: Array<u8, 213> = "NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO <proto> AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time";
 
 const text_noproto: Array<u8, 36> =[78_u8, 79_u8, 80_u8, 82_u8, 79_u8, 84_u8, 79_u8, 32_u8, 117_u8, 110_u8, 115_u8, 117_u8, 112_u8, 112_u8, 111_u8, 114_u8, 116_u8, 101_u8, 100_u8, 32_u8, 112_u8, 114_u8, 111_u8, 116_u8, 111_u8, 99_u8, 111_u8, 108_u8, 32_u8, 118_u8, 101_u8, 114_u8, 115_u8, 105_u8, 111_u8, 110_u8];
 
@@ -232,8 +232,8 @@ fn credentials_accepted(secret: &Bytes, input: &[u8], user: Span, password: Span
   return right;
 }
 
-fn set_name(client: &Client, input: &[u8], name: Span) -> named: Bool reads(input), writes(client) {
-  doc "Gives the connection a name as CLIENT SETNAME does and returns true, the empty name removing it; a name holding a byte outside ! to ~, a space or a line break among them, is refused with Redis's error, and the connection keeps its name.";
+fn validate_name(client: &Client, input: &[u8], name: Span) -> valid: Bool reads(input), writes(client) {
+  doc "Validates a client name before changing the connection: a byte outside ! to ~, a space or a line break among them, is refused with Redis's error, while the empty name is accepted.";
   for @bytes (offset in 0_u64..name.length) {
     let position = name.start +wrap offset;
     let byte = byte_at(input: input, index: position);
@@ -245,6 +245,15 @@ fn set_name(client: &Client, input: &[u8], name: Span) -> named: Bool reads(inpu
       return False();
     }
   }
+  return True();
+}
+
+fn set_name(client: &Client, input: &[u8], name: Span) -> named: Bool reads(input), writes(client) {
+  doc "Gives the connection a validated name as CLIENT SETNAME does and returns true, the empty name removing it; an invalid name keeps the old one.";
+  let valid = validate_name(client: client, input: input, name: name);
+  if bnot(valid) {
+    return False();
+  }
   let made = bytes_new(input: input, start: name.start, length: name.length);
   set client^.name = move made;
   set client^.changed = True();
@@ -252,7 +261,15 @@ fn set_name(client: &Client, input: &[u8], name: Span) -> named: Bool reads(inpu
 }
 
 fn run_auth(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "AUTH [username] password: authenticates the connection as Redis 7.0 does with its one user, default, against the password the server's state holds now, which CONFIG SET may have changed. With a password configured, the right one, alone or after the user name default, authenticates the connection, which then stays authenticated as Redis's flag does, and a wrong one or another user name is answered WRONGPASS and leaves the connection as it was. With none configured, a password alone is answered with Redis's error for that, and default with any password succeeds and authenticates the connection, as in Redis. More than two arguments are a syntax error.";
+  doc "Runs AUTH under the current configured password's hold; EXEC invokes the same non-waiting body under its own statement.";
+  atomic v = &store^.server {
+    run_auth_body(secret: &v^.password, input: input, args: args, client: client);
+  }
+  return unit;
+}
+
+fn run_auth_body(secret: &Bytes, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(secret), reads(input), reads(args), writes(client) {
+  doc "AUTH [username] password against the held current secret: the right password authenticates default, while a wrong password or another user leaves authentication unchanged. With no configured password, the password-only form errors and default with any password succeeds. More than two arguments are a syntax error.";
   let count = args^.inner.len;
   if count > 3_u64 {
     reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
@@ -261,12 +278,9 @@ fn run_auth(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let accepted = False();
   if count == 2_u64 {
     let password = arg(args: args, index: 1_u64);
-    let configured = False();
-    atomic v = &store^.server {
-      let length = bytes_length(bytes: &v^.password);
-      set configured = length > 0_u64;
-      set accepted = secret_matches(input: input, span: password, secret: &v^.password);
-    }
+    let length = bytes_length(bytes: secret);
+    let configured = length > 0_u64;
+    set accepted = secret_matches(input: input, span: password, secret: secret);
     if configured {
     } else {
       reply_error(client: client, word: &text_auth_unset[0_u64..124_u64]);
@@ -275,9 +289,7 @@ fn run_auth(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   } else {
     let user = arg(args: args, index: 1_u64);
     let password = arg(args: args, index: 2_u64);
-    atomic v = &store^.server {
-      set accepted = credentials_accepted(secret: &v^.password, input: input, user: user, password: password);
-    }
+    set accepted = credentials_accepted(secret: secret, input: input, user: user, password: password);
   }
   if accepted {
     set client^.authenticated = True();
@@ -290,7 +302,15 @@ fn run_auth(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
 }
 
 fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(store), reads(input), reads(args), writes(client) waits {
-  doc "HELLO [protover [AUTH username password] [SETNAME clientname]]: answers in Redis's form. A version that is not a number is refused with Redis's error, and one other than 2 or 3 as unsupported. The options then apply in order, AUTH as AUTH with a user name applies, against the password the server's state holds now, SETNAME as CLIENT SETNAME does, each stopping the command at its error with the options before it applied, and any other option is a syntax error; an option's name is read up to a zero byte, as Redis's strcasecmp reads it. A connection that has not authenticated is then refused, as Redis checks its flag of authentication even once no password is required; any other switches to the version given, keeps its own when none is, and is answered in it with Redis's map of the server's facts, an array under RESP2: server redis and version 7.2.16, the server and version whose replies firn follows, the protocol now in use, the connection's id, standalone mode, the master role and no modules.";
+  doc "Runs HELLO under the current configured password's hold; EXEC invokes the same non-waiting body under its own statement.";
+  atomic v = &store^.server {
+    run_hello_body(secret: &v^.password, input: input, args: args, client: client);
+  }
+  return unit;
+}
+
+fn run_hello_body(secret: &Bytes, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(secret), reads(input), reads(args), writes(client) {
+  doc "HELLO validates the version, all option syntax and each SETNAME value before changing connection state, as Redis 7.2.16 networking.c helloCommand does. The last AUTH pair then authenticates against the held current secret; after authentication succeeds or was already present, the last SETNAME applies and the protocol switches. Failed validation or authentication leaves the name and protocol unchanged. No version keeps the protocol; the successful reply reports Redis 7.2.16's server facts in the resulting protocol.";
   let count = args^.inner.len;
   let requested = 0_u64;
   if count >= 2_u64 {
@@ -310,6 +330,11 @@ fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     set requested = cvt.wrap::<i64, u64>(number.value);
   }
   let index = 2_u64;
+  let auth_user = Span(start: 0_u64, length: 0_u64);
+  let auth_password = Span(start: 0_u64, length: 0_u64);
+  let client_name = Span(start: 0_u64, length: 0_u64);
+  let with_auth = False();
+  let with_name = False();
   loop @options {
     if index >= count {
       break @options;
@@ -327,39 +352,45 @@ fn run_hello(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     if auth_option {
       let user_index = index +wrap 1_u64;
       let password_index = index +wrap 2_u64;
-      let user = arg(args: args, index: user_index);
-      let password = arg(args: args, index: password_index);
-      let accepted = False();
-      atomic v = &store^.server {
-        set accepted = credentials_accepted(secret: &v^.password, input: input, user: user, password: password);
-      }
-      if accepted {
-        set client^.authenticated = True();
-        set client^.locked = False();
-      } else {
-        reply_error(client: client, word: &text_wrongpass[0_u64..61_u64]);
-        return unit;
-      }
+      set auth_user = arg(args: args, index: user_index);
+      set auth_password = arg(args: args, index: password_index);
+      set with_auth = True();
       set index = index +wrap 3_u64;
     } else if name_option {
       let name_index = index +wrap 1_u64;
       let name = arg(args: args, index: name_index);
-      let named = set_name(client: client, input: input, name: name);
-      if named {
-      } else {
+      let valid = validate_name(client: client, input: input, name: name);
+      if bnot(valid) {
         return unit;
       }
+      set client_name = name;
+      set with_name = True();
       set index = index +wrap 2_u64;
     } else {
       reply_word(client: client, word: &text_hello_option[0_u64..35_u64]);
-      let shown = reply_echoed(client: client, input: input, span: option, limit: option.length);
+      let shown = reply_echoed(client: client, input: input, span: option, limit: spelled);
       reply_word(client: client, word: &text_quote_end[0_u64..3_u64]);
       return unit;
     }
   }
+  if with_auth {
+    let accepted = credentials_accepted(secret: secret, input: input, user: auth_user, password: auth_password);
+    if accepted {
+      set client^.authenticated = True();
+      set client^.locked = False();
+    } else {
+      reply_error(client: client, word: &text_wrongpass[0_u64..61_u64]);
+      return unit;
+    }
+  }
   if bnot(client^.authenticated) {
-    reply_error(client: client, word: &text_hello_noauth[0_u64..205_u64]);
+    reply_error(client: client, word: &text_hello_noauth[0_u64..213_u64]);
     return unit;
+  }
+  if with_name {
+    let made = bytes_new(input: input, start: client_name.start, length: client_name.length);
+    set client^.name = move made;
+    set client^.changed = True();
   }
   if requested != 0_u64 {
     set client^.resp = requested;

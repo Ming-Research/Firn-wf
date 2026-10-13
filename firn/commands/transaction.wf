@@ -165,7 +165,7 @@ fn queue_fits(transaction: &Transaction, args: &Box<Slots<Span>>) -> fits: Bool 
 }
 
 fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(transaction), writes(client) {
-  doc "A command sent inside a transaction, other than EXEC, DISCARD, MULTI, WATCH and QUIT: checked in the order Redis 7.0.15's processCommand checks it before queueing, and either queued and answered QUEUED, or refused, marking the transaction dirty so that EXEC aborts it. COMMAND's subcommand is resolved by command_plan, an unknown one or COUNT outside its arity refused before queueing; a Redis subcommand firn does not run takes the same foreign path as a command without parts, regardless of argument count. A command held_kind names with a count of arguments outside its arity is answered Redis's arity error, then a connection that must authenticate first NOAUTH; SHUTDOWN is refused with Redis's CMD_NO_MULTI error and marks the transaction dirty before queueing; a command that would take the queue past 1 GiB of arguments is refused, firn's queue growing no further. A name command_kind does not identify reaches here unrefused, since firn cannot tell a name Redis lacks from a Redis command firn does not run. As Redis queueMultiCommand does, an already dirty transaction answers an admitted command QUEUED without adding its arguments or flags. A CLIENT subcommand admitted by client_arity runs through its own body under EXEC's held client table. Any other command held_kind does not name lacks atomic parts, or is one firn does not run, and is queued and answered QUEUED, marking the transaction foreign so that EXEC refuses it whole; the same applies to deliberately unsupported COMMAND descriptors, preserving the established boundary for clients that would stop at an immediate error.";
+  doc "A command sent inside a transaction, other than EXEC, DISCARD, MULTI, WATCH and QUIT: checked in the order Redis 7.0.15's processCommand checks it before queueing, and either queued and answered QUEUED, or refused, marking the transaction dirty so that EXEC aborts it. COMMAND's subcommand is resolved by command_plan, an unknown one or COUNT outside its arity refused before queueing; a Redis subcommand firn does not run takes the same foreign path as a command without parts, regardless of argument count. A command held_kind names with a count of arguments outside its arity is answered Redis's arity error, then a connection that must authenticate first NOAUTH; SHUTDOWN is refused with Redis's CMD_NO_MULTI error and marks the transaction dirty before queueing; a command that would take the queue past 1 GiB of arguments is refused, firn's queue growing no further. A name command_kind does not identify reaches here unrefused, since firn cannot tell a name Redis lacks from a Redis command firn does not run. As Redis queueMultiCommand does, an already dirty transaction answers an admitted command QUEUED without adding its arguments or flags. Supported CLIENT subcommands, HELLO and AUTH run through their shared non-waiting bodies under EXEC's held client table and current server settings. AUTH and HELLO keep their NO_AUTH exemption when queued. Any other command held_kind does not name lacks atomic parts, or is one firn does not run, and is queued and answered QUEUED, marking the transaction foreign so that EXEC refuses it whole; the same applies to deliberately unsupported COMMAND descriptors, preserving the established boundary for clients that would stop at an immediate error.";
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
   let count = args^.inner.len;
@@ -200,7 +200,10 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
       set kind = 0_u64;
     }
   }
-  if client^.locked {
+  let command = command_kind(input: input, name: name);
+  let noauth = admission_noauth(kind: command);
+  let requires_auth = bnot(noauth);
+  if band(client^.locked, requires_auth) {
     let stopped = denied(client: client);
     set transaction^.dirty = True();
     return unit;
@@ -223,13 +226,16 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
   }
   let denies = command_denyoom(kind: kind);
   set transaction^.denyoom = bor(transaction^.denyoom, denies);
-  let command = command_kind(input: input, name: name);
   let writing = admission_writes(kind: command, input: input, args: args);
   set transaction^.write_commands = bor(transaction^.write_commands, writing);
   queue_command(transaction: transaction, input: input, args: args);
   let client_command = code == code_client;
+  let hello_command = code == code_hello;
+  let auth_command = code == code_auth;
+  let handshake = bor(hello_command, auth_command);
+  let connection_command = bor(client_command, handshake);
   let without_parts = kind == 0_u64;
-  let other_command = bnot(client_command);
+  let other_command = bnot(connection_command);
   let foreign = band(without_parts, other_command);
   if foreign {
     set transaction^.foreign = True();
@@ -239,7 +245,7 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
 }
 
 fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transaction: &Transaction) -> result: unit reads(store), reads(env), reads(time), writes(client), writes(transaction) waits {
-  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order through its parts or the CLIENT body, in one statement holding every key, the keyspace's metadata and its client table so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. Queued WRITE flags also gate EXEC on active AOF health before dirty/foreign handling, under the same Meta hold as mutation (Redis 7.0.15 server.c:3735-3740,3881-3905 and multi.c:136-140); a read-only queue runs through a latched disk error. There are no memory checks between queued commands after EXEC admission. Queued TOUCH temporarily clears NO-TOUCH only around its held body and restores the connection mode afterward: Redis 7.2.16 db.c lookupKey exempts current_client's touchCommand; inside Lua current_client stays the EVAL caller and script.c scriptCall changes the fake client's command before server.c call changes only executing_client, so the exception belongs to EXEC rather than the shared script body. A queue-time OOM marks the transaction dirty, so an admitted EXEC returns Redis 7.0.15 execCommand's previous-errors abort, even after memory recovers. OOM rejection of EXEC itself happens earlier during admission and returns the explicit OOM cause. Before releasing the statement, changed connection facts are published to the held client table and the connection's changed flag is cleared, so another client that observes the transaction's key changes cannot subsequently read old names or library metadata. The transaction then closes.";
+  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order through its parts or the supported connection-command bodies, in one statement holding every key, the keyspace's metadata, its client table and the current server settings HELLO and AUTH need so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. Queued WRITE flags also gate EXEC on active AOF health before dirty/foreign handling, under the same Meta hold as mutation (Redis 7.0.15 server.c:3735-3740,3881-3905 and multi.c:136-140); a read-only queue runs through a latched disk error. There are no memory or ordinary authentication checks between queued commands after EXEC admission. The EXEC array header is written before executing its members; a successful HELLO switches the encoding of its own reply and all later replies, while the outer array remains an array under RESP2 and RESP3. Queued TOUCH temporarily clears NO-TOUCH only around its held body and restores the connection mode afterward: Redis 7.2.16 db.c lookupKey exempts current_client's touchCommand; inside Lua current_client stays the EVAL caller and script.c scriptCall changes the fake client's command before server.c call changes only executing_client, so the exception belongs to EXEC rather than the shared script body. A queue-time OOM marks the transaction dirty, so an admitted EXEC returns Redis 7.0.15 execCommand's previous-errors abort, even after memory recovers. OOM rejection of EXEC itself happens earlier during admission and returns the explicit OOM cause. Before releasing the statement, changed connection facts are published to the held client table and the connection's changed flag is cleared, so another client that observes the transaction's key changes cannot subsequently read old names or library metadata. The transaction then closes.";
   let journal = None<pkg::store::AccessJournal>();
   prepare_access(client: client, time: time);
   let commands = transaction^.counts.inner.len;
@@ -249,7 +255,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
   let total = transaction^.bytes.inner.len;
   let queued = &transaction^.bytes.inner[0_u64..total];
   set client^.now = time^.check;
-  atomic t = &store^.keys, m = &store^.meta, clients = &store^.clients {
+  atomic t = &store^.keys, m = &store^.meta, clients = &store^.clients, server = &store^.server {
     if transaction^.write_commands {
       if pkg::store::aof_failed(meta: m) {
         let aborted = True();
@@ -291,6 +297,10 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
       if code == code_client {
         let queued_count = cvt.wrap::<u64, i64>(commands);
         run_client(table: clients, input: queued, args: &args, client: client, multi: queued_count);
+      } else if code == code_hello {
+        run_hello_body(secret: &server^.password, input: queued, args: &args, client: client);
+      } else if code == code_auth {
+        run_auth_body(secret: &server^.password, input: queued, args: &args, client: client);
       } else if kind != 0_u64 {
         let held_no_touch = client^.no_touch;
         if kind == 160_u64 {
