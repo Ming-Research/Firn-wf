@@ -1820,9 +1820,8 @@ fn hrandfield_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8
   return unit;
 }
 
-fn hincrbyfloat_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, client: &Client, floating: &Floating, input: &[u8], key_span: Span, field_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn hincrbyfloat_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, client: &Client, floating: &Floating, input: &[u8], key_span: Span, field_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(floating), reads(input), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Records an expired removal before HSET key field sum, Redis's propagation of HINCRBYFLOAT.";

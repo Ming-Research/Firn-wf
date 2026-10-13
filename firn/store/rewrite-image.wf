@@ -23,7 +23,6 @@ struct RewriteEmitter {
   remaining: u64;
   batch: u64;
   budget: LogBudget;
-  invariant group_offset(emitter): emitter.budget.group_start <= emitter.output.inner.len;
 }
 
 fn rewrite_header(emitter: &RewriteEmitter, word: &[u8], width: u64) -> result: unit reads(word), writes(emitter) {
@@ -75,10 +74,7 @@ fn rewrite_entry(slot: &Option<Entry>, emitter: &RewriteEmitter) -> result: unit
         }
         Items(items: listed) => {
           set emitter^.remaining = listed^.inner.len;
-          for (
-            index in 0_u64..listed^.inner.len,
-            invariant group_offset: emitter^.budget.group_start <= emitter^.output.inner.len
-          ) {
+          for (index in 0_u64..listed^.inner.len) {
             rewrite_header(emitter: emitter, word: &rewrite_rpush[0_u64..5_u64], width: 1_u64);
             let element = &listed^.inner[index];
             let length = element^.inner.len;

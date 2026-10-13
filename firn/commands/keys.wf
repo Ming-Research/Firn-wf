@@ -546,9 +546,8 @@ fn read_expiry(env: &Remaining, value: &Entry) -> result: u64 reads(value), writ
   return 2_u64;
 }
 
-fn log_expire_at(log: &Box<Slots<u8>>, input: &[u8], key: Span, at_ms: u64, budget: &pkg::store::LogBudget) -> result: unit reads(input), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn log_expire_at(log: &Box<Slots<u8>>, input: &[u8], key: Span, at_ms: u64, budget: &pkg::store::LogBudget) -> result: unit reads(input), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Appends PEXPIREAT key with the expiry as calendar milliseconds, as Redis 7.0.15 propagates an expiry GETEX sets.";
@@ -560,9 +559,8 @@ fn log_expire_at(log: &Box<Slots<u8>>, input: &[u8], key: Span, at_ms: u64, budg
   return unit;
 }
 
-fn log_expire_options(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, at_ms: u64, budget: &pkg::store::LogBudget) -> result: unit reads(input), reads(args), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn log_expire_options(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, at_ms: u64, budget: &pkg::store::LogBudget) -> result: unit reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Appends PEXPIREAT key with the expiry as calendar milliseconds, then the command's options as they were sent, the form Redis 7.0.15 propagates EXPIRE, PEXPIRE and EXPIREAT in.";
@@ -576,8 +574,7 @@ fn log_expire_options(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>
   log_decimal(log: log, value: at_ms, budget: budget);
   for @options (
     index in 3_u64..count,
-    invariant log_extent: log^.inner.len >= log_initial_length,
-    invariant group_offset: budget^.group_start <= log^.inner.len
+    invariant log_extent: log^.inner.len >= log_initial_length
   ) {
     let span = args^.inner[index];
     log_input(log: log, input: input, span: span, budget: budget);
@@ -585,9 +582,8 @@ fn log_expire_options(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>
   return unit;
 }
 
-fn log_key_word(log: &Box<Slots<u8>>, word: &[u8], input: &[u8], key: Span, budget: &pkg::store::LogBudget) -> result: unit reads(word), reads(input), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn log_key_word(log: &Box<Slots<u8>>, word: &[u8], input: &[u8], key: Span, budget: &pkg::store::LogBudget) -> result: unit reads(word), reads(input), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Appends a command of one word and a key.";
@@ -797,9 +793,8 @@ fn expire_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return 0_u64;
 }
 
-fn expire_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &ExpirePlan, outcome: u64, lapsed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn expire_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &ExpirePlan, outcome: u64, lapsed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(env), reads(budget.allowance), writes(due), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "EXPIRE's metadata after its work: queues a new expiry, and when logged appends what changed and answers how many commands it appended: a key found expired as log_removal records it, an expiry as PEXPIREAT key at with the options as they were sent or a PEXPIREAT as it was sent, and a removal as DEL key.";
@@ -884,9 +879,8 @@ fn ttl_body(sequence: &pkg::store::WriteSequence, capture_key: &[u8], slot: &Opt
   return False();
 }
 
-fn ttl_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(key), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn ttl_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "TTL's metadata after its work: when it removed an expired entry and the keyspace keeps a file, appends the removal as log_removal records it and answers 1; otherwise 0.";
@@ -1065,9 +1059,8 @@ fn rename_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return work;
 }
 
-fn transfer_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, work: &TransferWork, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(env), writes(due), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn transfer_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, work: &TransferWork, input: &[u8], args: &Box<Slots<Span>>, env: &KeyEnv, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(env), reads(budget.allowance), writes(due), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "RENAME, RENAMENX and COPY metadata: records source then destination removals, queues a transferred expiry and records a successful command exactly as sent, returning the record count for a script or transaction's effects wrapper.";
@@ -1266,9 +1259,8 @@ fn run_copy(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   return unit;
 }
 
-fn changed_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), reads(key), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn changed_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Records a lookup's expired removal and then a changed command as sent, returning the number of records for the caller's effects wrapper.";
@@ -1318,9 +1310,8 @@ fn persist_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
   return unit;
 }
 
-fn persist_meta(log: &Box<Slots<u8>>, logged: Bool, expiry: &Expiry, input: &[u8], key_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(expiry), reads(input), reads(key), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn persist_meta(log: &Box<Slots<u8>>, logged: Bool, expiry: &Expiry, input: &[u8], key_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(expiry), reads(input), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "PERSIST's expired removal or successful expiry removal, in Redis's propagated form.";

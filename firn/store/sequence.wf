@@ -106,7 +106,7 @@ fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: un
   return unit;
 }
 
-fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), reads(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) {
+fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(meta.log), reads(sequence), reads(budget.charged), reads(budget.failed), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) {
   doc "Commits sequence, after-images and any rotation-buffer allocation or overflow under the same outer keys-and-Meta hold, including effects before an EXEC or script error. The separate log budget permits held command parts to borrow their sequence and encoder allowance without overlapping owners.";
   set meta^.rewrite.used = meta^.rewrite.used +sat budget^.charged;
   set meta^.rewrite.peak = imax(meta^.rewrite.peak, meta^.rewrite.used);

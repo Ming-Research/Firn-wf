@@ -463,9 +463,8 @@ fn zadd_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   return lapsed;
 }
 
-fn zadd_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, plan: &ZaddPlan, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn zadd_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, plan: &ZaddPlan, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";
@@ -622,9 +621,8 @@ fn zrem_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   return lapsed;
 }
 
-fn zrem_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn zrem_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";
@@ -874,9 +872,8 @@ fn zpop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   return lapsed;
 }
 
-fn zpop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn zpop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";

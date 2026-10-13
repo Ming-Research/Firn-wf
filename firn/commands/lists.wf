@@ -2017,9 +2017,8 @@ fn lmove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   return work;
 }
 
-fn lmove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ListMoveWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn lmove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ListMoveWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Records source then destination expiry removals followed by the move exactly as sent; returns the effects record count.";

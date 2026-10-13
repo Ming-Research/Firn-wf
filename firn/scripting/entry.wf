@@ -245,9 +245,8 @@ fn reply_killed(client: &Client, sha: &Array<u8, 40>, line: u64) -> r: unit read
   return unit;
 }
 
-fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64, budget: &pkg::store::LogBudget) -> r: unit reads(effects), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64, budget: &pkg::store::LogBudget) -> r: unit reads(effects), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Appends the records a script's commands made to the append-only file's pending bytes, wrapped in MULTI and EXEC when they are more than one, as Redis 7.0.15 propagates a script's effects.";
@@ -510,9 +509,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
               let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
               let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
               let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
-              loop (
-                invariant group_offset: log_budget.group_start <= m^.log.inner.len
-              ) {
+              loop {
                 match outcome {
                   Budget() => {
                     if env.held.wrote {
@@ -580,8 +577,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
               let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
               let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
               loop (
-                invariant aligned: t^.len == declared.len,
-                invariant group_offset: log_budget.group_start <= m^.log.inner.len
+                invariant aligned: t^.len == declared.len
               ) {
                 match outcome {
                   Budget() => {

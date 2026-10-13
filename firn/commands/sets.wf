@@ -1617,9 +1617,8 @@ fn srandmember_finish(client: &Client) -> result: unit writes(client) {
   return unit;
 }
 
-fn set_members_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn set_members_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "SADD and SREM record expiry removal before a command that changed members, returning the number of records.";
@@ -1628,9 +1627,8 @@ fn set_members_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &C
   return appended;
 }
 
-fn spop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn spop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Records SPOP as Redis 7.2.16 does: DEL for a counted whole set, otherwise SREM batches of at most 1024 members in their selected order, returning the actual record count so a script or EXEC can wrap the complete execution unit.";
@@ -1654,8 +1652,7 @@ fn spop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, 
       let first = 0_u64;
       loop @batches (
         invariant remaining_members: first <= popped,
-        invariant log_extent: log^.inner.len >= log_initial_length,
-        invariant group_offset: budget^.group_start <= log^.inner.len
+        invariant log_extent: log^.inner.len >= log_initial_length
       ) {
         if first == popped {
           break @batches;
@@ -1671,8 +1668,7 @@ fn spop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, 
         set appended = appended +wrap 1_u64;
         for @members (
           index in first..end,
-          invariant member_log_extent: log^.inner.len >= log_initial_length,
-          invariant member_group_offset: budget^.group_start <= log^.inner.len
+          invariant member_log_extent: log^.inner.len >= log_initial_length
         ) {
           log_text(log: log, text: &members^[index].bytes, budget: budget);
         }
@@ -1793,9 +1789,8 @@ fn smove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   return work;
 }
 
-fn smove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &SetMoveWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn smove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &SetMoveWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Records source then destination removals, then a move that changed members, exactly as on the network.";
@@ -1826,9 +1821,8 @@ struct SetCombineWork {
   removed: Box<Slots<u64>>;
 }
 
-fn set_operands_meta(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(removed), reads(input), reads(args), writes(log), writes(budget) contract {
-  requires budget^.group_start <= log^.inner.len;
-  ensures budget^.group_start <= log^.inner.len;
+fn set_operands_meta(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(removed), reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
   doc "Records removed operands in the body's order, then any expired STORE destination, followed by the STORE command only when its destination changed.";
@@ -1837,8 +1831,7 @@ fn set_operands_meta(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64
   if logged {
     for @removals (
       at in 0_u64..removed^.inner.len,
-      invariant log_extent: log^.inner.len >= log_initial_length,
-      invariant group_offset: budget^.group_start <= log^.inner.len
+      invariant log_extent: log^.inner.len >= log_initial_length
     ) {
       if at < removed^.inner.len {
         let position = removed^.inner[at];

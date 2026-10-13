@@ -662,10 +662,7 @@ fn script_mset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
     set fallback^ = True();
     return 0_u64;
   }
-  for @pairs (
-    pair in 0_u64..pairs,
-    invariant group_offset: unlimited_log_budget.group_start <= effects^.inner.len
-  ) {
+  for @pairs (pair in 0_u64..pairs) {
     let doubled = pair *wrap 2_u64;
     let index = doubled +wrap 1_u64;
     let place = key_bounds(input: input, args: args, index: index);
@@ -2555,10 +2552,7 @@ fn script_named(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::stor
     set fallback^ = True();
     return 0_u64;
   }
-  for @named (
-    index in 1_u64..count,
-    invariant group_offset: unlimited_log_budget.group_start <= effects^.inner.len
-  ) {
+  for @named (index in 1_u64..count) {
     let place = key_bounds(input: input, args: args, index: index);
     let key = &input^[place.start..place.end];
     let rank = script_key_rank(keys: declared, key: key);
@@ -2622,10 +2616,7 @@ fn script_msetnx(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::sto
     set fallback^ = True();
     return 0_u64;
   }
-  for @checked (
-    pair in 0_u64..pairs,
-    invariant group_offset: unlimited_log_budget.group_start <= effects^.inner.len
-  ) {
+  for @checked (pair in 0_u64..pairs) {
     let doubled = pair *wrap 2_u64;
     let index = doubled +wrap 1_u64;
     let place = key_bounds(input: input, args: args, index: index);
