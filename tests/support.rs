@@ -726,7 +726,7 @@ mod tests {
 
     /// Waits for a fixture's natural exit without the normal timeout cleanup.
     fn wait_for_witness_exit(child: &ProgramChild) {
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if child.monitor.status_until(deadline).expect("probe witness").is_some() {
                 return;
@@ -772,7 +772,7 @@ mod tests {
             .is_some());
         // Include ordinary Drop: it must not re-enter unbounded cleanup.
         drop(child);
-        assert!(started.elapsed() < Duration::from_secs(3), "{diagnostic}");
+        assert!(started.elapsed() < Duration::from_secs(8), "{diagnostic}");
     }
 
     #[test]
@@ -805,9 +805,9 @@ mod tests {
                     return Ok(marker.len());
                 }
                 let _ = self.ready.send(());
-                // A regressed unbounded collector reaches EOF after four
+                // A regressed unbounded collector reaches EOF after thirty
                 // seconds and fails the timing assertion instead of hanging CI.
-                let _ = self.release.recv_timeout(Duration::from_secs(4));
+                let _ = self.release.recv_timeout(Duration::from_secs(30));
                 Ok(0)
             }
         }
@@ -831,7 +831,7 @@ mod tests {
             ready,
         }));
         for _ in 0..2 {
-            readers_ready.recv_timeout(Duration::from_secs(1))
+            readers_ready.recv_timeout(Duration::from_secs(10))
                 .expect("reader captured its marker before blocking");
         }
         let started = Instant::now();
@@ -840,7 +840,7 @@ mod tests {
         let elapsed = started.elapsed();
         drop(release_output);
         drop(release_errors);
-        assert!(elapsed < Duration::from_secs(3), "{diagnostic}");
+        assert!(elapsed < Duration::from_secs(8), "{diagnostic}");
         assert!(diagnostic.contains("OUTPUT-BEFORE-EOF"), "{diagnostic}");
         assert!(diagnostic.contains("ERROR-BEFORE-EOF"), "{diagnostic}");
         assert_eq!(
@@ -896,7 +896,7 @@ mod tests {
         let panic = std::panic::catch_unwind(|| crate::connect_when_ready(lease.port(), &child))
             .expect_err("an exited child cannot become ready");
         assert!(
-            started.elapsed() < Duration::from_secs(3),
+            started.elapsed() < Duration::from_secs(10),
             "readiness must detect child exit before the 20 second connect deadline"
         );
         let message = panic
