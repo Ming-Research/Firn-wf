@@ -578,8 +578,10 @@ first actual suspension, stages dbAdd notifications in shared command parts,
 and services them under the producer's whole-map/Meta/hub/server-state hold.
 It does not use a waiter wake race to select values. The conversion boundary
 currently accepts only literal `0`; complete timeout compatibility remains
-blocked on `firn-req-extended-float`. No compilation, oracle acceptance or
-performance result is implied by the source implementation.
+blocked on `firn-req-extended-float`. The gate compiled it and passed its
+Redis 7.2.16 recorded network cases and the list suite rows (run 38482277414 on
+883083f); the AOF byte cases wait on `firn-scope-select-db` and no
+performance result is measured yet ([blocking lists](blocking-lists.md)).
 
 ## Pub/sub, including shard channels
 

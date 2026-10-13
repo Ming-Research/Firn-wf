@@ -455,30 +455,61 @@ would add about 28 MB to its 9 MB dataset.
 
 Served blocking commands had the same cost: the immediate attempt and the
 waiter retry both opened the general sequence, so every served pop on a list
-already journaled in the window journaled another complete image. The
-one-key sequence is correct for a statement exactly when it can change only
-one key and its logged bytes name only that key. The capture code needs both:
-it decides per statement whether to journal bytes from the anchor of the
-first entry the statement changes (whether that entry's previous write lies
-inside the window), and once it journals bytes it records no image of any
-later key, so a second changed key would enter the journal only through bytes
-whose effect on it was never anchored, and the scanned image of that key may
-already hold the change, which replay would then apply twice. Per command:
+already journaled in the window journaled another complete image. Journaling
+a statement's own bytes is correct exactly when its logged bytes name only
+keys it changes and, at the end of the statement, it has changed one key whose
+previous write lies inside the window: that key's journal already reproduces
+its state before the statement, and the bytes touch nothing else. The capture
+code (`firn/store/rewrite-capture.wf`, `sequence_capture`) chooses byte mode at
+the first key the statement captures, from that key's anchor (whether its
+previous write lies inside the window), and from then on records no image of
+that key. The choice is therefore made before the statement knows whether a
+second key will change. A second changed key would otherwise enter the
+journal only through bytes whose effect on it was never anchored, and the
+scanned image of that key may already hold the change, which replay would then
+apply twice.
 
-- BLPOP and BRPOP whose key arguments are all one key K: the attempt visits K
-  only. It can remove K when K has expired, logged as a removal of K, and it
-  can pop from K, logged as `LPOP K` or `RPOP K` without count, as Redis
-  7.2.16's blockingPopGenericCommand propagates it; an emptied list is removed
-  by that pop on replay too. Nothing else changes, so the bytes replayed on
-  K's exact state reproduce K.
-- BLPOP and BRPOP over several distinct keys: the attempt visits keys in
-  argument order and removes each expired one it reaches before serving a
-  later ready key, logging that removal before the pop. Such a statement can
-  change two keys while its anchor covers only the first, so it keeps
-  complete images. When no earlier key has expired only the served key
-  changes, but the sequence is chosen before the attempt, so this case pays
-  images; a worker that waits on several queues at once, as Sidekiq's BRPOP
-  does, keeps paying one image per served pop during a rewrite.
+Commit `7cee86a` answered this statically: the statement opened in one-key
+mode only when its arguments could name one key, so a BLPOP or BRPOP over
+several distinct keys always paid images. The current rule checks it at run
+time instead. A statement opened in one-key mode retains a copy of the name of
+the first key it captures, charged to its scratch before allocation, and
+whether that key is present after its latest change. Every later capture in
+the same statement compares its key with that name before it can return on
+byte mode; `single` is read nowhere else (only `sequence_capture` reads it,
+and `sequence_publish` reads only the resulting effect flag and images), so
+the comparison runs before anything is published. On a different key the
+statement drops one-key mode and journals complete images of every key it
+changed:
+
+- if the first key was captured as an image (it was not anchored), its image
+  is already held and the second key's image joins it, exactly as a
+  statement opened for several keys does;
+- if the first key took byte mode and the statement removed it, its final
+  state is absence, whose image (a removal of that name) depends on the name
+  alone, so it is rebuilt from the retained copy and the second key's image
+  joins it;
+- if the first key took byte mode and is still present, its image would have
+  to be copied from an entry the statement no longer holds a reference to, so
+  capture fails and the rewrite aborts; the restart state stays correct and
+  the cost is the rewrite.
+
+Per command:
+
+- BLPOP and BRPOP over any keys: the attempt visits keys in argument order.
+  An absent key is left untouched. An expired key it reaches is removed,
+  logged as a removal of that key, and the attempt moves on; a wrong-type key
+  ends it with an error and no change. The served key is popped, logged as
+  `LPOP K` or `RPOP K` without count, as Redis 7.2.16's
+  blockingPopGenericCommand propagates it (an emptied list is removed by that
+  pop on replay too), and the attempt returns at once. So the logged bytes
+  name only changed keys, every key changed before another one is a removed
+  one, and the third case above cannot arise. When no earlier key has
+  expired only the served key changes and the statement journals its pop
+  bytes; this is the Sidekiq and Resque case, one worker blocked on
+  `BRPOP q1 q2 ... 0`. When an earlier anchored key has expired, its removal
+  takes byte mode, the served key revokes it, and the statement journals the
+  removal image and the served list's image, as before the change.
 - BRPOPLPUSH and BLMOVE with source equal to destination: the move rotates K,
   and removal of an expired K is the only other change; the logged
   `RPOPLPUSH K K` or `LMOVE K K from to` replays on K alone.
@@ -493,7 +524,17 @@ choice applies. A network case registers 100 BLPOP waiters on an absent
 list, installs a 20,000-element list with RENAME inside a delayed rewrite
 window, which serves them, then pops 50 times from each end at once and
 bounds the rewritten base at 12 MiB; with an image per pop, about 0.25 MB
-each, the base would grow by about 49 MB.
+each, the base would grow by about 49 MB. A second case does the same with
+`BRPOP absent1 absent2 queue 0` and `BLPOP absent1 absent2 queue 0`, the
+Sidekiq shape, under the same bound; before the run-time check those pops
+opened the general sequence and journaled one image each. A third case writes
+`early` keys inside the window with an absolute expiry in the past and then
+pops with `BRPOP early queue 0` from a list last written before the window,
+so each pop removes an anchored expired key before serving an unanchored one;
+restart must hold exactly the list the pops left, no `early` key, and the
+rewrite must finish ok, which separates the fallback from both journaling the
+bytes (the queue's scanned image, taken after the pops, would be popped again
+on replay) and aborting the rewrite.
 
 ## Contaminated zero-timeout passes
 

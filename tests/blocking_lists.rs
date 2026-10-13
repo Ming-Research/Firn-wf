@@ -1,7 +1,7 @@
 //! Blocking-list witnesses use Redis 7.2.16 recordings, never Firn output.
-//! The fixture intentionally fails before server startup while any required
-//! expectation is ORACLE-pending; successful Redis recordings are cited at
-//! each completed expectation. No Firn validation run is claimed.
+//! Each expectation cites the Redis 7.2.16 recording it came from. A step whose
+//! expectation is ORACLE-pending fails before the server starts, so a missing
+//! recording can never pass.
 
 use super::*;
 use std::collections::BTreeMap;

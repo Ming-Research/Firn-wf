@@ -10412,6 +10412,151 @@ fn firn_rewrite_journals_one_key_blocking_pops_as_their_bytes() {
     rewrite_stop(&mut client, child);
 }
 
+/// A served BLPOP or BRPOP over several distinct keys that, at run time,
+/// changes only the list it serves journals only the LPOP or RPOP bytes it
+/// logs once that list is journaled in the rewrite window, as Sidekiq's and
+/// Resque's `BRPOP q1 q2 ... 0` does on every job (design/firn/aof-rewrite/
+/// capture.md). Opening such a statement for several keys journals a complete
+/// list image per pop instead: each image of this 20,000-element list of
+/// six-byte values is about 0.25 MB, so the 200 pops here would add about
+/// 49 MB to a base of about 9 MB.
+#[test]
+fn firn_rewrite_journals_blocking_pops_over_several_keys_as_their_bytes() {
+    let program = CompiledProgram::from_environment();
+    rewrite_large_fixture(&program);
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let elements = 20000_usize;
+    let values: Vec<String> = (0..elements).map(|index| format!("v{index:05}")).collect();
+    for (batch, chunk) in values.chunks(64).enumerate() {
+        let mut request = vec!["RPUSH", "staging"];
+        request.extend(chunk.iter().map(String::as_str));
+        client.write_all(&resp(&request)).unwrap();
+        assert_eq!(integer_reply(&mut client, "list setup"), (batch * 64 + chunk.len()) as i64);
+    }
+    rewrite_key_delay(&mut client, "100");
+    rewrite_start(&mut client);
+    // Every waiter names two absent keys before the queue; RENAME installs
+    // the whole list in the window and serves them, FIFO, from its tail.
+    let waiters = 100_usize;
+    let mut blocked = Vec::new();
+    for index in 0..waiters {
+        let mut waiter = connect_when_ready(port, &child);
+        waiter.write_all(&resp(&["BRPOP", "absent1", "absent2", "queue", "0"])).unwrap();
+        blocking_lists::wait_blocked(&mut client, index + 1, "blocking pops over several keys during rewrite");
+        blocked.push(waiter);
+    }
+    client.write_all(&resp(&["RENAME", "staging", "queue"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "RENAME serving the waiters");
+    for (index, waiter) in blocked.iter_mut().enumerate() {
+        let expected = format!("*2\r\n$5\r\nqueue\r\n$6\r\n{}\r\n", values[elements - 1 - index]);
+        expect_replies(waiter, expected.as_bytes(), "waiter over several keys served by RENAME");
+    }
+    blocking_lists::wait_blocked(&mut client, 0, "blocking pops over several keys during rewrite");
+    // The list is ready now, so these are served at once.
+    let immediate = 50_usize;
+    for index in 0..immediate {
+        client.write_all(&resp(&["BLPOP", "absent1", "absent2", "queue", "0"])).unwrap();
+        let expected = format!("*2\r\n$5\r\nqueue\r\n$6\r\n{}\r\n", values[index]);
+        expect_replies(&mut client, expected.as_bytes(), "BLPOP over several keys served at once");
+        client.write_all(&resp(&["BRPOP", "absent1", "absent2", "queue", "0"])).unwrap();
+        let expected = format!("*2\r\n$5\r\nqueue\r\n$6\r\n{}\r\n", values[elements - 1 - waiters - index]);
+        expect_replies(&mut client, expected.as_bytes(), "BRPOP over several keys served at once");
+    }
+    assert_eq!(rewrite_info(&mut client)["aof_rewrite_in_progress"], "1", "every pop must fall inside the rewrite window");
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+    drop(blocked);
+    rewrite_stop(&mut client, child);
+    let directory = program.working_directory().join("appendonlydir");
+    assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), rewrite_manifest(2, 2));
+    // 16,000 SETs of 512-byte values are about 8.9 MB; RENAME journals one
+    // image of the list. 12 MiB admits those but not one image per pop.
+    let base = std::fs::metadata(directory.join("appendonly.aof.2.base.aof")).unwrap().len();
+    assert!(base < 12 * 1024 * 1024, "rewritten base holds {base} bytes: blocking pops over several keys journaled complete images");
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    client.write_all(&resp(&["EXISTS", "staging", "absent1", "absent2"])).unwrap();
+    assert_eq!(integer_reply(&mut client, "renamed source and absent keys after restart"), 0);
+    let left = &values[immediate..elements - waiters - immediate];
+    client.write_all(&resp(&["LRANGE", "queue", "0", "-1"])).unwrap();
+    let mut expected = format!("*{}\r\n", left.len());
+    for value in left {
+        expected.push_str(&format!("$6\r\n{value}\r\n"));
+    }
+    assert!(whole_reply(&mut client, "list after restart") == expected, "the restarted list must hold exactly the values the pops left");
+    rewrite_stop(&mut client, child);
+}
+
+/// A BRPOP over several keys that removes an expired earlier key before it
+/// serves a later list changes two keys, so it must fall back to complete
+/// images at run time (design/firn/aof-rewrite/capture.md). Each `early` key
+/// is written inside the rewrite window with an absolute expiry already
+/// passed, so its removal is the pop's first change and is anchored; the
+/// queue was last written before the window. Journaling the pop's own bytes
+/// here would replay `RPOP queue` on a queue whose scanned image, taken after
+/// the pops unless the scan happened to reach it within their first few
+/// milliseconds, already lacks those values, so restart would hold too few;
+/// aborting the rewrite instead would report the rewrite as failed. Active
+/// expiry can remove an `early` key between its SET and the pipelined pop;
+/// that pop then changes the queue alone, which is why there are many.
+#[test]
+fn firn_rewrite_falls_back_to_images_when_a_blocking_pop_removes_an_expired_key() {
+    let program = CompiledProgram::from_environment();
+    rewrite_large_fixture(&program);
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let elements = 2000_usize;
+    let values: Vec<String> = (0..elements).map(|index| format!("v{index:05}")).collect();
+    for (batch, chunk) in values.chunks(64).enumerate() {
+        let mut request = vec!["RPUSH", "queue"];
+        request.extend(chunk.iter().map(String::as_str));
+        client.write_all(&resp(&request)).unwrap();
+        assert_eq!(integer_reply(&mut client, "list setup"), (batch * 64 + chunk.len()) as i64);
+    }
+    rewrite_key_delay(&mut client, "100");
+    rewrite_start(&mut client);
+    let pops = 20_usize;
+    for index in 0..pops {
+        let early = format!("early:{index}");
+        let mut request = resp(&["SET", &early, "v", "PXAT", "1"]);
+        request.extend(resp(&["BRPOP", &early, "queue", "0"]));
+        client.write_all(&request).unwrap();
+        let expected = format!("+OK\r\n*2\r\n$5\r\nqueue\r\n$6\r\n{}\r\n", values[elements - 1 - index]);
+        expect_replies(&mut client, expected.as_bytes(), "BRPOP removing an expired earlier key");
+    }
+    assert_eq!(rewrite_info(&mut client)["aof_rewrite_in_progress"], "1", "every pop must fall inside the rewrite window");
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok", "the fallback keeps the rewrite");
+    rewrite_stop(&mut client, child);
+    let directory = program.working_directory().join("appendonlydir");
+    assert_eq!(std::fs::read_to_string(directory.join("appendonly.aof.manifest")).unwrap(), rewrite_manifest(2, 2));
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    for index in 0..pops {
+        client.write_all(&resp(&["EXISTS", &format!("early:{index}")])).unwrap();
+        assert_eq!(integer_reply(&mut client, "expired earlier key after restart"), 0);
+    }
+    let left = &values[..elements - pops];
+    client.write_all(&resp(&["LRANGE", "queue", "0", "-1"])).unwrap();
+    let mut expected = format!("*{}\r\n", left.len());
+    for value in left {
+        expected.push_str(&format!("$6\r\n{value}\r\n"));
+    }
+    assert!(whole_reply(&mut client, "list after restart") == expected, "the restarted list must hold exactly the values the pops left");
+    rewrite_stop(&mut client, child);
+}
+
 #[test]
 fn firn_shutdown_cancels_scan_before_rotation() {
     let program = CompiledProgram::from_environment();

@@ -419,8 +419,8 @@ The rewrite below is the reconciled-scan route under comparison ([investigation]
 With append-only persistence enabled, `BGREWRITEAOF` answers started after
 S0 admission. The worker scans the live map in separate statements while
 mutations journal a changed key's complete image at its first write in the
-rewrite and, for a command on that one key afterwards, the command's AOF
-bytes. Statements stage complete records in bounded memory; the sole AOF
+rewrite and, for a command that changes only that key afterwards, such as a
+`BRPOP` over several queues that serves one, the command's AOF bytes. Statements stage complete records in bounded memory; the sole AOF
 writer drains them outside atomic statements into `temp-F.journal`. The
 writer seals the old increment and rotates once at S1 after draining the
 frozen journal, then the worker reads the journal in bounded chunks to
