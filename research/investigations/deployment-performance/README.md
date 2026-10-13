@@ -302,6 +302,12 @@ A cell is client-limited when the mean `busy` over its client CPUs is above
 such a cell only requires firn not to fall behind. `compare-limited.csv`
 marks each sample with `line,pass,cpus,test,depth,client_busy_mean,client_limited`
 (`client_limited` is 1 above 0.90, else 0; exactly 0.90 is not limited).
+`workloads` mode records the same for its handshake, client-list and
+consumer workloads: `workload-cpu.csv` has the same columns with the workload
+name in `test` and the connection count in `depth`, and `workload-limited.csv`
+has `line,pass,cpus,workload,connections,client_busy_mean,client_limited`. Its
+interval is the whole client run, so it includes the client's connection setup
+and warm-up; the memory workloads are not recorded.
 
 **Other inputs.**
 

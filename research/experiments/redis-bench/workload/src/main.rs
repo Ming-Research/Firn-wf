@@ -1,7 +1,8 @@
 //! Depth-one consumer command forms for the deployment-performance investigation.
-//! Loopback RESP2; worker threads multiplex nonblocking connections and block in poll(2) between scans.
+//! Loopback RESP2/HELLO RESP3; worker threads multiplex nonblocking connections and block in poll(2) between scans.
 mod limiter;
 mod eviction;
+mod handshake;
 mod wait;
 
 use std::collections::{BTreeMap, HashMap};
@@ -17,7 +18,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 const TIMEOUT: Duration = Duration::from_secs(30);
 const WORKLOADS: &[&str] = &[
     "limiter-script", "limiter-tx", "setmany-tx", "session-set", "session-get",
-    "evict-zipf",
+    "evict-zipf", "handshake", "client-list",
 ];
 
 #[derive(Clone)]
@@ -116,8 +117,8 @@ fn command(out: &mut Vec<u8>, args: &[&[u8]]) {
     }
 }
 
-// Return the end of one complete RESP2 value, or None for a fragmented value.
-// Recurse through EXEC arrays so that an error inside one fails just like -ERR.
+// Return the end of one complete RESP2 value or HELLO RESP3 map, or None for a
+// fragmented value. Nested errors fail just like a top-level -ERR.
 fn reply(input: &[u8], depth: usize) -> Result<Option<usize>> {
     if depth > 128 { return Err("RESP nesting exceeds 128".into()); }
     let Some(end) = input.windows(2).position(|w| w == b"\r\n") else {
@@ -130,9 +131,11 @@ fn reply(input: &[u8], depth: usize) -> Result<Option<usize>> {
         b'+' => (),
         b'-' => return Err(format!("server error: {}", String::from_utf8_lossy(body)).into()),
         b':' => { std::str::from_utf8(body)?.parse::<i64>()?; }
-        b'$' | b'*' => {
+        b'$' | b'*' | b'%' => {
             let count: i64 = std::str::from_utf8(body)?.parse()?;
-            if count < -1 { return Err("invalid RESP length".into()); }
+            if count < -1 || (input[0] == b'%' && count < 0) {
+                return Err("invalid RESP length".into());
+            }
             if count == -1 { return Ok(Some(pos)); }
             let count = usize::try_from(count)?;
             if input[0] == b'$' {
@@ -142,13 +145,16 @@ fn reply(input: &[u8], depth: usize) -> Result<Option<usize>> {
                 if &input[end - 2..end] != b"\r\n" { return Err("bad bulk terminator".into()); }
                 pos = end;
             } else {
+                let count = if input[0] == b'%' {
+                    count.checked_mul(2).ok_or("RESP map length overflow")?
+                } else { count };
                 for _ in 0..count {
                     let Some(size) = reply(&input[pos..], depth + 1)? else { return Ok(None); };
                     pos += size;
                 }
             }
         }
-        _ => return Err("unsupported RESP2 type".into()),
+        _ => return Err("unsupported RESP type".into()),
     }
     Ok(Some(pos))
 }
@@ -223,6 +229,11 @@ fn random_key(state: &mut u64, keys: u64) -> u64 {
 
 fn request(out: &mut Vec<u8>, opts: &Options, rng: &mut u64, sha: &[u8]) -> usize {
     out.clear();
+    if opts.workload == "handshake" { return handshake::request(out); }
+    if opts.workload == "client-list" {
+        command(out, &[b"CLIENT", b"LIST"]);
+        return 1;
+    }
     let prefix = if opts.workload.starts_with("session-") { "sess" } else { "key" };
     let key = format!("{prefix}:{}", random_key(rng, opts.keys));
     let key = key.as_bytes();
@@ -262,7 +273,7 @@ fn request(out: &mut Vec<u8>, opts: &Options, rng: &mut u64, sha: &[u8]) -> usiz
 }
 
 struct Connection {
-    socket: TcpStream,
+    socket: Option<TcpStream>,
     sha: Vec<u8>,
     rng: u64,
     remaining: u64,
@@ -280,21 +291,25 @@ struct Connection {
 
 impl Connection {
     fn new(opts: &Options, id: usize) -> Result<Self> {
-        let mut socket = connect(opts.port)?;
+        // Handshake slots connect only inside the timed operation, and have no
+        // idle socket between operations. Every other workload keeps its socket.
+        let mut socket = if opts.workload == "handshake" { None } else { Some(connect(opts.port)?) };
         let mut sha = Vec::new();
         if opts.workload == "limiter-script" {
+            let socket = socket.as_mut().unwrap();
             let mut out = Vec::new();
             command(&mut out, &[b"SCRIPT", b"LOAD", limiter::SCRIPT.as_bytes()]);
             socket.write_all(&out)?;
             let mut input = Vec::new();
-            while reply(&input, 0)?.is_none() { read_more(&mut socket, &mut input)?; }
+            while reply(&input, 0)?.is_none() { read_more(socket, &mut input)?; }
             if input.len() != 47 || !input.starts_with(b"$40\r\n")
                 || !input[5..45].iter().all(u8::is_ascii_hexdigit) {
                 return Err("SCRIPT LOAD did not return a SHA1 bulk string".into());
             }
             sha.extend_from_slice(&input[5..45]);
         }
-        socket.set_nonblocking(true)?;
+        if opts.workload == "client-list" { handshake::setup(socket.as_mut().unwrap())?; }
+        if let Some(socket) = &socket { socket.set_nonblocking(true)?; }
         let remaining = opts.requests.map_or(u64::MAX, |n| share(n, opts.connections, id));
         // The default preserves the original uniform workload's sequence.
         Ok(Self { socket, sha, rng: (id as u64) ^ opts.seed.wrapping_sub(1), remaining,
@@ -307,8 +322,9 @@ impl Connection {
     // writes resume from sent; no next request is queued until every reply arrives.
     fn advance(&mut self, opts: &Options) -> Result<bool> {
         if self.started.elapsed() > TIMEOUT { return Err("request exceeded 30 seconds".into()); }
+        let socket = self.socket.as_mut().ok_or("active request has no socket")?;
         if self.sent < self.out.len() {
-            match self.socket.write(&self.out[self.sent..]) {
+            match socket.write(&self.out[self.sent..]) {
                 Ok(0) => return Err("zero-byte socket write".into()),
                 Ok(n) => self.sent += n,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted => (),
@@ -317,7 +333,7 @@ impl Connection {
         }
         // Read even while a large write is incomplete: transaction QUEUED
         // replies may already be available, and must not back up the server.
-        match read_more(&mut self.socket, &mut self.input) {
+        match read_more(socket, &mut self.input) {
             Ok(_) => (),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::Interrupted => (),
             Err(e) => return Err(e.into()),
@@ -331,7 +347,11 @@ impl Connection {
                 let Some(size) = reply(&self.input, 0)? else { break; };
                 size
             };
-            if opts.workload == "evict-zipf" {
+            if opts.workload == "handshake" {
+                handshake::check_reply(&self.input[..size], 4 - self.replies)?;
+            } else if opts.workload == "client-list" {
+                handshake::check_list(&self.input[..size], opts.connections)?;
+            } else if opts.workload == "evict-zipf" {
                 if self.cache_set {
                     if refused {
                         self.refused_sets += 1;
@@ -402,11 +422,21 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
                 }
                 c.sent = 0;
                 c.started = Instant::now();
+                if opts.workload == "handshake" {
+                    // std's connect_timeout blocks this multiplexing worker;
+                    // connect time belongs to this slot's operation latency.
+                    let socket = connect(opts.port)?;
+                    socket.set_nonblocking(true)?;
+                    c.socket = Some(socket);
+                }
                 c.remaining -= 1;
             }
             active = true;
             if c.advance(opts)? {
                 let us = c.started.elapsed().as_nanos().div_ceil(1000) as u64;
+                // Capture the fourth reply's latency before close overhead, but
+                // close before starting another operation in this slot.
+                if opts.workload == "handshake" { c.socket.take(); }
                 *histogram.entry(us).or_insert(0) += 1;
                 hits += u64::from(c.hit);
                 progressed = true;
@@ -422,7 +452,8 @@ fn worker(mut connections: Vec<Connection>, opts: &Options, start: Instant,
             let mut interests = Vec::new();
             let mut timeout = Duration::from_millis(50);
             for c in connections.iter().filter(|c| c.replies > 0) {
-                interests.push(wait::Interest { fd: c.socket.as_raw_fd(), write: c.sent < c.out.len() });
+                let Some(socket) = &c.socket else { continue };
+                interests.push(wait::Interest { fd: socket.as_raw_fd(), write: c.sent < c.out.len() });
                 timeout = timeout.min(TIMEOUT.saturating_sub(c.started.elapsed()));
             }
             wait::wait(&interests, timeout)?;
@@ -462,8 +493,18 @@ impl Measurement {
 fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
            mut monitor: Option<&mut eviction::Monitor>) -> Result<Measurement> {
     let mut groups: Vec<Vec<Connection>> = (0..opts.threads).map(|_| Vec::new()).collect();
-    // Connections and SCRIPT LOAD finish before the shared measurement clock.
-    for id in 0..opts.connections { groups[id % opts.threads].push(Connection::new(&opts, id)?); }
+    let mut retained_sockets = Vec::new();
+    // Persistent connections, SCRIPT LOAD and CLIENT SETINFO finish before the
+    // shared clock. Handshake slots have no connection setup outside that clock.
+    for id in 0..opts.connections {
+        let connection = Connection::new(&opts, id)?;
+        if opts.workload == "client-list" {
+            // Cloned descriptors hold the same connections open when a worker
+            // has a shorter request share, including a share of zero.
+            retained_sockets.push(connection.socket.as_ref().unwrap().try_clone()?);
+        }
+        groups[id % opts.threads].push(connection);
+    }
     // RESETSTAT and the initial INFO happen with all measured connections open,
     // before releasing any worker. A failed setup cannot strand a barrier waiter.
     if let Some(m) = monitor.as_deref_mut() { m.start()?; }
@@ -514,6 +555,7 @@ fn measure(opts: &Options, zipf: Option<Arc<eviction::Zipf>>,
             Err(e) => { eprintln!("{e}"); failure = Some(e); }
         }
     }
+    drop(retained_sockets);
     if let Some(e) = failure { return Err(e); }
     if let Some(m) = monitor { m.sample()?; }
     let count: u64 = histogram.values().sum();
@@ -530,6 +572,12 @@ fn run(opts: Options) -> Result<()> {
     if let Some(count) = opts.fill { return fill(&opts, count); }
     if opts.workload == "evict-zipf" { return eviction::run(&opts); }
     if opts.maxmemory.is_some() { return eviction::session_limit(&opts); }
+    if matches!(opts.workload.as_str(), "handshake" | "client-list") && !opts.warmup.is_zero() {
+        let mut warm = opts.clone();
+        warm.seconds = Some(opts.warmup);
+        warm.requests = None;
+        measure(&warm, None, None)?;
+    }
     println!("{}", measure(&opts, None, None)?.csv(&opts));
     Ok(())
 }
@@ -564,8 +612,8 @@ mod tests {
     fn workloads_send_consumer_forms_and_count_transactions_once() {
         use std::net::TcpListener;
         for &workload in WORKLOADS {
-            // Cache-aside has its own hit/miss state-machine and setup cases.
-            if workload == "evict-zipf" { continue; }
+            // Cache-aside and connection workloads have separate checked cases.
+            if matches!(workload, "evict-zipf" | "handshake" | "client-list") { continue; }
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let opts = options(listener.local_addr().unwrap().port(), workload);
             let server = thread::spawn(move || {

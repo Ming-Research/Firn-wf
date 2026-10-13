@@ -117,6 +117,32 @@
 #                                 --sample-ms 10 for both. Seed is the pass.
 #                                 evict-zipf.csv keeps memory/hit observations;
 #                                 all rates and latencies enter workloads.csv.
+#                                 Opt-in handshake counts one fresh TCP
+#                                 connection, HELLO 3, CLIENT SETINFO LIB-NAME
+#                                 firn-workload, CLIENT SETINFO LIB-VER 1.0 and
+#                                 PING as one operation, verifying every reply.
+#                                 client-list keeps WORKLOAD_CONNECTIONS open
+#                                 (default 50), sets LIB-NAME once,
+#                                 then counts each depth-1 CLIENT LIST as one
+#                                 operation; its bulk reply must contain at
+#                                 least that many clients. Both use Redis
+#                                 7.2.16, omit AOF and the optional perf pass,
+#                                 and accept only --warmup-seconds (default 5)
+#                                 and --sample-ms (default 10) in WORKLOAD_OPTIONS.
+#                                 --sample-ms is accepted as a shared option;
+#                                 no auxiliary sampler runs for these workloads,
+#                                 and every completed operation is recorded.
+#                                 Nonempty WORKLOAD_SERVERS selects, in order,
+#                                 reference firn valkey valkey-io dragonfly
+#                                 garnet (no duplicates); every selected line
+#                                 omits AOF and absent competitors are skipped.
+#                                 firn/dragonfly/garnet use the current CPU
+#                                 count. With WORKLOAD_IMAGES, selecting firn
+#                                 expands every IMAGES entry, including twins,
+#                                 beside the selected competitors. Without a
+#                                 selector, image behavior stays as above;
+#                                 without images, handshake/client-list default
+#                                 to reference and firn at the current count.
 #
 # firn is built with the options FIRN_LINK names, --full-lto when it is unset;
 # the records before the quick mode built it with none. The redis-bench
@@ -1275,22 +1301,72 @@ if [ "$MODE" = workloads ]; then
         exit 1
     fi
     memory_workloads=
+    connection_workloads=
     for workload in $workloads; do
         case $workload in
             limiter-script|limiter-tx|setmany-tx|session-set|session-get) ;;
             evict-zipf|session-set-limits|session-get-limits) memory_workloads=1 ;;
+            handshake|client-list) connection_workloads=1 ;;
             *) echo "unknown workload: $workload" >&2; exit 1 ;;
         esac
     done
-    if [ -n "$memory_workloads" ]; then
+    if [ -n "$memory_workloads$connection_workloads" ]; then
         reference_version=$(redis-server --version)
         case " $reference_version " in
             *" v=7.2.16 "*) ;;
-            *) echo "memory workloads require Redis 7.2.16: $reference_version" >&2; exit 1 ;;
+            *)
+                if [ -n "$connection_workloads" ]; then
+                    echo "handshake/client-list workloads require Redis 7.2.16: $reference_version" >&2
+                else
+                    echo "memory workloads require Redis 7.2.16: $reference_version" >&2
+                fi
+                exit 1
+                ;;
         esac
+    fi
+    # Workflow's empty input leaves the default selection intact. A nonempty
+    # selection must contain known, distinct names and at least one server.
+    if [ -n "${WORKLOAD_SERVERS:-}" ]; then
+        seen_servers=
+        set -f
+        for selected in $WORKLOAD_SERVERS; do
+            case $selected in
+                reference|firn|valkey|valkey-io|dragonfly|garnet) ;;
+                *) echo "unknown WORKLOAD_SERVERS name: $selected" >&2; exit 1 ;;
+            esac
+            case " $seen_servers " in
+                *" $selected "*) echo "duplicate WORKLOAD_SERVERS name: $selected" >&2; exit 1 ;;
+            esac
+            seen_servers="$seen_servers $selected"
+        done
+        [ -n "$seen_servers" ] || { echo "WORKLOAD_SERVERS needs at least one server name" >&2; exit 1; }
     fi
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms' >"$OUT/workloads.csv"
     echo 'line,pass,cpus,workload,sessions,rss_kib' >"$OUT/workloads-memory.csv"
+    workload_cpu=
+    if [ -r /proc/stat ]; then
+        workload_cpu="$OUT/workload-cpu.csv"
+        echo 'line,pass,cpus,test,depth,cpu,role,busy,user,system' >"$workload_cpu"
+        echo 'line,pass,cpus,workload,connections,client_busy_mean,client_limited' >"$OUT/workload-limited.csv"
+    else
+        echo "skip,workload-cpu.csv,no /proc/stat"
+    fi
+    # Copies of /proc/stat just outside one client run, for cpu_busy: the run
+    # includes the client's own connection setup and warm-up, which the
+    # busy fraction therefore covers. workload_end takes <line> <connections>
+    # and appends the sample's rows to workload-cpu.csv and workload-limited.csv.
+    workload_begin() {
+        [ -z "$workload_cpu" ] || cat /proc/stat >"$OUT/workload-stat-before"
+    }
+    workload_end() {
+        [ -z "$workload_cpu" ] || {
+            cat /proc/stat >"$OUT/workload-stat-after"
+            cpu_busy "$OUT/workload-stat-before" "$OUT/workload-stat-after" \
+                "$SERVER_CPUS" "$CLIENT_CPUS" >"$OUT/workload-busy"
+            echo "$1,$pass,$n,$workload,$2,$(client_limited "$OUT/workload-busy")" >>"$OUT/workload-limited.csv"
+            awk -v key="$1,$pass,$n,$workload,$2" '{ print key "," $0 }' "$OUT/workload-busy" >>"$workload_cpu"
+        }
+    }
     echo 'line,pass,cpus,workload,connections,requests,seconds,rate,p50_ms,p99_ms,keys,zipf_s,value_size,seed,warmup_seconds,sample_ms,get_count,hits,misses,refused_sets,hit_rate,evicted_keys_delta,used_memory,used_memory_peak,maxmemory,prefill_used_memory,filled_used_memory,peak_at_measurement_start,lifetime_peak_excess_bytes,lifetime_peak_excess_fraction,sampled_max_memory,sampled_excess_bytes,sampled_excess_fraction,memory_samples,max_sample_gap_ms,mem_not_counted_for_evict,writer_connections,keys_at_start,keys_at_end' >"$OUT/evict-zipf.csv"
     echo 'line,pass,cpus,workload,connections,keys,value_size,seed,warmup_seconds,sample_ms,maxmemory' >"$OUT/session-limits-settings.csv"
     # Accept only the measurement parameters shared by these opt-in workloads;
@@ -1309,6 +1385,18 @@ if [ "$MODE" = workloads ]; then
         done
     }
     memory_options
+    if [ -n "$connection_workloads" ]; then
+        set -f
+        set -- ${WORKLOAD_OPTIONS:-}
+        while [ "$#" -gt 0 ]; do
+            case $1 in
+                --warmup-seconds|--sample-ms) ;;
+                *) echo "handshake/client-list do not support WORKLOAD_OPTIONS flag: $1" >&2; exit 1 ;;
+            esac
+            [ "$#" -ge 2 ] || { echo "WORKLOAD_OPTIONS needs a value for $1" >&2; exit 1; }
+            shift 2
+        done
+    fi
     memory_run() {
         taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
             --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
@@ -1335,6 +1423,37 @@ if [ "$MODE" = workloads ]; then
                     order="$order image-${pair%%=*}"
                 done
             fi
+            if [ -n "${WORKLOAD_SERVERS:-}" ]; then
+                order=
+                for selected in $WORKLOAD_SERVERS; do
+                    case $selected in
+                        firn)
+                            if [ -n "${WORKLOAD_IMAGES:-}" ]; then
+                                for pair in $IMAGES; do
+                                    order="$order image-${pair%%=*}"
+                                done
+                            else
+                                order="$order firn-$n"
+                            fi
+                            ;;
+                        dragonfly|garnet) order="$order $selected-$n" ;;
+                        *) order="$order $selected" ;;
+                    esac
+                done
+                selected_order=
+                for line in $order; do
+                    if available "$line"; then
+                        selected_order="$selected_order $line"
+                    else
+                        echo "skip,$line,no executable"
+                    fi
+                done
+                [ -n "$selected_order" ] || {
+                    echo "WORKLOAD_SERVERS has no available server to measure" >&2
+                    exit 1
+                }
+                order=$selected_order
+            fi
             if [ $((pass % 2)) -eq 0 ]; then
                 reversed=
                 for line in $order; do
@@ -1343,6 +1462,35 @@ if [ "$MODE" = workloads ]; then
                 order=$reversed
             fi
             for workload in $workloads; do
+                workload_order=$order
+                case $workload in
+                    handshake|client-list)
+                        if [ -z "${WORKLOAD_SERVERS:-}${WORKLOAD_IMAGES:-}" ]; then
+                            workload_order="reference firn-$n"
+                            if [ $((pass % 2)) -eq 0 ]; then
+                                workload_order="firn-$n reference"
+                            fi
+                        fi
+                        for line in $workload_order; do
+                            if ! available "$line"; then
+                                echo "skip,$line,no executable"
+                                continue
+                            fi
+                            start "$line"
+                            for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                                workload_begin
+                                result=$(taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
+                                    --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
+                                    --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
+                                workload_end "$line" "$conns"
+                                echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
+                            done
+                            stop
+                            server=
+                        done
+                        continue
+                        ;;
+                esac
                 case $workload in
                     evict-zipf|session-set-limits|session-get-limits)
                         # Each sample starts with empty memory and a fresh AOF,
@@ -1356,7 +1504,11 @@ if [ "$MODE" = workloads ]; then
                             fi
                         fi
                         for conns in ${WORKLOAD_CONNECTIONS:-50}; do
-                            for line in $order; do
+                            for line in $workload_order; do
+                                if ! available "$line"; then
+                                    echo "skip,$line,no executable"
+                                    continue
+                                fi
                                 for variant in $variants; do
                                     start "$line"
                                     if [ "$variant" = eviction ]; then
@@ -1385,7 +1537,11 @@ if [ "$MODE" = workloads ]; then
                         continue
                         ;;
                 esac
-                for line in $order; do
+                for line in $workload_order; do
+                    if ! available "$line"; then
+                        echo "skip,$line,no executable"
+                        continue
+                    fi
                     start "$line"
                     if [ "$workload" = session-get ]; then
                         taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" --fill 1000000
@@ -1393,9 +1549,11 @@ if [ "$MODE" = workloads ]; then
                         echo "$line,$pass,$n,$workload,1000000,$rss" | tee -a "$OUT/workloads-memory.csv"
                     fi
                     for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                        workload_begin
                         result=$(taskset -c "$CLIENT_CPUS" "$client" --port "$PORT" \
                             --threads "$CLIENT_THREADS" --connections "$conns" \
                             --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}")
+                        workload_end "$line" "$conns"
                         echo "$line,$pass,$n,$result" | tee -a "$OUT/workloads.csv"
                     done
                     # Profile only after every measured run on this server, so
