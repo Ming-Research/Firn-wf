@@ -563,8 +563,10 @@ fn admission_without_aof_compares_the_heap_with_the_limit() {
 }
 
 /// With an append-only file, admission keeps its Meta statement, counting
-/// used memory less the AOF buffers. A limit far above use admits writes;
-/// an impossible one refuses them under noeviction while reads still run.
+/// used memory less the AOF buffers. A limit far above use admits writes, a
+/// limit between used - excluded and used admits one only because the buffers
+/// are excluded, and an impossible one refuses them under noeviction while
+/// reads still run.
 #[test]
 fn admission_with_aof_refuses_writes_over_the_limit() {
     let program = CompiledProgram::from_environment();
@@ -578,6 +580,28 @@ fn admission_with_aof_refuses_writes_over_the_limit() {
     let roomy = counted + (32 << 20);
     configure(&mut client, &["maxmemory", &roomy.to_string(), "maxmemory-policy", "noeviction"]);
     assert_eq!(memory_request(&mut client, &["SET", "under", &value]), "+OK\r\n");
+
+    // The excluded AOF capacity decides admission. Once the writer has
+    // drained, the buffers still own at least 2 * 65536 bytes (see the
+    // replay case above). A limit halfway between used - excluded and used
+    // admits a small write only if admission subtracts that capacity: a
+    // branch that compared the raw heap, as the no-file path does, would see
+    // used above the limit and refuse with OOM.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let persisted = info(&mut client, "persistence");
+        if number(&persisted, "aof_current_size") >= resp(&["SET", "under", &value]).len() as u64 { break; }
+        assert!(Instant::now() < deadline, "writer did not drain the SET");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let loaded = info(&mut client, "memory");
+    let (used, excluded) = (number(&loaded, "used_memory"), number(&loaded, "mem_not_counted_for_evict"));
+    assert!(excluded >= 64 * 1024, "AOF buffers own too little capacity to separate the counts: {loaded}");
+    assert!(used > excluded, "{loaded}");
+    configure(&mut client, &["maxmemory", &(used - excluded / 2).to_string()]);
+    assert_eq!(memory_request(&mut client, &["SET", "between", "v"]), "+OK\r\n");
+    assert_eq!(number(&info(&mut client, "stats"), "evicted_keys"), 0);
+
     configure(&mut client, &["maxmemory", "1"]);
     assert_eq!(memory_request(&mut client, &["SET", "over", &value]), OOM);
     assert_eq!(memory_request(&mut client, &["EXISTS", "over"]), ":0\r\n");
