@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Limit concurrent clients with maxclients
+
+Nodes: firn/startup
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-maxclients-tree, which asked to approve PR #115's three maxclients decisions on firn/startup: maxclients as Redis 7.2.16 has it (config file, command line, CONFIG GET/SET; default 10000, range 1 to 4294967295; a connection over the limit gets `-ERR max number of clients reached` before any command, is disconnected, and adds only to rejected_connections); the limit is read and the count raised in one atomic statement, and the reply to a refused connection waits at most one second; firn does not raise the process's file-descriptor limit, unlike Redis, because the pinned Whitefoot has no such interface (reopened when it delivers); and startup checks maxclients, port and timeout with CONFIG SET's own validation. #115 is stacked on #114 and merges after it.
+
+Summary: firn had no connection limit and rejected_connections stayed 0. The limit now follows Redis, with the one difference that the operator raises `ulimit -n` since firn cannot; accept errors beyond the system limit are absorbed without stopping the server.
+
 ## 2026-10-13 Start firn the way redis-server does
 
 Nodes: firn/startup (new), firn/measurement-sessions
