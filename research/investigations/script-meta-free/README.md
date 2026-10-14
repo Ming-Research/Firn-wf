@@ -914,3 +914,67 @@ reply equivalence. The owner can choose the bounded option with these limits
 visible; completing the full Meta-free target still requires resolving them.
 Accepted-WRITE publication, enhanced read-only cancellation progress and pooled
 KILL coordination remain separate deferred control work; they do not block D.
+
+## Measurement plan for the approved option D, under the owner-wide verdict standard
+
+**Judgment; registered before measurement, owner-approved 2026-10-14 on board
+card `firn-q-script-meta-125`; not yet run.** This section replaces the noise
+rule N of "Workload cells and comparison" above (the maximum of 5%, the
+base-to-twin deviation and the round spread) with the owner-wide standard: a
+cell's noise is the half-width of the twin-to-base ratio's 95% confidence
+interval, and the candidate-to-base ratio's 95% interval decides. The arms,
+counters and semantic falsifiers above stay. Nothing here is run until the
+owner authorizes a measurement workflow in the coordinator chat; no workflow
+is pushed with this plan.
+
+**Arms.** `base` is `origin/main` at the revision the run names (the pooled
+source with the full-attempt Meta hold), `head` is the head of Firn-wf#125
+after the owner-approval commit, and `base-twin` is a second image of `base`
+(`redis-bench.yml`, mode `workloads` with `workload_images`, or mode `compare`
+with `revisions: base=<main sha> head=<#125 sha> base-twin=<main sha>`). Same
+pin, `make firn-lto`, Redis 7.2.16 tools, idle coordinated 14900K, server on
+physical P-cores, clients on separate E-cores.
+
+**Cells.** The class is the rate-limiting script, `limiter-script`, random
+100,000-key domain, pipeline depth 1, AOF off (option D changes only this
+path):
+
+| Cell | Connections | Server cores | Question | Prediction (prior) |
+|---|---|---|---|---|
+| L1 | 8 | 1 | does D cost one core anything | interval contains 1, or faster |
+| L2 | 8 | 2 | primary: do two cores scale | head/base interval entirely above 1.10 |
+| L3 | 50 | 2 | same at higher concurrency | head/base interval entirely above 1.10 |
+| L4 | 50 | 4 | where the next global ceiling is (exploratory) | none; measured or reported unresolved |
+| C1 | 8 | 2 | control: AOF on, no rewrite, D's logged path unchanged | interval contains 1 |
+| N1 | 8 | 2 | negative control: one hot key | interval contains 1 |
+
+C1 and N1 can only falsify: a head/base interval entirely on one side of 1
+there means the logged path changed or another cause moved throughput, and
+the cell is explained before any claim. The diagnostic EVALSHA cells of the
+plan above (disjoint keys per client, expiry on every write, error after a
+write, undeclared-key fallback) are a second round, chosen only if L2 is
+inconclusive or a control fails.
+
+**Pairs and noise.** Each cell runs `base`, `base-twin` and `head` in
+interleaved rounds, rotating the first arm, 10 seconds per run. Noise is the
+half-width of the 95% CI of the twin-to-base throughput ratio over the cell's
+pairs. The floor is the platform's noise for the workload class
+`limiter-script`, measured once (a `base` against `base-twin` run on L2 with
+enough pairs to bound the interval), recorded with the 14900K queue and
+reused until the machine, its settings or the toolchain change. No floor for
+this class is recorded in the repository yet, so the floor run is the first
+batch of pairs. A cell noisier than the floor is rerun or reported
+unresolved; a cell adds pairs only until its interval decides, never as a
+study of its own.
+
+**Verdict per cell.** The head-to-base ratio's 95% interval decides: entirely
+below 1 is a regression of any size (accepting it takes a decision card with
+its size and reason), entirely above 1 an improvement, across 1 no detected
+change. The proposal is rejected if L2 and L3 both show no detected change or
+a regression, because then the full-attempt Meta hold was not what blocked
+scaling and the wait moved elsewhere; it is also rejected if L1 or a control
+shows a regression. Each cell reports pairs, noise, floor, interval and
+verdict; the Meta wait and hold counters above only explain the result.
+
+**Not part of this plan.** The Meta wait-share instrumentation above needs
+its own CI validation and is a separate item if L2 is inconclusive.

@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 A declared-key script holds no Meta while Lua runs when no AOF is kept
+
+Nodes: firn/scripts
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option D on card firn-q-script-meta-step2 (in English: first change only scripts with no AOF; the AOF-on path stays untouched), and option approve on card firn-q-script-meta-125, which asked to approve the design change of PR #125 and to measure its throughput on the 14900K.
+
+Summary: With the append-only file off, a declared-entry script attempt takes its sequence numbers from a local token, skips the append-only-file health check and takes Meta only to commit its staged expiry queue, so scripts on different keys serialize on their keys alone; attempts with the file on and whole-keyspace attempts keep the full-attempt hold. Generic staging of every Meta access (A), solving live health checks first (B) and waiting for the engine pool (C) were not chosen. The throughput effect is unmeasured; its measurement plan is in `research/investigations/script-meta-free/README.md`.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
