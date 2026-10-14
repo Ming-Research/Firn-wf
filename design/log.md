@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Keep firn's AOF rewrite diagnostics after INFO's Redis fields
+
+Nodes: firn/info-diagnostics
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-info-fields-tree, which asked to approve PR #88's new design-tree node info-diagnostics at head 994bd23, where INFO answers in Redis 7.2.16's field order and format.
+
+Summary: INFO keeps firn's own append-only rewrite diagnostics (the firn_aof_rewrite_ fields that operators and the rewrite acceptance cases read) in the Persistence section, after every selected Redis 7.2.16 field. This keeps the real measurements and Redis's relative field order; interleaving them with Redis fields, deleting them or moving them to another section is rejected.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
