@@ -269,6 +269,25 @@ unit/type/incr	decrby operation should update encoding from raw to int	1
 unit/type/incr	incr operation should update encoding from raw to int	1
 unit/type/incr	incrby operation should update encoding from raw to int	1
 unit/type/incr	string to double with null terminator	1
+unit/type/list	BLMOVE (left, left) with a client BLPOPing the target list	1
+unit/type/list	BLMOVE (left, right) with a client BLPOPing the target list	1
+unit/type/list	BLMOVE (right, left) with a client BLPOPing the target list	1
+unit/type/list	BLMOVE (right, right) with a client BLPOPing the target list	1
+unit/type/list	BLMOVE left left with zero timeout should block indefinitely	1
+unit/type/list	BLMOVE left right with zero timeout should block indefinitely	1
+unit/type/list	BLMOVE right left with zero timeout should block indefinitely	1
+unit/type/list	BLMOVE right right with zero timeout should block indefinitely	1
+unit/type/list	BLPOP inside a transaction	1
+unit/type/list	BLPOP when new key is moved into place	1
+unit/type/list	BLPOP with same key multiple times should work (issue #801)	1
+unit/type/list	BLPOP with variadic LPUSH	1
+unit/type/list	BLPOP, LPUSH + DEL + SET should not awake blocked client	1
+unit/type/list	BLPOP, LPUSH + DEL should not awake blocked client	1
+unit/type/list	BRPOPLPUSH inside a transaction	1
+unit/type/list	BRPOPLPUSH maintains order of elements after failure	1
+unit/type/list	BRPOPLPUSH with multiple blocked clients	1
+unit/type/list	BRPOPLPUSH with zero timeout should block indefinitely	1
+unit/type/list	Circular BRPOPLPUSH	1
 unit/type/list	DEL a list	1
 unit/type/list	LINDEX against non existing key	1
 unit/type/list	LINDEX against non-list value error	1
@@ -369,9 +388,11 @@ unit/type/list	LTRIM basics - listpack	1
 unit/type/list	LTRIM basics - quicklist	1
 unit/type/list	LTRIM out of range negative end index - listpack	1
 unit/type/list	LTRIM out of range negative end index - quicklist	1
+unit/type/list	Linked LMOVEs	1
 unit/type/list	List invalid list-max-listpack-size config	1
 unit/type/list	List listpack -> quicklist encoding conversion	2
 unit/type/list	List quicklist -> listpack encoding conversion	1
+unit/type/list	MULTI/EXEC is isolated from the point of view of BLPOP	1
 unit/type/list	Mass RPOP/LPOP - listpack	2
 unit/type/list	RPOP/LPOP with the optional count argument - listpack	1
 unit/type/list	RPOP/LPOP with the optional count argument - quicklist	1
@@ -389,6 +410,9 @@ unit/type/list	RPOPLPUSH with quicklist source and existing target quicklist	1
 unit/type/list	RPOPLPUSH with the same list as src and dst - listpack	1
 unit/type/list	RPOPLPUSH with the same list as src and dst - quicklist	1
 unit/type/list	RPUSH against non-list value error	1
+unit/type/list	Regression for bug 593 - chaining BRPOPLPUSH with other blocking cmds	1
+unit/type/list	Self-referential BRPOPLPUSH	1
+unit/type/list	Unblock fairness is kept while pipelining	1
 unit/type/list	Variadic RPUSH/LPUSH	1
 unit/type/list	reg node check compression combined with trim	1
 unit/type/list	reg node check compression with insert and pop	1

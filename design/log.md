@@ -4,6 +4,22 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Approve the blocking list design on top of the pub/sub design
+
+Nodes: firn, firn/blocking-lists, firn/connection-ownership, firn/script-attempt-external-effects, firn/aof-rewrite/capture, firn/pubsub-registries, firn/scripts, firn/transactions, firn/orderly-stop
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-blocking-lists-tree for PR #113's design-tree change at head 5b57dba (option A, in English: approve; merge once the gate is green on the final commit and the pub/sub PR has merged, after moving this PR onto main). PR #113 is stacked on PR #100, whose pub/sub design decisions the owner approved with option A on card firn-q-pubsub-tree, as the entries below record.
+
+Summary: Against main this branch changes every node the pub/sub entry below names, because it carries PR #100's approved decisions, and adds the blocking-list decisions of the entry below it. This entry names all of those nodes so that the design check, which requires the newest entry to name every node changed since main, passes while the stack is unmerged; it changes no decision.
+
+## 2026-10-14 Add blocking list commands
+
+Nodes: firn, firn/blocking-lists, firn/connection-ownership, firn/script-attempt-external-effects, firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-blocking-lists-tree, which asked to approve the blocking-lists design-tree change in PR #113 at head 5b57dba, stacked on the pub/sub PR.
+
+Summary: A new node records that a failed list lookup and FIFO waiter registration share one whole-keyspace, Meta and event-hub hold, and that a producer services ready waiters after committing its whole command, EXEC or script and before releasing the hold. Pending requests extend the event hub and promote a connection on its first actual suspension; they keep owned arguments, a never-reused generation and a scalar continuation, and each resumed command repeats memory and persistence admission. Timeout conversion stays an explicit incomplete boundary pending firn-req-extended-float, with only the literal 0 (infinite wait) implemented. Inside a script, blocking commands never register a waiter, and list readiness is drained after the script commits. The AOF capture rule lets list producers and blocking pops journal their own bytes when they change exactly one key. The reference suite's two BRPOPLPUSH/WATCH fixtures are patched to close their clients on failure.
+
 ## 2026-10-14 Add publish/subscribe with promoted connections and an event hub
 
 Nodes: firn, firn/connection-ownership, firn/pubsub-registries, firn/script-attempt-external-effects, firn/scripts, firn/transactions, firn/orderly-stop

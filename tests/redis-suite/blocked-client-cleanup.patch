@@ -1,0 +1,178 @@
+Redis 7.2.16 blocking-list tests: close both auxiliary clients on every exit.
+The two WATCH fixtures can fail before their explicit closes when a server
+refuses WATCH. Keep their commands, expected results and original errors;
+close every successfully created client and wait for the blocked-client count
+to return to its entry value before propagating the outcome. Cleanup failures
+are reported separately when an earlier error already owns the outcome.
+Apply to Firn, Redis reference and external targets alike. Retire when the
+pinned upstream fixtures provide equivalent exception-safe cleanup.
+
+Source:
+https://github.com/redis/redis/blob/7.2.16/tests/unit/type/list.tcl
+
+Redis license (COPYING from the same release):
+Copyright (c) 2006-2020, Salvatore Sanfilippo
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+    * Neither the name of Redis nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--- a/tests/unit/type/list.tcl
++++ b/tests/unit/type/list.tcl
+@@ -1090,46 +1090,114 @@
+     } {foo bar {} {} {bar foo}}
+ 
+     test "PUSH resulting from BRPOPLPUSH affect WATCH" {
+-        set blocked_client [redis_deferring_client]
+-        set watching_client [redis_deferring_client]
+-        r del srclist{t} dstlist{t} somekey{t}
+-        r set somekey{t} somevalue
+-        $blocked_client brpoplpush srclist{t} dstlist{t} 0
+-        wait_for_blocked_client
+-        $watching_client watch dstlist{t}
+-        $watching_client read
+-        $watching_client multi
+-        $watching_client read
+-        $watching_client get somekey{t}
+-        $watching_client read
+-        r lpush srclist{t} element
+-        $watching_client exec
+-        set res [$watching_client read]
+-        $blocked_client close
+-        $watching_client close
+-        set _ $res
++        set blocked_client {}
++        set watching_client {}
++        set blocked_before {}
++        set test_outcome [catch {
++            set blocked_before [s blocked_clients]
++            set blocked_client [redis_deferring_client]
++            set watching_client [redis_deferring_client]
++            r del srclist{t} dstlist{t} somekey{t}
++            r set somekey{t} somevalue
++            $blocked_client brpoplpush srclist{t} dstlist{t} 0
++            wait_for_blocked_client
++            $watching_client watch dstlist{t}
++            $watching_client read
++            $watching_client multi
++            $watching_client read
++            $watching_client get somekey{t}
++            $watching_client read
++            r lpush srclist{t} element
++            $watching_client exec
++            set res [$watching_client read]
++            set _ $res
++        } test_result test_options]
++        set blocked_outcome 0
++        set watching_outcome 0
++        set barrier_outcome 0
++        if {$blocked_client ne {}} {
++            set blocked_outcome [catch {$blocked_client close} blocked_result blocked_options]
++        }
++        if {$watching_client ne {}} {
++            set watching_outcome [catch {$watching_client close} watching_result watching_options]
++        }
++        if {$blocked_before ne {}} {
++            set barrier_outcome [catch {wait_for_blocked_clients_count $blocked_before} barrier_result barrier_options]
++        }
++        if {$barrier_outcome != 0 && ($test_outcome != 0 || $blocked_outcome != 0 || $watching_outcome != 0)} {
++            puts stderr "Blocking fixture cleanup barrier failed: $barrier_result"
++        }
++        if {$test_outcome != 0} {
++            if {$blocked_outcome != 0} {puts stderr "Blocking fixture client close failed: $blocked_result"}
++            if {$watching_outcome != 0} {puts stderr "Watching fixture client close failed: $watching_result"}
++            return -options $test_options $test_result
++        }
++        if {$blocked_outcome != 0} {
++            return -options $blocked_options $blocked_result
++        }
++        if {$watching_outcome != 0} {
++            return -options $watching_options $watching_result
++        }
++        if {$barrier_outcome != 0} {
++            return -options $barrier_options $barrier_result
++        }
++        set _ $test_result
+     } {}
+ 
+     test "BRPOPLPUSH does not affect WATCH while still blocked" {
+-        set blocked_client [redis_deferring_client]
+-        set watching_client [redis_deferring_client]
+-        r del srclist{t} dstlist{t} somekey{t}
+-        r set somekey{t} somevalue
+-        $blocked_client brpoplpush srclist{t} dstlist{t} 0
+-        wait_for_blocked_client
+-        $watching_client watch dstlist{t}
+-        $watching_client read
+-        $watching_client multi
+-        $watching_client read
+-        $watching_client get somekey{t}
+-        $watching_client read
+-        $watching_client exec
+-        # Blocked BLPOPLPUSH may create problems, unblock it.
+-        r lpush srclist{t} element
+-        set res [$watching_client read]
+-        $blocked_client close
+-        $watching_client close
+-        set _ $res
++        set blocked_client {}
++        set watching_client {}
++        set blocked_before {}
++        set test_outcome [catch {
++            set blocked_before [s blocked_clients]
++            set blocked_client [redis_deferring_client]
++            set watching_client [redis_deferring_client]
++            r del srclist{t} dstlist{t} somekey{t}
++            r set somekey{t} somevalue
++            $blocked_client brpoplpush srclist{t} dstlist{t} 0
++            wait_for_blocked_client
++            $watching_client watch dstlist{t}
++            $watching_client read
++            $watching_client multi
++            $watching_client read
++            $watching_client get somekey{t}
++            $watching_client read
++            $watching_client exec
++            # Blocked BLPOPLPUSH may create problems, unblock it.
++            r lpush srclist{t} element
++            set res [$watching_client read]
++            set _ $res
++        } test_result test_options]
++        set blocked_outcome 0
++        set watching_outcome 0
++        set barrier_outcome 0
++        if {$blocked_client ne {}} {
++            set blocked_outcome [catch {$blocked_client close} blocked_result blocked_options]
++        }
++        if {$watching_client ne {}} {
++            set watching_outcome [catch {$watching_client close} watching_result watching_options]
++        }
++        if {$blocked_before ne {}} {
++            set barrier_outcome [catch {wait_for_blocked_clients_count $blocked_before} barrier_result barrier_options]
++        }
++        if {$barrier_outcome != 0 && ($test_outcome != 0 || $blocked_outcome != 0 || $watching_outcome != 0)} {
++            puts stderr "Blocking fixture cleanup barrier failed: $barrier_result"
++        }
++        if {$test_outcome != 0} {
++            if {$blocked_outcome != 0} {puts stderr "Blocking fixture client close failed: $blocked_result"}
++            if {$watching_outcome != 0} {puts stderr "Watching fixture client close failed: $watching_result"}
++            return -options $test_options $test_result
++        }
++        if {$blocked_outcome != 0} {
++            return -options $blocked_options $blocked_result
++        }
++        if {$watching_outcome != 0} {
++            return -options $watching_options $watching_result
++        }
++        if {$barrier_outcome != 0} {
++            return -options $barrier_options $barrier_result
++        }
++        set _ $test_result
+     } {somevalue}
+ 
+     test {BRPOPLPUSH timeout} {

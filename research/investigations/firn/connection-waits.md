@@ -437,9 +437,12 @@ A source replaced with a non-list does not alone wake a list waiter.
 BRPOPLPUSH/BLMOVE inspect the destination after source availability; a wrong
 destination must leave the source unchanged and let the next eligible waiter
 proceed. Successful moves can make further keys ready; process the existing
-ready batch before the newly generated batch. RENAME, COPY, MOVE, SWAPDB, SORT STORE
-and every operation introducing an appropriate value need the same readiness
-hooks as list pushes. Design the event kind to distinguish ready-value from
+ready batch before the newly generated batch. Readiness follows Redis dbAdd: a
+newly installed list is signaled, including RENAME/COPY replacement. A SET
+string does not signal list readiness. SORT STORE signals a newly added list,
+but its overwrite of an existing destination uses dbSetValue and does not
+signal. MOVE, RESTORE and SORT are not implemented in this Firn base; their
+future adapters must follow those exact source boundaries. Design the event kind to distinguish ready-value from
 deletion notifications, since later stream group waits use deletion events.
 Later sorted-set and stream commands reuse scheduling and lifecycle, not
 the list-specific readiness predicate or reply builder.
@@ -566,6 +569,19 @@ waiters on unrelated keys, move chains and high-contention FIFO service as
 well as the feature-unused list-write path. Directly parking on map guards
 was considered but rejected as the ordering mechanism: it gives no FIFO and
 the pin wakes map-wide observers on unrelated writes.
+
+### Blocking implementation boundary
+
+The draft implementation and timeout counterexample are recorded in
+[blocking lists](blocking-lists.md). It extends the existing promotion on the
+first actual suspension, stages dbAdd notifications in shared command parts,
+and services them under the producer's whole-map/Meta/hub/server-state hold.
+It does not use a waiter wake race to select values. The conversion boundary
+currently accepts only literal `0`; complete timeout compatibility remains
+blocked on `firn-req-extended-float`. The gate compiled it and passed its
+Redis 7.2.16 recorded network cases and the list suite rows (run 38482277414 on
+883083f); the AOF byte cases wait on `firn-scope-select-db` and no
+performance result is measured yet ([blocking lists](blocking-lists.md)).
 
 ## Pub/sub, including shard channels
 
@@ -1532,9 +1548,10 @@ connection ownership/output ordering; blocked-command service ordering and
 timeout semantics; script attempt external effects; AOF database context;
 memory/output-limit accounting. The command-parts, transactions, scripts,
 enumeration, protocol, memory, shutdown and AOF trees named above need
-correspondence review. The original study changed no design nodes. The pub/sub implementation now
-proposes the three nodes linked above; the remaining alternatives are still
-research proposals.
+correspondence review. The original study changed no design nodes. The pub/sub implementation proposes the three nodes linked above; the blocking
+implementation adds its [service decision](../../../design/firn/blocking-lists.md)
+and extends ownership and script-attempt decisions. Remaining feature families
+are still research proposals.
 
 ## Remaining uncertainty and disposition
 
@@ -1543,9 +1560,9 @@ interfaces, timeout numeric/clock facilities, single-db and WATCH measured
 cost, and the raw transcripts marked ORACLE. The broader list-producer hold
 is correct in intent but its full admission/eviction helper composition and
 performance are unverified. The hub's one-to-many throughput and connection
-promotion complexity are also unmeasured. The pub/sub draft implementation
-and its reference-recording boundary are described separately above; the
-other feature families remain unimplemented proposals.
+promotion complexity are also unmeasured. The pub/sub and blocking-list draft implementations and their
+reference-recording boundaries are described separately above; database and
+WATCH feature families remain unimplemented proposals.
 
 The design examination found three concrete integration obligations beyond
 new command names: preserve the AOF-off no-Meta fast path; include externally

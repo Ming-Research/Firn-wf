@@ -1028,6 +1028,7 @@ fn rename_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
         set work.at = held_expiry(slot: &moved);
         pkg::store::sequence_replace(sequence: sequence, slot: &slots^[target], replacement: move moved);
         pkg::store::sequence_stamp_at(sequence: sequence, slot: &slots^[target], keys: access_keys, index: target);
+        list_signal_at(client: client, keys: access_keys, index: target, slot: &slots^[target]);
         pkg::store::sequence_capture_at(sequence: sequence, keys: access_keys, index: source, slot: &slots^[source]);
         set work.outcome = rename_done;
       }
@@ -1145,6 +1146,7 @@ fn copy_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
           set work.at = held_expiry(slot: &copied);
           pkg::store::sequence_replace(sequence: sequence, slot: &slots^[target], replacement: move copied);
           pkg::store::sequence_stamp_at(sequence: sequence, slot: &slots^[target], keys: access_keys, index: target);
+          list_signal_at(client: client, keys: access_keys, index: target, slot: &slots^[target]);
           set work.outcome = rename_done;
         }
       }

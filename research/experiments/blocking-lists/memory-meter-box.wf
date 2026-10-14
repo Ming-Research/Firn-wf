@@ -1,0 +1,7 @@
+alias MemoryMeter = std::process::MemoryMeter;
+
+fn main() -> status: std::process::ExitStatus pure {
+  let absent = None<MemoryMeter>();
+  let cell = box_new::<Option<MemoryMeter>>(value: move absent);
+  return std::process::exit_status(code: 0_u8);
+}

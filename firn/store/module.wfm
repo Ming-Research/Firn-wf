@@ -62,7 +62,7 @@ public struct Entry {
 }
 
 public struct WriteSequence {
-  doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; an inert token, taken while loading or by a statement that holds no Meta, leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed key before the outer statement commits; the inactive path allocates nothing.";
+  doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; an inert token, taken while loading or by a statement that holds no Meta, leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed key before the outer statement commits; the inactive path allocates nothing. A statement opened for one key retains, while capture is active, the name of the first key it captures (subject) and whether that key is present after its latest change (subject_live), so that a change to a second key revokes single before the statement commits.";
   public value: u64;
   public taken: Bool;
   public inert: Bool;
@@ -78,6 +78,8 @@ public struct WriteSequence {
   public anchor_seen: Bool;
   public anchored: Bool;
   public effect: Bool;
+  public subject_live: Bool;
+  public subject: Option<Box<Slots<u8>>>;
   public images: Option<Box<Slots<RewriteImage>>>;
 }
 
@@ -240,6 +242,7 @@ public struct Keyspace {
   public server: Shared<ServerState>;
   public scripts: Shared<pkg::script_pool::EnginePool>;
   public pubsub: Shared<pkg::connection_events::Hub>;
+  public wall: std::time::WallClock;
   public logging: Bool;
 }
 
@@ -266,7 +269,7 @@ public const keyspace_capacity: u64 = 262144_u64;
 
 public fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "Starts one outer atomic statement's sequence token from its held metadata; nested command parts reuse this token. Its captures are complete images.";
 
-public fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "sequence_new for a statement holding exactly one key. When that key's previous write lies inside the current rewrite window, the journal already reproduces its state, so the statement journals its own append-only bytes instead of the key's image.";
+public fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "sequence_new for a statement whose append-only bytes name only keys it changes and which normally changes one key. While the statement has changed one key and that key's previous write lies inside the current rewrite window, the journal already reproduces its state, so the statement journals its own append-only bytes instead of the key's image. A change to a second key revokes this at run time: the statement then journals complete images of every key it changed, rebuilding the first key's image from its name when the statement removed it, and failing capture when the first key took the byte path and remains, whose image is no longer at hand.";
 
 public fn sequence_inert() -> sequence: WriteSequence pure doc "The token of an outer atomic statement that holds no Meta, as a command's statement does while the keyspace keeps no append-only file and the statement queues no expiry: it takes no sequence, stamps changed entries zero, captures nothing and is never committed, as a loading token behaves.";
 
@@ -284,7 +287,7 @@ public fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> res
 
 public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), reads(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) doc "Publishes a taken sequence, its journal unit (after-images, or a one-key statement's own append-only bytes) and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
 
-public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
+public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64, wall: std::time::WallClock) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started. wall is retained for fresh nonwaiting calendar snapshots when a producer services blocked commands; ordinary keyed commands do not read it.";
 
 public fn shutdown_requested(store: &Keyspace) -> requested: Bool reads(store) waits doc "Whether SHUTDOWN or a stop signal requested that contexts drain and close, before the last client lets main stop the writer, or main has stopped it.";
 
@@ -365,7 +368,7 @@ public fn rewrite_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool
 
 public fn rewrite_try_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes(capture) doc "Reserves bytes before allocation when they fit the remaining allowance of a live attempt, with peak reservation accounting, and otherwise changes nothing, leaving the caller to retry smaller work or abort.";
 
-public fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) doc "Coalesces an actual changed key into the already-taken outer sequence: in an anchored one-key statement it only selects effect mode; otherwise it owns complete replacement bytes, charging scratch and allocation overlap; failure aborts capture at commit, never the client command.";
+public fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) doc "Coalesces an actual changed key into the already-taken outer sequence: in an anchored one-key statement that has changed only this key it only selects effect mode; a second key in a one-key statement revokes that mode; otherwise it owns complete replacement bytes, charging scratch and allocation overlap; failure aborts capture at commit, never the client command.";
 
 public fn sequence_capture_at(sequence: &WriteSequence, keys: &KeySet, index: u64, slot: &Option<Entry>) -> result: unit reads(keys), reads(slot), writes(sequence) doc "Captures the changed slot under its key-set index after charging the temporary key copy. Used when mutation helpers already stamped an entry through a matched payload.";
 

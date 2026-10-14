@@ -1,0 +1,286 @@
+alias Client = pkg::protocol::Client;
+alias Key = pkg::bytes::Key;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias KeyHash = pkg::bytes::KeyHash;
+alias HashMap = std::collections::hash_map::HashMap;
+alias PriorityOrder = std::collections::priority_queue::PriorityOrder;
+alias hash_map_lookup = std::collections::hash_map::hash_map_lookup;
+alias hash_map_put = std::collections::hash_map::hash_map_put;
+alias hash_map_remove = std::collections::hash_map::hash_map_remove;
+
+const unblock_error: Array<u8, 45> = "UNBLOCKED client unblocked via CLIENT UNBLOCK";
+
+fn promote(hub: &Hub, client: &Client) -> result: unit writes(hub), writes(client) {
+  if hub^.stopping {
+    set client^.closing = True();
+    return unit;
+  }
+  if client^.pubsub_id == 0_u64 {
+    let record = record_new(hub: hub, client: client);
+    put_record(hub: hub, record: move record);
+    return unit;
+  }
+  let registered = connection_live(hub: hub, id: client^.pubsub_id);
+  if bnot(registered) {
+    set client^.closing = True();
+  }
+  return unit;
+}
+
+fn observe_blocked(env: &Empty, key: &u64, value: &u64) -> present: Bool pure {
+  return True();
+}
+
+fn block_present(hub: &Hub, id: u64) -> present: Bool reads(hub.blocking_state.ids) {
+  let empty = Empty();
+  let visitor = Empty();
+  match hash_map_lookup::<IdentityHash, u64, Empty, Bool, fn observe_blocked, extent>(map: &hub^.blocking_state.ids, key: &id, key_env: &empty, visit_env: &visitor) {
+    Ok(value: present) => {
+      return present;
+    }
+    Err(error: absent) => {
+      return False();
+    }
+  }
+}
+
+fn block_class(hub: &Hub, id: u64, blocked: Bool) -> result: unit writes(hub.records), writes(hub.committed) {
+  match take_record(hub: hub, id: id) {
+    Some(value: record) => {
+      let subscribed = record_subscribed(record: &record);
+      let active = bor(subscribed, blocked);
+      let connection = connection_share(connection: &record.connection);
+      let action = Action::Membership(connection: move connection, subscribed: active);
+      queue_push::<Action>(queue: &hub^.committed, value: move action);
+      put_record(hub: hub, record: move record);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn block_deadline_compare(env: &Empty, left: &BlockDeadline, right: &BlockDeadline) -> order: i32 reads(left), reads(right) {
+  if left^.due < right^.due {
+    return -1_i32;
+  } else if left^.due > right^.due {
+    return 1_i32;
+  }
+  return 0_i32;
+}
+
+binding BlockDeadlineOrder : PriorityOrder<BlockDeadline, Empty> {
+  compare = block_deadline_compare;
+}
+
+fn block_positioned(env: &HashMap<u64, u64, extent>, value: &BlockDeadline, index: u64) -> result: unit reads(value), writes(env) {
+  let empty = Empty();
+  let placed = hash_map_put::<IdentityHash, u64, extent>(map: env, key: value^.id, value: index, env: &empty);
+  return unit;
+}
+
+fn block_deadline_remove(hub: &Hub, id: u64, generation: u64) -> result: unit writes(hub.blocking_state.timed), writes(hub.block_deadlines), writes(hub.block_positions), writes(hub.wake), writes(hub.committed) {
+  let empty = Empty();
+  let visitor = Empty();
+  match hash_map_lookup::<IdentityHash, u64, Empty, u64, fn observe_registration, extent>(map: &hub^.block_positions, key: &id, key_env: &empty, visit_env: &visitor) {
+    Ok(value: position) => {
+      if position < hub^.block_deadlines.storage.inner.len {
+        let item = hub^.block_deadlines.storage.inner[position];
+        let same_id = item.id == id;
+        let same_generation = item.generation == generation;
+        if band(same_id, same_generation) {
+          let removed = std::collections::priority_queue::priority_queue_remove_at_indexed::<BlockDeadlineOrder, HashMap<u64, u64, extent>, fn block_positioned, extent>(queue: &hub^.block_deadlines, index: position, order_env: &empty, position_env: &hub^.block_positions);
+          let retired = hash_map_remove::<IdentityHash, u64, extent>(map: &hub^.block_positions, key: &id, env: &empty);
+          set hub^.blocking_state.timed = hub^.block_deadlines.storage.inner.len;
+          wake_timer(hub: hub);
+        }
+      }
+    }
+    Err(error: absent) => {
+    }
+  }
+  return unit;
+}
+
+fn block_install(hub: &Hub, request: BlockedList) -> result: unit writes(hub) {
+  let id = request.connection;
+  let registered = connection_live(hub: hub, id: id);
+  if bnot(registered) {
+    return unit;
+  }
+  let previous = block_take(hub: hub, id: id);
+  let stale_resume = block_resume_take(hub: hub, id: id);
+  if request.generation == 0_u64 {
+    set request.generation = hub^.next_wait;
+    set hub^.next_wait = hub^.next_wait +wrap 1_u64;
+  }
+  let count = request.names.inner.len;
+  for (index in 0_u64..count) {
+    if index < request.names.inner.len {
+      member_add(map: &hub^.waiting, key: &request.names.inner[index], id: id);
+    }
+  }
+  let empty = Empty();
+  set hub^.blocking_state.keys = hub^.waiting.length;
+  if request.deadline != 0_u64 {
+    let deadline = BlockDeadline(id: id, generation: request.generation, due: request.deadline);
+    let placed = std::collections::priority_queue::priority_queue_push_indexed::<BlockDeadlineOrder, HashMap<u64, u64, extent>, fn block_positioned, extent>(queue: &hub^.block_deadlines, value: deadline, order_env: &empty, position_env: &hub^.block_positions);
+    set hub^.blocking_state.timed = hub^.block_deadlines.storage.inner.len;
+    wake_timer(hub: hub);
+  }
+  let indexed = hash_map_put::<IdentityHash, u64, extent>(map: &hub^.blocking_state.ids, key: id, value: request.generation, env: &empty);
+  let installed = hash_map_put::<IdentityHash, BlockedList, extent>(map: &hub^.blocked, key: id, value: move request, env: &empty);
+  let blocked = True();
+  block_class(hub: hub, id: id, blocked: blocked);
+  return unit;
+}
+
+fn block_take(hub: &Hub, id: u64) -> request: Option<BlockedList> writes(hub) {
+  let empty = Empty();
+  match hash_map_remove::<IdentityHash, BlockedList, extent>(map: &hub^.blocked, key: &id, env: &empty) {
+    Some(value: pair) => {
+      let std::collections::hash_map::HashMapPair(key: unused_id, value: request) = move pair;
+      let retired_id = hash_map_remove::<IdentityHash, u64, extent>(map: &hub^.blocking_state.ids, key: &id, env: &empty);
+      memberships_remove(map: &hub^.waiting, names: &request.names, id: id);
+      set hub^.blocking_state.keys = hub^.waiting.length;
+      if request.deadline != 0_u64 {
+        block_deadline_remove(hub: hub, id: id, generation: request.generation);
+      }
+      let blocked = False();
+      block_class(hub: hub, id: id, blocked: blocked);
+      return Some<BlockedList>(value: move request);
+    }
+    None() => {
+      return None<BlockedList>();
+    }
+  }
+}
+
+fn observe_block_front(env: &Empty, key: &Key, value: &Box<Slots<u64>>) -> id: Option<u64> reads(value) {
+  if value^.inner.len > 0_u64 {
+    return Some<u64>(value: value^.inner[0_u64]);
+  }
+  return None<u64>();
+}
+
+fn block_front(hub: &Hub, key: &Key) -> id: Option<u64> reads(hub), reads(key) {
+  let empty = Empty();
+  let key_env = KeyEnv();
+  match hash_map_lookup::<KeyHash, Box<Slots<u64>>, Empty, Option<u64>, fn observe_block_front, extent>(map: &hub^.waiting, key: key, key_env: &key_env, visit_env: &empty) {
+    Ok(value: first) => {
+      return first;
+    }
+    Err(error: absent) => {
+      return None<u64>();
+    }
+  }
+}
+
+fn observe_block_count(env: &Empty, key: &Key, value: &Box<Slots<u64>>) -> count: u64 reads(value) {
+  return value^.inner.len;
+}
+
+fn block_key_count(hub: &Hub, key: &Key) -> count: u64 reads(hub), reads(key) {
+  let empty = Empty();
+  let key_env = KeyEnv();
+  match hash_map_lookup::<KeyHash, Box<Slots<u64>>, Empty, u64, fn observe_block_count, extent>(map: &hub^.waiting, key: key, key_env: &key_env, visit_env: &empty) {
+    Ok(value: count) => {
+      return count;
+    }
+    Err(error: absent) => {
+      return 0_u64;
+    }
+  }
+}
+
+fn blocking_counts(hub: &Hub) -> counts: BlockingCounts reads(hub.blocking_state) {
+  return BlockingCounts(clients: hub^.blocking_state.ids.length, keys: hub^.blocking_state.keys, timed: hub^.blocking_state.timed);
+}
+
+fn block_wait_ready(hub: &Hub, id: u64, cancelled: Bool) -> ready: Bool reads(hub.blocking_state.ids), reads(hub.stopping) {
+  let pending = block_present(hub: hub, id: id);
+  let completed = bnot(pending);
+  let stopping = bor(cancelled, hub^.stopping);
+  return bor(completed, stopping);
+}
+
+fn block_complete(hub: &Hub, request: BlockedList, client: &Client, time: u64) -> result: unit writes(hub), writes(client) {
+  let id = request.connection;
+  let resume = BlockResume(generation: request.generation, random: client^.random, seen_peak: client^.seen_peak);
+  let stage = stage_new();
+  commit(hub: hub, client: client, stage: &stage, time: time);
+  block_resume_store(hub: hub, id: id, resume: resume);
+  return unit;
+}
+
+fn block_wait(hub: &Shared<Hub>, connection: &Connection) -> resumed: Option<BlockResume> reads(hub), reads(connection) waits {
+  let watch = std::time::cancel_watch(source: &connection^.stop);
+  let cancelled = std::time::cancel_state(watch: &watch);
+  atomic held = &hub^, stopped = &cancelled when block_wait_ready(hub: held, id: connection^.id, cancelled: stopped^.fired) {
+    if stopped^.fired {
+      return None<BlockResume>();
+    }
+    if held^.stopping {
+      return None<BlockResume>();
+    }
+    return block_resume_take(hub: held, id: connection^.id);
+  }
+}
+
+fn block_reply(hub: &Hub, request: BlockedList, failed: Bool, time: u64) -> result: unit writes(hub) {
+  let client = pkg::protocol::client_new(capacity: 128_u64);
+  set client.pubsub_id = request.connection;
+  set client.resp = request.resp;
+  set client.random = request.random;
+  set client.seen_peak = request.seen_peak;
+  if failed {
+    pkg::protocol::reply_error(client: &client, word: &unblock_error[0_u64..45_u64]);
+  } else {
+    pkg::protocol::reply_nil_array(client: &client);
+  }
+  block_complete(hub: hub, request: move request, client: &client, time: time);
+  return unit;
+}
+
+fn block_unblock(hub: &Hub, client_id: u64, failed: Bool, time: u64) -> changed: Bool writes(hub) {
+  let empty = Empty();
+  let visitor = Empty();
+  match hash_map_lookup::<IdentityHash, u64, Empty, u64, fn observe_registration, extent>(map: &hub^.clients, key: &client_id, key_env: &empty, visit_env: &visitor) {
+    Ok(value: id) => {
+      match block_take(hub: hub, id: id) {
+        Some(value: request) => {
+          block_reply(hub: hub, request: move request, failed: failed, time: time);
+          return True();
+        }
+        None() => {
+        }
+      }
+    }
+    Err(error: absent) => {
+    }
+  }
+  return False();
+}
+
+fn expire_blocks(hub: &Hub, time: u64) -> result: unit writes(hub) {
+  loop {
+    if hub^.block_deadlines.storage.inner.len == 0_u64 {
+      break;
+    }
+    let deadline = hub^.block_deadlines.storage.inner[0_u64];
+    if deadline.due >= time {
+      break;
+    }
+    match block_take(hub: hub, id: deadline.id) {
+      Some(value: request) => {
+        let failed = False();
+        let seconds = time / 1000_u64;
+        block_reply(hub: hub, request: move request, failed: failed, time: seconds);
+      }
+      None() => {
+        block_deadline_remove(hub: hub, id: deadline.id, generation: deadline.generation);
+      }
+    }
+  }
+  return unit;
+}

@@ -136,6 +136,12 @@ tar -xzf "$archive" -C "$out"
 # contextual patch applies to every target; stale or missing hunks stop the run.
 python3 -B "$here/check-pubsub-barriers.py" "$suite" "$here/pubsub-barriers.patch"
 patch --batch --forward --fuzz=0 -p1 -d "$suite" < "$here/pubsub-barriers.patch"
+# A WATCH refusal must not abandon the two fixtures' blocked connections.
+# Preserve their original bodies, errors and results while closing both
+# auxiliary clients and waiting for the entry blocked-client count on every
+# exit, identically for every target.
+python3 -B "$here/check-blocked-client-cleanup.py" "$suite" "$here/blocked-client-cleanup.patch"
+patch --batch --forward --fuzz=0 -p1 -d "$suite" < "$here/blocked-client-cleanup.patch"
 # Tests that run the suite's own client tools look for them in src/, as in a
 # built source tree; the 7.2.16 tools built from the same archive stand in
 # for them.
@@ -171,6 +177,7 @@ flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeou
 {
     echo "suite: redis-$version.tar.gz sha256 $sha256"
     echo "suite adjustment: pubsub-barriers.patch waits for and checks all known no-argument unsubscribe acknowledgments"
+    echo "suite adjustment: blocked-client-cleanup.patch closes both auxiliary clients and awaits the entry blocked-client count after each WATCH/list fixture, preserving its original result or error"
     echo "target: $target"
     case $target in
         redis) echo "server: $(redis-server --version)"
