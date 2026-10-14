@@ -9,6 +9,8 @@ metadata objects it also needs. It is named for firn, snow that has lasted a
 season: stored and compacted.
 
 See [safety guarantees and their evidence](../docs/safety.md).
+For service startup, connection limits and persistence recovery, see the
+[operator's guide](../docs/operations.md).
 
 Its commands are these, which began as the ones `redis-benchmark`'s default
 suite sends, with expiry, an append-only file and the connection commands
