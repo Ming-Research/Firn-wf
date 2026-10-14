@@ -723,10 +723,8 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                 if logged {
                   pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
                   pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
-                } else {
-                  if pkg::store::attempt_due_pending(staged: &due) {
-                    pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
-                  }
+                } else if pkg::store::attempt_due_pending(staged: &due) {
+                  pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
                 }
               }
             }
