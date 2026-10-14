@@ -8,6 +8,8 @@ the entries of the keys a command uses and the separate expiry, log or server
 metadata objects it also needs. It is named for firn, snow that has lasted a
 season: stored and compacted.
 
+See [safety guarantees and their evidence](../docs/safety.md).
+
 Its commands are these, which began as the ones `redis-benchmark`'s default
 suite sends, with expiry, an append-only file and the connection commands
 clients send on their own:
