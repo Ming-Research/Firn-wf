@@ -1085,6 +1085,90 @@ queued message ahead of it. Expected status, count, EXECABORT and message
 bytes follow the pinned Redis command bodies; no new oracle recording or
 ORACLE placeholder is needed for these histories.
 
+### Promoted INFO observation and reply ordering
+
+The direct adapter previously left INFO outside the protected dataset path
+because INFO has no held EXEC/script command parts. Its KEYSPACE section
+counted the map, released it, formatted under a separate Meta statement and
+then returned to the promoted owner's hub commitment. This permits A to
+observe an empty database, B to execute `MULTI; SET fresh v; PUBLISH news seen;
+EXEC`, and A to receive `seen` followed by that empty INFO snapshot. The
+observation and its output order disagree. This is the separate scope of
+board item `firn-pubsub-info-order`.
+
+Redis 7.2.16's [genRedisInfoString keyspace section](https://github.com/redis/redis/blob/7.2.16/src/server.c)
+counts each database dictionary and emits its `dbN` line only when keys or
+expiries are nonzero. The [INFO handler](https://github.com/redis/redis/blob/7.2.16/src/server.c)
+queues that complete text reply before another command executes; the
+[transaction handler](https://github.com/redis/redis/blob/7.2.16/src/multi.c)
+executes SET and PUBLISH together. With an initially empty database and no
+expiries there are exactly two observable serial outcomes on A: empty INFO
+then message, or message then INFO reporting one key. Message then empty
+INFO, and one-key INFO then message, are both incompatible.
+
+The proposed promoted INFO adapter parses the requested sections and samples
+host heap and residency before the shared statement. It then names the whole
+keyspace, Meta, event hub, script registry and server state in one atomic
+statement. Section-selected counts are read directly from these held values;
+`info_body` formats their text and `info_finish` writes the complete frame
+without waiting, and hub commitment occurs before leaving that statement.
+The ordinary `run_info` remains unchanged. The existing compile-time
+`execute_client::<0>` / `execute_client::<1>` owner choice selects the ordinary
+or promoted dispatch; there is no promotion predicate in ordinary INFO and
+no added target or wrapper on ordinary GET/SET. All promoted INFO selectors,
+including default, ALL, multi-section and unknown-section requests, use the
+adapter rather than making a KEYSPACE-only special path. The actual
+key-count read remains conditional on selecting KEYSPACE. Naming the extra
+objects can increase promoted INFO contention through the compiler's lock
+ordering; no narrow-lock or performance result is claimed.
+
+If A's key-count read precedes B's transaction, A retains the dataset hold
+through its INFO commitment, so B's publication follows it. If B wins the
+hold, its publication commits before the dataset is released and A counts
+one key, then commits INFO after that publication. The dispatcher cannot
+extract a committed frame while another statement holds the same hub, and
+sockets remain outside the hold. A repeated empty outer commitment after
+the adapter returns does not create a second reply. The host memory samples
+remain earlier independent measurements, not a simultaneous dataset/heap
+snapshot promise. INFO in EXEC or scripts still lacks held command parts;
+this direct-path repair does not add support for those existing refusals.
+
+The direct-command audit is based on implemented handlers in this stack:
+
+| Command | Dataset observation and disposition |
+|---|---|
+| DBSIZE | Kind 21 reaches `dbsize_body` through `held_run`; the existing whole-keyspace/Meta/hub boundary includes reply commitment. |
+| SCAN, KEYS, RANDOMKEY | Kinds 168, 169 and 170 reach `held_scan`, `held_keys` and `held_randomkey` under the same boundary; enumeration and lookup results do not escape before commitment. |
+| OBJECT IDLETIME / FREQ | Kind 171 reaches `script_object` under the boundary. OBJECT HELP is static and excluded; ENCODING / REFCOUNT are unsupported, not unprotected key observations. |
+| MEMORY USAGE | MEMORY has no implemented identity or handler here and observes no key before its unknown-command refusal. |
+| CLIENT LIST / CLIENT INFO | LIST is unsupported in this stack. INFO reads the connection-owned client fields and subscription counts, not dataset state; its commands and earlier membership confirmations are ordered by that connection's command owner. The separate client-table branch is not part of this base. |
+| DEBUG | Only LOG is implemented, returning OK without a dataset read; other forms are refused. |
+| CONFIG | GET reports settings, not key, expiry or eviction counters. SET changes settings and RESETSTAT resets statistics; they do not return a dataset observation. Their existing administrative boundaries are retained. |
+| BGREWRITEAOF | Returns rewrite admission/start status from Meta, waiting for the background writer; it does not return a dataset count or value. The writer's background snapshot is not a direct dataset-query reply. |
+| SCRIPT / FUNCTION / AUTH / HELLO / QUIT / RESET | Registry, configuration and connection controls, not additional dataset-query results. RESET's membership-removal confirmation retains its existing hub boundary. |
+| PUBSUB queries and publication | Use the existing registry/hub execution-and-commit boundary rather than observing the dataset outside a held command. |
+
+The correctness witness uses four drivers and 200 rounds. A negotiates RESP3
+and subscribes to `news`. Each round B queues SET of a distinct `fresh_i` and
+PUBLISH of `i`; two barrier-released host threads send A's INFO KEYSPACE and
+B's EXEC concurrently. A reads both complete frames and accepts only the
+two serial outcomes above. B's DEL acknowledgment clears that one key only
+after both frames and the EXEC reply, before the next round; no sleep, data
+poll or intermediate command narrows the race. A final PING detects leftover
+frames. Expected text preserves Redis's header, conditional database line,
+key count and CRLF order for Firn's existing reported fields. Firn still
+omits `expires` and `avg_ttl`; this test neither adds them nor claims full
+INFO field compatibility. The RESP3 `txt:` verbatim length and message frame
+are checked byte for byte.
+
+The falsifier is either nonserial pair, incorrect frame text, or a wrong
+transaction reply. The old read-to-commit gap is short, and its failure rate
+has not been measured; 200 rounds may not expose it reliably. No old/new
+execution is claimed. A passing stress run supplements the held-boundary
+argument rather than proving it by frequency. Acceptance requires the
+owner-driven gate to compile both static paths and run the new witness;
+local builds and tests remain prohibited.
+
 ### Membership confirmations and the Redis suite barrier
 
 The reported regression in

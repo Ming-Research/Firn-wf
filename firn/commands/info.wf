@@ -510,6 +510,63 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   return unit;
 }
 
+fn run_info_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "The promoted owner's INFO path. Host heap and residency samples precede the hold; all selected shared counters, the key count, complete text formatting and reply commitment share one statement holding the keyspace, metadata, event hub, script registry and server state. The shared formatter and reply encoder do not wait. Ordinary INFO retains run_info and its existing snapshots.";
+  let chosen = info_plan(input: input, args: args);
+  let used = 0_u64;
+  let rss = None<u64>();
+  if chosen[2_u64] == 1_u64 {
+    set used = heap_read(client: client);
+    match client^.meter {
+      Some(value: meter) => {
+        set rss = std::process::resident_bytes(meter: meter);
+      }
+      None() => {
+      }
+    }
+  }
+  let stage = pkg::connection_events::stage_new();
+  let seconds = client^.unix_us / 1000000_u64;
+  atomic keys = &store^.keys, meta = &store^.meta, hub = &store^.pubsub, registry = &store^.scripts, server = &store^.server {
+    let cached_scripts = 0_u64;
+    let maxmemory = 0_u64;
+    let memory_policy = 7_u64;
+    if chosen[2_u64] == 1_u64 {
+      set cached_scripts = registry^.registry.inner.len;
+      set maxmemory = server^.memory.maxmemory;
+      set memory_policy = server^.memory.maxmemory_policy;
+    }
+    let clients = 0_u64;
+    if chosen[1_u64] == 1_u64 {
+      set clients = meta^.clients;
+    }
+    let started = 0_u64;
+    if chosen[0_u64] == 1_u64 {
+      set started = server^.started;
+    }
+    let connections = 0_u64;
+    let channels = 0_u64;
+    let patterns = 0_u64;
+    let shards = 0_u64;
+    if chosen[4_u64] == 1_u64 {
+      set connections = server^.connections;
+      let counts = pkg::connection_events::registry_counts(hub: hub);
+      set channels = counts.channels;
+      set patterns = counts.patterns;
+      set shards = counts.shards;
+    }
+    let count = 0_u64;
+    if chosen[12_u64] == 1_u64 {
+      set count = map_count::<Entry>(map: keys);
+    }
+    set meta^.memory_peak = imax(meta^.memory_peak, used);
+    let text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, channels: channels, patterns: patterns, shards: shards, keys: count, logged: store^.logging, persistence: meta, client: client, time: time);
+    info_finish(client: client, text: &text);
+    pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+  }
+  return unit;
+}
+
 const human_units: Array<u8, 5> = "KMGTP";
 
 const human_byte: Array<u8, 1> = "B";

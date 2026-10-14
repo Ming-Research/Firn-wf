@@ -1325,13 +1325,22 @@ fn promoted_local_control(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> r
 }
 
 fn execute_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
-  doc "Only the promoted owner's static dispatch reaches this function. Supported dataset commands use their shared EXEC/script bodies under the whole keyspace, metadata and event hub, committing the complete reply before release. Their AOF effects remain ordinary command records without MULTI/EXEC framing. Scripts begin with their existing whole-map/hub attempt. Names without held command parts, top-level command-table arity and authentication refusals, and PING, ECHO, TIME, SELECT, COMMAND and OBJECT HELP retain ordinary dispatch and its error precedence. Command-specific dataset parsing and refusals, including unrecognized subcommands of a dataset family, remain inside the protected execution.";
+  doc "Only the promoted owner's static dispatch reaches this function. Supported dataset commands use their shared EXEC/script bodies under the whole keyspace, metadata and event hub, committing the complete reply before release. Their AOF effects remain ordinary command records without MULTI/EXEC framing. Scripts begin with their existing whole-map/hub attempt. INFO snapshots its shared counters, formats and commits its complete reply under one keyspace/metadata/hub/script-registry/server-state hold. Other names without held command parts, top-level command-table arity and authentication refusals, and PING, ECHO, TIME, SELECT, COMMAND and OBJECT HELP retain ordinary dispatch and its error precedence. Command-specific dataset parsing and refusals, including unrecognized subcommands of a dataset family, remain inside the protected execution.";
   let name = arg(args: args, index: 0_u64);
   let code = name_code(input: input, start: name.start, length: name.length);
   let evaluating = code == code_eval;
   let by_sha = code == code_evalsha;
   let count = args^.inner.len;
   let open = bnot(client^.locked);
+  if code == code_info {
+    let fits = arity_holds(arity: arity_info, count: count);
+    if band(fits, open) {
+      run_info_promoted(store: store, input: input, args: args, client: client, time: time);
+    } else {
+      execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+    }
+    return unit;
+  }
   if bor(evaluating, by_sha) {
     let fits = count >= 3_u64;
     if band(fits, open) {
