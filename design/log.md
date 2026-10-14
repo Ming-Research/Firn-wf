@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Approve the blocking list design on top of the pub/sub design
+
+Nodes: firn, firn/blocking-lists, firn/connection-ownership, firn/script-attempt-external-effects, firn/aof-rewrite/capture, firn/pubsub-registries, firn/scripts, firn/transactions, firn/orderly-stop
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-blocking-lists-tree for PR #113's design-tree change at head 5b57dba (option A, in English: approve; merge once the gate is green on the final commit and the pub/sub PR has merged, after moving this PR onto main). PR #113 is stacked on PR #100, whose pub/sub design decisions the owner approved with option A on card firn-q-pubsub-tree, as the entries below record.
+
+Summary: Against main this branch changes every node the pub/sub entry below names, because it carries PR #100's approved decisions, and adds the blocking-list decisions of the entry below it. This entry names all of those nodes so that the design check, which requires the newest entry to name every node changed since main, passes while the stack is unmerged; it changes no decision.
+
 ## 2026-10-14 Add blocking list commands
 
 Nodes: firn, firn/blocking-lists, firn/connection-ownership, firn/script-attempt-external-effects, firn/aof-rewrite/capture
