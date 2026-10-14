@@ -61,6 +61,41 @@ alias shutdown_requested = pkg::store::shutdown_requested;
 alias request_shutdown = pkg::store::request_shutdown;
 alias write_log = pkg::persistence::write_log;
 
+const maxclients_reply: Array<u8, 36> = "-ERR max number of clients reached\r\n";
+
+fn reject_client(connection: TcpConnection, factory: &HandleFactory, clock: &Clock) -> result: unit writes(factory), writes(clock) waits {
+  doc "Best-effort maxclients refusal without reading a request or allocating a client handler. Partial writes carry one absolute one-second deadline. Completion or a send error leads to both closes; zero-progress successes give no strict return-time bound.";
+  let TcpConnection(receive: receiver, send: sender) = move connection;
+  let source = &maxclients_reply[0_u64..36_u64];
+  invariant reply_length: source^.len == 36_u64;
+  let began = std::time::now(clock: clock);
+  let bound = instant_after(instant: began, nanoseconds: 1000000000_u64);
+  let deadline = Some<Instant>(value: bound);
+  let never = std::time::cancel_never();
+  let sent = 0_u64;
+  loop @refusing (
+    invariant sent_bound: sent <= 36_u64,
+    invariant source_length: source^.len == 36_u64
+  ) {
+    if sent == 36_u64 {
+      break @refusing;
+    }
+    match send_once(send: &sender, source: source, start: sent, end: 36_u64, deadline: deadline, cancel: &never) {
+      Ok(value: next) => {
+        invariant next_bound: next <= 36_u64;
+        set sent = next;
+      }
+      Err(error: problem) => {
+        break @refusing;
+      }
+    }
+  }
+  std::time::close_cancel_watch(watch: move never);
+  close_receive(factory: factory, receive: move receiver);
+  close_send(factory: factory, send: move sender);
+  return unit;
+}
+
 fn send_all(send: &TcpSend, source: &[u8], length: u64, store: &Keyspace, clock: &Clock, base: Instant) -> result: Result<unit, IoError> reads(source), reads(store), writes(send), writes(clock) waits contract {
   define source_length = source^.len;
   requires length <= source_length;
@@ -560,6 +595,7 @@ struct Options {
   port: u64;
   count: u64;
   idle: u64;
+  maxclients: u64;
   logging: Bool;
   aof: Box<Slots<u8>>;
   bind: Box<Slots<u8>>;
@@ -758,7 +794,7 @@ const option_rewrite_percentage: Array<u8, 27> = "AUTO-AOF-REWRITE-PERCENTAGE";
 const option_rewrite_min_size: Array<u8, 25> = "AUTO-AOF-REWRITE-MIN-SIZE";
 
 fn main(inputs: Inputs) -> status: ExitStatus pure waits {
-  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation reads an optional Redis configuration file or stdin -, followed by --directive values, with the later directives overriding the file. --firn-clients limits accepted clients for tests. Invalid invocation or configuration prints its reason and exits 1; include and directory changes beyond dir . or ./ are refused explicitly pending firn-req-host-paths. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from just before firn listens, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; firn stops with status 3 when it cannot listen, on its address or for those signals.";
+  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation reads an optional Redis configuration file or stdin -, followed by --directive values, with the later directives overriding the file. Maxclients defaults to 10000 and refuses excess connected clients with Redis's error; --firn-clients limits served clients for tests. Invalid invocation or configuration prints its reason and exits 1; include and directory changes beyond dir . or ./ are refused explicitly pending firn-req-host-paths. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from just before firn listens, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; firn stops with status 3 when it cannot listen, on its address or for those signals.";
   let Inputs(args: args, drivers: unused_drivers, cwd: cwd_directory, stdout: unused_stdout, stderr: stderr, handles: handles, stdin: stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter) = move inputs;
   let std::fs::Directory(read: cwd, write: cwd_write) = move cwd_directory;
   let options = read_options(args: &args, factory: &handles, root: &cwd, input: &stdin, output: &stderr);
@@ -797,6 +833,7 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   let startup = read_time(wall: &wall_clock);
   let root = keyspace_new(seed: seed, logging: quiet, password: move password_text, timeout: idle, started: startup.time.unix_ms);
   atomic v = &root.server {
+    set v^.maxclients = options.maxclients;
     set v^.memory.maxmemory = options.memory[0_u64];
     set v^.memory.maxmemory_policy = options.memory[1_u64];
     set v^.memory.maxmemory_samples = options.memory[2_u64];
@@ -877,6 +914,24 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
                 close_send(factory: &handles, send: move sender);
                 break @accepting;
               }
+              let admitted = False();
+              let required = False();
+              atomic m = &keyspace.meta, v = &keyspace.server {
+                if m^.clients < v^.maxclients {
+                  set m^.clients = m^.clients +wrap 1_u64;
+                  set v^.connections = v^.connections +wrap 1_u64;
+                  let length = bytes_length(bytes: &v^.password);
+                  set required = length > 0_u64;
+                  set admitted = True();
+                } else {
+                  set v^.rejected_connections = v^.rejected_connections +wrap 1_u64;
+                }
+              }
+              if admitted {
+              } else {
+                reject_client(connection: move connection, factory: &handles, clock: &clock);
+                continue @accepting;
+              }
               let factory = factory_share(factory: &handles);
               let handle = keyspace_share(store: &keyspace);
               let serving_clock = clock_share(clock: &clock);
@@ -884,15 +939,6 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
               let serving_meter = std::process::meter_share(meter: &memory_meter);
               let serving_settings = settings_copy(settings: &settings);
               let id = accepted +wrap 1_u64;
-              atomic m = &keyspace.meta {
-                set m^.clients = m^.clients +wrap 1_u64;
-              }
-              let required = False();
-              atomic v = &keyspace.server {
-                set v^.connections = v^.connections +wrap 1_u64;
-                let length = bytes_length(bytes: &v^.password);
-                set required = length > 0_u64;
-              }
               set accepted = accepted +wrap 1_u64;
               let serving_shutdown = std::time::cancel_share(source: &shutdown);
               spawn serve(connection: move connection, factory: move factory, store: move handle, clock: move serving_clock, wall: move serving_wall, origin: origin, required: required, settings: move serving_settings, id: id, meter: move serving_meter, shutdown: move serving_shutdown);

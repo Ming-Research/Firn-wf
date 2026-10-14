@@ -1,4 +1,5 @@
 alias Span = pkg::protocol::Span;
+alias IntegerConfig = pkg::commands::IntegerConfig;
 alias IoError = std::io::IoError;
 alias HandleFactory = std::io::HandleFactory;
 alias InputStream = std::io::InputStream;
@@ -20,9 +21,9 @@ const config_unbalanced: Array<u8, 39> = "Unbalanced quotes in configuration lin
 
 const config_bad_integer: Array<u8, 43> = "argument couldn't be parsed into an integer";
 
-const config_port_bounds: Array<u8, 46> = "argument must be between 0 and 65535 inclusive";
-
 const config_int_bounds: Array<u8, 51> = "argument must be between 0 and 2147483647 inclusive";
+
+const config_name_maxclients: Array<u8, 10> = "MAXCLIENTS";
 
 const config_size_bounds: Array<u8, 60> = "argument must be between 0 and 9223372036854775807 inclusive";
 
@@ -493,6 +494,9 @@ fn config_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   if config_is(input: input, span: name, word: &config_name_dir[0_u64..3_u64]) {
     return 11_u64;
   }
+  if config_is(input: input, span: name, word: &config_name_maxclients[0_u64..10_u64]) {
+    return 12_u64;
+  }
   if config_is(input: input, span: name, word: &config_name_memory[0_u64..9_u64]) {
     return 24_u64;
   }
@@ -641,29 +645,42 @@ fn config_apply(options: &Options, input: &[u8], arguments: &Box<Slots<Span>>) -
     }
     return text_of(word: &config_dir_gap[0_u64..66_u64]);
   }
+  let port_setting = kind == 1_u64;
+  let timeout_setting = kind == 3_u64;
+  let maxclients_setting = kind == 12_u64;
+  let port_or_timeout = bor(port_setting, timeout_setting);
+  if bor(port_or_timeout, maxclients_setting) {
+    let setting = if port_setting {
+      give IntegerConfig::Port();
+    } else if timeout_setting {
+      give IntegerConfig::Timeout();
+    } else {
+      give IntegerConfig::Maxclients();
+    }
+    let parsed = pkg::commands::parse_integer_config(input: input, span: span, setting: setting);
+    if parsed.valid {
+      if port_setting {
+        set options^.port = parsed.value;
+      } else if timeout_setting {
+        set options^.idle = parsed.value;
+      } else {
+        set options^.maxclients = parsed.value;
+      }
+      return move empty;
+    }
+    return move parsed.error;
+  }
   let number = pkg::bytes::read_integer(input: input, start: span.start, length: span.length);
   if number.state == 0_u64 {
     return text_of(word: &config_bad_integer[0_u64..43_u64]);
   }
-  let limit = if kind == 1_u64 {
-    give 65535_i64;
-  } else {
-    give 2147483647_i64;
-  }
   let low = number.value < 0_i64;
-  let high = number.value > limit;
+  let high = number.value > 2147483647_i64;
   if bor(low, high) {
-    if kind == 1_u64 {
-      return text_of(word: &config_port_bounds[0_u64..46_u64]);
-    }
     return text_of(word: &config_int_bounds[0_u64..51_u64]);
   }
   let unsigned = cvt::<i64, u64>(number.value);
-  if kind == 1_u64 {
-    set options^.port = unsigned;
-  } else if kind == 3_u64 {
-    set options^.idle = unsigned;
-  } else if kind == 8_u64 {
+  if kind == 8_u64 {
     set options^.rewrite_percentage = unsigned;
   }
   return move empty;
@@ -799,7 +816,7 @@ fn read_options(args: &std::text::Args, factory: &HandleFactory, root: &std::fs:
   set memory[3_u64] = 10_u64;
   set memory[4_u64] = 1_u64;
   set memory[5_u64] = 10_u64;
-  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, memory: memory, valid: readable);
+  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, maxclients: 10000_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, memory: memory, valid: readable);
   let total = std::text::args_count(args: args);
   if total <= 1_u64 {
     return move options;

@@ -4,14 +4,23 @@ alias Span = pkg::protocol::Span;
 alias Keyspace = pkg::store::Keyspace;
 alias Time = pkg::store::Time;
 
-public struct MemoryConfigValue {
-  doc "One validated memory setting, with an empty error on success or Redis's plain error reason on failure, without a RESP frame.";
+public struct ConfigValue {
+  doc "One validated configuration setting, with an empty error on success or Redis's plain error reason on failure, without a RESP frame.";
   public value: u64;
   public valid: Bool;
   public error: Box<Slots<u8>>;
 }
 
-public fn parse_memory_config(input: &[u8], span: Span, which: u64) -> result: MemoryConfigValue reads(input) contract {
+public enum IntegerConfig {
+  doc "The nonnegative integer settings whose startup and CONFIG SET paths share Redis validation.";
+  Port();
+  Timeout();
+  Maxclients();
+}
+
+public fn parse_integer_config(input: &[u8], span: Span, setting: IntegerConfig) -> result: ConfigValue reads(input) doc "Validates port, timeout or maxclients with Redis 7.2.16's signed integer parser, range and plain error reason, without touching a client or server state. Startup and CONFIG SET share this validation.";
+
+public fn parse_memory_config(input: &[u8], span: Span, which: u64) -> result: ConfigValue reads(input) contract {
   requires which >= 24_u64;
   requires which <= 29_u64;
 } doc "Validates the six memory settings with Redis 7.2.16's parsing, bounds and error reasons: parameter indices 24 through 29 name maxmemory, maxmemory-policy, maxmemory-samples, lfu-log-factor, lfu-decay-time and maxmemory-eviction-tenacity, respectively. Startup and CONFIG SET share this validation without touching a client or server state.";
