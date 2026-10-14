@@ -10480,9 +10480,9 @@ fn firn_does_not_rerun_a_script_that_wrote_before_its_budget_ran_out_without_an_
     let program = firn();
     let port = free_port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
     let mut client = connect_when_ready(port);
-    let declared = "redis.call('INCR',KEYS[1]); \
+    let declared ="redis.call('INCR',KEYS[1]); \
         local n=0; for i=1,20000 do n=n+i end; return redis.call('GET',KEYS[1])";
     assert_eq!(memory_request(&mut client, &["EVAL", declared, "1", "counter"]), "$1\r\n1\r\n");
     let whole = "redis.call('INCR',KEYS[1]); redis.call('INCR','undeclared'); \
