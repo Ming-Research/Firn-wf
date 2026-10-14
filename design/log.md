@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Add SSCAN, HSCAN and ZSCAN as whole-collection scans
+
+Nodes: firn/enumeration, firn/scripts
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-coll-scan-tree, which asked to approve PR #92's changes to the design nodes "enumeration" (the iteration node) and "scripts", stacked on the score-text PR; the same day the owner chose option A on card firn-q-coll-scan-interim, which allows the interim behaviour below.
+
+Summary: Until Whitefoot's standard-library hash map can resume a scan (board item coord-wfbl-02-01), SSCAN, HSCAN and ZSCAN return the whole MATCH-filtered collection in one held statement with cursor 0, in firn's element order; the temporary code is removed and replaced by bounded batches when the library delivers, and the item's acceptance waits for that. ZSCAN writes scores with Redis's d2string text when the whole sorted set has at most 128 members of at most 64 bytes each, and with the exact %.17g writer otherwise. The script rollback decision now rests on the scans having no cursor that spans an attempt, and reopens when bounded continuation arrives. Rejected: Redis encoding history, resuming at a numeric offset, dropping entries or returning cursor 0 for a partial result, one score formatter for all sizes.
+
 ## 2026-10-14 Write scores in replies and AOF rewrites byte for byte as Redis 7.2.16
 
 Nodes: firn/scripts
