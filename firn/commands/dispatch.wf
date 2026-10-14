@@ -220,6 +220,26 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   let name = arg(args: args, index: 0_u64);
   let code = name_code(input: input, start: name.start, length: name.length);
   let open = bnot(client^.locked);
+  let events = pubsub_kind(input: input, name: name);
+  if events != 0_u64 {
+    if events == 193_u64 {
+      if pubsub_refused(input: input, args: args, client: client) {
+        return unit;
+      }
+    } else {
+      let arity = held_arity(kind: events);
+      let arity_fits = arity_holds(arity: arity, count: count);
+      if bnot(arity_fits) {
+        reply_arity(client: client, input: input, name: name);
+        return unit;
+      }
+    }
+    if denied(client: client) {
+      return unit;
+    }
+    run_pubsub(store: store, kind: events, input: input, args: args, client: client);
+    return unit;
+  }
   let relative = False();
   let calendar = True();
   let whole_seconds = True();
@@ -235,7 +255,7 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       refused(client: client, input: input, name: name, fits: fits);
     }
     if go {
-      run_eval::<FirnCommands>(store: store, input: input, args: args, client: client, keys_env: env, time: time, clock: clock, by_sha: by_sha);
+      run_eval::<FirnCommands, 0>(store: store, input: input, args: args, client: client, keys_env: env, time: time, clock: clock, by_sha: by_sha);
     }
     return unit;
   }
@@ -1284,5 +1304,82 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     return unit;
   }
   reply_unknown(client: client, input: input, args: args);
+  return unit;
+}
+
+fn promoted_local_control(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> result: Bool reads(input), reads(args) {
+  doc "PING, ECHO, TIME, SELECT, COMMAND and OBJECT HELP observe no dataset in their direct handlers. Their replies need ordinary hub commitment, without the dataset hold; a keyless footprint alone does not establish this property. Other OBJECT subcommands retain dataset execution.";
+  if kind == 171_u64 {
+    let sub = arg(args: args, index: 1_u64);
+    return word_at(input: input, span: sub, word: &object_help_name[0_u64..4_u64]);
+  }
+  let ping = kind == 22_u64;
+  let echo = kind == 23_u64;
+  let time = kind == 162_u64;
+  let select = kind == 163_u64;
+  let command = kind == 166_u64;
+  let local_replies = bor(ping, echo);
+  let session_controls = bor(select, command);
+  let local_controls = bor(time, session_controls);
+  return bor(local_replies, local_controls);
+}
+
+fn execute_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
+  doc "Only the promoted owner's static dispatch reaches this function. Supported dataset commands use their shared EXEC/script bodies under the whole keyspace, metadata and event hub, committing the complete reply before release. Their AOF effects remain ordinary command records without MULTI/EXEC framing. Scripts begin with their existing whole-map/hub attempt. Names without held command parts, top-level command-table arity and authentication refusals, and PING, ECHO, TIME, SELECT, COMMAND and OBJECT HELP retain ordinary dispatch and its error precedence. Command-specific dataset parsing and refusals, including unrecognized subcommands of a dataset family, remain inside the protected execution.";
+  let name = arg(args: args, index: 0_u64);
+  let code = name_code(input: input, start: name.start, length: name.length);
+  let evaluating = code == code_eval;
+  let by_sha = code == code_evalsha;
+  let count = args^.inner.len;
+  let open = bnot(client^.locked);
+  if bor(evaluating, by_sha) {
+    let fits = count >= 3_u64;
+    if band(fits, open) {
+      prepare_access(client: client, time: time);
+      run_eval::<FirnCommands, 1>(store: store, input: input, args: args, client: client, keys_env: env, time: time, clock: clock, by_sha: by_sha);
+    } else {
+      execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+    }
+    return unit;
+  }
+  let kind = held_kind(input: input, name: name);
+  let events = pubsub_command(kind: kind);
+  let unsupported = kind == 0_u64;
+  let local_control = promoted_local_control(kind: kind, input: input, args: args);
+  let ordinary = bor(events, unsupported);
+  if bor(ordinary, local_control) {
+    execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+    return unit;
+  }
+  let arity = held_arity(kind: kind);
+  let fits = arity_holds(arity: arity, count: count);
+  let admitted = band(fits, open);
+  if bnot(admitted) {
+    execute(store: store, input: input, args: args, client: client, env: env, time: time, clock: clock);
+    return unit;
+  }
+  prepare_access(client: client, time: time);
+  set client^.now = time^.check;
+  let journal = None<pkg::store::AccessJournal>();
+  let effects = box_slots_new::<u8>(capacity: 64_u64);
+  let stage = pkg::connection_events::stage_new();
+  let seconds = client^.unix_us / 1000000_u64;
+  let logged = store^.logging;
+  let writing = command_writes(kind: kind);
+  atomic keys = &store^.keys, meta = &store^.meta, hub = &store^.pubsub {
+    if writing {
+      if aof_refuse(meta: meta, client: client) {
+        pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+        return unit;
+      }
+    }
+    let sequence = pkg::store::sequence_new(meta: meta, loading: time^.loading);
+    let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
+    let appended = held_run(sequence: &sequence, journal: &journal, kind: kind, keys: keys, meta: meta, effects: &effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    let length = effects.inner.len;
+    pkg::store::log_append(log: &meta^.log, bytes: &effects.inner[0_u64..length], budget: &budget);
+    pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &budget);
+    pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+  }
   return unit;
 }

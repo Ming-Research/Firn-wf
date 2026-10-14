@@ -72,7 +72,8 @@ When priorities conflict, first:
   dispatch-only `redis-suite-record.yml` workflow produces both lists for
   review and commit, running the suite in the gate's two shards so that its
   evidence holds under the gate's load.
-- The gate needs git, curl, Python 3, Rust stable with Cargo, `tclsh` 8.5 or
+- The gate needs git, curl, GNU `patch`, Python 3, Rust stable with Cargo,
+  `tclsh` 8.5 or
   later, a C compiler and `make` (the suite builds the Redis 7.2.16 tools it
   needs from source and caches them), the submodules
   (`git submodule update --init`), `/usr/bin/clang` and, on Linux, LLD of
