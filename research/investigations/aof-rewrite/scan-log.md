@@ -918,3 +918,101 @@ split observations (answered in the capture node); and narrow effect-mode
 coverage (the restore case now also requires its scan output to be read,
 and adds SET EX, EXPIRE, GETEX, INCRBYFLOAT, HINCRBYFLOAT and SPOP, whose
 AOF forms differ from the commands sent).
+
+## Rewrite at the cache limit
+
+Proposal for board item `firn-rw-cache-refused`: exclude bounded rewrite
+charges from maxmemory. This replaces the headroom policy above on this
+draft branch; it is not an owner approval or a new measurement. The task
+reports refusal in the 14900K cache sample
+[run 38395271960](https://github.com/Ming-Research/Firn-wf/actions/runs/38395271960):
+one core, AOF on, one million keys with Zipf access, allkeys-lru and a limit
+near half the dataset. No reproduction or performance run was made locally.
+
+Source inspection confirms two causes. Admission required counted heap plus
+R plus max(R, 1 MiB) to fit maxmemory. Even if admitted, a command's memory
+check aborted a running rewrite when counted heap plus that headroom
+exceeded the limit. A full cache cannot satisfy that service-headroom rule.
+
+Redis 7.2.16 provides the independent semantic reference:
+
+- `src/aof.c:2413–2425,2442–2445,2464–2475` describes and implements a
+  forked child producing the base while the parent opens a new incremental
+  file; `src/server.c:6610` calls fork.
+- `src/zmalloc.c:91–94,410–413` maintains and reads a process-local allocation
+  counter. Therefore allocations in the child and physical copy-on-write
+  do not increase the parent's counter. This is a deduction from fork and
+  the counter implementation, not an RSS measurement.
+- `src/evict.c:367–368,402,414–424` excludes allocated AOF buffer storage
+  from that counter for maxmemory. `src/aof.c:1351–1360` propagates commands
+  into the ordinary AOF buffer; the multipart protocol uses the new
+  increment rather than a parent rewrite-difference buffer.
+- `src/aof.c:2427–2494` launches without a maxmemory admission check;
+  `src/aof.c:2497–2510` returns the started reply on a successful launch.
+
+The proposal keeps R = floor(maxmemory / 20), or 16 MiB without a limit,
+frozen at admission. It removes both headroom checks while keeping sequence
+exhaustion, stopping and insufficient fixed-plus-chunk reserve refusals.
+Without maxmemory the old headroom calculation was never enforced, so its
+removal changes no unlimited-memory admission behavior. Budget exhaustion
+still aborts the rewrite without rejecting the command or ordinary append.
+
+The comparison and INFO share one calculation, with saturating arithmetic:
+
+```text
+aof = collecting_capacity + pending_capacity
+rewrite_excluded = rewrite.used - rewrite.aof_charged
+mem_not_counted_for_evict = aof + rewrite_excluded
+counted = heap_in_use - mem_not_counted_for_evict
+```
+
+`aof_charged` records the cumulative rotation-buffer portion of `used`.
+Each successful rotation charge adds to both counters under Meta. These
+charges include full replacement capacity and conservative growth overlap,
+and remain in R until completion. They are omitted from the rewrite
+exclusion because ordinary AOF capacities already exclude that storage;
+adding all of `used` would deduct it twice and retain deductions for old
+backings. No command admission interface changes: `evict_before` uses the
+shared comparison for admission, each eviction victim and exhausted-policy
+checks; INFO uses its exclusion helper too.
+
+Abort flags do not release memory, so exclusion persists through worker and
+journal cleanup. Existing refunds follow release. Completion clears both
+counters. The fixed filename/manifest allowance is conservative, and some
+small filename owners survive until the cycle returns, so removing the
+remaining exclusion may raise counted memory; subsequent admission performs
+normal eviction or OOM. The additional rewrite allowance is bounded by R,
+not total RSS by maxmemory + R: ordinary AOF exclusion, in-flight command
+overshoot, allocator overhead and resident pages remain separate.
+
+The new network case fills an allkeys-lru cache to observed eviction, checks
+the exact started reply and successful completion, and verifies all
+surviving values and absent evicted keys after restart. Its assertion prints
+INFO before and after refusal, including abort reason and memory fields.
+The existing post-S1 pressure case now requires successful installation
+after reducing maxmemory to one byte, while checking normal SET OOM and
+restart equality. That expectation changes because ordinary pressure no
+longer cancels the independent rewrite allowance. It also checks pre-cut
+INFO exclusion includes the live rewrite ledger and completion clears it.
+The primary agent reports that a temporary branch containing only the new
+cache case on main failed with "rewrite refused at the eviction limit", so
+the case detects the original admission refusal. The modified implementation
+has not yet passed: [PR #86's gate run 38396947945](https://github.com/Ming-Research/Firn-wf/actions/runs/38396947945)
+failed compilation because aof_rw_cycle still declared writes(meter) after
+admission stopped reading the heap. Its remaining meter_share call only
+reads the meter. The follow-up changes that effect to reads(meter), exactly
+as the EFF-2 diagnostic requires; its caller owns the meter and needs no
+signature change. The scan worker still reads the heap through its own
+meter, so its dataset function's writes(meter) remains required. Compilation
+and new-behavior CI results after this correction remain pending. Pins and
+submodules are unchanged.
+
+A separate read-only GPT-6.1 Sol review inspected the complete uncommitted
+change against 24df67f1c45cb234dd37c8a212733778f6a3f924, affected consumers,
+charge/refund paths, Redis source and the project checklist. It found no
+static defect. Design G1–G3/DC1–DC3 and A1/C1/C2/D1 passed static inspection;
+DC4 and gate evidence remain unverified. In particular, the exact exclusion
+assertion runs before S1, where rotation charges are zero: it does not
+discriminate omitting the rotation-charge subtraction. That accounting
+branch has source-review evidence only. The pressure case retains its
+existing timing-sensitive rotation observation, which CI must exercise.
