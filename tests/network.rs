@@ -10978,10 +10978,11 @@ fn firn_restores_first_access_stamps_on_script_retries() {
 #[test]
 fn firn_does_not_rerun_a_script_that_wrote_before_its_budget_ran_out_without_an_aof() {
     let program = firn();
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]);
-    let mut client = connect_when_ready(port);
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
     let declared ="redis.call('INCR',KEYS[1]); \
         local n=0; for i=1,20000 do n=n+i end; return redis.call('GET',KEYS[1])";
     assert_eq!(memory_request(&mut client, &["EVAL", declared, "1", "counter"]), "$1\r\n1\r\n");
