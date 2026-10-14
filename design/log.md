@@ -12,6 +12,22 @@ Owner-approved: On the shared status board on 2026-10-14, the owner chose option
 
 Summary: A new node records how firn is shipped: the full-LTO build as a dynamic glibc binary at the Ubuntu 24.04 baseline, a container on Debian trixie-slim running as UID 10001 with its AOF in a named volume at /data and binding every IPv4 address internally, and the quickstart checker executing the document's marked shell blocks literally. GitHub Releases and GHCR are the only channels; only tags matching ^v[0-9]+\.[0-9]+\.[0-9]+$ are stable and move latest; only pushed v* tags publish; publication refuses an existing release or image version tag and pushes the image tags before creating the release.
 
+## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
+
+Nodes: firn/memory-limit
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-admit-tree, which asked to approve PR #67's design change at head bc2425d: while firn keeps no append-only file, a command's maxmemory admission check reads the heap and compares it with the limit without a Meta statement and takes Meta only once the reading is over the limit; with a file it keeps the Meta statement; the decision cites the 14900K measurement instead of being provisional.
+
+Summary: Every command's admission check took the exclusive Meta statement whenever a limit was set, so with an 8 GiB limit far above use main ran depth-16 GET at 0.117 and SET at 0.145 of its unlimited throughput on 8 P-cores of the i9-14900K. Without an append-only file nothing is excluded and no rewrite can start, so the Meta-held check reduces to a heap comparison; with it the change ran at 0.941 and 0.948, and without a limit within the twin's range of main ([admission without Meta](../research/investigations/memory-limit/README.md#admission-without-meta-while-no-aof-is-kept)). Admission still raises the peak when its reading exceeds the peak the connection last saw recorded.
+
+## 2026-10-13 Carry the AOF transaction boundary instead of rereading history
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-rw-boundary-state, which asked to approve PR #78's design change at head 17138bd: at the rewrite's file switch, the AOF writer uses the transaction-boundary state it carries from the startup parse and advances with every append, instead of rereading the whole old incremental file; the PR merges after the 14900K measures the per-append parse cost within the twin's noise.
+
+Summary: On the 14900K a rewrite under 50 writing connections scanned the keyspace and then aborted with rotation_reserve, because the single AOF writer reread about 525 MB of incremental file at the switch while new writes filled the capture buffer past its 16 MiB reserve; Redis 7.2.16 does not reread at its switch. The writer now keeps the file length, parse position and first unclosed MULTI from the startup parse, advances them with the same parser after each successful append, and uses them at the switch; it invalidates the state and falls back to the reserve-charged, cancellable reread only when the boundary is uncertain (a failed append without rollback, a failed truncation, an unexpected form, or an unreplayed file opened at startup). Rereading the whole history at every switch is rejected because of that abort ([scan-pace](../research/investigations/aof-rewrite/scan-pace.md)). The capture decision's wording now matches where the writer checks for an abort.
+
 ## 2026-10-13 Write a conditional Meta hold as one statement
 
 Nodes: firn/command-parts
