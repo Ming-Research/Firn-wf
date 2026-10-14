@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Keep serving after an accept error
+
+Nodes: firn/orderly-stop
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-accept-error-tree, which asked to approve PR #104's four new decisions in design/firn/orderly-stop.md at head c407e3d: firn keeps accepting after an accept error, as Redis 7.2.16 does; it waits 100 ms after an error before retrying (shutdown interrupts the wait; only a connection abandoned before accept retries at once); accept errors share one rate limiter (the first logged at once, then at most one per second with the suppressed count); each log write is capped at 512 bytes under one 100 ms deadline that shutdown interrupts.
+
+Summary: Before, one accept error (such as running out of file descriptors) closed the listener and firn exited with status 0 once clients left, silently ending service. Now only shutdown, SHUTDOWN or the client limit ends accepting. The 100 ms wait stops a persistent error from spinning the CPU, which differs from Redis only because Redis calls accept after readiness; the cost is that a new connection may wait up to 100 ms after the error clears. Rejected: stopping and returning 0, retrying at once on descriptor exhaustion, and waiting only for resource exhaustion.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
