@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Install a finished AOF rewrite while appends keep failing
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/append-only-file
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-rw-publish-tree, which asked to approve PR #119's design at head b885c1d: an append failure to the old incremental file no longer abandons a rewrite (the scan and journal are kept, writes stay refused with MISCONF; a sync failure still abandons it); when the base is complete while bytes before the cut are still unwritten, the new base and a new empty incremental file are published as a new file group in one manifest, the held bytes released only in the statement that adopts the new manifest, which also clears the append error (a directory sync failure after the rename is recorded as a sync error and writes stay refused); once the new group is durably published firn accepts writes again, deliberately unlike Redis, which keeps refusing until its held bytes are written; the single switch at S1 gets this exception. Rejected: moving the held bytes into a new incremental file, releasing them at the cut, waiting for the disk to heal before switching, and keeping the append error after the install.
+
+Summary: Redis 7.2.16 installs a finished rewrite while appends to its current incremental file fail and marks the rewrite successful; firn abandoned it at the first append error, leaving the old history on disk and the automatic rewrite off until a manual one succeeds. The held bytes precede the cut and are already in the new base, so the new group executes every command once and the old group stays valid until the new one is published; resuming writes there is the stated difference, since no append is left to clear the error otherwise. The wording of append-only-file about clearing the error and of capture about memory held in this wait follows.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
