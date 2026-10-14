@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Write scores in replies and AOF rewrites byte for byte as Redis 7.2.16
+
+Nodes: firn/scripts
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-score-text-tree, which asked to approve PR #90's design change at head 161875e: the decision on how numbers are written now has firn's scores module own Redis 7.2.16's numeric text writers, so command-score replies and rewritten append-only scores match Redis 7.2.16 byte for byte.
+
+Summary: Redis 7.2.16 selects the text rule by command and encoding, so one module now writes all of them: command-score replies and script double replies use d2string (nan, infinities and signed zeros first, an integral value up to 2^62 as an integer, otherwise fpconv_dtoa); a Lua number passed to redis.call or redis.pcall uses the integer rule and otherwise fpconv_dtoa; rewritten append-only scores use plain fpconv_dtoa; ZSCAN scores for skiplist sorted sets use ld2string(LD_STR_AUTO), implemented by the exact %.17g writer. The Grisu2 digits come from Halo-wf's port, checked against 18,235 doubles recorded on redis-server 7.2.16. Command-reply scores no longer keep %.17g.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
