@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Add the distribution node
+
+Nodes: firn/distribution
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-distribution-tree, which asked to approve PR #84's new design-tree node distribution at head 57ca95d.
+
+Summary: A new node records how firn is shipped: the full-LTO build as a dynamic glibc binary at the Ubuntu 24.04 baseline, a container on Debian trixie-slim running as UID 10001 with its AOF in a named volume at /data and binding every IPv4 address internally, and the quickstart checker executing the document's marked shell blocks literally. GitHub Releases and GHCR are the only channels; only tags matching ^v[0-9]+\.[0-9]+\.[0-9]+$ are stable and move latest; only pushed v* tags publish; publication refuses an existing release or image version tag and pushes the image tags before creating the release.
+
 ## 2026-10-13 Write a conditional Meta hold as one statement
 
 Nodes: firn/command-parts
