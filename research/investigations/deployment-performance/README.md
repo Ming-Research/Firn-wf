@@ -27,6 +27,9 @@ single-threaded client process per client CPU. "firn twin" is the same image
 measured again as `firn-base`; its distance from firn shows the noise, up to
 5%.
 
+The current pinned installation method and its receipts are described
+under the [baseline instrument](#compare-baseline-instrument).
+
 The last column is the scale probe [37456575942](https://github.com/Ming-Research/Firn-wf/actions/runs/37456575942)
 of 2026-10-06. It measured Firn-wf 2c774fb9b, before RESP3, transactions,
 scripts and the command parts. That firn was built with Whitefoot release
@@ -256,6 +259,8 @@ Measured requests keep the planned 100,000-key range. The client also takes
 and either `--seconds` or a total `--requests`; fill emits no timing row,
 and any protocol, I/O or Redis error fails the run.
 
+### Compare baseline instrument
+
 **Compare mode and AOF.** `redis-bench.yml` mode `compare` measures the
 images `revisions` names, interleaved, with a `-twin` as the noise control.
 Its `aof` input (`COMPARE_AOF=true`, default false) starts every image with
@@ -274,6 +279,213 @@ file on (appendfsync everysec, a fresh directory removed when it stops) and
 the same checks; the script fails unless `redis-server --version` reads
 7.2.16. It records `setting,reference=true` (`false` when off) in its output
 and in `host.txt`.
+
+**Competitor selection.** The existing `workload_servers` workflow input is
+reused by mode `compare` as `COMPARE_LINES`; no dispatch input was added.
+It accepts an ordered, space-separated selection of `reference`,
+`reference-io`, `valkey`, `valkey-io`, `dragonfly`, and `garnet`, with the
+optional word `probe`. For example,
+`probe reference reference-io valkey valkey-io dragonfly garnet` selects
+all competitors for a probe. Images still come from `revisions`; include a
+second name ending in `-twin` for the same image. `compare_reference=true`
+adds `reference` once even when the selection already includes it. Empty
+`workload_servers` preserves the image comparison and its optional Redis
+line. In `workloads` mode this input retains its old meaning and does not
+accept `probe` or `reference-io`.
+
+Every selected competitor starts under the same `taskset` server list as
+firn. The I/O-thread lines are omitted at one server CPU; otherwise each
+uses n I/O threads. Redis also sets `io-threads-do-reads yes`, while
+Valkey omits this deprecated no-op. Dragonfly sets `--proactor_threads=n`
+and disables snapshots with `--dbfilename=`. The harness checks every
+Dragonfly thread's `Cpus_allowed_list` after startup; an escaping mask
+causes a fresh start with `--proactor_affinity_mode=off`, then another
+check. Checks after measured work reject a later escape. These observations
+bound the sampled times; they are not continuous monitoring. Garnet sets
+`--lua`, leaves its thread-pool options at their system defaults, and
+inherits the same affinity. These flag choices follow the
+[Redis configuration](https://raw.githubusercontent.com/redis/redis/7.2.16/redis.conf),
+[Valkey configuration](https://raw.githubusercontent.com/valkey-io/valkey/9.1.2/valkey.conf),
+[Dragonfly flags](https://www.dragonflydb.io/docs/managing-dragonfly/flags),
+[Garnet configuration](https://microsoft.github.io/garnet/docs/getting-started/configuration)
+and [.NET CPU-count documentation](https://learn.microsoft.com/en-us/dotnet/api/system.environment.processorcount)
+listed in baseline rules 1–3. Installed-release behavior still needs the CI
+probe; documentation alone is not a successful flag or affinity test.
+
+With AOF, both Redis and Valkey lines use `appendonly yes`,
+`appendfsync everysec`, and `auto-aof-rewrite-percentage 0`, with the
+startup checks above and a fresh directory removed on stop. Asking for
+Dragonfly with AOF is an error, including in probes. Garnet uses `--aof
+--aof-commit-freq 1000`, leaves `--aof-commit-wait` off, and uses a fresh
+`--checkpointdir`. The [v2.2.1 options implementation](https://github.com/microsoft/garnet/blob/v2.2.1/libs/server/Servers/GarnetServerOptions.cs#L817)
+places AOF under this directory; `--logdir` requires storage tiering, which
+would change the experiment. Its startup check writes and deletes a witness, then requires a numeric
+`CommittedUntilAddress` from `INFO persistence` to increase, with a
+nonempty `AOF/aof.log*` file. This checks logical log growth even for
+preallocated files; physical sizes and allocated bytes are also retained.
+It assumes the pinned default of one AOF sublog; vector-valued or absent
+committed offsets fail rather than being guessed. These INFO fields are
+specified by the [v2.2.1 metrics implementation](https://github.com/microsoft/garnet/blob/v2.2.1/libs/server/Metrics/Info/GarnetInfoMetrics.cs#L345),
+not Redis's `aof_enabled` or `CONFIG` interface. This
+establishes logging, not fsync. Every Garnet AOF result is labelled
+**durability not equal**, excluded from a fastest-competitor verdict until
+the pinned-release commit path is checked as baseline rule 2 requires.
+
+**Client and latency.** The process client has exactly 50 connections in
+total. With `client_cpus=16-31`, the first two processes have four each and
+the other fourteen have three each; CPU order determines the remainder.
+Every process gets a share of requests, and the rate uses completed
+requests over the common wall interval. All processes must finish
+successfully and provide valid latency rows. For the four LRANGE tests,
+list preparation is outside the timed interval; only the requested LRANGE
+is timed, since Redis's built-in test also measures its LPUSH setup.
+
+CSV percentiles cannot be merged into an exact distribution. The process
+client therefore keeps every process's p50 and p99 and reports the maximum
+of each as an upper bound on the combined quantile. `compare.csv` preserves
+its first ten columns and appends `quantiles`: `exact` for the threaded
+client or one client process, `upper_bound` for multiple processes. Every
+row, pilot and profiled stdout sample carries this label. The companion
+`compare-percentiles.csv` retains
+`line,pass,cpus,test,depth,process,connections,requests,p50_ms,p99_ms,quantile_kind`;
+individual process rows are `process_histogram` (or `merged_histogram` for
+the threaded client), and the `all` row ends in `exact` or `upper_bound`. `COMPARE_CLIENT=threads` uses one process, exactly 50
+connections and Redis's shared latency histogram, so its quantiles are exact
+over that pass's requests at redis-benchmark's histogram precision.
+
+Every compare run with selected competitor lines, including the optional
+`COMPARE_REFERENCE` line, adds one threaded pass for each CPU/test/depth
+cell on every line, images and twins included. It starts fresh servers and
+uses the line-order reversal of the next numbered pass; the recorded pass
+label is `exact`. The ordinary numbered passes remain the throughput series:
+filter `pass != exact` for throughput and noise sizing. Only `pass = exact`
+with `quantiles = exact` supplies the baseline p99 verdict; upper bounds
+are reported but decide nothing. An image-only comparison adds no pass.
+
+The exact pass uses the same request counts selected by the throughput
+pilot, so its cost is one additional complete pass plus fresh-server setup
+and LRANGE fills. For example, 19 tests at two depths on eight lines would
+add 25 minutes 20 seconds if every added sample lasted five seconds, before
+startup overhead. Its duration is the request count divided by the threaded
+client's observed rate, which can exceed `COMPARE_SECONDS`. Earlier runs
+put that client's ceiling near 6.7 million requests per second on the
+14900K; this is an empirical estimate, not a universal rate threshold. Above
+that ceiling the exact pass measures a client-limited system rather than
+server capacity. The instrument records its actual client CPU busy fraction
+in `compare-cpu.csv` and `compare-limited.csv`, under `pass=exact`, using
+the same mean-busy-above-0.90 rule as numbered passes. The exact pass's
+throughput is diagnostic and must not enter the throughput comparison.
+
+**Version and archive evidence.** A nonempty compare selection records
+selected server versions, expected versions, executable SHA-256 values and
+archive provenance in `host.txt`. A full run fails on a version mismatch
+or unavailable archive provenance. A probe records these problems; only
+missing Dragonfly or Garnet may be skipped (`skip,<line>,no executable`).
+Missing Redis or Valkey is always an error. Executable hashes are labelled
+separately and never substituted for archive hashes. Redis's archive pin
+and archive hash check come from `tests/redis-suite/reference.sh`. Reference
+provenance is verified only when that archive passes its hash check and the
+real path of the selected `redis-server` matches the server in the build
+directory that `reference.sh bin` returns. A same-version binary elsewhere
+on PATH is recorded as an origin mismatch and fails a full run.
+
+Version-output support remains a probe prerequisite. The [Dragonfly v2.0.2
+version printer](https://github.com/dragonflydb/dragonfly/blob/v2.0.2/src/server/dfly_main.cc)
+prints a colored tag followed by a build suffix. The complete suffix
+constraints have not been established from its version-generation source,
+so the matcher retains strict complete-release tokens and may reject that
+legitimate build format. Garnet v2.2.1 `--version` support is also
+unverified. Before a full run, the hosted probe must retain the real output
+and exit status for both; unsupported output or a failed version command
+remains visible and cannot certify a release. No arbitrary suffix is
+accepted merely because it begins with the expected release.
+
+**Pinned installations and receipts.** The dispatch-only
+`redis-bench.yml` mode `install-competitors` (runner 14900k) installs the baseline releases under the
+runner user's `~/.local/opt`, with executable symlinks in `~/.local/bin`.
+It uses fixed archive URLs and SHA-256 values, checks every download before
+installing it, and writes a JSON `firn-install-receipt` in each installation.
+It uses no sudo. Valkey is built from its release source with the runner's
+compiler; Dragonfly and Garnet use the named Linux x86-64 release assets.
+Rerunning replaces the selected release installation and receipt after
+staging succeeds, rather than silently adopting the latest release.
+
+The instrument pins the same version, URL and archive SHA-256 values. It
+parses receipts as data, checks those three fields against its own pins,
+and requires the real path and SHA-256 of the PATH-selected executable to
+match the receipt. A missing, malformed or mismatched receipt fails a full
+run; a probe records the failure. The receipt is evidence supplied by the
+trusted installer, not an independent reconstruction of an executable from
+its archive. Garnet v2.2.1's [release packaging](https://github.com/microsoft/garnet/blob/v2.2.1/.azure/pipelines/createbinaries.ps1)
+contains both `net8.0` and `net10.0` framework-dependent single-file apphosts,
+as specified by its [Linux publish profile](https://github.com/microsoft/garnet/blob/v2.2.1/main/GarnetServer/Properties/PublishProfiles/linux-x64-based.pubxml).
+The installer explicitly selects the `net8.0` apphost and a compatible
+.NET 8 runtime, using the profile's first/default framework rather than
+archive enumeration order. It writes a canonical wrapper that sets
+`DOTNET_ROOT` and executes that apphost. The receipt binds the wrapper,
+apphost payload and runtime-locator paths and hashes. The apphost loads
+runtime libraries from that location rather than executing the `dotnet`
+locator. These checks do not freeze every shared library or framework
+assembly. Selection of the .NET 10 variant would be a different measured
+configuration and must be recorded explicitly.
+
+| Release | Archive | SHA-256 pin |
+|---|---|---|
+| Dragonfly v2.0.2 | `dragonfly-x86_64.tar.gz` | `eb9dfe654c69ab190cb3aa329ed3599ebe19c5e9a3a437bb7bc38ef52f665c88` |
+| Garnet v2.2.1 | `linux-x64-based.tar.xz` | `605d91a6ba4c3f4f416b74e676e945b983cf73fdd28e8cad569aa84e699d3903` |
+| Valkey 9.1.2 | GitHub source `9.1.2.tar.gz` | `19c23908e7d57e8d91ef85b41f5646307582f10f4f0fb999bbf89ed24ec9c983` |
+
+The two binary-archive pins above were obtained from GitHub's recorded
+release-asset `digest` through the connected GitHub reader on 2026-10-13:
+[Dragonfly release](https://github.com/dragonflydb/dragonfly/releases/tag/v2.0.2)
+and [Garnet release](https://github.com/microsoft/garnet/releases/tag/v2.2.1).
+Valkey's exact source URL and digest come from the [Homebrew formula at a
+fixed commit](https://github.com/Homebrew/homebrew-core/blob/b4bfd41d027c1161d55ceeb5246a4bb02f619392/Formula/v/valkey.rb).
+This is third-party checksum evidence for the official GitHub source archive.
+Local curl downloads of all three archives failed DNS resolution, so none
+of these pins was independently computed from archive bytes on this machine.
+Installation CI still downloads the actual bytes with curl and checks
+`sha256sum` against the fixed pins before any installation. The requested
+local download/hash evidence remains unavailable; successful installation
+CI provides the byte-level checks. The measurement workflow places the
+reference Redis tools first on PATH, then `~/.local/bin`, so Ubuntu's older
+Valkey cannot shadow the pinned installation.
+
+**Memory and verification.** `compare-memory.csv` records each measured
+line after all its tests in a pass, before shutdown:
+`line,pass,cpus,used_memory_bytes,rss_bytes,rss_source,vmhwm_bytes`.
+`used_memory` and RSS come from `INFO memory` where available; missing RSS
+falls back to Linux `VmRSS`. Missing allocator memory is left unavailable,
+not filled with RSS. Linux `VmHWM` is also recorded, summed across descendant processes; this
+is the sum of their individual high-water marks, not a simultaneous peak. These are end-of-pass
+observations, not the separate million-session memory experiment.
+A failed correctness pass fails the run with the line named; no failed
+competitor silently disappears from the comparison. The pure selection,
+allocation, CSV, argument, affinity and version helpers have selftests
+wired into `placement-selftest`, now an explicit `make check` target and
+a matching step in the push gate as well as the measurement workflow. They do not
+start any server. Runtime startup, logging and memory checks require CI.
+
+**Scope against the nine baseline gaps.**
+
+| Gap | Instrument disposition |
+|---|---|
+| 1. Compare lacks competitors | Selected lines join image/twin verification, pilots and reversed passes; scale mode is not the baseline path. |
+| 2. 48 connections and first-process p99 | Exactly 50; all process quantiles retained, with explicit CSV bounds. A separate threaded exact pass supplies p99 verdicts. |
+| 3. Selected workloads omit AOF | Compare now starts Valkey/Garnet with AOF. The separate application `workloads` selector remains non-AOF; application baseline integration is still required. |
+| 4. Garnet lacks Lua/AOF flags | Lua enabled; compare AOF has commit frequency 1000 ms. Disk synchronization remains unverified. |
+| 5. Dragonfly affinity unchecked | Startup and post-run checks; fresh restart with affinity off when startup escapes. |
+| 6. Missing Redis I/O line and Valkey no-op | Both I/O lines in compare at n >= 2; no deprecated Valkey reads flag. |
+| 7. Unchecked versions, absent hashes | Full compare validates versions and receipts against fixed archive pins; the pins are fixed; installation evidence remains outstanding. |
+| 8. Redis-only AOF check | Compare uses Redis/Valkey/firn INFO and configuration checks, Garnet log observation. Application-workload version enforcement is not extended. |
+| 9. No redis-benchmark memory | End-of-pass allocator memory, RSS and VmHWM CSV; session-fill measurements remain in workloads mode. |
+
+For the redis-benchmark baseline, set `tests=SUITE_DEFAULT` to select its 19 names
+(the empty compare default remains `mset set get`),
+`depths=1 16`, `profile=false`, and the server/client CPU lists in the
+baseline rules. Probe sizing and full-run sizing remain the dispatcher's
+rule-5 decision. This instrument does not calculate rule-6 verdicts, nor
+does a partial competitor selection constitute a full baseline.
 
 **Placement.** By default the script places servers and clients itself, one
 thread per physical core, leaving core 0 to the OS. `server_cpus` and

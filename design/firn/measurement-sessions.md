@@ -4,6 +4,24 @@ Decision: A process of a measurement's session that is not a server and outlives
 
 Decision: Redis benchmark servers and clients take one logical CPU per distinct physical performance core in Linux topology order, reserving core_id 0 for the OS and runner, with servers first and clients on both threads of the remaining eligible cores, never on a server's core, capping the client count with a warning and recording both lists; without hybrid information the same rule uses all physical cores, and explicit list overrides must preserve physical-core separation and the requested server count, because adjacent logical CPU numbers on the native i9-14900K are hyperthread siblings and later numbers include efficiency cores, instead of assuming consecutive logical CPUs represent independent cores of equal performance.
 
+Decision: Baseline competitors run in compare mode with the same server CPU list, reversed pass order and durability settings as the firn images and their twin, because compare mode already carries the twin and client-busy observations required by the [baseline rules](../../research/investigations/perf-baseline/README.md), instead of extending scale mode's fixed-order measurement.
+
+Decision: Selecting competitor lines opts into strict version and archive-provenance checks, with probes allowed to record unverified versions and omit absent Dragonfly or Garnet, because a full comparison needs identified competitors while a probe must establish the installed tools before that comparison, instead of allowing missing executables or provenance in a full run.
+
+Decision: Competitor provenance is checked through receipts written by the trusted installer, binding its fixed archive version, URL and SHA-256 to the executable's canonical path and content hash, because the installer verifies downloaded bytes before recording the installed files while a source-archive hash alone does not identify the executable on PATH, instead of accepting a same-version executable or an unbound archive digest as provenance. A Garnet managed launcher also binds its payload and runtime host and must match the recorded invocation template ([receipt checks](../../research/investigations/deployment-performance/README.md#compare-baseline-instrument)).
+
+Decision: The Garnet baseline selects the pinned release's net8.0 apphost and a compatible .NET 8 runtime explicitly, because the release contains two framework-dependent single-file variants and the publish profile lists net8.0 first with its default output directory, instead of choosing the first executable encountered while unpacking the archive ([published variants](../../research/investigations/deployment-performance/README.md#compare-baseline-instrument)).
+
+Decision: Dragonfly is refused in AOF cells because it supports snapshots but no append-only log, instead of comparing its snapshot durability with firn's every-second AOF durability ([persistence parity](../../research/investigations/perf-baseline/README.md#rule-2-persistence-parity-in-the-aof-cells)).
+
+Decision: Garnet's AOF results remain labelled durability not equal until the pinned commit path establishes disk synchronization, because the instrument's committed-offset and file checks establish logging but do not prove fsync, instead of treating a millisecond commit setting as evidence of equal durability ([persistence parity](../../research/investigations/perf-baseline/README.md#rule-2-persistence-parity-in-the-aof-cells)).
+
+Decision: The compare client divides exactly 50 connections across its assigned CPUs, because the baseline rules fix 50 client connections for every line, instead of three connections per client CPU, which gave 48.
+
+Decision: Multi-process compare rows label their quantiles as upper bounds, because redis-benchmark CSV percentiles cannot reconstruct a merged distribution and their maximum only bounds the combined p99, instead of reporting the first process's p99 or an average of percentiles as the combined value.
+
+Decision: A competitor comparison runs one additional single-process threaded pass for every line and only its exact merged p99 decides the latency verdict, because a bound cannot decide whether firn's p99 is above a competitor's ([measurement policy](../../research/investigations/perf-baseline/README.md#workloads-and-settings)), instead of judging p99 from the multi-process bounds.
+
 Rejected:
 - Matching leftovers by command name: rejected because other projects run the same servers on the machine.
 - A token in each process's environment: rejected because Redis 7.0.15 and Valkey overwrite the environment the kernel shows when they set their process titles ([setproctitle.c](https://github.com/redis/redis/blob/7.0.15/src/setproctitle.c)), so the servers a cancelled run leaves escape the match.

@@ -12,8 +12,9 @@
 #   sh redis-bench.sh placement-selftest
 #                                 check placement against fake Linux topology
 #                                 and the per-CPU busy reading against a fake
-#                                 /proc/stat, without building or starting any
-#                                 server
+#                                 /proc/stat, plus compare selection, client
+#                                 allocation/CSV, version and competitor pure
+#                                 logic, without building or starting a server
 #   sh redis-bench.sh suite       the correctness pass and the firn criteria:
 #                                 Redis 7.0's redis-benchmark default suite
 #                                 (SUITE_DEFAULT) on every line
@@ -38,7 +39,8 @@
 #                                 appear under two names as a noise control;
 #                                 each pass starts every image in turn, the
 #                                 order reversed on even passes, and runs
-#                                 COMPARE_TESTS (default mset set get) at each
+#                                 COMPARE_TESTS (default mset set get;
+#                                 SUITE_DEFAULT expands all 19 tests) at each
 #                                 depth in COMPARE_DEPTHS (default 16 1) for
 #                                 COMPARE_SECONDS (default 10) each, on
 #                                 each server CPU count in COMPARE_CPUS (default 1 2), for
@@ -81,6 +83,51 @@
 #                                 directory stop removes) when COMPARE_AOF=true;
 #                                 the run records setting,reference=true (false
 #                                 otherwise) in its output and in host.txt
+#                                 COMPARE_LINES adds ordered competitors:
+#                                 reference reference-io valkey valkey-io
+#                                 dragonfly garnet. Optional token probe
+#                                 records unverified versions/provenance and
+#                                 skips only missing Dragonfly/Garnet; full
+#                                 refuses mismatches or missing archive pins.
+#                                 Empty preserves the image/reference selector.
+#                                 Workflow reuses workload_servers for this
+#                                 option in compare, adding no dispatch input.
+#                                 I/O lines run only at n >= 2; both have n
+#                                 threads, Redis alone threads reads explicitly.
+#                                 Dragonfly has n proactors, no snapshots, and
+#                                 checked thread masks (restart with affinity
+#                                 off if needed); AOF with it is refused.
+#                                 Garnet has --lua; with AOF, --aof and
+#                                 --aof-commit-freq 1000 and a fresh
+#                                 --checkpointdir.
+#                                 Its log-write check replaces Redis's INFO/
+#                                 CONFIG check; durability is not yet equal.
+#                                 Version/archive records go to host.txt;
+#                                 install receipts must match fixed archive
+#                                 pins and the PATH executable's path/hash;
+#                                 full runs refuse missing/mismatched receipts.
+#                                 50 total client connections: quotient and
+#                                 remainder over CPU processes (16: 4,4, then
+#                                 fourteen times 3). Process CSV quantiles
+#                                 cannot merge: retain all process p50/p99,
+#                                 label their maximum as an upper bound.
+#                                 compare.csv appends quantiles=exact or
+#                                 upper_bound without moving its ten columns;
+#                                 stdout and pilots carry the same label.
+#                                 COMPARE_CLIENT=threads uses one process and
+#                                 Redis's merged histogram; one process in
+#                                 procs mode also has exact quantiles.
+#                                 A competitor comparison adds one threads
+#                                 pass=exact for every line/test/depth/CPU,
+#                                 with the next ordinal's reversed order and
+#                                 client-busy records. This supplies the p99
+#                                 verdict; numbered passes supply throughput.
+#                                 It reuses fixed request counts and may run
+#                                 longer than COMPARE_SECONDS near the earlier
+#                                 ~6.7M requests/s threaded-client ceiling.
+#                                 compare-memory.csv records used_memory,
+#                                 RSS (INFO or /proc fallback), and VmHWM
+#                                 after each measured server's pass, in bytes.
 #   sh redis-bench.sh workloads   the deployment-performance investigation's
 #                                 std-only Rust client, built offline with
 #                                 cargo in release mode; Redis and firn, each
@@ -599,8 +646,167 @@ placement_selftest() (
     echo 'placement-selftest: passed'
 )
 
+# Validate the actual sample format before extracting the summary tail used
+# by compare-percentiles.csv. Numeric positions in compare.csv stay stable.
+compare_sample_tail() {
+    printf '%s\n' "$1" | awk -F, '
+        function number(s) { return s ~ /^[0-9]+([.][0-9]+)?$/ }
+        {
+            if (NR != 1 || NF != 5 || !number($1) || $1 <= 0 || !number($2) ||
+                !number($3) || !number($4) || $3 > $4 ||
+                ($5 != "exact" && $5 != "upper_bound")) bad = 1
+            tail = $3 "," $4 "," $5
+        }
+        END {
+            if (bad || NR != 1) {
+                print "compare: malformed client sample" > "/dev/stderr"
+                exit 1
+            }
+            print tail
+        }'
+}
+
+# Build all companion rows from the same allocation and latency files the
+# client used. Buffer output until each expected process and the totals have
+# been checked, so missing rows cannot produce plausible partial evidence.
+compare_percentile_rows() (
+    row_tail=$(compare_sample_tail "$6") || exit 1
+    case $3 in procs|threads) ;; *) echo "compare: invalid client mode" >&2; exit 1 ;; esac
+    awk -v key="$1" -v requested="$2" -v mode="$3" -v tail="$row_tail" '
+        function reject(message) {
+            print "compare percentiles: " message > "/dev/stderr"
+            bad = 1
+            exit 1
+        }
+        function integer(s) { return s ~ /^[0-9]+$/ }
+        function number(s) { return s ~ /^[0-9]+([.][0-9]+)?$/ }
+        BEGIN {
+            # An uninitialized awk subscript is "", not numeric zero. Set
+            # this before buffering so process 0 is stored at output[0].
+            rows = 0
+            if (split(key, fields, ",") != 5) reject("invalid sample key")
+            for (i = 1; i <= 5; i++) if (fields[i] == "") reject("empty key field")
+            if (!integer(requested) || requested < 50) reject("invalid total requests")
+            split(tail, summary, ",")
+        }
+        FILENAME == ARGV[1] {
+            if (NF != 4 || !integer($1) || $1 != allocations || !integer($2) ||
+                cpu[$2]++ || !integer($3) || $3 < 1 || !integer($4) || $4 < 1)
+                reject("invalid process allocation")
+            connections[$1] = $3
+            requests[$1] = $4
+            total_connections += $3
+            total_requests += $4
+            allocations++
+            next
+        }
+        FILENAME == ARGV[2] {
+            count = split($0, values, ",")
+            if (FNR == 1) {
+                if (count != 2 || !number(values[1]) || !number(values[2]) ||
+                    values[1] != summary[1] || values[2] != summary[2])
+                    reject("summary differs from client sample")
+                next
+            }
+            if (count != 3 || !integer(values[1]) || values[1] != rows ||
+                !number(values[2]) || !number(values[3]) || values[2] > values[3])
+                reject("invalid or duplicate process latency row")
+            process_index = values[1]
+            if (mode == "threads") {
+                if (process_index != 0) reject("unexpected threaded process")
+                connection_count = 50
+                request_count = requested
+                kind = "merged_histogram"
+            } else {
+                if (!(process_index in connections)) reject("latency row has no allocation")
+                connection_count = connections[process_index]
+                request_count = requests[process_index]
+                kind = "process_histogram"
+            }
+            if (values[2] > max_p50) max_p50 = values[2]
+            if (values[3] > max_p99) max_p99 = values[3]
+            output[rows] = key "," process_index "," connection_count "," request_count "," \
+                sprintf("%.3f,%.3f", values[2], values[3]) "," kind
+            rows++
+        }
+        END {
+            if (bad) exit 1
+            if (!allocations || allocations > 50 || total_connections != 50 || total_requests != requested)
+                reject("allocation totals differ from sample")
+            expected = mode == "threads" ? 1 : allocations
+            if (rows != expected) reject("missing process latency row")
+            if (max_p50 != summary[1] || max_p99 != summary[2]) reject("summary is not process maximum")
+            quantiles = expected == 1 ? "exact" : "upper_bound"
+            if (summary[3] != quantiles) reject("wrong quantile classification")
+            for (i = 0; i < rows; i++) print output[i]
+            print key ",all,50," requested "," tail
+        }' "$4" "$5"
+)
+
+compare_rows_selftest() (
+    fixture=$(mktemp -d)
+    trap 'rm -rf "$fixture"' EXIT
+    sample=1000,0.125,4.000,9.000,upper_bound
+    actual=$(compare_sample_tail "$sample")
+    [ "$actual" = 4.000,9.000,upper_bound ] || exit 1
+    for bad in '1000,0.125,4,9' '1000,0.125,4,9,merged_histogram' \
+        '0,0.125,4,9,exact' '1000,nan,4,9,exact' '1000,0.125,10,9,exact' \
+        '1000,0.125,4,9,exact,extra'; do
+        if compare_sample_tail "$bad" >"$fixture/rows" 2>/dev/null; then
+            echo "compare-rows-selftest: accepted malformed sample $bad" >&2; exit 1
+        fi
+        [ ! -s "$fixture/rows" ] || exit 1
+    done
+    printf '0 16 25 50\n1 17 25 50\n' >"$fixture/allocation"
+    printf '4.000,9.000\n0,2.000,7.000\n1,4.000,9.000\n' >"$fixture/latencies"
+    actual=$(compare_percentile_rows firn,1,2,set,16 100 procs "$fixture/allocation" "$fixture/latencies" "$sample")
+    expected=$(printf 'firn,1,2,set,16,0,25,50,2.000,7.000,process_histogram\nfirn,1,2,set,16,1,25,50,4.000,9.000,process_histogram\nfirn,1,2,set,16,all,50,100,4.000,9.000,upper_bound')
+    [ "$actual" = "$expected" ] || { echo "compare-rows-selftest: wrong process rows" >&2; exit 1; }
+    printf '4.000,9.000\n0,4.000,9.000\n' >"$fixture/latencies"
+    actual=$(compare_percentile_rows firn,exact,2,set,16 100 threads "$fixture/allocation" "$fixture/latencies" 1000,0.125,4.000,9.000,exact)
+    expected=$(printf 'firn,exact,2,set,16,0,50,100,4.000,9.000,merged_histogram\nfirn,exact,2,set,16,all,50,100,4.000,9.000,exact')
+    [ "$actual" = "$expected" ] || { echo "compare-rows-selftest: wrong threaded rows" >&2; exit 1; }
+    # The production row builder must reject a missing process, bad summary,
+    # wrong classification, duplicate row, and allocation/sample mismatch.
+    for fault in missing summary classification duplicate allocation requests malformed; do
+        printf '0 16 25 50\n1 17 25 50\n' >"$fixture/allocation"
+        printf '4.000,9.000\n0,2.000,7.000\n1,4.000,9.000\n' >"$fixture/latencies"
+        checked_sample=$sample
+        case $fault in
+            missing) printf '4.000,9.000\n0,2.000,7.000\n' >"$fixture/latencies" ;;
+            summary) checked_sample=1000,0.125,4.000,8.000,upper_bound ;;
+            classification) checked_sample=1000,0.125,4.000,9.000,exact ;;
+            duplicate) printf '1,4.000,9.000\n' >>"$fixture/latencies" ;;
+            allocation) printf '0 16 25 50\n1 17 24 50\n' >"$fixture/allocation" ;;
+            requests) printf '0 16 25 50\n1 17 25 49\n' >"$fixture/allocation" ;;
+            malformed) checked_sample=1000,0.125,4.000,9.000 ;;
+        esac
+        if compare_percentile_rows firn,1,2,set,16 100 procs "$fixture/allocation" "$fixture/latencies" "$checked_sample" \
+            >"$fixture/rows" 2>/dev/null; then
+            echo "compare-rows-selftest: accepted $fault" >&2; exit 1
+        fi
+        [ ! -s "$fixture/rows" ] || { echo "compare-rows-selftest: partial $fault rows" >&2; exit 1; }
+    done
+    # One ordinary process has an exact histogram too.
+    printf '0 16 50 100\n' >"$fixture/allocation"
+    printf '4.000,9.000\n0,4.000,9.000\n' >"$fixture/latencies"
+    compare_percentile_rows firn,1,1,set,1 100 procs "$fixture/allocation" "$fixture/latencies" 1000,0.125,4.000,9.000,exact \
+        >"$fixture/rows"
+    grep -q ',all,50,100,4.000,9.000,exact$' "$fixture/rows" || exit 1
+    echo 'compare-rows-selftest: passed'
+)
+
+# Keep pure competitor/client checks on the gate's existing selftest path.
+# These helpers are sourced before ROOT/build initialization and start nothing.
+BENCH_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$BENCH_DIR/competitors.sh"
+. "$BENCH_DIR/competitor-versions.sh"
 if [ "${1:-}" = placement-selftest ]; then
     placement_selftest
+    compare_rows_selftest
+    competitors_selftest
+    versions_selftest
+    python3 "$BENCH_DIR/compare-client.py" selftest
     exit 0
 fi
 
@@ -650,8 +856,8 @@ KEEP=
 # Whether a line's server can run on this host.
 available() {
     case $1 in
-        dragonfly-*) command -v "$DRAGONFLY" >/dev/null 2>&1 ;;
-        garnet-*) command -v "$GARNET" >/dev/null 2>&1 ;;
+        dragonfly|dragonfly-*) command -v "$DRAGONFLY" >/dev/null 2>&1 ;;
+        garnet|garnet-*) command -v "$GARNET" >/dev/null 2>&1 ;;
         firn-base-*) test -n "$FIRN_BASELINE" && test -x "$FIRN_BASELINE" ;;
         valkey*) command -v valkey-server >/dev/null 2>&1 ;;
         *) true ;;
@@ -688,46 +894,48 @@ start() {
     esac
     PORT=$((PORT + 1))
     cpus=$(cpu_count "$SERVER_CPUS")
+    server_line=$1
     if [ -z "$KEEP" ]; then
         rm -rf "$OUT/appendonlydir" "$OUT/firn.aof"
     fi
     case $1 in
-        reference)
-            (registered; exec taskset -c "$SERVER_CPUS" redis-server --port "$PORT" --save "" \
-                --appendonly no --timeout "${IDLE:-0}" --daemonize no \
-                ) >"$OUT/server.log" 2>&1 &
-            ;;
-        reference-aof)
-            ref_dir=$OUT
-            if [ "$MODE" = compare ]; then
-                # As for the images, a directory of its own that stop removes.
+        reference|reference-io|reference-aof|reference-io-aof|valkey|valkey-io|valkey-aof|valkey-io-aof|dragonfly|dragonfly-*|garnet|garnet-*)
+            competitor=$1
+            competitor_cpus=$cpus
+            competitor_aof=false
+            case $competitor in
+                *-aof) competitor=${competitor%-aof}; competitor_aof=true ;;
+                dragonfly-*) competitor_cpus=${competitor#dragonfly-}; competitor=dragonfly ;;
+                garnet-*) competitor=garnet ;;
+            esac
+            if [ "$MODE" = compare ] && [ "${COMPARE_AOF:-}" = true ]; then
+                competitor_aof=true
+            fi
+            competitor_dir=$OUT
+            if [ "$MODE" = compare ] && [ "$competitor_aof" = true ]; then
                 AOF_DIR="$OUT/aof-$PORT"
                 rm -rf "$AOF_DIR"
                 mkdir -p "$AOF_DIR"
-                ref_dir=$AOF_DIR
+                competitor_dir=$AOF_DIR
             fi
-            (registered; exec taskset -c "$SERVER_CPUS" redis-server --port "$PORT" --save "" \
-                --appendonly yes --appendfsync everysec --dir "$ref_dir" \
-                --timeout "${IDLE:-0}" --daemonize no \
+            # Existing scale/quick n=1 cells use the plain Valkey server; the
+            # compare selector omits its redundant I/O line at n=1.
+            if [ "$MODE" != compare ] && [ "$competitor" = valkey-io ] && [ "$cpus" -eq 1 ]; then
+                competitor=valkey
+            fi
+            case $competitor in
+                reference*) competitor_bin=redis-server ;;
+                valkey*) competitor_bin=valkey-server ;;
+                dragonfly) competitor_bin=$DRAGONFLY ;;
+                garnet) competitor_bin=$GARNET ;;
+            esac
+            competitor_args "$competitor" "$competitor_cpus" "$competitor_aof" "$PORT" \
+                "$competitor_dir" "${IDLE:-0}" "${DRAGONFLY_AFFINITY:-on}" >"$OUT/server-args-$PORT.txt"
+            (registered
+                set --
+                while IFS= read -r argument; do set -- "$@" "$argument"; done <"$OUT/server-args-$PORT.txt"
+                exec taskset -c "$SERVER_CPUS" "$competitor_bin" "$@"
                 ) >"$OUT/server.log" 2>&1 &
-            ;;
-        valkey)
-            (registered; exec taskset -c "$SERVER_CPUS" valkey-server --port "$PORT" --save "" \
-                --appendonly no --daemonize no ) >"$OUT/server.log" 2>&1 &
-            ;;
-        valkey-io)
-            (registered; exec taskset -c "$SERVER_CPUS" valkey-server --port "$PORT" --save "" \
-                --appendonly no --io-threads "$cpus" --io-threads-do-reads yes \
-                --daemonize no ) >"$OUT/server.log" 2>&1 &
-            ;;
-        dragonfly-*)
-            (registered; exec taskset -c "$SERVER_CPUS" "$DRAGONFLY" --port="$PORT" \
-                --proactor_threads="${1#dragonfly-}" --dbfilename= \
-                --logtostderr ) >"$OUT/server.log" 2>&1 &
-            ;;
-        garnet-*)
-            (registered; exec taskset -c "$SERVER_CPUS" "$GARNET" --port "$PORT" \
-                --bind 127.0.0.1 ) >"$OUT/server.log" 2>&1 &
             ;;
         firn-base-*)
             (registered; WF_DRIVERS=${1#firn-base-} exec taskset -c "$SERVER_CPUS" \
@@ -774,12 +982,30 @@ start() {
     tries=0
     until redis-cli -p "$PORT" PING 2>/dev/null | grep -q PONG; do
         tries=$((tries + 1))
-        if [ "$tries" -gt 400 ]; then
+        if ! kill -0 "$server" 2>/dev/null || [ "$tries" -gt 400 ]; then
+            stop
             echo "$1 never answered on $PORT" >&2
             exit 1
         fi
         sleep 0.05
     done
+    case $1 in
+        dragonfly|dragonfly-*)
+            affinity_status=0
+            compare_affinity_check "$1" || affinity_status=$?
+            if [ "$affinity_status" -eq 2 ] && [ "${DRAGONFLY_AFFINITY:-on}" = on ]; then
+                echo "affinity,$1,restart=off,reason=thread_mask_outside_server_cpus"
+                stop
+                DRAGONFLY_AFFINITY=off
+                start "$1"
+                return
+            elif [ "$affinity_status" -ne 0 ]; then
+                stop
+                echo "$1: Dragonfly affinity check failed" >&2
+                exit 1
+            fi
+            ;;
+    esac
     # Compare mode: every server, twins included, runs under the same memory
     # limit, set after it starts and read back before anything is measured.
     if [ "$MODE" = compare ] && [ -n "${COMPARE_MAXMEMORY:-}" ]; then
@@ -800,6 +1026,15 @@ start() {
     # automatic rewrites are switched off so that the run measures the
     # steady-state append path (appendfsync everysec is firn's only policy).
     if [ "$MODE" = compare ] && [ "${COMPARE_AOF:-}" = true ]; then
+        case $1 in
+            garnet|garnet-*)
+                if ! compare_garnet_aof_check "$1"; then
+                    stop
+                    exit 1
+                fi
+                return
+                ;;
+        esac
         enabled=$(redis-cli -p "$PORT" INFO persistence | tr -d '\r' | sed -n 's/^aof_enabled://p') || enabled=
         echo "aof,$1,aof_enabled=$enabled"
         if [ "$enabled" != 1 ]; then
@@ -819,26 +1054,40 @@ start() {
             echo "$1: CONFIG GET auto-aof-rewrite-percentage read '$reply', not 0" >&2
             exit 1
         fi
+        case $1 in
+            reference*|valkey*)
+                reply=$(redis-cli -p "$PORT" CONFIG GET appendfsync | sed -n 2p) || reply=
+                if [ "$reply" != everysec ]; then
+                    stop
+                    echo "$1: CONFIG GET appendfsync read '$reply', not everysec" >&2
+                    exit 1
+                fi
+                ;;
+        esac
     fi
 }
 
 AOF_DIR=
-# The start and verify argument of a compare line: the reference is Redis,
-# with the append-only file on when COMPARE_AOF=true; any other name is an image.
+# The start and verify argument of a compare line; competitor names are
+# reserved by selector validation, and all other names are firn images.
 compare_arg() {
-    if [ "$1" = reference ]; then
-        if [ "${COMPARE_AOF:-}" = true ]; then
-            echo reference-aof
-        else
-            echo reference
-        fi
-    else
+    # Before the selector existed, every name except reference was an image;
+    # keep even images named valkey/dragonfly/garnet on that legacy path.
+    if [ -z "${COMPARE_LINES:-}" ] && [ "$1" != reference ]; then
         echo "image-$1"
+        return
     fi
+    case $1 in
+        reference|reference-io|valkey|valkey-io|garnet)
+            if [ "${COMPARE_AOF:-}" = true ]; then echo "$1-aof"; else echo "$1"; fi ;;
+        dragonfly) echo dragonfly ;;
+        *) echo "image-$1" ;;
+    esac
 }
 stop() {
-    kill "$server"
+    kill "$server" 2>/dev/null || true
     wait "$server" 2>/dev/null || true
+    server=
     if [ -n "$AOF_DIR" ]; then
         rm -rf "$AOF_DIR"
         AOF_DIR=
@@ -1165,48 +1414,89 @@ server_ticks() {
 # One redis-benchmark run of <test> at depth <depth> for <requests> against
 # the started server, its client threads on CLIENT_CPUS; prints the rate over
 # the run's wall time, the server's CPU microseconds per request, and the
-# client's p50 and p99. redis-benchmark's own rate divides by a clock that
+# client p50/p99 and exact or upper_bound quantile classification. The first
+# four fields retain their positions. redis-benchmark own rate divides by a clock that
 # ticks every 250 ms, a step of 5% in a five-second run, so it is not used.
 # COMPARE_CLIENT=threads runs one redis-benchmark with CLIENT_THREADS
 # threads instead of one process per client CPU. With cpu_record set, it copies
 # /proc/stat to compare-stat-before and compare-stat-after just outside the
 # timed interval, for cpu_busy.
 compare_client() {
-    ticks=$(server_ticks)
+    cmp_test=$1
+    cmp_depth=$2
+    cmp_requests=$3
+    # Redis's -t lrange_* also times a full LPUSH benchmark before LRANGE.
+    # Fill first, outside timing, then run the same command explicitly so
+    # both wall time and server CPU time belong only to the selected test.
+    case $cmp_test in
+        lrange_100|lrange_300|lrange_500|lrange_600)
+            taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" -c 50 -n 100000 \
+                -d 3 -P 16 -t lpush -q >"$OUT/compare-lrange-fill.txt" 2>&1 || return 1
+            cmp_limit=$((${cmp_test#lrange_} - 1))
+            set -- LRANGE mylist 0 "$cmp_limit"
+            ;;
+        *) set -- -t "$cmp_test" ;;
+    esac
+    case ${COMPARE_CLIENT:-procs} in
+        procs|threads) ;;
+        *) echo "COMPARE_CLIENT must be procs or threads" >&2; return 1 ;;
+    esac
+    python3 "$ROOT/research/experiments/redis-bench/compare-client.py" allocation \
+        "$CLIENT_CPUS" "$cmp_requests" >"$OUT/compare-allocation.txt" || return 1
+    cmp_ticks=$(server_ticks) || return 1
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-before"
-    begin=$(date +%s%N)
+    cmp_begin=$(date +%s%N)
     if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
         taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" --threads "$CLIENT_THREADS" \
-            -c 50 -n "$3" -r 100000 -d 3 -P "$2" -t "$1" --csv >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
+            -c 50 -n "$cmp_requests" -r 100000 -d 3 -P "$cmp_depth" --csv "$@" \
+            >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err" || return 1
     else
-        # One process per client CPU, three connections each: one process's
-        # threads stop near 6.6M requests a second on the 14900K, below what
-        # four server CPUs answer. The first process's latencies are kept.
-        pids=
-        index=0
-        for cpu in $(echo "$CLIENT_CPUS" | tr ',' ' '); do
-            taskset -c "$cpu" redis-benchmark -p "$PORT" -c 3 -n $(($3 / CLIENT_THREADS)) \
-                -r 100000 -d 3 -P "$2" -t "$1" --csv >"$OUT/compare-client-$index.csv" 2>"$OUT/compare-client.err" &
-            pids="$pids $!"
-            index=$((index + 1))
+        # Exactly 50 connections in total: quotient/remainder over CPUs,
+        # first two with four and the other fourteen with three on 16 CPUs.
+        # Requests are apportioned to connections without dropping a remainder.
+        cmp_pids=
+        while read -r cmp_index cmp_cpu cmp_connections cmp_count; do
+            taskset -c "$cmp_cpu" redis-benchmark -p "$PORT" -c "$cmp_connections" -n "$cmp_count" \
+                -r 100000 -d 3 -P "$cmp_depth" --csv "$@" \
+                >"$OUT/compare-client-$cmp_index.csv" 2>"$OUT/compare-client-$cmp_index.err" &
+            cmp_pids="$cmp_pids $!"
+        done <"$OUT/compare-allocation.txt"
+        cmp_failed=false
+        # wait's status with several PIDs is only the last PID's. Read each.
+        for cmp_pid in $cmp_pids; do
+            if ! wait "$cmp_pid"; then cmp_failed=true; fi
         done
-        wait $pids
-        cp "$OUT/compare-client-0.csv" "$OUT/compare-client.csv"
-        set -- "$1" "$2" $(($3 / CLIENT_THREADS * CLIENT_THREADS))
+        [ "$cmp_failed" = false ] || { echo "compare client process failed" >&2; return 1; }
     fi
-    end=$(date +%s%N)
+    cmp_end=$(date +%s%N)
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-after"
-    ticks=$(($(server_ticks) - ticks))
-    # The fields between the first and last quoted ones hold no quote.
-    awk -F'","' -v n="$3" -v ns=$((end - begin)) -v ticks="$ticks" -v hz="$(getconf CLK_TCK)" '
-        $1 != "\"test" {
-            printf "%.0f,%.3f,%s,%s\n", n / (ns / 1e9), ticks / hz * 1e6 / n, $5, $7
-        }' "$OUT/compare-client.csv"
+    cmp_after=$(server_ticks) || return 1
+    cmp_ticks=$((cmp_after - cmp_ticks))
+    if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
+        set -- "$OUT/compare-client.csv"
+    else
+        set --
+        while read -r cmp_index cmp_cpu cmp_connections cmp_count; do
+            set -- "$@" "$OUT/compare-client-$cmp_index.csv"
+        done <"$OUT/compare-allocation.txt"
+    fi
+    python3 "$ROOT/research/experiments/redis-bench/compare-client.py" csv "$cmp_test" "$@" \
+        >"$OUT/compare-latencies.txt" || return 1
+    if [ "$#" -eq 1 ]; then cmp_kind=exact; else cmp_kind=upper_bound; fi
+    cmp_quantiles=$(sed -n '1p' "$OUT/compare-latencies.txt")
+    cmp_hz=$(getconf CLK_TCK) || return 1
+    cmp_sample=$(awk -v n="$cmp_requests" -v ns=$((cmp_end - cmp_begin)) -v ticks="$cmp_ticks" -v hz="$cmp_hz" \
+        -v quantiles="$cmp_quantiles" -v kind="$cmp_kind" 'BEGIN {
+            if (ns <= 0 || hz <= 0 || ticks < 0) exit 1
+            printf "%.0f,%.3f,%s,%s\n", n / (ns / 1e9), ticks / hz * 1e6 / n, quantiles, kind
+        }') || return 1
+    compare_sample_tail "$cmp_sample" >/dev/null || return 1
+    printf '%s\n' "$cmp_sample"
 }
 
 # The comparison of prebuilt images. A line whose replies fail verify stops
 # the run; every sample is kept as compare.csv's line,pass,cpus,test,depth,
-# requests,rps,server_cpu_us_per_request,p50_ms,p99_ms, and each test's
+# requests,rps,server_cpu_us_per_request,p50_ms,p99_ms,quantiles, and each test's
 # request count is sized from the
 # fastest image's pilot so that every image runs the same count. Where
 # /proc/stat exists, each measured sample also gives compare-cpu.csv one
@@ -1219,6 +1509,9 @@ compare_client() {
 # Whitefoot runtime's per-driver counts when WF_SCHED_REPORT is set, is kept
 # per pass as compare-server-<line>-<cpus>-<pass>.txt.
 if [ "$MODE" = compare ]; then
+    trap '[ -z "$server" ] || stop' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     total=$(nproc)
     if [ -n "${COMPARE_MAXMEMORY:-}" ]; then
         case $COMPARE_MAXMEMORY in
@@ -1254,7 +1547,7 @@ if [ "$MODE" = compare ]; then
     if [ -f "$OUT/host.txt" ]; then
         echo "setting,reference=${COMPARE_REFERENCE:-false}" >>"$OUT/host.txt"
     fi
-    if [ "${COMPARE_REFERENCE:-}" = true ]; then
+    if [ "${COMPARE_REFERENCE:-}" = true ] && [ -z "${COMPARE_LINES:-}" ]; then
         reference_version=$(redis-server --version)
         case " $reference_version " in
             *" v=7.2.16 "*) ;;
@@ -1270,21 +1563,97 @@ if [ "$MODE" = compare ]; then
         echo "skip,compare-cpu.csv,no /proc/stat"
     fi
     tests=${COMPARE_TESTS:-mset set get}
+    if [ "$tests" = SUITE_DEFAULT ]; then
+        tests=$(echo "$SUITE_DEFAULT" | tr ',' ' ')
+    fi
     depths=${COMPARE_DEPTHS:-16 1}
-    names=
+    python3 "$ROOT/research/experiments/redis-bench/compare-client.py" selection \
+        "${IMAGES:-}" "${COMPARE_LINES:-}" "${COMPARE_REFERENCE:-false}" \
+        >"$OUT/compare-selection.txt" || exit 1
+    COMPARE_PROBE=$(sed -n '1p' "$OUT/compare-selection.txt")
+    image_names=$(sed -n '2p' "$OUT/compare-selection.txt")
+    competitor_names=$(sed -n '3p' "$OUT/compare-selection.txt")
     for pair in $IMAGES; do
-        names="$names ${pair%%=*}"
         sha256sum "${pair#*=}" | sed "s/^/image,${pair%%=*},/"
     done
-    if [ "${COMPARE_REFERENCE:-}" = true ]; then
-        names="$names reference"
+    if [ -n "${COMPARE_LINES:-}" ]; then
+        echo "setting,compare_run=$([ "$COMPARE_PROBE" = true ] && echo probe || echo full)"
+        echo "setting,compare_lines=$competitor_names"
+        if [ -f "$OUT/host.txt" ]; then
+            echo "setting,compare_probe=$COMPARE_PROBE" >>"$OUT/host.txt"
+            echo "setting,compare_lines=$competitor_names" >>"$OUT/host.txt"
+        fi
+        installed_names=
+        for name in $competitor_names; do
+            if [ "$name" = dragonfly ] && [ "${COMPARE_AOF:-}" = true ]; then
+                echo "Dragonfly has no AOF; cannot select dragonfly in an AOF cell" >&2
+                exit 1
+            fi
+            arg=$(compare_arg "$name") || exit 1
+            if available "$arg"; then
+                installed_names="$installed_names $name"
+            elif [ "$COMPARE_PROBE" = true ] && { [ "$name" = dragonfly ] || [ "$name" = garnet ]; }; then
+                echo "skip,$name,no executable"
+                echo "skip,$name,no executable" >>"$OUT/host.txt"
+            else
+                echo "compare requires an executable for $name" >&2
+                exit 1
+            fi
+        done
+        competitor_names=$installed_names
+        compare_versions $competitor_names || exit 1
     fi
-    reversed=$(echo $names | tr ' ' '\n' | awk '{ a[NR] = $0 } END { for (i = NR; i > 0; i--) printf "%s ", a[i] }')
-    echo 'line,pass,cpus,test,depth,requests,rps,server_cpu_us_per_request,p50_ms,p99_ms' >"$OUT/compare.csv"
+    echo "setting,compare_connections=50,client=${COMPARE_CLIENT:-procs}"
+    quantile_kind=exact_if_threads_or_single_process_otherwise_upper_bound
+    echo "setting,compare_quantiles=$quantile_kind"
+    if [ -f "$OUT/host.txt" ]; then
+        echo "setting,compare_connections=50,client=${COMPARE_CLIENT:-procs}" >>"$OUT/host.txt"
+        echo "setting,compare_quantiles=$quantile_kind" >>"$OUT/host.txt"
+    fi
+    echo 'line,pass,cpus,test,depth,requests,rps,server_cpu_us_per_request,p50_ms,p99_ms,quantiles' >"$OUT/compare.csv"
+    echo 'line,pass,cpus,test,depth,process,connections,requests,p50_ms,p99_ms,quantile_kind' >"$OUT/compare-percentiles.csv"
+    echo 'line,pass,cpus,used_memory_bytes,rss_bytes,rss_source,vmhwm_bytes' >"$OUT/compare-memory.csv"
     for n in ${COMPARE_CPUS:-1 2}; do
         placement_for_count "$n" "$((total - n < 1 ? 1 : total - n < 16 ? total - n : 16))" || continue
+        names=$image_names
+        cell_competitors=
+        for name in $competitor_names; do
+            case $name in
+                reference-io|valkey-io)
+                    if [ "$n" -lt 2 ]; then
+                        echo "skip,$name,cpus=$n,I/O line equals plain line below two CPUs"
+                        continue
+                    fi
+                    ;;
+            esac
+            names="$names $name"
+            cell_competitors="$cell_competitors $name"
+        done
+        [ -n "$names" ] || { echo "no compare lines apply at cpus=$n" >&2; exit 1; }
+        if [ -n "${COMPARE_LINES:-}" ]; then
+            required="reference valkey garnet"
+            [ "${COMPARE_AOF:-}" = true ] || required="$required dragonfly"
+            [ "$n" -lt 2 ] || required="$required reference-io valkey-io"
+            missing=
+            for name in $required; do
+                case " $cell_competitors " in
+                    *" $name "*) ;;
+                    *) missing="$missing $name" ;;
+                esac
+            done
+            if [ -n "$missing" ]; then
+                echo "baseline,cpus=$n,incomplete,no verdict,missing=$missing"
+                echo "baseline,cpus=$n,incomplete,no verdict,missing=$missing" >>"$OUT/host.txt"
+            else
+                echo "baseline,cpus=$n,all required competitor lines selected,verdict requires analysis"
+                echo "baseline,cpus=$n,all required competitor lines selected,verdict requires analysis" >>"$OUT/host.txt"
+            fi
+        fi
+        reversed=$(echo $names | tr ' ' '\n' | awk '{ a[NR] = $0 } END { for (i = NR; i > 0; i--) printf "%s ", a[i] }')
         for name in $names; do
-            verify "$(compare_arg "$name")"
+            arg=$(compare_arg "$name") || exit 1
+            echo "verify,$name,cpus=$n"
+            verify "$arg"
         done
         sizes="$OUT/compare-sizes-$n.txt"
         : >"$sizes"
@@ -1292,8 +1661,12 @@ if [ "$MODE" = compare ]; then
             for depth in $depths; do
                 fastest=0
                 for name in $names; do
-                    start "$(compare_arg "$name")"
-                    rate=$(compare_client "$test" "$depth" 1000000 | cut -d, -f1)
+                    arg=$(compare_arg "$name") || exit 1
+                    start "$arg"
+                    pilot=$(compare_client "$test" "$depth" 1000000) || exit 1
+                    echo "pilot,$name,$n,$test,$depth,$pilot"
+                    rate=${pilot%%,*}
+                    compare_affinity_check "$arg" || exit 1
                     stop
                     fastest=$(awk -v a="$fastest" -v b="$rate" 'BEGIN { print (b > a ? b : a) }')
                 done
@@ -1301,29 +1674,53 @@ if [ "$MODE" = compare ]; then
             done
         done
         pass=1
-        while [ "$pass" -le "${COMPARE_PASSES:-6}" ]; do
+        ordinary_client=${COMPARE_CLIENT:-procs}
+        final_pass=${COMPARE_PASSES:-6}
+        # Competitor selections add one exact merged-histogram pass. Its
+        # disjoint identity keeps this slower client out of throughput medians.
+        if [ -n "$cell_competitors" ]; then final_pass=$((final_pass + 1)); fi
+        while [ "$pass" -le "$final_pass" ]; do
+            sample_pass=$pass
+            COMPARE_CLIENT=$ordinary_client
+            if [ "$pass" -gt "${COMPARE_PASSES:-6}" ]; then
+                sample_pass=exact
+                COMPARE_CLIENT=threads
+                echo "setting,exact_pass,cpus=$n,ordinal=$pass,client=threads,throughput=diagnostic_only"
+                echo "setting,exact_pass,cpus=$n,ordinal=$pass,client=threads,throughput=diagnostic_only" >>"$OUT/host.txt"
+                echo "warning,exact_client,previous 14900K single-process client saturated near 6.7M requests/s; this is an observation, not a cutoff; use recorded client busy; fixed request counts may run longer"
+                echo "warning,exact_client,previous 14900K single-process client saturated near 6.7M requests/s; this is an observation, not a cutoff; use recorded client busy; fixed request counts may run longer" >>"$OUT/host.txt"
+            fi
             order=$names
             if [ $((pass % 2)) -eq 0 ]; then
                 order=$reversed
             fi
             for name in $order; do
-                start "$(compare_arg "$name")"
+                arg=$(compare_arg "$name") || exit 1
+                start "$arg"
                 while read -r test depth requests; do
-                    echo "$name,$pass,$n,$test,$depth,$requests,$(compare_client "$test" "$depth" "$requests")" |
+                    sample=$(compare_client "$test" "$depth" "$requests") || exit 1
+                    echo "$name,$sample_pass,$n,$test,$depth,$requests,$sample" |
                         tee -a "$OUT/compare.csv"
+                    compare_percentile_rows "$name,$sample_pass,$n,$test,$depth" "$requests" \
+                        "${COMPARE_CLIENT:-procs}" "$OUT/compare-allocation.txt" "$OUT/compare-latencies.txt" "$sample" \
+                        >>"$OUT/compare-percentiles.csv" || exit 1
                     if [ -n "$cpu_record" ]; then
                         cpu_busy "$OUT/compare-stat-before" "$OUT/compare-stat-after" \
                             "$SERVER_CPUS" "$CLIENT_CPUS" >"$OUT/compare-busy"
-                        echo "$name,$pass,$n,$test,$depth,$(client_limited "$OUT/compare-busy")" >>"$OUT/compare-limited.csv"
-                        awk -v key="$name,$pass,$n,$test,$depth" '{ print key "," $0 }' \
+                        limit=$(client_limited "$OUT/compare-busy") || exit 1
+                        echo "$name,$sample_pass,$n,$test,$depth,$limit" >>"$OUT/compare-limited.csv"
+                        awk -v key="$name,$sample_pass,$n,$test,$depth" '{ print key "," $0 }' \
                             "$OUT/compare-busy" >>"$cpu_record"
                     fi
                 done <"$sizes"
+                compare_affinity_check "$arg" || exit 1
+                compare_memory "$name" "$sample_pass" "$n" || exit 1
                 stop
-                cp "$OUT/server.log" "$OUT/compare-server-$name-$n-$pass.txt"
+                cp "$OUT/server.log" "$OUT/compare-server-$name-$n-$sample_pass.txt"
             done
             pass=$((pass + 1))
         done
+        COMPARE_CLIENT=$ordinary_client
         if [ -n "$PERF" ]; then
             # COMPARE_PROFILE lists test and depth pairs, separated by ';'.
             echo "${COMPARE_PROFILE:-mset 16}" | tr ';' '\n' | while read -r ptest pdepth; do
@@ -1331,14 +1728,17 @@ if [ "$MODE" = compare ]; then
                 requests=$(awk -v t="$ptest" -v d="$pdepth" '$1 == t && $2 == d { print $3 }' "$sizes")
                 test -n "$requests" || { echo "skip,profile,$ptest $pdepth not measured"; continue; }
                 for name in $names; do
-                    start "$(compare_arg "$name")"
+                    arg=$(compare_arg "$name") || exit 1
+                    start "$arg"
                     # With PERF_CALLERS set, each sample carries a DWARF-unwound
                     # stack, since firn keeps no frame pointers.
                     "$PERF" record ${PERF_CALLERS:+--call-graph dwarf,16384} -F "${PERF_FREQUENCY:-4999}" \
                         -p "$server" -o "$OUT/perf-$name-$n-$ptest.data" >/dev/null 2>&1 &
                     recorder=$!
                     sleep 1
-                    compare_client "$ptest" "$pdepth" "$requests" | sed "s/^/profiled,$name,$n,$ptest,/"
+                    profile_sample=$(compare_client "$ptest" "$pdepth" "$requests") || exit 1
+                    echo "$profile_sample" | sed "s/^/profiled,$name,$n,$ptest,/"
+                    compare_affinity_check "$arg" || exit 1
                     kill -INT "$recorder"
                     wait "$recorder" || true
                     stop
@@ -1358,11 +1758,14 @@ if [ "$MODE" = compare ]; then
                     # perf c2c's load and store samples, which name the cache
                     # lines several cores write and read in turn.
                     if [ -n "$PERF_C2C" ]; then
-                        start "$(compare_arg "$name")"
+                        arg=$(compare_arg "$name") || exit 1
+                        start "$arg"
                         "$PERF" c2c record -p "$server" -o "$OUT/c2c-$name-$n-$ptest.data" >/dev/null 2>&1 &
                         recorder=$!
                         sleep 1
-                        compare_client "$ptest" "$pdepth" "$requests" | sed "s/^/c2c,$name,$n,$ptest,/"
+                        profile_sample=$(compare_client "$ptest" "$pdepth" "$requests") || exit 1
+                        echo "$profile_sample" | sed "s/^/c2c,$name,$n,$ptest,/"
+                        compare_affinity_check "$arg" || exit 1
                         kill -INT "$recorder"
                         wait "$recorder" || true
                         stop
