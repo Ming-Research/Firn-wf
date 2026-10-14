@@ -65,6 +65,7 @@ public struct WriteSequence {
   doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; an inert token, taken while loading or by a statement that holds no Meta, leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed key before the outer statement commits; the inactive path allocates nothing.";
   public value: u64;
   public taken: Bool;
+  public changed: Bool;
   public inert: Bool;
   public exhausted: Bool;
   public capturing: Bool;
@@ -267,7 +268,7 @@ public fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence re
 
 public fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "sequence_new for a statement holding exactly one key. When that key's previous write lies inside the current rewrite window, the journal already reproduces its state, so the statement journals its own append-only bytes instead of the key's image.";
 
-public fn sequence_inert() -> sequence: WriteSequence pure doc "The token of an outer atomic statement that holds no Meta, as a command's statement does while the keyspace keeps no append-only file and the statement queues no expiry: it takes no sequence, stamps changed entries zero, captures nothing and is never committed, as a loading token behaves.";
+public fn sequence_inert() -> sequence: WriteSequence pure doc "The token of an outer atomic statement that holds no Meta, as a command's statement does while the keyspace keeps no append-only file and the statement queues no expiry: it takes no sequence, stamps changed entries zero, captures nothing and is never committed, as a loading token behaves; it records only in changed that a dataset change happened. A declared-key script with the AOF off uses it; with the AOF on every statement still starts from sequence_new.";
 
 public fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) doc "Takes one sequence lazily for an actual dataset mutation, reusing it for the rest of the statement. Reaching u64's maximum saturates the counter and permanently refuses future captures until a quiescent reset protocol exists; service mutations continue. An inert token takes no sequence.";
 
@@ -345,6 +346,8 @@ public fn restore_access_entries(journal: &Option<AccessJournal>, declared: &Key
 } doc "Restores original first-refresh stamps in held declared entries after payload undo, preserving original absence.";
 
 public fn attempt_due_new() -> due: ExpiryQueue pure doc "An empty private expiry queue; its invalidation flag is unpublished until attempt acceptance.";
+
+public fn attempt_due_pending(staged: &ExpiryQueue) -> pending: Bool reads(staged) doc "Whether an attempt's private expiry queue holds insertions or an eligibility change that attempt_due_commit would publish; a statement without them need not take Meta.";
 
 public fn attempt_due_commit(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(staged), writes(target) doc "Publishes accepted expiry insertions and volatile eligibility into held metadata; abandonment drops the private queue instead.";
 

@@ -2031,7 +2031,47 @@ fn held_entries_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
 }
 
 fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: u64 reads(input), reads(args), reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error), writes(memory), writes(client) {
-  doc "Redis script command admission, shared by declared and whole attempts, in Redis 7.0.15 scriptCall's order (script.c:530-557): subcommand and arity errors, then the active AOF check at the first WRITE command (scriptVerifyWriteCommandAllow, script.c:349-386), then DENYOOM; accepted WRITE flags are recorded before command-specific parsing. Both attempt kinds hold Meta for the entire attempt and the writer needs that hold to publish, so the status read here cannot change during the attempt. WRITE_DIRTY suppresses later disk checks and restarts with each retry, including the whole-keyspace fallback. The shared error reply reaches redis.call as an exception and redis.pcall as an error table.";
+  doc "Redis script command admission, shared by declared and whole attempts, in Redis 7.0.15 scriptCall's order (script.c:530-557): subcommand and arity errors (script_admit_head), then the active AOF check at the first WRITE command (scriptVerifyWriteCommandAllow, script.c:349-386), then DENYOOM; accepted WRITE flags are recorded before command-specific parsing (script_admit_after). Both attempt kinds hold Meta for the entire attempt and the writer needs that hold to publish, so the status read here cannot change during the attempt. WRITE_DIRTY suppresses later disk checks and restarts with each retry, including the whole-keyspace fallback. The shared error reply reaches redis.call as an exception and redis.pcall as an error table.";
+  let kind = script_admit_head(input: input, args: args, client: client);
+  if kind == 0_u64 {
+    return 0_u64;
+  }
+  let unwritten = bnot(memory^.write_dirty);
+  let writing = command_writes(kind: kind);
+  if band(unwritten, writing) {
+    if aof_refuse(meta: meta, client: client) {
+      return 0_u64;
+    }
+  }
+  return script_admit_after(memory: memory, kind: kind, client: client);
+}
+
+fn script_admit_quiet(memory: &pkg::scripting::ScriptMemory, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: u64 reads(input), reads(args), writes(memory), writes(client) {
+  doc "script_admit with the AOF off, so that the script holds no Meta: with no AOF its health cannot change and is never a refusal, and the check is left out, reading nothing global.";
+  let kind = script_admit_head(input: input, args: args, client: client);
+  if kind == 0_u64 {
+    return 0_u64;
+  }
+  return script_admit_after(memory: memory, kind: kind, client: client);
+}
+
+fn script_admit_after(memory: &pkg::scripting::ScriptMemory, kind: u64, client: &Client) -> admitted: u64 writes(memory), writes(client) {
+  doc "The part of script admission after the AOF check: DENYOOM before the first write, then the write flag.";
+  let denyoom = command_denyoom(kind: kind);
+  let unwritten = bnot(memory^.write_dirty);
+  let before_write = band(memory^.pre_command_oom, unwritten);
+  if band(before_write, denyoom) {
+    reply_error(client: client, word: &oom_error[0_u64..55_u64]);
+    return 0_u64;
+  }
+  if command_writes(kind: kind) {
+    set memory^.write_dirty = True();
+  }
+  return kind;
+}
+
+fn script_admit_head(input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: u64 reads(input), reads(args), writes(client) {
+  doc "Script admission up to the AOF check: the subcommand and arity errors, and the command's kind, zero when refused or not a script command.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
@@ -2065,22 +2105,6 @@ fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8]
   if kind != 0_u64 {
     let arity = held_arity(kind: kind);
     if arity_holds(arity: arity, count: count) {
-      let denyoom = command_denyoom(kind: kind);
-      let unwritten = bnot(memory^.write_dirty);
-      let writing = command_writes(kind: kind);
-      if band(unwritten, writing) {
-        if aof_refuse(meta: meta, client: client) {
-          return 0_u64;
-        }
-      }
-      let before_write = band(memory^.pre_command_oom, unwritten);
-      if band(before_write, denyoom) {
-        reply_error(client: client, word: &oom_error[0_u64..55_u64]);
-        return 0_u64;
-      }
-      if command_writes(kind: kind) {
-        set memory^.write_dirty = True();
-      }
       return kind;
     }
     reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
@@ -2169,10 +2193,44 @@ fn script_command_entries(sequence: &pkg::store::WriteSequence, memory: &pkg::sc
   return pkg::scripting::ScriptCommandResult::Completed(appended: appended);
 }
 
+fn script_command_entries_quiet(sequence: &pkg::store::WriteSequence, memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: pkg::scripting::ScriptCommandResult reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(memory), writes(journal), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
+  requires slots^.len == declared^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "script_command_entries for a script with the AOF off, which holds no Meta: admission skips the AOF health check, which has no state to read, and nothing else here reads or writes Meta.";
+  let kind = script_admit_quiet(memory: memory, input: input, args: args, client: client);
+  if kind == 0_u64 {
+    return pkg::scripting::ScriptCommandResult::Completed(appended: 0_u64);
+  }
+  if script_whole_kind(kind: kind) {
+    if kind == 168_u64 {
+      let plan = scan_plan(input: input, args: args);
+      if scan_refused(client: client, plan: &plan) {
+        return pkg::scripting::ScriptCommandResult::Completed(appended: 0_u64);
+      }
+    }
+    let flushall = kind == 164_u64;
+    let flushdb = kind == 165_u64;
+    if bor(flushall, flushdb) {
+      if flush_refused(input: input, args: args, client: client) {
+        return pkg::scripting::ScriptCommandResult::Completed(appended: 0_u64);
+      }
+    }
+    return pkg::scripting::ScriptCommandResult::NeedWholeMap();
+  }
+  let fallback = False();
+  let appended = held_entries_run(sequence: sequence, journal: journal, kind: kind, keys: slots, declared: declared, undo: undo, fallback: &fallback, due: due, effects: effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+  if fallback {
+    return pkg::scripting::ScriptCommandResult::NeedWholeMap();
+  }
+  return pkg::scripting::ScriptCommandResult::Completed(appended: appended);
+}
+
 binding FirnCommands : ScriptCommands {
   doc "The commands a script calls are firn's commands written as parts, run by script_command.";
   call = script_command;
   call_entries = script_command_entries;
+  call_entries_quiet = script_command_entries_quiet;
 }
 
 fn script_type(sequence: &pkg::store::WriteSequence, keys: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, fallback: &Bool, operation_kind: u64, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> appended: u64 reads(declared), reads(input), reads(args), reads(time), writes(sequence), writes(keys), writes(undo), writes(fallback), writes(effects), writes(client) contract {
