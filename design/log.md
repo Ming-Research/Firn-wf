@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Exclude expired keys from SCAN and cap glob nesting as Redis 7.2.16
+
+Nodes: firn/enumeration
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-scan-match-tree, which asked to approve PR #99's two new decisions on the iteration node at head ca56c8c.
+
+Summary: SCAN removes and records a matched key found expired before deciding whether its type belongs in the reply, so the removed key is excluded under every TYPE argument including none, as Redis 7.2.16's scanGenericCommand rejects a null lookup result. The shared glob matcher, used by KEYS, SCAN MATCH and CONFIG GET, obeys Redis 7.2.16's maximum nesting of 1000 while staying iterative, counting only entry into a nonterminal star suffix after adjacent stars collapse; a 1001st suffix entry returns no match and a trailing star can still succeed at depth 1000.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
