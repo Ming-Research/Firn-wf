@@ -273,19 +273,10 @@ fn start_firn(program: &CompiledProgram, native: bool) -> (ProgramChild, TcpStre
     (child, client)
 }
 
-/// The redis-server REDIS_SERVER names, checked to be 7.2.16, the oracle.
-fn oracle() -> PathBuf {
-    let binary = std::env::var_os("REDIS_SERVER").map(PathBuf::from)
-        .expect("REDIS_SERVER must name redis-server 7.2.16, the oracle");
-    let version = support::run_command(Command::new(&binary).arg("--version"));
-    assert!(String::from_utf8_lossy(&version.stdout).contains(" v=7.2.16 "), "{version:?}");
-    binary
-}
-
 /// Redis 7.2.16 through the failure, then watched staying refused while
 /// idle once the device heals.
 fn redis_failure(device: &Device) -> Failure {
-    let binary = oracle();
+    let binary = support::redis_oracle();
     let directory = device.mount.join(format!("redis-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let log = std::env::temp_dir().join(format!("firn-sync-fault-redis-{}.log", std::process::id()));
@@ -714,7 +705,7 @@ fn restart(child: ProgramChild, port: u16, server: &str) -> Result<BTreeMap<Stri
 /// the device heals, so its restart shows only what became of DURING.
 fn redis_page_end(device: &Device) -> PageEnd {
     let server = "redis-7.2.16";
-    let binary = oracle();
+    let binary = support::redis_oracle();
     let directory = device.mount.join(format!("redis-page-end-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let log = std::env::temp_dir().join(format!("firn-sync-fault-redis-page-end-{}.log", std::process::id()));
@@ -858,7 +849,7 @@ impl RewriteServer {
         let label = if redis { "redis" } else { "firn" };
         let log = std::env::temp_dir().join(format!(
             "firn-sync-fault-redis-rewrite-{scenario}-{label}-{}.log", std::process::id()));
-        Self { program, redis: redis.then(oracle), log }
+        Self { program, redis: redis.then(support::redis_oracle), log }
     }
 
     fn directory(&self) -> &Path { self.program.working_directory() }

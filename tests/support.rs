@@ -671,6 +671,21 @@ pub(crate) fn run_command(command: &mut Command) -> Output {
         .unwrap_or_else(|error| panic!("run native test command: {error}"))
 }
 
+/// The redis-server `REDIS_SERVER` names, checked to be 7.2.16, the oracle
+/// every case that runs Redis itself compares firn with.
+pub(crate) fn redis_oracle() -> PathBuf {
+    let binary = std::env::var_os("REDIS_SERVER")
+        .map(PathBuf::from)
+        .expect("REDIS_SERVER must name redis-server 7.2.16, the oracle");
+    let output = run_command(Command::new(&binary).arg("--version"));
+    assert!(output.status.success(), "Redis version command: {output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(" v=7.2.16 "),
+        "{output:?}"
+    );
+    binary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
