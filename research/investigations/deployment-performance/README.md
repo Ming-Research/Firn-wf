@@ -564,3 +564,36 @@ turns. This tested one workload
 on one machine; the workload client reports p50 and p99, not the longest
 wait. It is evidence against turns as built for this engine, and the
 reason firn asks that any bounded-overtaking build be measured the same way.
+
+## Handshake and CLIENT LIST rate against four rivals
+
+Firn-wf#74 adds client handshake commands and `CLIENT LIST`. Run
+[38485636396](https://github.com/Ming-Research/Firn-wf/actions/runs/38485636396)
+on the i9-14900K, branch `claude/perf-reproduce` commit 9946abf, measured
+two new workloads of the workload tool: new connections doing the handshake
+(HELLO, CLIENT SETNAME) and `CLIENT LIST`. Rivals: Redis 7.2.16, Valkey
+9.1.2, Dragonfly v2.0.2, Garnet v2.2.1.
+
+CLIENT LIST, firn about 133k requests a second:
+
+| rival | firn / rival |
+| --- | --- |
+| Redis 7.2.16 | 3.85x |
+| Valkey 9.1.2 | 4.70x |
+| Dragonfly v2.0.2 | 5.57x |
+| Garnet v2.2.1 | 0.69x (Garnet is faster) |
+
+Handshake: all six servers land at about 20-23k new connections a second.
+The workload client busy-polls, so every client CPU shows busy rate above
+0.998 and no cell can be told apart as client-limited from the data; the
+equal rates may be the client's limit, not the servers'.
+
+Verdict: 未按标准判. These figures are the run's rates as reported to the
+board. The noise-gate and 95% confidence-interval standard needs interleaved
+base/candidate pairs beside the twin, the twin ratio's interval half-width
+as noise, the platform floor, and the candidate/base interval; this record
+has no pairs, noise, floor or interval for this run, so it claims no
+regression, improvement or "no detected change". The ratios are descriptive
+only. An earlier run with the same tooling (firn and Redis only) showed
+handshake within about 3% while the twin spread was about 2%; that is also
+not a verdict.
