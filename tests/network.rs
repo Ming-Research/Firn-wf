@@ -7511,8 +7511,11 @@ fn firn_enumerates_keys_as_redis_does() {
     assert_eq!(status, 0);
 }
 
-/// firn records SCAN with TYPE none run inside a transaction's EXEC and a script as Redis 7.0.15 propagates it: an expired key its MATCH pattern selects is removed, recorded as DEL where SCAN meets it, and named in the reply, since Redis reads a key's type before its expiry check; a live key is not named. The expected
-/// records are redis-server 7.0.15's (Firn-wf probe run 37552883025).
+/// firn records SCAN with TYPE none inside EXEC and EVAL as Redis 7.2.16
+/// does: a selected expired key is removed and propagated as DEL, but no key
+/// is returned, since the type check rejects the missing object after expiry.
+/// The replies follow src/db.c:scanGenericCommand; the unchanged DEL records
+/// follow src/db.c:expireIfNeeded and src/server.c:propagatePendingCommands.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_held_scan_type_none_as_redis_propagates_it() {
@@ -7533,9 +7536,125 @@ fn firn_records_held_scan_type_none_as_redis_propagates_it() {
             &["EVAL", "local r = redis.call('SCAN', '0', 'MATCH', 'n3', 'TYPE', 'NONE', 'COUNT', '1000'); redis.call('SET', 't', '1'); return r", "0"],
             &["DBSIZE"],
         ],
-        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n*2\r\n$1\r\n0\r\n*1\r\n$2\r\nn1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n*2\r\n$1\r\n0\r\n*1\r\n$2\r\nn3\r\n:3\r\n",
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n*2\r\n$1\r\n0\r\n*0\r\n:3\r\n",
         b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nn1\r\n*3\r\n$3\r\nSET\r\n$1\r\nw\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nn3\r\n*3\r\n$3\r\nSET\r\n$1\r\nt\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n",
     );
+}
+
+/// Redis 7.2.16 removes a key that SCAN's TYPE lookup finds expired, including
+/// TYPE none. Creating and scanning it in one script prevents active expiry
+/// from hiding that lookup. The expected SCAN and EXISTS bytes were recorded
+/// in 72-scan-type-none-and-deep-glob.json by the owner's reference run:
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_scan_type_none_omits_a_key_expired_during_the_scan() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    client
+        .write_all(&resp(&[
+            "EVAL",
+            "redis.call('SET', 'k', 'v', 'PXAT', '1'); return redis.call('SCAN', '0', 'TYPE', 'none', 'COUNT', '1000')",
+            "0",
+        ]))
+        .expect("create and scan a just-expired key inside one script");
+    assert_eq!(whole_reply(&mut client, "SCAN TYPE none"), "*2\r\n$1\r\n0\r\n*0\r\n");
+    client.write_all(&resp(&["EXISTS", "k"])).expect("check the expired key was removed");
+    assert_eq!(whole_reply(&mut client, "EXISTS after SCAN"), ":0\r\n");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// Redis 7.2.16 accepts 1000 nested nonterminal star groups and rejects 1001.
+/// The KEYS results for 999, 1000 and 1001 '*a' groups against 1001 'a' bytes,
+/// and the empty SCAN result at 1001 groups, were recorded in
+/// 72-scan-type-none-and-deep-glob.json by the owner's reference run:
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583
+/// The other boundaries follow src/util.c:stringmatchlen_impl: adjacent stars
+/// collapse, trailing stars, '?' and escaped or bracketed stars do not recurse,
+/// and retrying a star at later string positions keeps the same nesting depth.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_glob_matching_obeys_redis_star_nesting_limit() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let key = "a".repeat(1001);
+    client.write_all(&resp(&["SET", &key, "v"])).expect("write the deep-glob key");
+    assert_eq!(whole_reply(&mut client, "SET the deep-glob key"), "+OK\r\n");
+    for groups in [999, 1000, 1001] {
+        let pattern = "*a".repeat(groups);
+        client.write_all(&resp(&["KEYS", &pattern])).expect("send the recorded deep-glob pattern");
+        let expected = if groups <= 1000 { resp(&[&key]) } else { b"*0\r\n".to_vec() };
+        assert_eq!(whole_reply(&mut client, "KEYS star-nesting boundary").as_bytes(), expected, "{groups} star groups");
+    }
+    let over_limit = "*a".repeat(1001);
+    client
+        .write_all(&resp(&["SCAN", "0", "MATCH", &over_limit, "COUNT", "1000"]))
+        .expect("send the recorded deep SCAN pattern");
+    assert_eq!(whole_reply(&mut client, "SCAN over the star-nesting limit"), "*2\r\n$1\r\n0\r\n*0\r\n");
+
+    for (what, pattern) in [
+        ("adjacent stars collapse before nesting", "**a".repeat(1000)),
+        ("a trailing star does not add nesting", format!("{}*", "*a".repeat(1000))),
+        ("a question mark does not add nesting", format!("{}?", "*a".repeat(1000))),
+    ] {
+        client.write_all(&resp(&["KEYS", &pattern])).expect("send a source-derived boundary pattern");
+        assert_eq!(whole_reply(&mut client, what).as_bytes(), resp(&[&key]), "{what}");
+    }
+
+    client.write_all(&resp(&["DEL", &key])).expect("remove the first deep-glob key");
+    assert_eq!(whole_reply(&mut client, "DEL the first deep-glob key"), ":1\r\n");
+    let literal_star_key = format!("{}*", "a".repeat(1000));
+    client.write_all(&resp(&["SET", &literal_star_key, "v"])).expect("write a key ending in a literal star");
+    assert_eq!(whole_reply(&mut client, "SET the literal-star key"), "+OK\r\n");
+    for (what, ending) in [("an escaped star does not add nesting", "\\*"), ("a bracketed star does not add nesting", "[*]")] {
+        let pattern = format!("{}{ending}", "*a".repeat(1000));
+        client.write_all(&resp(&["KEYS", &pattern])).expect("send a literal-star boundary pattern");
+        assert_eq!(whole_reply(&mut client, what).as_bytes(), resp(&[&literal_star_key]), "{what}");
+    }
+
+    client.write_all(&resp(&["DEL", &literal_star_key])).expect("remove the literal-star key");
+    assert_eq!(whole_reply(&mut client, "DEL the literal-star key"), ":1\r\n");
+    let retry_key = format!("{}{}a", "a".repeat(999), "b".repeat(1002));
+    client.write_all(&resp(&["SET", &retry_key, "v"])).expect("write a key requiring many star retries");
+    assert_eq!(whole_reply(&mut client, "SET the retry key"), "+OK\r\n");
+    let pattern = "*a".repeat(1000);
+    client.write_all(&resp(&["KEYS", &pattern])).expect("send the many-retries pattern");
+    assert_eq!(whole_reply(&mut client, "star retries retain nesting").as_bytes(), resp(&[&retry_key]));
+
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// CONFIG GET uses Redis 7.2.16's same glob matcher with nocase enabled
+/// (src/config.c:configGetCommand). Adjacent stars are one group regardless
+/// of their count (src/util.c:stringmatchlen_impl), so P + 1001 stars + ORT
+/// selects the canonical name "port" and this server's configured port.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_config_get_collapses_adjacent_stars_without_counting_them_as_depth() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let pattern = format!("P{}ORT", "*".repeat(1001));
+    client.write_all(&resp(&["CONFIG", "GET", &pattern])).expect("send a long case-insensitive config glob");
+    assert_eq!(whole_reply(&mut client, "CONFIG GET adjacent stars").as_bytes(), resp(&["port", &text]));
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
 }
 
 /// firn's RANDOMKEY draws each key of a keyspace of ten keys about equally
