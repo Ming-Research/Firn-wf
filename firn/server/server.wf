@@ -20,7 +20,6 @@ alias TcpSend = std::net::TcpSend;
 alias Time = pkg::store::Time;
 alias WallClock = std::time::WallClock;
 alias arg_get = std::text::arg_get;
-alias args_count = std::text::args_count;
 alias bytes_length = pkg::bytes::bytes_length;
 alias bytes_new = pkg::bytes::bytes_new;
 alias client_new = pkg::protocol::client_new;
@@ -36,8 +35,6 @@ alias transaction_new = pkg::commands::transaction_new;
 alias exit_status = std::process::exit_status;
 alias expire_batch = pkg::store::expire_batch;
 alias factory_share = std::io::factory_share;
-alias host_copy_utf8 = std::text::host_copy_utf8;
-alias host_utf8_len = std::text::host_utf8_len;
 alias input_grow = pkg::protocol::input_grow;
 alias input_new = pkg::protocol::input_new;
 alias instant_after = std::time::instant_after;
@@ -533,8 +530,6 @@ const option_appendfilename: Array<u8, 14> =[65_u8, 80_u8, 80_u8, 69_u8, 78_u8, 
 
 const option_requirepass: Array<u8, 11> =[82_u8, 69_u8, 81_u8, 85_u8, 73_u8, 82_u8, 69_u8, 80_u8, 65_u8, 83_u8, 83_u8];
 
-const option_clients: Array<u8, 7> =[67_u8, 76_u8, 73_u8, 69_u8, 78_u8, 84_u8, 83_u8];
-
 const word_yes: Array<u8, 3> =[89_u8, 69_u8, 83_u8];
 
 const word_no: Array<u8, 2> =[78_u8, 79_u8];
@@ -571,28 +566,28 @@ struct Options {
   password: Box<Slots<u8>>;
   rewrite_percentage: u64;
   rewrite_min_size: u64;
+  memory: Array<u64, 6>;
   valid: Bool;
 }
 
 fn option_text(args: &std::text::Args, position: u64) -> text: Text reads(args) {
-  doc "The UTF-8 bytes of the invocation argument at a position; valid is false when it is absent, is not UTF-8 or holds more than 65,536 bytes.";
+  doc "Reads an invocation argument as host bytes without a UTF-8 restriction; the configuration syntax operates on bytes as Redis does.";
   let invalid = False();
   match arg_get(args: args, position: position) {
     Ok(value: host) => {
-      match host_utf8_len(value: &host) {
-        Ok(value: length) => {
-          if length <= 65536_u64 {
-            let made = input_new(capacity: length);
-            let window = &made.inner[0_u64..length];
-            match host_copy_utf8(value: &host, destination: window, start: 0_u64, end: length) {
-              Ok(value: next) => {
-                let complete = next == length;
-                return Text(bytes: move made, valid: complete);
-              }
-              Err(error: problem) => {
-              }
-            }
+      let length = std::text::host_bytes_len(value: &host);
+      let made = box_array_filled::<u8>(count: length, value: 0_u8);
+      invariant argument_storage: made.inner.len == length;
+      match std::text::host_copy_bytes(value: &host, destination: &made.inner[0_u64..length], start: 0_u64, end: length) {
+        Ok(value: next) => {
+          invariant copied_endpoint: next <= length;
+          invariant copied_prefix: next <= made.inner.len;
+          let result = config_buffer();
+          config_append(buffer: &result, source: &made.inner[0_u64..next]);
+          if next != length {
+            set result.valid = False();
           }
+          return move result;
         }
         Err(error: problem) => {
         }
@@ -632,18 +627,6 @@ fn dashed(text: &Box<Slots<u8>>) -> marked: Bool reads(text) {
   let two = second == 45_u8;
   let both = band(one, two);
   return both;
-}
-
-fn option_named(text: &Box<Slots<u8>>, word: &[u8]) -> named: Bool reads(text), reads(word) {
-  doc "Whether an argument is -- followed by an option's upper-case name, in either case.";
-  let length = text^.inner.len;
-  if length < 2_u64 {
-    return False();
-  }
-  let window = &text^.inner[0_u64..length];
-  let size = length -wrap 2_u64;
-  let named = name_is(input: window, start: 2_u64, length: size, word: word);
-  return named;
 }
 
 fn spelled(text: &Box<Slots<u8>>, word: &[u8]) -> same: Bool reads(text), reads(word) {
@@ -774,227 +757,21 @@ const option_rewrite_percentage: Array<u8, 27> = "AUTO-AOF-REWRITE-PERCENTAGE";
 
 const option_rewrite_min_size: Array<u8, 25> = "AUTO-AOF-REWRITE-MIN-SIZE";
 
-fn rewrite_option_size(text: &Box<Slots<u8>>) -> number: Decimal reads(text) {
-  doc "A nonnegative byte count with Redis's b, decimal k, m, g or binary kb, mb, gb suffix, compared in either case.";
-  let end = text^.inner.len;
-  let multiplier = 1_u64;
-  let binary = False();
-  if end > 0_u64 {
-    let last = end -wrap 1_u64;
-    if last < text^.inner.len {
-      let tail = pkg::bytes::lower(byte: text^.inner[last]);
-      if tail == 98_u8 {
-        set binary = True();
-        set end = last;
-      }
-    }
-  }
-  if end > 0_u64 {
-    let last = end -wrap 1_u64;
-    if last < text^.inner.len {
-      let suffix = pkg::bytes::lower(byte: text^.inner[last]);
-      let scale = 1000_u64;
-      if binary {
-        set scale = 1024_u64;
-      }
-      if suffix == 107_u8 {
-        set multiplier = scale;
-        set end = last;
-      } else if suffix == 109_u8 {
-        set multiplier = scale *wrap scale;
-        set end = last;
-      } else if suffix == 103_u8 {
-        let square = scale *wrap scale;
-        set multiplier = square *wrap scale;
-        set end = last;
-      }
-    }
-  }
-  let digits = box_slots_new::<u8>(capacity: end);
-  for (index in 0_u64..end) {
-    if index < text^.inner.len {
-      if digits.inner.len < digits.inner.cap {
-        place_back(window: &digits.inner, value: text^.inner[index]);
-      }
-    }
-  }
-  if multiplier > 0_u64 {
-    let limit = 9223372036854775807_u64 / multiplier;
-    let parsed = decimal(text: &digits, limit: limit);
-    let bytes = parsed.value *wrap multiplier;
-    return Decimal(value: bytes, valid: parsed.valid);
-  }
-  let invalid = False();
-  return Decimal(value: 0_u64, valid: invalid);
-}
-
-fn apply_named(options: &Options, name: Box<Slots<u8>>, value: Box<Slots<u8>>) -> applied: Bool writes(options) {
-  doc "Applies one option given by name to the options, returning false for an unknown name or a value that does not read.";
-  let is_port = option_named(text: &name, word: &option_port[0_u64..4_u64]);
-  let is_bind = option_named(text: &name, word: &option_bind[0_u64..4_u64]);
-  let is_timeout = option_named(text: &name, word: &option_timeout[0_u64..7_u64]);
-  let is_appendonly = option_named(text: &name, word: &option_appendonly[0_u64..10_u64]);
-  let is_appendfilename = option_named(text: &name, word: &option_appendfilename[0_u64..14_u64]);
-  let is_requirepass = option_named(text: &name, word: &option_requirepass[0_u64..11_u64]);
-  let is_clients = option_named(text: &name, word: &option_clients[0_u64..7_u64]);
-  let is_rewrite_percentage = option_named(text: &name, word: &option_rewrite_percentage[0_u64..27_u64]);
-  let is_rewrite_min_size = option_named(text: &name, word: &option_rewrite_min_size[0_u64..25_u64]);
-  if is_rewrite_percentage {
-    let number = decimal(text: &value, limit: 2147483647_u64);
-    set options^.rewrite_percentage = number.value;
-    return number.valid;
-  }
-  if is_rewrite_min_size {
-    let number = rewrite_option_size(text: &value);
-    set options^.rewrite_min_size = number.value;
-    return number.valid;
-  }
-  if is_port {
-    let number = decimal(text: &value, limit: 65535_u64);
-    set options^.port = number.value;
-    return number.valid;
-  }
-  if is_bind {
-    let address = parse_address(text: &value);
-    set options^.bind = move value;
-    return address.valid;
-  }
-  if is_timeout {
-    let number = decimal(text: &value, limit: 2147483647_u64);
-    set options^.idle = number.value;
-    return number.valid;
-  }
-  if is_appendonly {
-    let yes = spelled(text: &value, word: &word_yes[0_u64..3_u64]);
-    let no = spelled(text: &value, word: &word_no[0_u64..2_u64]);
-    set options^.logging = yes;
-    let either = bor(yes, no);
-    return either;
-  }
-  if is_appendfilename {
-    let length = value.inner.len;
-    set options^.aof = move value;
-    let named = length > 0_u64;
-    return named;
-  }
-  if is_requirepass {
-    set options^.password = move value;
-    return True();
-  }
-  if is_clients {
-    let number = decimal(text: &value, limit: 18446744073709551615_u64);
-    set options^.count = number.value;
-    return number.valid;
-  }
-  return False();
-}
-
-fn apply_positional(options: &Options, ordinal: u64, value: Box<Slots<u8>>) -> applied: Bool writes(options) {
-  doc "Applies the argument at an ordinal by position to the options, as firn has always read them: the port, how many clients to accept, the append-only file's name, - or an empty one for none, and the idle limit; false reports a value that does not read.";
-  if ordinal == 0_u64 {
-    let number = decimal(text: &value, limit: 65535_u64);
-    set options^.port = number.value;
-    return number.valid;
-  }
-  if ordinal == 1_u64 {
-    let number = decimal(text: &value, limit: 18446744073709551615_u64);
-    set options^.count = number.value;
-    return number.valid;
-  }
-  if ordinal == 2_u64 {
-    let length = value.inner.len;
-    let none = length == 0_u64;
-    if length == 1_u64 {
-      let only = value.inner[0_u64];
-      if only == 45_u8 {
-        set none = True();
-      }
-    }
-    if none {
-      set options^.logging = False();
-      return True();
-    }
-    set options^.logging = True();
-    set options^.aof = move value;
-    return True();
-  }
-  let number = decimal(text: &value, limit: 2147483647_u64);
-  set options^.idle = number.value;
-  return number.valid;
-}
-
-fn read_options(args: &std::text::Args) -> options: Options reads(args) {
-  doc "Reads firn's invocation. Up to four arguments come by position, as firn has always taken them: the port, how many clients to accept, the append-only file's name or - for none, and the idle limit in seconds. Options by name follow, each -- and a name in either case, then its value: --port; --bind, an IPv4 address or *; --timeout, the idle limit; --appendonly, yes or no; --appendfilename, the file's name, which alone does not turn the file on, as in Redis; --requirepass, the password clients must give, empty for none; and --clients, how many clients to accept before stopping; --auto-aof-rewrite-percentage, zero disabling automatic rewrites; and --auto-aof-rewrite-min-size, a byte count with Redis memory suffixes. A later value replaces an earlier one, one by position included. The defaults are port 6379, the loopback address 127.0.0.1, no idle limit, no append-only file, named appendonly.aof once turned on, no password and no limit on clients. valid is false for an unknown name, a name without its value, an argument by position after one by name or past the fourth, and a value that does not read: a port past 65,535, an idle limit past 2,147,483,647 seconds, Redis's limit, an empty file name, or an argument that is not UTF-8 or holds more than 65,536 bytes.";
-  let total = args_count(args: args);
-  let aof = text_of(word: &default_file[0_u64..14_u64]);
-  let bind = text_of(word: &default_bind[0_u64..9_u64]);
-  let password = box_slots_new::<u8>(capacity: 0_u64);
-  let off = False();
-  let readable = True();
-  let options = Options(port: 6379_u64, count: 0_u64, idle: 0_u64, logging: off, aof: move aof, bind: move bind, password: move password, rewrite_percentage: 100_u64, rewrite_min_size: 67108864_u64, valid: readable);
-  let position = 1_u64;
-  let ordinal = 0_u64;
-  let named = False();
-  loop @arguments {
-    if position >= total {
-      break @arguments;
-    }
-    let text = option_text(args: args, position: position);
-    let Text(bytes: argument, valid: read) = move text;
-    if read {
-    } else {
-      set options.valid = False();
-      break @arguments;
-    }
-    let marked = dashed(text: &argument);
-    if marked {
-      set named = True();
-      let value_position = position +wrap 1_u64;
-      if value_position >= total {
-        set options.valid = False();
-        break @arguments;
-      }
-      let given = option_text(args: args, position: value_position);
-      let Text(bytes: value, valid: value_read) = move given;
-      if value_read {
-      } else {
-        set options.valid = False();
-        break @arguments;
-      }
-      let applied = apply_named(options: &options, name: move argument, value: move value);
-      if applied {
-      } else {
-        set options.valid = False();
-        break @arguments;
-      }
-      set position = position +wrap 2_u64;
-    } else {
-      let full = ordinal >= 4_u64;
-      let late = bor(named, full);
-      if late {
-        set options.valid = False();
-        break @arguments;
-      }
-      let applied = apply_positional(options: &options, ordinal: ordinal, value: move argument);
-      if applied {
-      } else {
-        set options.valid = False();
-        break @arguments;
-      }
-      set ordinal = ordinal +wrap 1_u64;
-      set position = position +wrap 1_u64;
-    }
-  }
-  return move options;
-}
-
 fn main(inputs: Inputs) -> status: ExitStatus pure waits {
-  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation, which read_options reads, names up to four arguments by position, the port, how many clients to accept, zero for no limit, the append-only file's name or - for none, and the idle limit, then options by name, --port, --bind, --timeout, --appendonly, --appendfilename, --requirepass, --clients, --auto-aof-rewrite-percentage and --auto-aof-rewrite-min-size; an invocation that does not read stops firn with status 1. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from just before firn listens, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; firn stops with status 3 when it cannot listen, on its address or for those signals.";
-  let Inputs(args: args, drivers: unused_drivers, cwd: cwd_directory, stdout: unused_stdout, stderr: unused_stderr, handles: handles, stdin: unused_stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter) = move inputs;
+  doc "firn, a server of Redis's protocol for the commands firn/README.md lists, over TCP in RESP2 or RESP3 or as inline commands, with pipelining. It serves each accepted client in a context of its own over one keyspace with separate shared map, metadata and server objects. Atomic statements hold the entries of the keys a command names together with any metadata they use, or the map whole for DBSIZE, FLUSHALL, FLUSHDB and INFO. Its invocation reads an optional Redis configuration file or stdin -, followed by --directive values, with the later directives overriding the file. --firn-clients limits accepted clients for tests. Invalid invocation or configuration prints its reason and exits 1; include and directory changes beyond dir . or ./ are refused explicitly pending firn-req-host-paths. firn listens on the address --bind names, the loopback address by default. The manifest's base and incremental files are replayed before firn listens, only the last cut to what replay keeps when its end did not load, and every change is appended to the last incremental file, the file synced once a second; a file that does not load, cannot be opened for appending or cannot be cut stops firn with status 4. A client silent for the idle limit, when it is not zero, is closed, and while a password is required a client that has not authenticated, by giving it or by being accepted while none was required, must give it before other commands; CONFIG SET changes both while firn runs, in the server's state beside the keyspace. Expired keys are removed when a command finds them and by a context that wakes ten times a second. SIGTERM and SIGINT, heard from just before firn listens, request the orderly stop SHUTDOWN requests, after which a further signal ends firn at once; firn stops with status 3 when it cannot listen, on its address or for those signals.";
+  let Inputs(args: args, drivers: unused_drivers, cwd: cwd_directory, stdout: unused_stdout, stderr: stderr, handles: handles, stdin: stdin, clock: clock, wall_clock: wall_clock, stops: stops, memory_meter: memory_meter) = move inputs;
   let std::fs::Directory(read: cwd, write: cwd_write) = move cwd_directory;
-  let options = read_options(args: &args);
+  let options = read_options(args: &args, factory: &handles, root: &cwd, input: &stdin, output: &stderr);
   if options.valid {
   } else {
+    close_directory_write(factory: &handles, directory: move cwd_write);
+    close_directory(factory: &handles, directory: move cwd);
+    return exit_status(code: 1_u8);
+  }
+  let no_port = options.port == 0_u64;
+  let no_bind = options.bind.inner.len == 0_u64;
+  if bor(no_port, no_bind) {
+    config_write(factory: &handles, output: &stderr, bytes: &config_no_listener[0_u64..44_u64]);
     close_directory_write(factory: &handles, directory: move cwd_write);
     close_directory(factory: &handles, directory: move cwd);
     return exit_status(code: 1_u8);
@@ -1019,6 +796,14 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   let quiet = False();
   let startup = read_time(wall: &wall_clock);
   let root = keyspace_new(seed: seed, logging: quiet, password: move password_text, timeout: idle, started: startup.time.unix_ms);
+  atomic v = &root.server {
+    set v^.memory.maxmemory = options.memory[0_u64];
+    set v^.memory.maxmemory_policy = options.memory[1_u64];
+    set v^.memory.maxmemory_samples = options.memory[2_u64];
+    set v^.memory.lfu_log_factor = options.memory[3_u64];
+    set v^.memory.lfu_decay_time = options.memory[4_u64];
+    set v^.memory.maxmemory_eviction_tenacity = options.memory[5_u64];
+  }
   atomic m = &root.meta {
     set m^.aof_rewrite_percentage = options.rewrite_percentage;
     set m^.aof_rewrite_min_size = options.rewrite_min_size;

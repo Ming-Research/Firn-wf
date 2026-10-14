@@ -917,6 +917,9 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     let value_at = index +wrap 1_u64;
     let value = arg(args: args, index: value_at);
     let unrefused = refused == 33_u64;
+    let memory_low = which >= 24_u64;
+    let memory_high = which <= 29_u64;
+    let memory_parameter = band(memory_low, memory_high);
     if which == 1_u64 {
       let spelled = before_zero(input: input, span: value);
       let yes = name_is(input: input, start: value.start, length: spelled, word: &word_yes[0_u64..3_u64]);
@@ -1036,7 +1039,9 @@ fn run_config_set(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
       }
       set delay_given = True();
       set new_delay = number.value;
-    } else if which >= 24_u64 {
+    } else if memory_parameter {
+      invariant memory_selector_lower: which >= 24_u64;
+      invariant memory_selector_upper: which <= 29_u64;
       let memory_slot = which -wrap 24_u64;
       let parsed_memory = config_memory_value(input: input, span: value, which: which, client: client);
       if bnot(parsed_memory.valid) {

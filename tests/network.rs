@@ -3,6 +3,7 @@
 #![cfg(target_os = "linux")]
 
 mod support;
+mod config;
 mod memory_limit;
 mod aof_write_errors;
 mod aof_sync_fault;
@@ -276,7 +277,7 @@ fn firn_serves_every_client_over_one_keyspace() {
     let child = program.spawn_on_route_with(
         true,
         &[("WF_DRIVERS", "4")],
-        &[text.as_bytes(), count.as_bytes()],
+        &[b"--port", text.as_bytes(), b"--firn-clients", count.as_bytes()],
     ).with_port(&port_lease);
     let mut first = connect_when_ready(port, &child);
     first
@@ -395,7 +396,7 @@ fn firn_expires_keys_on_both_routes() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
@@ -560,7 +561,7 @@ fn firn_removes_expired_keys_no_command_reads_on_both_routes() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
@@ -638,7 +639,7 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
@@ -775,7 +776,7 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
@@ -874,7 +875,7 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes_with_lists_a
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
@@ -1015,7 +1016,7 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes_with_lists_a
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         client
             .set_read_timeout(Some(Duration::from_secs(20)))
@@ -1106,7 +1107,7 @@ fn firn_records_its_writes_as_redis_propagates_them() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", b"forms.aof"]).with_port(&port_lease);
+    let child = program.spawn_in_directory(fixture.path(), &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"forms.aof"]).with_port(&port_lease);
     let monitor = child.monitor();
     let client = std::thread::spawn(move || {
         let mut client = connect_when_ready(port, &monitor);
@@ -1291,7 +1292,7 @@ fn firn_replays_blocks_and_cuts_an_unloaded_end_as_redis_does() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let child = program.spawn_in_directory(fixture.path(), &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
         let monitor = child.monitor();
         let client = std::thread::spawn(move || {
             let mut client = connect_when_ready(port, &monitor);
@@ -1312,7 +1313,7 @@ fn firn_replays_blocks_and_cuts_an_unloaded_end_as_redis_does() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+        let child = program.spawn_in_directory(fixture.path(), &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
         let monitor = child.monitor();
         let client = std::thread::spawn(move || {
             let mut client = connect_when_ready(port, &monitor);
@@ -1352,7 +1353,7 @@ fn firn_stops_on_an_append_only_file_that_does_not_parse() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let output = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease).wait_with_output().expect("wait for compiled program");
+    let output = program.spawn_in_directory(fixture.path(), &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease).wait_with_output().expect("wait for compiled program");
     assert_eq!(
         output.status.code(),
         Some(4),
@@ -1388,7 +1389,7 @@ fn firn_closes_a_client_silent_past_its_idle_limit_on_both_routes() {
         let port = port_lease.port();
         let text = port.to_string();
         let clients: &[u8] = if native_ring { b"5" } else { b"3" };
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), clients, b"-", b"1"]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", clients, b"--appendonly", b"no", b"--timeout", b"1"]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         let ready = Instant::now();
         client
@@ -1527,7 +1528,7 @@ fn firn_answers_the_value_types_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -1604,7 +1605,7 @@ fn firn_answers_the_value_types_as_redis_does_with_lists_and_sets() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -1757,7 +1758,7 @@ fn firn_copies_and_renames_the_value_types_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -2064,7 +2065,7 @@ fn firn_reads_and_writes_scores_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -2146,7 +2147,7 @@ fn firn_keeps_strings_at_and_past_the_inline_length_apart() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -2280,7 +2281,7 @@ fn firn_answers_string_commands_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -2487,7 +2488,7 @@ fn firn_answers_commands_naming_a_key_twice_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -2609,7 +2610,7 @@ fn firn_answers_config_and_echoes_client_bytes_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -2808,7 +2809,7 @@ fn firn_carries_requests_and_replies_larger_than_its_windows() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -2872,7 +2873,7 @@ fn firn_replays_the_value_types_from_its_append_only_file() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -2947,7 +2948,7 @@ fn firn_replays_the_value_types_from_its_append_only_file() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -3003,7 +3004,7 @@ fn firn_replays_the_value_types_from_its_append_only_file_with_lists_and_sets() 
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -3041,7 +3042,7 @@ fn firn_replays_the_value_types_from_its_append_only_file_with_lists_and_sets() 
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -3152,7 +3153,7 @@ fn firn_splits_quoted_inline_arguments_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"3"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .write_all(b"ECHO \"hello world\"\r\nECHO \"a\\nb\\r\\t\\b\\a\\\\\\\"\\x41\\x4a\\xzz\\q\"\r\nECHO 'it\\'s'\r\nECHO 'a\\nb'\r\nECHO a\"b c\"\r\nECHO a\x0bb\r\nECHO \x0ba\r\nECHO \"a\"\x0bb\r\nECHO \"\"\r\n\"ECHO\" x\r\nECHO \"\\x4\"\r\nNOPE \"a b\" 'c\\'d' e\r\nECHO \"abc\"x\r\nPING\r\n")
@@ -3182,6 +3183,66 @@ fn firn_splits_quoted_inline_arguments_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+/// Redis 7.2.16's processInlineBuffer finds LF with strchr before calling
+/// sdssplitargs, so a raw NUL hides the LF and leaves the request pending.
+/// A NUL decoded from a quoted `\x00` escape is instead part of the value.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_handles_inline_nul_bytes_as_redis_does() {
+    use std::path::PathBuf;
+    use std::process::{Command, Stdio};
+
+    let mut servers = vec![("firn", PathBuf::from(std::env::var_os("FIRN").expect("FIRN")))];
+    if let Some(binary) = std::env::var_os("REDIS_SERVER") {
+        let binary = PathBuf::from(binary);
+        let version = support::run_command(Command::new(&binary).arg("--version"));
+        assert!(version.status.success(), "Redis version: {version:?}");
+        assert!(String::from_utf8_lossy(&version.stdout).contains(" v=7.2.16 "),
+            "REDIS_SERVER must name Redis 7.2.16: {version:?}");
+        servers.push(("Redis 7.2.16", binary));
+    }
+    let fixture = fixture_directory();
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    let mut firn_replies = None;
+    for (label, binary) in servers {
+        let mut command = Command::new(binary);
+        command.current_dir(fixture.path())
+            .args(["--port", &port, "--bind", "127.0.0.1", "--appendonly", "no"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .env_remove("WF_REQUIRE_WINDOWS_IOCP");
+        if label == "Redis 7.2.16" {
+            command.args(["--save", ""]);
+        }
+        let child = ProgramChild::spawn(&mut command).expect("spawn inline NUL subject").with_port(&lease);
+        let mut blocked = connect_when_ready(lease.port(), &child);
+        blocked.write_all(b"SET k v\0x\r\nGET k\r\n").expect("send raw inline NUL and following GET");
+        expect_silence(&mut blocked, &format!("{label}: raw NUL hides both inline newlines"));
+
+        let mut observer = connect_when_ready(lease.port(), &child);
+        observer.write_all(b"GET k\r\n").expect("observe whether raw NUL SET was applied");
+        let absent = whole_reply(&mut observer, &format!("{label}: pending SET leaves k absent"));
+        assert_eq!(absent, "$-1\r\n", "{label}: raw NUL SET must not execute");
+        observer.write_all(b"SET k \"v\\x00x\"\r\nGET k\r\n").expect("send escaped inline NUL");
+        let set = whole_reply(&mut observer, &format!("{label}: escaped NUL SET"));
+        let get = whole_reply(&mut observer, &format!("{label}: escaped NUL GET"));
+        assert_eq!(set, "+OK\r\n", "{label}: escaped NUL SET");
+        assert_eq!(get, "$3\r\nv\0x\r\n", "{label}: decoded NUL must retain the suffix");
+        let replies = vec![absent, set, get];
+        if let Some(expected) = &firn_replies {
+            assert_eq!(&replies, expected, "{label}: every inline NUL reply must match firn");
+        } else {
+            firn_replies = Some(replies);
+        }
+        drop(blocked);
+        observer.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop inline NUL subject");
+        expect_closed(&mut observer, &format!("{label}: shutdown"));
+        let output = child.wait_with_output().expect("bounded inline NUL shutdown");
+        assert_eq!(output.status.code(), Some(0), "{label}: {output:?}");
+        assert!(output.stderr.is_empty(), "{label}: {output:?}");
+    }
+}
+
 /// firn reads a request's count and length lines as Redis 7.0 reads them. A
 /// carriage return ends a line whatever byte follows it, which is skipped
 /// unread; a negative count is skipped; and an array of 2,147,483,647
@@ -3201,7 +3262,7 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"9"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"9"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .write_all(b"*1\r\n$4\rXPING\r\n*1\rX$4\r\nPING\r\n*-1\r\n*2147483647\r\n")
@@ -3298,7 +3359,7 @@ fn firn_matches_config_get_patterns_as_redis_does() {
         &[
             b"--port",
             text.as_bytes(),
-            b"--clients",
+            b"--firn-clients",
             b"1",
             b"--timeout",
             b"7",
@@ -3363,7 +3424,7 @@ fn firn_matches_config_get_patterns_as_redis_does() {
 /// idle limit --timeout set. An unknown option, an option without its value, a
 /// port past 65,535, an address that is not one, an --appendonly other than
 /// yes or no, an idle limit past 2,147,483,647 seconds, an empty file name, a
-/// fifth argument by position and an argument by position after one by name
+/// legacy positional invocation and an extra directive value
 /// each stop firn with status 1 before it listens.
 #[cfg(target_os = "linux")]
 #[test]
@@ -3381,7 +3442,7 @@ fn firn_listens_where_its_options_by_name_say() {
             b"127.0.0.2",
             b"--PORT",
             text.as_bytes(),
-            b"--Clients",
+            b"--Firn-Clients",
             b"1",
             b"--appendonly",
             b"yes",
@@ -3428,13 +3489,19 @@ fn firn_listens_where_its_options_by_name_say() {
         &[b"--appendonly", b"maybe"],
         &[b"--timeout", b"2147483648"],
         &[b"--appendfilename", b""],
-        &[b"6379", b"0", b"-", b"0", b"5"],
+        &[text.as_bytes(), b"1", b"-", b"0"],
         &[b"--port", b"6379", b"0"],
     ];
     for arguments in refused {
         let child = program.spawn_on_route(true, arguments);
-        let (status, _) = finished(child);
-        assert_eq!(status, 1, "{arguments:?}");
+        let output = child.wait_with_output().expect("wait for rejected startup");
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}: {output:?}");
+        assert!(!output.stderr.is_empty(), "startup error has no diagnostic: {arguments:?}");
+        if arguments[0] == text.as_bytes() {
+            let expected = format!("Fatal error, can't open config file '{text}': ");
+            assert!(output.stderr.starts_with(expected.as_bytes()),
+                "legacy positional port must be treated as an unopened config file: {output:?}");
+        }
     }
 }
 
@@ -3456,7 +3523,7 @@ fn firn_listens_again_on_its_port_after_a_restart() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         client.write_all(&resp(&["QUIT"])).expect("send QUIT");
         expect_replies(&mut client, b"+OK\r\n", &what);
@@ -3464,9 +3531,9 @@ fn firn_listens_again_on_its_port_after_a_restart() {
         drop(client);
         let (status, _) = finished(child);
         assert_eq!(status, 0, "{what}: the first run");
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"2"]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"2"]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
-        let third = program.spawn_on_route(native_ring, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let third = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
         let (status, _) = finished(third);
         assert_eq!(
             status, 3,
@@ -3515,7 +3582,7 @@ fn firn_requires_its_password_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"7", b"--requirepass", b"secret"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"7", b"--requirepass", b"secret"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     // Redis 7.0.15's src/commands/{mset,msetnx,lpop,rpop}.json admit
     // minimum counts of 3, 3, 2 and 2 before processCommand checks auth.
@@ -3809,7 +3876,7 @@ fn firn_answers_connection_commands_as_redis_does() {
     let port = port_lease.port();
     let text = port.to_string();
     let spawned = Instant::now();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"3"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
@@ -4028,7 +4095,7 @@ fn firn_keeps_transactions_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
@@ -4112,7 +4179,7 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
@@ -4183,7 +4250,7 @@ fn firn_answers_zrank_withscore_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
@@ -4270,7 +4337,7 @@ fn firn_answers_client_info_as_redis_does() {
     let port = port_lease.port();
     let text = port.to_string();
     let spawned = Instant::now();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
@@ -4355,7 +4422,7 @@ fn firn_records_transactions_as_redis_propagates_them() {
     let text = port.to_string();
     let child = program.spawn_in_directory(
         fixture.path(),
-        &[text.as_bytes(), b"1", b"transactions.aof"],
+        &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"transactions.aof"],
     ).with_port(&port_lease);
     let monitor = child.monitor();
     let client = std::thread::spawn(move || {
@@ -4400,7 +4467,7 @@ fn firn_records_transactions_as_redis_propagates_them() {
     let text = port.to_string();
     let child = program.spawn_in_directory(
         fixture.path(),
-        &[text.as_bytes(), b"1", b"transactions.aof"],
+        &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"transactions.aof"],
     ).with_port(&port_lease);
     let monitor = child.monitor();
     let client = std::thread::spawn(move || {
@@ -4446,7 +4513,7 @@ fn firn_runs_scripts_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let sha = "1fa00e76656cc152ad327c13fe365858fd7be306";
     let upper = sha.to_ascii_uppercase();
@@ -4642,7 +4709,7 @@ fn firn_keeps_a_script_error_reply_on_one_line() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
@@ -4724,7 +4791,7 @@ fn firn_runs_scripts_as_redis_7_2_16_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
@@ -4931,7 +4998,7 @@ fn firn_kills_a_looping_script_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"2"]).with_port(&port_lease);
     let mut looping = connect_when_ready(port, &child);
     let mut other = connect_when_ready(port, &child);
     let mut batch = resp(&["SCRIPT", "KILL"]);
@@ -4993,7 +5060,7 @@ fn firn_script_flush_waits_for_a_looping_script_to_be_killed() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"3"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"3"]).with_port(&port_lease);
     let mut looping = connect_when_ready(port, &child);
     let mut flushing = connect_when_ready(port, &child);
     let mut killing = connect_when_ready(port, &child);
@@ -5082,7 +5149,7 @@ fn firn_scripts_share_one_lua_state_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[text.as_bytes(), b"3"]).with_port(&port_lease);
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "4")], &[b"--port", text.as_bytes(), b"--firn-clients", b"3"]).with_port(&port_lease);
     let mut setter = connect_when_ready(port, &child);
     let mut writer = connect_when_ready(port, &child);
     let mut reader = connect_when_ready(port, &child);
@@ -5136,7 +5203,7 @@ fn firn_removes_an_expired_key_incrbyfloat_refuses_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .write_all(&resp(&["SET", "lapsing", "1", "PX", "1"]))
@@ -5282,7 +5349,7 @@ abcdef\x00\x00Z\r\n:1\r\n*2\r\n$4\r\nlast\r\n$5\r\nother\r\n:0\r\n:0\r\n$3\r\n\
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let setup: [&[&str]; 2] = [&["FLUSHALL"], &["LPUSH", "parts:list", "x"]];
     let mut transactions = Vec::new();
@@ -5423,7 +5490,7 @@ $3\r\ntwo\r\n+OK\r\n+OK\r\n:0\r\n:1\r\n:1\r\n+OK\r\n+OK\r\n:4102444800000\r\n\
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut transactions = vec![resp(&["MULTI"])];
     for request in VALID {
@@ -5520,7 +5587,7 @@ fn check_held_records(loaded: &[&[&str]], requests: &[&[&str]], replies: &[u8], 
         let port = port_lease.port();
         let text = port.to_string();
         let sent = batch.clone();
-        let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", b"held.aof"]).with_port(&port_lease);
+        let child = program.spawn_in_directory(fixture.path(), &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"held.aof"]).with_port(&port_lease);
         let monitor = child.monitor();
         let client = std::thread::spawn(move || {
             let mut client = connect_when_ready(port, &monitor);
@@ -5819,7 +5886,7 @@ $0\r\n\r\n$3\r\nv\x00x\r\n:0\r\n:3\r\n$3\r\n3.5\r\n:4102444800000\r\n\
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
@@ -6106,7 +6173,7 @@ $1\r\nz\r\n:0\r\n$-1\r\n$-1\r\n$-1\r\n:0\r\n+OK\r\n*0\r\n\
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
@@ -6409,7 +6476,7 @@ $1\r\nx\r\n:0\r\n*0\r\n*0\r\n:0\r\n:0\r\n*0\r\n:0\r\n*2\r\n:0\r\n:0\r\n$-1\r\n\
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
@@ -6460,7 +6527,7 @@ fn firn_combines_lapsed_sets_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
@@ -6783,7 +6850,7 @@ $-1\r\n$-1\r\n*0\r\n:0\r\n*0\r\n:0\r\n-ERR syntax error\r\n\
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
@@ -6864,7 +6931,7 @@ fn firn_answers_time_inside_transactions_and_scripts() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
@@ -6922,7 +6989,7 @@ fn firn_answers_command_inside_transactions_and_scripts_as_on_the_network() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut batch = Vec::new();
     for request in [
@@ -7038,7 +7105,7 @@ $0\r\n\r\n+OK\r\n+OK\r\n:4\r\n\
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
@@ -7200,7 +7267,7 @@ $1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut transactions: Vec<Vec<u8>> = SETUP.iter().map(|request| resp(request)).collect();
     transactions.push(resp(&["MULTI"]));
@@ -7400,7 +7467,7 @@ fn firn_enumerates_keys_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let mut kinds: Vec<(String, &str)> = Vec::new();
     let mut writes: Vec<Vec<u8>> = Vec::new();
@@ -7554,7 +7621,7 @@ fn firn_draws_random_keys_uniformly_as_redis_does() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let keys: Vec<String> = (0..10).map(|index| format!("draw:{index}")).collect();
     let writes: Vec<Vec<u8>> = keys.iter().map(|key| resp(&["SET", key, "v"])).collect();
@@ -7594,7 +7661,7 @@ fn firn_records_scripts_as_redis_propagates_them() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]).with_port(&port_lease);
+    let child = program.spawn_in_directory(fixture.path(), &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"scripts.aof"]).with_port(&port_lease);
     let monitor = child.monitor();
     let client = std::thread::spawn(move || {
         let mut client = connect_when_ready(port, &monitor);
@@ -7625,7 +7692,7 @@ fn firn_records_scripts_as_redis_propagates_them() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", b"scripts.aof"]).with_port(&port_lease);
+    let child = program.spawn_in_directory(fixture.path(), &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"scripts.aof"]).with_port(&port_lease);
     let monitor = child.monitor();
     let client = std::thread::spawn(move || {
         let mut client = connect_when_ready(port, &monitor);
@@ -7655,7 +7722,7 @@ fn firn_script_fallback_is_not_catchable_and_publishes_once() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-once.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"fallback-once.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let scripts = [
         "redis.call('INCR',KEYS[1]); return redis.call('GET','outside') or 'missing'",
@@ -7676,7 +7743,7 @@ fn firn_script_fallback_is_not_catchable_and_publishes_once() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-once.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"fallback-once.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["MGET", "counter:0", "counter:1", "counter:2"]), "*3\r\n$1\r\n1\r\n$1\r\n1\r\n$1\r\n1\r\n");
     drop(client);
@@ -7700,7 +7767,7 @@ fn firn_script_fallback_restores_collection_payloads_but_not_lua_errors() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-values.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"fallback-values.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     for (args, expected) in [
         (vec!["RPUSH", "list", "base"], ":1\r\n"),
@@ -7733,7 +7800,7 @@ fn firn_script_fallback_restores_collection_payloads_but_not_lua_errors() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-values.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"fallback-values.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["LRANGE", "list", "0", "-1"]), "*3\r\n$4\r\nbase\r\n$1\r\na\r\n$1\r\nb\r\n");
     assert_eq!(memory_request(&mut client, &["HGET", "hash", "n"]), "$1\r\n2\r\n");
@@ -7756,7 +7823,7 @@ fn firn_script_fallback_restores_deadlines_types_and_presence() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-branches.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"fallback-branches.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     for (args, reply) in [
         (vec!["SET", "deadline", "v", "PXAT", "9999999999999"], "+OK\r\n"),
@@ -7803,7 +7870,7 @@ fn firn_script_fallback_restores_deadlines_types_and_presence() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-branches.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"fallback-branches.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["MGET", "deadline", "typed", "created", "removed"]), "*4\r\n$1\r\nv\r\n$3\r\nnew\r\n$3\r\nnew\r\n$-1\r\n");
     assert_eq!(memory_request(&mut client, &["PEXPIRETIME", "deadline"]), ":9999999998888\r\n");
@@ -7825,7 +7892,7 @@ fn firn_script_declared_names_and_global_fallback_preserve_replies() {
     let port = port_lease.port();
     let text = port.to_string();
     // AOF on: the rewrite sequence the fallback checks read is reported only while a file is kept.
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"declared-names.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"declared-names.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let names = "local a,b,c=KEYS[1],KEYS[2],KEYS[3]; KEYS[1]='outside'; \
         redis.call('INCR',a); redis.call('INCR',b); redis.call('INCR',c); \
@@ -7875,7 +7942,7 @@ fn firn_script_fallback_keeps_lazy_expiry_effects() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"fallback-expiry.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"fallback-expiry.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let script = "local a=redis.call('GET',KEYS[1]); local b=redis.call('GET','outside'); return {a or 'missing',b or 'missing'}";
     client.write_all(&resp(&["SCRIPT", "LOAD", script])).unwrap();
@@ -7908,7 +7975,7 @@ fn firn_disjoint_declared_scripts_finish_with_a_serial_history() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "2")], &[text.as_bytes(), b"2"]).with_port(&port_lease);
+    let child = program.spawn_on_route_with(true, &[("WF_DRIVERS", "2")], &[b"--port", text.as_bytes(), b"--firn-clients", b"2"]).with_port(&port_lease);
     let mut left = connect_when_ready(port, &child);
     let mut right = connect_when_ready(port, &child);
     let script = "local a=redis.call('INCR',KEYS[1]); local n=0; for i=1,3000 do n=n+i end; return {a,redis.call('INCR',KEYS[1]),redis.call('GET',KEYS[1])}";
@@ -8006,7 +8073,7 @@ fn firn_answers_the_value_types_as_redis_does_with_hashes_and_sorted_sets() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -8346,7 +8413,7 @@ fn firn_replays_the_value_types_from_its_append_only_file_with_hashes_and_sorted
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -8440,7 +8507,7 @@ fn firn_replays_the_value_types_from_its_append_only_file_with_hashes_and_sorted
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -8525,7 +8592,7 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
             let port = port_lease.port();
             let text = port.to_string();
             let child =
-                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+                program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
             let mut client = connect_when_ready(port, &child);
             let mut late = connect_when_ready(port, &child);
             late.write_all(&resp(&["PING"]))
@@ -8582,7 +8649,7 @@ fn firn_shutdown_drains_and_replays_its_append_only_file_on_both_routes() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         let mut keys: Vec<(String, String)> = (0..128)
             .map(|i| (format!("shutdown:{i}"), format!("value:{i}")))
@@ -8616,7 +8683,7 @@ fn firn_shutdown_closes_an_idle_client_without_an_idle_limit_on_both_routes() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+        let child = firn().spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"0"]).with_port(&port_lease);
         let mut idle = connect_when_ready(port, &child);
         let mut caller = connect_when_ready(port, &child);
         let started = Instant::now();
@@ -8649,7 +8716,7 @@ fn firn_shutdown_refusals_match_redis_on_both_routes() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+        let child = firn().spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"0"]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         client
             .write_all(&resp(&["CONFIG", "SET", "requirepass", "secret"]))
@@ -8742,7 +8809,7 @@ fn firn_shutdown_abandons_a_blocked_send_on_both_routes() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = firn().spawn_on_route(native_ring, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+        let child = firn().spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"0"]).with_port(&port_lease);
         let mut slow = connect_when_ready(port, &child);
         let mut caller = connect_when_ready(port, &child);
         let value = "x".repeat(16 * 1024 * 1024);
@@ -8814,7 +8881,7 @@ fn firn_stops_in_order_on_sigterm_and_sigint_on_both_routes() {
             let port = port_lease.port();
             let text = port.to_string();
             let child =
-                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+                program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
             let mut client = connect_when_ready(port, &child);
             let mut batch = Vec::new();
             for i in 0..128 {
@@ -8830,7 +8897,7 @@ fn firn_stops_in_order_on_sigterm_and_sigint_on_both_routes() {
             let port = port_lease.port();
             let text = port.to_string();
             let child =
-                program.spawn_on_route(native_ring, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+                program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
             let mut reader = connect_when_ready(port, &child);
             for i in 0..128 {
                 reader
@@ -8871,7 +8938,7 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
         let mut child = firn().spawn_on_route_with(
             native_ring,
             &[("WF_WORKERS", "2"), ("WF_DRIVERS", "2")],
-            &[text.as_bytes(), b"0"],
+            &[b"--port", text.as_bytes(), b"--firn-clients", b"0"],
         ).with_port(&port_lease);
         let mut looping = connect_when_ready(port, &child);
         let mut observer = connect_when_ready(port, &child);
@@ -8921,7 +8988,7 @@ fn firn_applies_an_idle_limit_to_a_previously_unlimited_receive() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = firn().spawn_on_route(true, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+    let child = firn().spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0"]).with_port(&port_lease);
     let mut idle = connect_when_ready(port, &child);
     let mut caller = connect_when_ready(port, &child);
     idle.write_all(&resp(&["PING"]))
@@ -8962,7 +9029,7 @@ fn firn_reapplies_an_idle_limit_after_disabling_it_on_both_routes() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(native_ring, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+        let child = program.spawn_on_route(native_ring, &[b"--port", text.as_bytes(), b"--firn-clients", b"0"]).with_port(&port_lease);
         let mut idle = connect_when_ready(port, &child);
         let mut caller = connect_when_ready(port, &child);
         // This client stays active through its own configuration changes;
@@ -9058,7 +9125,7 @@ fn multipart_load(program: &CompiledProgram, name: &str, values: &[(&str, Option
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     multipart_values(&mut client, values);
     // Also make an empty expected-values case prove that startup completed.
@@ -9073,7 +9140,7 @@ fn multipart_refused(program: &CompiledProgram) {
     let text = port_lease.port().to_string();
     let result = program.spawn_in_directory(
         program.working_directory(),
-        &[text.as_bytes(), b"1", b"appendonly.aof"],
+        &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"],
     ).with_port(&port_lease).wait_with_output().expect("wait for compiled program");
     assert_eq!(result.status.code(), Some(4), "{result:?}");
 }
@@ -9292,7 +9359,7 @@ fn multipart_empty_start(empty_directory: bool) {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"appendonly.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(
         std::fs::read(directory.join("appendonly.aof.1.base.aof")).unwrap(),
@@ -9414,7 +9481,7 @@ fn multipart_upgrade(interrupted: bool, both: bool) {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     rewrite_start(&mut client);
     assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
@@ -9496,12 +9563,12 @@ fn multi_part_aof_can_upgrade_when_two_servers_share_the_same_server_dir() {
     let first_port_lease = support::lease_port();
     let first_port = first_port_lease.port();
     let first_text = first_port.to_string();
-    let first = program.spawn_on_route(true, &[first_text.as_bytes(), b"1", b"appendonly.aof"]).with_port(&first_port_lease);
+    let first = program.spawn_on_route(true, &[b"--port", first_text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&first_port_lease);
     let mut first_client = connect_when_ready(first_port, &first);
     let second_port_lease = support::lease_port();
     let second_port = second_port_lease.port();
     let second_text = second_port.to_string();
-    let second = program.spawn_on_route(true, &[second_text.as_bytes(), b"1", b"appendonly.aof2"]).with_port(&second_port_lease);
+    let second = program.spawn_on_route(true, &[b"--port", second_text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof2"]).with_port(&second_port_lease);
     let mut second_client = connect_when_ready(second_port, &second);
     multipart_values(
         &mut first_client,
@@ -9559,7 +9626,7 @@ fn multi_part_aof_can_handle_appendfilename_contains_whitespaces() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client.write_all(&resp(&["SET", "k1", "v1"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "whitespace appendfilename");
@@ -9572,7 +9639,7 @@ fn multi_part_aof_can_handle_appendfilename_contains_whitespaces() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     rewrite_start(&mut client);
     assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
@@ -9591,7 +9658,7 @@ fn multi_part_aof_quotes_apostrophes_in_appendfilename() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client.write_all(&resp(&["SET", "k", "v"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "apostrophe appendfilename");
@@ -9625,7 +9692,7 @@ fn multi_part_aof_replays_in_order_appends_to_last_and_removes_history() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"appendonly.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     multipart_values(&mut client, &[("k", Some("3"))]);
     client.write_all(&resp(&["INCR", "k"])).unwrap();
@@ -9816,7 +9883,7 @@ fn firn_refuses_aof_rewrite_without_appendonly() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client.write_all(&resp(&["SET", "k", "v"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "in-memory value");
@@ -9844,7 +9911,7 @@ fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client.write_all(&resp(&["SET", "text", "hello\0world\r\n"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "binary string");
@@ -9895,7 +9962,7 @@ fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     multipart_values(&mut client, &[("text", Some("hello\0world\r\n"))]);
     for index in 0..65 {
@@ -9940,7 +10007,7 @@ fn firn_rewrite_cuts_a_retained_unfinished_block_before_switching() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     multipart_values(&mut client, &[("a", Some("1")), ("b", None), ("c", None)]);
     assert_eq!(std::fs::read(&path).unwrap(), retained);
@@ -9983,7 +10050,7 @@ fn firn_rewrite_failed_after_cutting_a_retained_block_stays_loadable() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     client.write_all(&resp(&["SET", "after", "1"])).unwrap();
     expect_replies(&mut client, b"+OK\r\n", "append inside retained block");
@@ -10023,7 +10090,7 @@ fn firn_rewrite_keeps_a_retained_block_closed_by_an_appended_transaction() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+        let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         multipart_values(&mut client, &[("a", Some("1")), ("b", None), ("c", None)]);
         assert_eq!(std::fs::read(&path).unwrap(), retained);
@@ -10078,7 +10145,7 @@ fn firn_rewrite_cuts_before_both_retained_unmatched_multis() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&port_lease);
+        let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         multipart_values(&mut client, &[("a", Some("2")), ("b", None), ("c", None), ("d", None)]);
         assert_eq!(std::fs::read(&path).unwrap(), retained);
@@ -10116,7 +10183,7 @@ fn firn_rewrite_cuts_first_retained_multi_after_nested_clean_eof() {
     let lease = support::lease_port();
     let port = lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()]).with_port(&lease);
     let mut client = connect_when_ready(port, &child);
     multipart_values(&mut client, &[("a", Some("1")), ("b", None), ("c", None)]);
     assert_eq!(std::fs::read(&path).unwrap(), retained, "startup trims the latest MULTI while the first remains unmatched");
@@ -10190,7 +10257,7 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
     let mut control = connect_when_ready(port, &child);
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let mut workers = Vec::new();
@@ -10224,7 +10291,7 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     for (operation, count) in expected {
         match operation {
@@ -10259,7 +10326,7 @@ fn firn_shutdown_cancels_scan_before_rotation() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     rewrite_key_delay(&mut client, "100");
     rewrite_start(&mut client);
@@ -10288,9 +10355,7 @@ fn firn_automatic_rewrite_requires_size_and_growth_and_can_be_disabled() {
         let port = port_lease.port();
         let text = port.to_string();
         let child = program.spawn_on_route(true, &[
-            text.as_bytes(), b"0", b"appendonly.aof",
-            b"--auto-aof-rewrite-percentage", percentage.as_bytes(),
-            b"--auto-aof-rewrite-min-size", minimum.as_bytes(),
+            b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof", b"--auto-aof-rewrite-percentage", percentage.as_bytes(), b"--auto-aof-rewrite-min-size", minimum.as_bytes(),
         ]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -10325,7 +10390,7 @@ fn firn_rewrite_host_failures_keep_a_replayable_manifest() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+        let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         let directory = program.working_directory().join("appendonlydir");
         let obstacle = directory.join(match failure {
@@ -10360,7 +10425,7 @@ fn firn_rewrite_host_failures_keep_a_replayable_manifest() {
         let port_lease = support::lease_port();
         let port = port_lease.port();
         let text = port.to_string();
-        let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+        let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
         let mut client = connect_when_ready(port, &child);
         rewrite_start(&mut client);
         assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok", "retry after {failure}");
@@ -10375,7 +10440,7 @@ fn firn_rewrites_an_empty_dataset_without_select_and_can_rewrite_again() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let directory = program.working_directory().join("appendonlydir");
     for sequence in 2..=3 {
@@ -10404,7 +10469,7 @@ fn firn_automatic_rewrite_minimum_is_strict() {
     let port = port_lease.port();
     let text = port.to_string();
     let child = program.spawn_on_route(true, &[
-        text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", minimum.as_bytes(),
+        b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof", b"--auto-aof-rewrite-min-size", minimum.as_bytes(),
     ]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     std::thread::sleep(Duration::from_millis(250));
@@ -10444,12 +10509,12 @@ fn firn_simultaneous_rewrites_in_one_directory_keep_independent_datasets() {
     let first_port_lease = support::lease_port();
     let first_port = first_port_lease.port();
     let first_text = first_port.to_string();
-    let first = program.spawn_on_route(true, &[first_text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&first_port_lease);
+    let first = program.spawn_on_route(true, &[b"--port", first_text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&first_port_lease);
     let mut first_client = connect_when_ready(first_port, &first);
     let second_port_lease = support::lease_port();
     let second_port = second_port_lease.port();
     let second_text = second_port.to_string();
-    let second = program.spawn_on_route(true, &[second_text.as_bytes(), b"0", b"second.aof"]).with_port(&second_port_lease);
+    let second = program.spawn_on_route(true, &[b"--port", second_text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"second.aof"]).with_port(&second_port_lease);
     let mut second_client = connect_when_ready(second_port, &second);
     rewrite_key_delay(&mut first_client, "100");
     rewrite_key_delay(&mut second_client, "100");
@@ -10491,7 +10556,7 @@ fn firn_configures_rdb_key_save_delay_as_a_hidden_parameter() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let name = "rdb-key-save-delay";
     assert_eq!(memory_request(&mut client, &["CONFIG", "GET", name]).as_bytes(), resp(&[name, "0"]));
@@ -10528,7 +10593,7 @@ fn firn_configures_and_reports_automatic_aof_rewrite_thresholds() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     let percentage = "auto-aof-rewrite-percentage";
     let minimum = "auto-aof-rewrite-min-size";
@@ -10623,7 +10688,7 @@ fn firn_uses_config_set_thresholds_for_the_next_automatic_rewrite() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &[
         "CONFIG", "SET", "auto-aof-rewrite-percentage", "0", "auto-aof-rewrite-min-size", "1kb",
@@ -10699,7 +10764,7 @@ fn firn_configures_and_reports_maxmemory() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     for (name, default, changed) in [
         ("maxmemory", "0", "1048576"),
@@ -10792,7 +10857,7 @@ fn firn_tracks_idle_time_and_notouch_lookups() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["SET", "idle", "v"]), "+OK\r\n");
     assert!(memory_object(&mut client, "IDLETIME", "idle") <= 1);
@@ -10854,7 +10919,7 @@ fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu"]), "+OK\r\n");
     assert_eq!(memory_request(&mut client, &["SET", "freq", "v"]), "+OK\r\n");
@@ -10918,7 +10983,7 @@ fn firn_initializes_access_stamps_during_aof_replay() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1", b"access.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", b"access.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert!(memory_object(&mut client, "IDLETIME", "loaded") <= 1);
     drop(client);
@@ -10935,7 +11000,7 @@ fn firn_restores_first_access_stamps_on_script_retries() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu", "lfu-log-factor", "0", "lfu-decay-time", "0"]), "+OK\r\n");
     for (args, expected) in [
@@ -10977,7 +11042,7 @@ fn firn_restores_access_stamps_when_a_read_only_script_is_killed() {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]).with_port(&port_lease);
+    let child = program.spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"2"]).with_port(&port_lease);
     let mut looping = connect_when_ready(port, &child);
     let mut other = connect_when_ready(port, &child);
     assert_eq!(memory_request(&mut other, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu", "lfu-log-factor", "0", "lfu-decay-time", "0"]), "+OK\r\n");
