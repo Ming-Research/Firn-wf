@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Gate the ten safety witnesses
+
+Nodes: firn/building
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-safety-witness-gate, which asked to approve PR #85's new decision in design/firn/building.md at head a3253ee: the gate compiles ten real Redis-family bug patterns with the pinned Whitefoot compiler, each rejected form must report the named source diagnostic (rule, kind and source line) and each accepted form must compile.
+
+Summary: Each witness is a pair of small programs written from a real defect in Redis, Valkey, KeyDB, Garnet or Dragonfly. Checking the diagnostic, not just a nonzero exit, avoids masking an unrelated error, and compiling the fixed form avoids masking a correct form Whitefoot does not support. A Whitefoot upgrade that stops rejecting a class, or stops accepting a fix, turns the gate red. Replaced: unchecked examples as safety evidence.
+
 ## 2026-10-13 Carry the AOF transaction boundary instead of rereading history
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture
