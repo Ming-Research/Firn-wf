@@ -346,8 +346,61 @@ fn answer_call_entries<interface ScriptCommands>(sequence: &pkg::store::WriteSeq
   return complete_command_call(sequence: sequence, engine: engine, env: env, client: client, id: id, appended: appended, reply_start: reply_start, budget: budget);
 }
 
+fn answer_call_entries_quiet<interface ScriptCommands>(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, slots: &Entries<Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(declared), reads(keys_env), reads(time), writes(sequence), writes(engine), writes(env), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
+  requires slots^.len == declared^.len;
+  ensures slots^.len == entry(slots)^.len;
+} {
+  doc "answer_call_entries for a script with the AOF off: the same command and reply conversion, but the call takes no Meta, so the script holds only its declared keys while Lua runs. The sequence is the local unmetered token, whose changed flag completion folds into the attempt's written flag.";
+  let id = 0_u32;
+  let argc = 0_u64;
+  match halo::embed::pending_call(engine: engine) {
+    Some(value: call) => {
+      set id = call.id;
+      set argc = call.argc;
+    }
+    None() => {
+      return Outcome::HostStopped();
+    }
+  }
+  let input = box_slots_new::<u8>(capacity: 64_u64);
+  let spans = box_slots_new::<Span>(capacity: 8_u64);
+  for @arguments (i in 0_u64..argc) {
+    let v = halo::embed::pending_argument(engine: engine, index: i);
+    let text = command_argument(vm: &engine^.vm, v: v);
+    let start = input.inner.len;
+    value_bytes(vm: &engine^.vm, v: text, out: &input);
+    let end = input.inner.len;
+    let length = end -sat start;
+    push_arg(args: &spans, start: start, length: length);
+  }
+  let n = input.inner.len;
+  let reply_start = client^.at;
+  let protocol = client^.resp;
+  let scripted = cvt::<u8, u64>(env^.resp);
+  set client^.resp = scripted;
+  set client^.now = time^.check;
+  let logged = False();
+  let result = ScriptCommands::call_entries_quiet(sequence: sequence, memory: &env^.memory, journal: &env^.access, slots: slots, declared: declared, undo: undo, due: due, effects: effects, logged: logged, input: &input.inner[0_u64..n], args: &spans, client: client, env: keys_env, time: time);
+  set client^.resp = protocol;
+  let appended = 0_u64;
+  match result {
+    Completed(appended: count) => {
+      set appended = count;
+    }
+    NeedWholeMap() => {
+      set env^.need_whole = True();
+      set client^.at = reply_start;
+      return Outcome::HostStopped();
+    }
+  }
+  return complete_command_call(sequence: sequence, engine: engine, env: env, client: client, id: id, appended: appended, reply_start: reply_start, budget: budget);
+}
+
 fn complete_command_call(sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, client: &Client, id: u32, appended: u64, reply_start: u64, budget: u64) -> outcome: Outcome reads(sequence), writes(engine), writes(env), writes(client) {
   if sequence^.taken {
+    set env^.held.wrote = True();
+  }
+  if sequence^.changed {
     set env^.held.wrote = True();
   }
   if appended > 0_u64 {
@@ -570,8 +623,12 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
               let saved = pkg::store::attempt_undo_new();
               let undo = Some<pkg::store::AttemptUndo>(value: move saved);
               let due = pkg::store::attempt_due_new();
-              let sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
-              let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+              let sequence = pkg::store::sequence_unmetered();
+              let log_budget = pkg::store::log_budget_new();
+              if logged {
+                set sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
+                set log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+              }
               let outcome = halo::embed::start::<ScriptHost>(engine: &pooled.engine, env: &env, script: id, budget: budget);
               loop (
                 invariant aligned: t^.len == declared.len
@@ -604,7 +661,11 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                     if env.held.wrote {
                       set more = 18446744073709551615_u64;
                     }
-                    set outcome = answer_call_entries::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, slots: t, declared: &declared, undo: &undo, due: &due, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                    if logged {
+                      set outcome = answer_call_entries::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, slots: t, declared: &declared, undo: &undo, due: &due, meta: m, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                    } else {
+                      set outcome = answer_call_entries_quiet::<ScriptCommands>(sequence: &sequence, engine: &pooled.engine, env: &env, slots: t, declared: &declared, undo: &undo, due: &due, effects: &effects, keys_env: keys_env, client: client, time: time, budget: more);
+                    }
                   }
                   Done(..) => {
                     let v = Value::Nil();
@@ -659,8 +720,14 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                 }
               }
               if bnot(retry) {
-                pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
-                pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+                if logged {
+                  pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
+                  pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+                } else {
+                  if pkg::store::attempt_due_pending(staged: &due) {
+                    pkg::store::attempt_due_commit(staged: &due, target: &m^.due, env: keys_env);
+                  }
+                }
               }
             }
           }

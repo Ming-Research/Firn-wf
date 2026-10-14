@@ -264,6 +264,21 @@ fn attempt_due_new() -> due: ExpiryQueue pure {
   return ExpiryQueue(queue: move queue, eligibility_changed: unchanged, staged: move staged);
 }
 
+fn attempt_due_pending(staged: &ExpiryQueue) -> pending: Bool reads(staged) {
+  doc "Whether the private queue has anything attempt_due_commit would publish.";
+  let found = staged^.eligibility_changed;
+  match staged^.staged {
+    Some(value: records) => {
+      if records^.inner.len > 0_u64 {
+        set found = True();
+      }
+    }
+    None() => {
+    }
+  }
+  return found;
+}
+
 fn attempt_due_commit(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(staged), writes(target) {
   if staged^.eligibility_changed {
     set target^.eligibility_changed = True();

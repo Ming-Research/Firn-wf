@@ -65,6 +65,7 @@ public struct WriteSequence {
   doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; loading leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed key before the outer statement commits; the inactive path allocates nothing.";
   public value: u64;
   public taken: Bool;
+  public changed: Bool;
   public loading: Bool;
   public exhausted: Bool;
   public capturing: Bool;
@@ -260,6 +261,8 @@ public binding DueOrder : PriorityOrder<Due, KeyEnv> {
 
 public const keyspace_capacity: u64 = 262144_u64;
 
+public fn sequence_unmetered() -> sequence: WriteSequence pure doc "A token for a statement that holds no Meta because the AOF is off: it takes no sequence, stamps zero and captures nothing, and records only in changed that a dataset change happened. A declared-key script with the AOF off uses it; with the AOF on every statement still starts from sequence_new.";
+
 public fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "Starts one outer atomic statement's sequence token from its held metadata; nested command parts reuse this token. Its captures are complete images.";
 
 public fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "sequence_new for a statement holding exactly one key. When that key's previous write lies inside the current rewrite window, the journal already reproduces its state, so the statement journals its own append-only bytes instead of the key's image.";
@@ -340,6 +343,8 @@ public fn restore_access_entries(journal: &Option<AccessJournal>, declared: &Key
 } doc "Restores original first-refresh stamps in held declared entries after payload undo, preserving original absence.";
 
 public fn attempt_due_new() -> due: ExpiryQueue pure doc "An empty private expiry queue; its invalidation flag is unpublished until attempt acceptance.";
+
+public fn attempt_due_pending(staged: &ExpiryQueue) -> pending: Bool reads(staged) doc "Whether an attempt's private expiry queue holds insertions or an eligibility change that attempt_due_commit would publish; a statement without them need not take Meta.";
 
 public fn attempt_due_commit(staged: &ExpiryQueue, target: &ExpiryQueue, env: &KeyEnv) -> result: unit reads(env), writes(staged), writes(target) doc "Publishes accepted expiry insertions and volatile eligibility into held metadata; abandonment drops the private queue instead.";
 

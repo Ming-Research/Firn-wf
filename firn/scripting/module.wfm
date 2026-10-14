@@ -17,6 +17,10 @@ public interface ScriptCommands {
     requires slots^.len == declared^.len;
     ensures slots^.len == entry(slots)^.len;
   };
+  fn call_entries_quiet(sequence: &pkg::store::WriteSequence, memory: &ScriptMemory, journal: &Option<pkg::store::AccessJournal>, slots: &Entries<pkg::store::Entry>, declared: &KeySet, undo: &Option<pkg::store::AttemptUndo>, due: &pkg::store::ExpiryQueue, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<pkg::protocol::Span>>, client: &pkg::protocol::Client, env: &pkg::bytes::KeyEnv, time: &pkg::store::Time) -> result: ScriptCommandResult reads(declared), reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(memory), writes(journal), writes(slots), writes(undo), writes(due), writes(effects), writes(client) contract {
+    requires slots^.len == declared^.len;
+    ensures slots^.len == entry(slots)^.len;
+  };
 }
 
 public fn eval<interface ScriptCommands>(store: &pkg::store::Keyspace, input: &[u8], args: &Box<Slots<pkg::protocol::Span>>, client: &pkg::protocol::Client, keys_env: &pkg::bytes::KeyEnv, time: &pkg::store::Time, clock: &std::time::Clock, by_sha: Bool) -> r: unit reads(store), reads(input), reads(args), reads(keys_env), reads(time), writes(client), writes(clock) waits doc "EVAL script numkeys [key ...] [arg ...] or EVALSHA sha1 numkeys [key ...] [arg ...]: compiles or finds the script, takes the pool's one engine, waiting while another script has it, runs the script in attempts, initially holding the immutable declared entry set and metadata, abandoning an out-of-declaration attempt and retrying under a whole-keyspace and metadata hold, writes its result to the client in the client's protocol, and returns the engine after each attempt, the pool's short statements outside the script's.";

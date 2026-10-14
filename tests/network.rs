@@ -10468,6 +10468,32 @@ fn firn_restores_first_access_stamps_on_script_retries() {
     assert_eq!(finished(child).0, 0);
 }
 
+/// With the append-only file off, a script holds no Meta while Lua runs, so
+/// the attempt's written flag cannot come from a sequence or a log record.
+/// A write followed by a loop that exhausts the first attempt's budget must
+/// still not be restarted: the counter is incremented once, for a declared
+/// key and for a script that also writes an undeclared key and so runs again
+/// whole after the abandoned attempt.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_does_not_rerun_a_script_that_wrote_before_its_budget_ran_out_without_an_aof() {
+    let program = firn();
+    let port = free_port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"2"]);
+    let mut client = connect_when_ready(port);
+    let declared = "redis.call('INCR',KEYS[1]); \
+        local n=0; for i=1,20000 do n=n+i end; return redis.call('GET',KEYS[1])";
+    assert_eq!(memory_request(&mut client, &["EVAL", declared, "1", "counter"]), "$1\r\n1\r\n");
+    let whole = "redis.call('INCR',KEYS[1]); redis.call('INCR','undeclared'); \
+        local n=0; for i=1,20000 do n=n+i end; return redis.call('GET','undeclared')";
+    assert_eq!(memory_request(&mut client, &["EVAL", whole, "1", "other"]), "$1\r\n1\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "counter"]), "$1\r\n1\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "other"]), "$1\r\n1\r\n");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
 /// An abandoned attempt restores metadata before releasing the keyspace.
 /// SCRIPT KILL still reaches the pool and leaves those stamps restored.
 #[cfg(target_os = "linux")]
