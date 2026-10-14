@@ -59,8 +59,33 @@ fn start(server: Server, oracle: &Path, directory: &Path, traced: bool) -> (Prog
         }
     }
     let child = ProgramChild::spawn(&mut command).expect("spawn rewrite crash subject").with_port(&lease);
-    let client = connect_when_ready(lease.port(), &child);
+    let mut client = connect_when_ready(lease.port(), &child);
+    loaded(&mut client, server);
     (child, client)
+}
+
+/// Waits until the server answers PING with +PONG. Redis 7.2.16 admits
+/// connections while it replays its append-only file and answers -LOADING
+/// until the replay ends (firn listens only after it); that reply alone is
+/// "not ready yet" and is retried on the same connection. Any other reply,
+/// a closed connection or no +PONG within 60 s fails the test.
+fn loaded(client: &mut TcpStream, server: Server) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        client.write_all(&resp(&["PING"])).expect("send the readiness PING");
+        let mut line = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !line.ends_with(b"\r\n") {
+            assert!(Instant::now() < deadline, "{server:?}: no PING reply within 60 s");
+            assert_eq!(client.read(&mut byte).expect("read the readiness PING reply"), 1,
+                "{server:?}: connection closed while waiting for PONG, saw {:?}", String::from_utf8_lossy(&line));
+            line.push(byte[0]);
+        }
+        if line == b"+PONG\r\n" { return; }
+        assert!(line.starts_with(b"-LOADING "), "{server:?}: unexpected PING reply {:?}", String::from_utf8_lossy(&line));
+        assert!(Instant::now() < deadline, "{server:?}: still loading after 60 s");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn manifest(directory: &Path) -> String {
