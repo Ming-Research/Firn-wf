@@ -360,8 +360,42 @@ start creates `appendonlydir/F.1.base.aof` (empty), `F.1.incr.aof` and
 `F.manifest`. Base files use commands, not an RDB preamble. Manifest updates
 write `temp-F.manifest`, sync it, rename it over the manifest and sync the
 directory. A malformed AOF record stops firn with status 1 before it listens
-and writes Redis 7.2.16's bad-file-format message to stderr; a missing listed
-file or another unrecoverable startup refusal also stops it with status 1.
+and writes Redis 7.2.16's bad-file-format message to stderr. An unknown command
+also stops startup with status 1 and Redis's diagnostic
+`Unknown command '<command>' reading the append only file <filename>`.
+Lookup covers every complete record, including commands in an unfinished
+transaction, before tail recovery can truncate it. Refused records leave
+the AOF unchanged. A missing listed file or another unrecoverable startup
+refusal also stops it with status 1.
+
+Known commands that return execution errors are logged and loading continues,
+as in Redis 7.2.16 with its default `propagation-error-behavior ignore`;
+later commands, including later commands inside EXEC, still run. Firn logs
+`Firn AOF replay error reading the append only file <filename>: <RESP error>`
+to stderr. This diagnostic deliberately differs from Redis's critical log:
+Redis logs the original error argument, which can differ from the RESP error
+text, whereas Firn's command interface retains only the reply. Firn also
+retains its command dispatcher's argument-count checks; Redis's AOF loader
+calls command handlers directly without the network's general arity check,
+so malformed known-command records have no uniform Redis refusal rule.
+
+Firn has only database 0. Replay refuses a parsed nonzero `SELECT` index
+with status 1 and
+`Firn cannot load SELECT <index> reading the append only file <filename>: only database 0 is supported`.
+It also refuses cross-database `COPY`, unsupported transaction state
+(`DISCARD`, `RESET`, and `WATCH`), unsupported `FUNCTION` state, and
+MULTI/EXEC records with extra arguments with status 1 and
+`Firn cannot load <command> reading the append only file <filename>: command requires unsupported replay state`.
+These are Firn-specific refusals: Redis can load databases beyond 0 and
+function state, while Firn must avoid silently dropping persisted effects
+or applying them to the wrong database. The database refusal also covers
+`SELECT 1 extra`: Redis's direct AOF handler ignores the extra argument and
+still changes database. The scanner also refuses unsupported control and
+function state inside an unfinished transaction before tail recovery;
+`EXEC extra` must not be mistaken for a tail that can be discarded. Database
+selection and COPY checks run when the queued command would execute.
+`SELECT 0` remains supported.
+
 Startup accepts RESP array records, refuses inline commands, and skips each
 `#` annotation chunk through its first LF or 1023 bytes, matching Redis's
 1024-byte line buffer. Header numbers follow Redis's `atoi`/`strtol`

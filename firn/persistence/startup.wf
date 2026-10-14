@@ -135,7 +135,7 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
       if part^.kind == kind {
         let length = part^.name.inner.len;
         let name = &part^.name.inner[0_u64..length];
-        let loaded = replay(store: store, factory: factory, root: directory, name: name, name_length: length, time: time, clock: clock);
+        let loaded = replay(store: store, factory: factory, root: directory, name: name, name_length: length, time: time, clock: clock, stderr: stderr);
         set loaded_count = loaded_count +wrap 1_u64;
         if loaded.bad_format {
           aof_bad_format(factory: factory, stderr: stderr, name: name);
@@ -347,7 +347,12 @@ fn aof_bad_format(factory: &HandleFactory, stderr: &std::io::OutputStream, name:
   let message = aof_named(prefix: &aof_bad_format_prefix[0_u64..45_u64], suffix: name);
   pkg::store::log_append_plain(log: &message, bytes: &aof_bad_format_suffix[0_u64..87_u64]);
   let length = message.inner.len;
-  let bytes = &message.inner[0_u64..length];
+  aof_message(factory: factory, stderr: stderr, bytes: &message.inner[0_u64..length]);
+  return unit;
+}
+
+fn aof_message(factory: &HandleFactory, stderr: &std::io::OutputStream, bytes: &[u8]) -> result: unit reads(bytes), writes(factory), writes(stderr) waits {
+  let length = bytes^.len;
   let sent = 0_u64;
   let cancel = std::time::cancel_never();
   loop @message {

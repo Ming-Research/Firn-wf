@@ -88,9 +88,13 @@ fn bounded_stream(stream: TcpStream) -> TcpStream {
 
 /// The exit code one finished child reported, with its diagnostics on failure.
 fn finished(child: ProgramChild) -> (i32, Vec<u8>) {
+    finished_with_stderr(child, b"")
+}
+
+fn finished_with_stderr(child: ProgramChild, expected_stderr: &[u8]) -> (i32, Vec<u8>) {
     let output = child.wait_with_output().expect("wait for compiled program");
-    assert!(
-        output.stderr.is_empty(),
+    assert_eq!(
+        output.stderr, expected_stderr,
         "native program diagnostics: {output:?}"
     );
     (output.status.code().unwrap_or(-1), output.stdout)
@@ -8479,7 +8483,12 @@ fn firn_replays_the_value_types_from_its_append_only_file_with_hashes_and_sorted
 /// Wait without dropping connected peers: otherwise EOF from the test itself
 /// could conceal a shutdown path that never closes them.
 #[cfg(target_os = "linux")]
-fn shutdown_finished(mut child: ProgramChild) {
+fn shutdown_finished(child: ProgramChild) {
+    shutdown_finished_with_stderr(child, b"");
+}
+
+#[cfg(target_os = "linux")]
+fn shutdown_finished_with_stderr(mut child: ProgramChild, expected_stderr: &[u8]) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(status) = child.try_wait().expect("poll shutdown exit") {
@@ -8492,7 +8501,7 @@ fn shutdown_finished(mut child: ProgramChild) {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert_eq!(finished(child).0, 0);
+    assert_eq!(finished_with_stderr(child, expected_stderr).0, 0);
 }
 
 /// No client limit or half-close can end these servers. A second client
@@ -9056,6 +9065,15 @@ fn multipart_values(client: &mut TcpStream, values: &[(&str, Option<&str>)]) {
 }
 
 fn multipart_load(program: &CompiledProgram, name: &str, values: &[(&str, Option<&str>)]) {
+    multipart_load_with_stderr(program, name, values, b"");
+}
+
+fn multipart_load_with_stderr(
+    program: &CompiledProgram,
+    name: &str,
+    values: &[(&str, Option<&str>)],
+    expected_stderr: &[u8],
+) {
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
@@ -9066,7 +9084,7 @@ fn multipart_load(program: &CompiledProgram, name: &str, values: &[(&str, Option
     client.write_all(&resp(&["PING"])).unwrap();
     expect_replies(&mut client, b"+PONG\r\n", "loaded");
     drop(client);
-    assert_eq!(finished(child).0, 0);
+    assert_eq!(finished_with_stderr(child, expected_stderr).0, 0);
 }
 
 fn multipart_refused(program: &CompiledProgram) {
@@ -9799,8 +9817,12 @@ fn rewrite_key_delay(client: &mut TcpStream, microseconds: &str) {
 }
 
 fn rewrite_stop(client: &mut TcpStream, child: ProgramChild) {
+    rewrite_stop_with_stderr(client, child, b"");
+}
+
+fn rewrite_stop_with_stderr(client: &mut TcpStream, child: ProgramChild, expected_stderr: &[u8]) {
     client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).unwrap();
-    shutdown_finished(child);
+    shutdown_finished_with_stderr(child, expected_stderr);
 }
 
 fn rewrite_manifest(base: u64, incremental: u64) -> String {
@@ -10046,10 +10068,15 @@ fn firn_rewrite_keeps_a_retained_block_closed_by_an_appended_transaction() {
         multipart_values(&mut client, &[("b", None), ("x", Some("1")), ("y", Some("2"))]);
         rewrite_stop(&mut client, child);
         let b = if rewrite { None } else { Some("2") };
-        multipart_load(&program, name, &[
+        // Without rewrite, the appended MULTI executes inside the retained block.
+        // The rewrite's live snapshot contains neither MULTI and loads quietly.
+        let expected_stderr: &[u8] = if rewrite { b"" } else {
+            b"Firn AOF replay error reading the append only file appendonly.aof.1.incr.aof: -ERR MULTI calls can not be nested\n"
+        };
+        multipart_load_with_stderr(&program, name, &[
             ("a", Some("1")), ("b", b), ("c", None),
             ("x", Some("1")), ("y", Some("2")),
-        ]);
+        ], expected_stderr);
     }
 }
 
@@ -10090,11 +10117,15 @@ fn firn_rewrite_cuts_before_both_retained_unmatched_multis() {
             assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
         }
         multipart_values(&mut client, &[("after", Some("1"))]);
-        rewrite_stop(&mut client, child);
+        // The second EXEC is outside the preceding completed block at startup.
+        // It remains on the next load only when no rewrite replaced the file.
+        let exec_error = b"Firn AOF replay error reading the append only file appendonly.aof.1.incr.aof: -ERR EXEC without MULTI\n";
+        rewrite_stop_with_stderr(&mut client, child, exec_error);
         let after = if rewrite { Some("1") } else { None };
-        multipart_load(&program, name, &[
+        let expected_stderr: &[u8] = if rewrite { b"" } else { exec_error };
+        multipart_load_with_stderr(&program, name, &[
             ("a", Some("2")), ("b", None), ("c", None), ("d", None), ("after", after),
-        ]);
+        ], expected_stderr);
     }
 }
 

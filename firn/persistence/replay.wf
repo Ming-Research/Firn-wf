@@ -135,7 +135,133 @@ fn aof_read_payload(factory: &HandleFactory, file: &ReadFile, destination: &[u8]
   }
 }
 
-fn aof_apply(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, record: &AofRecord, client: &pkg::protocol::Client, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(record), reads(time), writes(factory), writes(file), writes(client), writes(clock) waits {
+const aof_unknown_prefix: Array<u8, 17> = "Unknown command '";
+
+const aof_unknown_middle: Array<u8, 31> = "' reading the append only file ";
+
+const aof_refuse_prefix: Array<u8, 17> = "Firn cannot load ";
+
+const aof_file_middle: Array<u8, 30> = " reading the append only file ";
+
+const aof_database_suffix: Array<u8, 31> = ": only database 0 is supported\n";
+
+const aof_state_suffix: Array<u8, 44> = ": command requires unsupported replay state\n";
+
+const aof_error_prefix: Array<u8, 51> = "Firn AOF replay error reading the append only file ";
+
+const aof_error_middle: Array<u8, 2> = ": ";
+
+const aof_line_end: Array<u8, 1> = "\n";
+
+const aof_argument_separator: Array<u8, 1> = " ";
+
+const aof_nested_error: Array<u8, 34> = "-ERR MULTI calls can not be nested";
+
+const aof_exec_error: Array<u8, 23> = "-ERR EXEC without MULTI";
+
+fn aof_log_argument(log: &Box<Slots<u8>>, input: &[u8], span: Span, nul: Bool) -> result: unit reads(input), writes(log) {
+  let start = imin(span.start, input^.len);
+  invariant start_bound: start <= input^.len;
+  let room = input^.len - start;
+  let length = imin(span.length, room);
+  invariant length_bound: length <= room;
+  invariant payload_end: start + length <= input^.len;
+  let end = start + length;
+  invariant end_bound: end <= input^.len;
+  let shown = end;
+  if nul {
+    for (
+      at in start..end,
+      invariant shown_begin: start <= shown,
+      invariant shown_end: shown <= end
+    ) {
+      if input^[at] == 0_u8 {
+        set shown = at;
+        break;
+      }
+    }
+  }
+  pkg::store::log_append_plain(log: log, bytes: &input^[start..shown]);
+  return unit;
+}
+
+fn aof_command_error(factory: &HandleFactory, stderr: &std::io::OutputStream, name: &[u8], input: &[u8], args: &Box<Slots<Span>>, reason: u8) -> result: unit reads(name), reads(input), reads(args), writes(factory), writes(stderr) waits {
+  let command = pkg::protocol::arg(args: args, index: 0_u64);
+  let message = box_slots_new::<u8>(capacity: 0_u64);
+  let nul = True();
+  if reason == 1_u8 {
+    pkg::store::log_append_plain(log: &message, bytes: &aof_unknown_prefix[0_u64..17_u64]);
+    aof_log_argument(log: &message, input: input, span: command, nul: nul);
+    pkg::store::log_append_plain(log: &message, bytes: &aof_unknown_middle[0_u64..31_u64]);
+    pkg::store::log_append_plain(log: &message, bytes: name);
+    pkg::store::log_append_plain(log: &message, bytes: &aof_line_end[0_u64..1_u64]);
+  } else {
+    pkg::store::log_append_plain(log: &message, bytes: &aof_refuse_prefix[0_u64..17_u64]);
+    aof_log_argument(log: &message, input: input, span: command, nul: nul);
+    if reason == 2_u8 {
+      pkg::store::log_append_plain(log: &message, bytes: &aof_argument_separator[0_u64..1_u64]);
+      let database = pkg::protocol::arg(args: args, index: 1_u64);
+      let raw = False();
+      aof_log_argument(log: &message, input: input, span: database, nul: raw);
+    }
+    pkg::store::log_append_plain(log: &message, bytes: &aof_file_middle[0_u64..30_u64]);
+    pkg::store::log_append_plain(log: &message, bytes: name);
+    if reason == 2_u8 {
+      pkg::store::log_append_plain(log: &message, bytes: &aof_database_suffix[0_u64..31_u64]);
+    } else {
+      pkg::store::log_append_plain(log: &message, bytes: &aof_state_suffix[0_u64..44_u64]);
+    }
+  }
+  let length = message.inner.len;
+  aof_message(factory: factory, stderr: stderr, bytes: &message.inner[0_u64..length]);
+  return unit;
+}
+
+fn aof_execution_error(factory: &HandleFactory, stderr: &std::io::OutputStream, name: &[u8], reply: &[u8]) -> result: unit reads(name), reads(reply), writes(factory), writes(stderr) waits {
+  let message = aof_named(prefix: &aof_error_prefix[0_u64..51_u64], suffix: name);
+  pkg::store::log_append_plain(log: &message, bytes: &aof_error_middle[0_u64..2_u64]);
+  pkg::store::log_append_plain(log: &message, bytes: reply);
+  pkg::store::log_append_plain(log: &message, bytes: &aof_line_end[0_u64..1_u64]);
+  let length = message.inner.len;
+  aof_message(factory: factory, stderr: stderr, bytes: &message.inner[0_u64..length]);
+  return unit;
+}
+
+fn aof_probe(factory: &HandleFactory, file: &ReadFile, record: &AofRecord, name: &[u8], stderr: &std::io::OutputStream) -> status: u8 reads(record), reads(name), writes(factory), writes(file), writes(stderr) waits {
+  doc "Resolve every complete command encountered while scanning an unfinished transaction, as Redis does before queueing. Only the first two argument payloads are reread for lookup and unsupported control-state refusal; later argument payloads remain unallocated until EXEC.";
+  let count = imin(record^.args.inner.len, 2_u64);
+  invariant count_bound: count <= record^.args.inner.len;
+  let lengths = box_array_filled::<u64>(count: count, value: 0_u64);
+  for (index in 0_u64..count) {
+    set lengths.inner[index] = record^.args.inner[index].length;
+  }
+  let payload = box_segments_filled::<u8>(lengths: &lengths.inner[0_u64..count], value: 0_u8);
+  let args = box_slots_new::<Span>(capacity: count);
+  let at = 0_u64;
+  for (index in 0_u64..count) {
+    let source = record^.args.inner[index];
+    let destination = &payload.inner[index];
+    let copied = aof_read_payload(factory: factory, file: file, destination: destination, offset: source.start);
+    if bnot(copied) {
+      return 1_u8;
+    }
+    pkg::protocol::push_arg(args: &args, start: at, length: source.length);
+    set at = at +wrap source.length;
+  }
+  let known = pkg::commands::replay_known(input: &payload.inner.all, args: &args);
+  if bnot(known) {
+    aof_command_error(factory: factory, stderr: stderr, name: name, input: &payload.inner.all, args: &args, reason: 1_u8);
+    return 1_u8;
+  }
+  let reason = pkg::commands::replay_supported(input: &payload.inner.all, args: &args);
+  if reason == 3_u8 {
+    aof_command_error(factory: factory, stderr: stderr, name: name, input: &payload.inner.all, args: &args, reason: reason);
+    return 1_u8;
+  }
+  return 0_u8;
+}
+
+fn aof_apply(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, record: &AofRecord, client: &pkg::protocol::Client, time: &Time, clock: &Clock, name: &[u8], stderr: &std::io::OutputStream) -> status: u8 reads(store), reads(record), reads(time), reads(name), writes(factory), writes(file), writes(client), writes(clock), writes(stderr) waits {
   doc "The command interface consumes contiguous payload plus spans. Allocate their exact sum without the network window's ceiling, and reread each body by its recorded file position; headers and transaction bodies are never retained.";
   let count = record^.args.inner.len;
   let lengths = box_array_filled::<u64>(count: count, value: 0_u64);
@@ -151,21 +277,49 @@ fn aof_apply(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, record:
     let copied = aof_read_payload(factory: factory, file: file, destination: destination, offset: source.start);
     if copied {
     } else {
-      return False();
+      return 1_u8;
     }
     pkg::protocol::push_arg(args: &args, start: at, length: source.length);
     set at = at +wrap source.length;
   }
+  let known = pkg::commands::replay_known(input: &payload.inner.all, args: &args);
+  if bnot(known) {
+    aof_command_error(factory: factory, stderr: stderr, name: name, input: &payload.inner.all, args: &args, reason: 1_u8);
+    return 1_u8;
+  }
+  let reason = pkg::commands::replay_supported(input: &payload.inner.all, args: &args);
+  if reason != 0_u8 {
+    aof_command_error(factory: factory, stderr: stderr, name: name, input: &payload.inner.all, args: &args, reason: reason);
+    return 1_u8;
+  }
   let env = pkg::bytes::KeyEnv();
   pkg::commands::execute(store: store, input: &payload.inner.all, args: &args, client: client, env: &env, time: time, clock: clock);
+  let length = imin(client^.at, client^.bytes.inner.len);
+  invariant reply_bound: length <= client^.bytes.inner.len;
+  if length > 0_u64 {
+    if client^.bytes.inner[0_u64] == '-'_u8 {
+      let end = length;
+      if length >= 2_u64 {
+        let cr = length - 2_u64;
+        let lf = length - 1_u64;
+        let carriage = client^.bytes.inner[cr] == 13_u8;
+        let newline = client^.bytes.inner[lf] == 10_u8;
+        if band(carriage, newline) {
+          set end = cr;
+        }
+      }
+      aof_execution_error(factory: factory, stderr: stderr, name: name, reply: &client^.bytes.inner[0_u64..end]);
+    }
+  }
   set client^.at = 0_u64;
-  return True();
+  return 0_u8;
 }
 
-fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name: &[u8], name_length: u64, time: &Time, clock: &Clock) -> loaded: Loaded reads(store), reads(root), reads(name), reads(time), writes(factory), writes(clock) waits contract {
+fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name: &[u8], name_length: u64, time: &Time, clock: &Clock, stderr: &std::io::OutputStream) -> loaded: Loaded reads(store), reads(root), reads(name), reads(time), writes(factory), writes(clock), writes(stderr) waits contract {
   requires name_length <= name^.len;
 } {
-  doc "Redis 7.2.16 AOF framing is independent of the network parser. Scan bounded chunks and retain file positions, rereading transaction commands only after EXEC; incomplete tails keep Redis's last-command or latest-MULTI truncation offset.";
+  doc "Redis 7.2.16 AOF framing is independent of the network parser. Scan bounded chunks and retain file positions, rereading complete transaction payloads only after EXEC; incomplete tails keep Redis's last-command or latest-MULTI truncation offset.";
+  let filename = &name^[0_u64..name_length];
   let applied = 0_u64;
   let kept = 0_u64;
   let size = 0_u64;
@@ -232,6 +386,11 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
         let multi = record.kind == 1_u64;
         let exec = record.kind == 2_u64;
         if scanning {
+          let status = aof_probe(factory: factory, file: &file, record: &record, name: filename, stderr: stderr);
+          if status != 0_u8 {
+            set stopped = True();
+            break @records;
+          }
           if exec {
             set scanning = False();
             set executing = True();
@@ -246,9 +405,11 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
         } else if executing {
           if exec {
             set executing = False();
+          } else if multi {
+            aof_execution_error(factory: factory, stderr: stderr, name: filename, reply: &aof_nested_error[0_u64..34_u64]);
           } else {
-            let accepted = aof_apply(store: store, factory: factory, file: &file, record: &record, client: &client, time: time, clock: clock);
-            if accepted {
+            let accepted = aof_apply(store: store, factory: factory, file: &file, record: &record, client: &client, time: time, clock: clock, name: filename, stderr: stderr);
+            if accepted == 0_u8 {
               set applied = applied +wrap 1_u64;
             } else {
               set stopped = True();
@@ -261,9 +422,10 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
           set first_multi = latest_multi;
           set block_body = reader.position;
         } else if exec {
+          aof_execution_error(factory: factory, stderr: stderr, name: filename, reply: &aof_exec_error[0_u64..23_u64]);
         } else {
-          let accepted = aof_apply(store: store, factory: factory, file: &file, record: &record, client: &client, time: time, clock: clock);
-          if accepted {
+          let accepted = aof_apply(store: store, factory: factory, file: &file, record: &record, client: &client, time: time, clock: clock, name: filename, stderr: stderr);
+          if accepted == 0_u8 {
             set applied = applied +wrap 1_u64;
           } else {
             set stopped = True();

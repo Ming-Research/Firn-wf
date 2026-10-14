@@ -21,9 +21,9 @@ public struct Loaded {
   public continuable: Bool;
 }
 
-public fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name: &[u8], name_length: u64, time: &Time, clock: &Clock) -> loaded: Loaded reads(store), reads(root), reads(name), reads(time), writes(factory), writes(clock) waits contract {
+public fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name: &[u8], name_length: u64, time: &Time, clock: &Clock, stderr: &std::io::OutputStream) -> loaded: Loaded reads(store), reads(root), reads(name), reads(time), writes(factory), writes(clock), writes(stderr) waits contract {
   requires name_length <= name^.len;
-} doc "Replays Redis 7.2.16 AOF records with a bounded scanner, skipping fgets-sized annotation lines and refusing inline records. Argument positions allow a record larger than the network input ceiling; commands between MULTI and EXEC are reread and applied only after EXEC is found. Truncated tails retain Redis's last-whole-command or latest-MULTI cut boundary. Expiry is suppressed while loading.";
+} doc "Replays Redis 7.2.16 AOF records with a bounded scanner, skipping fgets-sized annotation lines and refusing inline records. Argument positions allow a record larger than the network input ceiling; complete command payloads between MULTI and EXEC are reread and applied only after EXEC is found. Unknown commands refuse startup with Redis's diagnostic and status 1, including inside incomplete transactions; execution errors are logged and loading continues. Commands requiring another database refuse when executed; unsupported control/function state also refuses while scanning incomplete transactions, with a Firn diagnostic and status 1. Truncated tails retain Redis's last-whole-command or latest-MULTI cut boundary. Expiry is suppressed while loading.";
 
 public struct AofPart {
   doc "A Redis manifest record: the filename, signed sequence and b, i or h type byte.";

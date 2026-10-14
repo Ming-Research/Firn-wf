@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Replay unknown commands, command errors and unrepresentable state as Redis 7.2.16
+
+Nodes: firn/append-only-file, firn/aof-rewrite
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-aof-replay-tree, which asked to approve PR #111's three replay decisions on the AOF node: an unknown command stops startup with status 1; a known command that errors is logged and loading continues; a state firn cannot represent, such as a nonzero SELECT, refuses to start.
+
+Summary: Every complete record is checked for a command firn can look up before execution, and an unknown command stops startup with status 1 and Redis 7.2.16's filename-bearing diagnostic, leaving the file unchanged. A known command whose execution errors is logged and replay continues, including later commands in the same EXEC, as Redis 7.2.16's default propagation-error-behavior ignore does; firn's diagnostic text differs. Startup refuses, with status 1 and a diagnostic naming command, file and state, a nonzero SELECT, COPY to another database, FUNCTION state firn cannot restore, DISCARD, RESET and WATCH state, and MULTI/EXEC outside the supported framing, which deliberately differs from Redis where Redis can represent that state. The PR also moves every startup refusal to status 1, as Redis does, and keeps the node's other replay rules (format errors, headers, bulk trailers, bounded scanning) as written in the node.
+
 ## 2026-10-14 Read the AOF at startup as Redis 7.2.16 does, and exit with status 1
 
 Nodes: firn/append-only-file, firn/aof-rewrite
