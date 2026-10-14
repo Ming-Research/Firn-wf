@@ -186,53 +186,77 @@ and its twin, and every competitor, see the same drift.
 
 ### Rule 5: run sizing
 
-The probe: server CPUs 2 and 8, tests `set`, `get` and `mset`, depths 1
-and 16, 2 passes of 5 seconds, every installed line and the twin. From it:
+The owner's performance standard decides noise, not a fixed band. Each cell
+runs firn, firn-twin and every competitor in interleaved passes (Order
+above). A pass gives one twin-to-firn ratio and one firn-to-fastest-competitor
+ratio.
 
-- the **twin spread** of a cell is the largest difference, over the passes,
-  between firn and firn-twin, as a fraction of firn's rate; and the **line
-  spread** is each line's range over its mean across the passes.
-- If every probe cell has twin spread ≤ 3% and every line spread ≤ 5%: the
-  full run uses 3 passes of 5 seconds.
-- If the largest twin spread is above 3% but ≤ 6%, or a line spread above
-  5% but ≤ 10%: 5 passes of 10 seconds.
-- Above that: no full run; the noise is investigated first (load on the
-  host, frequency, placement), and this rule is revisited with what it
-  found.
+- The **noise** of a cell is the half-width of the 95% confidence interval of
+  the twin-to-firn throughput ratio over the passes (the same on p99 for the
+  p99 verdict). The largest difference between two lines is not noise.
+- The **floor** is the largest noise a cell of a workload class may have and
+  still be judged. It is measured once per class (single commands, multi-key
+  and script commands, application workloads), at each class's CPU counts,
+  from the probe: server CPUs 2 and 8, tests `set`, `get` and `mset`, depths 1
+  and 16, 5 seconds a pass, enough passes for the twin interval to settle. It
+  is recorded with the 14900K queue and reused until the machine, its
+  settings or the toolchain change. The probe of 2026-10-13 (2 passes) gave
+  twin differences up to 4.3% and line ranges up to 7.7%; those were not
+  intervals and set no floor. The probe is repeated with enough passes to
+  state the floors before the first dispatch.
+- A cell whose noise is above its class's floor is rerun, and if still above
+  it is reported **unresolved**; it takes no verdict.
+- A cell adds passes (10 seconds each, from a start of 5) only until the
+  firn-to-fastest-competitor interval decides (rule 6) or its noise is shown
+  to be above the floor. There is no fixed pass count; the pass count is
+  reported with every cell.
 - The full run is dispatched one server-CPU count at a time, so that each
-  dispatch holds the machine for a bounded slot (at 3 passes of 5 seconds,
-  19 tests × 2 depths × 8 lines × 15 s ≈ 76 minutes before overhead), and
-  the probe's own duration is used to check that estimate before the first
-  dispatch.
+  dispatch holds the machine for a bounded slot, and the probe's own duration
+  is used to check the slot estimate before the first dispatch.
 
 ### Rule 6: verdicts and what rejects "firn leads"
 
-Per cell (server CPUs, test or workload, depth), with ratio r = firn's
-median throughput over the fastest competitor's, and s the cell's twin
-spread:
+Per cell (server CPUs, test or workload, depth), with r the ratio of firn's
+throughput to the fastest competitor's and its 95% confidence interval taken
+over the interleaved passes:
 
-- **leads** when r > 1 + s and firn's rate exceeds that competitor's in
-  every pass; **leads widely** when, in addition, r ≥ 1.7;
-- **level** when 1 − s ≤ r ≤ 1 + s, or the passes disagree;
-- **behind** when r < 1 − s.
-- **p99:** firn's median p99 above the same competitor's by more than the
-  p99 twin spread (the same definition on p99) is a p99 loss, reported
-  whatever the throughput verdict. Only exact merged p99s decide it (see
-  Metrics); an upper bound is reported but decides nothing.
+- **leads** when the whole interval is above 1; **behind** when the whole
+  interval is below 1; **level** (no change detected) when it crosses 1.
+  No ratio is picked as a threshold, and "firn is faster in every pass" is
+  not a criterion.
+- **p99:** the same interval on firn's p99 over the same competitor's;
+  entirely above 1 is a p99 loss, reported whatever the throughput verdict.
+  Only exact merged p99s decide it (see Metrics); an upper bound is
+  reported but decides nothing.
+- **Unresolved cells** (rule 5) are listed and decide nothing.
 - **Client-limited cells** (client measure above 0.90 in any pass of firn
   or the fastest competitor) can only be level or behind: they pass if not
   behind.
 - **Memory:** firn's resident set above the leanest competitor's by more
-  than the twin's difference is a memory loss, reported per CPU count.
+  than the twin's difference in resident set is a memory loss, reported per
+  CPU count. It is a size, not a throughput verdict.
 
 The claim "firn leads every competitor" is rejected by any cell that is
 behind or has a p99 loss, and is unproven in any cell that is level and not
-client-limited. The report lists every cell's verdict and r, and counts the
-cells that lead widely against the owner's 1.7 aim.
+client-limited, or unresolved. The report lists every cell's verdict, r,
+interval, noise, floor and pass count.
 
-**Later runs.** A later run regresses a lead when a cell that leads here
-no longer leads, or its r falls below this baseline's by more than the sum
-of the two runs' twin spreads in that cell.
+**The owner's 1.7 aim.** "Leads widely" is the definition of the owner's
+flagship aim, not a noise criterion: a cell counts toward it when the lower
+end of its r interval is at least 1.7. The report counts those cells.
+
+**Later runs.** A later run regresses a cell when its r interval lies
+entirely below this baseline's r interval for the same cell (both from
+interleaved runs with a twin), or when a cell that led here is behind or
+level; accepting a detected regression takes a decision card with its size
+and reason.
+
+**Approval.** The owner approved rules 1 to 6 on board card
+`firn-q-rebase-rules` (option A, 2026-10-14) and, on card
+`firn-q-rebase-rules-ci`, option A: rules 5 and 6 follow the owner's
+performance standard above (half-width noise, per-class floor, 95% interval
+verdicts, 1.7 as the aim's definition). The second approval covers the text
+of rules 5 and 6 as written here.
 
 ## Gaps in the instrument against these rules
 
