@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Approve the promoted INFO order change on top of the pub/sub design
+
+Nodes: firn, firn/connection-ownership, firn/pubsub-registries, firn/script-attempt-external-effects, firn/scripts, firn/transactions, firn/orderly-stop
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-pubsub-info-tree for PR #112's design change at head 73bfdc4 (option A, in English: approve; after the pub/sub PR merges this PR is rebased on main, its gate green, and merged). PR #112 is stacked on PR #100, whose pub/sub design decisions the owner approved with option A on card firn-q-pubsub-tree, as the entries below record.
+
+Summary: Against main this branch changes every node the pub/sub entry below names, because it carries PR #100's approved decisions, and adds the INFO decision of the entry below it. This entry names all of those nodes so that the design check, which requires the newest entry to name every node changed since main, passes while the stack is unmerged; it changes no decision. Once PR #100 merges this entry is the record of the stack and the two entries below keep the decisions' wording.
+
 ## 2026-10-14 Queue a promoted connection's INFO reply inside the lock interval
 
 Nodes: firn/connection-ownership
