@@ -203,14 +203,21 @@ fn scan_matches(input: &[u8], pattern: Span, key: &[u8]) -> matched: Bool reads(
   return glob_match(input: input, start: pattern.start, length: pattern.length, name: key, nocase: nocase);
 }
 
-fn scan_body(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], plan: &ScanPlan, client: &Client, now: u64, found: &KeySet, budget: &pkg::store::LogBudget) -> work: ScanWork reads(input), reads(plan), writes(sequence), writes(keys), writes(log), writes(client), writes(found), writes(budget) {
+fn scan_body(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], plan: &ScanPlan, client: &Client, now: u64, found: &KeySet, budget: &pkg::store::LogBudget) -> work: ScanWork reads(input), reads(plan), reads(budget.allowance), writes(sequence), writes(keys), writes(log), writes(client), writes(found), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "One map_scan into a fresh key set. MATCH precedes lookup; a matched expired entry is removed and logged even when TYPE excludes it, and TYPE none returns its name. No reference into the map survives a whole-map mutation.";
+  let log_initial_length = log^.inner.len;
   let step = key_set_new(capacity: 16_u64);
   let next = map_scan::<Entry>(map: keys, cursor: plan^.cursor, count: plan^.count, keys: &step);
   let entries = &keys^[step];
   let appended = 0_u64;
   set client^.now = now;
-  for (index in 0_u64..step.len) {
+  for (
+    index in 0_u64..step.len,
+    invariant log_extent: log^.inner.len >= log_initial_length
+  ) {
     let bytes = scanned_key(keys: &step, index: index);
     let size = bytes.inner.len;
     let key = &bytes.inner[0_u64..size];
@@ -284,7 +291,10 @@ fn scan_finish(client: &Client, found: &KeySet, next: u64) -> result: unit reads
   return unit;
 }
 
-fn held_scan(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64, budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), writes(sequence), writes(keys), writes(log), writes(client), writes(budget) {
+fn held_scan(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, now: u64, budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), reads(budget.allowance), writes(sequence), writes(keys), writes(log), writes(client), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   let plan = scan_plan(input: input, args: args);
   let refused = scan_refused(client: client, plan: &plan);
   if refused {
@@ -335,11 +345,17 @@ fn held_keys(keys: &ConcurrentHashMap<Entry>, input: &[u8], args: &Box<Slots<Spa
   return unit;
 }
 
-fn held_randomkey(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &Client, now: u64, budget: &pkg::store::LogBudget) -> appended: u64 writes(sequence), writes(keys), writes(random), writes(log), writes(client), writes(budget) {
+fn held_randomkey(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entry>, random: &u64, log: &Box<Slots<u8>>, logged: Bool, client: &Client, now: u64, budget: &pkg::store::LogBudget) -> appended: u64 reads(budget.allowance), writes(sequence), writes(keys), writes(random), writes(log), writes(client), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "RANDOMKEY as Redis 7.0.15's dbRandomKey draws through dictGetFairRandomKey and dictGetRandomKey: one map_scan step of count 15 from a position drawn from firn's xorshift64 state, also used by SPOP, continued from position zero when it reaches the table's end short of fifteen keys, as dictGetSomeKeys wraps, and a key picked uniformly among those gathered, with a fresh position whenever none is. A picked key found expired is removed, recorded as DEL, and the draw starts over; nil once the map holds no key.";
+  let log_initial_length = log^.inner.len;
   let appended = 0_u64;
   set client^.now = now;
-  loop {
+  loop (
+    invariant log_extent: log^.inner.len >= log_initial_length
+  ) {
     let live = map_count::<Entry>(map: keys);
     if live == 0_u64 {
       break;

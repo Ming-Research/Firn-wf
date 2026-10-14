@@ -392,7 +392,10 @@ fn reply_held_text(slot: &Option<Entry>, client: &Client) -> result: unit reads(
   return unit;
 }
 
-fn log_set(log: &Box<Slots<u8>>, input: &[u8], key: Span, value: Span, budget: &pkg::store::LogBudget) -> result: unit reads(input), writes(log), writes(budget) {
+fn log_set(log: &Box<Slots<u8>>, input: &[u8], key: Span, value: Span, budget: &pkg::store::LogBudget) -> result: unit reads(input), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Appends SET key value.";
   let room = key.length +wrap value.length;
   log_count(log: log, count: 3_u64, room: room, budget: budget);
@@ -402,8 +405,11 @@ fn log_set(log: &Box<Slots<u8>>, input: &[u8], key: Span, value: Span, budget: &
   return unit;
 }
 
-fn log_set_at(log: &Box<Slots<u8>>, input: &[u8], key: Span, value: Span, at: u64, budget: &pkg::store::LogBudget) -> result: unit reads(input), writes(log), writes(budget) {
-  doc "Appends SET key value PXAT at, the form Redis 7.0.15 propagates every store with an expiry in, the expiry as calendar milliseconds.";
+fn log_set_at(log: &Box<Slots<u8>>, input: &[u8], key: Span, value: Span, at: u64, budget: &pkg::store::LogBudget) -> result: unit reads(input), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
+  doc "Appends SET key value PXAT at, the form Redis 7.2.16 propagates a store with EX, PX or EXAT in, the expiry as calendar milliseconds; an existing PXAT preserves the original arguments.";
   let room = key.length +wrap value.length;
   let more = room +wrap 48_u64;
   log_count(log: log, count: 5_u64, room: more, budget: budget);
@@ -426,8 +432,12 @@ fn get_option(input: &[u8], args: &Box<Slots<Span>>, index: u64) -> option: Bool
   return option;
 }
 
-fn log_without_get(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> result: unit reads(input), reads(args), writes(log), writes(budget) {
-  doc "Appends a SET as it was sent but for its GET options, which Redis 7.0.15 leaves out of what it propagates.";
+fn log_without_get(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> result: unit reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
+  doc "Appends a SET without an expiry as it was sent but for its GET options, which Redis 7.2.16 leaves out of what it propagates.";
+  let log_initial_length = log^.inner.len;
   let count = args^.inner.len;
   let kept = 0_u64;
   for @counting (index in 0_u64..count) {
@@ -438,7 +448,10 @@ fn log_without_get(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, 
     }
   }
   log_count(log: log, count: kept, room: 0_u64, budget: budget);
-  for @arguments (index in 0_u64..count) {
+  for @arguments (
+    index in 0_u64..count,
+    invariant log_extent: log^.inner.len >= log_initial_length
+  ) {
     let dropped = get_option(input: input, args: args, index: index);
     if dropped {
     } else {
@@ -450,7 +463,7 @@ fn log_without_get(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, 
 }
 
 fn set_key(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, key_index: u64, value_index: u64, flags: u64, at: u64, mode: u64) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client) waits {
-  doc "Stores the argument at value_index under the key at key_index as Redis 7.0.15's setGenericCommand does, in one atomic statement on the key's entry that also appends the change to the append-only file's pending bytes, an expired key counting as absent and its removal recorded as log_removal records it. With GET the string the key held is written as the reply first and a key of another kind is refused, nothing stored; with NX nothing is stored over a live key, with XX nothing in place of an absent one. The value keeps the key's expiry with KEEPTTL, takes at with an expiry option, and has none otherwise. The reply is OK, or nil when nothing was stored; 1 or 0 for SETNX (mode_setnx); with GET the old string or nil alone. The file records a store with an expiry as SET key value PXAT at, GETSET (mode_getset) as SET key value, a SET with GET as it was sent without its GET options, and any other as it was sent, as Redis propagates them.";
+  doc "Stores the argument at value_index under the key at key_index as Redis 7.2.16's setGenericCommand does, in one atomic statement on the key's entry that also appends the change to the append-only file's pending bytes, an expired key counting as absent and its removal recorded as log_removal records it. With GET the string the key held is written as the reply first and a key of another kind is refused, nothing stored; with NX nothing is stored over a live key, with XX nothing in place of an absent one. The value keeps the key's expiry with KEEPTTL, takes at with an expiry option, and has none otherwise. The reply is OK, or nil when nothing was stored; 1 or 0 for SETNX (mode_setnx); with GET the old string or nil alone. The file records EX, PX and EXAT as SET key value PXAT at, an existing PXAT with every original argument preserved, GETSET (mode_getset) as SET key value, a SET with GET and no expiry as it was sent without its GET options, and any other as it was sent, as Redis propagates them.";
   let journal = None<pkg::store::AccessJournal>();
   let value_span = arg(args: args, index: value_index);
   let place = key_bounds(input: input, args: args, index: key_index);
@@ -477,7 +490,7 @@ fn set_key(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
     set work = set_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, value: move value, flags: flags, at: at);
     if held {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let stored = work.outcome == state_done;
       let queued = band(stored, timed);
       let changed = bor(stored, work.removed);
@@ -486,7 +499,7 @@ fn set_key(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
       if touches {
         let appended = set_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, work: &work, input: input, args: args, key: key, env: env, budget: &log_budget);
       }
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   set_finish(client: client, plan: &plan, work: &work);
@@ -559,12 +572,16 @@ fn set_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::A
   return SetWork(outcome: state_done, answered: answered, removed: removed);
 }
 
-fn set_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &SetPlan, work: &SetWork, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(args), reads(key), reads(env), writes(due), writes(log), writes(budget) {
-  doc "What a SET-like command's work leaves to the keyspace's metadata, and the number of commands it appended to log: a stored value with an expiry option queues that expiry; when logged, an expired value's removal is recorded as log_removal records it, and a store as Redis propagates it: with an expiry as SET key value PXAT at, GETSET as SET key value, a SET with GET as it was sent without its GET options, and any other as it was sent.";
+fn set_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &SetPlan, work: &SetWork, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], env: &KeyEnv, budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(args), reads(key), reads(env), reads(budget.allowance), writes(due), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
+  doc "What a SET-like command's work leaves to the keyspace's metadata, and the number of commands it appended to log: a stored value with an expiry option queues that expiry; when logged, an expired value's removal is recorded as log_removal records it, and a store as Redis 7.2.16 propagates it: EX, PX and EXAT as SET key value PXAT at, an existing PXAT with every original argument preserved, GETSET as SET key value, a SET with GET and no expiry as it was sent without its GET options, and any other as it was sent.";
   let appended = 0_u64;
   let stored = work^.outcome == state_done;
   let timed_flag = iand(plan^.flags, options_expiry);
   let timed = timed_flag != 0_u64;
+  let pxat_flag = iand(plan^.flags, option_pxat);
   let getting_flag = iand(plan^.flags, option_get);
   let getting = getting_flag != 0_u64;
   let key_span = arg(args: args, index: plan^.key_index);
@@ -581,7 +598,11 @@ fn set_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &SetPla
     }
     if logged {
       if timed {
-        log_set_at(log: log, input: input, key: key_span, value: value_span, at: plan^.at, budget: budget);
+        if pxat_flag != 0_u64 {
+          log_command(log: log, input: input, args: args, budget: budget);
+        } else {
+          log_set_at(log: log, input: input, key: key_span, value: value_span, at: plan^.at, budget: budget);
+        }
       } else if plan^.mode == mode_getset {
         log_set(log: log, input: input, key: key_span, value: value_span, budget: budget);
       } else if getting {
@@ -723,10 +744,10 @@ fn run_getdel(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     }
     set kind = getdel_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let removed = client^.state == state_expired;
       let appended = getdel_meta(log: &m^.log, logged: logged, removed: removed, kind: kind, input: input, key_span: key_span, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   getdel_finish(client: client, kind: kind);
@@ -762,9 +783,9 @@ fn run_getex(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     }
     set work = getex_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
     if held {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = getex_meta(due: &m^.due, log: &m^.log, logged: logged, plan: &plan, work: &work, input: input, key_span: key_span, key: key, env: env, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   getex_finish(client: client, plan: &plan, work: &work);
@@ -831,13 +852,16 @@ fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       give move inert;
     }
     let log_budget = if logged {
-      let begun = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let begun = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       give begun;
     } else {
       let none = pkg::store::log_budget_new();
       give none;
     }
-    for @stored (pair in 0_u64..pairs) {
+    for @stored (
+      pair in 0_u64..pairs,
+      invariant group_offset: log_budget.group_start <= m^.log.inner.len
+    ) {
       if pair < client^.key_lookups.inner.len {
         let at = client^.key_lookups.inner[pair];
         if at < slots^.len {
@@ -859,14 +883,17 @@ fn run_mset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       let recorded = mset_meta(log: &m^.log, logged: logged, input: input, args: args, budget: &log_budget);
     }
     if logged {
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   reply_ok(client: client);
   return unit;
 }
 
-fn mset_lapse_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(key), writes(log), writes(budget) {
+fn mset_lapse_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "MSET's metadata for one key after mset_body: when the entry it replaced had expired and the keyspace keeps a file, appends the removal as log_removal records it, as Redis propagates the removal when it overwrites such a key, and answers 1; otherwise 0.";
   if lapsed {
     if logged {
@@ -877,7 +904,10 @@ fn mset_lapse_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, key: &[u8],
   return 0_u64;
 }
 
-fn mset_meta(log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), writes(log), writes(budget) {
+fn mset_meta(log: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "MSET's metadata after its work on every key: when the keyspace keeps a file, appends the command as it was sent and answers 1; otherwise 0.";
   if logged {
     log_command(log: log, input: input, args: args, budget: budget);
@@ -966,11 +996,11 @@ fn run_incr(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let removed = incr_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, counted: &counted);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       if store^.logging {
         let appended = incr_log(log: &m^.log, removed: removed, counted: &counted, input: input, args: args, key: key, budget: &log_budget);
       }
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   incr_finish(client: client, counted: &counted);
@@ -1006,7 +1036,10 @@ fn incr_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   return removed;
 }
 
-fn incr_log(log: &Box<Slots<u8>>, removed: Bool, counted: &Counted, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(counted), reads(input), reads(args), reads(key), writes(log), writes(budget) {
+fn incr_log(log: &Box<Slots<u8>>, removed: Bool, counted: &Counted, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(counted), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Appends what INCR changed to the file's bytes and returns how many commands it appended: an expired key's removal as log_removal records it, then the command as it was sent once it stored a number.";
   let appended = 0_u64;
   if removed {
@@ -1350,10 +1383,10 @@ fn run_append(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     }
     set work = append_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let changed = work.outcome == state_done;
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   string_write_finish(client: client, work: &work);
@@ -1389,10 +1422,10 @@ fn run_setrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
     }
     set work = setrange_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, input: input, client: client, value_span: value_span, offset: offset);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let changed = work.outcome == state_done;
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   string_write_finish(client: client, work: &work);
@@ -1418,9 +1451,9 @@ fn run_strlen(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     }
     set work = strlen_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: work.removed, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   strlen_finish(client: client, work: &work);
@@ -1450,10 +1483,10 @@ fn run_getrange(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client:
     }
     set kind = getrange_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, start: plan.start, end: plan.end);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let removed = client^.state == state_expired;
       let appended = mset_lapse_meta(log: &m^.log, logged: logged, lapsed: removed, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   getrange_finish(client: client, kind: kind);
@@ -1488,13 +1521,16 @@ fn run_mget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       give move inert;
     }
     let log_budget = if logged {
-      let begun = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let begun = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       give begun;
     } else {
       let none = pkg::store::log_budget_new();
       give none;
     }
-    for @answers (step in 0_u64..client^.key_metadata.inner.len) {
+    for @answers (
+      step in 0_u64..client^.key_metadata.inner.len,
+      invariant group_offset: log_budget.group_start <= m^.log.inner.len
+    ) {
       if step < client^.key_metadata.inner.len {
         let rank = client^.key_metadata.inner[step];
         if rank < slots^.len {
@@ -1515,7 +1551,7 @@ fn run_mget(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
       }
     }
     if logged {
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   return unit;
@@ -1558,7 +1594,7 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       give move inert;
     }
     let log_budget = if logged {
-      let begun = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let begun = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       give begun;
     } else {
       let none = pkg::store::log_budget_new();
@@ -1567,7 +1603,8 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     let blocked = False();
     for @checked (
       rank in 0_u64..keys.len,
-      invariant aligned: slots^.len == keys.len
+      invariant aligned: slots^.len == keys.len,
+      invariant group_offset: log_budget.group_start <= m^.log.inner.len
     ) {
       if rank < slots^.len {
         refresh_access_at(journal: &journal, slots: slots, access_keys: &keys, index: rank, client: client);
@@ -1590,7 +1627,10 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
     }
     if blocked {
     } else {
-      for @stored (pair in 0_u64..pairs) {
+      for @stored (
+        pair in 0_u64..pairs,
+        invariant stored_group_offset: log_budget.group_start <= m^.log.inner.len
+      ) {
         if pair < client^.key_lookups.inner.len {
           let at = client^.key_lookups.inner[pair];
           if at < slots^.len {
@@ -1606,7 +1646,7 @@ fn run_msetnx(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &
       set stored = True();
     }
     if logged {
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   msetnx_finish(client: client, stored: stored);
@@ -1676,7 +1716,10 @@ fn float_value(env: &FloatSum, value: &Entry) -> result: u64 writes(env), writes
   }
 }
 
-fn log_float(log: &Box<Slots<u8>>, input: &[u8], key: Span, text: &Bytes, budget: &pkg::store::LogBudget) -> result: unit reads(input), reads(text), writes(log), writes(budget) {
+fn log_float(log: &Box<Slots<u8>>, input: &[u8], key: Span, text: &Bytes, budget: &pkg::store::LogBudget) -> result: unit reads(input), reads(text), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Appends SET key value KEEPTTL, the form Redis 7.0.15 propagates INCRBYFLOAT in, so that a replay stores the very text the sum was written as.";
   let length = bytes_length(bytes: text);
   let sum = key.length +wrap length;
@@ -1720,9 +1763,9 @@ fn run_incrbyfloat(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clie
     }
     let removed = incrbyfloat_body(sequence: &sequence, journal: &journal, access_key: key, client: client, slot: slot, summed: &summed);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = incrbyfloat_meta(log: &m^.log, logged: logged, removed: removed, summed: &summed, input: input, key_span: key_span, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   incrbyfloat_finish(client: client, summed: &summed);
@@ -1824,7 +1867,10 @@ fn getdel_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   return kind;
 }
 
-fn getdel_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, kind: u64, input: &[u8], key_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(key), writes(log), writes(budget) {
+fn getdel_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, kind: u64, input: &[u8], key_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(input), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "GETDEL propagates its expired removal, or DEL for a removed live string.";
   let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
   if kind == 1_u64 {
@@ -1930,7 +1976,10 @@ fn incrbyfloat_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
   return removed;
 }
 
-fn incrbyfloat_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, summed: &FloatSum, input: &[u8], key_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(summed), reads(input), reads(key), writes(log), writes(budget) {
+fn incrbyfloat_meta(log: &Box<Slots<u8>>, logged: Bool, removed: Bool, summed: &FloatSum, input: &[u8], key_span: Span, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(summed), reads(input), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "INCRBYFLOAT propagates the expired removal and SET with KEEPTTL for its computed value.";
   let appended = mset_lapse_meta(log: log, logged: logged, lapsed: removed, key: key, budget: budget);
   if summed^.state == state_done {
@@ -2032,7 +2081,10 @@ fn getex_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   return GetexWork(kind: kind, removed: removed, change: change);
 }
 
-fn getex_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &GetexPlan, work: &GetexWork, input: &[u8], key_span: Span, key: &[u8], env: &KeyEnv, budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(key), reads(env), writes(due), writes(log), writes(budget) {
+fn getex_meta(due: &ExpiryQueue, log: &Box<Slots<u8>>, logged: Bool, plan: &GetexPlan, work: &GetexWork, input: &[u8], key_span: Span, key: &[u8], env: &KeyEnv, budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(work), reads(input), reads(key), reads(env), reads(budget.allowance), writes(due), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Queues GETEX's new expiry and propagates its expired removal and DEL, PEXPIREAT or PERSIST change.";
   let appended = mset_lapse_meta(log: log, logged: logged, lapsed: work^.removed, key: key, budget: budget);
   if work^.change == 2_u64 {
