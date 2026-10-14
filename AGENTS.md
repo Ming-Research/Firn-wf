@@ -84,16 +84,21 @@ When priorities conflict, first:
   A merge needs it green on the exact revision, like the gate. It is not part
   of `make check`, because it needs a device only root can make. The job
   makes the device with `sudo tests/aof_sync_fault_device.sh setup MOUNT
-  UID:GID`, a device-mapper device whose writes and flushes fail on command,
+  UID:GID`, a device-mapper device whose writes and flushes fail on command
+  and which turns the kernel's periodic writeback off, so that only the
+  server's fsync and the harness's umount write during a failing window,
   takes the redis-server 7.2.16 that `tests/redis-suite/reference.sh` builds
-  as the oracle, runs `make aof-sync-fault` and
+  as the oracle, runs `check-writeback` (a file made before a 40 s failure
+  must survive it), runs `make aof-sync-fault` and
   removes the device with `teardown MOUNT` even when a step failed. The
-  target runs the sync-failure case of `tests/aof_sync_fault.rs`, ignored in
-  `make check`, against firn and the oracle, and fails unless
-  `FIRN_SYNC_FAULT_MOUNT` names that mount, `REDIS_SERVER` names the oracle
-  and the case passed. It needs Linux with passwordless sudo, `dmsetup` and
-  the dm-flakey module; `setup` may install `linux-modules-extra-$(uname -r)`
-  through `apt-get` on Ubuntu to get it.
+  target runs the two sync-failure cases of `tests/aof_sync_fault.rs`,
+  ignored in `make check`, against firn and the oracle, one after the other,
+  each on a filesystem made anew by `reset` (`remount` fails the run when
+  `e2fsck -fn` finds the metadata damaged),
+  and fails unless `FIRN_SYNC_FAULT_MOUNT` names that mount, `REDIS_SERVER`
+  names the oracle and both cases passed. It needs Linux with passwordless
+  sudo, `dmsetup` and the dm-flakey module; `setup` may install
+  `linux-modules-extra-$(uname -r)` through `apt-get` on Ubuntu to get it.
 - `make pin-ready`, with the readiness check: `whitefoot.pin` names no
   experiment release.
 
@@ -105,6 +110,13 @@ firn builds with the compiler release `whitefoot.pin` names, through the
 trying an unmerged Whitefoot change, upgrading Whitefoot and recording a
 Whitefoot gap; a change to them is made in
 [Whitefoot-kit](https://github.com/Ming-Research/Whitefoot-kit).
+
+Before writing Whitefoot code, read the kit's
+[README.md](whitefoot-kit/README.md) and its writing guide
+[docs/writing.md](whitefoot-kit/docs/writing.md). Where the guide does not
+cover a form, or a compiler diagnostic does not lead to the accepted form,
+file a request into Whitefoot-kit on the status board with the source
+written, the compiler output and the form finally accepted.
 
 ## Reports
 

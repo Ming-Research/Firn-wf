@@ -1163,57 +1163,72 @@ const text_aof_error: Array<u8, 40> = "MISCONF Errors writing to the AOF file: "
 
 const text_aof_execabort: Array<u8, 44> = "EXECABORT Transaction discarded because of: ";
 
-fn reply_aof_error(client: &Client, execabort: Bool, error: &Option<std::io::IoError>) -> result: unit reads(error), writes(client) {
-  doc "One reply writer for all active-AOF refusals: Redis 7.0.15 server.c:4350-4353's prefix followed by the host's description of the saved IoError, strerror(aof_last_write_errno), optionally wrapped by EXECABORT as server.c:3568-3576 and multi.c:136-140 do. None writes the prefix alone: a short write's ENOSPC description (aof.c:1184) awaits board item firn-req-enospc-text. A description the host reports unavailable is also left empty.";
+fn reply_aof_error(client: &Client, execabort: Bool, text: &AofErrorText) -> result: unit reads(text), writes(client) {
+  doc "One reply writer for all active-AOF refusals: Redis 7.0.15 server.c:4350-4353's prefix followed by the text the store selected, strerror(aof_last_write_errno), optionally wrapped by EXECABORT as server.c:3568-3576 and multi.c:136-140 do. Host is the host's description of the saved IoError; ShortWrite is Redis's ENOSPC for a short write (aof.c:1163-1184), described by the no-space class (std::io::error_copy_class_description), which ignores the error's host code. Absent writes the prefix alone, as does a description the host reports unavailable.";
   reply_byte(client: client, value: 45_u8);
   if execabort {
     reply_word(client: client, word: &text_aof_execabort[0_u64..44_u64]);
   }
   reply_word(client: client, word: &text_aof_error[0_u64..40_u64]);
-  match error^ {
-    Some(value: problem) => {
-      reply_io_description(client: client, error: problem);
+  match text^ {
+    Host(error: problem) => {
+      let by_code = False();
+      reply_io_description(client: client, error: problem, by_class: by_code);
     }
-    None() => {
+    ShortWrite() => {
+      let class_only = std::io::IoError::NoSpace(code: 0_u32, origin: 0_u8);
+      let by_class = True();
+      reply_io_description(client: client, error: &class_only, by_class: by_class);
+    }
+    Absent() => {
     }
   }
   reply_word(client: client, word: &reply_crlf[0_u64..2_u64]);
   return unit;
 }
 
-fn reply_io_description(client: &Client, error: &std::io::IoError) -> result: unit reads(error), writes(client) {
-  doc "Copies the host's description of error after at, without truncation. A window too small is grown by the length the host reports and the copy retried once; the host's description of one error does not change between the two calls, so a second refusal, like an unavailable description, writes nothing.";
-  let required = 0_u64;
-  let start = client^.at;
+fn copy_io_description(client: &Client, error: &std::io::IoError, by_class: Bool, start: u64) -> copied: Result<u64, std::io::DescriptionError> reads(error), writes(client) {
+  doc "Copies the host's description of error, or with by_class of its class alone, into the reply window from start to its end. A start past the window's end copies nothing and asks for no room.";
   let end = client^.bytes.inner.len;
   if start <= end {
-    match std::io::error_copy_description(error: error, destination: &client^.bytes.inner[0_u64..end], start: start, end: end) {
-      Ok(value: next) => {
-        set client^.at = next;
-        return unit;
-      }
-      Err(error: refused) => {
-        match refused {
-          DescriptionTooSmall(required: length) => {
-            set required = length;
-          }
-          DescriptionUnavailable() => {
-            return unit;
-          }
+    if by_class {
+      let by_class_copy = std::io::error_copy_class_description(error: error, destination: &client^.bytes.inner[0_u64..end], start: start, end: end);
+      return by_class_copy;
+    }
+    let by_code_copy = std::io::error_copy_description(error: error, destination: &client^.bytes.inner[0_u64..end], start: start, end: end);
+    return by_code_copy;
+  }
+  let no_room = std::io::DescriptionError::DescriptionTooSmall(required: 0_u64);
+  return Err<u64, std::io::DescriptionError>(error: no_room);
+}
+
+fn reply_io_description(client: &Client, error: &std::io::IoError, by_class: Bool) -> result: unit reads(error), writes(client) {
+  doc "Copies the host's description of error, or with by_class of its class alone, after at, without truncation. A window too small is grown by the length the host reports and the copy retried once; the host's description of one error does not change between the two calls, so a second refusal, like an unavailable description, writes nothing.";
+  let required = 0_u64;
+  let start = client^.at;
+  match copy_io_description(client: client, error: error, by_class: by_class, start: start) {
+    Ok(value: next) => {
+      set client^.at = next;
+      return unit;
+    }
+    Err(error: refused) => {
+      match refused {
+        DescriptionTooSmall(required: length) => {
+          set required = length;
+        }
+        DescriptionUnavailable() => {
+          return unit;
         }
       }
     }
   }
   reply_room(client: client, needed: required);
   let retry_start = client^.at;
-  let retry_end = client^.bytes.inner.len;
-  if retry_start <= retry_end {
-    match std::io::error_copy_description(error: error, destination: &client^.bytes.inner[0_u64..retry_end], start: retry_start, end: retry_end) {
-      Ok(value: next) => {
-        set client^.at = next;
-      }
-      Err(..) => {
-      }
+  match copy_io_description(client: client, error: error, by_class: by_class, start: retry_start) {
+    Ok(value: next) => {
+      set client^.at = next;
+    }
+    Err(..) => {
     }
   }
   return unit;

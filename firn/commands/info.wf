@@ -19,7 +19,7 @@ const section_names: Array<u8, 105> = "SERVERCLIENTSMEMORYPERSISTENCESTATSREPLIC
 
 const section_ends: Array<u64, 13> =[6_u64, 13_u64, 19_u64, 30_u64, 35_u64, 46_u64, 49_u64, 56_u64, 68_u64, 78_u64, 90_u64, 97_u64, 105_u64];
 
-const info_server_head: Array<u8, 103> = "# Server\r\nredis_version:7.0.15\r\nredis_git_sha1:00000000\r\nredis_mode:standalone\r\narch_bits:64\r\ntcp_port:";
+const info_server_head: Array<u8, 103> = "# Server\r\nredis_version:7.2.16\r\nredis_git_sha1:00000000\r\nredis_mode:standalone\r\narch_bits:64\r\ntcp_port:";
 
 const info_server_time: Array<u8, 19> = "\r\nserver_time_usec:";
 
@@ -322,8 +322,10 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         } else {
           text_word(text: &text, word: &info_rw_ok[0_u64..2_u64]);
         }
-        text_word(text: &text, word: &info_rw_sequence[0_u64..30_u64]);
-        text_number(text: &text, value: persistence^.commit_seq);
+        if logged {
+          text_word(text: &text, word: &info_rw_sequence[0_u64..30_u64]);
+          text_number(text: &text, value: persistence^.commit_seq);
+        }
         text_word(text: &text, word: &info_rw_cut[0_u64..23_u64]);
         let cut = persistence^.aof_rewrite_cut;
         if persistence^.aof_rewrite_in_progress {
@@ -428,7 +430,7 @@ fn info_finish(client: &Client, text: &Box<Slots<u8>>) -> result: unit reads(tex
 }
 
 fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 as Redis 7.0.15 answers it, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; Redis 7.0.15 genRedisInfoString reports raw heap, its observed peak, and AOF exclusion separately. RSS is read on demand through resident_bytes and omitted if the host supplies None. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. The cached-script count reads the registry in a separate short statement. Every other field is one whose value is fixed for firn: Redis's version 7.0.15, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
+  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 in Redis's form, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; Redis 7.0.15 genRedisInfoString reports raw heap, its observed peak, and AOF exclusion separately. RSS is read on demand through resident_bytes and omitted if the host supplies None. The fields carry real values where firn has them: the port, the calendar time, the seconds and days since the server started, counted on the calendar clock as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. The cached-script count reads the registry in a separate short statement. Every other field is one whose value is fixed for firn: Redis's version 7.2.16, whose replies firn follows, no git revision, as Redis's builds from a release report, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no configuration file, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0. Fields firn cannot measure, processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
   let chosen = info_plan(input: input, args: args);
   let cached_scripts = 0_u64;
   let used = 0_u64;

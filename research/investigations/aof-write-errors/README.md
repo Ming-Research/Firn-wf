@@ -41,6 +41,16 @@ until success even during shutdown, contradicting the documented bounded attempt
 
 ## Proposed design and alternatives
 
+Update, 2026-10-13: two of the sync rules below are superseded by
+[append-only-file](../../../design/firn/append-only-file.md). A retried sync
+that succeeds no longer clears a saved sync error; only a rewrite whose
+installation is durable does, because Linux marks the pages whose writeback
+failed clean and the retried sync does not write them (CI run 38324105320).
+The writer no longer syncs once a second while idle; it syncs only after new
+bytes or while a sync error is saved, as Redis 7.2.16 does (CI run
+38328422734). The text below and the 2026-10-11 validation record the
+earlier design.
+
 The proposed decisions belong to [append-only-file](../../../design/firn/append-only-file.md),
 [transactions](../../../design/firn/transactions.md),
 [scripts](../../../design/firn/scripts.md) and
@@ -265,25 +275,25 @@ with glibc's C-locale text. The design is rejected if a zero-progress append
 fault, its EXECABORT wrapping, or the script call and pcall paths give
 anything but `File too large` after the exact prefix.
 
-Design: `reply_aof_error` receives the error `aof_error_described` selects
-from Meta and copies its description straight into the reply window. When
+Design: `reply_aof_error` receives the text `aof_error_text` selects from
+Meta (the saved host error, a short write, or nothing) and copies its description straight into the reply window. When
 the window is too small the window grows by the length the host reports and
 the copy runs once more. `DescriptionUnavailable` leaves the suffix empty;
 glibc describes every code, so on Linux this needs a host failure.
 
-Gap: a short write must be described as ENOSPC, but std offers no way to
-name the host's ENOSPC code. Constructing `NoSpace(code: 28, origin: 3)`
-hard-codes the Linux and macOS number (Windows' disk-full code is 112), and
-`NoSpace(code: 0, origin: 0)` gives PRE-2's fixed `No space left`, not the
-host's `No space left on device`. firn leaves that suffix empty, filed as
-Whitefoot item `firn-req-enospc-text`; the case asserting the ENOSPC text is
-ignored with that key.
+Short write: Redis describes it as ENOSPC. Whitefoot's
+`error_copy_class_description` (specification v0.136) copies the host's text
+for the class of an error and ignores its code, so firn describes
+`NoSpace(code: 0, origin: 0)` by class and holds no platform number; before
+that release std named no host code for ENOSPC (Whitefoot item
+`firn-req-enospc-text`), and the suffix was left empty.
 
 Status: implemented on the work branch. The gate at `36ac0a5`
 ([run 38203897532](https://github.com/Ming-Research/Firn-wf/actions/runs/38203897532))
 passed, including the four `aof_write_errors` cases on both routes with their
-full `File too large` assertions; the short-write ENOSPC case is ignored,
-citing `firn-req-enospc-text`.
+full `File too large` assertions; the short-write ENOSPC case was ignored,
+citing `firn-req-enospc-text`, until the pin moved to the release with
+`error_copy_class_description`, which un-ignored it.
 
 ## Completion review fixes
 

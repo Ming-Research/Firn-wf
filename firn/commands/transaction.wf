@@ -249,8 +249,8 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
     if transaction^.write_commands {
       if pkg::store::aof_failed(meta: m) {
         let aborted = True();
-        let described = pkg::store::aof_error_described(meta: m);
-        pkg::protocol::reply_aof_error(client: client, execabort: aborted, error: &described);
+        let text = pkg::store::aof_error_text(meta: m);
+        pkg::protocol::reply_aof_error(client: client, execabort: aborted, text: &text);
         transaction_reset(transaction: transaction);
         return unit;
       }
@@ -426,14 +426,16 @@ fn execute_client(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     set writing = transaction^.write_commands;
   }
   let ping = kind == 22_u64;
-  let disk_sensitive = bor(writing, ping);
+  let refusable = bor(writing, ping);
+  let logged = store^.logging;
+  let disk_sensitive = band(logged, refusable);
   if disk_sensitive {
     let failed = False();
     atomic disk_meta = &store^.meta {
       set failed = pkg::store::aof_failed(meta: disk_meta);
       if failed {
-        let described = pkg::store::aof_error_described(meta: disk_meta);
-        pkg::protocol::reply_aof_error(client: client, execabort: exec, error: &described);
+        let text = pkg::store::aof_error_text(meta: disk_meta);
+        pkg::protocol::reply_aof_error(client: client, execabort: exec, text: &text);
         if exec {
           transaction_reset(transaction: transaction);
         } else if transaction^.open {

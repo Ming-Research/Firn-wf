@@ -106,8 +106,8 @@ fn aof_upgrade(factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs
   }
 }
 
-fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, manifest: &AofManifest, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(directory), reads(writable), reads(manifest), reads(time), writes(factory), writes(clock) waits {
-  doc "Replay base first, then incrementals in manifest order. Missing listed files are fatal; only the last may be truncated. Keep startup byte sizes beside metadata for the writer and the later rewrite trigger.";
+fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, manifest: &AofManifest, boundary: &AofBoundary, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(directory), reads(writable), reads(manifest), reads(time), writes(factory), writes(boundary), writes(clock) waits {
+  doc "Replay base first, then incrementals in manifest order. Missing listed files are fatal; only the last may be truncated. Keep startup byte sizes beside metadata for the writer and the later rewrite trigger, and retain the current increment's syntax boundary after any successful cut.";
   let total = 0_u64;
   for (index in 0_u64..manifest^.parts.inner.len) {
     let part = &manifest^.parts.inner[index];
@@ -157,6 +157,10 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
           set base_size = size;
         } else {
           set incr_size = size;
+          set boundary^.whole = True();
+          set boundary^.unfinished = loaded.unfinished;
+          set boundary^.reverted = loaded.reverted;
+          set boundary^.size = size;
         }
       }
     }
@@ -164,6 +168,7 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
   atomic m = &store^.meta {
     set m^.aof_current_size = current_size;
     set m^.aof_incr_size = incr_size;
+    set m^.aof_synced_size = incr_size;
     set m^.aof_base_size = base_size;
   }
   return True();
@@ -213,7 +218,7 @@ fn aof_history(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, pref
   return unit;
 }
 
-fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest, time: &Time, clock: &Clock) -> result: Result<WriteFile, unit> reads(store), reads(cwd), reads(directory), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(writable), writes(manifest), writes(clock) waits {
+fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest, boundary: &AofBoundary, time: &Time, clock: &Clock) -> result: Result<WriteFile, unit> reads(store), reads(cwd), reads(directory), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(writable), writes(manifest), writes(boundary), writes(clock) waits {
   let parsed = aof_read_manifest(factory: factory, directory: directory, prefix: prefix, manifest: manifest);
   if parsed {
   } else {
@@ -224,7 +229,7 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
   } else {
     return Err<WriteFile, unit>(error: unit);
   }
-  let loaded = aof_load_parts(store: store, factory: factory, directory: directory, writable: writable, manifest: manifest, time: time, clock: clock);
+  let loaded = aof_load_parts(store: store, factory: factory, directory: directory, writable: writable, manifest: manifest, boundary: boundary, time: time, clock: clock);
   if loaded {
   } else {
     return Err<WriteFile, unit>(error: unit);
@@ -250,6 +255,12 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
   }
   if no_incr {
     let name = aof_named(prefix: prefix, suffix: &aof_incr_suffix[0_u64..11_u64]);
+    let name_length = name.inner.len;
+    let name_bytes = &name.inner[0_u64..name_length];
+    let present = aof_exists(factory: factory, directory: directory, name: name_bytes);
+    if present != 0_u64 {
+      set boundary^.whole = False();
+    }
     let part = AofPart(name: move name, sequence: 1_i64, kind: 105_u8);
     aof_push(manifest: manifest, part: move part);
     set manifest^.incr_sequence = 1_i64;
@@ -298,10 +309,11 @@ fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd
           let parts = box_slots_new::<AofPart>(capacity: 4_u64);
           let clean = False();
           let manifest = AofManifest(parts: move parts, base_sequence: 0_i64, incr_sequence: 0_i64, dirty: clean);
-          match aof_prepare(store: store, factory: factory, cwd: cwd, cwd_write: cwd_write, directory: &directory, writable: &writable, prefix: prefix, manifest: &manifest, time: time, clock: clock) {
+          let boundary = aof_boundary_empty();
+          match aof_prepare(store: store, factory: factory, cwd: cwd, cwd_write: cwd_write, directory: &directory, writable: &writable, prefix: prefix, manifest: &manifest, boundary: &boundary, time: time, clock: clock) {
             Ok(value: opened) => {
               let filename = aof_copy(input: prefix);
-              let log = AofLog(directory: move directory, writable: move writable, prefix: move filename, manifest: move manifest, file: move opened);
+              let log = AofLog(directory: move directory, writable: move writable, prefix: move filename, manifest: move manifest, file: move opened, boundary: boundary);
               return Ok<AofLog, unit>(value: move log);
             }
             Err(error: problem) => {

@@ -4,8 +4,8 @@
 //! script.c:349-386,547-557 and script_lua.c:988-994,1711-1722 define
 //! first-write refusal, redis.call raising and redis.pcall error tables.
 //! The MISCONF suffix is strerror(aof_last_write_errno) (server.c:4346-4355):
-//! the text below is glibc's on Linux x86-64 in the C locale. A short write's
-//! ENOSPC text (aof.c:1163-1184) is pending firn-req-enospc-text.
+//! the text below is glibc's on Linux x86-64 in the C locale. A short write is
+//! described as ENOSPC whatever the host returned (aof.c:1163-1184).
 
 use super::*;
 use std::path::Path;
@@ -23,8 +23,8 @@ const ENOSPC_TEXT: &str = "No space left on device";
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct FileLimit {
-    soft: u64,
+pub(super) struct FileLimit {
+    pub(super) soft: u64,
     hard: u64,
 }
 
@@ -34,7 +34,7 @@ unsafe extern "C" {
 
 /// prlimit(2) on the child owned by this test, preserving its hard limit so
 /// raising the soft limit later needs no privilege. Linux RLIMIT_FSIZE is 1.
-fn file_limit(child: &ProgramChild, soft: u64) -> FileLimit {
+pub(super) fn file_limit(child: &ProgramChild, soft: u64) -> FileLimit {
     let mut previous = FileLimit { soft: 0, hard: 0 };
     let read = unsafe { prlimit64(child.id() as i32, 1, std::ptr::null(), &mut previous) };
     assert_eq!(read, 0, "read child file limit: {}", std::io::Error::last_os_error());
@@ -53,10 +53,11 @@ fn ignored_xfsz(child: &ProgramChild) {
 }
 
 fn start(program: &CompiledProgram, native: bool) -> (ProgramChild, TcpStream, u16) {
-    let port = free_port();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route_ignoring_xfsz(native, &[text.as_bytes(), b"0", b"errors.aof"]);
-    let client = connect_when_ready(port);
+    let child = program.spawn_on_route_ignoring_xfsz(native, &[text.as_bytes(), b"0", b"errors.aof"]).with_port(&port_lease);
+    let client = connect_when_ready(port, &child);
     ignored_xfsz(&child);
     (child, client, port)
 }
@@ -205,8 +206,8 @@ fn aof_failure_transaction_admission_and_legacy_script_first_write() {
     for native in [false, true] {
         let program = CompiledProgram::from_environment();
         let (child, mut client, port) = start(&program, native);
-        let mut other = connect_when_ready(port);
-        let mut readonly = connect_when_ready(port);
+        let mut other = connect_when_ready(port, &child);
+        let mut readonly = connect_when_ready(port, &child);
         let path = incremental(&program);
         seed(&mut other, &path);
         let read_source = "return redis.call('GET','readable')";
@@ -320,7 +321,8 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
 /// real failure (capture.md's first-cause diagnostics): the writer's next
 /// attempted append fails and latches `drain`. A tick on which the append
 /// retry is not yet due attempts nothing and must not abort the rewrite as
-/// `writer_io`. The 5000 keys keep the scan running past the first ticks, so
+/// `writer_io`. The 5000 keys, with rdb-key-save-delay sleeping after each,
+/// keep the scan running past the first ticks and the first due retry, so
 /// the cut's own drain is not what latches the cause. A 1-MiB value written
 /// and deleted before the fault makes the incremental file, and so the file
 /// size limit, larger than the whole base, so the base write cannot latch
@@ -346,6 +348,7 @@ fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
         expected.extend(resp(&["DEL", "padding"]));
         wait_bytes(&path, &expected);
         wait_empty_healthy_buffer(&mut client);
+        rewrite_key_delay(&mut client, "100");
         let old = fault(&child, &mut client, &path);
         rewrite_start(&mut client);
         let info = rewrite_wait(&mut client);
@@ -361,7 +364,6 @@ fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
 /// 1184): here the second write gets EFBIG, yet Redis replies with ENOSPC's
 /// text, outside MULTI and at queue admission inside it.
 #[test]
-#[ignore = "firn-req-enospc-text: std names no host code for ENOSPC, so firn cannot describe a short write yet"]
 fn aof_short_append_reports_no_space_on_both_routes() {
     for native in [false, true] {
         let program = CompiledProgram::from_environment();

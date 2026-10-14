@@ -54,7 +54,7 @@ public enum Value {
 }
 
 public struct Entry {
-  doc "A key's value, Redis 7.0.15 robj.lru access bits (object.c createObject and db.c lookupKey), its dataset last-write sequence (zero after loading), and its expiry: the calendar time in milliseconds at which it expires, as Redis keeps it, or zero for none.";
+  doc "A key's value, Redis 7.0.15 robj.lru access bits (object.c createObject and db.c lookupKey), its dataset last-write sequence (zero after loading and after a statement that holds no Meta), and its expiry: the calendar time in milliseconds at which it expires, as Redis keeps it, or zero for none.";
   public value: Value;
   public expires: u64;
   public access: u32;
@@ -62,11 +62,11 @@ public struct Entry {
 }
 
 public struct WriteSequence {
-  doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; loading leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed key before the outer statement commits; the inactive path allocates nothing.";
+  doc "One outer atomic statement's lazy sequence, initialized from held Meta and committed back before releasing that same hold. All command parts share it; an inert token, taken while loading or by a statement that holds no Meta, leaves the sequence and entry stamps zero. While capture is active, bounded owned images coalesce each changed key before the outer statement commits; the inactive path allocates nothing.";
   public value: u64;
   public taken: Bool;
   public changed: Bool;
-  public loading: Bool;
+  public inert: Bool;
   public exhausted: Bool;
   public capturing: Bool;
   public failed: Bool;
@@ -89,7 +89,7 @@ public struct RewriteImage {
 }
 
 public struct RewriteCapture {
-  doc "running covers admission through worker and chunk cleanup; diagnostics survive it. active covers (start,end]; aborted prevents this attempt's installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result after journal draining. Staging chunks contain little-endian u64 sequence, byte count and kind (0 images, 1 effect), then owned RESP bytes in Meta commit order. journal_bytes counts successfully appended file bytes; image/effect counters count complete file records, not staged records. cleanup_failed counts failed journal close/remove operations in this attempt, including failures after the first abort cause.";
+  doc "running covers admission through worker and chunk cleanup; diagnostics survive it. active covers (start,end]; aborted prevents this attempt's installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result after journal draining. Staging chunks contain little-endian u64 sequence, byte count and kind (0 images, 1 effect), then owned RESP bytes in Meta commit order. journal_bytes counts successfully appended file bytes; image/effect counters count complete file records, not staged records. cleanup_failed counts failed journal close/remove operations in this attempt, including failures after the first abort cause. fixed is the part of used that admission charged for the attempt's whole life, so limit minus fixed bounds what any later charge can ever reach.";
   public running: Bool;
   public active: Bool;
   public aborted: Bool;
@@ -101,6 +101,7 @@ public struct RewriteCapture {
   public start: u64;
   public end: u64;
   public limit: u64;
+  public fixed: u64;
   public used: u64;
   public peak: u64;
   public scan_peak: u64;
@@ -163,7 +164,7 @@ public struct EvictionCandidate {
 }
 
 public struct Meta {
-  doc "What the keyspace keeps beside its keys: the queued expiries, the dataset statement sequence and capture-exhaustion state, the append-only file's collecting buffer, published retained length/capacity, saved append/sync IoErrors and partial-append marker, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the total active-file and current incremental byte counts and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion and automatic thresholds, the clients connected, whether the server is stopping, and the state SPOP draws from. aof_rewrite_journal_leftover records the latest failed removal of an unlisted temporary journal until a later removal or absence is observed; admission does not reset it and it is not a filesystem stat.";
+  doc "What the keyspace keeps beside its keys: the queued expiries, the dataset statement sequence and capture-exhaustion state, the append-only file's collecting buffer, published retained length/capacity, saved append/sync IoErrors and partial-append marker, the observed heap peak, eviction and active/lazy-helper expiry counts, the shared 16-candidate eviction pool and resumable empty-search cursor, the total active-file and current incremental byte counts, the incremental byte count at its last successful sync, and rewrite baseline, rewrite request and reply handoff, progress, attempts, last status, worker completion, automatic thresholds and the rdb-key-save-delay testing delay the scan reads at each step, the clients connected, whether the server is stopping, and the state SPOP draws from. aof_rewrite_journal_leftover records the latest failed removal of an unlisted temporary journal until a later removal or absence is observed; admission does not reset it and it is not a filesystem stat.";
   public due: ExpiryQueue;
   public commit_seq: u64;
   public aof_rewrite_seq_exhausted: Bool;
@@ -190,6 +191,7 @@ public struct Meta {
   public eviction_wrapped: Bool;
   public aof_current_size: u64;
   public aof_incr_size: u64;
+  public aof_synced_size: u64;
   public aof_base_size: u64;
   public aof_rewrite_in_progress: Bool;
   public aof_rewrite_requested: Bool;
@@ -200,14 +202,15 @@ public struct Meta {
   public aof_installing: u64;
   public aof_rewrite_percentage: u64;
   public aof_rewrite_min_size: u64;
+  public aof_rewrite_key_delay: i64;
   public clients: u64;
   public stopping: Bool;
   public random: u64;
 }
 
-public fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_described selects the error the refusal describes.";
+public fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) doc "Whether active-file append or sync has failed. Admission reads this with its held mutation metadata; rewrite failure is independent. aof_error_text selects what the refusal describes.";
 
-public fn aof_error_described(meta: &Meta) -> described: Option<std::io::IoError> reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error) doc "The error whose host description follows the MISCONF prefix, as Redis 7.0.15 writeCommandsDeniedByDiskError (server.c:4324-4344) selects aof_last_write_errno: a failed append's own error when nothing of it was written (aof.c:1157-1162); otherwise the sync error (aof_bio_fsync_errno). A partial append reports ENOSPC whatever the host returned (aof.c:1163-1184); std names no host code for that class, so it yields None, pending board item firn-req-enospc-text.";
+public fn aof_error_text(meta: &Meta) -> text: pkg::protocol::AofErrorText reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error) doc "Selects the text for the refusal: Host with a failed append's own error when nothing of it was written (aof.c:1157-1162), else Host with the sync error (aof_bio_fsync_errno), else Absent. A partial append is ShortWrite, which Redis reports as ENOSPC whatever the host returned (aof.c:1163-1184), described by the no-space class rather than a host code.";
 
 public struct MemoryConfig {
   doc "Redis 7.0.15 config.c memory settings; policies use maxmemory_policy_enum order, with noeviction at 7. Access tracking and command admission share each connection read's snapshot, refreshed after its own CONFIG SET.";
@@ -232,7 +235,7 @@ public struct ServerState {
 }
 
 public struct Keyspace {
-  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served.";
+  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
   public keys: Shared<ConcurrentHashMap<Entry>>;
   public meta: Shared<Meta>;
   public server: Shared<ServerState>;
@@ -261,15 +264,15 @@ public binding DueOrder : PriorityOrder<Due, KeyEnv> {
 
 public const keyspace_capacity: u64 = 262144_u64;
 
-public fn sequence_unmetered() -> sequence: WriteSequence pure doc "A token for a statement that holds no Meta because the AOF is off: it takes no sequence, stamps zero and captures nothing, and records only in changed that a dataset change happened. A declared-key script with the AOF off uses it; with the AOF on every statement still starts from sequence_new.";
-
 public fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "Starts one outer atomic statement's sequence token from its held metadata; nested command parts reuse this token. Its captures are complete images.";
 
 public fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) doc "sequence_new for a statement holding exactly one key. When that key's previous write lies inside the current rewrite window, the journal already reproduces its state, so the statement journals its own append-only bytes instead of the key's image.";
 
-public fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) doc "Takes one sequence lazily for an actual dataset mutation, reusing it for the rest of the statement. Reaching u64's maximum saturates the counter and permanently refuses future captures until a quiescent reset protocol exists; service mutations continue. Loading takes no sequence.";
+public fn sequence_inert() -> sequence: WriteSequence pure doc "The token of an outer atomic statement that holds no Meta, as a command's statement does while the keyspace keeps no append-only file and the statement queues no expiry: it takes no sequence, stamps changed entries zero, captures nothing and is never committed, as a loading token behaves; it records only in changed that a dataset change happened. A declared-key script with the AOF off uses it; with the AOF on every statement still starts from sequence_new.";
 
-public fn sequence_stamp(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit reads(slot), writes(sequence), writes(slot.Some.value.last_write) doc "Publishes an actual entry change through the statement's lazy sequence and stamps a surviving entry. Call only for a change; deletion and FLUSH use the same sequence_change contract. Loading stamps zero.";
+public fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) doc "Takes one sequence lazily for an actual dataset mutation, reusing it for the rest of the statement. Reaching u64's maximum saturates the counter and permanently refuses future captures until a quiescent reset protocol exists; service mutations continue. An inert token takes no sequence.";
+
+public fn sequence_stamp(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit reads(slot), writes(sequence), writes(slot.Some.value.last_write) doc "Publishes an actual entry change through the statement's lazy sequence and stamps a surviving entry. Call only for a change; deletion and FLUSH use the same sequence_change contract. An inert token stamps zero.";
 
 public fn sequence_replace(sequence: &WriteSequence, slot: &Option<Entry>, replacement: Option<Entry>) -> result: unit writes(sequence), writes(slot) doc "Records the replaced destination's anchor before installing a fresh or transferred entry. The caller then stamps and captures the final value; no replacement uses the incoming entry's stamp as its anchor.";
 
@@ -361,6 +364,8 @@ public fn rewrite_capture_new() -> capture: RewriteCapture pure doc "An inactive
 public fn rewrite_abort(capture: &RewriteCapture, reason: RewriteAbortReason) -> result: unit writes(capture) doc "For a running attempt, disables capture and latches the first failure reason, reserve use and peak under Meta before any cleanup. Later failures and ordinary writer activity outside an attempt preserve that snapshot; staging ownership remains until bounded sole-writer cleanup.";
 
 public fn rewrite_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes(capture) doc "Reserves bytes before allocation, or logically aborts this attempt without allocating when they exceed the remaining allowance. Includes peak reservation accounting.";
+
+public fn rewrite_try_charge(capture: &RewriteCapture, bytes: u64) -> accepted: Bool writes(capture) doc "Reserves bytes before allocation when they fit the remaining allowance of a live attempt, with peak reservation accounting, and otherwise changes nothing, leaving the caller to retry smaller work or abort.";
 
 public fn sequence_capture(sequence: &WriteSequence, key: &[u8], slot: &Option<Entry>) -> result: unit reads(key), reads(slot), writes(sequence) doc "Coalesces an actual changed key into the already-taken outer sequence: in an anchored one-key statement it only selects effect mode; otherwise it owns complete replacement bytes, charging scratch and allocation overlap; failure aborts capture at commit, never the client command.";
 

@@ -4,6 +4,69 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
+
+Nodes: firn/memory-limit
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-admit-tree, which asked to approve PR #67's design change at head bc2425d: while firn keeps no append-only file, a command's maxmemory admission check reads the heap and compares it with the limit without a Meta statement and takes Meta only once the reading is over the limit; with a file it keeps the Meta statement; the decision cites the 14900K measurement instead of being provisional.
+
+Summary: Every command's admission check took the exclusive Meta statement whenever a limit was set, so with an 8 GiB limit far above use main ran depth-16 GET at 0.117 and SET at 0.145 of its unlimited throughput on 8 P-cores of the i9-14900K. Without an append-only file nothing is excluded and no rewrite can start, so the Meta-held check reduces to a heap comparison; with it the change ran at 0.941 and 0.948, and without a limit within the twin's range of main ([admission without Meta](../research/investigations/memory-limit/README.md#admission-without-meta-while-no-aof-is-kept)). Admission still raises the peak when its reading exceeds the peak the connection last saw recorded.
+## 2026-10-13 Carry the AOF transaction boundary instead of rereading history
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-rw-boundary-state, which asked to approve PR #78's design change at head 17138bd: at the rewrite's file switch, the AOF writer uses the transaction-boundary state it carries from the startup parse and advances with every append, instead of rereading the whole old incremental file; the PR merges after the 14900K measures the per-append parse cost within the twin's noise.
+
+Summary: On the 14900K a rewrite under 50 writing connections scanned the keyspace and then aborted with rotation_reserve, because the single AOF writer reread about 525 MB of incremental file at the switch while new writes filled the capture buffer past its 16 MiB reserve; Redis 7.2.16 does not reread at its switch. The writer now keeps the file length, parse position and first unclosed MULTI from the startup parse, advances them with the same parser after each successful append, and uses them at the switch; it invalidates the state and falls back to the reserve-charged, cancellable reread only when the boundary is uncertain (a failed append without rollback, a failed truncation, an unexpected form, or an unreplayed file opened at startup). Rereading the whole history at every switch is rejected because of that abort ([scan-pace](../research/investigations/aof-rewrite/scan-pace.md)). The capture decision's wording now matches where the writer checks for an abort.
+
+## 2026-10-13 Write a conditional Meta hold as one statement
+
+Nodes: firn/command-parts
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-one-stmt-design, which asked to approve PR #72's design change at head 0be3c57 (option A, in English: approve; merge #72, then write the other 39 sites as one statement and measure the whole change once on the 14900K).
+
+Summary: A command that holds Meta only on some runs (AOF kept, or an expiry it may queue) is written as one atomic statement naming its keys and Meta, with every use of Meta under the run-time condition, instead of two statements around that condition. The pinned compiler acquires a named target at its first use on a path, so the path that never uses Meta never holds it; SET so written measured within the twin's noise at six passes on 8 P-cores with AOF off ([write-meta](../research/investigations/write-meta/README.md#one-statement-set)). The specification only permits holding less than a statement names, so the form rests on the compiler's behaviour, which Whitefoot's lock ledger (Whitefoot#421) is to check at each site; the owner kept the language without a conditional target.
+
+## 2026-10-13 Describe a short AOF append by the host's no-space text
+
+Nodes: firn/append-only-file
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-enospc-design, which asked to approve PR #70's design change at head 13ba7ed with the pin moved from wf-c52e867cae4f (specification v0.135) to wf-2a785316590a (specification v0.136): a partial AOF append's MISCONF reply ends with the host's description of the no-space class.
+
+Summary: Redis 7.2.16 reports every short AOF write as ENOSPC. Whitefoot v0.136's error_copy_class_description gives the host's text for an error class, so firn's reply now equals Redis's word for word without naming a platform error number, which closes the gap the previous empty suffix recorded.
+
+## 2026-10-13 Run Lua scripts as Redis 7.2.16 does
+
+Nodes: firn/scripts
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-host72-design, which asked to approve PR #69's three new decisions at head 34c96c2: a script's numbers and double replies are written with Redis 7.2.16's Grisu2 text through Halo's port; the script environment is protected once through Halo's embedding interface as Redis's scriptingInit does; redis.set_repl accepts REPL_AOF and REPL_ALL and refuses the flags firn cannot honor.
+
+Summary: Redis 7.2.16 writes script numbers with Grisu2, whose digits differ from the exact shortest form for 355 of 16,922 recorded values, so firn takes Halo's byte-checked port; command-reply scores keep %.17g until board item firn-score-text-72. Protection through the embedding gives Redis's refusal message at Redis's location. firn records a command's changes and its expiry deletions under one switch, so it refuses REPL_NONE, REPL_SLAVE and REPL_REPLICA rather than honor them partly; this is a deliberate difference from Redis.
+
+## 2026-10-13 Let AOF-off writes that queue no expiry hold only their keys
+
+Nodes: firn/command-parts, firn/aof-rewrite/sequence
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-write-meta-design, which asked to approve PR #65's design-tree change at head d82c411: while AOF is off, a write that can queue no expiry and reads nothing else from Meta holds only its keys' entries, and admission's saved-error check skips Meta; such statements take an inert sequence token and INFO leaves firn_aof_rewrite_commit_seq out while AOF is off.
+
+Summary: one exclusive Meta target on every write bounded all writes together; on the i9-14900K main's SET fell to 1.23 M/s on 8 P-cores, 1/17 of GET, with 43% of its time acquiring Meta. Without a file nothing a write records in Meta is read, so those statements now hold their entries alone; on 8 P-cores SET reached 21.4 M/s, 99.6% of GET, and SET and MSET grew 1.74 and 1.73 times from 4 to 8 cores. INFO omits the commit sequence while AOF is off because most writes no longer advance it.
+
+## 2026-10-12 Bound each AOF rewrite scan step by the reserve and pace it by time slice
+
+Nodes: firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-12, the owner chose option A (approve) on card firn-q-approve-57-tree, which asked to approve PR #57's design-tree changes at head 27e7c34, carrying out the owner's earlier choice of option A on card firn-q-rw-pace; the ruling adds that the merge waits for a formal Whitefoot release fixing the 2-core MSET regression and a passing before-and-after comparison on the 14900K.
+
+Summary: Each live scan step calls map_scan_within with the reserve left after the step buffer as its limit and charges the growth key_set_bytes reports, so a step never exceeds R; copies and buffer growth are charged before allocation, and a one-position step that does not fit is discarded, waits outside every hold and retries while it could fit, or aborts with reserve when it never can. The scan runs steps back to back and yields about every millisecond, with a per-step key hint starting at 64 that halves or doubles by the bytes a step writes and falls back to one position when several do not fit, because a 100-microsecond sleep per one-key step cost about a millisecond per key and a million-key rewrite could not finish under write load. CONFIG answers Redis 7.0.15's hidden rdb-key-save-delay so cases can keep a rewrite in progress without a firn-only hook. The post-call charging limitation and its rejection entry are replaced by three rejected alternatives ([scan pacing](../research/investigations/aof-rewrite/scan-pace.md#design)).
+
+## 2026-10-13 Recover from an AOF sync failure only through a durable rewrite, and sync only after new bytes
+
+Nodes: firn/append-only-file, firn/aof-rewrite/capture
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A on card firn-q-sync-recover (after a failed sync, a retried sync that succeeds starts a rewrite of the AOF from memory, and only a durable installation clears the error and admits writes again, as implemented on PR #68 at head c183857) and option A on card firn-q-sync-schedule (sync once a second only after new bytes or while a sync error is saved, as Redis 7.2.16 does, instead of once a second while idle).
+
+Summary: Linux marks pages whose writeback failed clean, so a retried fsync succeeds without writing them; on the faulty-device job a write acknowledged during the failure and one acknowledged after firn's automatic recovery were both lost after a restart while firn loaded the file silently. firn now keeps refusing writes until a rewrite from memory is durably installed; recovery rewrites run whatever the automatic-rewrite block, and append errors keep the clear-on-complete-append rule. Syncing only after new bytes makes firn acknowledge a write after an idle-time device fault as Redis does, instead of refusing it because an idle sync failed first.
+
 ## 2026-10-12 Take Redis 7.2.16 as the gate's suite and the reference server
 
 Nodes: firn, firn/consumers

@@ -6,16 +6,7 @@ fn sequence_new(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(met
   let allowance = meta^.rewrite.limit -sat meta^.rewrite.used;
   let images = None<Box<Slots<RewriteImage>>>();
   let no_reason = RewriteAbortReason::None();
-  return WriteSequence(value: meta^.commit_seq, taken: taken, changed: taken, loading: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, failure: no_reason, allowance: allowance, retained: 0_u64, single: taken, start: meta^.rewrite.start, log_start: meta^.log.inner.len, anchor_seen: taken, anchored: taken, effect: taken, images: move images);
-}
-
-fn sequence_unmetered() -> sequence: WriteSequence pure {
-  doc "Starts a local token with no Meta: loading semantics, so a change stamps zero and takes no sequence, and nothing is captured. changed still records the change.";
-  let no = False();
-  let yes = True();
-  let images = None<Box<Slots<RewriteImage>>>();
-  let no_reason = RewriteAbortReason::None();
-  return WriteSequence(value: 0_u64, taken: no, changed: no, loading: yes, exhausted: no, capturing: no, failed: no, failure: no_reason, allowance: 0_u64, retained: 0_u64, single: no, start: 0_u64, log_start: 0_u64, anchor_seen: no, anchored: no, effect: no, images: move images);
+  return WriteSequence(value: meta^.commit_seq, taken: taken, changed: taken, inert: loading, exhausted: meta^.aof_rewrite_seq_exhausted, capturing: capturing, failed: taken, failure: no_reason, allowance: allowance, retained: 0_u64, single: taken, start: meta^.rewrite.start, log_start: meta^.log.inner.len, anchor_seen: taken, anchored: taken, effect: taken, images: move images);
 }
 
 fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads(meta.commit_seq), reads(meta.aof_rewrite_seq_exhausted), reads(meta.rewrite), reads(meta.log) {
@@ -23,6 +14,15 @@ fn sequence_new_key(meta: &Meta, loading: Bool) -> sequence: WriteSequence reads
   let sequence = sequence_new(meta: meta, loading: loading);
   set sequence.single = True();
   return move sequence;
+}
+
+fn sequence_inert() -> sequence: WriteSequence pure {
+  doc "Without an append-only file no rewrite captures and nothing reads the sequence or the stamps, so a statement that holds no Meta needs neither. changed still records that a dataset change happened.";
+  let none = False();
+  let inert = True();
+  let images = None<Box<Slots<RewriteImage>>>();
+  let no_reason = RewriteAbortReason::None();
+  return WriteSequence(value: 0_u64, taken: none, changed: none, inert: inert, exhausted: none, capturing: none, failed: none, failure: no_reason, allowance: 0_u64, retained: 0_u64, single: none, start: 0_u64, log_start: 0_u64, anchor_seen: none, anchored: none, effect: none, images: move images);
 }
 
 fn sequence_anchor(sequence: &WriteSequence, previous: u64) -> result: unit writes(sequence) {
@@ -41,9 +41,9 @@ fn sequence_anchor(sequence: &WriteSequence, previous: u64) -> result: unit writ
 }
 
 fn sequence_change(sequence: &WriteSequence) -> result: unit writes(sequence) {
-  doc "Takes the statement's sequence once, saturating at u64's maximum and refusing captures without refusing service writes. Loading has no surviving capture. changed is set first, so a statement that takes no sequence still shows it changed the dataset.";
+  doc "Takes the statement's sequence once, saturating at u64's maximum and refusing captures without refusing service writes. An inert token, while loading or without Meta, takes none and has no surviving capture. changed is set first, so a statement that takes no sequence still shows it changed the dataset.";
   set sequence^.changed = True();
-  if sequence^.loading {
+  if sequence^.inert {
     return unit;
   }
   if sequence^.taken {
@@ -77,7 +77,7 @@ fn sequence_replace(sequence: &WriteSequence, slot: &Option<Entry>, replacement:
 }
 
 fn sequence_stamp(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit reads(slot), writes(sequence), writes(slot.Some.value.last_write) {
-  doc "One publication path for a changed surviving entry and the statement counter, independent of access refreshes and AOF configuration.";
+  doc "One publication path for a changed surviving entry and the statement counter, independent of access refreshes; whether the token is inert, not the AOF append, decides whether a sequence is taken.";
   sequence_change(sequence: sequence);
   match slot^ {
     Some(value: changed_entry) => {
@@ -90,7 +90,7 @@ fn sequence_stamp(sequence: &WriteSequence, slot: &Option<Entry>) -> result: uni
 }
 
 fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit writes(sequence), writes(slot) {
-  doc "Actual removal takes a sequence even with AOF disabled; an absent key takes none.";
+  doc "Actual removal takes a sequence unless the token is inert, in a statement that holds Meta even with AOF disabled; an absent key takes none.";
   let present = False();
   match slot^ {
     Some(value: removed_entry) => {
@@ -137,7 +137,7 @@ fn sequence_entry(sequence: &WriteSequence, value: &Entry) -> result: unit write
   sequence_anchor(sequence: sequence, previous: value^.last_write);
   sequence_change(sequence: sequence);
   let stamp = sequence^.value;
-  if sequence^.loading {
+  if sequence^.inert {
     set stamp = 0_u64;
   }
   set value^.last_write = stamp;

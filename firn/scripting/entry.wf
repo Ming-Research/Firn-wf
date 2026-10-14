@@ -598,9 +598,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   }
                   Error() => {
                     let line = halo::embed::error_line(engine: &pooled.engine);
-                    let value = halo::embed::error_value(engine: &pooled.engine);
-                    let locate = readonly_message(vm: &pooled.engine.vm, value: value);
-                    let message = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
+                    let message = format_redis_error(engine: &pooled.engine, sha: &sha, line: line);
                     let raised = False();
                     reply_error_text(client: client, text: &message, formatted: raised);
                     if logged {
@@ -623,7 +621,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
               let saved = pkg::store::attempt_undo_new();
               let undo = Some<pkg::store::AttemptUndo>(value: move saved);
               let due = pkg::store::attempt_due_new();
-              let sequence = pkg::store::sequence_unmetered();
+              let sequence = pkg::store::sequence_inert();
               let log_budget = pkg::store::log_budget_new();
               if logged {
                 set sequence = pkg::store::sequence_new(meta: m, loading: time^.loading);
@@ -684,9 +682,7 @@ fn eval<interface ScriptCommands>(store: &Keyspace, input: &[u8], args: &Box<Slo
                   }
                   Error() => {
                     let line = halo::embed::error_line(engine: &pooled.engine);
-                    let value = halo::embed::error_value(engine: &pooled.engine);
-                    let locate = readonly_message(vm: &pooled.engine.vm, value: value);
-                    let message = format_redis_error(engine: &pooled.engine, sha: &sha, line: line, locate: locate);
+                    let message = format_redis_error(engine: &pooled.engine, sha: &sha, line: line);
                     let raised = False();
                     reply_error_text(client: client, text: &message, formatted: raised);
                     if logged {
