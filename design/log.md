@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Keep the list element ceiling and refuse before changing anything
+
+Nodes: firn/lists
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-lists-ceiling-tree, which asked to approve PR #83's new design node at head 75133a9: firn lists keep the store-wide ceiling of 2^32 elements shared with hashes and sets, a deliberate difference from Redis 7.2.16 on 64-bit hosts; a command that would exceed it replies with an error naming the limit before changing any element or access metadata.
+
+Summary: A push, LINSERT or LMOVE that would exceed the ceiling refuses whole, so a successful reply always means the elements were kept: a multi-element push is checked as one, LMOVE checks the destination before popping the source, a rotation within one list needs no room, and LINSERT with a missing pivot still returns -1. Dropping elements while replying success, partial multi-element pushes and popping the source before checking the destination are rejected. The ceiling is a storage policy, to be reopened when a selected workload needs more than 2^32 elements.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
