@@ -4419,6 +4419,381 @@ fn firn_records_transactions_as_redis_propagates_them() {
     assert!(output.status.success(), "firn: {:?}", output.status);
 }
 
+/// Run each script-client case with both client protocols. Direct and MULTI
+/// callers are separate tests, so CI can report direct evidence independently.
+/// MULTI is the Redis acceptance required by firn-scope-script-client, currently
+/// blocked on Whitefoot request wf-need-firn-script-kill. MULTI tests are
+/// explicitly ignored until scripts can run inside EXEC; Redis expectations
+/// remain unchanged.
+fn script_client_matrix(transaction: bool, mut cases: impl FnMut(&mut TcpStream, bool, bool)) {
+    for resp3 in [false, true] {
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
+        let text = port.to_string();
+        let child = firn().spawn_on_route(true, &[text.as_bytes(), b"1"])
+            .with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
+        if resp3 {
+            // Redis 7.2.16 networking.c:helloCommand. The connection id includes
+            // internal clients, so compare it with this connection's CLIENT ID.
+            // The recorder negotiated HELLO separately and omitted its reply;
+            // the other greeting fields retain their source-derived expectation.
+            let mut greeting = resp(&["HELLO", "3"]);
+            greeting.extend(resp(&["PING"]));
+            greeting.extend(resp(&["CLIENT", "ID"]));
+            client.write_all(&greeting).expect("send script-client greeting");
+            expect_replies(&mut client,
+                b"%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n",
+                "script-client HELLO prefix");
+            let greeting_id = integer_reply(&mut client, "script-client HELLO id");
+            assert!(greeting_id > 0, "script-client HELLO id: {greeting_id}");
+            expect_replies(&mut client,
+                b"$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n+PONG\r\n",
+                "script-client HELLO suffix and trailing PING");
+            assert_eq!(integer_reply(&mut client, "script-client CLIENT ID"), greeting_id);
+        }
+        cases(&mut client, transaction, resp3);
+        drop(client);
+        assert_eq!(finished(child).0, 0, "RESP3={resp3}, MULTI={transaction}");
+    }
+}
+
+/// Compare exact bytes, including non-UTF-8 MessagePack, and consume a trailing
+/// PING. In EXEC, PING is a later element: a script error must not abort it.
+fn script_client_reply(client: &mut TcpStream, transaction: bool, request: &[&str], expected: &[u8]) {
+    let mut batch = Vec::new();
+    let mut answer = Vec::new();
+    if transaction {
+        batch.extend(resp(&["MULTI"]));
+        answer.extend_from_slice(b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n");
+    }
+    batch.extend(resp(request));
+    batch.extend(resp(&["PING"]));
+    if transaction {
+        batch.extend(resp(&["EXEC"]));
+    }
+    answer.extend_from_slice(expected);
+    answer.extend_from_slice(b"+PONG\r\n");
+    client.write_all(&batch).expect("send script-client case");
+    let mut actual = vec![0; answer.len()];
+    client.read_exact(&mut actual)
+        .unwrap_or_else(|error| panic!("script-client {request:?}, MULTI={transaction}: {error}"));
+    assert_eq!(actual, answer, "script-client {request:?}, MULTI={transaction}");
+}
+
+fn script_client_bulk(bytes: &[u8]) -> Vec<u8> {
+    let mut reply = format!("${}\r\n", bytes.len()).into_bytes();
+    reply.extend_from_slice(bytes);
+    reply.extend_from_slice(b"\r\n");
+    reply
+}
+
+/// Redis 7.2.16 eval.c:evalShaCommand checks SHA length before numkeys;
+/// evalGenericCommand checks numkeys before lookup/registration. script.c:
+/// scriptVerifyWriteCommandAllow refuses writes per invocation, not per cached
+/// function. script_lua.c's error handler appends this script's SHA and line.
+fn check_script_clients_lookup_and_read_only(transaction: bool) {
+    const READ: &str = "return redis.call('GET',KEYS[1])";
+    const READ_SHA: &str = "620cd258c2c9c88c9d10db67812ccf663d96bdc6";
+    const WRITE: &str = "local value = ARGV[1]\nreturn redis.call('SET',KEYS[1],value)";
+    const WRITE_SHA: &str = "77f2655554bff93ceed45aefb8b7a7732100fe64";
+    const PROTECTED: &str = "local value = ARGV[1]\nreturn redis.pcall('SET',KEYS[1],value)";
+    const PROTECTED_SHA: &str = "c722735c954551c90e7698082c9d6056c0d45326";
+    const VALIDATED: &str = "return 'validated'";
+    const VALIDATED_SHA: &str = "05cc273ec6d5b4636e6d803a73df33a89f7d83b8";
+    const NOSCRIPT: &[u8] = b"-NOSCRIPT No matching script. Please use EVAL.\r\n";
+    const INTEGER: &[u8] = b"-ERR value is not an integer or out of range\r\n";
+    const NEGATIVE: &[u8] = b"-ERR Number of keys can't be negative\r\n";
+    const EXCESS: &[u8] = b"-ERR Number of keys can't be greater than number of args\r\n";
+    const REFUSED: &[u8] = b"-ERR Write commands are not allowed from read-only scripts.\r\n";
+    script_client_matrix(transaction, |client, transaction, _| {
+        for command in ["EVALSHA", "EVALSHA_RO", "eVaLsHa_Ro"] {
+            for sha in ["", "short", "0000000000000000000000000000000000000000",
+                "abcdefABCDEFabcdefABCDEFabcdefABCDEFabcd",
+                "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"] {
+                script_client_reply(client, transaction, &[command, sha, "0"], NOSCRIPT);
+                let invalid = if sha.len() == 40 { INTEGER } else { NOSCRIPT };
+                script_client_reply(client, transaction, &[command, sha, "bad"], invalid);
+                let negative = if sha.len() == 40 { NEGATIVE } else { NOSCRIPT };
+                script_client_reply(client, transaction, &[command, sha, "-1"], negative);
+                let excess = if sha.len() == 40 { EXCESS } else { NOSCRIPT };
+                script_client_reply(client, transaction, &[command, sha, "1"], excess);
+            }
+        }
+        for command in ["EVAL", "EVAL_RO", "eVaL_rO"] {
+            script_client_reply(client, transaction, &[command, VALIDATED, "bad"], INTEGER);
+            script_client_reply(client, transaction, &[command, VALIDATED, "-1"], NEGATIVE);
+            script_client_reply(client, transaction, &[command, VALIDATED, "1"], EXCESS);
+            script_client_reply(client, transaction, &["SCRIPT", "EXISTS", VALIDATED_SHA], b"*1\r\n:0\r\n");
+        }
+        script_client_reply(client, transaction, &["EVAL_RO", VALIDATED, "0"], b"$9\r\nvalidated\r\n");
+        script_client_reply(client, transaction, &["EVALSHA", VALIDATED_SHA, "0"], b"$9\r\nvalidated\r\n");
+        script_client_reply(client, transaction, &["SET", "script-client", "original"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["EVAL_RO", READ, "1", "script-client"], b"$8\r\noriginal\r\n");
+        // Redis checks command WRITE flags even when DEL would change nothing;
+        // scriptCall checks arity before scriptVerifyWriteCommandAllow.
+        script_client_reply(client, transaction, &["EVAL_RO", "return redis.pcall('DEL',KEYS[1])", "1", "missing-ro-key"], REFUSED);
+        script_client_reply(client, transaction, &["EXISTS", "missing-ro-key"], b":0\r\n");
+        script_client_reply(client, transaction, &["EVAL_RO", "return redis.pcall('SET',KEYS[1])", "1", "script-client"], b"-ERR Wrong number of args calling Redis command from script\r\n");
+        // The first undeclared read abandons Firn's declared-entry attempt.
+        // The retried invocation must retain its original read-only authority.
+        script_client_reply(client, transaction, &["EVAL_RO", "return {redis.call('GET','script-client'),redis.pcall('SET','script-client','refused')}", "0"], b"*2\r\n$8\r\noriginal\r\n-ERR Write commands are not allowed from read-only scripts.\r\n");
+        // More than the first 1000 safepoints require a budget retry before SET.
+        script_client_reply(client, transaction, &["EVAL_RO", "local n=0; for i=1,3000 do n=n+1 end; return {n,redis.pcall('SET',KEYS[1],'refused')}", "1", "script-client"], b"*2\r\n:3000\r\n-ERR Write commands are not allowed from read-only scripts.\r\n");
+        script_client_reply(client, transaction, &["GET", "script-client"], b"$8\r\noriginal\r\n");
+        for command in ["EVALSHA", "EVALSHA_RO", "eVaLsHa_Ro"] {
+            script_client_reply(client, transaction, &[command, &READ_SHA.to_ascii_uppercase(), "1", "script-client"], b"$8\r\noriginal\r\n");
+        }
+        // EVAL_RO registers the function even when execution raises an error.
+        let raised = format!("-ERR Write commands are not allowed from read-only scripts. script: {WRITE_SHA}, on @user_script:2.\r\n");
+        for command in ["EVAL_RO", "eVaL_rO"] {
+            script_client_reply(client, transaction, &[command, WRITE, "1", "script-client", "refused"], raised.as_bytes());
+            script_client_reply(client, transaction, &["GET", "script-client"], b"$8\r\noriginal\r\n");
+        }
+        script_client_reply(client, transaction, &["SCRIPT", "EXISTS", WRITE_SHA], b"*1\r\n:1\r\n");
+        for command in ["EVALSHA_RO", "eVaLsHa_Ro"] {
+            script_client_reply(client, transaction, &[command, &WRITE_SHA.to_ascii_uppercase(), "1", "script-client", "refused"], raised.as_bytes());
+            script_client_reply(client, transaction, &["GET", "script-client"], b"$8\r\noriginal\r\n");
+        }
+        // Both a cached source invocation and a cached SHA invocation may write.
+        script_client_reply(client, transaction, &["EVAL", WRITE, "1", "script-client", "plain"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["GET", "script-client"], b"$5\r\nplain\r\n");
+        script_client_reply(client, transaction, &["EVALSHA", WRITE_SHA, "1", "script-client", "sha"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["EVALSHA_RO", WRITE_SHA, "1", "script-client", "refused"], raised.as_bytes());
+        script_client_reply(client, transaction, &["GET", "script-client"], b"$3\r\nsha\r\n");
+        script_client_reply(client, transaction, &["SCRIPT", "LOAD", PROTECTED], &script_client_bulk(PROTECTED_SHA.as_bytes()));
+        for (command, source) in [("EVAL_RO", PROTECTED), ("EVALSHA_RO", PROTECTED_SHA)] {
+            script_client_reply(client, transaction, &[command, source, "1", "script-client", "refused"], REFUSED);
+            script_client_reply(client, transaction, &["GET", "script-client"], b"$3\r\nsha\r\n");
+        }
+        script_client_reply(client, transaction, &["EVAL", PROTECTED, "1", "script-client", "protected"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["GET", "script-client"], b"$9\r\nprotected\r\n");
+        script_client_reply(client, transaction, &["SCRIPT", "FLUSH"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["EVALSHA_RO", READ_SHA, "1", "script-client"], NOSCRIPT);
+        if transaction {
+            // Cache effects happen at execution, in queue order: the initial
+            // miss cannot see the EVAL which is only later in the same EXEC.
+            let batch = [resp(&["MULTI"]), resp(&["EVALSHA_RO", VALIDATED_SHA, "0"]),
+                resp(&["EVAL_RO", VALIDATED, "0"]), resp(&["EVALSHA_RO", VALIDATED_SHA, "0"]),
+                resp(&["EXEC"])].concat();
+            client.write_all(&batch).expect("send ordered script cache transaction");
+            expect_replies(client, b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n$9\r\nvalidated\r\n$9\r\nvalidated\r\n", "script cache follows EXEC order");
+        }
+    });
+}
+
+/// Redis 7.2.16 server.c command arity rejection dirties MULTI, whereas an
+/// accepted EVAL error is one EXEC reply and later queued commands still run.
+fn check_script_client_arity_and_execution_errors(transaction: bool) {
+    script_client_matrix(transaction, |client, transaction, _| {
+        for command in ["EVAL", "EVALSHA", "EVAL_RO", "EVALSHA_RO", "eVaL_rO", "eVaLsHa_Ro"] {
+            for request in [vec![command], vec![command, "return 1"]] {
+                let error = format!("-ERR wrong number of arguments for '{}' command\r\n", command.to_ascii_lowercase());
+                if transaction {
+                    let batch = [resp(&["MULTI"]), resp(&request), resp(&["SET", "arity-write", "bad"]), resp(&["EXEC"])].concat();
+                    client.write_all(&batch).expect("send invalid scripting transaction");
+                    let expected = format!("+OK\r\n{error}+QUEUED\r\n-EXECABORT Transaction discarded because of previous errors.\r\n");
+                    expect_replies(client, expected.as_bytes(), "script arity dirties transaction");
+                    script_client_reply(client, false, &["EXISTS", "arity-write"], b":0\r\n");
+                } else {
+                    script_client_reply(client, false, &request, error.as_bytes());
+                }
+            }
+        }
+        const SOURCE: &str = "local value = ARGV[1]\nerror(value)";
+        const SHA: &str = "87f322ca39697edda58eb5f9f0e96e72fb5fe0eb";
+        let raised = format!("-ERR user_script:2: boom script: {SHA}, on @user_script:2.\r\n");
+        script_client_reply(client, transaction, &["EVAL_RO", SOURCE, "0", "boom"], raised.as_bytes());
+        script_client_reply(client, transaction, &["EVALSHA_RO", SHA, "0", "boom"], raised.as_bytes());
+        script_client_reply(client, transaction, &["SCRIPT", "EXISTS", SHA], b"*1\r\n:1\r\n");
+        // A later write, rather than only PING, proves EXEC continued after error.
+        if transaction {
+            let batch = [resp(&["MULTI"]), resp(&["EVALSHA_RO", SHA, "0", "boom"]),
+                resp(&["SET", "after-script-error", "kept"]), resp(&["EXEC"])].concat();
+            client.write_all(&batch).expect("send execution-error transaction");
+            let expected = format!("+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n{raised}+OK\r\n");
+            expect_replies(client, expected.as_bytes(), "EXEC continues after script error");
+            script_client_reply(client, false, &["GET", "after-script-error"], b"$4\r\nkept\r\n");
+        }
+    });
+}
+
+/// Redis 7.2.16 script_lua.c:luaRedisReturnSingleFieldTable,
+/// luaRedisErrorReplyCommand, luaPushErrorBuff and luaReplyToRedisReply;
+/// eval.c:luaRedisReplicateCommandsCommand is an unconditional true, including
+/// after writes. The byte/control cases distinguish Lua values from wire lines.
+fn check_script_clients_error_status_and_replication(transaction: bool) {
+    script_client_matrix(transaction, |client, transaction, resp3| {
+        for (source, expected) in [
+            ("return redis.status_reply('QUEUED')", b"+QUEUED\r\n".as_slice()),
+            ("return redis.error_reply('ERR denied')", b"-ERR denied\r\n".as_slice()),
+            ("return redis.error_reply('denied')", b"-ERR denied\r\n".as_slice()),
+            ("return redis.error_reply('-BUSY denied')", b"-BUSY denied\r\n".as_slice()),
+            ("return redis.status_reply('a'..string.char(13,10)..'b')", b"+a  b\r\n".as_slice()),
+            ("return redis.status_reply('a'..string.char(0)..'b')", b"+a\r\n".as_slice()),
+            ("return redis.status_reply('a'..string.char(0)..'b').ok", b"$3\r\na\0b\r\n".as_slice()),
+            ("return redis.error_reply('ERR a'..string.char(0)..'b').err", b"$5\r\nERR a\r\n".as_slice()),
+            ("return redis.error_reply('ERR '..string.char(13,10)..'denied'..string.char(13,10)).err", b"$10\r\nERR denied\r\n".as_slice()),
+            ("return redis.pcall().err", b"$64\r\nERR Please specify at least one argument for this redis lib call\r\n".as_slice()),
+            ("return redis.pcall('GET',{}).err", b"$63\r\nERR Lua redis lib command arguments must be strings or integers\r\n".as_slice()),
+            ("return redis.replicate_commands()", b":1\r\n".as_slice()),
+            ("local f=redis.replicate_commands; return f(false,{},'extra')", b":1\r\n".as_slice()),
+        ] {
+            script_client_reply(client, transaction, &["EVAL", source, "0"], expected);
+        }
+        for name in ["status_reply", "error_reply"] {
+            for arguments in ["", "1", "false", "{}", "'a','b'"] {
+                let source = format!("return redis.{name}({arguments})");
+                script_client_reply(client, transaction, &["EVAL", &source, "0"], b"-ERR wrong number or type of arguments\r\n");
+            }
+        }
+        // script.c:scriptCall resolves the command and checks arity before its
+        // CMD_NOSCRIPT flag. The SHA spelling is immaterial after that refusal.
+        for command in ["EVAL", "EVALSHA", "EVAL_RO", "EVALSHA_RO"] {
+            let short = format!("return redis.pcall('{command}')");
+            script_client_reply(client, transaction, &["EVAL", &short, "0"], b"-ERR Wrong number of args calling Redis command from script\r\n");
+            let full = format!("return redis.pcall('{command}','return 1',0)");
+            script_client_reply(client, transaction, &["EVAL", &full, "0"], b"-ERR This Redis command is not allowed from script\r\n");
+        }
+        let missing: &[u8] = if resp3 {
+            b"*3\r\n_\r\n_\r\n:1\r\n"
+        } else {
+            b"*3\r\n$-1\r\n$-1\r\n:1\r\n"
+        };
+        script_client_reply(client, transaction, &["EVAL", "return {redis.pcall('GET',KEYS[1]),false,true}", "1", "script-client-missing"], missing);
+        script_client_reply(client, transaction, &["SET", "script-pcall", "text"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local r=redis.pcall('INCR',KEYS[1]); redis.call('SET',KEYS[2],'after'); return r", "2", "script-pcall", "after-pcall"], b"-ERR value is not an integer or out of range\r\n");
+        script_client_reply(client, transaction, &["GET", "script-pcall"], b"$4\r\ntext\r\n");
+        script_client_reply(client, transaction, &["GET", "after-pcall"], b"$5\r\nafter\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local ok,e=pcall(redis.call,'INCR',KEYS[1]); return {tostring(ok),type(e),e}", "1", "script-pcall"], b"*3\r\n$5\r\nfalse\r\n$6\r\nstring\r\n$43\r\nERR value is not an integer or out of range\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local before=redis.replicate_commands(); redis.call('SET',KEYS[1],'written'); local f=redis.replicate_commands; return {before,f('ignored')}", "1", "replication-api"], b"*2\r\n:1\r\n:1\r\n");
+        script_client_reply(client, transaction, &["GET", "replication-api"], b"$7\r\nwritten\r\n");
+    });
+}
+
+/// Redis 7.2.16 deps/lua/src/lua_cjson.c and lua_cmsgpack.c, plus
+/// tests/unit/scripting.tcl's codec smoke/number tests. Arrays and single-key
+/// objects make exact encodings independent of Lua hash-table iteration.
+fn check_script_clients_json_and_messagepack(transaction: bool) {
+    script_client_matrix(transaction, |client, transaction, _| {
+        script_client_reply(client, transaction, &["EVAL", "return cjson.encode({a=1})", "0"], b"$7\r\n{\"a\":1}\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return cjson.decode(ARGV[1]).a", "0", "{\"a\":1}"], b":1\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return cmsgpack.pack({a=1})", "0"], &script_client_bulk(b"\x81\xa1\x61\x01"));
+        script_client_reply(client, transaction, &["EVAL", "return cmsgpack.unpack(string.char(129,161,97,1)).a", "0"], b":1\r\n");
+        let json = br#"[1,1.25,1000,0.0003,true,false,null,"a\n\"\\\u0000\/"]"#;
+        script_client_reply(client, transaction, &["EVAL", "return cjson.encode({1,1.25,1000,0.0003,true,false,cjson.null,'a'..string.char(10,34,92,0)..'/'})", "0"], &script_client_bulk(json));
+        script_client_reply(client, transaction, &["EVAL", "local t=cjson.decode(ARGV[1]); return {t[1],tostring(t[2]),tostring(t[4]),tostring(t[5]),tostring(t[6]),t[7]==cjson.null,t[8]}", "0", std::str::from_utf8(json).unwrap()], b"*7\r\n:1\r\n$4\r\n1.25\r\n$6\r\n0.0003\r\n$4\r\ntrue\r\n$5\r\nfalse\r\n:1\r\n$6\r\na\n\"\\\0/\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local t=cjson.decode(ARGV[1]); t[2]=t[2]+1; redis.call('SET',KEYS[1],cjson.encode(t)); return redis.call('GET',KEYS[1])", "1", "json-client", "[1,2,\"x\"]"], b"$9\r\n[1,3,\"x\"]\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return not pcall(cjson.decode,'{\"a\":]')", "0"], b":1\r\n");
+        let packed = b"\x95\x01\xff\xc3\xc2\xa3a\0b";
+        script_client_reply(client, transaction, &["EVAL", "local s='a'..string.char(0)..'b'; local p=cmsgpack.pack({1,-1,true,false,s}); redis.call('SET',KEYS[1],p); return redis.call('GET',KEYS[1])", "1", "msgpack-client"], &script_client_bulk(packed));
+        script_client_reply(client, transaction, &["EVAL", "local t=cmsgpack.unpack(redis.call('GET',KEYS[1])); return {t[1],t[2],tostring(t[3]),tostring(t[4]),t[5]}", "1", "msgpack-client"], b"*5\r\n:1\r\n:-1\r\n$4\r\ntrue\r\n$5\r\nfalse\r\n$3\r\na\0b\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return cmsgpack.pack(0.1,-1099511627776)", "0"], &script_client_bulk(b"\xcb\x3f\xb9\x99\x99\x99\x99\x99\x9a\xd3\xff\xff\xff\x00\x00\x00\x00\x00"));
+        script_client_reply(client, transaction, &["EVAL", "local p=cmsgpack.pack('a',2,'z'); return {cmsgpack.unpack(p)}", "0"], b"*3\r\n$1\r\na\r\n:2\r\n$1\r\nz\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local p=cmsgpack.pack('a',2,'z'); local offset,a=cmsgpack.unpack_one(p,0); local last,b,c=cmsgpack.unpack_limit(p,2,offset); return {offset,a,last,b,c}", "0"], b"*5\r\n:2\r\n$1\r\na\r\n:-1\r\n:2\r\n$1\r\nz\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return not pcall(cmsgpack.unpack,string.char(193))", "0"], b":1\r\n");
+    });
+}
+
+/// Redis 7.2.16 lbaselib.c:luaB_unpack and lapi.c:lua_checkstack require
+/// result_count + argc <= LUAI_MAXCSTACK (8000). The explicit-range failures
+/// also cover scripting.tcl's signed-index overflow regressions. RPUSH crosses
+/// the interpreter/host argument boundary with more than a short argument list.
+fn check_script_clients_unpack_boundaries(transaction: bool) {
+    script_client_matrix(transaction, |client, transaction, _| {
+        script_client_reply(client, transaction, &["EVAL", "local t={}; for i=1,7999 do t[i]=i end; return select('#',unpack(t))", "0"], b":7999\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local t={}; for i=1,8000 do t[i]=i end; local ok,e=pcall(unpack,t); return {tostring(ok),e}", "0"], b"*2\r\n$5\r\nfalse\r\n$26\r\ntoo many results to unpack\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return select('#',unpack({},1,7997))", "0"], b":7997\r\n");
+        for (first, last) in [("1", "7998"), ("-2", "2147483647"), ("0", "2147483647"), ("-2147483648", "-2")] {
+            let source = format!("local ok,e=pcall(unpack,{{}},{first},{last}); return {{tostring(ok),e}}");
+            script_client_reply(client, transaction, &["EVAL", &source, "0"], b"*2\r\n$5\r\nfalse\r\n$26\r\ntoo many results to unpack\r\n");
+        }
+        script_client_reply(client, transaction, &["EVAL", "return {select('#',unpack({},-1,-2)),select('#',unpack({},1,-1)),select('#',unpack({},-2147483648,-2147483646))}", "0"], b"*3\r\n:0\r\n:0\r\n:3\r\n");
+        let values: Vec<String> = (0..128).map(|i| format!("value-{i}")).collect();
+        let mut request = vec!["EVAL", "return redis.call('RPUSH',KEYS[1],unpack(ARGV))", "1", "many-arguments"];
+        request.extend(values.iter().map(String::as_str));
+        script_client_reply(client, transaction, &request, b":128\r\n");
+        script_client_reply(client, transaction, &["LLEN", "many-arguments"], b":128\r\n");
+        script_client_reply(client, transaction, &["LINDEX", "many-arguments", "0"], b"$7\r\nvalue-0\r\n");
+        script_client_reply(client, transaction, &["LINDEX", "many-arguments", "-1"], b"$9\r\nvalue-127\r\n");
+    });
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+fn firn_script_clients_direct_lookup_and_read_only() {
+    check_script_clients_lookup_and_read_only(false);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+#[ignore = "waits for Whitefoot request wf-need-firn-script-kill: scripts inside EXEC"]
+fn firn_script_clients_multi_lookup_and_read_only() {
+    check_script_clients_lookup_and_read_only(true);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+fn firn_script_clients_direct_arity_and_execution_errors() {
+    check_script_client_arity_and_execution_errors(false);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+#[ignore = "waits for Whitefoot request wf-need-firn-script-kill: scripts inside EXEC"]
+fn firn_script_clients_multi_arity_and_execution_errors() {
+    check_script_client_arity_and_execution_errors(true);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+fn firn_script_clients_direct_error_status_and_replication() {
+    check_script_clients_error_status_and_replication(false);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+#[ignore = "waits for Whitefoot request wf-need-firn-script-kill: scripts inside EXEC"]
+fn firn_script_clients_multi_error_status_and_replication() {
+    check_script_clients_error_status_and_replication(true);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+fn firn_script_clients_direct_json_and_messagepack() {
+    check_script_clients_json_and_messagepack(false);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+#[ignore = "waits for Whitefoot request wf-need-firn-script-kill: scripts inside EXEC"]
+fn firn_script_clients_multi_json_and_messagepack() {
+    check_script_clients_json_and_messagepack(true);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+fn firn_script_clients_direct_unpack_boundaries() {
+    check_script_clients_unpack_boundaries(false);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+#[ignore = "waits for Whitefoot request wf-need-firn-script-kill: scripts inside EXEC"]
+fn firn_script_clients_multi_unpack_boundaries() {
+    check_script_clients_unpack_boundaries(true);
+}
+
 /// firn runs scripts as Redis 7.0.15's EVAL, EVALSHA and SCRIPT do: a script
 /// compiled by EVAL or SCRIPT LOAD is cached under its SHA1 until SCRIPT FLUSH,
 /// EVALSHA finds it in either case and SCRIPT EXISTS in lower case only; KEYS
