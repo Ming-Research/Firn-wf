@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Approve the maxclients decisions on top of the startup design
+
+Nodes: firn/startup, firn/measurement-sessions
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-maxclients-tree for PR #115's three maxclients decisions on firn/startup (option A, in English: approve; firn's connection limit is Redis's, with the one stated difference that it does not raise the file-descriptor limit; merge #115 after #114). PR #115 is stacked on PR #114, whose startup decisions and the one on firn/measurement-sessions the owner approved with option A on card firn-q-ops-tree, as the entries below record.
+
+Summary: Against main this branch changes firn/measurement-sessions as well as firn/startup, because it carries PR #114's approved decisions. This entry names both nodes so that the design check, which requires the newest entry to name every node changed since main, passes while the stack is unmerged; it changes no decision.
+
 ## 2026-10-13 Limit concurrent clients with maxclients
 
 Nodes: firn/startup
