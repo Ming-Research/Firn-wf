@@ -4,6 +4,21 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Chaos testing with an independent checker
+
+Nodes: firn/chaos
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-chaos-tree, which asked to approve PR #110's 16 new decisions in design/firn/chaos.md at head 38f394c: per-key operation sequence tokens checked by an independent serial model, a fresh shared key group per epoch kept to the end of the run, restart failures recorded as findings, separate reporting of lost writes, inconsistencies, unrequested exits and fault coverage, diagnostic labels that never relax firn's zero-lost-acknowledged-writes standard, the 10 ms "reply before log" attribution rule with no promised latency bound, incremental and 19x-cost-scheduled full rechecks plus a final full check, digest-only clean checkpoints with exact-value judgement and a full dump on inconsistency, wall-clock 24 hours with load and check time reported apart, a 10% check-time failure limit, and the fault device cleaned up only when its saved mount path matches the job's own.
+
+Summary: The chaos test runs the same load against firn and each competitor while injecting high concurrency, random disconnects, disk errors through the fault device and SIGKILL restarts, and judges the results with a checker that never reads a server's own persistence files. All 16 decisions are additions; none changes or removes an earlier one.
+
+## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
+
+Nodes: firn/memory-limit
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-admit-tree, which asked to approve PR #67's design change at head bc2425d: while firn keeps no append-only file, a command's maxmemory admission check reads the heap and compares it with the limit without a Meta statement and takes Meta only once the reading is over the limit; with a file it keeps the Meta statement; the decision cites the 14900K measurement instead of being provisional.
+
+Summary: Every command's admission check took the exclusive Meta statement whenever a limit was set, so with an 8 GiB limit far above use main ran depth-16 GET at 0.117 and SET at 0.145 of its unlimited throughput on 8 P-cores of the i9-14900K. Without an append-only file nothing is excluded and no rewrite can start, so the Meta-held check reduces to a heap comparison; with it the change ran at 0.941 and 0.948, and without a limit within the twin's range of main ([admission without Meta](../research/investigations/memory-limit/README.md#admission-without-meta-while-no-aof-is-kept)). Admission still raises the peak when its reading exceeds the peak the connection last saw recorded.
 ## 2026-10-13 Carry the AOF transaction boundary instead of rereading history
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture

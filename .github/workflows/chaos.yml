@@ -1,0 +1,288 @@
+# Deliberate faults are opt-in. The ordinary gate runs the pure checker
+# cases, while this workflow runs the ignored experiment. Reserve the
+# 14900K through the coordinator before a long run: its faulty device
+# changes machine-wide writeback settings. This concurrency group protects
+# chaos jobs only, not unrelated benchmark workflows.
+name: chaos
+
+on:
+  workflow_dispatch:
+    inputs:
+      servers:
+        description: Comma or space separated servers (firn redis valkey dragonfly garnet)
+        type: string
+        required: true
+        default: firn,redis
+      seconds:
+        description: Wall-clock deadline seconds per server (120 smoke, 86400 on 14900K; final verification may finish afterward)
+        type: number
+        required: true
+        default: 120
+      seed:
+        description: Unsigned 64-bit workload and fault seed
+        type: string
+        required: true
+        default: '1'
+      runner:
+        description: Reserved runner (hosted smoke or 14900K)
+        type: choice
+        options: [github, 14900k]
+        default: github
+      firn_append_before_reply:
+        description: Whether the firn image includes Firn-wf#97
+        type: choice
+        options: [unknown, absent, present]
+        default: unknown
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chaos-${{ inputs.runner }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      servers: ${{ steps.select.outputs.servers }}
+    steps:
+      - id: select
+        name: Validate the requested coverage
+        env:
+          SERVERS: ${{ inputs.servers }}
+          SECONDS_REQUESTED: ${{ inputs.seconds }}
+          SEED: ${{ inputs.seed }}
+          CHAOS_RUNNER: ${{ inputs.runner }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          servers = re.split(r'[\s,]+', os.environ['SERVERS'].strip())
+          allowed = {'firn', 'redis', 'valkey', 'dragonfly', 'garnet'}
+          if not servers or any(s not in allowed for s in servers) or len(set(servers)) != len(servers):
+              raise SystemExit('Select each supported server at most once')
+          seconds_text = os.environ['SECONDS_REQUESTED']
+          seed_text = os.environ['SEED']
+          if not re.fullmatch(r'[0-9]+', seconds_text) or not 1 <= int(seconds_text) <= 86400:
+              raise SystemExit('seconds must be an integer wall-clock deadline from 1 through 86400 per server')
+          if os.environ['CHAOS_RUNNER'] == 'github' and int(seconds_text) > 18000:
+              raise SystemExit('hosted wall-clock deadlines are limited to 18000 seconds; select 14900k for 86400 wall-clock seconds')
+          if not re.fullmatch(r'[0-9]+', seed_text) or int(seed_text) > 2**64 - 1:
+              raise SystemExit('seed must be an unsigned 64-bit integer')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('servers=' + json.dumps(servers) + '\n')
+          PY
+
+  chaos:
+    needs: select
+    name: chaos ${{ matrix.server }} (${{ inputs.runner }})
+    runs-on: ${{ inputs.runner == '14900k' && fromJSON('["self-hosted", "14900k"]') || 'ubuntu-24.04' }}
+    # Hosted jobs have a six-hour platform ceiling; select caps their run.
+    # A self-hosted server gets a 24-hour wall-clock deadline plus one hour
+    # for setup, mandatory final verification after the deadline, and upload.
+    timeout-minutes: 1500
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        server: ${{ fromJSON(needs.select.outputs.servers) }}
+    env:
+      CHAOS_SERVER: ${{ matrix.server }}
+      CHAOS_SECONDS: ${{ inputs.seconds }}
+      CHAOS_SEED: ${{ inputs.seed }}
+      CHAOS_CLIENTS: '32'
+      CHAOS_FIRN_APPEND_BEFORE_REPLY: ${{ inputs.firn_append_before_reply }}
+    steps:
+      # The runner context is not available in job-level env, so the
+      # runner-dependent paths are set here for every later step.
+      - name: Set the runner's paths
+        run: |
+          echo "CHAOS_OUT=$RUNNER_TEMP/chaos-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$CHAOS_SERVER" >>"$GITHUB_ENV"
+          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+            echo "REDIS_COMPAT_CACHE=$GITHUB_WORKSPACE/build/redis-compat-cache" >>"$GITHUB_ENV"
+          else
+            echo "REDIS_COMPAT_CACHE=" >>"$GITHUB_ENV"
+          fi
+      - name: Start the infrastructure report
+        run: |
+          mkdir "$CHAOS_OUT"
+          {
+            echo "revision=$GITHUB_SHA"
+            echo "server=$CHAOS_SERVER wall_clock_deadline_seconds=$CHAOS_SECONDS seed=$CHAOS_SEED clients=$CHAOS_CLIENTS"
+            echo 'duration=wall-clock deadline includes workload and checks; mandatory final verification may finish afterward; inspect workload/check time in the harness report'
+            echo "runner=$RUNNER_NAME environment=$RUNNER_ENVIRONMENT"
+            echo "firn_append_before_reply=$CHAOS_FIRN_APPEND_BEFORE_REPLY"
+            echo 'acceptance=not established by infrastructure setup; inspect the harness report'
+            echo 'device_size=32G sparse; disk ENOSPC injection is not selected'
+          } > "$CHAOS_OUT/infrastructure.txt"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Clean only this experiment's recorded session
+        if: ${{ runner.environment == 'self-hosted' }}
+        run: |
+          record="$HOME/.cache/firn-chaos/session"
+          mkdir -p "$(dirname "$record")"
+          echo "FIRN_REDIS_BENCH_RECORD=$record" >> "$GITHUB_ENV"
+          python3 research/experiments/redis-bench/session.py stop "$record"
+
+      - name: Install the hosted toolchain and fault tools
+        if: ${{ runner.environment == 'github-hosted' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dmsetup
+          make toolchain
+
+      - name: Check the reserved runner's toolchain
+        if: ${{ runner.environment == 'self-hosted' }}
+        run: make toolchain-check
+
+      - name: Restore the reference Redis build
+        if: ${{ runner.environment == 'github-hosted' }}
+        uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build and identify the binaries
+        run: |
+          rustup default stable
+          make compiler firn-test
+          echo "FIRN=$GITHUB_WORKSPACE/build/firn-test" >> "$GITHUB_ENV"
+          bin=$(tests/redis-suite/reference.sh)
+          echo "REDIS_SERVER=$bin/redis-server" >> "$GITHUB_ENV"
+          {
+            "$bin/redis-server" --version
+            cargo --version
+            /usr/bin/clang --version
+            ld.lld --version
+            git submodule status
+            cat whitefoot.pin
+            uname -srvmo
+            lscpu
+            lscpu -e=CPU,CORE,SOCKET,ONLINE
+            df -h "$CHAOS_OUT" /var/tmp
+            for tool in valkey-server dragonfly garnet-server; do
+              command -v "$tool" || true
+            done
+          } >> "$CHAOS_OUT/infrastructure.txt"
+
+      - name: Build the harness once and exercise its pure checker
+        run: |
+          cargo test --manifest-path tests/Cargo.toml --locked --test chaos --no-run --message-format=json > "$CHAOS_OUT/build.jsonl" 2> "$CHAOS_OUT/build.log"
+          python3 - <<'PY'
+          import json, os
+          executables = []
+          with open(os.environ['CHAOS_OUT'] + '/build.jsonl') as source:
+              for line in source:
+                  entry = json.loads(line)
+                  if entry.get('reason') == 'compiler-artifact' and entry.get('target', {}).get('name') == 'chaos' and entry.get('executable'):
+                      executables.append(entry['executable'])
+          if len(executables) != 1:
+              raise SystemExit('Expected exactly one compiled chaos test executable')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('CHAOS_TEST_BINARY=' + executables[0] + '\n')
+          PY
+          cargo test --manifest-path tests/Cargo.toml --locked --test chaos -- --skip chaos_run --nocapture > "$CHAOS_OUT/self-tests.log" 2>&1
+
+      - name: Check that an invalid device size is refused before setup
+        run: |
+          status=0
+          tests/aof_sync_fault_device.sh setup "$RUNNER_TEMP/unused-invalid-device" "$(id -u):$(id -g)" invalid-size \
+            > "$CHAOS_OUT/device-invalid-size.log" 2>&1 || status=$?
+          if [ "$status" -eq 0 ] || ! grep -qx 'invalid device size: invalid-size' "$CHAOS_OUT/device-invalid-size.log"; then
+            cat "$CHAOS_OUT/device-invalid-size.log"
+            echo 'device helper did not reject the invalid size before device operations' >&2
+            exit 1
+          fi
+
+      - name: Set up the disk failure device when root is available
+        run: |
+          if ! command -v sudo >/dev/null || ! sudo -n true; then
+            echo 'disk_faults=skipped: passwordless sudo unavailable; full acceptance incomplete' >> "$CHAOS_OUT/infrastructure.txt"
+            echo 'CHAOS_FAULT_SKIP_REASON=passwordless sudo unavailable' >> "$GITHUB_ENV"
+            exit 0
+          fi
+          # The helper uses one global device/state and machine-wide sysctls.
+          # Refuse ownership of another job's device. The helper's sixth
+          # state line identifies this unique mount, including partial setup;
+          # teardown checks it before changing any global device or sysctl.
+          if sudo -n test -e /var/tmp/firn-sync-fault.state || sudo -n dmsetup info firn-sync-fault >/dev/null 2>&1; then
+            echo 'disk_faults=infrastructure failure: preexisting device; left untouched' >> "$CHAOS_OUT/infrastructure.txt"
+            exit 1
+          fi
+          mount="$RUNNER_TEMP/chaos-fault-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$CHAOS_SERVER"
+          touch "$CHAOS_OUT/device-setup-intent"
+          sudo -n tests/aof_sync_fault_device.sh setup "$mount" "$(id -u):$(id -g)" 32G > "$CHAOS_OUT/device-setup.log" 2>&1
+          recorded_mount=$(sudo -n sed -n '6p' /var/tmp/firn-sync-fault.state)
+          if [ "$recorded_mount" != "$mount" ]; then
+            echo 'disk_faults=infrastructure failure: device state omitted its ownership evidence' >> "$CHAOS_OUT/infrastructure.txt"
+            exit 1
+          fi
+          echo "CHAOS_FAULT_MOUNT=$mount" >> "$GITHUB_ENV"
+          echo 'disk_faults=device ready; setup probe passed' >> "$CHAOS_OUT/infrastructure.txt"
+          sudo -n tests/aof_sync_fault_device.sh check-writeback "$mount" > "$CHAOS_OUT/device-writeback.log" 2>&1
+
+      - name: Run the seeded fault experiment
+        run: |
+          status=0
+          if [ -n "${FIRN_REDIS_BENCH_RECORD:-}" ]; then
+            # Record before the test starts. The harness registers every
+            # server before exec; session.py can clean a cancelled job later.
+            setsid --wait sh -c 'python3 "$1" record "$2" $$ || exit 1; shift 2; exec "$@"' run \
+              "$GITHUB_WORKSPACE/research/experiments/redis-bench/session.py" "$FIRN_REDIS_BENCH_RECORD" \
+              "$CHAOS_TEST_BINARY" --ignored --exact chaos_run --nocapture --test-threads=1 \
+              > "$CHAOS_OUT/runner.log" 2>&1 || status=$?
+          else
+            "$CHAOS_TEST_BINARY" --ignored --exact chaos_run --nocapture --test-threads=1 \
+              > "$CHAOS_OUT/runner.log" 2>&1 || status=$?
+          fi
+          cat "$CHAOS_OUT/runner.log"
+          echo "harness_exit=$status" >> "$CHAOS_OUT/infrastructure.txt"
+          exit "$status"
+
+      - name: Clean this experiment's recorded processes
+        if: ${{ always() && runner.environment == 'self-hosted' }}
+        run: python3 research/experiments/redis-bench/session.py stop "$HOME/.cache/firn-chaos/session"
+
+      - name: Tear down only the device this job made
+        if: always()
+        run: |
+          if [ -f "$CHAOS_OUT/device-setup-intent" ]; then
+            mount="$RUNNER_TEMP/chaos-fault-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$CHAOS_SERVER"
+            recorded_mount=$(sudo -n sed -n '6p' /var/tmp/firn-sync-fault.state 2>/dev/null) || recorded_mount=
+            if [ "$recorded_mount" != "$mount" ]; then
+              echo 'device_cleanup=no matching owned state; existing device left untouched' >> "$CHAOS_OUT/infrastructure.txt"
+              exit 0
+            fi
+            # A stopped job may have left the map in its failing state.
+            sudo -n tests/aof_sync_fault_device.sh heal >> "$CHAOS_OUT/device-teardown.log" 2>&1 || true
+            sudo -n tests/aof_sync_fault_device.sh teardown "$mount" >> "$CHAOS_OUT/device-teardown.log" 2>&1
+          fi
+
+      - name: Summarize the infrastructure and harness outcome
+        if: always()
+        run: |
+          {
+            echo "## Chaos: $CHAOS_SERVER"
+            echo '```text'
+            cat "$CHAOS_OUT/infrastructure.txt"
+            echo '```'
+            echo 'The artifact reports the per-server wall-clock deadline, workload time, check time, and complete history. Mandatory final verification may finish after the deadline. A skipped server or disk fault leaves the full comparison incomplete.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chaos-${{ matrix.server }}-${{ github.run_id }}
+          path: ${{ env.CHAOS_OUT }}/
+          retention-days: 14

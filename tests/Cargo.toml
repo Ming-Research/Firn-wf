@@ -9,3 +9,7 @@ autobins = false
 [[test]]
 name = "network"
 path = "network.rs"
+
+[[test]]
+name = "chaos"
+path = "chaos.rs"

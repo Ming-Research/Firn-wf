@@ -5,10 +5,120 @@ use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::net::{SocketAddr, TcpStream};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::{Duration, Instant};
+
+/// Connects to a program that is still starting.
+///
+/// The program binds its listener some time after the harness spawned it, so
+/// the first attempts are refused. This retries for a bounded wall-clock span
+/// and fails the case if the program never listened; nothing about the
+/// program's own acceptance depends on it.
+pub(crate) fn connect_when_ready(port: u16, child: &ProgramMonitor) -> TcpStream {
+    connect_to_when_ready(SocketAddr::from(([127, 0, 0, 1], port)), child)
+}
+
+/// Connects to a program that is still starting, at the address it listens on.
+pub(crate) fn connect_to_when_ready(address: SocketAddr, child: &ProgramMonitor) -> TcpStream {
+    connect_to_when_ready_using(address, child, TcpStream::connect_timeout)
+}
+
+pub(crate) fn connect_to_when_ready_using(
+    address: SocketAddr,
+    child: &ProgramMonitor,
+    connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
+) -> TcpStream {
+    connect_to_when_ready_using_limit(address, child, Duration::from_secs(20), connect)
+}
+
+/// The same admission/retry rules with an explicit startup budget for a large AOF.
+pub(crate) fn connect_to_when_ready_with_limit(
+    address: SocketAddr,
+    child: &ProgramMonitor,
+    limit: Duration,
+) -> TcpStream {
+    connect_to_when_ready_using_limit(address, child, limit, TcpStream::connect_timeout)
+}
+
+#[derive(Debug)]
+pub(crate) struct ReadinessError(pub String);
+
+impl std::fmt::Display for ReadinessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f,"{}",self.0) }
+}
+impl std::error::Error for ReadinessError {}
+
+fn connect_to_when_ready_using_limit(
+    address: SocketAddr,
+    child: &ProgramMonitor,
+    limit: Duration,
+    connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
+) -> TcpStream {
+    try_connect_to_when_ready_using_limit(address, child, limit, connect)
+        .unwrap_or_else(|error| panic!("{error}{}", child.diagnostic_block(Some(address.port()))))
+}
+
+/// Expected readiness failures are data for fault experiments. Existing test
+/// wrappers still panic with the same bounded process diagnostics.
+pub(crate) fn try_connect_to_when_ready_with_limit(
+    address: SocketAddr,
+    child: &ProgramMonitor,
+    limit: Duration,
+) -> Result<TcpStream, ReadinessError> {
+    try_connect_to_when_ready_using_limit(address, child, limit, TcpStream::connect_timeout)
+}
+
+fn try_connect_to_when_ready_using_limit(
+    address: SocketAddr,
+    child: &ProgramMonitor,
+    limit: Duration,
+    mut connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
+) -> Result<TcpStream, ReadinessError> {
+    let port = address.port();
+    let deadline = Instant::now() + limit;
+    loop {
+        child.ensure_running(port)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ReadinessError(format!("{} connect at {address} exceeded the {}-second deadline",child.name(),limit.as_secs())));
+        }
+        match connect(&address, remaining) {
+            Ok(stream) => {
+                child.ensure_running(port)?;
+                stream.set_nonblocking(false)
+                    .and_then(|_|stream.set_read_timeout(Some(Duration::from_secs(10))))
+                    .and_then(|_|stream.set_write_timeout(Some(Duration::from_secs(10))))
+                    .map_err(|error|ReadinessError(format!("{} configure readiness socket: {error}",child.name())))?;
+                return Ok(stream);
+            }
+            // A timeout can follow admission. Retrying could consume another
+            // client slot, so only a refused handshake gets another attempt.
+            Err(error) if retry_refused_connection(&error, deadline) => {
+                child.ensure_running(port)?;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(ReadinessError(format!("{} connect at {address} failed: {error}",child.name()))),
+        }
+    }
+}
+
+pub(crate) fn retry_refused_connection(error: &std::io::Error, deadline: Instant) -> bool {
+    error.kind() == std::io::ErrorKind::ConnectionRefused && Instant::now() < deadline
+}
+
+pub(crate) fn bounded_stream(stream: TcpStream) -> TcpStream {
+    stream.set_nonblocking(false).expect("blocking peer socket");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("bound peer reads");
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .expect("bound peer writes");
+    stream
+}
 
 static NEXT_EXECUTION: AtomicU64 = AtomicU64::new(0);
 static LEASED_PORTS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
@@ -418,6 +528,7 @@ struct MonitoredProgram {
     output: CapturedOutput,
     errors: CapturedOutput,
     program: OsString,
+    name: Mutex<OsString>,
     pid: u32,
     diagnostic_deadline: OnceLock<Instant>,
 }
@@ -430,28 +541,47 @@ pub struct ProgramMonitor {
 }
 
 impl ProgramMonitor {
-    /// Fails with the child's stderr tail if it exited before readiness.
-    /// This checks the actual child even when another server accepts this port.
-    pub fn assert_running(&self, port: u16) {
+    /// Stops the child and collects both output tails within one shared
+    /// diagnostic budget, including when a peer only owns a monitor.
+    pub(crate) fn diagnostic_block(&self, port: Option<u16>) -> String {
+        let deadline = *self.program.diagnostic_deadline
+            .get_or_init(|| Instant::now() + DIAGNOSTIC_LIMIT);
+        let exited = self.status_until(deadline);
+        let status = match exited {
+            Ok(Some(status)) => format!("already exited: yes; exit status: {status}"),
+            Ok(None) => "already exited: no; killed by harness".to_owned(),
+            Err(error) => format!("already exited: unknown ({error}); killed by harness"),
+        };
+        self.stop_for_diagnostics(deadline);
+        let port = port.map_or_else(|| "unknown".to_owned(), |port| port.to_string());
+        format!(
+            "\n----- BEGIN TEST CHILD DIAGNOSTICS -----\nprogram: {}\nexecutable: {}\nPID: {}\nport: {port}\n{status}\nstderr (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}\nstdout (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}\n----- END TEST CHILD DIAGNOSTICS -----\n",
+            self.name(),
+            self.program.program.to_string_lossy(),
+            self.program.pid,
+            self.program.errors.diagnostic_tail(deadline),
+            self.program.output.diagnostic_tail(deadline),
+        )
+    }
+
+    pub(crate) fn name(&self) -> String {
+        locked(&self.program.name).to_string_lossy().into_owned()
+    }
+
+    /// Reports the actual child status even if another server accepts the port.
+    pub(crate) fn ensure_running(&self, port: u16) -> Result<(), ReadinessError> {
         let deadline = self.program.diagnostic_deadline.get().copied()
             .unwrap_or_else(|| Instant::now() + DIAGNOSTIC_LIMIT);
-        let status = self.status_until(deadline);
-        match status {
-            Ok(Some(status)) => {
-                let deadline = *self.program.diagnostic_deadline.get_or_init(|| deadline);
-                self.stop_for_diagnostics(deadline);
-                panic!(
-                    "firn exited before listening on {port}: {status}\nstderr (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}",
-                    self.program.errors.diagnostic_tail(deadline)
-                );
-            }
-            Ok(None) => {}
-            Err(error) => {
-                let deadline = *self.program.diagnostic_deadline.get_or_init(|| deadline);
-                self.stop_for_diagnostics(deadline);
-                panic!("check firn while waiting for port {port}: {error}");
-            }
+        match self.status_until(deadline) {
+            Ok(Some(status)) => Err(ReadinessError(format!("{} exited before listening on {port}: {status}",self.name()))),
+            Ok(None) => Ok(()),
+            Err(error) => Err(ReadinessError(format!("check {} while waiting for port {port}: {error}",self.name()))),
         }
+    }
+
+    /// Existing test callers retain their panic-and-diagnostic contract.
+    pub fn assert_running(&self, port: u16) {
+        self.ensure_running(port).unwrap_or_else(|error| panic!("{error}{}",self.diagnostic_block(Some(port))));
     }
 
     /// Probes without applying the normal program timeout or blocking on a
@@ -548,6 +678,7 @@ impl ProgramChild {
                     output,
                     errors,
                     program: command.get_program().to_os_string(),
+                    name: Mutex::new(command.get_program().to_os_string()),
                     pid,
                     diagnostic_deadline: OnceLock::new(),
                 }),
@@ -555,6 +686,12 @@ impl ProgramChild {
             deadline: Instant::now() + limit,
             port: None,
         })
+    }
+
+    /// Identifies the server even when its executable is a registration wrapper.
+    pub(crate) fn with_name(self, name: impl AsRef<OsStr>) -> Self {
+        *locked(&self.monitor.program.name) = name.as_ref().to_os_string();
+        self
     }
 
     /// Retains the port reservation until this child has stopped and supplies
@@ -613,26 +750,7 @@ impl ProgramChild {
     /// Stops this child and builds the panic report within one shared two
     /// second collection budget. A later Drop never repeats blocking cleanup.
     fn diagnostic_block(&mut self) -> String {
-        let deadline = *self.monitor.program.diagnostic_deadline
-            .get_or_init(|| Instant::now() + DIAGNOSTIC_LIMIT);
-        let exited = self.monitor.status_until(deadline);
-        let status = match exited {
-            Ok(Some(status)) => format!("already exited: yes; exit status: {status}"),
-            Ok(None) => "already exited: no; killed by harness".to_owned(),
-            Err(error) => format!("already exited: unknown ({error}); killed by harness"),
-        };
-        self.monitor.stop_for_diagnostics(deadline);
-        let port = self.port.as_ref().map_or_else(
-            || "unknown".to_owned(),
-            |lease| lease.port().to_string(),
-        );
-        format!(
-            "\n----- BEGIN TEST CHILD DIAGNOSTICS -----\nprogram: {}\nPID: {}\nport: {port}\n{status}\nstderr (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}\nstdout (last {DIAGNOSTIC_TAIL_BYTES} bytes):\n{}\n----- END TEST CHILD DIAGNOSTICS -----\n",
-            self.monitor.program.program.to_string_lossy(),
-            self.id(),
-            self.monitor.program.errors.diagnostic_tail(deadline),
-            self.monitor.program.output.diagnostic_tail(deadline),
-        )
+        self.monitor.diagnostic_block(self.port.as_ref().map(PortLease::port))
     }
 }
 
@@ -881,6 +999,94 @@ mod tests {
     }
 
     #[test]
+    fn readiness_does_not_retry_a_timeout_after_a_completed_handshake() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("listen for the readiness regression");
+        let address = listener.local_addr().expect("readiness listener address");
+        listener.set_nonblocking(true).expect("bound regression acceptance");
+        let lease = lease_port();
+        let child = shell_child("exec sleep 30", &lease);
+        let mut listener = Some(listener);
+        let mut accepted = None;
+        let mut attempts = 0;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            connect_to_when_ready_using(address, &child, |address, timeout| {
+                attempts += 1;
+                // The old retry-on-any-error rule reaches this assertion on
+                // attempt two, rather than waiting for the readiness deadline.
+                assert_eq!(attempts, 1, "readiness reconnected after consuming its slot");
+                let stream = std::net::TcpStream::connect_timeout(address, timeout)?;
+                let listener = listener.take().expect("only one accepted connection");
+                let accept_deadline = Instant::now() + Duration::from_secs(10);
+                accepted = Some(loop {
+                    match listener.accept() {
+                        Ok((peer, _)) => break peer,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < accept_deadline => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("the completed handshake was not admitted: {error}"),
+                    }
+                });
+                drop(listener);
+                drop(stream);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "timeout observed after a completed handshake",
+                ))
+            })
+        }));
+        let failure = outcome.expect_err("a timeout must fail readiness");
+        let message = failure.downcast_ref::<String>().expect("formatted connection error");
+        assert!(message.contains("timeout observed after a completed handshake"), "{message}");
+        assert!(message.contains("BEGIN TEST CHILD DIAGNOSTICS"), "{message}");
+        assert!(message.contains(&format!("PID: {}", child.id())), "{message}");
+        assert!(message.contains(&format!("port: {}", address.port())), "{message}");
+        assert!(message.contains("already exited: no; killed by harness"), "{message}");
+        assert!(message.contains("stderr (last 4096 bytes):"), "{message}");
+        assert!(message.contains("stdout (last 4096 bytes):"), "{message}");
+        assert_eq!(attempts, 1, "an admitted connection must not be replaced");
+        let mut accepted = bounded_stream(accepted.expect("one connection was admitted"));
+        assert_eq!(accepted.read(&mut [0_u8; 1]).expect("read abandoned connection"), 0);
+    }
+
+    #[test]
+    fn readiness_retries_refusal_before_connecting() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("listen for the refusal regression");
+        let address = listener.local_addr().expect("refusal listener address");
+        let lease = lease_port();
+        let child = shell_child("exec sleep 30", &lease);
+        let mut attempts = 0;
+        let stream = connect_to_when_ready_using(address, &child, |address, timeout| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(std::io::ErrorKind::ConnectionRefused.into())
+            } else {
+                std::net::TcpStream::connect_timeout(address, timeout)
+            }
+        });
+        assert_eq!(attempts, 2, "a not-yet-listening child must get another attempt");
+        drop(stream);
+    }
+
+    #[test]
+    fn readiness_retry_rule_rejects_other_errors_and_an_expired_deadline() {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::PermissionDenied,
+        ] {
+            assert!(!retry_refused_connection(&kind.into(), deadline), "{kind:?}");
+        }
+        assert!(!retry_refused_connection(
+            &std::io::ErrorKind::ConnectionRefused.into(), Instant::now(),
+        ));
+    }
+
+    #[test]
     fn readiness_reports_child_exit_status_and_stderr() {
         let lease = lease_port();
         let mut command = Command::new("/bin/sh");
@@ -893,7 +1099,7 @@ mod tests {
             .expect("spawn readiness witness")
             .with_port(&lease);
         let started = Instant::now();
-        let panic = std::panic::catch_unwind(|| crate::connect_when_ready(lease.port(), &child))
+        let panic = std::panic::catch_unwind(|| connect_when_ready(lease.port(), &child))
             .expect_err("an exited child cannot become ready");
         assert!(
             started.elapsed() < Duration::from_secs(10),
@@ -906,7 +1112,7 @@ mod tests {
             .expect("string panic message");
         assert!(
             message.contains(&format!(
-                "firn exited before listening on {}: exit status: 7",
+                "/bin/sh exited before listening on {}: exit status: 7",
                 lease.port()
             )),
             "readiness panic lost exit status: {message}"
@@ -916,4 +1122,37 @@ mod tests {
             "readiness panic lost stderr: {message}"
         );
     }
+    #[test]
+    fn readiness_result_preserves_named_server_exit_without_panicking() {
+        let lease=lease_port();
+        let child=shell_child("echo REDIS_AOF_FAILURE >&2; exit 7",&lease).with_name("redis");
+        wait_for_witness_exit(&child);
+        let error=try_connect_to_when_ready_with_limit(
+            SocketAddr::from(([127,0,0,1],lease.port())),&child,Duration::from_secs(20))
+            .expect_err("an exited server must return a readiness failure");
+        assert!(error.0.contains("redis exited"),"{error}");
+        assert!(error.0.contains("exit status: 7"),"{error}");
+        assert!(!error.0.contains("firn"),"competitor error mislabeled: {error}");
+        let diagnostic=child.monitor.diagnostic_block(Some(lease.port()));
+        assert!(diagnostic.contains("program: redis"),"{diagnostic}");
+        assert!(diagnostic.contains("executable: /bin/sh"),"{diagnostic}");
+        assert!(diagnostic.contains("REDIS_AOF_FAILURE"),"{diagnostic}");
+    }
+
+    #[test]
+    fn readiness_result_does_not_retry_nonrefusal_or_panic() {
+        let lease=lease_port();
+        let child=shell_child("exec sleep 30",&lease).with_name("valkey");
+        let mut attempts=0;
+        let error=try_connect_to_when_ready_using_limit(
+            SocketAddr::from(([127,0,0,1],lease.port())),&child,Duration::from_secs(20),|_,_| {
+                attempts+=1;
+                Err(std::io::Error::new(std::io::ErrorKind::TimedOut,"injected admitted-connection timeout"))
+            }).expect_err("timeout must return an error");
+        assert_eq!(attempts,1,"nonrefusal must not reconnect");
+        assert!(error.0.contains("valkey"),"{error}");
+        assert!(error.0.contains("injected admitted-connection timeout"),"{error}");
+        assert!(child.ensure_running(lease.port()).is_ok(),"typed failure must leave cleanup to its owner");
+    }
+
 }

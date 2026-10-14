@@ -4,12 +4,13 @@
 # `sudo -n`); the `aof-sync-fault` job of .github/workflows/check.yml runs
 # `setup` before the cases and `teardown` after them, whatever they did.
 #
-# usage: aof_sync_fault_device.sh setup MOUNT OWNER
-#        aof_sync_fault_device.sh fail | heal | remount | reset
+# usage: aof_sync_fault_device.sh setup MOUNT OWNER [SIZE]
+#        aof_sync_fault_device.sh fail | heal | remount | reset | fill | unfill
 #        aof_sync_fault_device.sh check-writeback MOUNT
 #        aof_sync_fault_device.sh teardown MOUNT
 #
-#   setup    makes a 64 MiB loop file, puts device-mapper device
+#   setup    makes a sparse loop file (64 MiB by default, SIZE such as 32G
+#            for the chaos run), puts device-mapper device
 #            firn-sync-fault over it as a linear map, makes an ext4
 #            filesystem without a journal on it, mounts it at MOUNT with
 #            errors=continue, gives MOUNT to OWNER (uid:gid), and checks the
@@ -30,6 +31,10 @@
 #            mount, give the mount to the OWNER `setup` was given), so that
 #            a case whose metadata was lost cannot break the next; each case
 #            calls it before it starts
+#   fill     allocates the remaining blocks to a disposable file until the
+#            kernel returns ENOSPC; the rewrite cases stop the rewrite worker
+#            first, then observe ENOSPC on its temporary file after resuming
+#   unfill   removes that file, leaving the server's files alone
 #   check-writeback MOUNT
 #            the self-check of the writeback setting: creates a file on
 #            MOUNT, fails the device for 40 s with no fsync, heals, remounts
@@ -68,6 +73,11 @@
 # write of metadata, while e2fsck looks only at what the filesystem needs to
 # be consistent (it ignores the "mounting fs with errors" flag the setup's
 # probe leaves, because of -f, and finds a failed data write harmless).
+# Inode tables are initialized during mkfs, not lazily by the kernel after
+# mount: ext4's background initializer can otherwise write metadata during
+# EIO even with the periodic flusher disabled, especially on the larger
+# chaos filesystem. Both setup and reset use lazy_itable_init=0; see
+# https://github.com/tytso/e2fsprogs/blob/master/misc/mke2fs.8.in
 set -euo pipefail
 
 name=firn-sync-fault
@@ -75,7 +85,9 @@ device=/dev/mapper/$name
 # What `setup` made or changed, one per line, written as each exists so that
 # `teardown` finds them even when the map is gone: the loop device, the
 # image, the saved vm.dirty_writeback_centisecs, the saved
-# vm.dirty_expire_centisecs and the owner of the mount.
+# vm.dirty_expire_centisecs, the owner of the mount, and the requested mount
+# path. The sixth line lets a workflow prove ownership even if cancellation
+# interrupts setup before mount succeeds; older readers use the first five.
 state=/var/tmp/$name.state
 writeback=/proc/sys/vm/dirty_writeback_centisecs
 expire=/proc/sys/vm/dirty_expire_centisecs
@@ -145,9 +157,39 @@ reset() {
     target=$(mount_point)
     heal >/dev/null
     umount "$target"
-    mkfs.ext4 -q -F -O ^has_journal "$device"
+    mkfs.ext4 -q -F -O ^has_journal -E lazy_itable_init=0 "$device"
     mount -o errors=continue "$device" "$target"
     chown "$owner" "$target"
+}
+
+# Real allocation, not a sparse file or RLIMIT_FSIZE (which returns EFBIG).
+# Keep the allocation durable so a later remount tests the server's files,
+# without a filesystem-wide write failure losing unrelated metadata.
+fill() {
+    python3 -I - "$(mount_point)/rewrite-fault-filler" <<'EOF'
+import errno, os, sys
+
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+offset = 0
+try:
+    for chunk in (1024 * 1024, 4096):
+        while True:
+            try:
+                os.posix_fallocate(fd, offset, chunk)
+                offset += chunk
+            except OSError as error:
+                if error.errno != errno.ENOSPC:
+                    raise
+                break
+    os.fsync(fd)
+    print(f"rewrite-fault fill: allocated {offset} bytes; final allocation failed with ENOSPC")
+finally:
+    os.close(fd)
+EOF
+}
+
+unfill() {
+    rm -f "$(mount_point)/rewrite-fault-filler"
 }
 
 # Shows that no periodic writeback reaches the failing device: a file made
@@ -249,7 +291,10 @@ teardown() {
 }
 
 setup() {
-    local target=$1 owner=$2 image loop wb exp
+    local target=$1 owner=$2 size=${3:-64M} image loop wb exp
+    # Limit the optional size to GNU truncate's integer/unit spelling. The
+    # default remains the fault cases' deliberately small filesystem.
+    [[ "$size" =~ ^[1-9][0-9]*[KMGT]?$ ]] || { echo "invalid device size: $size" >&2; return 1; }
     if [ -e "$state" ] || dmsetup info "$name" >/dev/null 2>&1; then
         echo "$name is already set up; run teardown first" >&2
         return 1
@@ -268,14 +313,14 @@ setup() {
     # names them, so a failed step restores them. 100000000 centiseconds
     # (about 11 days) is far below the overflow of the kernel's conversion
     # to milliseconds.
-    printf '\n%s\n%s\n%s\n%s\n' "$image" "$wb" "$exp" "$owner" >"$state"
+    printf '\n%s\n%s\n%s\n%s\n%s\n' "$image" "$wb" "$exp" "$owner" "$target" >"$state"
     echo 0 >"$writeback"
     echo 100000000 >"$expire"
-    truncate -s 64M "$image"
+    truncate -s "$size" "$image"
     loop=$(losetup --find --show "$image")
-    printf '%s\n%s\n%s\n%s\n%s\n' "$loop" "$image" "$wb" "$exp" "$owner" >"$state"
+    printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$loop" "$image" "$wb" "$exp" "$owner" "$target" >"$state"
     dmsetup create "$name" --table "0 $(blockdev --getsz "$loop") linear $loop 0"
-    mkfs.ext4 -q -F -O ^has_journal "$device"
+    mkfs.ext4 -q -F -O ^has_journal -E lazy_itable_init=0 "$device"
     mkdir -p "$target"
     mount -o errors=continue "$device" "$target"
     chown "$owner" "$target"
@@ -292,11 +337,13 @@ setup() {
 action=$1
 shift
 case $action in
-    setup) [ $# -eq 2 ] || usage; setup "$1" "$2" ;;
+    setup) [ $# -eq 2 ] || [ $# -eq 3 ] || usage; setup "$@" ;;
     fail) [ $# -eq 0 ] || usage; fail ;;
     heal) [ $# -eq 0 ] || usage; heal ;;
     remount) [ $# -eq 0 ] || usage; remount ;;
     reset) [ $# -eq 0 ] || usage; reset ;;
+    fill) [ $# -eq 0 ] || usage; fill ;;
+    unfill) [ $# -eq 0 ] || usage; unfill ;;
     check-writeback) [ $# -eq 1 ] || usage; check_writeback "$1" ;;
     teardown) [ $# -eq 1 ] || usage; teardown "$1" ;;
     *) usage ;;

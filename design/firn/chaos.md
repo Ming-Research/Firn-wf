@@ -1,0 +1,31 @@
+Decision: The chaos experiment orders each shared key group's operations through fixed-width unique APPEND tokens, placing SET and INCR in the same transaction as their token and checking complete replies and final values with an independent serial model, because a disconnected client's INCR may have executed without its reply and a final count alone cannot identify a duplicated or missing effect, instead of retrying ambiguous writes or using the server's persistence file as its own oracle ([experiment and checker](../../research/investigations/chaos/README.md#independent-checker)).
+
+Decision: Each epoch uses new shared key groups while retaining all older groups and their checked expectations until the run ends, because bounded in-memory histories must not erase evidence of acknowledged data lost at a later restart, instead of clearing the database between fault cycles or retiring previously checked writes ([workload](../../research/investigations/chaos/README.md#workload-and-fault-schedule)).
+
+Decision: A server refusing restart is reported as that server's finding with fault context and log tails, because unreadable recovery state cannot establish durability, instead of turning expected startup failure into a harness panic ([checker](../../research/investigations/chaos/README.md#independent-checker)).
+
+Decision: The report retains separate loss, inconsistency, unrequested-exit, and exercised-or-skipped coverage categories, because a clean result must identify both rejected histories and missing fault evidence, instead of reporting only a pass or total finding count ([checker](../../research/investigations/chaos/README.md#independent-checker)).
+
+Decision: Competitor durability policies and known firn losses receive diagnostic labels without weakening firn's zero-loss criterion, because an explained failure or unsupported comparison does not establish acceptance, instead of counting expected loss or skipped coverage as a pass ([criterion](../../research/investigations/chaos/README.md#question-and-rejection-criterion-before-measurement)).
+
+Decision: A lost write on an explicitly unfixed firn image carries the known acknowledgment-before-append label only when its complete reply falls within the inclusive interval from 10 ms before the current SIGKILL send through that kill's recorded reap and no active EIO overlaps its invocation-to-send interval, because asynchronous signal delivery allows a previously sent reply to reach the client after the kill request, instead of rejecting every post-send reply or attributing a loss with missing reap evidence or a post-reap reply to the known cause ([loss attribution](../../research/investigations/chaos/README.md#second-hosted-observation-loss-attribution)).
+
+Decision: The attribution threshold is a diagnostic consistency criterion rather than a promised append-delay bound, because reply and signal timestamps do not establish the AOF writer's precise cause or maximum delay, instead of claiming an older loss proves a different defect ([loss attribution](../../research/investigations/chaos/README.md#second-hosted-observation-loss-attribution)).
+
+Decision: After each restart of a persistent server the checker rechecks only the epochs created since the last completed full check, because retaining every closed epoch's detection must fit the day-run check budget, instead of rereading every epoch after every restart ([budget](../../research/investigations/chaos/README.md#day-run-check-and-artifact-budget)).
+
+Decision: A full check of every closed epoch runs once at least the greater of 60 seconds and 19 times the preceding full check's duration has passed, because that bounds full checks near 5% of the run while a loss of old data is still found at the next full check, instead of a fixed epoch count whose cost grows with the run ([budget](../../research/investigations/chaos/README.md#day-run-check-and-artifact-budget)).
+
+Decision: Every run ends with a full check of every closed epoch unless the last scheduled one already covered them, because a loss of old data after the last scheduled full check would otherwise go unreported, instead of ending on an incremental check ([budget](../../research/investigations/chaos/README.md#day-run-check-and-artifact-budget)).
+
+Decision: Clean checkpoints log a key count and a digest per checked epoch, because a full observation per check grows the log quadratically with the run, instead of logging every full clean observation ([checker](../../research/investigations/chaos/README.md#independent-checker)).
+
+Decision: Correctness is decided against exact expected values and validated baselines, with the digest only a log aid, because a digest cannot show which value differs and is not independent of the observed state, instead of using a digest as the correctness oracle ([checker](../../research/investigations/chaos/README.md#independent-checker)).
+
+Decision: A mismatch writes the complete observed state for that check, because the finding must be inspectable without rerunning, instead of a summary only ([checker](../../research/investigations/chaos/README.md#independent-checker)).
+
+Decision: The day criterion is a wall-clock budget with workload and check time reported separately, because startup and verification consume the requested duration, instead of presenting the duration as uninterrupted active traffic ([criterion](../../research/investigations/chaos/README.md#question-and-rejection-criterion-before-measurement)).
+
+Decision: A run whose checks exceed 10% of its wall time fails, because a run that mostly checks does not show the long fault exposure the criterion asks for, instead of accepting any check share ([criterion](../../research/investigations/chaos/README.md#question-and-rejection-criterion-before-measurement)).
+
+Decision: A chaos job heals or removes the shared fault device only when the device's saved mount path matches that job's unique mount, recording that identity before changing the mapper or writeback settings, because cancellation can interrupt setup before a workflow step completes and an unrelated job may own the singleton device, instead of inferring ownership from the device's existence or requiring setup to finish before cleanup is possible ([CI ownership](../../research/investigations/chaos/README.md#ci-and-ownership)).
