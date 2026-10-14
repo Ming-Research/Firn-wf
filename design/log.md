@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Add publish/subscribe with promoted connections and an event hub
+
+Nodes: firn, firn/connection-ownership, firn/pubsub-registries, firn/script-attempt-external-effects, firn/scripts, firn/transactions, firn/orderly-stop
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-pubsub-tree, which asked to approve the pub/sub design decisions in PR #100 at head 79085e0 (the later commits change only research notes and the test list).
+
+Summary: A connection keeps the receive/execute/send owner until its first successful subscription, then moves once to independent receive, command and output owners. Membership changes and complete reply groups commit under one event hub, and one dispatcher publishes them in order to per-connection output inboxes. Channels, patterns and shard channels have separate indexes with monotonically allocated registration ids. A dataset command on a promoted connection holds the whole keyspace, Meta and hub through its reply commitment. Outstanding frames are charged to the connection's output limit, with Redis's pub/sub client thresholds. A script attempt that meets PUBLISH, SPUBLISH or PUBSUB retries in whole-map mode, stages its deliveries until the final reply, and publishes nothing if abandoned. EXEC adds the hub for pub/sub queues or promoted connections, and the reference suite's argument-free unsubscribe helpers are patched to drain the known acknowledgments.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
