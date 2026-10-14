@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Migrate from Redis to firn through a plain-command append-only file
+
+Nodes: firn/migration
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-migration-tree, which asked to approve PR #103's new design node at head f8d7213: the official migration path is Redis 7.2.16 with `aof-use-rdb-preamble no` writing a plain-command append-only file after one successful rewrite and a clean shutdown, its manifest, base and incremental files copied to firn to load; the gate runs the pinned Redis 7.2.16 as the reference for checking the migration result.
+
+Summary: The path covers database 0 and firn's five types with application writes paused. The online per-key copy (the alternative path) copies absolute expiry times (PEXPIRETIME read, PEXPIREAT written), because reading the remaining time and setting a relative expiry delayed each key's expiry by the copy time (about 2 ms per key on gate run 38419322241). The network job compares full values key by key against the pinned Redis 7.2.16, and the file path uses Redis's own loader restarting the same file as reference, never the copier's own output or hand-written data. Importing Redis's default file with an RDB preamble, and adding DUMP, RESTORE or MIGRATE to firn, are rejected: the existing loader reads these files as they are. Known limits: only database 0, no streams.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
