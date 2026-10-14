@@ -31,11 +31,15 @@ clients ([design](design/firn.md)).
 - **Performance:** measured with `redis-benchmark` against Redis, Valkey,
   Dragonfly and Garnet ([measurements](research/investigations/firn/DESIGN.md)).
 - **Not yet:** scripts' and transactions' commands beyond those
-  `firn/README.md` lists, `WATCH`, memory limits and eviction, replication
+  `firn/README.md` lists, `WATCH`, replication
   and clustering, among the gaps the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip) lists. firn
   is a research server, not a production database.
 
 ## Build and run
+
+For a prebuilt Linux x86-64 program or Docker image, follow the
+[quickstart](docs/quickstart.md). It covers download, startup, client commands
+and an AOF restart; the release workflow checks those commands before publishing.
 
 On Linux x86-64 or macOS arm64, with `git`, `curl`, Python 3,
 `/usr/bin/clang` and, on Linux, LLD, both of the LLVM major the pinned

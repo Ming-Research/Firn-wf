@@ -25,6 +25,8 @@
   The `aof-sync-fault` job is the one check beside them: it runs the Makefile
   target of the same name on a device only root can make, which gate-sync
   leaves out, and its pass is required for a merge like the gate's.
+  The release workflow checks packaging separately, without adding targets to
+  `make check`; only pushed release tags may run its publishing job.
 - [ ] **T3 — The pins.** The [review items](../whitefoot-kit/downstream.md#review-items)
   of Whitefoot-kit hold for `whitefoot.pin` and the `whitefoot-kit` and
   `design/skill` submodules, and firn's checks pass with them.

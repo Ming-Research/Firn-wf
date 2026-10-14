@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Add the distribution node
+
+Nodes: firn/distribution
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-distribution-tree, which asked to approve PR #84's new design-tree node distribution at head 57ca95d.
+
+Summary: A new node records how firn is shipped: the full-LTO build as a dynamic glibc binary at the Ubuntu 24.04 baseline, a container on Debian trixie-slim running as UID 10001 with its AOF in a named volume at /data and binding every IPv4 address internally, and the quickstart checker executing the document's marked shell blocks literally. GitHub Releases and GHCR are the only channels; only tags matching ^v[0-9]+\.[0-9]+\.[0-9]+$ are stable and move latest; only pushed v* tags publish; publication refuses an existing release or image version tag and pushes the image tags before creating the release.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
@@ -11,6 +19,7 @@ Nodes: firn/memory-limit
 Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-admit-tree, which asked to approve PR #67's design change at head bc2425d: while firn keeps no append-only file, a command's maxmemory admission check reads the heap and compares it with the limit without a Meta statement and takes Meta only once the reading is over the limit; with a file it keeps the Meta statement; the decision cites the 14900K measurement instead of being provisional.
 
 Summary: Every command's admission check took the exclusive Meta statement whenever a limit was set, so with an 8 GiB limit far above use main ran depth-16 GET at 0.117 and SET at 0.145 of its unlimited throughput on 8 P-cores of the i9-14900K. Without an append-only file nothing is excluded and no rewrite can start, so the Meta-held check reduces to a heap comparison; with it the change ran at 0.941 and 0.948, and without a limit within the twin's range of main ([admission without Meta](../research/investigations/memory-limit/README.md#admission-without-meta-while-no-aof-is-kept)). Admission still raises the peak when its reading exceeds the peak the connection last saw recorded.
+
 ## 2026-10-13 Carry the AOF transaction boundary instead of rereading history
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture
