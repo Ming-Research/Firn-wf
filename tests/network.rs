@@ -1983,14 +1983,14 @@ fn dyadic_decimal(m: u64, k: usize) -> String {
 /// range of i64;
 /// infinities and arguments of 400 and 1,000 digits are read as strtod reads
 /// them; NaN, overflow, a leading or trailing space, an empty argument and a
-/// zero byte are refused. Every score is written as %.17g writes it, ties at
-/// the seventeenth digit to even, in exponential notation below 10^-4 and from
-/// 10^17; negative zero is kept as 0, as Redis keeps it in a sorted set it
-/// encodes as a listpack. Members at infinite, subnormal, zero and equal scores
-/// pop in Redis's order. An option word before the first score, in either case
-/// and compared up to a zero byte as strcasecmp compares it, is a syntax
+/// zero byte are refused. Negative zero is kept as 0, as Redis keeps it in a
+/// sorted set it encodes as a listpack. Members at infinite, subnormal, zero
+/// and equal scores pop in Redis's order. An option word before the first
+/// score, in either case and compared up to a zero byte as strcasecmp compares
+/// it, is a syntax
 /// error, while one in a later score's place is an invalid score. The expected
-/// replies are redis-server 7.0.15's.
+/// replies are redis-server 7.2.16's, recorded in
+/// [the score oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38394816029).
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_reads_and_writes_scores_as_redis_does() {
@@ -2011,24 +2011,24 @@ fn firn_reads_and_writes_scores_as_redis_does() {
     let long_thirds = format!("3.{}", "3".repeat(1000));
     let cases: [(&str, Option<&str>); 49] = [
         ("1.5", Some("1.5")),
-        ("-2.5e-3", Some("-0.0025000000000000001")),
-        ("0.1", Some("0.10000000000000001")),
-        ("1e23", Some("9.9999999999999992e+22")),
+        ("-2.5e-3", Some("-0.0025")),
+        ("0.1", Some("0.1")),
+        ("1e23", Some("99999999999999990000000")),
         ("9007199254740993", Some("9007199254740992")),
         ("9007199254740995", Some("9007199254740996")),
-        ("2.2250738585072011e-308", Some("2.2250738585072009e-308")),
-        ("4.9e-324", Some("4.9406564584124654e-324")),
+        ("2.2250738585072011e-308", Some("2.225073858507201e-308")),
+        ("4.9e-324", Some("5e-324")),
         ("2.4703282292062327e-324", None),
-        ("2.4703282292062328e-324", Some("4.9406564584124654e-324")),
+        ("2.4703282292062328e-324", Some("5e-324")),
         (&half_smallest, None),
-        (&half_smallest_above, Some("4.9406564584124654e-324")),
-        (&half_smallest_far_above, Some("4.9406564584124654e-324")),
+        (&half_smallest_above, Some("5e-324")),
+        (&half_smallest_far_above, Some("5e-324")),
         (&below_normal, Some("2.2250738585072014e-308")),
-        (&below_normal_below, Some("2.2250738585072009e-308")),
+        (&below_normal_below, Some("2.225073858507201e-308")),
         (&above_normal, Some("2.2250738585072014e-308")),
-        (&above_normal_far_above, Some("2.2250738585072019e-308")),
+        (&above_normal_far_above, Some("2.225073858507202e-308")),
         (&short_tie_far_above, Some("9007199254740994")),
-        (&scaled_tie_far_above, Some("5.0000000000000004e+22")),
+        (&scaled_tie_far_above, Some("50000000000000004000000")),
         ("1.7976931348623158e308", Some("1.7976931348623157e+308")),
         ("1.7976931348623159e308", None),
         ("1e-400", None),
@@ -2043,14 +2043,14 @@ fn firn_reads_and_writes_scores_as_redis_does() {
         ("0x1.000000000000080001p0", Some("1.0000000000000002")),
         ("0x1.fffffffffffff8p1023", None),
         ("0x1.fffffffffffff8p99999999999999999999", None),
-        ("0x3p-1076", Some("4.9406564584124654e-324")),
+        ("0x3p-1076", Some("5e-324")),
         ("0x1p-1075", None),
-        ("1125899906842623.75", Some("1125899906842623.8")),
-        ("1125899906842623.25", Some("1125899906842623.2")),
+        ("1125899906842623.75", Some("1125899906842623.7")),
+        ("1125899906842623.25", Some("1125899906842623.3")),
         ("0.0001", Some("0.0001")),
-        ("0.00001", Some("1.0000000000000001e-05")),
+        ("0.00001", Some("0.00001")),
         ("99999999999999984", Some("99999999999999984")),
-        ("1e17", Some("1e+17")),
+        ("1e17", Some("100000000000000000")),
         ("-0", Some("0")),
         (" 1", None),
         ("1 ", None),
@@ -2101,9 +2101,9 @@ fn firn_reads_and_writes_scores_as_redis_does() {
         "zero",
         "0",
         "tiny",
-        "4.9406564584124654e-324",
+        "5e-324",
         "small",
-        "0.0025000000000000001",
+        "0.0025",
         "a",
         "1.5",
         "b",
@@ -2128,6 +2128,215 @@ fn firn_reads_and_writes_scores_as_redis_does() {
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
+}
+
+/// Redis 7.2.16 writes sorted-set reply scores with d2string and rewritten
+/// AOF scores with plain fpconv. The integer fast path's boundaries,
+/// decimal and exponent forms, extreme finite values, signed zero and
+/// infinities are read through each score reply under RESP2 and RESP3, then
+/// checked independently in the rewritten base's ZADD records.
+/// The expected replies and base score arguments are redis-server 7.2.16's,
+/// recorded in [the score oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38394816029).
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_writes_score_text_as_redis_7_2_16_does() {
+    // Each row holds the input, member, complete RESP2 replies for ZSCORE,
+    // ZINCRBY and ZRANK WITHSCORE, the same RESP3 replies, and base AOF text.
+    let cases: [(&str, &str, [&str; 3], [&str; 3], &str); 21] = [
+        (
+            "3", "m00",
+            ["$1\r\n3\r\n", "$1\r\n3\r\n", "*2\r\n:11\r\n$1\r\n3\r\n"],
+            [",3\r\n", ",3\r\n", "*2\r\n:11\r\n,3\r\n"],
+            "3",
+        ),
+        (
+            "-3", "m01",
+            ["$2\r\n-3\r\n", "$2\r\n-3\r\n", "*2\r\n:1\r\n$2\r\n-3\r\n"],
+            [",-3\r\n", ",-3\r\n", "*2\r\n:1\r\n,-3\r\n"],
+            "-3",
+        ),
+        (
+            "1e17", "m02",
+            ["$18\r\n100000000000000000\r\n", "$18\r\n100000000000000000\r\n", "*2\r\n:12\r\n$18\r\n100000000000000000\r\n"],
+            [",100000000000000000\r\n", ",100000000000000000\r\n", "*2\r\n:12\r\n,100000000000000000\r\n"],
+            "1e+17",
+        ),
+        (
+            "4611686018427387904", "m03",
+            ["$19\r\n4611686018427387904\r\n", "$19\r\n4611686018427387904\r\n", "*2\r\n:13\r\n$19\r\n4611686018427387904\r\n"],
+            [",4611686018427387904\r\n", ",4611686018427387904\r\n", "*2\r\n:13\r\n,4611686018427387904\r\n"],
+            "4611686018427388000",
+        ),
+        (
+            "4611686018427389952", "m04",
+            ["$19\r\n4611686018427390000\r\n", "$19\r\n4611686018427390000\r\n", "*2\r\n:14\r\n$19\r\n4611686018427390000\r\n"],
+            [",4611686018427390000\r\n", ",4611686018427390000\r\n", "*2\r\n:14\r\n,4611686018427390000\r\n"],
+            "4611686018427390000",
+        ),
+        (
+            "9223372036854775808", "m05",
+            ["$19\r\n9223372036854776000\r\n", "$19\r\n9223372036854776000\r\n", "*2\r\n:15\r\n$19\r\n9223372036854776000\r\n"],
+            [",9223372036854776000\r\n", ",9223372036854776000\r\n", "*2\r\n:15\r\n,9223372036854776000\r\n"],
+            "9223372036854776000",
+        ),
+        (
+            "0.1", "m06",
+            ["$3\r\n0.1\r\n", "$3\r\n0.1\r\n", "*2\r\n:7\r\n$3\r\n0.1\r\n"],
+            [",0.1\r\n", ",0.1\r\n", "*2\r\n:7\r\n,0.1\r\n"],
+            "0.1",
+        ),
+        (
+            "0.3", "m07",
+            ["$3\r\n0.3\r\n", "$3\r\n0.3\r\n", "*2\r\n:8\r\n$3\r\n0.3\r\n"],
+            [",0.3\r\n", ",0.3\r\n", "*2\r\n:8\r\n,0.3\r\n"],
+            "0.3",
+        ),
+        (
+            "1.5", "m08",
+            ["$3\r\n1.5\r\n", "$3\r\n1.5\r\n", "*2\r\n:10\r\n$3\r\n1.5\r\n"],
+            [",1.5\r\n", ",1.5\r\n", "*2\r\n:10\r\n,1.5\r\n"],
+            "1.5",
+        ),
+        (
+            "0.6666666666666666", "m09",
+            ["$18\r\n0.6666666666666666\r\n", "$18\r\n0.6666666666666666\r\n", "*2\r\n:9\r\n$18\r\n0.6666666666666666\r\n"],
+            [",0.6666666666666666\r\n", ",0.6666666666666666\r\n", "*2\r\n:9\r\n,0.6666666666666666\r\n"],
+            "0.6666666666666666",
+        ),
+        (
+            "1e23", "m10",
+            ["$23\r\n99999999999999990000000\r\n", "$23\r\n99999999999999990000000\r\n", "*2\r\n:18\r\n$23\r\n99999999999999990000000\r\n"],
+            [",99999999999999990000000\r\n", ",99999999999999990000000\r\n", "*2\r\n:18\r\n,99999999999999990000000\r\n"],
+            "99999999999999990000000",
+        ),
+        (
+            "1e22", "m11",
+            ["$5\r\n1e+22\r\n", "$5\r\n1e+22\r\n", "*2\r\n:17\r\n$5\r\n1e+22\r\n"],
+            [",1e+22\r\n", ",1e+22\r\n", "*2\r\n:17\r\n,1e+22\r\n"],
+            "1e+22",
+        ),
+        (
+            "1e21", "m12",
+            ["$5\r\n1e+21\r\n", "$5\r\n1e+21\r\n", "*2\r\n:16\r\n$5\r\n1e+21\r\n"],
+            [",1e+21\r\n", ",1e+21\r\n", "*2\r\n:16\r\n,1e+21\r\n"],
+            "1e+21",
+        ),
+        (
+            "1.7976931348623157e308", "m13",
+            ["$23\r\n1.7976931348623157e+308\r\n", "$23\r\n1.7976931348623157e+308\r\n", "*2\r\n:19\r\n$23\r\n1.7976931348623157e+308\r\n"],
+            [",1.7976931348623157e+308\r\n", ",1.7976931348623157e+308\r\n", "*2\r\n:19\r\n,1.7976931348623157e+308\r\n"],
+            "1.7976931348623157e+308",
+        ),
+        (
+            "5e-324", "m14",
+            ["$6\r\n5e-324\r\n", "$6\r\n5e-324\r\n", "*2\r\n:3\r\n$6\r\n5e-324\r\n"],
+            [",5e-324\r\n", ",5e-324\r\n", "*2\r\n:3\r\n,5e-324\r\n"],
+            "5e-324",
+        ),
+        (
+            "2.2250738585072014e-308", "m15",
+            ["$23\r\n2.2250738585072014e-308\r\n", "$23\r\n2.2250738585072014e-308\r\n", "*2\r\n:4\r\n$23\r\n2.2250738585072014e-308\r\n"],
+            [",2.2250738585072014e-308\r\n", ",2.2250738585072014e-308\r\n", "*2\r\n:4\r\n,2.2250738585072014e-308\r\n"],
+            "2.2250738585072014e-308",
+        ),
+        (
+            "1e-5", "m16",
+            ["$7\r\n0.00001\r\n", "$7\r\n0.00001\r\n", "*2\r\n:5\r\n$7\r\n0.00001\r\n"],
+            [",0.00001\r\n", ",0.00001\r\n", "*2\r\n:5\r\n,0.00001\r\n"],
+            "0.00001",
+        ),
+        (
+            "0.0001", "m17",
+            ["$6\r\n0.0001\r\n", "$6\r\n0.0001\r\n", "*2\r\n:6\r\n$6\r\n0.0001\r\n"],
+            [",0.0001\r\n", ",0.0001\r\n", "*2\r\n:6\r\n,0.0001\r\n"],
+            "0.0001",
+        ),
+        (
+            "-0", "m18",
+            ["$1\r\n0\r\n", "$1\r\n0\r\n", "*2\r\n:2\r\n$1\r\n0\r\n"],
+            [",0\r\n", ",0\r\n", "*2\r\n:2\r\n,0\r\n"],
+            "0",
+        ),
+        (
+            "inf", "m19",
+            ["$3\r\ninf\r\n", "$3\r\ninf\r\n", "*2\r\n:20\r\n$3\r\ninf\r\n"],
+            [",inf\r\n", ",inf\r\n", "*2\r\n:20\r\n,inf\r\n"],
+            "inf",
+        ),
+        (
+            "-inf", "m20",
+            ["$4\r\n-inf\r\n", "$4\r\n-inf\r\n", "*2\r\n:0\r\n$4\r\n-inf\r\n"],
+            [",-inf\r\n", ",-inf\r\n", "*2\r\n:0\r\n,-inf\r\n"],
+            "-inf",
+        ),
+    ];
+    let program = CompiledProgram::from_environment();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    client
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .expect("bound the score oracle client's waits");
+    let mut seed = Vec::new();
+    for (score, member, _, _, _) in &cases {
+        seed.extend(resp(&["ZADD", "score72", score, member]));
+    }
+    client.write_all(&seed).expect("seed every score boundary");
+    expect_replies(&mut client, b":1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n", "the score oracle seed batch");
+
+    // Rewrite the original dataset before ZINCRBY can change a zero's sign.
+    rewrite_start(&mut client);
+    let info = rewrite_wait(&mut client);
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok");
+    let base = std::fs::read(program.working_directory().join("appendonlydir/appendonly.aof.2.base.aof"))
+        .expect("read the score oracle rewritten base");
+    let mut rewritten = std::collections::BTreeMap::new();
+    for record in file_records(&base) {
+        if record.first().is_some_and(|command| command == b"ZADD") {
+            assert!(record.len() >= 4, "rewritten ZADD has a key and score/member pair");
+            assert_eq!(record[1], b"score72");
+            assert_eq!((record.len() - 2) % 2, 0, "complete score/member pairs");
+            for pair in record[2..].chunks_exact(2) {
+                assert!(rewritten.insert(pair[1].clone(), pair[0].clone()).is_none(), "one rewritten score per member");
+            }
+        }
+    }
+    assert_eq!(rewritten.len(), cases.len(), "rewrite every score boundary");
+    for (_, member, _, _, expected) in &cases {
+        assert_eq!(rewritten.get(member.as_bytes()).unwrap(), expected.as_bytes(), "rewritten AOF score for {member}");
+    }
+
+    for (protocol, range_expected) in [
+        ("2", "*42\r\n$3\r\nm20\r\n$4\r\n-inf\r\n$3\r\nm01\r\n$2\r\n-3\r\n$3\r\nm18\r\n$1\r\n0\r\n$3\r\nm14\r\n$6\r\n5e-324\r\n$3\r\nm15\r\n$23\r\n2.2250738585072014e-308\r\n$3\r\nm16\r\n$7\r\n0.00001\r\n$3\r\nm17\r\n$6\r\n0.0001\r\n$3\r\nm06\r\n$3\r\n0.1\r\n$3\r\nm07\r\n$3\r\n0.3\r\n$3\r\nm09\r\n$18\r\n0.6666666666666666\r\n$3\r\nm08\r\n$3\r\n1.5\r\n$3\r\nm00\r\n$1\r\n3\r\n$3\r\nm02\r\n$18\r\n100000000000000000\r\n$3\r\nm03\r\n$19\r\n4611686018427387904\r\n$3\r\nm04\r\n$19\r\n4611686018427390000\r\n$3\r\nm05\r\n$19\r\n9223372036854776000\r\n$3\r\nm12\r\n$5\r\n1e+21\r\n$3\r\nm11\r\n$5\r\n1e+22\r\n$3\r\nm10\r\n$23\r\n99999999999999990000000\r\n$3\r\nm13\r\n$23\r\n1.7976931348623157e+308\r\n$3\r\nm19\r\n$3\r\ninf\r\n"),
+        ("3", "*21\r\n*2\r\n$3\r\nm20\r\n,-inf\r\n*2\r\n$3\r\nm01\r\n,-3\r\n*2\r\n$3\r\nm18\r\n,0\r\n*2\r\n$3\r\nm14\r\n,5e-324\r\n*2\r\n$3\r\nm15\r\n,2.2250738585072014e-308\r\n*2\r\n$3\r\nm16\r\n,0.00001\r\n*2\r\n$3\r\nm17\r\n,0.0001\r\n*2\r\n$3\r\nm06\r\n,0.1\r\n*2\r\n$3\r\nm07\r\n,0.3\r\n*2\r\n$3\r\nm09\r\n,0.6666666666666666\r\n*2\r\n$3\r\nm08\r\n,1.5\r\n*2\r\n$3\r\nm00\r\n,3\r\n*2\r\n$3\r\nm02\r\n,100000000000000000\r\n*2\r\n$3\r\nm03\r\n,4611686018427387904\r\n*2\r\n$3\r\nm04\r\n,4611686018427390000\r\n*2\r\n$3\r\nm05\r\n,9223372036854776000\r\n*2\r\n$3\r\nm12\r\n,1e+21\r\n*2\r\n$3\r\nm11\r\n,1e+22\r\n*2\r\n$3\r\nm10\r\n,99999999999999990000000\r\n*2\r\n$3\r\nm13\r\n,1.7976931348623157e+308\r\n*2\r\n$3\r\nm19\r\n,inf\r\n"),
+    ] {
+        client.write_all(&resp(&["HELLO", protocol])).expect("select score reply protocol");
+        // HELLO itself is checked elsewhere; consume its array or map without
+        // tying these score oracles to Redis's connection ID.
+        let header = reply_line(&mut client, "score oracle HELLO header");
+        let length = header[1..].trim_end().parse::<usize>().expect("HELLO collection length");
+        let fields = if header.starts_with('%') { length * 2 } else { length };
+        for _ in 0..fields {
+            whole_reply(&mut client, "score oracle HELLO field");
+        }
+        client.write_all(&resp(&["ZRANGE", "score72", "0", "-1", "WITHSCORES"]))
+            .expect("read every score in order");
+        assert_eq!(whole_reply(&mut client, "score oracle ZRANGE"), range_expected, "RESP{protocol} range scores");
+        for (_, member, resp2, resp3, _) in &cases {
+            let expected = if protocol == "2" { resp2 } else { resp3 };
+            for (request, expected) in [
+                (vec!["ZSCORE", "score72", member], expected[0]),
+                (vec!["ZINCRBY", "score72", "0", member], expected[1]),
+                (vec!["ZRANK", "score72", member, "WITHSCORE"], expected[2]),
+            ] {
+                client.write_all(&resp(&request)).expect("read a score boundary");
+                assert_eq!(whole_reply(&mut client, "score oracle reply"), expected, "RESP{protocol} {request:?}");
+            }
+        }
+    }
+    rewrite_stop(&mut client, child);
 }
 
 /// firn keeps strings of at most 24 bytes inside the keyspace and longer ones
@@ -2856,14 +3065,15 @@ fn firn_carries_requests_and_replies_larger_than_its_windows() {
 /// others. A string set before FLUSHALL and a list pushed before FLUSHDB stay
 /// absent, since the file records both commands, and FUNCTION FLUSH after
 /// them, as Redis does, and a FLUSHALL of the keyspace still empty before
-/// them: the file's first bytes are those redis-server 7.0.15 appends for the
+/// them: the file's first bytes follow Redis's append semantics for the
 /// same requests, the SELECT it writes first aside. A key the expiring context
 /// removed is recorded as removed, as Redis propagates it, so a `SET` with NX
 /// that found it absent holds its value after the restart, where a replay
 /// keeping the expired key would refuse it. INFO reports the file as kept;
 /// CONFIG SET appendonly yes, the file firn keeps, succeeds, and no is refused
 /// in Redis's form for a refused value with firn's own reason, where Redis
-/// would stop its file.
+/// would stop its file. The expected score replies are redis-server 7.2.16's,
+/// recorded in [the score oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38394816029).
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_replays_the_value_types_from_its_append_only_file() {
@@ -2971,7 +3181,7 @@ fn firn_replays_the_value_types_from_its_append_only_file() {
     client.write_all(&batch).expect("read the replayed values");
     expect_replies(
         &mut client,
-        b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nv\r\n:1\r\n$1\r\n2\r\n$19\r\n0.10000000000000001\r\n:25\r\n:0\r\n:0\r\n$3\r\nnew\r\n",
+        b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nv\r\n:1\r\n$1\r\n2\r\n$3\r\n0.1\r\n:25\r\n:0\r\n:0\r\n$3\r\nnew\r\n",
         "the replayed values",
     );
     let mut batch = resp(&["CONFIG", "SET", "appendonly", "yes"]);
@@ -4164,11 +4374,9 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
 /// firn answers ZRANK and ZREVRANK with WITHSCORE, which Redis 7.2 adds, as
 /// Redis 7.2.16's zrankGenericCommand (t_zset.c) does, on the network, inside
 /// a transaction's EXEC and through a script: the rank with the score, in a
-/// two-element array, written as firn writes every score, Redis 7.0.15's
-/// %.17g, which differs from the shortest form of Redis 7.2.16's
-/// addReplyDouble for some values, such as 0.1 (board item
-/// firn-score-text-72); the null array for an
-/// absent key or member, which a script turns into the null bulk string, as
+/// two-element array, written with Redis 7.2.16's addReplyDouble text. These
+/// requests use exact values whose score text is unchanged. An absent key or
+/// member answers the null array, which a script turns into the null bulk string, as
 /// Redis's Lua conversion turns it into false; the option read in either case
 /// up to a zero byte, as strcasecmp reads it; any other fourth argument
 /// refused with the syntax error and a fifth with the command's arity error,
@@ -9837,7 +10045,9 @@ fn firn_refuses_aof_rewrite_without_appendonly() {
 
 /// rewriteAppendOnlyFileRio, rewrite*Object and AOF_REWRITE_ITEMS_PER_CMD
 /// supply the oracle: SET, RPUSH/SADD/ZADD/HMSET in groups of at most 64,
-/// SELECT 0 before the dataset, and absolute PEXPIREAT after each key.
+/// SELECT 0 before the dataset, and absolute PEXPIREAT after each key. The
+/// expected replayed score replies are redis-server 7.2.16's, recorded in
+/// [the score oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38394816029).
 #[test]
 fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
     let program = CompiledProgram::from_environment();
