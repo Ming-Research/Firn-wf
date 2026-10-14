@@ -10844,9 +10844,12 @@ fn firn_tracks_idle_time_and_notouch_lookups() {
     assert_eq!(finished(child).0, 0);
 }
 
-/// object.c createObject starts at five. dbOverwrite preserves the old LFU
-/// bits; setGenericCommand with GET and getsetCommand each look up twice.
-/// A zero log factor makes increments effectively deterministic as in Redis.
+/// Redis 7.2.16 object.c initObjectLRUOrLFU starts at five; db.c dbSetValue
+/// preserves the old LFU bits. setGenericCommand with GET and getsetCommand
+/// each look up twice. A zero log factor makes increments effectively
+/// deterministic as in Redis. msetGenericCommand skips MSETNX store lookups,
+/// and renameGenericCommand calls dbAdd, resetting the moved object's LFU.
+/// Witness: https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
@@ -10884,7 +10887,7 @@ fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
     assert_eq!(memory_request(&mut client, &["MSET", "dup", "a", "dup", "b"]), "+OK\r\n");
     assert_eq!(memory_object(&mut client, "FREQ", "dup"), 6);
     assert_eq!(memory_request(&mut client, &["MSETNX", "nxdup", "a", "nxdup", "b"]), ":1\r\n");
-    assert_eq!(memory_object(&mut client, "FREQ", "nxdup"), 6);
+    assert_eq!(memory_object(&mut client, "FREQ", "nxdup"), 5);
     assert_eq!(memory_request(&mut client, &["SADD", "set", "a"]), ":1\r\n");
     memory_request(&mut client, &["SINTER", "set", "set"]);
     assert_eq!(memory_object(&mut client, "FREQ", "set"), 7);
@@ -10893,17 +10896,167 @@ fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
     assert_eq!(memory_request(&mut client, &["COPY", "freq", "copied"]), ":1\r\n");
     assert_eq!(memory_object(&mut client, "FREQ", "copied"), 5);
     assert_eq!(memory_request(&mut client, &["RENAME", "copied", "renamed"]), "+OK\r\n");
-    assert_eq!(memory_object(&mut client, "FREQ", "renamed"), 6);
+    assert_eq!(memory_object(&mut client, "FREQ", "renamed"), 5);
     assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
     for args in [vec!["GET", "renamed"], vec!["GET", "renamed"], vec!["OBJECT", "FREQ", "renamed"]] {
         assert_eq!(memory_request(&mut client, &args), "+QUEUED\r\n");
     }
-    assert_eq!(memory_request(&mut client, &["EXEC"]), "*3\r\n$1\r\nv\r\n$1\r\nv\r\n:8\r\n");
-    assert_eq!(memory_request(&mut client, &["EVAL", "redis.call('GET', KEYS[1]); local n=0; for i=1,20000 do n=n+i end; return redis.call('OBJECT','FREQ',KEYS[1])", "1", "renamed"]), ":9\r\n");
+    assert_eq!(memory_request(&mut client, &["EXEC"]), "*3\r\n$1\r\nv\r\n$1\r\nv\r\n:7\r\n");
+    assert_eq!(memory_request(&mut client, &["EVAL", "redis.call('GET', KEYS[1]); local n=0; for i=1,20000 do n=n+i end; return redis.call('OBJECT','FREQ',KEYS[1])", "1", "renamed"]), ":8\r\n");
     for _ in 0..260 {
         memory_request(&mut client, &["GET", "renamed"]);
     }
     assert_eq!(memory_object(&mut client, "FREQ", "renamed"), 255);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Exact Redis 7.2.16 LFU batches from lfu-rename-msetnx.json in
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583:
+/// a moved object starts at five; a same-name rename only looks it up;
+/// twenty duplicate-key MSETNX batches store the last value without a touch.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_matches_the_lfu_rename_and_msetnx_oracle() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    for (setting, value) in [("maxmemory-policy", "allkeys-lfu"), ("lfu-log-factor", "0"), ("lfu-decay-time", "0")] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", setting, value]), "+OK\r\n");
+    }
+    let warmup = "while redis.call('OBJECT','FREQ',KEYS[1]) < 6 do redis.call('GET',KEYS[1]) end return redis.call('OBJECT','FREQ',KEYS[1])";
+    assert_eq!(memory_request(&mut client, &["SET", "src", "x"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["EVAL", warmup, "1", "src"]), ":6\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAME", "src", "dst"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ", "dst"]), ":5\r\n");
+    assert_eq!(memory_request(&mut client, &["SET", "a", "x"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["EVAL", warmup, "1", "a"]), ":6\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAMENX", "a", "b"]), ":1\r\n");
+    assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ", "b"]), ":5\r\n");
+    assert_eq!(memory_request(&mut client, &["SET", "same", "x"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["EVAL", warmup, "1", "same"]), ":6\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAME", "same", "same"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ", "same"]), ":7\r\n");
+    for repetition in 0..20 {
+        let deleted = if repetition == 0 { ":0\r\n" } else { ":1\r\n" };
+        assert_eq!(memory_request(&mut client, &["DEL", "k"]), deleted);
+        assert_eq!(memory_request(&mut client, &["MSETNX", "k", "x", "k", "y"]), ":1\r\n");
+        assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ", "k"]), ":5\r\n", "repetition {repetition}");
+        assert_eq!(memory_request(&mut client, &["GET", "k"]), "$1\r\ny\r\n");
+    }
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Redis 7.2.16 db.c renameGenericCommand refreshes source and destination
+/// before refusing RENAMENX, but only the source for a same-name command,
+/// and neither when the source is missing. A replacement uses dbAdd and
+/// initObjectLRUOrLFU just as a move to an absent name does. t_string.c
+/// msetGenericCommand stops at the first existing key during its precheck;
+/// successful stores skip lookups, including under EXEC and both script routes.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_preserves_lfu_lookup_order_for_rename_and_msetnx_branches() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu", "lfu-log-factor", "0", "lfu-decay-time", "0"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["SET", "replace-src", "x"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "replace-src"]), "$1\r\nx\r\n");
+    assert_eq!(memory_request(&mut client, &["SET", "replace-dst", "y"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "replace-dst"]), "$1\r\ny\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAME", "replace-src", "replace-dst"]), "+OK\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "replace-dst"), 5);
+    assert_eq!(memory_request(&mut client, &["EXISTS", "replace-src"]), ":0\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "replace-dst"]), "$1\r\nx\r\n");
+
+    for (key, value) in [("refused-src", "x"), ("refused-dst", "y"), ("same-nx", "x"), ("missing-dst", "y"), ("blocker", "b"), ("later", "l")] {
+        assert_eq!(memory_request(&mut client, &["SET", key, value]), "+OK\r\n");
+    }
+    assert_eq!(memory_request(&mut client, &["RENAMENX", "refused-src", "refused-dst"]), ":0\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "refused-src"), 6);
+    assert_eq!(memory_object(&mut client, "FREQ", "refused-dst"), 6);
+    assert_eq!(memory_request(&mut client, &["GET", "refused-src"]), "$1\r\nx\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "refused-dst"]), "$1\r\ny\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAMENX", "same-nx", "same-nx"]), ":0\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "same-nx"), 6);
+    assert_eq!(memory_request(&mut client, &["GET", "same-nx"]), "$1\r\nx\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAMENX", "missing-src", "missing-dst"]), "-ERR no such key\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "missing-dst"), 5);
+    assert_eq!(memory_request(&mut client, &["GET", "missing-dst"]), "$1\r\ny\r\n");
+
+    assert_eq!(memory_request(&mut client, &["MSETNX", "before-blocker", "x", "blocker", "x", "later", "x"]), ":0\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "blocker"), 6);
+    assert_eq!(memory_object(&mut client, "FREQ", "later"), 5);
+    assert_eq!(memory_request(&mut client, &["EXISTS", "before-blocker"]), ":0\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "blocker"]), "$1\r\nb\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "later"]), "$1\r\nl\r\n");
+
+    assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+    for args in [vec!["MSETNX", "exec-dup", "x", "exec-dup", "y"], vec!["OBJECT", "FREQ", "exec-dup"], vec!["GET", "exec-dup"]] {
+        assert_eq!(memory_request(&mut client, &args), "+QUEUED\r\n");
+    }
+    assert_eq!(memory_request(&mut client, &["EXEC"]), "*3\r\n:1\r\n:5\r\n$1\r\ny\r\n");
+    let declared = "local r=redis.call('MSETNX',KEYS[1],'x',KEYS[1],'y'); return {r,redis.call('OBJECT','FREQ',KEYS[1]),redis.call('GET',KEYS[1])}";
+    assert_eq!(memory_request(&mut client, &["EVAL", declared, "1", "script-dup"]), "*3\r\n:1\r\n:5\r\n$1\r\ny\r\n");
+    let undeclared = "local r=redis.call('MSETNX','whole-dup','x','whole-dup','y'); return {r,redis.call('OBJECT','FREQ','whole-dup'),redis.call('GET','whole-dup')}";
+    assert_eq!(memory_request(&mut client, &["EVAL", undeclared, "0"]), "*3\r\n:1\r\n:5\r\n$1\r\ny\r\n");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Redis 7.2.16 initObjectLRUOrLFU uses the current LRU clock under non-LFU
+/// policies. A successful rename and MSETNX leave a fresh idle clock; a
+/// refused MSETNX refreshes only its first existing key. Rename's source
+/// lookup already refreshes LRU, so these cases confirm the policy branch
+/// rather than distinguish the old and new rename code on a frozen clock.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_uses_idle_time_for_rename_and_msetnx_under_non_lfu_policies() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let policies = ["noeviction", "allkeys-lru", "volatile-lru"];
+    for policy in policies {
+        for suffix in ["src", "nxsrc", "blocker", "later"] {
+            let key = format!("{policy}-{suffix}");
+            assert_eq!(memory_request(&mut client, &["SET", &key, "v"]), "+OK\r\n");
+        }
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    for policy in policies {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", policy]), "+OK\r\n");
+        let src = format!("{policy}-src");
+        let dst = format!("{policy}-dst");
+        let nxsrc = format!("{policy}-nxsrc");
+        let nxdst = format!("{policy}-nxdst");
+        let fresh = format!("{policy}-fresh");
+        let blocker = format!("{policy}-blocker");
+        let later = format!("{policy}-later");
+        assert!(memory_object(&mut client, "IDLETIME", &src) >= 1, "{policy} source must age");
+        assert!(memory_object(&mut client, "IDLETIME", &nxsrc) >= 1, "{policy} NX source must age");
+        let later_idle = memory_object(&mut client, "IDLETIME", &later);
+        assert!(later_idle >= 1, "{policy} later key must age");
+        assert_eq!(memory_request(&mut client, &["RENAME", &src, &dst]), "+OK\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", &dst) <= 1, "{policy} renamed clock");
+        assert_eq!(memory_request(&mut client, &["RENAMENX", &nxsrc, &nxdst]), ":1\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", &nxdst) <= 1, "{policy} NX renamed clock");
+        assert_eq!(memory_request(&mut client, &["MSETNX", &fresh, "x", &fresh, "y"]), ":1\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", &fresh) <= 1, "{policy} duplicate insertion clock");
+        assert_eq!(memory_request(&mut client, &["GET", &fresh]), "$1\r\ny\r\n");
+        assert_eq!(memory_request(&mut client, &["MSETNX", &blocker, "x", &later, "y"]), ":0\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", &blocker) <= 1, "{policy} blocker lookup must touch");
+        assert!(memory_object(&mut client, "IDLETIME", &later) >= later_idle, "{policy} later key must not be touched");
+    }
     drop(client);
     assert_eq!(finished(child).0, 0);
 }

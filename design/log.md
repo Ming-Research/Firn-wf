@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Initialize the access stamp at RENAME's destination and MSETNX stores like Redis 7.2.16
+
+Nodes: firn/memory-limit
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-lfu-moves-tree, which asked to approve PR #98's design change at head c777bd1: the access-stamp decision cites Redis 7.2.16 and adds that a successful RENAME or RENAMENX to a different name gives the destination a fresh stamp, and that MSETNX performs its successful stores without further lookups.
+
+Summary: A successful RENAME or RENAMENX to a different name initializes the destination's LRU clock or LFU minute with counter 5 instead of carrying the source's stamp, because Redis 7.2.16 adds the moved value through dbAddInternal, which initializes it; same-name and refused renames keep the ordinary lookup refreshes. MSETNX keeps its ordered existence lookups but stores without refreshing a repeated key after each pair, as Redis 7.2.16's msetGenericCommand does, so the last pair wins with the first insertion's fresh stamp. The LFU outcomes are recorded in Firn-wf run 38406427583.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
