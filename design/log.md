@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Queue a promoted connection's INFO reply inside the lock interval
+
+Nodes: firn/connection-ownership
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-pubsub-info-tree, which asked to approve the design change "INFO on a subscribed connection also queues its reply inside the lock interval" in PR #112 at head 73bfdc4, stacked on the pub/sub PR.
+
+Summary: Every admitted INFO form on a promoted (subscribed) connection commits its complete reply under the dataset, Meta and event-hub boundary, with the script-registry and server-state snapshots taken in that same non-waiting statement. Otherwise a key-count snapshot released before the reply is committed would let a later SET/PUBLISH transaction precede an INFO reply that reports the earlier empty database. Host heap and residency samples precede the statement, and INFO on a never-subscribed connection keeps its original snapshot path.
+
 ## 2026-10-14 Add publish/subscribe with promoted connections and an event hub
 
 Nodes: firn, firn/connection-ownership, firn/pubsub-registries, firn/script-attempt-external-effects, firn/scripts, firn/transactions, firn/orderly-stop
