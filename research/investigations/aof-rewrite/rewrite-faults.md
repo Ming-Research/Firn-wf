@@ -328,3 +328,118 @@ the replacement protocol. Match compaction progress without copying Redis's
 fork implementation or weakening Firn's sync-error recovery. Redis's behavior
 is not intrinsically an extra acknowledged-write-loss hazard, so safety alone
 does not justify keeping immediate cancellation as a permanent difference.
+
+## Switch manifest whose directory sync fails
+
+Board item: `firn-rw-switch-dirsync`.
+
+### Problem, found by reading the code
+
+A rewrite's switch publishes a manifest naming a new increment by syncing a
+temporary manifest, renaming it over the active one and syncing the
+directory. Until this change firn adopted the new increment whenever the
+rename succeeded, even if the directory sync then failed, and only marked
+the rewrite failed. Writes stayed admitted and went to the new increment. If
+the device then loses the rename, a restart reads the old manifest, which
+does not name the new increment, so writes acknowledged, and even synced,
+after the switch are lost. No run has shown this yet; the case below shows
+the admitted write and where it lands.
+
+### What Redis 7.2.16 does
+
+Source: [`src/aof.c`](https://github.com/redis/redis/blob/7.2.16/src/aof.c),
+[`src/util.c`](https://github.com/redis/redis/blob/7.2.16/src/util.c) and
+[`src/config.h`](https://github.com/redis/redis/blob/7.2.16/src/config.h) at
+7.2.16; a source reading, observed by the case below.
+
+- Redis does sync the directory. `writeAofManifestFile` writes and syncs
+  `temp-F.manifest`, renames it over `F.manifest`, then calls
+  `fsyncFileDir` (aof.c:527-597, rename at 572-579, directory sync at
+  581-588). `fsyncFileDir` opens the directory and calls `redis_fsync`,
+  which is `fdatasync` on Linux (util.c:1100-1138, config.h:117); it treats
+  EBADF and EINVAL as success and any other error as failure.
+- On that failure `persistAofManifest` returns C_ERR without clearing
+  `dirty` (aof.c:600-610). Redis's switch is `openNewIncrAofForAppend`,
+  called by `rewriteAppendOnlyFileBackground` before it forks
+  (aof.c:2443-2446). On C_ERR it goes to `cleanup` (aof.c:821-823,850-855):
+  it closes the new file's descriptor without unlinking the file and frees
+  the candidate manifest, so `server.aof_fd` and `server.aof_manifest` stay
+  the old ones (they change only at aof.c:832-847). The caller sets
+  `aof_lastbgrewrite_status = C_ERR` and BGREWRITEAOF answers "Can't
+  execute an AOF background rewriting" (aof.c:2443-2446,2506-2510).
+- Nothing sets `aof_last_write_status` or `aof_bio_fsync_status`, so
+  `writeCommandsDeniedByDiskError` (server.c:4483-4503) admits writes. They
+  are appended to the old increment, which both the old manifest and the
+  renamed one name; the renamed one also names the empty new increment.
+- At installation, `backgroundRewriteDoneHandler` treats the same failure by
+  unlinking the new base and the renamed temporary increment the visible
+  manifest may name (aof.c:2666-2678); firn's installation keeps the
+  renamed manifest in force instead ([design](../../../design/firn/aof-rewrite.md)).
+
+So Redis keeps every acknowledged write in whichever manifest a restart
+reads, because it keeps appending to the old increment, but it does not
+treat the failed directory sync as a persistence failure.
+
+### Reasoning about the handle
+
+After the failed directory sync either manifest may be the one on the device
+at the next restart. The old increment is named by both, and the new one only
+by the renamed manifest. So the handle that keeps every write in both
+selections is the old increment's, and the in-memory manifest stays the old
+one. Adopting the new increment is never required for later recovery: the
+recovery rewrite's switch builds its manifest from the old one, reopens the
+same new increment name empty, and its base is written from memory, so it
+holds every write acknowledged before its cut, wherever those writes were
+appended. The new increment's file stays in place because the renamed
+manifest may name it, as Redis leaves it.
+
+firn also saves the directory sync's error as its AOF sync error. The device
+did not confirm the directory entries either selection depends on, and the
+page-end case above showed that Linux can mark failed writeback clean, so a
+later sync that succeeds proves nothing about them. Refusing writes with
+MISCONF until a recovery rewrite's installation is durable is the rule firn
+already applies to a failed sync of the active file, and the recovery
+rewrite is the step that writes a new rename and syncs the directory again.
+This deliberately differs from Redis, which keeps acknowledging. The same
+rule covers a failed directory sync of the installation manifest; there the
+renamed manifest stays in force, because both manifests name the active
+increment.
+
+### Case and rejection criteria
+
+`aof_rewrite_switch_directory_sync_failure_refuses_until_recovery` in
+`tests/aof_sync_fault.rs`, in the aof-sync-fault job. strace, attached to
+the server with `-P appendonlydir`, makes every `fsync` and `fdatasync` of
+the directory itself fail with EIO; the rename and file syncs are not
+touched. firn's switch comes at S1 after a scan paced at 20 ms a key, so the
+tracer is attached during the scan; Redis's comes at BGREWRITEAOF, so the
+tracer is attached before it. Both servers: the trace shows the injected
+EIO on the directory, the rewrite is reported failed, the manifest on disk
+is the renamed one naming the new increment, and no base was installed.
+Then:
+
+- Redis: a write is acknowledged; asserted, as the source predicts.
+- firn: INFO reports `aof_last_write_status:err` and abort reason
+  `install_io`, and SET and PING are refused with MISCONF and the host's
+  "Input/output error". Before this change firn acknowledged the SET, which
+  fails this assertion.
+- Both: the old manifest with its files' present bytes, and the renamed one
+  with theirs, each load exactly the acknowledged state in a fresh server.
+  Before this change the write acknowledged after the failure was only in
+  the new increment, so the old selection would lack it.
+- firn, after the tracer is detached: the recovery rewrite installs a new
+  base and writes are accepted again, never while a rewrite is still
+  running.
+- Both: after one more write, a kill, a remount and a restart, the state is
+  exactly what was acknowledged.
+
+Rejected if firn acknowledges a write between the failed directory sync and
+a durable recovery installation, if either selection lacks an acknowledged
+write or holds a refused one, or if the restart differs.
+
+Results: the case passed for both servers in the aof-sync-fault job of
+[run 38470333829](https://github.com/Ming-Research/Firn-wf/actions/runs/38470333829).
+The same case without the firn change failed in
+[run 38470344113](https://github.com/Ming-Research/Firn-wf/actions/runs/38470344113)
+after the trace showed the injected EIO on Redis's directory `fdatasync`
+and on firn's directory `fsync`, because firn never reported `aof_last_write_status:err` and kept admitting writes.

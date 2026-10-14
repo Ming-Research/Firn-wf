@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Refuse writes after a failed directory sync at the rewrite's manifest swap
+
+Nodes: firn/aof-rewrite
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-rw-dirsync-tree, which asked to approve PR #120's design change at head ca3d045 (the tree is unchanged at the current head): when the directory sync fails after the AOF rewrite renames the new manifest into place, the rewrite fails and firn records an AOF sync error (EINVAL excepted, as Redis treats it as success), then answers writes with MISCONF until a recovering rewrite installs durably; this deliberately differs from Redis 7.2.16, which reverts the switch but keeps acknowledging writes.
+
+Summary: At the switch point the old manifest and old append file stay in force and the new incremental file is left in place, since both manifests list the old incremental file and data written to it survives whichever manifest a restart reads; at the install point the renamed new manifest stays in force and the sync error is recorded too. Continuing to switch to the new incremental file and acknowledge writes after a failed directory sync is rejected, because a power loss could then lose acknowledged writes (the new case failed on the code before the change). The rule matches firn's existing refusal of writes after a failed sync of the active file.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
