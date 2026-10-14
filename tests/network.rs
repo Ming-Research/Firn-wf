@@ -3592,8 +3592,11 @@ fn firn_listens_again_on_its_port_after_a_restart() {
 /// is set authenticates it, so that a password set afterwards leaves it in.
 /// A connection accepted while no password is set has authenticated too, and
 /// stays in once it sets one. The expected bytes are redis-server 7.0.15's
-/// with the same password, the connection's id aside; HELLO's version follows
-/// Redis 7.2.16 networking.c:helloCommand and version.h's REDIS_VERSION.
+/// with the same password, the connection's id aside; HELLO's version and
+/// NOAUTH wording follow Redis 7.2.16 networking.c:3611-3618 and version.h.
+/// The pipelined WRONGPASS expectations remain the recorded 7.0.15 behavior;
+/// Firn deliberately keeps complete errors where 7.2.16 suppresses them
+/// when replies are pending, as design/firn/transactions.md records.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_requires_its_password_as_redis_does() {
@@ -3670,7 +3673,7 @@ fn firn_requires_its_password_as_redis_does() {
     client.write_all(&batch).expect("send the locked batch");
     expect_replies(
         &mut client,
-        b"-NOAUTH Authentication required.\r\n-ERR unknown command 'NOPE', with args beginning with: 'a' \r\n-ERR wrong number of arguments for 'get' command\r\n-ERR wrong number of arguments for 'config|get' command\r\n-NOAUTH Authentication required.\r\n-ERR unknown subcommand 'FOO'. Try CLIENT HELP.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'client|info' command\r\n-ERR unknown subcommand 'NOPE'. Try FUNCTION HELP.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'debug' command\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'config|resetstat' command\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n+OK\r\n+PONG\r\n-ERR wrong number of arguments for 'ping' command\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n+PONG\r\n*2\r\n$11\r\nrequirepass\r\n$6\r\nsecret\r\n:0\r\n",
+        b"-NOAUTH Authentication required.\r\n-ERR unknown command 'NOPE', with args beginning with: 'a' \r\n-ERR wrong number of arguments for 'get' command\r\n-ERR wrong number of arguments for 'config|get' command\r\n-NOAUTH Authentication required.\r\n-ERR unknown subcommand 'FOO'. Try CLIENT HELP.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'client|info' command\r\n-ERR unknown subcommand 'NOPE'. Try FUNCTION HELP.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'debug' command\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n-ERR wrong number of arguments for 'config|resetstat' command\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO <proto> AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n-NOAUTH Authentication required.\r\n-NOAUTH Authentication required.\r\n+OK\r\n+PONG\r\n-ERR wrong number of arguments for 'ping' command\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n+PONG\r\n*2\r\n$11\r\nrequirepass\r\n$6\r\nsecret\r\n:0\r\n",
         "the locked batch",
     );
     for command in ["MSET", "MSETNX", "LPOP", "RPOP"] {
@@ -3756,7 +3759,7 @@ fn firn_requires_its_password_as_redis_does() {
         .expect("send once the password is removed");
     expect_replies(
         &mut waiting,
-        b"+PONG\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
+        b"+PONG\r\n-NOAUTH HELLO must be called with the client already authenticated, otherwise the HELLO <proto> AUTH <user> <pass> option can be used to authenticate the client and select the RESP protocol version at the same time\r\n-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n",
         "once the password is removed",
     );
     waiting
@@ -4039,6 +4042,8 @@ fn firn_answers_connection_commands_as_redis_does() {
         ("tcp_port", text.as_str()),
         ("uptime_in_days", "0"),
         ("connected_clients", "2"),
+        ("total_blocking_keys", "0"),
+        ("total_blocking_keys_on_nokey", "0"),
         ("loading", "0"),
         ("aof_enabled", "0"),
         ("aof_rewrite_in_progress", "0"),
@@ -11735,4 +11740,351 @@ fn firn_publishes_exec_client_metadata_with_its_key_writes() {
     drop(observer);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
+}
+
+/// Redis 7.2.16 networking.c:3624-3650 switches protocol before writing
+/// HELLO's map. These fixtures fix the single client's id to 1, as the other
+/// HELLO network cases do; the version comes from src/version.h.
+#[cfg(target_os = "linux")]
+fn transaction_hello_reply(protocol: &str) -> String {
+    let header = if protocol == "2" { "*14" } else { "%7" };
+    format!("{header}\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:{protocol}\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n")
+}
+
+/// Admission answers QUEUED without applying any of these commands
+/// (Redis 7.2.16 server.c:4157-4166). EXEC is sent separately so a queued
+/// HELLO cannot select the reply protocol before EXEC runs it.
+#[cfg(target_os = "linux")]
+fn queue_connection_commands(client: &mut TcpStream, requests: &[Vec<&str>]) {
+    let mut batch = resp(&["MULTI"]);
+    for request in requests {
+        batch.extend(resp(request));
+    }
+    client.write_all(&batch).expect("queue connection commands");
+    assert_eq!(reply_line(client, "MULTI"), "+OK\r\n");
+    for request in requests {
+        assert_eq!(reply_line(client, &request.join(" ")), "+QUEUED\r\n");
+    }
+}
+
+/// multi.c:195 writes an array header before the queued commands run;
+/// networking.c:1002-1014 always writes * for an array but selects the map
+/// and set prefixes from the connection's current protocol. HELLO changes
+/// its own reply and subsequent replies, including the next network command.
+/// Every transaction below fails at EXECABORT on the parent branch.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_executes_hello_protocol_switches_in_transactions_as_redis_does() {
+    let program = firn();
+    for initial in ["2", "3"] {
+        let port_lease = support::lease_port();
+        let text = port_lease.port().to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port_lease.port(), &child);
+        for selected in ["2", "3"] {
+            assert_eq!(memory_request(&mut client, &["HELLO", initial]), transaction_hello_reply(initial));
+            queue_connection_commands(&mut client, &[
+                vec!["GET", "hello:missing"],
+                vec!["HGETALL", "hello:missing"],
+                vec!["SMEMBERS", "hello:missing"],
+                vec!["HELLO", selected],
+                vec!["GET", "hello:missing"],
+                vec!["HGETALL", "hello:missing"],
+                vec!["SMEMBERS", "hello:missing"],
+                vec!["HELLO"],
+            ]);
+            let null = |protocol| if protocol == "2" { "$-1\r\n" } else { "_\r\n" };
+            let map = |protocol| if protocol == "2" { "*0\r\n" } else { "%0\r\n" };
+            let set = |protocol| if protocol == "2" { "*0\r\n" } else { "~0\r\n" };
+            let hello = transaction_hello_reply(selected);
+            let expected = format!("*8\r\n{}{}{}{hello}{}{}{}{hello}", null(initial), map(initial), set(initial), null(selected), map(selected), set(selected));
+            client.write_all(&resp(&["EXEC"])).expect("execute protocol switches");
+            expect_replies(&mut client, expected.as_bytes(), "mixed protocol EXEC replies");
+            assert_eq!(memory_request(&mut client, &["GET", "hello:missing"]), null(selected));
+        }
+        drop(client);
+        assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// networking.c:3559-3595 rejects protocol and option syntax while EXEC
+/// continues, and validates all options before applying any. The final
+/// SETNAME and AUTH options win (3577-3586); an earlier invalid SETNAME
+/// still fails. These EXEC assertions fail on the parent at EXECABORT.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_executes_hello_options_and_runtime_errors_as_redis_does() {
+    let program = firn();
+    for protocol in ["2", "3"] {
+        let port_lease = support::lease_port();
+        let text = port_lease.port().to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port_lease.port(), &child);
+        assert_eq!(memory_request(&mut client, &["HELLO", protocol]), transaction_hello_reply(protocol));
+        queue_connection_commands(&mut client, &[
+            vec!["HELLO", "1"],
+            vec!["HELLO", "x"],
+            vec!["HELLO", protocol, "SETNAME", "first", "SETNAME", "last"],
+            vec!["CLIENT", "GETNAME"],
+            vec!["HELLO", protocol, "SETNAME", ""],
+            vec!["CLIENT", "GETNAME"],
+            vec!["PING"],
+        ]);
+        let hello = transaction_hello_reply(protocol);
+        let null = if protocol == "2" { "$-1\r\n" } else { "_\r\n" };
+        client.write_all(&resp(&["EXEC"])).expect("execute HELLO options");
+        expect_replies(&mut client, format!("*7\r\n-NOPROTO unsupported protocol version\r\n-ERR Protocol version is not an integer or out of range\r\n{hello}$4\r\nlast\r\n{hello}{null}+PONG\r\n").as_bytes(), "HELLO option replies");
+        assert_eq!(memory_request(&mut client, &["CLIENT", "SETNAME", "kept"]), "+OK\r\n");
+        let other = if protocol == "2" { "3" } else { "2" };
+        queue_connection_commands(&mut client, &[
+            vec!["HELLO", other, "SETNAME", "early", "BOGUS"],
+            vec!["CLIENT", "GETNAME"],
+            vec!["GET", "hello:missing"],
+            vec!["HELLO", other, "bad\0tail"],
+            vec!["HELLO", other, "SETNAME", "early", "SETNAME", "bad name"],
+            vec!["CLIENT", "GETNAME"],
+            vec!["HELLO", other, "SETNAME", "bad name", "SETNAME", "valid"],
+            vec!["CLIENT", "GETNAME"],
+        ]);
+        client.write_all(&resp(&["EXEC"])).expect("execute invalid HELLO options");
+        expect_replies(&mut client, format!("*8\r\n-ERR Syntax error in HELLO option 'BOGUS'\r\n$4\r\nkept\r\n{null}-ERR Syntax error in HELLO option 'bad'\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$4\r\nkept\r\n-ERR Client names cannot contain spaces, newlines or special characters.\r\n$4\r\nkept\r\n").as_bytes(), "invalid options preserve name and protocol");
+        // Nopass accepts any password for default. Only the last AUTH pair
+        // is checked, so this unknown first user must not make HELLO fail.
+        queue_connection_commands(&mut client, &[
+            vec!["HELLO", protocol, "AUTH", "missing-user", "bad", "AUTH", "default", "x", "SETNAME", "last-auth"],
+            vec!["CLIENT", "GETNAME"],
+        ]);
+        client.write_all(&resp(&["EXEC"])).expect("execute repeated HELLO AUTH");
+        expect_replies(&mut client, format!("*2\r\n{hello}$9\r\nlast-auth\r\n").as_bytes(), "only final HELLO AUTH applies");
+        drop(client);
+        assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// acl.c:3119-3123 preserves the legacy two-argument AUTH error when no
+/// password is configured. Its three-argument form and HELLO AUTH accept
+/// default's nopass credentials (1432), and configured passwords use the
+/// same authentication helper. All EXEC cases fail on the parent branch.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_executes_successful_and_nopass_auth_in_transactions_as_redis_does() {
+    let program = firn();
+    for protocol in ["2", "3"] {
+        let port_lease = support::lease_port();
+        let text = port_lease.port().to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port_lease.port(), &child);
+        assert_eq!(memory_request(&mut client, &["HELLO", protocol]), transaction_hello_reply(protocol));
+        let null = if protocol == "2" { "$-1\r\n" } else { "_\r\n" };
+        queue_connection_commands(&mut client, &[
+            vec!["AUTH", "unused"],
+            vec!["GET", "auth:missing"],
+            vec!["AUTH", "default", "unused"],
+            vec!["GET", "auth:missing"],
+            vec!["HELLO", protocol, "AUTH", "default", "unused", "SETNAME", "nopass"],
+            vec!["CLIENT", "GETNAME"],
+        ]);
+        client.write_all(&resp(&["EXEC"])).expect("execute nopass AUTH");
+        expect_replies(&mut client, format!("*6\r\n-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n{null}+OK\r\n{null}{}$6\r\nnopass\r\n", transaction_hello_reply(protocol)).as_bytes(), "nopass AUTH replies and continuation");
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "requirepass", "right"]), "+OK\r\n");
+        queue_connection_commands(&mut client, &[
+            vec!["AUTH", "right"],
+            vec!["AUTH", "default", "right"],
+            vec!["HELLO", protocol, "AUTH", "default", "right", "SETNAME", "authed"],
+            vec!["CLIENT", "GETNAME"],
+            vec!["GET", "auth:missing"],
+            vec!["PING"],
+        ]);
+        client.write_all(&resp(&["EXEC"])).expect("execute correct AUTH");
+        expect_replies(&mut client, format!("*6\r\n+OK\r\n+OK\r\n{}$6\r\nauthed\r\n{null}+PONG\r\n", transaction_hello_reply(protocol)).as_bytes(), "correct credentials apply inside EXEC");
+        assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n");
+        drop(client);
+        assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// DISCARD and queue-time arity failures prevent HELLO/AUTH from running;
+/// AUTH's extra arguments are a runtime syntax error (acl.c:3105-3108).
+/// The controls pass on the parent, while the runtime EXEC case aborts.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_keeps_hello_auth_transaction_admission_and_discard_rules() {
+    let program = firn();
+    for protocol in ["2", "3"] {
+        let port_lease = support::lease_port();
+        let text = port_lease.port().to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port_lease.port(), &child);
+        assert_eq!(memory_request(&mut client, &["HELLO", protocol]), transaction_hello_reply(protocol));
+        assert_eq!(memory_request(&mut client, &["CLIENT", "SETNAME", "kept"]), "+OK\r\n");
+        let other = if protocol == "2" { "3" } else { "2" };
+        let null = if protocol == "2" { "$-1\r\n" } else { "_\r\n" };
+        queue_connection_commands(&mut client, &[
+            vec!["HELLO", other, "SETNAME", "discarded"],
+            vec!["AUTH", "default", "unused"],
+        ]);
+        assert_eq!(memory_request(&mut client, &["DISCARD"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["CLIENT", "GETNAME"]), "$4\r\nkept\r\n");
+        assert_eq!(memory_request(&mut client, &["GET", "auth:missing"]), null);
+        queue_connection_commands(&mut client, &[vec!["HELLO", other, "SETNAME", "aborted"]]);
+        assert_eq!(memory_request(&mut client, &["AUTH"]), "-ERR wrong number of arguments for 'auth' command\r\n");
+        assert_eq!(memory_request(&mut client, &["EXEC"]), "-EXECABORT Transaction discarded because of previous errors.\r\n");
+        assert_eq!(memory_request(&mut client, &["CLIENT", "GETNAME"]), "$4\r\nkept\r\n");
+        assert_eq!(memory_request(&mut client, &["GET", "auth:missing"]), null);
+        queue_connection_commands(&mut client, &[vec!["AUTH", "default", "unused", "extra"], vec!["PING"]]);
+        client.write_all(&resp(&["EXEC"])).expect("execute AUTH syntax error");
+        expect_replies(&mut client, b"*2\r\n-ERR syntax error\r\n+PONG\r\n", "runtime AUTH syntax does not abort EXEC");
+        drop(client);
+        assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// Both descriptors retain NOSCRIPT. Script admission checks table arity
+/// first, so AUTH without a password still receives the script arity error.
+/// The script controls should pass on the parent; the admitted transaction
+/// afterwards should fail there at EXECABORT. These are source-based
+/// expectations, not recorded parent runs.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_keeps_hello_auth_transaction_and_script_boundaries() {
+    let program = firn();
+    for protocol in ["2", "3"] {
+        let port_lease = support::lease_port();
+        let text = port_lease.port().to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port_lease.port(), &child);
+        assert_eq!(memory_request(&mut client, &["HELLO", protocol]), transaction_hello_reply(protocol));
+        for (raised, sha, error) in [
+            ("return redis.call('HELLO','3')", "c813bebc5ffb46f3bfb8e1a70f2278ffc088a6de", "ERR This Redis command is not allowed from script"),
+            ("return redis.call('AUTH','default','x')", "509958a27be4a373a0ac3f2a5beabd986c02558a", "ERR This Redis command is not allowed from script"),
+            ("return redis.call('AUTH')", "ca9e88fe2c7664a86ea971a5721d67e284f3c661", "ERR Wrong number of args calling Redis command from script"),
+        ] {
+            assert_eq!(memory_request(&mut client, &["EVAL", raised, "0"]), format!("-{error} script: {sha}, on @user_script:1.\r\n"), "{raised}");
+            let guarded = raised.replace("redis.call", "redis.pcall");
+            assert_eq!(memory_request(&mut client, &["EVAL", &guarded, "0"]), format!("-{error}\r\n"), "{guarded}");
+        }
+        queue_connection_commands(&mut client, &[vec!["HELLO", protocol], vec!["AUTH", "default", "x"]]);
+        client.write_all(&resp(&["EXEC"])).expect("execute connection commands after script refusals");
+        expect_replies(&mut client, format!("*2\r\n{}+OK\r\n", transaction_hello_reply(protocol)).as_bytes(), "connection commands run in EXEC but remain refused in scripts");
+        assert_eq!(memory_request(&mut client, &["HELLO"]), transaction_hello_reply(protocol));
+        drop(client);
+        assert_eq!(finished(child).0, 0);
+    }
+}
+
+/// NO_AUTH permits queueing HELLO and AUTH even if requirepass becomes set
+/// after an unauthenticated client opened MULTI (server.c:3920-3927).
+/// EXEC itself still needs authentication and aborts (3711-3716). Under
+/// nopass, executing either credential command sets authenticated; restoring
+/// requirepass then leaves PING admitted. The parent fails the QUEUED check
+/// under requirepass, or EXECABORT under nopass instead of applying AUTH.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_applies_queued_authentication_and_keeps_noauth_admission() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let text = port_lease.port().to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"4"]).with_port(&port_lease);
+    let mut admin = connect_when_ready(port_lease.port(), &child);
+    assert_eq!(memory_request(&mut admin, &["CONFIG", "SET", "requirepass", "right"]), "+OK\r\n");
+    let mut client = connect_when_ready(port_lease.port(), &child);
+    assert_eq!(memory_request(&mut client, &["PING"]), "-NOAUTH Authentication required.\r\n");
+    assert_eq!(memory_request(&mut admin, &["CONFIG", "SET", "requirepass", ""]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut admin, &["CONFIG", "SET", "requirepass", "right"]), "+OK\r\n");
+    for request in [&["AUTH", "right"][..], &["HELLO", "3", "AUTH", "default", "right"][..]] {
+        assert_eq!(memory_request(&mut client, request), "+QUEUED\r\n", "NO_AUTH exemption: {request:?}");
+    }
+    assert_eq!(memory_request(&mut client, &["EXEC"]), "-EXECABORT Transaction discarded because of: NOAUTH Authentication required.\r\n");
+    assert_eq!(memory_request(&mut admin, &["CONFIG", "SET", "requirepass", ""]), "+OK\r\n");
+    queue_connection_commands(&mut client, &[vec!["AUTH", "default", "unused"]]);
+    client.write_all(&resp(&["EXEC"])).expect("execute AUTH on unauthenticated client");
+    expect_replies(&mut client, b"*1\r\n+OK\r\n", "AUTH sets authenticated inside EXEC");
+    assert_eq!(memory_request(&mut admin, &["CONFIG", "SET", "requirepass", "right"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n");
+    drop(client);
+    for (protocol, id) in [("2", 3), ("3", 4)] {
+        let mut client = connect_when_ready(port_lease.port(), &child);
+        assert_eq!(memory_request(&mut client, &["PING"]), "-NOAUTH Authentication required.\r\n");
+        assert_eq!(memory_request(&mut admin, &["CONFIG", "SET", "requirepass", ""]), "+OK\r\n");
+        queue_connection_commands(&mut client, &[vec!["HELLO", protocol, "AUTH", "default", "unused", "SETNAME", "authed"]]);
+        client.write_all(&resp(&["EXEC"])).expect("execute HELLO AUTH on unauthenticated client");
+        let hello = transaction_hello_reply(protocol).replace("$2\r\nid\r\n:1\r\n", &format!("$2\r\nid\r\n:{id}\r\n"));
+        expect_replies(&mut client, format!("*1\r\n{hello}").as_bytes(), "HELLO AUTH sets authenticated inside EXEC");
+        assert_eq!(memory_request(&mut admin, &["CONFIG", "SET", "requirepass", "right"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n");
+        admin.write_all(&resp(&["CLIENT", "LIST", "ID", &id.to_string()])).expect("observe HELLO connection facts");
+        let line = bulk_reply(&mut admin, "published HELLO name and protocol");
+        assert_eq!(line.lines().count(), 1, "{line:?}");
+        for expected in [format!("id={id}"), "name=authed".to_owned(), format!("resp={protocol}")] {
+            assert!(line.split_ascii_whitespace().any(|field| field == expected), "missing {expected}: {line:?}");
+        }
+        drop(client);
+    }
+    drop(admin);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Firn retains the complete WRONGPASS error when replies are pending, as
+/// design/firn/transactions.md records. Redis 7.2.16 acl.c:1455-1458 omits
+/// that error in this situation; the expected bytes below deliberately
+/// differ. Its credential failure still leaves the authenticated user
+/// unchanged (1469-1477), and HELLO returns before setting name/protocol
+/// (networking.c:3597-3624). Each transaction should fail on the parent at
+/// EXECABORT; the standalone pipeline is a control expected to pass there.
+/// These parent outcomes are source-based, not recorded test runs.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_retains_complete_auth_errors_and_connection_state_in_transactions() {
+    let program = firn();
+    for protocol in ["2", "3"] {
+        let port_lease = support::lease_port();
+        let text = port_lease.port().to_string();
+        let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+        let mut client = connect_when_ready(port_lease.port(), &child);
+        assert_eq!(memory_request(&mut client, &["HELLO", protocol]), transaction_hello_reply(protocol));
+        assert_eq!(memory_request(&mut client, &["CLIENT", "SETNAME", "kept"]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "requirepass", "right"]), "+OK\r\n");
+        // One write puts PING's reply before wrong AUTH's error. Neither
+        // command is queued; the error must survive the pending PONG.
+        let mut pipeline = resp(&["PING"]);
+        pipeline.extend(resp(&["AUTH", "wrong"]));
+        client.write_all(&pipeline).expect("pipeline PING and wrong AUTH");
+        expect_replies(&mut client, b"+PONG\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n", "complete standalone pipelined authentication error");
+        assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n");
+        let other = if protocol == "2" { "3" } else { "2" };
+        let null = if protocol == "2" { "$-1\r\n" } else { "_\r\n" };
+        for invalid in [
+            vec!["AUTH", "wrong"],
+            vec!["AUTH", "default", "wrong"],
+            vec!["AUTH", "missing-user", "right"],
+            vec!["HELLO", other, "SETNAME", "changed", "AUTH", "default", "wrong"],
+            vec!["HELLO", other, "SETNAME", "changed", "AUTH", "missing-user", "right"],
+        ] {
+            let label = invalid.join(" ");
+            queue_connection_commands(&mut client, &[
+                invalid,
+                vec!["CLIENT", "GETNAME"],
+                vec!["GET", "auth:missing"],
+                vec!["PING"],
+            ]);
+            client.write_all(&resp(&["EXEC"])).expect("execute wrong credentials");
+            expect_replies(&mut client, format!("*4\r\n-WRONGPASS invalid username-password pair or user is disabled.\r\n$4\r\nkept\r\n{null}+PONG\r\n").as_bytes(), &label);
+            // A later network command must retain authentication, and HELLO
+            // without arguments must still report the original protocol.
+            assert_eq!(memory_request(&mut client, &["PING"]), "+PONG\r\n", "{label}");
+            assert_eq!(memory_request(&mut client, &["HELLO"]), transaction_hello_reply(protocol), "{label}");
+            client.write_all(&resp(&["CLIENT", "INFO"])).expect("inspect user after wrong credentials");
+            let line = if protocol == "2" {
+                bulk_reply(&mut client, "CLIENT INFO after wrong credentials")
+            } else {
+                verbatim_reply(&mut client, "CLIENT INFO after wrong credentials")
+            };
+            for expected in ["name=kept", "user=default"] {
+                assert!(line.split_ascii_whitespace().any(|field| field == expected), "{label}: missing {expected}: {line:?}");
+            }
+        }
+        drop(client);
+        assert_eq!(finished(child).0, 0);
+    }
 }

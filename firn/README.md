@@ -78,8 +78,12 @@ clients send on their own:
   `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
   `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`; `INFO` is not among
   them. These same command parts run in scripts. The supported `CLIENT`
-  subcommands also run in the transaction's statement, using the connection's
-  state and the shared table of clients; they remain unavailable to scripts.
+  subcommands, `HELLO` and `AUTH` also run in the transaction's statement,
+  using the connection's state, the configured password and the shared table
+  of clients; they remain unavailable to scripts. A successful `HELLO`
+  changes its own reply and later replies in the same `EXEC` to the selected
+  protocol, while the outer `EXEC` reply remains an array. Its name and
+  protocol changes are published before the transaction releases its holds.
   Any other command without parts, or any name firn does not run, is queued and makes
   `EXEC` refuse the whole transaction without running any of it, where Redis
   refuses a name it lacks when it is sent; unknown subcommands and commands
@@ -331,6 +335,14 @@ in binary128 on aarch64 Linux, and in a double where long double is one.
 What is not there yet is listed on the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip); the
 measurements and the design are in
 [research/investigations/firn](../research/investigations/firn/DESIGN.md).
+
+## Differences from Redis
+
+- Invalid credentials in `AUTH` and `HELLO AUTH` always receive a complete
+  `WRONGPASS` reply, including inside `EXEC` and after pipelined commands.
+  Redis 7.2.16 omits that error when replies are pending, leaving an incomplete `EXEC`
+  array or an unanswered pipelined command. Authentication, user, name and
+  protocol stay unchanged on failure; later queued commands continue.
 
 ## Build and run
 
