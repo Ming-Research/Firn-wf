@@ -34,7 +34,7 @@ FIRN_SOURCES := $(shell find $(ROOT)/firn $(ROOT)/deps/halo-wf/lib -name '*.wf' 
 # The Redis suite runs as this many run.sh shards side by side.
 SUITE_SHARDS ?= 2
 
-.PHONY: check firn firn-test test redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync
+.PHONY: check firn firn-test test list-ceiling redis-suite aof-sync-fault firn-lto design-lint design-ready gate-sync
 
 # The gate's targets: check.yml runs each in a job of its own, which
 # gate-sync requires.
@@ -62,7 +62,7 @@ $(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 # Keep ptrace and process-stop experiments out of the ordinary suite's load:
 # its continuous-write rewrite cases must not compete with /proc stop polling.
 # Both selections are required; the serial selection must run all three cases.
-test: firn-test
+test: firn-test list-ceiling
 	@redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) && \
 	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
 	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked -- --skip rewrite_faults:: --show-output
@@ -72,6 +72,18 @@ test: firn-test
 	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked --test network rewrite_faults:: -- \
 	  --test-threads=1 --nocapture >"$$log" 2>&1; status=$$?; cat "$$log"; \
 	[ $$status -eq 0 ] && grep -q '^test result: ok\. 3 passed' "$$log"
+
+# Direct Whitefoot fixtures exercise the real private list command bodies at
+# an eight-element ceiling, without a production test hook or a giant network
+# dataset. The assembler copies sources only into this disposable build tree.
+LIST_CEILING_SOURCES := $(ROOT)/tests/list_ceiling.py $(ROOT)/tests/list_ceiling.wf
+
+$(BUILD)/list-ceiling/check: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES) $(LIST_CEILING_SOURCES)
+	$(PY) -B $(ROOT)/tests/list_ceiling.py --out $(BUILD)/list-ceiling
+	$(WHITEFOOTC) --graph $(BUILD)/list-ceiling/firn/modules.wfg --entry list_ceiling -o $@
+
+list-ceiling: $(BUILD)/list-ceiling/check
+	$(BUILD)/list-ceiling/check
 
 # Redis's released suite runs against the cached server build, split into
 # shards that run side by side and merge into one run. Every listed pass must
