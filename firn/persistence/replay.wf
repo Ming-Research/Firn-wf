@@ -1,0 +1,283 @@
+alias Clock = std::time::Clock;
+alias DirectoryRead = std::fs::DirectoryRead;
+alias HandleFactory = std::io::HandleFactory;
+alias Keyspace = pkg::store::Keyspace;
+alias ReadFile = std::fs::ReadFile;
+alias Span = pkg::protocol::Span;
+alias Time = pkg::store::Time;
+
+struct AofReader {
+  bytes: Box<Array<u8>>;
+  cursor: u64;
+  held: u64;
+  position: u64;
+  size: u64;
+  eof: Bool;
+  syntax: AofSyntax;
+  invariant window(reader): reader.cursor <= reader.held;
+  invariant capacity(reader): reader.held <= reader.bytes.inner.len;
+  invariant header_room(reader): reader.syntax.line.len < 1023_u64;
+  invariant probe_bound(reader): reader.syntax.probe <= 5_u64;
+}
+
+struct AofRecord {
+  args: Box<Slots<Span>>;
+  length: u64;
+  kind: u64;
+}
+
+fn aof_fill(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: &AofReader, clock: &Clock, rewriting: Bool) -> result: Result<unit, u8> reads(store), writes(factory), writes(file), writes(reader), writes(clock) waits {
+  doc "Transport only: bounded reads and rewrite cancellation, without interpreting AOF syntax. EOF is retained for the shared parser's explicit finalization.";
+  if reader^.cursor < reader^.held {
+    return Ok<unit, u8>(value: unit);
+  }
+  if rewriting {
+    if reader^.position > 0_u64 {
+      aof_rw_pause(clock: clock);
+    }
+    let cancelled = aof_rw_cancelled(store: store);
+    if cancelled {
+      return Err<unit, u8>(error: 3_u8);
+    }
+  }
+  let length = reader^.bytes.inner.len;
+  let destination = &reader^.bytes.inner[0_u64..length];
+  match std::fs::read_at(factory: factory, file: file, destination: destination, file_offset: reader^.position, start: 0_u64, end: length) {
+    Ok(value: next) => {
+      set reader^.cursor = 0_u64;
+      set reader^.held = next;
+      set reader^.eof = next == 0_u64;
+      if next == 0_u64 {
+        return Err<unit, u8>(error: 0_u8);
+      }
+      let end = reader^.position +wrap next;
+      set reader^.size = imax(reader^.size, end);
+      return Ok<unit, u8>(value: unit);
+    }
+    Err(error: stopped) => {
+      match stopped {
+        ReadEnd() => {
+          set reader^.eof = True();
+          return Err<unit, u8>(error: 0_u8);
+        }
+        ReadFailed(error: problem) => {
+          return Err<unit, u8>(error: 3_u8);
+        }
+      }
+    }
+  }
+}
+
+fn aof_record(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, reader: &AofReader, clock: &Clock, rewriting: Bool, retain: Bool) -> result: Result<AofRecord, u8> reads(store), writes(factory), writes(file), writes(reader), writes(clock) waits {
+  doc "Drive the shared pure syntax machine from file chunks. Startup keeps argument-header positions for later payload reads; boundary validation retains only fixed parser state.";
+  let args = box_slots_new::<Span>(capacity: 0_u64);
+  loop @events (
+    invariant window: reader^.cursor <= reader^.held,
+    invariant capacity: reader^.held <= reader^.bytes.inner.len,
+    invariant header_room: reader^.syntax.line.len < 1023_u64,
+    invariant probe_bound: reader^.syntax.probe <= 5_u64
+  ) {
+    if reader^.eof {
+    } else if reader^.cursor == reader^.held {
+      match aof_fill(store: store, factory: factory, file: file, reader: reader, clock: clock, rewriting: rewriting) {
+        Ok(value: filled) => {
+        }
+        Err(error: reason) => {
+          if reason != 0_u8 {
+            return Err<AofRecord, u8>(error: reason);
+          }
+        }
+      }
+    }
+    let held = reader^.held;
+    let input = &reader^.bytes.inner[0_u64..held];
+    let event = aof_syntax_next(syntax: &reader^.syntax, input: input, start: reader^.cursor, end: held, eof: reader^.eof);
+    set reader^.cursor = event.next;
+    set reader^.position = reader^.syntax.position;
+    if event.state == 1_u64 {
+      if retain {
+        pkg::protocol::push_arg(args: &args, start: event.start, length: event.length);
+      }
+    } else if event.state == 2_u64 {
+      let record = AofRecord(args: move args, length: reader^.syntax.total, kind: event.kind);
+      return Ok<AofRecord, u8>(value: move record);
+    } else if event.state == 3_u64 {
+      return Err<AofRecord, u8>(error: 0_u8);
+    } else if event.state == 4_u64 {
+      return Err<AofRecord, u8>(error: 1_u8);
+    } else if event.state == 5_u64 {
+      return Err<AofRecord, u8>(error: 2_u8);
+    } else if event.state == 6_u64 {
+      return Err<AofRecord, u8>(error: 3_u8);
+    }
+  }
+}
+
+fn aof_read_payload(factory: &HandleFactory, file: &ReadFile, destination: &[u8], offset: u64) -> accepted: Bool writes(factory), writes(file), writes(destination) waits {
+  let length = destination^.len;
+  let at = 0_u64;
+  loop @payload {
+    if at >= length {
+      return True();
+    }
+    let position = offset +wrap at;
+    match std::fs::read_at(factory: factory, file: file, destination: destination, file_offset: position, start: at, end: length) {
+      Ok(value: next) => {
+        if next == at {
+          return False();
+        }
+        set at = next;
+      }
+      Err(error: problem) => {
+        return False();
+      }
+    }
+  }
+}
+
+fn aof_apply(store: &Keyspace, factory: &HandleFactory, file: &ReadFile, record: &AofRecord, client: &pkg::protocol::Client, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(record), reads(time), writes(factory), writes(file), writes(client), writes(clock) waits {
+  doc "The command interface consumes contiguous payload plus spans. Allocate their exact sum without the network window's ceiling, and reread each body by its recorded file position; headers and transaction bodies are never retained.";
+  let count = record^.args.inner.len;
+  let lengths = box_array_filled::<u64>(count: count, value: 0_u64);
+  for (index in 0_u64..count) {
+    set lengths.inner[index] = record^.args.inner[index].length;
+  }
+  let payload = box_segments_filled::<u8>(lengths: &lengths.inner[0_u64..count], value: 0_u8);
+  let args = box_slots_new::<Span>(capacity: count);
+  let at = 0_u64;
+  for (index in 0_u64..count) {
+    let source = record^.args.inner[index];
+    let destination = &payload.inner[index];
+    let copied = aof_read_payload(factory: factory, file: file, destination: destination, offset: source.start);
+    if copied {
+    } else {
+      return False();
+    }
+    pkg::protocol::push_arg(args: &args, start: at, length: source.length);
+    set at = at +wrap source.length;
+  }
+  let env = pkg::bytes::KeyEnv();
+  pkg::commands::execute(store: store, input: &payload.inner.all, args: &args, client: client, env: &env, time: time, clock: clock);
+  set client^.at = 0_u64;
+  return True();
+}
+
+fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name: &[u8], name_length: u64, time: &Time, clock: &Clock) -> loaded: Loaded reads(store), reads(root), reads(name), reads(time), writes(factory), writes(clock) waits contract {
+  requires name_length <= name^.len;
+} {
+  doc "Redis 7.2.16 AOF framing is independent of the network parser. Scan bounded chunks and retain file positions, rereading transaction commands only after EXEC; incomplete tails keep Redis's last-command or latest-MULTI truncation offset.";
+  let applied = 0_u64;
+  let kept = 0_u64;
+  let size = 0_u64;
+  let cut = False();
+  let stopped = False();
+  let bad_format = False();
+  let unfinished = False();
+  let reverted = 0_u64;
+  let retained_valid = 0_u64;
+  let continuable = True();
+  match std::fs::open_file(factory: factory, root: root, name: name, start: 0_u64, end: name_length) {
+    Ok(value: file) => {
+      let client = pkg::protocol::client_new(capacity: 16384_u64);
+      atomic m = &store^.meta {
+        set client.random = m^.random;
+      }
+      let bytes = box_array_filled::<u8>(count: 65536_u64, value: 0_u8);
+      let no_eof = False();
+      let syntax = aof_syntax_new(position: 0_u64, valid: 0_u64);
+      let reader = AofReader(bytes: move bytes, cursor: 0_u64, held: 0_u64, position: 0_u64, size: 0_u64, eof: no_eof, syntax: move syntax);
+      let scanning = False();
+      let executing = False();
+      let block_body = 0_u64;
+      let latest_multi = 0_u64;
+      let first_multi = 0_u64;
+      let valid = 0_u64;
+      let rewriting = False();
+      let retain = True();
+      loop @records (
+        invariant window: reader.cursor <= reader.held,
+        invariant capacity: reader.held <= reader.bytes.inner.len,
+        invariant header_room: reader.syntax.line.len < 1023_u64,
+        invariant probe_bound: reader.syntax.probe <= 5_u64
+      ) {
+        let record = match aof_record(store: store, factory: factory, file: &file, reader: &reader, clock: clock, rewriting: rewriting, retain: retain) {
+          Ok(value: parsed) => {
+            give move parsed;
+          }
+          Err(error: reason) => {
+            if reason == 0_u8 {
+              if scanning {
+                set kept = latest_multi;
+                set cut = True();
+                set unfinished = first_multi < latest_multi;
+                set reverted = first_multi;
+                set retained_valid = kept;
+              } else {
+                set retained_valid = reader.syntax.valid;
+                set continuable = reader.syntax.continuable;
+              }
+            } else if reason == 1_u8 {
+              set kept = valid;
+              set cut = True();
+              set unfinished = scanning;
+              set reverted = first_multi;
+              set retained_valid = kept;
+            } else {
+              set stopped = True();
+              set bad_format = reason == 2_u8;
+            }
+            break @records;
+          }
+        }
+        let multi = record.kind == 1_u64;
+        let exec = record.kind == 2_u64;
+        if scanning {
+          if exec {
+            set scanning = False();
+            set executing = True();
+            set reader.cursor = 0_u64;
+            set reader.held = 0_u64;
+            set reader.position = block_body;
+            set reader.syntax = aof_syntax_new(position: block_body, valid: block_body);
+            continue @records;
+          } else if multi {
+            set latest_multi = valid;
+          }
+        } else if executing {
+          if exec {
+            set executing = False();
+          } else {
+            let accepted = aof_apply(store: store, factory: factory, file: &file, record: &record, client: &client, time: time, clock: clock);
+            if accepted {
+              set applied = applied +wrap 1_u64;
+            } else {
+              set stopped = True();
+              break @records;
+            }
+          }
+        } else if multi {
+          set scanning = True();
+          set latest_multi = valid;
+          set first_multi = latest_multi;
+          set block_body = reader.position;
+        } else if exec {
+        } else {
+          let accepted = aof_apply(store: store, factory: factory, file: &file, record: &record, client: &client, time: time, clock: clock);
+          if accepted {
+            set applied = applied +wrap 1_u64;
+          } else {
+            set stopped = True();
+            break @records;
+          }
+        }
+        set valid = reader.position;
+      }
+      set size = reader.size;
+      std::fs::close_read(factory: factory, file: move file);
+    }
+    Err(error: problem) => {
+      set stopped = True();
+    }
+  }
+  return Loaded(applied: applied, kept: kept, size: size, cut: cut, stopped: stopped, bad_format: bad_format, unfinished: unfinished, reverted: reverted, valid: retained_valid, continuable: continuable);
+}

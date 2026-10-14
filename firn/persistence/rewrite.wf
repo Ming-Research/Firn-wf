@@ -66,6 +66,7 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
       Ok(value: truncated) => {
         set log^.boundary = aof_boundary_empty();
         set log^.boundary.size = boundary.reverted;
+        set log^.boundary.valid = boundary.reverted;
         let removed = boundary.size -sat boundary.reverted;
         atomic m = &store^.meta {
           set m^.aof_current_size = m^.aof_current_size -sat removed;
@@ -951,7 +952,7 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
 }
 
 fn aof_rw_overhead(log: &AofLog) -> bytes: u64 reads(log) {
-  doc "Precharge rewrite filenames, manifest candidate copies, serialization and their growth overlap before S0. Sixteen times the escaped-name and record ceilings covers the old/new candidates, serialization's doubling and transient growth; the ordinary two AOF buffers are reused, never a third sealed buffer. The fixed 8192-byte writer allowance also covers scalar boundary state, the syntax decoder and its empty argument-box header.";
+  doc "Precharge rewrite filenames, manifest candidate copies, serialization and their growth overlap before S0. Sixteen times the escaped-name and record ceilings covers the old/new candidates, serialization's doubling and transient growth; the ordinary two AOF buffers are reused, never a third sealed buffer. The fixed 8192-byte writer allowance also covers scalar boundary state and the fixed syntax scratch: one 1023-byte header window, a five-byte command probe and decoder scalars; append tracking allocates no argument array.";
   let names = log^.prefix.inner.len *sat 128_u64;
   let records = log^.manifest.parts.inner.len +sat 2_u64;
   let headers = records *sat 512_u64;

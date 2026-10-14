@@ -1,0 +1,204 @@
+struct AofSyntax {
+  doc "Shared incremental AOF grammar. Phases are record header, bulk header, bulk body and two unchecked trailer bytes. Headers retain at most one fgets chunk; bodies retain only the first argument's five-byte command probe. position counts physical bytes, while valid advances only after complete commands.";
+  phase: u64;
+  line: Slots<u8, 1023>;
+  position: u64;
+  valid: u64;
+  count: u64;
+  index: u64;
+  remaining: u64;
+  total: u64;
+  word: Array<u8, 5>;
+  word_length: u64;
+  probe: u64;
+  continuable: Bool;
+  invariant probe_bound(syntax): syntax.probe <= 5_u64;
+}
+
+struct AofEvent {
+  doc "State zero needs another chunk, one gives an argument's file position and length, two completes a command, three is clean EOF, four is a truncated record, five is bad format, and six is an unrecoverable read-format condition. next is the consumed endpoint in this chunk; a completed command's start is the preceding whole-command offset, excluding annotations.";
+  state: u64;
+  next: u64;
+  start: u64;
+  length: u64;
+  kind: u64;
+}
+
+fn aof_syntax_new(position: u64, valid: u64) -> made: AofSyntax pure contract {
+  ensures made.line.len == 0_u64;
+} {
+  let line = slots_new::<u8, 1023>();
+  let word = array_filled::<u8, 5>(value: 0_u8);
+  let continuable = True();
+  return AofSyntax(phase: 0_u64, line: move line, position: position, valid: valid, count: 0_u64, index: 0_u64, remaining: 0_u64, total: 0_u64, word: word, word_length: 0_u64, probe: 0_u64, continuable: continuable);
+}
+
+fn aof_syntax_line_parse(syntax: &AofSyntax, eof: Bool) -> state: u64 writes(syntax) contract {
+  requires syntax^.line.len > 0_u64;
+} {
+  let length = syntax^.line.len;
+  let bytes = &syntax^.line[0_u64..length];
+  let first = syntax^.line[0_u64];
+  if syntax^.phase == 0_u64 {
+    if first == 35_u8 {
+      set syntax^.continuable = bnot(eof);
+      return 0_u64;
+    }
+    if first != 42_u8 {
+      return 5_u64;
+    }
+    let second = pkg::bytes::byte_at(input: bytes, index: 1_u64);
+    if second == 0_u8 {
+      if eof {
+        return 4_u64;
+      }
+      return 6_u64;
+    }
+    let text = &syntax^.line[1_u64..length];
+    let number = aof_sequence(input: text);
+    let count = cvt.wrap::<i64, i32>(number);
+    if count < 1_i32 {
+      return 5_u64;
+    }
+    set syntax^.count = cvt::<i32, u64>(count);
+    set syntax^.index = 0_u64;
+    set syntax^.total = 0_u64;
+    set syntax^.probe = 0_u64;
+    set syntax^.word_length = 0_u64;
+    set syntax^.phase = 1_u64;
+  } else {
+    if first != 36_u8 {
+      return 5_u64;
+    }
+    let text = &syntax^.line[1_u64..length];
+    let number = aof_sequence(input: text);
+    if number < 0_i64 {
+      return 5_u64;
+    }
+    let bulk = cvt::<i64, u64>(number);
+    match syntax^.total +checked bulk {
+      Ok(value: total) => {
+        set syntax^.total = total;
+      }
+      Err(error: overflow) => {
+        return 5_u64;
+      }
+    }
+    set syntax^.remaining = bulk;
+    if syntax^.index == 0_u64 {
+      set syntax^.word_length = bulk;
+    }
+    set syntax^.phase = 2_u64;
+    return 1_u64;
+  }
+  return 0_u64;
+}
+
+fn aof_syntax_line(syntax: &AofSyntax, eof: Bool) -> state: u64 writes(syntax) contract {
+  requires syntax^.line.len > 0_u64;
+  ensures syntax^.line.len == 0_u64;
+} {
+  let state = aof_syntax_line_parse(syntax: syntax, eof: eof);
+  set syntax^.line = slots_new::<u8, 1023>();
+  return state;
+}
+
+fn aof_syntax_next(syntax: &AofSyntax, input: &[u8], start: u64, end: u64, eof: Bool) -> event: AofEvent reads(input), writes(syntax) contract {
+  requires syntax^.line.len < 1023_u64;
+  requires start <= end;
+  requires end <= input^.len;
+  ensures syntax^.line.len < 1023_u64;
+  ensures event.next >= start;
+  ensures event.next <= end;
+} {
+  doc "Consume one memory chunk until an argument header or command boundary is known. The same pure parser drives startup, completed append accounting and exceptional disk rereads. EOF finalizes a short fgets line; a chunk boundary never does.";
+  let at = start;
+  loop @scan (
+    invariant lower: at >= start,
+    invariant upper: at <= end,
+    invariant header_room: syntax^.line.len < 1023_u64,
+    invariant probe_bound: syntax^.probe <= 5_u64
+  ) {
+    if syntax^.phase == 2_u64 {
+      if syntax^.remaining == 0_u64 {
+        set syntax^.remaining = 2_u64;
+        set syntax^.phase = 3_u64;
+        continue @scan;
+      }
+      if at < end {
+        let available = end - at;
+        let taken = imin(available, syntax^.remaining);
+        invariant step: taken <= available;
+        let next = at + taken;
+        if syntax^.index == 0_u64 {
+          let room = 5_u64 - syntax^.probe;
+          let count = imin(room, taken);
+          invariant probe_step: count <= room;
+          for (index in 0_u64..count) {
+            let source = at + index;
+            let target = syntax^.probe + index;
+            set syntax^.word[target] = input^[source];
+          }
+          set syntax^.probe = syntax^.probe + count;
+        }
+        set syntax^.remaining = syntax^.remaining - taken;
+        set syntax^.position = syntax^.position +wrap taken;
+        set at = next;
+        continue @scan;
+      }
+    } else if syntax^.phase == 3_u64 {
+      if at < end {
+        let available = end - at;
+        let taken = imin(available, syntax^.remaining);
+        invariant step: taken <= available;
+        set at = at + taken;
+        set syntax^.remaining = syntax^.remaining - taken;
+        set syntax^.position = syntax^.position +wrap taken;
+        if syntax^.remaining == 0_u64 {
+          set syntax^.index = syntax^.index +wrap 1_u64;
+          if syntax^.index == syntax^.count {
+            let kind = aof_block_word(input: &syntax^.word[0_u64..5_u64], start: 0_u64, length: syntax^.word_length, count: syntax^.count);
+            let previous = syntax^.valid;
+            set syntax^.valid = syntax^.position;
+            set syntax^.phase = 0_u64;
+            return AofEvent(state: 2_u64, next: at, start: previous, length: 0_u64, kind: kind);
+          }
+          set syntax^.phase = 1_u64;
+        }
+        continue @scan;
+      }
+    } else if at < end {
+      let byte = input^[at];
+      set at = at + 1_u64;
+      set syntax^.position = syntax^.position +wrap 1_u64;
+      place_back(window: &syntax^.line, value: byte);
+      let newline = byte == 10_u8;
+      let full = syntax^.line.len == syntax^.line.cap;
+      let complete = bor(newline, full);
+      if complete {
+        let final = False();
+        let state = aof_syntax_line(syntax: syntax, eof: final);
+        if state != 0_u64 {
+          return AofEvent(state: state, next: at, start: syntax^.position, length: syntax^.remaining, kind: 0_u64);
+        }
+      }
+      continue @scan;
+    }
+    if eof {
+      if syntax^.phase <= 1_u64 {
+        if syntax^.line.len > 0_u64 {
+          let state = aof_syntax_line(syntax: syntax, eof: eof);
+          if state != 0_u64 {
+            return AofEvent(state: state, next: at, start: syntax^.position, length: syntax^.remaining, kind: 0_u64);
+          }
+          continue @scan;
+        }
+        if syntax^.phase == 0_u64 {
+          return AofEvent(state: 3_u64, next: at, start: syntax^.valid, length: 0_u64, kind: 0_u64);
+        }
+      }
+      return AofEvent(state: 4_u64, next: at, start: syntax^.valid, length: 0_u64, kind: 0_u64);
+    }
+    return AofEvent(state: 0_u64, next: at, start: syntax^.valid, length: 0_u64, kind: 0_u64);
+  }
+}
