@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-14 Run HELLO and AUTH queued in a transaction inside EXEC
+
+Nodes: firn/transactions
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-hello-auth-tree, which asked to approve PR #81's change to the transactions node at head 912eb48: EXEC's atomic statement also reads the server configuration when HELLO or AUTH is queued; the connection commands EXEC runs extend from CLIENT subcommands to CLIENT, HELLO and AUTH; a wrong-password AUTH is answered even with replies pending, as a deliberate difference from Redis 7.2.16 that the owner chose on card firn-q-auth-error-pending; the rejected alternatives are updated to match.
+
+Summary: Redis 7.2.16 queues HELLO and AUTH, whose descriptors lack NO_MULTI, and runs their handlers in execCommand, so firn runs them inside EXEC through the network path's implementations instead of refusing the transaction with EXECABORT; a successful HELLO switches the encoding of its own and later replies while EXEC's outer array stays an array. EXEC holds the configured password for them; the compiler's lock ledger showed the server configuration is taken only when HELLO or AUTH is queued. Redis 7.2.16 omits the authentication error when replies are pending, which leaves fewer replies than commands; firn writes it, and that omission is recorded as rejected.
+
 ## 2026-10-13 Answer CLIENT handshake subcommands as Redis 7.2.16 does
 
 Nodes: firn/reported-facts, firn/transactions
