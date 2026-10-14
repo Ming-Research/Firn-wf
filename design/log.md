@@ -4,6 +4,14 @@ Newest first. One entry per approved change of the tree: a dated title,
 `Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
 owner-wide instructions' design-tree part owns the form.
 
+## 2026-10-13 Start firn the way redis-server does
+
+Nodes: firn/startup (new), firn/measurement-sessions
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A on card firn-q-ops-startup (firn starts and is configured like redis-server: a Redis-syntax config file and --directive arguments, only supported directives accepted and unknown ones refused with status 1, Redis's log format, firn's four positional arguments dropped), option A on card firn-q-ops-paths-interim (until Whitefoot opens ordinary paths, the config file path is relative to the start directory, `dir` accepts only `.` and `./`, and absolute paths, `..`, `include` and other `dir` values are refused with an error naming the missing capability), and option A (approve) on card firn-q-ops-tree, which asked to approve PR #114's design changes at head 4281189: the new node firn/startup with six startup decisions (the form `firn [config file or -] [--directive value ...]`; the interim path limit; the accepted directives, the six maxmemory-family ones validated by CONFIG SET's own code; `bind` taking one IPv4 address or `*`, unlike Redis; the test-only directive `--firn-clients N`; bare arguments after the config file name refused, unlike Redis), and one decision on firn/measurement-sessions: a benchmark picks the startup form for each firn version under test from that version's own source, recorded in the revision table, rather than one form for all versions or guessing by descent from the merge.
+
+Summary: firn read no config file, logged nothing and took four positional arguments; an operator replacing redis-server found it treating the config path as a port. It now starts and is configured as redis-server is, with two stated differences (one `bind` address; bare arguments refused) and a temporary path limit that Whitefoot's request for opening ordinary paths removes. The benchmark script chooses the old or new startup form per version so comparisons across the change still run.
+
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
 Nodes: firn/memory-limit
