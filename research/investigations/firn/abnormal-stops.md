@@ -68,7 +68,7 @@ number or diagnostic; those differences are stated explicitly.
 | `firn/server/server.wf:514` | Closing the stop listener restores host defaults. After a first observed stop signal, a later SIGINT/SIGTERM can terminate immediately. The close also runs after a `stop_next` error (`:511`). | Second SIGINT during shutdown exits **1**; SIGTERM remains handled ([server.c:6493–6522][redis-signals]). **(b)** for the deliberate second-signal policy; unexpected loss of interception after a non-cancellation wait error is **(c)**. See [the existing decision](../../../design/firn/orderly-stop.md). |
 | `firn/server/server.wf:1116` → `:1147` | **Any** `tcp_accept` error breaks acceptance, including a recoverable resource/I/O error; listener closes, clients drain, and entry can return **0**. Pending clients may instead keep the drain waiting (`:1128`). | The accept handler retries selected errors or returns to the event loop ([socket.c:311–330][redis-accept]); **(c)**. Cancellation after an intentional shutdown is the normal exception. |
 
-The status-4 path has these trigger sites; propagation/cleanup sites are not
+Firn-wf #87 later changed every one of these AOF startup refusals to exit **1**, matching Redis; the audit above records the status as it was at the audited revision. The status-4 path had these trigger sites; propagation/cleanup sites are not
 counted as additional exits:
 
 | Firn trigger site | Fatal condition | Redis comparison / class |
