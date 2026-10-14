@@ -59,8 +59,19 @@ firn-test: $(BUILD)/firn-test
 $(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 	$(WHITEFOOTC) --par --par-call-grain off --graph $(FIRN_GRAPH) --entry firn --cache $(BUILD)/firn-test-cache -o $@
 
+# Keep ptrace and process-stop experiments out of the ordinary suite's load:
+# its continuous-write rewrite cases must not compete with /proc stop polling.
+# Both selections are required; the serial selection must run all three cases.
 test: firn-test list-ceiling
-	FIRN=$(BUILD)/firn-test cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked
+	@redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) && \
+	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
+	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked -- --skip rewrite_faults:: --show-output
+	@redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) || exit $$?; \
+	log=$$(mktemp) || exit $$?; trap 'rm -f "$$log"' EXIT; \
+	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
+	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked --test network rewrite_faults:: -- \
+	  --test-threads=1 --nocapture >"$$log" 2>&1; status=$$?; cat "$$log"; \
+	[ $$status -eq 0 ] && grep -q '^test result: ok\. 3 passed' "$$log"
 
 # Direct Whitefoot fixtures exercise the real private list command bodies at
 # an eight-element ceiling, without a production test hook or a giant network
@@ -83,14 +94,14 @@ redis-suite: $(BUILD)/firn
 	$(PY) -B $(ROOT)/tests/redis-suite/ratchet.py check "$(BUILD)/redis-suite/tests.tsv" --passing $(ROOT)/tests/redis-suite/passing.tsv --unstable $(ROOT)/tests/redis-suite/unstable.tsv
 
 # The append-only file's sync failing on a real device, firn against Redis
-# 7.2.16: the two cases of tests/aof_sync_fault.rs. Not part of `make check`:
+# 7.2.16: the sync and rewrite fault cases of tests/aof_sync_fault.rs. Not part of `make check`:
 # the cases are ignored there because they need a device only root can make,
 # so the aof-sync-fault job of .github/workflows/check.yml makes it first with
 #   sudo tests/aof_sync_fault_device.sh setup MOUNT UID:GID
 # and exports FIRN_SYNC_FAULT_MOUNT=MOUNT and REDIS_SERVER, the path of a
 # redis-server 7.2.16. The cases fail and heal the one device, so they run on
 # one test thread, one after the other. Without one of the variables, or
-# unless both cases ran and passed, the target fails. The output is kept so
+# unless all five cases ran and passed, the target fails. The output is kept so
 # that each case's account of what every server did shows, and the pass is
 # read from the run itself.
 aof-sync-fault: firn-test
@@ -104,8 +115,11 @@ aof-sync-fault: firn-test
 	  --ignored --exact --nocapture --test-threads=1 \
 	  aof_sync_fault::aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device \
 	  aof_sync_fault::aof_sync_failure_keeps_a_write_acknowledged_at_a_page_end \
+	  aof_sync_fault::aof_rewrite_temporary_enospc_keeps_acknowledged_state \
+	  aof_sync_fault::aof_rewrite_temporary_eio_keeps_acknowledged_state \
+	  aof_sync_fault::aof_rewrite_current_append_failure_observes_publication \
 	  >"$$log" 2>&1; status=$$?; cat "$$log"; \
-	[ $$status -eq 0 ] && grep -q '^test result: ok\. 2 passed' "$$log"
+	[ $$status -eq 0 ] && grep -q '^test result: ok\. 5 passed' "$$log"
 
 # The server as it is measured: the program and the runtime optimized
 # together under full link-time optimization.

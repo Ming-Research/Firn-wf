@@ -8,6 +8,8 @@ the entries of the keys a command uses and the separate expiry, log or server
 metadata objects it also needs. It is named for firn, snow that has lasted a
 season: stored and compacted.
 
+See [safety guarantees and their evidence](../docs/safety.md).
+
 Its commands are these, which began as the ones `redis-benchmark`'s default
 suite sends, with expiry, an append-only file and the connection commands
 clients send on their own:
@@ -412,6 +414,14 @@ directory permits at most 8188 queued chunks, further limited by R. If startup
 left the file inside an unfinished MULTI, the rewrite cuts the sealed file
 before that MULTI; the new base holds the live writes appended after it, as
 Redis's rewrite does.
+
+The writer keeps the increment's syntax and unfinished-block boundary from
+startup and advances it after successful appends, so a healthy switch does
+not reread accumulated history. Successful append rollback preserves the
+previous boundary. An uncertain append or truncation outcome invalidates it;
+the next switch then uses the charged streaming reader to recover the state.
+Collecting-buffer growth during rotation still consumes R and can abort a
+rewrite when storage or this exceptional reread delays ordinary draining.
 
 When a sync of the append-only file fails, firn refuses writes and `PING`
 with Redis's `MISCONF` reply, still answers reads, and INFO reports

@@ -38,8 +38,19 @@ fn memory_excluded(meta: &Meta, logged: Bool) -> bytes: u64 reads(meta) {
   return 0_u64;
 }
 
+fn raise_memory_peak(store: &Keyspace, client: &Client, used: u64) -> result: unit reads(store), writes(client) waits {
+  doc "Raises the recorded heap peak to a reading. The peak only rises, so a reading at or below the peak this client last saw recorded cannot change it and takes no Meta statement; a higher one takes this short statement, which does not cover command execution, and remembers the peak it leaves.";
+  if used > client^.seen_peak {
+    atomic meta = &store^.meta {
+      set meta^.memory_peak = imax(meta^.memory_peak, used);
+      set client^.seen_peak = meta^.memory_peak;
+    }
+  }
+  return unit;
+}
+
 fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(store), writes(client) waits {
-  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading. The peak only rises, so a reading at or below the peak this client last saw recorded cannot change it and takes no Meta statement; a higher one takes this short statement, which does not cover command execution, and remembers the peak it leaves.";
+  doc "Redis 7.0.15 call records peak heap after each command, before the next command can evict. INFO and eviction also record each reading. The peak only rises, so a reading at or below the peak this client last saw recorded cannot change it and takes no Meta statement; a higher one takes this short statement, which does not cover command execution, and remembers the peak it leaves. The body repeats raise_memory_peak on purpose: calling it here ran unlimited 2-core SET at 0.964 of main on the i9-14900K (research/investigations/memory-limit/README.md, admission without Meta).";
   let used = heap_read(client: client);
   if used > client^.seen_peak {
     atomic meta = &store^.meta {
@@ -312,14 +323,20 @@ fn eviction_sample(keys: &ConcurrentHashMap<Entry>, meta: &Meta, client: &Client
 }
 
 fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool reads(store), writes(client), writes(clock) waits {
-  doc "Redis 7.0.15 performEvictions: only EVICT_FAIL sets OOM. Over the limit, the keyspace map's reserve is given back first and the limit read again, since that storage holds no key. Each command's context re-reads the heap before every victim; no global command turn is held. EVICT_RUNNING permits the command and the next command resumes, replacing Redis's evictionTimeProc continuation as the owner ruled. Check monotonic tenacity every 16 deletions, and every 16 unsuccessful batches to bound sparse/ghost searches. An exhaustion decision reads the heap in the same whole-map and Meta statement as its final sample, which is its admission point even if a writer starts afterward. Each deletion, DEL propagation and statistic update holds the chosen entry plus Meta together; an entry now expired follows active expiry instead of eviction. A single map_scan and a single deletion remain indivisible, as Redis's sampling and deletion do.";
+  doc "Redis 7.0.15 performEvictions: only EVICT_FAIL sets OOM. Without an append-only file the first check takes no Meta statement: nothing is excluded and no rewrite can start, so memory_over reduces to the raw heap against the limit, and the peak is raised as record_memory_peak raises it; with one, the first check reads the excluded AOF capacity and may abort a rewrite under Meta. Over the limit, the keyspace map's reserve is given back first and the limit read again, since that storage holds no key. Each command's context re-reads the heap before every victim; no global command turn is held. EVICT_RUNNING permits the command and the next command resumes, replacing Redis's evictionTimeProc continuation as the owner ruled. Check monotonic tenacity every 16 deletions, and every 16 unsuccessful batches to bound sparse/ghost searches. An exhaustion decision reads the heap in the same whole-map and Meta statement as its final sample, which is its admission point even if a writer starts afterward. Each deletion, DEL propagation and statistic update holds the chosen entry plus Meta together; an entry now expired follows active expiry instead of eviction. A single map_scan and a single deletion remain indivisible, as Redis's sampling and deletion do.";
   if client^.maxmemory == 0_u64 {
     return False();
   }
   let logged = store^.logging;
   let over = False();
-  atomic meta = &store^.meta {
-    set over = memory_over(meta: meta, client: client, logged: logged);
+  if logged {
+    atomic meta = &store^.meta {
+      set over = memory_over(meta: meta, client: client, logged: logged);
+    }
+  } else {
+    let used = heap_read(client: client);
+    raise_memory_peak(store: store, client: client, used: used);
+    set over = used > client^.maxmemory;
   }
   if bnot(over) {
     return False();
