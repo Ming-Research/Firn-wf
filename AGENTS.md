@@ -52,6 +52,9 @@ When priorities conflict, first:
   `redis-bench.yml` workflow; an upgrade of Whitefoot uses them for the
   comparison
   [downstream.md](whitefoot-kit/downstream.md#upgrading-whitefoot) asks for.
+  The servers run on P-cores and the load clients on all 16 E-cores
+  (CPUs 16-31), for every competitor alike; a cell whose clients average over
+  90% busy is marked client-limited.
 
 ## Checks
 
