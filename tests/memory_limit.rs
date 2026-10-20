@@ -217,19 +217,17 @@ fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
     let mut observed = info(&mut client, "all");
     assert_eq!(reply, "+Background append only file rewriting started\r\n",
         "rewrite refused at the eviction limit; before:\n{before}\nafter (abort reason and memory):\n{observed}");
-    let evicted_at_start = number(&observed, "evicted_keys");
     // A few writes right after the reply, while the rewrite is usually still
-    // running. At the limit each write evicts a key; if the rewrite is still
-    // running, its capture must record that eviction, and the restart below
-    // must not bring the key back. The writes stay few because the rewrite's
-    // rotation reserve is only R, and a larger batch aborts the rewrite.
+    // running. The writes stay few because the rewrite's rotation reserve is
+    // only R, and a larger batch aborts the rewrite. They may evict nothing:
+    // the rewrite's reserve is outside maxmemory, so eviction resumes only
+    // once the figure is over the limit again. Evictions inside the rewrite
+    // window are therefore not guaranteed by this case.
     for index in written..written + 4 {
         assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
     }
     written += 4;
     observed = info(&mut client, "all");
-    assert!(number(&observed, "evicted_keys") > evicted_at_start,
-        "writes at the limit evicted no key: {observed}");
     let deadline = Instant::now() + Duration::from_secs(60);
     while number(&observed, "aof_rewrite_in_progress") != 0 {
         assert!(Instant::now() < deadline, "cache rewrite did not finish: {observed}");

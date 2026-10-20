@@ -920,6 +920,9 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
             break;
         }
         assert!(Instant::now() < deadline, "S1 never rotated");
+        // Writes that land while S1 rotates grow the collecting buffer, which
+        // is what the rotation charge records.
+        request(&mut client, &[b"SET", b"hot", &payload]);
         std::thread::sleep(Duration::from_micros(100));
     }
     // After rotation the rotation charges are part of the rewrite ledger, and

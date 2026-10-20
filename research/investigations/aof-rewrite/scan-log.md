@@ -1007,8 +1007,11 @@ required. The head commit's checks pass, including the cache case, in
 [run 39466887032](https://github.com/Ming-Research/Firn-wf/actions/runs/39466887032)
 on 9f5f051. Pins and submodules are unchanged.
 
-The cache case writes batches of keys while the rewrite runs, so evictions
-happen inside the rewrite window and the restart check covers them.
+The cache case writes four keys right after the reply. The rewrite's reserve
+is excluded from maxmemory, so these writes may evict nothing (CI run
+39476647418 with 32-key batches aborted with rotation_reserve; the four-key
+batch did not evict in run 39486884100). Evictions while a rewrite captures
+are not covered by this case.
 
 The rotation-charge subtraction in mem_not_counted_for_evict
 (`firn/commands/eviction.wf`, memory_excluded) is checked by
