@@ -17,8 +17,6 @@ Summary: A SIGTERM or SIGINT during the startup replay used to end firn by the h
 
 Nodes: firn/append-only-file
 
-Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-aof-groups-tree, which asked to approve PR #101's two AOF-writing design decisions at head 4114519: how a successful SET with an expiry is appended, and how a command with several effects is framed with MULTI and EXEC.
-
 Summary: A successful SET supplied with PXAT appends its original argument vector; EX, PX and EXAT append SET key value PXAT with the absolute millisecond expiry, and GET is stripped only when there is no expiry, as Redis 7.2.16's setGenericCommand does. An ordinary top-level command remembers its initial AOF length and an effect counter, appends effects under its existing atomic hold, and inserts the 15-byte MULTI frame at that offset and appends the 14-byte EXEC frame only when it commits several effects; zero effects write nothing and one stays bare, as propagatePendingCommands groups the execution unit, including a command's own lazy-expiry DELs. The single-effect hot path adds only the offset and counter; the frame uses the rotation budget and is completed before sequence commit. Counted partial SPOP contributes one SREM per batch of at most 1024 members. Scripts and EXEC keep their outer grouping; active-expiry and eviction deletions are published independently.
 
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
