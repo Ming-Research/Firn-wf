@@ -921,8 +921,10 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
         }
         assert!(Instant::now() < deadline, "S1 never rotated");
         // Writes that land while S1 rotates grow the collecting buffer, which
-        // is what the rotation charge records.
-        request(&mut client, &[b"SET", b"hot", &payload]);
+        // is what the rotation charge records. They are small: 32 KiB writes
+        // here exhausted the reserve and kept S1 from rotating (CI run
+        // 39498935592).
+        request(&mut client, &[b"SET", b"hot", b"rotating"]);
         std::thread::sleep(Duration::from_micros(100));
     }
     // After rotation the rotation charges are part of the rewrite ledger, and
