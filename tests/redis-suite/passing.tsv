@@ -128,6 +128,7 @@ unit/keyspace	RENAMENX against already existing key (2)	1
 unit/keyspace	RENAMENX basic usage	1
 unit/keyspace	RENAMENX where source and dest key are the same (existing)	1
 unit/keyspace	Regression for pattern matching long nested loops	1
+unit/keyspace	Regression for pattern matching very long nested loops	1
 unit/keyspace	Untagged multi-key commands	1
 unit/keyspace	Vararg DEL	1
 unit/keyspace	Zero length value in key. SET/GET/EXISTS	1

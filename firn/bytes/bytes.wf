@@ -602,7 +602,7 @@ fn class_match(input: &[u8], open: u64, end: u64, byte: u8, nocase: Bool) -> res
 }
 
 fn glob_match(input: &[u8], start: u64, length: u64, name: &[u8], nocase: Bool) -> matched: Bool reads(input), reads(name) {
-  doc "Whether a name matches the glob pattern of length bytes of the input from start, as Redis's stringmatchlen matches one with the supplied case flag: * matches any run of bytes, ? any one byte, [...] one byte as class_match reads a class, a backslash makes the next byte literal, and any other byte matches itself, folding case only when nocase is true. Where Redis recurses at each *, this returns to the last * passed and lets it take one more byte, which accepts the same names without a recursion as deep as the pattern's stars; as in Redis, a * never takes the name's last byte from the rest of the pattern, which cannot match an empty name, and an empty name matches only an empty pattern.";
+  doc "Whether a name matches the glob pattern of length bytes of the input from start, as Redis 7.2.16's stringmatchlen matches one with the supplied case flag: * matches any run of bytes, ? any one byte, [...] one byte as class_match reads a class, a backslash makes the next byte literal, and any other byte matches itself, folding case only when nocase is true. This returns to the last * passed and lets it take one more byte, counting entry into each nonterminal star suffix as Redis counts recursion: adjacent stars collapse, a trailing star succeeds without another level, and entering a 1001st suffix returns no match. Retries, classes, escaped stars and other bytes add no level. As in Redis, a * never takes the name's last byte from the rest of the pattern, which cannot match an empty name, and an empty name matches only an empty pattern.";
   let end = start +wrap length;
   let size = name^.len;
   if size == 0_u64 {
@@ -614,6 +614,7 @@ fn glob_match(input: &[u8], start: u64, length: u64, name: &[u8], nocase: Bool) 
   let starred = False();
   let resume = start;
   let resume_at = 0_u64;
+  let nesting = 0_u64;
   loop @matching {
     let step = 0_u64;
     let next = position;
@@ -636,6 +637,10 @@ fn glob_match(input: &[u8], start: u64, length: u64, name: &[u8], nocase: Bool) 
           if after >= end {
             return True();
           }
+          if nesting >= 1000_u64 {
+            return False();
+          }
+          set nesting = nesting + 1_u64;
           set starred = True();
           set resume = after;
           set resume_at = at;

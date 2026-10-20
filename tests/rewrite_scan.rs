@@ -412,6 +412,14 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
             request(&mut client, &[b"HINCRBYFLOAT", b"single:hash", b"field", b"0.5"]);
             request(&mut client, &[b"SADD", b"single:set", b"a", b"b", b"c"]);
             request(&mut client, &[b"SPOP", b"single:set"]);
+            // One statement on one key that writes several records: a
+            // 1500-member SPOP COUNT writes two SREM batches (1024 and 476),
+            // and both must reach the captured journal and the restored base.
+            let multi: Vec<String> = (0..2500).map(|i| format!("m{i}")).collect();
+            let mut sadd: Vec<&[u8]> = vec![b"SADD".as_slice(), b"single:multi".as_slice()];
+            sadd.extend(multi.iter().map(|m| m.as_bytes()));
+            request(&mut client, &sadd);
+            request(&mut client, &[b"SPOP", b"single:multi", b"1500"]);
             for key in &worker_unobserved {
                 request(&mut client, &[b"INCR", key]);
             }
