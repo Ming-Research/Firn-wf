@@ -281,11 +281,22 @@ and passes over a subsequent EXEC outside a block.
 
 ## Validation still needed
 
+The [rewrite fault investigation](rewrite-faults.md) adds paired Redis
+7.2.16 and Firn cases for process kills, temporary-base ENOSPC/EIO and a
+current-increment append error. At revision c27b414,
+[run 38426641490](https://github.com/Ming-Research/Firn-wf/actions/runs/38426641490)
+passed all three serial crash cases in 27.44 seconds and all five device
+cases in 106.39 seconds. The ordinary network suite passed in 55.70 seconds,
+including the unchanged long-history scan case before the crash cases ran;
+that supports but does not prove the parallel-load hypothesis. The
+investigation records the recovery evidence, current-append consequences,
+policy recommendation and observation limits.
+
 The network cases cover the disabled-AOF refusal, independent appendfilenames
 sharing a directory, interrupted directory states, host refusals before
 publication, concurrent writes, shutdown and successful installation. They
-have not been run for this implementation; compilation and all checks await
-CI after push. Interrupted-state fixtures establish restart expectations,
+passed in the ordinary network invocation of that gate. Interrupted-state
+fixtures establish restart expectations,
 not execution of a failing directory sync. That path needs a CI fault
 experiment in which manifest rename succeeds and the following directory
 sync returns an error, for both switching and installation. It must observe
@@ -297,6 +308,6 @@ unverified and must retain both history files and manifest entries. The
 partial-command-in-block and nested-MULTI rewrite cases expect Redis's
 reverted values after restart; the appended-transaction case expects the
 now-completed block's values to survive. The apostrophe appendfilename case
-expects a quoted, reloadable manifest. These cases await CI; no local build,
-check or test was run for these review fixes. No performance result is
+expects a quoted, reloadable manifest. These cases passed in that gate; no
+local build, check or test was run. No performance result is
 claimed.
