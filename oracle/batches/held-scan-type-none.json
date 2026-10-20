@@ -3,16 +3,18 @@
   "name": "held-scan-type-none",
   "resp": 2,
   "appendonly": true,
-  "preload_aof": [
+  "commands": [
+   [
+    "DEBUG",
+    "SET-ACTIVE-EXPIRE",
+    "0"
+   ],
    [
     "SET",
     "n1",
-    "1"
-   ],
-   [
-    "PEXPIREAT",
-    "n1",
-    "1"
+    "1",
+    "PX",
+    "100"
    ],
    [
     "SET",
@@ -22,19 +24,14 @@
    [
     "SET",
     "n3",
-    "3"
+    "3",
+    "PX",
+    "100"
    ],
    [
-    "PEXPIREAT",
-    "n3",
-    "1"
-   ]
-  ],
-  "commands": [
-   [
     "DEBUG",
-    "SET-ACTIVE-EXPIRE",
-    "0"
+    "SLEEP",
+    "0.3"
    ],
    [
     "MULTI"
