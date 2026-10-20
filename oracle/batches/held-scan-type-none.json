@@ -32,6 +32,11 @@
   ],
   "commands": [
    [
+    "DEBUG",
+    "SET-ACTIVE-EXPIRE",
+    "0"
+   ],
+   [
     "MULTI"
    ],
    [
@@ -72,6 +77,12 @@
    ],
    [
     "__AOF__"
+   ]
+  ],
+  "config": [
+   [
+    "enable-debug-command",
+    "yes"
    ]
   ]
  }
