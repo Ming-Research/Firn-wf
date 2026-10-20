@@ -1091,8 +1091,8 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes_with_lists_a
 /// becomes SET, INCRBYFLOAT becomes SET with KEEPTTL, GETEX becomes
 /// PEXPIREAT or PERSIST, and EXAT and EXPIREAT become millisecond deadlines.
 /// The complete 1418-byte expected incremental file, including SELECT 0,
-/// was recorded by Redis 7.2.16 for the same requests in
-/// https://github.com/Ming-Research/Firn-wf/actions/runs/38403444843
+/// was recorded by Redis 7.2.16 for the same requests; the recording is kept
+/// in research/experiments/aof-oracle/legacy-forms-recording.json
 /// (legacy-direct-propagation-forms). Only SELECT 0 frames are ignored in
 /// the comparison, keeping it independent of database-selection placement.
 /// The pipeline must reach expired keys before active expiry removes them;
@@ -1172,7 +1172,8 @@ fn firn_records_its_writes_as_redis_propagates_them() {
 /// Redis 7.2.16 preserves SET's argument vector when PXAT was supplied,
 /// including NX and XX GET, but rewrites EX, PX and EXAT to SET key val PXAT
 /// milliseconds. The first two byte expectations and PX rewrite are recorded
-/// in https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583;
+/// by Redis 7.2.16 in research/experiments/aof-oracle/set-spop-recording.json
+/// (case aof-set-nx-pxat);
 /// mixed-case/reordered arguments and EX/EXAT follow src/t_string.c's
 /// setGenericCommand and getExpireMillisecondsOrReply in tag 7.2.16.
 #[cfg(target_os = "linux")]
@@ -1235,8 +1236,9 @@ fn firn_records_set_pxat_arguments_and_rewrites_other_expiries() {
 
 /// Redis 7.2.16 writes SPOP COUNT's partial removals in SREM batches of at
 /// most 1024 members, wraps multiple effects in MULTI/EXEC, and writes DEL
-/// when the entire set is popped. The 2500/3000 and 2/3 cases were recorded
-/// in https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583;
+/// when the entire set is popped. The 2500/3000 and 2/3 cases were recorded by
+/// Redis 7.2.16 in research/experiments/aof-oracle/set-spop-recording.json
+/// (case aof-spop-2500);
 /// the 1024 boundary and whole-set rule follow src/t_set.c's
 /// spopWithCountCommand in tag 7.2.16. Members are random, so the AOF's
 /// removed members must equal the popped reply, in its order, rather than
