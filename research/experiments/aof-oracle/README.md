@@ -52,6 +52,6 @@ the reply's raw text.
 - Case `held-scan-type-none`: the requests of
   `firn_records_held_scan_type_none_as_redis_propagates_it`, with the two
   keys made expired by time (`PX 100`) and `DEBUG SLEEP 0.3` while active
-  expiry is off, so no command removes them before the transaction. The
-  first three records of the AOF are the setup `SET`s; the rest are the
+  expiry is off, so no command removes them before the transaction. The AOF
+  starts with `SELECT 0`, then three setup `SET`s; after them are the
   expected records of the test, which the replies match too.
