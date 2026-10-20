@@ -11514,8 +11514,9 @@ fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
     assert_eq!(finished(child).0, 0);
 }
 
-/// Exact Redis 7.2.16 LFU batches from lfu-rename-msetnx.json in
-/// https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583:
+/// Exact Redis 7.2.16 LFU batches from research/experiments/aof-oracle/
+/// lfu-rename-msetnx.json (recorded in
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583):
 /// a moved object starts at five; a same-name rename only looks it up;
 /// twenty duplicate-key MSETNX batches store the last value without a touch.
 #[cfg(target_os = "linux")]

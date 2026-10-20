@@ -55,3 +55,12 @@ the reply's raw text.
   expiry is off, so no command removes them before the transaction. The AOF
   starts with `SELECT 0`, then three setup `SET`s; after them are the
   expected records of the test, which the replies match too.
+
+## `lfu-rename-msetnx.json`
+
+- Source run: https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583
+- Run head commit: `351b3d4c842d0f1e5fa2b95a8a8b4180968a3a90`
+- Case `lfu-rename-msetnx`: under `allkeys-lfu` with `lfu-log-factor 0` and
+  `lfu-decay-time 0`, the object frequencies after `RENAME`, `RENAMENX`, a
+  same-name `RENAME`, and twenty duplicate-key `MSETNX` batches. Used by
+  `firn_matches_the_lfu_rename_and_msetnx_oracle`.
