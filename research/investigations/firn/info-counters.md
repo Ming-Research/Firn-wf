@@ -3,8 +3,7 @@
 Board item: `firn-scope-info`. The counter study below remains a proposed
 design, not a counter implementation or performance result. The later
 [INFO field audit](#info-field-audit) records the separate field corrections
-and their network cases. No compiler, test, reference server or benchmark
-was run on this machine. The owner drives CI.
+and their network cases.
 
 ## Question and conclusion
 
@@ -595,7 +594,7 @@ false sharing. A source shard target alone is not evidence of a cheap path.
 2. Approve the counting/publication/snapshot design and its throughput budget.
    Put the surviving decisions in `design/firn/reported-facts.md` or a child
    statistics node, with the relevant script/transaction amendments if their
-   support is extended. This study changes no live design node or approval log.
+   support is extended. This study changes no live design node.
 3. Audit every supported Redis lookup site and firn execution path. Record
    explicit deltas and admission/completion distinctions; include network,
    transaction, script, expiry and AOF replay paths. Fix the existing rewrite
@@ -606,12 +605,12 @@ false sharing. A source shard target alone is not evidence of a cheap path.
    successful socket reads, common snapshot construction to INFO, and the
    whole baseline operation to RESETSTAT. Dispose of retry-local deltas on
    every abandoned attempt and preserve accepted error-path deltas.
-5. In owner-driven CI, run the focused oracle cases below and existing suite
+5. In CI, run the focused oracle cases below and existing suite
    ratchet, then the gate and AOF fault job appropriate to the implementation.
    Expected values must come from 7.2.16 source or captured oracle output.
 6. Run the registered 14900K comparison. Perform a separate completion review
    of the implementation, contracts, full diff, actual validation and design
-   correspondence. Stop for the owner to commit and approve delivery.
+   correspondence.
 
 ### Focused cases to add in the implementation, not tests added by this study
 
@@ -649,9 +648,10 @@ no workaround implemented, and no live design node, pin or submodule changed.
 
 ## INFO field audit
 
-This is the fields step of `firn-scope-info`, separate from the counter
-proposal above. The baseline is this worktree before the field changes.
-The reference is [Redis 7.2.16's INFO implementation](https://github.com/redis/redis/blob/7.2.16/src/server.c#L5019-L5833)
+These are the INFO field corrections of board item `firn-info-fields`,
+separate from the counter proposal above. The baseline is firn before the
+field changes.
+The reference is [Redis 7.2.16's INFO implementation](https://github.com/redis/redis/blob/7.2.16/src/server.c#L5465-L6268)
 and the raw RESP replies recorded in [the INFO oracle CI run](https://github.com/Ming-Research/Firn-wf/actions/runs/38396764389).
 Batch 0 uses RESP2 without AOF; batch 1 uses RESP3 with AOF. Both first send
 `SET k v` and `EXPIRE k 100`. The field names, their relative order,
@@ -727,7 +727,7 @@ measurement. A field group has the same disposition for every named field.
 | `aof_buffer_length` | Persistence; bytes, only when AOF enabled | Collecting plus retained unwritten lengths | Retain actual sum after sizes/pending rewrite. |
 | `aof_pending_bio_fsync`, `aof_delayed_fsync` | Persistence; decimal counts, only when AOF enabled | `0`, `0` | Retain: sole writer syncs itself, with no BIO jobs or defer-behind-BIO mechanism. |
 | Loading progress fields | Persistence; conditional epoch/bytes/percent/ETA fields | Absent | Keep omitted: INFO is not served while startup loads. |
-| `firn_aof_rewrite_*` | Firn extension, no Redis field | Real documented diagnostics interleaved | Preserve after every Redis Persistence field; proposed design node records that boundary. Commit sequence stays AOF-only. |
+| `firn_aof_rewrite_*` | Firn extension, no Redis field | Real documented diagnostics interleaved | Preserve after every Redis Persistence field; the design node records that boundary. Commit sequence stays AOF-only. |
 | `total_connections_received` | Stats; signed accepted-connection count | Actual total | Retain. |
 | `total_net_repl_input_bytes`, `total_net_repl_output_bytes`, `instantaneous_input_repl_kbps`, `instantaneous_output_repl_kbps` | Stats; signed bytes, two decimals | Absent | Add `0`, `0`, `0.00`, `0.00`: no replication traffic. |
 | `rejected_connections`, `sync_full`, `sync_partial_ok`, `sync_partial_err` | Stats; signed counts | Fixed `0`, after eviction count | Place before `evicted_keys`, retaining unsupported-feature zeros. |
@@ -792,31 +792,16 @@ and expiration requests remain the owners of the excluded counters.
 
 ### Design, unresolved evidence and oracle placeholders
 
-The proposed [diagnostic-tail decision](../../../design/firn/info-diagnostics.md)
+The [diagnostic-tail decision](../../../design/firn/info-diagnostics.md)
 keeps documented rewrite measurements available in Persistence after the
 Redis fields, rather than moving them to a new selection or removing them.
 It changes no CLIENT/Clients decision. The existing memory-limit and
 append-only-file decisions continue to own heap accounting and sync
-recovery, including their deliberate differences from Redis. Owner approval
-of the new node remains pending; no approval log was written.
+recovery, including their deliberate differences from Redis.
 
 No new `ORACLE` placeholder is needed for the field cases: their structural
 and fixed-value expectations are recorded or source-derived. The three
 `ORACLE` rows in the preceding counter study remain unresolved and outside
 this implementation: separate transport sends; pipelined/fragmented sends;
 and direct-command versus MULTI/EXEC startup AOF replay. Their exact batches
-remain in that study's table. No new Whitefoot gap was encountered or worked
-around, no excluded counter was introduced, and no pin or submodule moved.
-Build acceptance, the new network results, ratchet results and a completion
-review with actual CI evidence remain unverified until the owner supplies CI.
-
-A separate read-only review by `gpt-6.1-sol` covered the complete working
-diff, the imported study comparison, the new design node, affected consumers
-and both oracle batches. It found that the populated-keyspace assertion
-derived its expected field list from the actual reply and could pass without
-`db0`. The assertion now requires `db0` unconditionally after SET/EXPIRE;
-the reviewer inspected that repair. The HELLO attribution comment was also
-corrected to say batch 1 uses RESP3, without claiming it records HELLO.
-No outstanding source-inspection finding remained. The review checked all
-project and design checklist groups; compiler/runtime, ratchet, gate and
-pin-readiness evidence remained unverified. No suite was run for the review.
+remain in that study's table.

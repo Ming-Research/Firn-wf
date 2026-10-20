@@ -566,7 +566,7 @@ order; the documented `firn_aof_rewrite_*` diagnostics follow them as a tail.
 when both append and sync errors are clear, otherwise `err`, independently of
 `aof_last_bgrewrite_status`. With AOF enabled, `aof_buffer_length` reports the
 collecting bytes plus bytes retained by the writer, excluding already appended
-bytes awaiting sync (`server.c:5596-5650`). `aof_pending_bio_fsync` and
+bytes awaiting sync (`server.c:5818-5832`). `aof_pending_bio_fsync` and
 `aof_delayed_fsync` are zero: firn's sole writer performs sync itself, with no
 background BIO queue or append postponement behind a background sync. The firn-only field
 `firn_aof_rewrite_commit_seq` is the actual dataset statement sequence while

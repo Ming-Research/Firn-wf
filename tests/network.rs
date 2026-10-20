@@ -4714,6 +4714,43 @@ fn firn_info_fields_match_redis_7_2_16_resp3_with_aof() {
     info_field_audit_case(3, true);
 }
 
+/// Redis 7.2.16 server.c genRedisInfoString takes uptime_in_seconds as
+/// server.unixtime - server.stat_starttime, two whole-second clocks, so the
+/// uptime steps exactly when the calendar second does. An uptime computed from
+/// the millisecond difference would step a start-time fraction of a second
+/// later. firn reads server_time_usec and the uptime's clock together, so the
+/// calendar second less the uptime is one constant while the uptime steps.
+#[test]
+fn firn_info_uptime_steps_with_the_calendar_second() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut starts = std::collections::BTreeSet::new();
+    let mut steps = 0_u32;
+    let mut before = None;
+    let began = Instant::now();
+    // 2.3 s hold at least two calendar-second boundaries wherever they fall.
+    while began.elapsed() < Duration::from_millis(2300) {
+        client.write_all(&resp(&["INFO", "server"])).unwrap();
+        let info = info_reply(&mut client, 2);
+        let seconds = info_field(&info, "uptime_in_seconds").unwrap().parse::<u64>().unwrap();
+        let micros = info_field(&info, "server_time_usec").unwrap().parse::<u64>().unwrap();
+        starts.insert((micros / 1_000_000).wrapping_sub(seconds));
+        if before.is_some_and(|earlier| earlier != seconds) {
+            steps += 1;
+        }
+        before = Some(seconds);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(steps >= 2, "the uptime stepped {steps} times in 2.3 s");
+    assert_eq!(starts.len(), 1, "uptime_in_seconds left the calendar second: starts {starts:?}");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
 /// firn answers in RESP3 after HELLO 3 as Redis 7.2.16 does, and in RESP2
 /// again after HELLO 2: HELLO's map with protocol 3; the null for an absent
 /// string, an absent element of MGET and LPOP's count on an absent key; a map

@@ -1,0 +1,157 @@
+# Temporary (board item firn-info-fields): shows that the INFO cases fail on
+# a server that breaks the condition each protects, and pass on the unchanged
+# server. Delete it with the review fixes' last commit.
+name: tmp-info-fails
+
+on:
+  push:
+    branches: [claude/info-fields]
+
+jobs:
+  mutant:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: control
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof firn_info_fields_match_redis_7_2_16_resp3_with_aof firn_info_uptime_steps_with_the_calendar_second firn_configures_and_reports_maxmemory
+            expect: pass
+          - name: baseline
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof firn_info_fields_match_redis_7_2_16_resp3_with_aof
+            expect: 'assertion .left == right. failed'
+          - name: order
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof
+            expect: 'Persistence: Redis field names, section and order'
+          - name: duplicate
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof
+            expect: 'duplicate INFO field: uptime_in_days'
+          - name: framing
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof
+            expect: 'INFO line: '
+          - name: aof-fields-off
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof
+            expect: 'Persistence: Redis field names, section and order'
+          - name: debug-in-all
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof
+            expect: '"Debug"'
+          - name: commandstats-in-default
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof
+            expect: '"Commandstats"'
+          - name: human-unit
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof
+            expect: 'Memory.used_memory_human'
+          - name: version
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof
+            expect: 'Server.redis_version'
+          - name: lru-clock
+            tests: firn_info_fields_match_redis_7_2_16_resp2_without_aof
+            expect: "LRU clock uses Redis's 24-bit seconds"
+          - name: uptime-ms
+            tests: firn_info_uptime_steps_with_the_calendar_second
+            expect: 'uptime_in_seconds left the calendar second'
+          - name: signed-minus
+            tests: firn_configures_and_reports_maxmemory
+            expect: 'Some\("\+1"\)'
+    env:
+      MUTATION: ${{ matrix.name }}
+      TESTS: ${{ matrix.tests }}
+      EXPECT: ${{ matrix.expect }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      # Each mutation changes the one source line of INFO that a condition of
+      # the cases rests on and fails the step if the line is not found once.
+      - name: Break the condition
+        run: |
+          python3 -I - <<'EOF'
+          import os, subprocess
+          name = os.environ["MUTATION"]
+          path = "firn/commands/info.wf"
+          source = open(path).read()
+          if name == "control":
+              raise SystemExit(0)
+          if name == "baseline":
+              base = subprocess.run(["git", "show", "630bef4a472c30309c267d211e0af819dde93a5c:" + path],
+                                    capture_output=True, text=True, check=True).stdout
+              open(path, "w").write(base)
+              raise SystemExit(0)
+          mutations = {
+              "order": (
+                  r"rdb_last_bgsave_time_sec:-1\r\nrdb_current_bgsave_time_sec:-1",
+                  r"rdb_current_bgsave_time_sec:-1\r\nrdb_last_bgsave_time_sec:-1"),
+              "duplicate": (
+                  "        text_word(text: &text, word: &info_uptime_days[0_u64..17_u64]);\n"
+                  "        text_signed(text: &text, value: days);\n",
+                  "        text_word(text: &text, word: &info_uptime_days[0_u64..17_u64]);\n"
+                  "        text_signed(text: &text, value: days);\n"
+                  "        text_word(text: &text, word: &info_uptime_days[0_u64..17_u64]);\n"
+                  "        text_signed(text: &text, value: days);\n"),
+              "framing": (
+                  'const info_gap: Array<u8, 2> = "\\r\\n";',
+                  'const info_gap: Array<u8, 2> = "\\n\\n";'),
+              "aof-fields-off": (
+                  "        if logged {\n"
+                  "          text_word(text: &text, word: &info_rw_current[0_u64..19_u64]);\n",
+                  "        if True() {\n"
+                  "          text_word(text: &text, word: &info_rw_current[0_u64..19_u64]);\n"),
+              "debug-in-all": (
+                  "for @every (which in 0_u64..13_u64) {",
+                  "for @every (which in 0_u64..14_u64) {"),
+              "commandstats-in-default": (
+                  "    set chosen[8_u64] = 0_u64;\n", ""),
+              "human-unit": (
+                  'const human_units: Array<u8, 5> = "KMGTP";',
+                  'const human_units: Array<u8, 5> = "kMGTP";'),
+              "version": ("redis_version:7.2.16", "redis_version:7.2.15"),
+              "lru-clock": (
+                  "let lru_clock = now_seconds % 16777216_u64;",
+                  "let lru_clock = now_seconds % 16777215_u64;"),
+              "uptime-ms": (
+                  "        let started_seconds = started / 1000_u64;\n"
+                  "        let seconds = now_seconds -wrap started_seconds;\n",
+                  "        let elapsed = time^.unix_ms -wrap started;\n"
+                  "        let seconds = elapsed / 1000_u64;\n"),
+              "signed-minus": (
+                  'const info_minus: Array<u8, 1> = "-";',
+                  'const info_minus: Array<u8, 1> = "+";'),
+          }
+          old, new = mutations[name]
+          assert source.count(old) == 1, (name, source.count(old))
+          open(path, "w").write(source.replace(old, new))
+          EOF
+          git diff --stat
+          git diff -U0 -- firn/commands/info.wf | head -40
+
+      - name: Build firn for the network cases
+        run: make firn-test
+
+      # The step passes when the cases pass (control) or when they fail with
+      # the message of the condition they protect, not on a build error.
+      - name: Run the cases
+        run: |
+          mkdir -p build
+          set +e
+          FIRN="$PWD/build/firn-test" cargo test --manifest-path tests/Cargo.toml --locked --test network -- --exact --nocapture $TESTS > build/cases.log 2>&1
+          status=$?
+          set -e
+          cat build/cases.log
+          if [ "$EXPECT" = pass ]; then
+            [ "$status" -eq 0 ] && grep -Eq "^test result: ok\. $(echo $TESTS | wc -w) passed" build/cases.log
+          else
+            [ "$status" -ne 0 ] && grep -Eq "$EXPECT" build/cases.log && ! grep -q 'could not compile' build/cases.log
+          fi
