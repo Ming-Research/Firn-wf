@@ -1008,6 +1008,21 @@ required. The head commit's checks pass, including the cache case, in
 on 9f5f051. Pins and submodules are unchanged.
 
 The cache case writes batches of keys while the rewrite runs, so evictions
-happen inside the rewrite window and the restart check covers them. Not yet
-shown by a test: the rotation-charge subtraction in mem_not_counted_for_evict
-(its effect on the compared figure is checked by source reading only).
+happen inside the rewrite window and the restart check covers them.
+
+The rotation-charge subtraction in mem_not_counted_for_evict
+(`firn/commands/eviction.wf`, memory_excluded) is checked by
+reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom: after
+S1 the exclusion must equal the buffer part (firn_aof_buffer_excluded) plus
+the rewrite ledger less its rotation charge (firn_aof_rewrite_charged). A
+temporary workflow removes the subtraction and expects this check to fail;
+its run is the evidence that the check detects the omission.
+
+The wait for an aborted or installing rewrite (the three cleanup points in
+eviction.wf) stays. At the moment of abort aof_charged is not zero in
+general: rewrite_abort sets aborted and clears rotating but keeps used and
+aof_charged (`firn/store/rewrite-capture.wf`), and only cleanup resets them
+(`firn/persistence/rewrite.wf`). Eviction therefore waits for the cleanup
+that releases the worker's allocations and the charges together, rather than
+reading a figure in which the charges are excluded while the cleanup is
+pending. Its length is not measured.

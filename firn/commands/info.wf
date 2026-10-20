@@ -285,8 +285,6 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         text_word(text: &text, word: &info_memory_excluded[0_u64..28_u64]);
         let excluded = memory_excluded(meta: persistence, logged: logged);
         text_number(text: &text, value: excluded);
-        // The buffer part of the exclusion and the rotation charge that the
-        // rewrite part subtracts, so a test can check the sum (eviction.wf).
         let buffer_excluded = 0_u64;
         if logged {
           set buffer_excluded = persistence^.log.inner.cap +sat persistence^.aof_pending_capacity;
