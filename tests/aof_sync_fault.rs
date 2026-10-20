@@ -961,7 +961,7 @@ fn isolated_close_failure(device: &Device, directory: &Path, native: Option<bool
     let route = match native { None => "redis", Some(false) => "firn-file", Some(true) => "firn-native" };
     let mut fixture = IsolatedIncrement::new(device, directory, route);
     let server = match native {
-        None => spawn_redis(&oracle(), directory, &directory.join("redis.log")),
+        None => spawn_redis(&support::redis_oracle(), directory, &directory.join("redis.log")),
         Some(native) => spawn_firn(program.expect("firn program"), native),
     };
     let mut client = fixture.start(server);
