@@ -5,6 +5,14 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-14 Keep a saved sync error through a successful close-sync of the old file
+
+Nodes: firn/append-only-file
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A on card firn-q-close-sync-recovery (keep firn's recovery rule; not clearing a saved sync error when the sealed old file's pre-close sync succeeds is a deliberate difference from Redis 7.2.16) and option A (approve) on card firn-q-close-sync-tree, which asked to approve PR #91's design change at head a6bbe8d: the decision on rotation preserving health cites Redis 7.2.16 and names its close-sync success rule as an intentional difference, and the rejected clearing on a successful retried sync now includes the pre-close sync.
+
+Summary: A saved sync error survives the successful sync of the sealed old incremental file at a rewrite's switch, as it survives any later successful sync, and only a durable rewrite installation clears it; Redis 7.2.16's BIO_CLOSE_AOF success path clears it at once. A later successful sync does not write the pages whose writeback failed, so clearing would acknowledge writes before the hole is repaired and a restart would lose them. A faulty-device CI case with only the old incremental file on the failing device shows both servers refusing SET and PING with MISCONF after the failed close sync and accepting writes again after the device recovers ([close-fsync status](../research/investigations/aof-write-errors/README.md#close-fsync-status-in-redis-7216)).
+
 ## 2026-10-14 Initialize the access stamp at RENAME's destination and MSETNX stores like Redis 7.2.16
 
 Nodes: firn/memory-limit
