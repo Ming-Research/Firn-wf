@@ -922,6 +922,19 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
         assert!(Instant::now() < deadline, "S1 never rotated");
         std::thread::sleep(Duration::from_micros(100));
     }
+    // After rotation the rotation charges are part of the rewrite ledger, and
+    // eviction.wf subtracts them so the buffer capacities are not counted
+    // twice. Without that subtraction the exclusion would be buffer + used.
+    client.write_all(&resp(&["INFO", "all"])).unwrap();
+    let rotated = bulk_reply(&mut client, "rotation memory exclusion");
+    let charged: u64 = info_field(&rotated, "firn_aof_rewrite_charged").unwrap().parse().unwrap();
+    let buffer: u64 = info_field(&rotated, "firn_aof_buffer_excluded").unwrap().parse().unwrap();
+    let used: u64 = info_field(&rotated, "firn_aof_rewrite_used").unwrap().parse().unwrap();
+    let excluded: u64 = info_field(&rotated, "mem_not_counted_for_evict").unwrap().parse().unwrap();
+    assert!(charged > 0, "rotation must charge the rewrite ledger: {rotated}");
+    assert!(charged <= used, "{rotated}");
+    assert_eq!(excluded, buffer + (used - charged),
+        "rotation charges must be excluded from the ledger once, as their buffer capacity is: {rotated}");
     // Lower the ordinary Redis limit while frozen images still await release.
     // Service pressure still refuses DENYOOM under noeviction, but it must
     // not cancel rewrite work whose bounded memory is outside maxmemory.

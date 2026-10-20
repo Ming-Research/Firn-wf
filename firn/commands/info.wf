@@ -285,6 +285,16 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         text_word(text: &text, word: &info_memory_excluded[0_u64..28_u64]);
         let excluded = memory_excluded(meta: persistence, logged: logged);
         text_number(text: &text, value: excluded);
+        // The buffer part of the exclusion and the rotation charge that the
+        // rewrite part subtracts, so a test can check the sum (eviction.wf).
+        let buffer_excluded = 0_u64;
+        if logged {
+          set buffer_excluded = persistence^.log.inner.cap +sat persistence^.aof_pending_capacity;
+        }
+        text_word(text: &text, word: &info_buffer_excluded[0_u64..27_u64]);
+        text_number(text: &text, value: buffer_excluded);
+        text_word(text: &text, word: &info_rw_charged[0_u64..27_u64]);
+        text_number(text: &text, value: persistence^.rewrite.aof_charged);
         match rss {
           Some(value: resident) => {
             text_word(text: &text, word: &info_used_memory_rss[0_u64..18_u64]);
@@ -597,6 +607,10 @@ const info_rw_scan_peak: Array<u8, 29> = "\r\nfirn_aof_rewrite_scan_peak:";
 const info_rw_cut: Array<u8, 23> = "\r\nfirn_aof_rewrite_cut:";
 
 const info_rw_abort_reason: Array<u8, 32> = "\r\nfirn_aof_rewrite_abort_reason:";
+
+const info_buffer_excluded: Array<u8, 27> = "\r\nfirn_aof_buffer_excluded:";
+
+const info_rw_charged: Array<u8, 27> = "\r\nfirn_aof_rewrite_charged:";
 
 const info_rw_used: Array<u8, 24> = "\r\nfirn_aof_rewrite_used:";
 
