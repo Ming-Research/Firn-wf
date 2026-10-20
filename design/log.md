@@ -5,6 +5,14 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-13 Leave an AOF rewrite's memory out of maxmemory
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/memory-limit
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A on card firn-q-rw-memory-excluded, which asked to approve PR #86's change: BGREWRITEAOF admission no longer compares used memory plus the reserve R plus the same margin with maxmemory, and a rewrite no longer aborts for lack of margin; the memory the rewrite has accounted (at most R, 5% of maxmemory, 16 MiB without a limit) is subtracted from the figure compared with the limit, as the ordinary AOF buffer already is, for eviction and command admission; R is unchanged, so exceeding it still aborts the rewrite and the process uses at most about 5% more than maxmemory; the other refusals (exhausted sequence numbers, shutdown, R too small) stay. The owner thereby also accepted that this narrows the earlier ruling on the card "what maxmemory governs" (option B), under which maxmemory approaches the process's whole footprint. Rejected: counting the rewrite inside the limit and requiring the margin (a cache held at its limit can never rewrite, and Redis does not count it), and evicting R plus the margin before each rewrite.
+
+Summary: On the 14900K a cache with maxmemory about half its dataset and eviction on answered BGREWRITEAOF with "Can't execute an AOF background rewriting" where Redis 7.2.16 rewrites, so its append-only file would grow until the disk filled. Redis rewrites in a forked child whose memory is not the parent's used memory, and its eviction figure also excludes the AOF buffer. The new case rewriting under eviction and recovering the surviving data after a restart fails on main and passes here.
+
 ## 2026-10-14 Keep a saved sync error through a successful close-sync of the old file
 
 Nodes: firn/append-only-file
@@ -38,14 +46,6 @@ Nodes: firn/orderly-stop
 Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-replay-stop-tree, which asked to approve PR #124's design change at head 0059406: the stop listener opens before the replay, so a host that refuses it stops firn with status 3 before the replay and ahead of status 4; a stop requested during the replay stops it at the next check (before the first command, then every 1024 commands, as Redis 7.2.16 does) and firn exits with status 0 without creating or opening an incremental file, truncating, deleting history or writing the manifest; an upgrade of an old single file stays before the replay as in Redis; having the replay poll a cancellation handle is rejected.
 
 Summary: A SIGTERM or SIGINT during the startup replay used to end firn by the host default, where Redis 7.2.16 installs its handlers before loading and exits with status 0 leaving the append-only directory unchanged. The listener now opens first and the replay reads the server's stop request. A request arriving after the last check is taken as the ordinary orderly stop once firn listens. The first signal still closes the listener, so a later signal ends firn at once; matching Redis there needs a Whitefoot immediate exit, requested from Whitefoot.
-
-## 2026-10-13 Leave an AOF rewrite's memory out of maxmemory
-
-Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/memory-limit
-
-Owner-approved: On the shared status board on 2026-10-13, the owner chose option A on card firn-q-rw-memory-excluded, which asked to approve PR #86's change: BGREWRITEAOF admission no longer compares used memory plus the reserve R plus the same margin with maxmemory, and a rewrite no longer aborts for lack of margin; the memory the rewrite has accounted (at most R, 5% of maxmemory, 16 MiB without a limit) is subtracted from the figure compared with the limit, as the ordinary AOF buffer already is, for eviction and command admission; R is unchanged, so exceeding it still aborts the rewrite and the process uses at most about 5% more than maxmemory; the other refusals (exhausted sequence numbers, shutdown, R too small) stay. The owner thereby also accepted that this narrows the earlier ruling on the card "what maxmemory governs" (option B), under which maxmemory approaches the process's whole footprint. Rejected: counting the rewrite inside the limit and requiring the margin (a cache held at its limit can never rewrite, and Redis does not count it), and evicting R plus the margin before each rewrite.
-
-Summary: On the 14900K a cache with maxmemory about half its dataset and eviction on answered BGREWRITEAOF with "Can't execute an AOF background rewriting" where Redis 7.2.16 rewrites, so its append-only file would grow until the disk filled. Redis rewrites in a forked child whose memory is not the parent's used memory, and its eviction figure also excludes the AOF buffer. The new case rewriting under eviction and recovering the surviving data after a restart fails on main and passes here.
 
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 
