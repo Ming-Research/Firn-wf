@@ -1,0 +1,33 @@
+name: tmp redis source check
+
+# Temporary: prints how Redis 7.2.16 handles EINVAL from a directory sync.
+# Removed before the branch is ready.
+on:
+  push:
+    branches: [claude/rw-switch-dirsync]
+    paths: [".github/workflows/tmp-redis-source-check.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch the pinned Redis 7.2.16 release and check its SHA-256
+        run: |
+          set -eu
+          curl -fsSL -o redis.tar.gz https://download.redis.io/releases/redis-7.2.16.tar.gz
+          echo "960a8ec15e34ff40e57ff16837b26b33bd81f2da6d24497bb63de532a323a18e  redis.tar.gz" | sha256sum --check
+          tar -xzf redis.tar.gz
+      - name: Show fsyncFileDir and its EINVAL handling
+        run: |
+          set -eu
+          cd redis-7.2.16/src
+          grep -rn "fsyncFileDir\|redis_fsync(" *.c *.h || true
+          file=$(grep -l "^int fsyncFileDir\|^void fsyncFileDir\|fsyncFileDir(const char" *.c | head -1)
+          echo "defined in: $file"
+          line=$(grep -n "fsyncFileDir(const char" "$file" | head -1 | cut -d: -f1)
+          sed -n "${line},$((line+30))p" "$file"
+          echo "--- EINVAL in util.c and bio.c:"
+          grep -n "EINVAL" util.c bio.c aof.c || true

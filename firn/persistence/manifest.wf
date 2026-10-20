@@ -414,14 +414,11 @@ fn aof_publication_failed(reporting: &Option<Keyspace>) -> result: unit reads(re
 }
 
 fn aof_publication_unsynced(reporting: &Option<Keyspace>, problem: std::io::IoError) -> result: unit reads(reporting) waits {
-  doc "A rewrite's manifest rename whose directory sync failed: save the error, when it counts, as the AOF sync error before aborting the attempt, so writes are refused with MISCONF as after a failed sync of the active file until a recovery rewrite's installation is durable, because the device did not confirm the directory entries either selection depends on. Startup and history cleanup publish without a reporting target and save nothing.";
+  doc "A rewrite's manifest rename whose directory sync failed with an error that counts (EINVAL does not, see aof_persist_record): save the error as the AOF sync error before aborting the attempt, so writes are refused with MISCONF as after a failed sync of the active file until a recovery rewrite's installation is durable, because the device did not confirm the directory entries either selection depends on. Startup and history cleanup publish without a reporting target and save nothing.";
   match reporting^ {
     Some(value: rewrite_store) => {
-      let counted = aof_sync_counts(error: &problem);
-      if counted {
-        atomic m = &rewrite_store^.meta {
-          set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
-        }
+      atomic m = &rewrite_store^.meta {
+        set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
       }
       let reason_install_io_2 = pkg::store::RewriteAbortReason::InstallIo();
       aof_rw_abort(store: rewrite_store, reason: reason_install_io_2);
@@ -488,8 +485,15 @@ fn aof_persist_record(reporting: &Option<Keyspace>, factory: &HandleFactory, wri
       return AofPublication(published: yes, durable: yes);
     }
     Err(error: problem) => {
-      aof_publication_unsynced(reporting: reporting, problem: problem);
-      return AofPublication(published: yes, durable: no);
+      if aof_sync_counts(error: &problem) {
+        aof_publication_unsynced(reporting: reporting, problem: problem);
+        return AofPublication(published: yes, durable: no);
+      }
+      // EINVAL: this filesystem cannot sync directories at all. Redis 7.2.16's
+      // fsyncFileDir treats it as success, and so does firn, so the publication
+      // is as durable as the device can make it and the attempt completes.
+      set manifest^.dirty = False();
+      return AofPublication(published: yes, durable: yes);
     }
   }
 }

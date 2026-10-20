@@ -45,7 +45,7 @@
 //!
 //! The cases are ignored in `make check`, which has no such device; the
 //! `aof-sync-fault` job of .github/workflows/check.yml makes it and runs these
-//! two sync cases, the four rewrite cases and the isolated close-sync case
+//! two sync cases, the five rewrite cases and the isolated close-sync case
 //! below, one after the other, through `make aof-sync-fault`, failing when the
 //! device cannot be made. They share the device, so they never run at once,
 //! and a case that fails while the device fails heals it for the next.
@@ -1210,6 +1210,11 @@ struct RewriteTrace {
 
 impl RewriteTrace {
     fn attach(pid: u32, target: &Path, syscalls: &str, inject: bool, label: &str) -> Self {
+        Self::attach_fault(pid, target, syscalls, inject.then_some("EIO"), label)
+    }
+
+    /// Like `attach`, and when `errno` is given, makes each matching call fail with it.
+    fn attach_fault(pid: u32, target: &Path, syscalls: &str, errno: Option<&str>, label: &str) -> Self {
         let log = std::env::temp_dir().join(format!(
             "firn-rewrite-fault-{label}-{pid}-{}.trace", std::process::id()));
         let mut command = Command::new("sudo");
@@ -1219,7 +1224,7 @@ impl RewriteTrace {
             "strace", "-f", "-qq", "-yy", "-s", "80", "-o"])
             .arg(&log).arg("-e").arg(format!("trace={syscalls}"))
             .arg("-P").arg(target).arg("-p").arg(pid.to_string());
-        if inject { command.arg("-e").arg(format!("inject={syscalls}:error=EIO")); }
+        if let Some(errno) = errno { command.arg("-e").arg(format!("inject={syscalls}:error={errno}")); }
         command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let child = ProgramChild::spawn(&mut command).expect("attach strace to rewrite process");
         // Own privilege-aware cleanup immediately, including an attachment
@@ -1667,5 +1672,52 @@ fn aof_rewrite_switch_directory_sync_failure_refuses_until_recovery() {
         wait_status(&mut client, "ok");
         rewrite_restart(&device, &server, child, client, &expected);
         eprintln!("rewrite-fault observation: server={label} case=switch-dirsync restart=exact keys={}", expected.len());
+    }
+}
+
+/// The switch's directory sync fails with EINVAL, which means this filesystem
+/// cannot sync directories at all. Redis 7.2.16's fsyncFileDir treats that as
+/// success (util.c), so the rewrite completes and writes after the switch are
+/// acknowledged. firn must do the same: a failure that never clears would leave
+/// every rewrite unfinished.
+#[test]
+#[ignore = "needs the aof-sync-fault device, strace and pinned Redis oracle"]
+fn aof_rewrite_switch_directory_sync_einval_completes() {
+    let device = Device::from_environment();
+    for redis in [true, false] {
+        device.run("reset");
+        let server = RewriteServer::new(&device, redis, "switch-dirsync-einval");
+        let label = server.label().to_string();
+        let (child, mut client) = server.start();
+        let mut expected = rewrite_seed(&mut client);
+        let old_base = rewrite_base_name(server.directory());
+        let target = server.directory().join("appendonlydir").canonicalize().unwrap();
+        let trace = if redis {
+            let trace = RewriteTrace::attach_fault(child.id(), &target, SYNC_SYSCALLS, Some("EINVAL"), "switch-dirsync-einval");
+            assert_eq!(memory_request(&mut client, &["BGREWRITEAOF"]),
+                "+Background append only file rewriting started\r\n",
+                "{label}: the switch's EINVAL directory sync does not fail the rewrite");
+            trace
+        } else {
+            let (_worker, _temporary) = rewrite_begin(&server, &child, &mut client);
+            // The scan still runs (20 ms a key), so S1 and its switch come
+            // after the tracer is attached.
+            let trace = RewriteTrace::attach_fault(child.id(), &target, SYNC_SYSCALLS, Some("EINVAL"), "switch-dirsync-einval");
+            assert_eq!(info_field(&persistence(&mut client), "aof_rewrite_in_progress").as_deref(), Some("1"),
+                "{label}: the switch must come after the tracer attached");
+            trace
+        };
+        let finished = rewrite_finished(&mut client);
+        trace.assert_fault("EINVAL", true);
+        assert_eq!(info_field(&finished, "aof_last_bgrewrite_status").as_deref(), Some("ok"), "{label}: {finished}");
+        assert_ne!(rewrite_base_name(server.directory()), old_base, "{label}: the rewrite installed its base");
+        trace.detach();
+        let reply = memory_request(&mut client, &["SET", "rewrite:after-einval", "accepted"]);
+        assert_eq!(reply, "+OK\r\n", "{label}: writes after the EINVAL directory sync are acknowledged");
+        expected.insert("rewrite:after-einval".to_string(), "accepted".to_string());
+        std::thread::sleep(SETTLE);
+        wait_status(&mut client, "ok");
+        rewrite_restart(&device, &server, child, client, &expected);
+        eprintln!("rewrite-fault observation: server={label} case=switch-dirsync-einval rewrite=ok restart=exact keys={}", expected.len());
     }
 }

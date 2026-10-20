@@ -5,6 +5,14 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-20 Treat EINVAL from a rewrite's manifest directory sync as a successful sync
+
+Nodes: firn/aof-rewrite
+
+Owner-approved: pending the ruling on card firn-q-dirsync-einval (recommended option A: EINVAL counts as synced, as Redis 7.2.16's fsyncFileDir does); this entry takes the owner's wording when the card is ruled.
+
+Summary: EINVAL from the directory sync after a rewrite's manifest rename means the filesystem cannot sync directories, which does not change between calls. Counting it as a failure would leave every rewrite unfinished. The rewrite now completes and writes continue on the new increment, as they do on Redis 7.2.16 (the case switch-dirsync-einval shows both servers finish the rewrite and acknowledge writes after it). Other directory sync failures keep the refusal recorded in the entry below.
+
 ## 2026-10-14 Refuse writes after a failed directory sync at the rewrite's manifest swap
 
 Nodes: firn/aof-rewrite
