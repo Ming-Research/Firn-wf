@@ -245,7 +245,10 @@ fn reply_killed(client: &Client, sha: &Array<u8, 40>, line: u64) -> r: unit read
   return unit;
 }
 
-fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64, budget: &pkg::store::LogBudget) -> r: unit reads(effects), writes(log), writes(budget) {
+fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64, budget: &pkg::store::LogBudget) -> r: unit reads(effects), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Appends the records a script's commands made to the append-only file's pending bytes, wrapped in MULTI and EXEC when they are more than one, as Redis 7.0.15 propagates a script's effects.";
   if appended > 1_u64 {
     log_count(log: log, count: 1_u64, room: 16_u64, budget: budget);
@@ -260,7 +263,9 @@ fn record_effects(log: &Box<Slots<u8>>, effects: &Box<Slots<u8>>, appended: u64,
   return unit;
 }
 
-fn answer_call<interface ScriptCommands>(hub: &pkg::connection_events::Hub, stage: &pkg::connection_events::Stage, sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(hub), writes(stage), writes(sequence), writes(engine), writes(env), writes(keys), writes(meta), writes(effects), writes(client) {
+fn answer_call<interface ScriptCommands>(hub: &pkg::connection_events::Hub, stage: &pkg::connection_events::Stage, sequence: &pkg::store::WriteSequence, engine: &Engine, env: &Env, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, keys_env: &KeyEnv, client: &Client, time: &Time, budget: u64) -> outcome: Outcome reads(keys_env), reads(time), writes(hub), writes(stage), writes(sequence), writes(engine), writes(env), writes(keys), writes(meta), writes(effects), writes(client) contract {
+  ensures meta^.log.inner.len >= entry(meta)^.log.inner.len;
+} {
   doc "Runs the command a script's redis.call or redis.pcall left pending, inside the script's statement, and continues the script with its reply: the arguments, numbers formatted as Redis formats them, are laid out as the network's input; the command runs through ScriptCommands with the client answering in the script's protocol, which redis.setresp selects, its records counted in the script's effects; its reply is converted to a Lua value from the bytes it wrote, which are then taken back; and an error reply is raised at redis.call, while redis.pcall returns it as its error table, as Redis 7.0.15's luaRedisGenericCommand does. budget is what the script's attempt has left.";
   let id = 0_u32;
   let argc = 0_u64;

@@ -41,17 +41,15 @@ When priorities conflict, first:
   design, rulings, criteria and measurements) and `research/experiments/`
   (the instruments and their results). Records from before firn moved here
   cite Whitefoot's paths of their time, such as `apps/firn/`.
-- Maintained TODO: the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip),
-  the only TODO; repositories keep no TODO file. firn's backlog is in
-  `firn-server` and `firn-ops`; Whitefoot gaps are in "firn 需要的 Whitefoot 工作"
-  (`firn-wf`) and Whitefoot's own areas. Code, documents and checks that
-  refer to unfinished work cite its board item key.
 - Review checklist: [docs/review-checklist.md](docs/review-checklist.md).
 - Performance comparisons build firn with `make firn-lto` and run
   `research/experiments/redis-bench/redis-bench.sh` on the 14900K through the
   `redis-bench.yml` workflow; an upgrade of Whitefoot uses them for the
   comparison
   [downstream.md](whitefoot-kit/downstream.md#upgrading-whitefoot) asks for.
+  The servers run on P-cores and the load clients on all 16 E-cores
+  (CPUs 16-31), for every competitor alike; a cell whose clients average over
+  90% busy is marked client-limited.
 
 ## Checks
 
@@ -92,12 +90,12 @@ When priorities conflict, first:
   as the oracle, runs `check-writeback` (a file made before a 40 s failure
   must survive it), runs `make aof-sync-fault` and
   removes the device with `teardown MOUNT` even when a step failed. The
-  target runs the two sync-failure cases of `tests/aof_sync_fault.rs`,
+  target runs the six cases of `tests/aof_sync_fault.rs` that it selects,
   ignored in `make check`, against firn and the oracle, one after the other,
   each on a filesystem made anew by `reset` (`remount` fails the run when
   `e2fsck -fn` finds the metadata damaged),
   and fails unless `FIRN_SYNC_FAULT_MOUNT` names that mount, `REDIS_SERVER`
-  names the oracle and both cases passed. It needs Linux with passwordless
+  names the oracle and all six cases passed. It needs Linux with passwordless
   sudo, `dmsetup` and the dm-flakey module; `setup` may install
   `linux-modules-extra-$(uname -r)` through `apt-get` on Ubuntu to get it.
 - `make pin-ready`, with the readiness check: `whitefoot.pin` names no
@@ -114,10 +112,7 @@ Whitefoot gap; a change to them is made in
 
 Before writing Whitefoot code, read the kit's
 [README.md](whitefoot-kit/README.md) and its writing guide
-[docs/writing.md](whitefoot-kit/docs/writing.md). Where the guide does not
-cover a form, or a compiler diagnostic does not lead to the accepted form,
-file a request into Whitefoot-kit on the status board with the source
-written, the compiler output and the form finally accepted.
+[docs/writing.md](whitefoot-kit/docs/writing.md).
 
 ## Reports
 
@@ -128,6 +123,4 @@ Whitefoot gap filed.
 
 `README.md` introduces and navigates, `firn/README.md` describes the server's
 commands and invocation, `docs/review-checklist.md` holds the review items,
-the [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip)
-tracks open defects and Whitefoot requirements in the areas named above, and
-`research/` holds questions, experiments and results.
+and `research/` holds questions, experiments and results.
