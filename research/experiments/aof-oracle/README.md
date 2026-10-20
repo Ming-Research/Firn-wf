@@ -1,14 +1,15 @@
-# Recorded AOF bytes from Redis 7.2.16
+# Recorded replies and AOF bytes from Redis 7.2.16
 
-These files keep the append-only bytes that Redis 7.2.16 wrote for requests
-that firn's network tests compare against (`tests/network.rs`). They were
+These files keep the replies, and where a case asks for them the append-only
+bytes, that Redis 7.2.16 gave for requests that firn's network tests compare
+against (`tests/network.rs`). They were
 copied from the artifacts of the `oracle-replies` workflow, which ran the
 reference server built from the pinned Redis 7.2.16 release. They are kept
 here because GitHub deletes run artifacts after 90 days.
 
 Each file is a JSON list of cases. A case has `name`, `resp` (the protocol
 version the client used), `replies` (each request with the reply Redis gave)
-and `file`. The request whose `cmd` is `["__AOF__"]` carries the complete
+and `file`. A case whose requests include `["__AOF__"]` also keeps the complete
 append-only incremental file that Redis wrote for the requests before it, as
 the reply's raw text.
 
