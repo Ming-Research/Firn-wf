@@ -9,9 +9,15 @@ line, a field since retired.
 
 Nodes: firn/scripts
 
-Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-score-text-tree, which asked to approve PR #90's design change at head 161875e: the decision on how numbers are written now has firn's scores module own Redis 7.2.16's numeric text writers, so command-score replies and rewritten append-only scores match Redis 7.2.16 byte for byte.
-
 Summary: Redis 7.2.16 selects the text rule by command and encoding, so one module now writes all of them: command-score replies and script double replies use d2string (nan, infinities and signed zeros first, an integral value up to 2^62 as an integer, otherwise fpconv_dtoa); a Lua number passed to redis.call or redis.pcall uses the integer rule and otherwise fpconv_dtoa; rewritten append-only scores use plain fpconv_dtoa; ZSCAN scores for skiplist sorted sets use ld2string(LD_STR_AUTO), implemented by the exact %.17g writer. The Grisu2 digits come from Halo-wf's port, checked against 18,235 doubles recorded on redis-server 7.2.16. Command-reply scores no longer keep %.17g.
+
+## 2026-10-14 Keep a saved sync error through a successful close-sync of the old file
+
+Nodes: firn/append-only-file
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A on card firn-q-close-sync-recovery (keep firn's recovery rule; not clearing a saved sync error when the sealed old file's pre-close sync succeeds is a deliberate difference from Redis 7.2.16) and option A (approve) on card firn-q-close-sync-tree, which asked to approve PR #91's design change at head a6bbe8d: the decision on rotation preserving health cites Redis 7.2.16 and names its close-sync success rule as an intentional difference, and the rejected clearing on a successful retried sync now includes the pre-close sync.
+
+Summary: A saved sync error survives the successful sync of the sealed old incremental file at a rewrite's switch, as it survives any later successful sync, and only a durable rewrite installation clears it; Redis 7.2.16's BIO_CLOSE_AOF success path clears it at once. A later successful sync does not write the pages whose writeback failed, so clearing would acknowledge writes before the hole is repaired and a restart would lose them. A faulty-device CI case with only the old incremental file on the failing device shows both servers refusing SET and PING with MISCONF after the failed close sync and accepting writes again after the device recovers ([close-fsync status](../research/investigations/aof-write-errors/README.md#close-fsync-status-in-redis-7216)).
 
 ## 2026-10-14 Initialize the access stamp at RENAME's destination and MSETNX stores like Redis 7.2.16
 

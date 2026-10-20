@@ -437,7 +437,9 @@ directory synced. Meanwhile INFO shows `aof_rewrite_in_progress:1` with
 reports `aof_last_bgrewrite_status:err`, stops automatic rewrites as any
 failed attempt does, and is tried again after the next successful sync;
 recovery rewrites run even while automatic rewrites are stopped. An idle
-Redis 7.2.16 instead keeps refusing writes until it is restarted.
+Redis 7.2.16 instead keeps refusing writes until an operator requests
+a rewrite or restarts it; a successful old-file close-sync clears its saved
+background sync failure before that rewrite finishes.
 
 Each scan step calls `map_scan_within` with a limit of the reserve left
 after the step's 64-KiB output buffer, and charges the bytes its KeySet then
@@ -540,8 +542,11 @@ sync and a device that fails while firn is idle shows only at the sync after
 the next write (`aof.c:1071-1094,1236-1267`); a saved sync failure is the
 exception, retried once a second while idle as described above.
 A successful append clears an append failure, and only a rewrite whose
-installation is durable clears a sync failure; ordinary rewrite rotation resets neither
-(`aof.c:790-852`).
+installation is durable clears a sync failure; ordinary rewrite rotation
+resets neither. This deliberately differs from Redis 7.2.16's successful
+old-file fsync-and-close, which clears its background sync error before
+rewrite completion; firn preserves the saved error until the new files are
+durable ([recovery rule](../design/firn/append-only-file.md)).
 
 A refused queued write or PING dirties MULTI. EXEC with a queued WRITE command
 is discarded with EXECABORT and the MISCONF text while failure remains; read-only
