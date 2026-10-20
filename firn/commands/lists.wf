@@ -296,9 +296,9 @@ fn run_push(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let work = push_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, front: front, existing: existing);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   push_finish(client: client);
@@ -392,9 +392,9 @@ fn run_pop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
     }
     let work = pop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   pop_finish(client: client);
@@ -707,9 +707,9 @@ fn run_lset(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let work = lset_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   lset_finish(client: client);
@@ -830,9 +830,9 @@ fn run_lrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let work = lrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   lrem_finish(client: client);
@@ -941,9 +941,9 @@ fn run_ltrim(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     }
     let work = ltrim_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   ltrim_finish(client: client);
@@ -1054,9 +1054,9 @@ fn run_linsert(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     }
     let work = linsert_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, input: input, args: args);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = changed_meta(log: &m^.log, logged: logged, removed: work.removed, changed: work.changed, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   linsert_finish(client: client);
@@ -1323,9 +1323,9 @@ fn run_lmove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     }
     let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &ks, slots: slots, source: pair.source, destination: pair.target, client: client, from_head: from_head, to_head: to_head);
     if logged {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = lmove_meta(log: &m^.log, logged: logged, work: &work, input: input, args: args, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   lmove_finish(client: client);
@@ -2133,7 +2133,10 @@ fn lmove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   return work;
 }
 
-fn lmove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ListMoveWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget) {
+fn lmove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &ListMoveWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Records source then destination expiry removals followed by the move exactly as sent; returns the effects record count.";
   let source_place = key_bounds(input: input, args: args, index: 1_u64);
   let source_key = &input^[source_place.start..source_place.end];
