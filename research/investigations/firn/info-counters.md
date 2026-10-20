@@ -778,8 +778,42 @@ case/duplicate/unknown requests exercise selection without relying on
 unstable recorded pid, times, memory or command timings. Existing
 human-limit boundary cases already cover signed maxmemory and nearest-even
 formatting, and existing rewrite/fault cases cover operational sizes and
-health. CI must still establish compilation and execution; no local suite
-or compiler was run, so no pre-fix/post-fix run is claimed.
+health.
+
+#### Evidence that the cases fail on a wrong server
+
+A temporary CI workflow (removed after the run) ran the INFO cases against
+firn with one line of `firn/commands/info.wf` broken at a time, and against
+the `info.wf` from before the field changes, at commit `f4f85d0`
+([run](https://github.com/Ming-Research/Firn-wf/actions/runs/39498283007)).
+Each row fails with the message of the condition it protects, and the
+unchanged server passes all four cases (the two structure cases, the uptime
+case below and the existing maxmemory case).
+
+| Server | Case that failed | Failure |
+|---|---|---|
+| unchanged | none (4 passed) | |
+| `info.wf` before the field changes | both structure cases | Server fields include `redis_git_sha1`, lack `process_supervised` and `lru_clock` |
+| `rdb_last_bgsave_time_sec` and `rdb_current_bgsave_time_sec` swapped | RESP2 structure | Persistence field order |
+| `uptime_in_days` written twice | RESP2 structure | `duplicate INFO field: uptime_in_days` |
+| section gap `\r\n` replaced by `\n\n` | RESP2 structure | `INFO line:` holds a line break |
+| `aof_current_size` and the AOF-only fields written with AOF off | RESP2 structure | Persistence field names |
+| `all` also selects Debug | RESP2 structure | section list gains `"Debug"` |
+| default also selects Commandstats | RESP2 structure | section list gains `"Commandstats"` |
+| human-size units lowercased | RESP2 structure | `Memory.used_memory_human` is `8.57m`, not `8.57M` |
+| `redis_version` 7.2.15 | RESP2 structure | `Server.redis_version` |
+| LRU clock modulo 16777215 | RESP2 structure | `LRU clock uses Redis's 24-bit seconds` |
+| uptime from the millisecond difference | uptime case | `uptime_in_seconds left the calendar second` |
+| minus sign of the signed writer replaced by `+` | maxmemory case | `maxmemory` reads `+1`, not `-1` |
+
+The uptime case reads `server_time_usec` and `uptime_in_seconds` for 2.3 s
+and requires the calendar second less the uptime to stay one value while the
+uptime steps at least twice. Redis 7.2.16 subtracts two whole-second clocks
+(`server.c` `genRedisInfoString`), so the uptime steps with the calendar
+second; a millisecond difference steps a start-time fraction later and
+leaves the value constant only when that fraction is under about the 5 ms
+polling step. The `uptime_in_days` divisor has no case: at any reachable uptime the
+value is 0.
 
 Further real-value additions worth considering are `used_memory_peak_perc`
 from the existing used/peak readings, and `db0`'s `expires` from a whole-map
