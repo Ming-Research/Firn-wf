@@ -1519,7 +1519,9 @@ fn held_arity(kind: u64) -> arity: i64 pure {
   return 0_i64;
 }
 
-fn held_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
+fn held_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) contract {
+  ensures meta^.log.inner.len >= entry(meta)^.log.inner.len;
+} {
   doc "Runs a command held_kind names, its arity already checked, by its parts inside a statement holding every key and the keyspace's metadata, writing its reply into the client's reply as the network does and returning how many commands it appended to effects, the caller's record of what it changed. journal is the attempt environment's first-refresh undo log, or None for EXEC; the client carries the read's memory settings, refreshed after its own CONFIG SET. time is the statement's: its check is the instant the script or the transaction began, and its calendar time is frozen with it.";
   let unlimited_log_budget = pkg::store::log_budget_new();
   if kind == 164_u64 {
@@ -2127,7 +2129,9 @@ fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8]
   return 0_u64;
 }
 
-fn script_command(sequence: &pkg::store::WriteSequence, memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(memory), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) {
+fn script_command(sequence: &pkg::store::WriteSequence, memory: &pkg::scripting::ScriptMemory, journal: &Option<pkg::store::AccessJournal>, keys: &ConcurrentHashMap<Entry>, meta: &Meta, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> appended: u64 reads(input), reads(args), reads(env), reads(time), writes(sequence), writes(memory), writes(journal), writes(keys), writes(meta), writes(effects), writes(client) contract {
+  ensures meta^.log.inner.len >= entry(meta)^.log.inner.len;
+} {
   doc "Runs an admitted script command under the existing whole keyspace hold; EXEC shares held_run directly.";
   let kind = script_admit(memory: memory, meta: meta, input: input, args: args, client: client);
   if kind == 0_u64 {
