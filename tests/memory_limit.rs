@@ -267,6 +267,138 @@ fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
     rewrite_stop(&mut restored, child);
 }
 
+/// Redis 7.2.16 rewrites while eviction runs: the rewrite child is outside the
+/// parent's counter, and its capture records the eviction's deletions. This
+/// case pauses the rewrite per key so that writes at the limit land while it
+/// captures; the survivors must be exactly what live reads show after restart.
+#[test]
+fn allkeys_lru_evicts_while_a_paced_rewrite_captures_and_restores_survivors() {
+    let program = CompiledProgram::from_environment();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let spawn = || program.spawn_on_route_with(
+        true, &[("WF_DRIVERS", "1"), ("WF_WORKERS", "1")],
+        &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-percentage", b"0"],
+    ).with_port(&port_lease);
+    let child = spawn();
+    let mut client = connect_when_ready(port, &child);
+    const CACHE_VALUE_BYTES: usize = 16 * 1024;
+    let value = |index: usize| format!("{index:08}:{}", "c".repeat(CACHE_VALUE_BYTES - 9));
+    let baseline = number(&info(&mut client, "memory"), "used_memory");
+    let mut written = 0;
+    for index in 0..512 {
+        assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
+        written += 1;
+    }
+    let filled = number(&info(&mut client, "memory"), "used_memory");
+    assert!(filled > baseline + 6 * 1024 * 1024, "fill must exceed the limit below: {filled} over {baseline}");
+    // The limit sits well under the fill, so the cache is over it from the
+    // first write on; a 4 MiB limit gives R = 200 KiB for the rewrite.
+    let limit = baseline + 4 * 1024 * 1024;
+    configure(&mut client, &[
+        "maxmemory", &limit.to_string(), "maxmemory-policy", "allkeys-lru",
+        "maxmemory-eviction-tenacity", "100", "rdb-key-save-delay", "1000",
+    ]);
+    assert_eq!(memory_request(&mut client, &["BGREWRITEAOF"]), "+Background append only file rewriting started\r\n");
+    let mut observed = info(&mut client, "all");
+    // Each write is one 16 KiB image in the rewrite's ledger, so only a few
+    // fit R. Eviction removes at least one key per write while over the limit.
+    for index in 512..520 {
+        if number(&observed, "aof_rewrite_in_progress") == 0 { break; }
+        assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
+        written += 1;
+        observed = info(&mut client, "all");
+    }
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while number(&observed, "aof_rewrite_in_progress") != 0 {
+        assert!(Instant::now() < deadline, "paced cache rewrite did not finish: {observed}");
+        std::thread::sleep(Duration::from_millis(10));
+        observed = info(&mut client, "all");
+    }
+    assert_eq!(info_field(&observed, "aof_last_bgrewrite_status").as_deref(), Some("ok"), "{observed}");
+    assert_eq!(info_field(&observed, "firn_aof_rewrite_abort_reason").as_deref(), Some(""), "{observed}");
+    assert!(number(&observed, "evicted_keys") > 0, "the cache never evicted: {observed}");
+
+    configure(&mut client, &["maxmemory", "0"]);
+    let mut expected = Vec::new();
+    let mut survivors = 0;
+    for index in 0..written {
+        let actual = memory_request(&mut client, &["GET", &format!("cache:{index}")]);
+        if actual != "$-1\r\n" {
+            assert_eq!(actual, format!("${CACHE_VALUE_BYTES}\r\n{}\r\n", value(index)), "live cache value {index}");
+            survivors += 1;
+        }
+        expected.push(actual);
+    }
+    assert!(survivors > 0 && survivors < written, "cache must retain data and have evicted keys");
+    assert_eq!(memory_request(&mut client, &["DBSIZE"]), format!(":{survivors}\r\n"));
+    rewrite_stop(&mut client, child);
+    drop(client);
+    let child = spawn();
+    let mut restored = connect_when_ready(port, &child);
+    assert_eq!(memory_request(&mut restored, &["DBSIZE"]), format!(":{survivors}\r\n"));
+    for (index, expected) in expected.iter().enumerate() {
+        assert_eq!(&memory_request(&mut restored, &["GET", &format!("cache:{index}")]), expected,
+            "restart must keep keys evicted during the rewrite absent: {index}");
+    }
+    rewrite_stop(&mut restored, child);
+}
+
+/// A rewrite that aborts while the cache is over its limit must not hold
+/// eviction back: the aborted attempt's cleanup is not awaited, so writes at
+/// the limit keep evicting until the abort is cleared.
+#[test]
+fn allkeys_lru_keeps_evicting_while_an_aborted_rewrite_clears() {
+    let program = CompiledProgram::from_environment();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route_with(
+        true, &[("WF_DRIVERS", "1"), ("WF_WORKERS", "1")],
+        &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-percentage", b"0"],
+    ).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    const CACHE_VALUE_BYTES: usize = 16 * 1024;
+    let value = |index: usize| format!("{index:08}:{}", "c".repeat(CACHE_VALUE_BYTES - 9));
+    let baseline = number(&info(&mut client, "memory"), "used_memory");
+    for index in 0..512 {
+        assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
+    }
+    let limit = baseline + 4 * 1024 * 1024;
+    configure(&mut client, &[
+        "maxmemory", &limit.to_string(), "maxmemory-policy", "allkeys-lru",
+        "maxmemory-eviction-tenacity", "100", "rdb-key-save-delay", "1000",
+    ]);
+    assert_eq!(memory_request(&mut client, &["BGREWRITEAOF"]), "+Background append only file rewriting started\r\n");
+    // Post-cut writes past R abort the rewrite (rotation_reserve). Writes made
+    // after the abort is seen, while it is not yet cleared, must still evict.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut next = 512;
+    let mut evicted_after_abort = None;
+    loop {
+        let info_all = info(&mut client, "all");
+        if info_field(&info_all, "firn_aof_rewrite_abort_reason").as_deref().map_or(false, |r| !r.is_empty()) {
+            let before = number(&info_all, "evicted_keys");
+            evicted_after_abort.get_or_insert(before);
+            if number(&info_all, "aof_rewrite_in_progress") == 0 { break; }
+            assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{next}"), &value(next)]), "+OK\r\n");
+            next += 1;
+            let after = number(&info(&mut client, "all"), "evicted_keys");
+            if after > before { break; }
+        } else {
+            assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{next}"), &value(next)]), "+OK\r\n");
+            next += 1;
+        }
+        assert!(Instant::now() < deadline, "the rewrite never aborted or writes stopped evicting: {info_all}");
+    }
+    let observed = info(&mut client, "all");
+    assert_eq!(info_field(&observed, "aof_last_bgrewrite_status").as_deref(), Some("err"), "{observed}");
+    assert!(number(&observed, "evicted_keys") > evicted_after_abort.unwrap_or(0),
+        "writes after the abort evicted no key: {observed}");
+    rewrite_stop(&mut client, child);
+}
+
 /// Redis counts the keyspace's own dictionary and key storage in used_memory,
 /// so keys with empty values alone reach the limit. Only the shared map's
 /// tables and nodes grow here: without them in heap_in_use, no write is refused.

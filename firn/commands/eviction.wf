@@ -336,8 +336,7 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
   let initial_cleanup = False();
   atomic cleanup_meta = &store^.meta {
     let committed = cleanup_meta^.aof_installing != 0_u64;
-    let retained = bor(cleanup_meta^.rewrite.aborted, committed);
-    set initial_cleanup = band(cleanup_meta^.aof_rewrite_in_progress, retained);
+    set initial_cleanup = band(cleanup_meta^.aof_rewrite_in_progress, committed);
   }
   if initial_cleanup {
     atomic cleaned = &store^.meta when bnot(cleaned^.aof_rewrite_in_progress) {
@@ -362,8 +361,7 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
     atomic check_meta = &store^.meta {
       set over = memory_over(meta: check_meta, client: client, logged: logged);
       let committed = check_meta^.aof_installing != 0_u64;
-      let retained = bor(check_meta^.rewrite.aborted, committed);
-      set loop_cleanup = band(check_meta^.aof_rewrite_in_progress, retained);
+      set loop_cleanup = band(check_meta^.aof_rewrite_in_progress, committed);
     }
     if loop_cleanup {
       atomic cleaned = &store^.meta when bnot(cleaned^.aof_rewrite_in_progress) {
@@ -396,8 +394,7 @@ fn evict_before(store: &Keyspace, client: &Client, clock: &Clock) -> oom: Bool r
           let log_budget = pkg::store::log_budget_begin(meta: meta, loading: loading);
           set over = memory_over(meta: meta, client: client, logged: logged);
           let committed = meta^.aof_installing != 0_u64;
-          let retained = bor(meta^.rewrite.aborted, committed);
-          let victim_cleanup = band(meta^.aof_rewrite_in_progress, retained);
+          let victim_cleanup = band(meta^.aof_rewrite_in_progress, committed);
           let service = bnot(victim_cleanup);
           let can_evict = band(over, service);
           if can_evict {

@@ -934,21 +934,25 @@ R plus max(R, 1 MiB) to fit maxmemory. Even if admitted, a command's memory
 check aborted a running rewrite when counted heap plus that headroom
 exceeded the limit. A full cache cannot satisfy that service-headroom rule.
 
-Redis 7.2.16 provides the independent semantic reference:
+Redis 7.2.16 provides the independent semantic reference. The names below
+are the functions to read in its source; their line numbers are not given
+here. The references are checked against the 7.2.16 source before merge
+(not yet done: the source could not be fetched during this work):
 
-- `src/aof.c:2413–2425,2442–2445,2464–2475` describes and implements a
-  forked child producing the base while the parent opens a new incremental
-  file; `src/server.c:6610` calls fork.
-- `src/zmalloc.c:91–94,410–413` maintains and reads a process-local allocation
-  counter. Therefore allocations in the child and physical copy-on-write
+- `src/aof.c`, `rewriteAppendOnlyFileBackground`: a forked child produces the
+  base while the parent opens a new incremental file; `src/server.c`,
+  `redisFork`, makes the fork.
+- `src/zmalloc.c`, the process-local allocation counter behind
+  `zmalloc_used_memory`: allocations in the child and physical copy-on-write
   do not increase the parent's counter. This is a deduction from fork and
   the counter implementation, not an RSS measurement.
-- `src/evict.c:367–368,402,414–424` excludes allocated AOF buffer storage
-  from that counter for maxmemory. `src/aof.c:1351–1360` propagates commands
-  into the ordinary AOF buffer; the multipart protocol uses the new
+- `src/evict.c`, `freeMemoryGetNotCountedMemory`: excludes allocated AOF
+  buffer storage from that counter for maxmemory. `src/aof.c`, the command
+  propagation into the AOF buffer: the multipart protocol uses the new
   increment rather than a parent rewrite-difference buffer.
-- `src/aof.c:2427–2494` launches without a maxmemory admission check;
-  `src/aof.c:2497–2510` returns the started reply on a successful launch.
+- `src/aof.c`, `rewriteAppendOnlyFileBackground`: launches without a
+  maxmemory admission check, and returns the started reply on a successful
+  launch.
 
 The ruled design keeps R = floor(maxmemory / 20), or 16 MiB without a limit,
 frozen at admission. It removes both headroom checks while keeping sequence
@@ -1011,7 +1015,8 @@ The cache case writes four keys right after the reply. The rewrite's reserve
 is excluded from maxmemory, so these writes may evict nothing (CI run
 39476647418 with 32-key batches aborted with rotation_reserve; the four-key
 batch did not evict in run 39486884100). Evictions while a rewrite captures
-are not covered by this case.
+are covered by allkeys_lru_evicts_while_a_paced_rewrite_captures_and_restores_survivors
+(paced by rdb-key-save-delay, eight writes at the limit).
 
 The rotation-charge subtraction in mem_not_counted_for_evict
 (`firn/commands/eviction.wf`, memory_excluded) is checked by
@@ -1023,11 +1028,10 @@ ran this case: run [39491203976](https://github.com/Ming-Research/Firn-wf/action
 fails at rewrite_scan.rs:939 with "rotation charges must be excluded from the
 ledger once", so the check detects the omission.
 
-The wait for an aborted or installing rewrite (the three cleanup points in
-eviction.wf) stays. At the moment of abort aof_charged is not zero in
-general: rewrite_abort sets aborted and clears rotating but keeps used and
-aof_charged (`firn/store/rewrite-capture.wf`), and only cleanup resets them
-(`firn/persistence/rewrite.wf`). Eviction therefore waits for the cleanup
-that releases the worker's allocations and the charges together, rather than
-reading a figure in which the charges are excluded while the cleanup is
-pending. Its length is not measured.
+Eviction waits only for the cleanup of a rewrite that is installing
+(`aof_installing`, the three cleanup points in eviction.wf). The wait for an
+aborted rewrite was removed: the aborted attempt's ledger is excluded until
+cleanup, and cleanup lowers the compared figure by the same ledger it
+releases, so waiting gives eviction no room. The installing wait stays because
+the installation must publish one result before keys change. The aborted case
+is covered by allkeys_lru_keeps_evicting_while_an_aborted_rewrite_clears.
