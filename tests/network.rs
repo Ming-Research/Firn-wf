@@ -7670,6 +7670,8 @@ fn firn_enumerates_keys_as_redis_does() {
 /// is returned, since the type check rejects the missing object after expiry.
 /// The replies follow src/db.c:scanGenericCommand; the unchanged DEL records
 /// follow src/db.c:expireIfNeeded and src/server.c:propagatePendingCommands.
+/// The expected records were recorded on Redis 7.2.16 in
+/// research/experiments/aof-oracle/held-scan-type-none-recording.json.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_held_scan_type_none_as_redis_propagates_it() {
