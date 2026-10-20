@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-14 Exclude expired keys from SCAN and cap glob nesting as Redis 7.2.16
+
+Nodes: firn/enumeration
+
+Summary: SCAN removes and records a matched key found expired before deciding whether its type belongs in the reply, so the removed key is excluded under every TYPE argument including none, as Redis 7.2.16's scanGenericCommand rejects a null lookup result. The shared glob matcher, used by KEYS, SCAN MATCH and CONFIG GET, obeys Redis 7.2.16's maximum nesting of 1000 while staying iterative, counting only entry into a nonterminal star suffix after adjacent stars collapse; a 1001st suffix entry returns no match and a trailing star can still succeed at depth 1000.
+
 ## 2026-10-14 Write SET with PXAT and effect groups as Redis 7.2.16 does
 
 Nodes: firn/append-only-file

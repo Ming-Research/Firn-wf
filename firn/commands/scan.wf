@@ -89,7 +89,7 @@ fn scan_cursor(input: &[u8], span: Span) -> parsed: ScanCursor reads(input) {
 }
 
 fn scan_type(input: &[u8], span: Span) -> kind: u64 reads(input) {
-  doc "TYPE names are compared in either case up to NUL, as Redis's strcasecmp. none is 7: Redis 7.0.15 reads a key's type before its expiry check, so the name of an expired key the step removes has type none. Other unknown types match nothing: 6; 0 means no TYPE filter in ScanPlan.";
+  doc "TYPE names are compared in either case up to NUL, as Redis 7.2.16's strcasecmp. none and other unknown types match nothing: 6; Redis's scanGenericCommand excludes an absent lookup result before comparing types, even for none, so an expired key the lookup removes is never returned. 0 means no TYPE filter in ScanPlan.";
   let length = before_zero(input: input, span: span);
   let code = name_code(input: input, start: span.start, length: length);
   if code == 78401563153491_u64 {
@@ -106,9 +106,6 @@ fn scan_type(input: &[u8], span: Span) -> kind: u64 reads(input) {
   }
   if code == 1413829466_u64 {
     return 5_u64;
-  }
-  if code == 1162760014_u64 {
-    return 7_u64;
   }
   return 6_u64;
 }
@@ -207,7 +204,7 @@ fn scan_body(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entr
   ensures budget^.group_start == entry(budget)^.group_start;
   ensures log^.inner.len >= entry(log)^.inner.len;
 } {
-  doc "One map_scan into a fresh key set. MATCH precedes lookup; a matched expired entry is removed and logged even when TYPE excludes it, and TYPE none returns its name. No reference into the map survives a whole-map mutation.";
+  doc "One map_scan into a fresh key set. MATCH precedes lookup; a matched expired entry is removed and logged even when TYPE excludes it, and its name is never returned, including for TYPE none, as Redis 7.2.16's scanGenericCommand does. No reference into the map survives a whole-map mutation.";
   let log_initial_length = log^.inner.len;
   let step = key_set_new(capacity: 16_u64);
   let next = map_scan::<Entry>(map: keys, cursor: plan^.cursor, count: plan^.count, keys: &step);
@@ -236,11 +233,6 @@ fn scan_body(sequence: &pkg::store::WriteSequence, keys: &ConcurrentHashMap<Entr
           let typed = plan^.kind == kind;
           let included = bor(any, typed);
           if included {
-            key_set_insert(keys: found, key: key);
-          }
-        }
-        if removed {
-          if plan^.kind == 7_u64 {
             key_set_insert(keys: found, key: key);
           }
         }
