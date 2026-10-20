@@ -33,8 +33,10 @@ health. Shutdown forces a flush and sync and exits even when these fail
 
 ## Close-fsync status in Redis 7.2.16
 
-Source investigation for board item `firn-aof-close-sync-status`; no runtime
-validation is claimed. The following findings concern Redis 7.2.16, whereas
+Source investigation for board item `firn-aof-close-sync-status`; the runtime
+check is the isolated fixture below, which passed in CI at head 2c9a592 (run
+[39457176042](https://github.com/Ming-Research/Firn-wf/actions/runs/39457176042)).
+The following findings concern Redis 7.2.16, whereas
 the historical investigation below primarily concerns Redis 7.0.15.
 
 Redis queues the old incremental descriptor's fsync-and-close at rewrite
@@ -79,10 +81,11 @@ Firn already saves a counted seal-sync failure and aborts the rewrite
 Inspection therefore does not reproduce the premise that Firn ignores this
 failure. Redis's immediate clearing after a successful close-sync conflicts
 with Firn's established failed-page safety rule: writes resume only after a
-durable rewrite. The selected proposal retains that recovery rule and records
-Redis's clear-on-successful-close-sync path as an intentional divergence in
-the append-only-file decision and rejection rationale. Design approval remains
-with the owner; no runtime behavior change is needed for this comparison.
+durable rewrite. The owner ruled on 2026-10-14 (card firn-q-close-sync-recovery,
+option A) to retain that recovery rule and record Redis's
+clear-on-successful-close-sync path as an intentional divergence in the
+append-only-file decision and rejection rationale. No runtime behavior change
+is needed for this comparison.
 
 ### Isolated fixture and assertions
 
