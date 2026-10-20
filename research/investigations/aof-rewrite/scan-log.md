@@ -921,9 +921,9 @@ AOF forms differ from the commands sent).
 
 ## Rewrite at the cache limit
 
-Proposal for board item `firn-rw-cache-refused`: exclude bounded rewrite
-charges from maxmemory. This replaces the headroom policy above on this
-draft branch; it is not an owner approval or a new measurement. The task
+Board item `firn-rw-cache-refused`: exclude bounded rewrite charges from
+maxmemory. Owner ruling firn-q-rw-memory-excluded chose this (option A) on
+2026-10-14; it replaces the headroom policy above. The task
 reports refusal in the 14900K cache sample
 [run 38395271960](https://github.com/Ming-Research/Firn-wf/actions/runs/38395271960):
 one core, AOF on, one million keys with Zipf access, allkeys-lru and a limit
@@ -994,25 +994,20 @@ after reducing maxmemory to one byte, while checking normal SET OOM and
 restart equality. That expectation changes because ordinary pressure no
 longer cancels the independent rewrite allowance. It also checks pre-cut
 INFO exclusion includes the live rewrite ledger and completion clears it.
-The primary agent reports that a temporary branch containing only the new
-cache case on main failed with "rewrite refused at the eviction limit", so
-the case detects the original admission refusal. The modified implementation
-has not yet passed: [PR #86's gate run 38396947945](https://github.com/Ming-Research/Firn-wf/actions/runs/38396947945)
+The new cache case fails on main: a temporary branch holding only that case,
+run [38396951877](https://github.com/Ming-Research/Firn-wf/actions/runs/38396951877),
+fails with "rewrite refused at the eviction limit", so the case detects the
+original admission refusal. An earlier gate run on this branch,
+[38396947945](https://github.com/Ming-Research/Firn-wf/actions/runs/38396947945),
 failed compilation because aof_rw_cycle still declared writes(meter) after
-admission stopped reading the heap. Its remaining meter_share call only
-reads the meter. The follow-up changes that effect to reads(meter), exactly
-as the EFF-2 diagnostic requires; its caller owns the meter and needs no
-signature change. The scan worker still reads the heap through its own
-meter, so its dataset function's writes(meter) remains required. Compilation
-and new-behavior CI results after this correction remain pending. Pins and
-submodules are unchanged.
+admission stopped reading the heap; the fix changes that effect to
+reads(meter), which the remaining meter_share call needs. The scan worker
+still reads the heap through its own meter, so its writes(meter) remains
+required. The head commit's checks pass, including the cache case, in
+[run 39466887032](https://github.com/Ming-Research/Firn-wf/actions/runs/39466887032)
+on 9f5f051. Pins and submodules are unchanged.
 
-A separate read-only GPT-6.1 Sol review inspected the complete uncommitted
-change against 24df67f1c45cb234dd37c8a212733778f6a3f924, affected consumers,
-charge/refund paths, Redis source and the project checklist. It found no
-static defect. Design G1–G3/DC1–DC3 and A1/C1/C2/D1 passed static inspection;
-DC4 and gate evidence remain unverified. In particular, the exact exclusion
-assertion runs before S1, where rotation charges are zero: it does not
-discriminate omitting the rotation-charge subtraction. That accounting
-branch has source-review evidence only. The pressure case retains its
-existing timing-sensitive rotation observation, which CI must exercise.
+The cache case writes batches of keys while the rewrite runs, so evictions
+happen inside the rewrite window and the restart check covers them. Not yet
+shown by a test: the rotation-charge subtraction in mem_not_counted_for_evict
+(its effect on the compared figure is checked by source reading only).

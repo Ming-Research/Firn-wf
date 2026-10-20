@@ -217,12 +217,24 @@ fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
     let mut observed = info(&mut client, "all");
     assert_eq!(reply, "+Background append only file rewriting started\r\n",
         "rewrite refused at the eviction limit; before:\n{before}\nafter (abort reason and memory):\n{observed}");
+    let evicted_at_start = number(&observed, "evicted_keys");
     let deadline = Instant::now() + Duration::from_secs(60);
-    while number(&observed, "aof_rewrite_in_progress") != 0 {
+    // Keep writing while the rewrite runs. At the limit each write evicts a
+    // key, and that eviction must reach the rewrite's capture, so the restart
+    // below must not bring it back. At least one batch is written even when
+    // the rewrite finishes first.
+    loop {
+        for index in written..written + 32 {
+            assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
+        }
+        written += 32;
+        observed = info(&mut client, "all");
+        if number(&observed, "aof_rewrite_in_progress") == 0 { break; }
         assert!(Instant::now() < deadline, "cache rewrite did not finish: {observed}");
         std::thread::sleep(Duration::from_millis(10));
-        observed = info(&mut client, "all");
     }
+    assert!(number(&observed, "evicted_keys") > evicted_at_start,
+        "writes during the rewrite evicted no key: {observed}");
     assert_eq!(info_field(&observed, "aof_last_bgrewrite_status").as_deref(), Some("ok"),
         "cache rewrite failed: {observed}");
     assert_eq!(info_field(&observed, "firn_aof_rewrite_abort_reason").as_deref(), Some(""), "{observed}");
