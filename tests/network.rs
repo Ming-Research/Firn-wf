@@ -4575,10 +4575,9 @@ fn firn_records_transactions_as_redis_propagates_them() {
 
 /// Run each script-client case with both client protocols. Direct and MULTI
 /// callers are separate tests, so CI can report direct evidence independently.
-/// MULTI is the Redis acceptance required by firn-scope-script-client, currently
-/// blocked on Whitefoot request wf-need-firn-script-kill. MULTI tests are
-/// explicitly ignored until scripts can run inside EXEC; Redis expectations
-/// remain unchanged.
+/// MULTI is the Redis acceptance required by firn-scope-script-client, which
+/// owns running scripts inside EXEC. MULTI tests are explicitly ignored until
+/// scripts can run inside EXEC; Redis expectations remain unchanged.
 fn script_client_matrix(transaction: bool, mut cases: impl FnMut(&mut TcpStream, bool, bool)) {
     for resp3 in [false, true] {
         let port_lease = support::lease_port();
@@ -4883,7 +4882,7 @@ fn firn_script_clients_direct_lookup_and_read_only() {
 /// Expected replies were recorded on redis-server 7.2.16 in
 /// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
 #[test]
-#[ignore = "waits for Whitefoot request wf-need-firn-script-kill: scripts inside EXEC"]
+#[ignore = "waits for firn-scope-script-client: scripts inside EXEC"]
 fn firn_script_clients_multi_lookup_and_read_only() {
     check_script_clients_lookup_and_read_only(true);
 }
@@ -4898,7 +4897,7 @@ fn firn_script_clients_direct_arity_and_execution_errors() {
 /// Expected replies were recorded on redis-server 7.2.16 in
 /// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
 #[test]
-#[ignore = "waits for Whitefoot request wf-need-firn-script-kill: scripts inside EXEC"]
+#[ignore = "waits for firn-scope-script-client: scripts inside EXEC"]
 fn firn_script_clients_multi_arity_and_execution_errors() {
     check_script_client_arity_and_execution_errors(true);
 }
@@ -4913,7 +4912,7 @@ fn firn_script_clients_direct_error_status_and_replication() {
 /// Expected replies were recorded on redis-server 7.2.16 in
 /// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
 #[test]
-#[ignore = "waits for Whitefoot request wf-need-firn-script-kill: scripts inside EXEC"]
+#[ignore = "waits for firn-scope-script-client: scripts inside EXEC"]
 fn firn_script_clients_multi_error_status_and_replication() {
     check_script_clients_error_status_and_replication(true);
 }
@@ -4928,7 +4927,7 @@ fn firn_script_clients_direct_json_and_messagepack() {
 /// Expected replies were recorded on redis-server 7.2.16 in
 /// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
 #[test]
-#[ignore = "waits for Whitefoot request wf-need-firn-script-kill: scripts inside EXEC"]
+#[ignore = "waits for firn-scope-script-client: scripts inside EXEC"]
 fn firn_script_clients_multi_json_and_messagepack() {
     check_script_clients_json_and_messagepack(true);
 }
@@ -4943,7 +4942,7 @@ fn firn_script_clients_direct_unpack_boundaries() {
 /// Expected replies were recorded on redis-server 7.2.16 in
 /// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
 #[test]
-#[ignore = "waits for Whitefoot request wf-need-firn-script-kill: scripts inside EXEC"]
+#[ignore = "waits for firn-scope-script-client: scripts inside EXEC"]
 fn firn_script_clients_multi_unpack_boundaries() {
     check_script_clients_unpack_boundaries(true);
 }

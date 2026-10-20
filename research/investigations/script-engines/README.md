@@ -150,9 +150,8 @@ is not an asserted byte expectation in the network cases.
 
 The new network cases assert reference results for direct and EXEC paths,
 without Firn-specific expected replies. The five MULTI/EXEC tests are explicitly
-ignored with the reason "waits for Whitefoot request wf-need-firn-script-kill:
-scripts inside EXEC", as directed by the owner, until the dependency supports
-this execution path. Their Redis expectations remain unchanged. Direct cases
+ignored with the reason "waits for firn-scope-script-client: scripts inside
+EXEC", as directed by the owner, until that item supports this execution path. Their Redis expectations remain unchanged. Direct cases
 require CI validation; source inspection alone does not establish byte
 equivalence.
 
@@ -175,7 +174,7 @@ equivalence.
   and previous writes.
 - `tests/network.rs`: add the five groups below, each split into direct and
   MULTI tests and each exercised with RESP2 and RESP3. The five MULTI tests are
-  ignored pending `wf-need-firn-script-kill`; direct tests remain in the gate.
+  ignored pending `firn-scope-script-client`; direct tests remain in the gate.
 - `design/firn/scripts.md`: propose shared invocation-local read-only execution
   instead of caching authority or duplicating command implementations.
 - `design/firn/command-parts.md`: include the EVAL family in the NOSCRIPT rule.
