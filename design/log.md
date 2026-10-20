@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-14 Initialize the access stamp at RENAME's destination and MSETNX stores like Redis 7.2.16
+
+Nodes: firn/memory-limit
+
+Summary: A successful RENAME or RENAMENX to a different name initializes the destination's LRU clock or LFU minute with counter 5 instead of carrying the source's stamp, because Redis 7.2.16 adds the moved value through dbAddInternal, which initializes it; same-name and refused renames keep the ordinary lookup refreshes. MSETNX keeps its ordered existence lookups but stores without refreshing a repeated key after each pair, as Redis 7.2.16's msetGenericCommand does, so the last pair wins with the first insertion's fresh stamp. The LFU outcomes are recorded in research/experiments/aof-oracle/lfu-rename-msetnx.json, from Firn-wf run 38406427583.
+
 ## 2026-10-14 Exclude expired keys from SCAN and cap glob nesting as Redis 7.2.16
 
 Nodes: firn/enumeration

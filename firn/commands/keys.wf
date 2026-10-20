@@ -1027,7 +1027,7 @@ fn rename_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   requires slots^.len == access_keys^.len;
   ensures slots^.len == entry(slots)^.len;
 } {
-  doc "RENAME and RENAMENX over the named entries, checking the source before an equal or occupied target, moving the value with its expiry, and recording which lookups removed expired entries. The caller sets client.now to its statement's time.";
+  doc "RENAME and RENAMENX over the named entries, checking the source before an equal or occupied target, moving the value with its expiry, and recording which lookups removed expired entries. A successful move to a different name initializes the destination's access stamp as Redis 7.2.16 dbAddInternal does; same-name and refused moves retain their lookup refreshes. The caller sets client.now to its statement's time.";
   let no = False();
   let work = TransferWork(outcome: rename_missing, at: 0_u64, source_expired: no, target_expired: no);
   if source < slots^.len {
@@ -1049,6 +1049,14 @@ fn rename_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
         let moved = None<Entry>();
         swap(first: &slots^[source], second: &moved);
         set work.at = held_expiry(slot: &moved);
+        let transferred = &moved;
+        match transferred^ {
+          Some(value: transferred_entry) => {
+            set transferred_entry^.access = new_access(client: client);
+          }
+          None() => {
+          }
+        }
         pkg::store::sequence_replace(sequence: sequence, slot: &slots^[target], replacement: move moved);
         pkg::store::sequence_stamp_at(sequence: sequence, slot: &slots^[target], keys: access_keys, index: target);
         pkg::store::sequence_capture_at(sequence: sequence, keys: access_keys, index: source, slot: &slots^[source]);
