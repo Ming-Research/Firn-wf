@@ -89,6 +89,8 @@ jobs:
     name: network tests
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,8 +110,51 @@ jobs:
       - name: Select the Rust toolchain
         run: rustup default stable && cargo --version
 
+      - name: Install syscall fault instrumentation
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
+
+      - name: Cache the pinned Redis oracle for rewrite crash cases
+        uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      # Board item firn-test-recv-eintr: a socket read with a timeout once
+      # failed with EINTR, but the tests send the test process no signal.
+      # The kernel's signal_generate tracepoint records every signal sent on
+      # the runner with its sender and target, so a recurrence names its
+      # source. Both steps are diagnostic and never fail the job. Remove
+      # them with that item once the source is fixed.
+      - name: Record every signal sent during the network cases
+        run: |
+          t=/sys/kernel/tracing
+          sudo sh -c "echo 32768 > $t/buffer_size_kb && echo 1 > $t/events/signal/signal_generate/enable && echo 1 > $t/tracing_on" ||
+            echo "::warning::signal tracing unavailable"
+
       - name: Build firn for the network cases and run them
         run: make test
+
+      # SIGCHLD (17), sent at every child's exit, has no handler in the test
+      # process and so cannot interrupt a read; it is only counted. SIGURG
+      # (23) is summarized by sender and target with their pids, because the
+      # runner's own agents send it thousands of times to themselves. Every
+      # other signal is listed with its sender (the task column) and its
+      # target (comm= and pid=).
+      - name: Show the signals sent during the network cases
+        if: always()
+        run: |
+          t=/sys/kernel/tracing
+          sudo sh -c "echo 0 > $t/tracing_on" || true
+          sudo cat $t/trace > "$RUNNER_TEMP/signals.txt" || true
+          echo "signal_generate events by signal number:"
+          grep -o 'signal_generate: sig=[0-9]*' "$RUNNER_TEMP/signals.txt" | sort | uniq -c
+          echo "lost events per CPU buffer (overrun):"
+          sudo sh -c "grep -h overrun $t/per_cpu/cpu*/stats" | sort | uniq -c
+          echo "SIGURG by sender and target:"
+          grep 'signal_generate: sig=23 ' "$RUNNER_TEMP/signals.txt" |
+            sed -E 's/^ *(.*-[0-9]+) +\[.*comm=([^ ]*) pid=([0-9]+).*/\1 -> \2-\3/' | sort | uniq -c
+          echo "every other signal:"
+          grep 'signal_generate:' "$RUNNER_TEMP/signals.txt" | grep -v -E ' sig=(17|23) ' || true
 
   safety-witnesses:
     name: rejected and accepted safety witnesses
@@ -171,11 +216,11 @@ jobs:
   # The append-only file's sync failing on a real device:
   # tests/aof_sync_fault_device.sh makes a device-mapper device whose writes
   # and flushes fail on command, under an ext4 filesystem the case runs firn
-  # and Redis 7.2.16, its oracle, on. The case is ignored in `make check`,
-  # which has no such device; here it runs alone, and a device that cannot be
+  # and Redis 7.2.16, its oracle, on. The cases are ignored in `make check`,
+  # which has no such device; here they run serially, and a device that cannot be
   # made, a missing oracle or a run that passes no case fails the job.
   aof-sync-fault:
-    name: AOF sync failure on a faulty device
+    name: AOF sync and rewrite failures
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -190,7 +235,7 @@ jobs:
       - name: Install the host toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends dmsetup
+          sudo apt-get install -y --no-install-recommends dmsetup strace
           make toolchain
           ld.lld --version
           /usr/bin/clang --version
@@ -238,8 +283,8 @@ jobs:
         run: sudo tests/aof_sync_fault_device.sh check-writeback "$FIRN_SYNC_FAULT_MOUNT"
 
       # The target fails without FIRN_SYNC_FAULT_MOUNT and REDIS_SERVER, set
-      # by the steps above, and unless both of its cases ran and passed.
-      - name: Run the sync-failure cases
+      # by the steps above, and unless all six of its cases ran and passed.
+      - name: Run the sync and rewrite fault cases
         run: make aof-sync-fault
 
       - name: Show the kernel's account of the device
