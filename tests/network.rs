@@ -2144,7 +2144,7 @@ fn dyadic_decimal(m: u64, k: usize) -> String {
 /// it, is a syntax
 /// error, while one in a later score's place is an invalid score. The expected
 /// replies are redis-server 7.2.16's, recorded in
-/// [the score oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38394816029).
+/// research/experiments/aof-oracle/score-text-recording.json.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_reads_and_writes_scores_as_redis_does() {
@@ -2290,7 +2290,7 @@ fn firn_reads_and_writes_scores_as_redis_does() {
 /// infinities are read through each score reply under RESP2 and RESP3, then
 /// checked independently in the rewritten base's ZADD records.
 /// The expected replies and base score arguments are redis-server 7.2.16's,
-/// recorded in [the score oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38394816029).
+/// recorded in research/experiments/aof-oracle/score-text-recording.json.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_writes_score_text_as_redis_7_2_16_does() {
@@ -3227,7 +3227,7 @@ fn firn_carries_requests_and_replies_larger_than_its_windows() {
 /// CONFIG SET appendonly yes, the file firn keeps, succeeds, and no is refused
 /// in Redis's form for a refused value with firn's own reason, where Redis
 /// would stop its file. The expected score replies are redis-server 7.2.16's,
-/// recorded in [the score oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38394816029).
+/// recorded in research/experiments/aof-oracle/score-text-recording.json.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_replays_the_value_types_from_its_append_only_file() {
@@ -10650,7 +10650,7 @@ fn firn_refuses_aof_rewrite_without_appendonly() {
 /// supply the oracle: SET, RPUSH/SADD/ZADD/HMSET in groups of at most 64,
 /// SELECT 0 before the dataset, and absolute PEXPIREAT after each key. The
 /// expected replayed score replies are redis-server 7.2.16's, recorded in
-/// [the score oracle run](https://github.com/Ming-Research/Firn-wf/actions/runs/38394816029).
+/// research/experiments/aof-oracle/score-text-recording.json.
 #[test]
 fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
     let program = CompiledProgram::from_environment();
