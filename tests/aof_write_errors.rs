@@ -13,8 +13,8 @@ use std::path::Path;
 const MISCONF: &str = "-MISCONF Errors writing to the AOF file: ";
 const EXEC_MISCONF: &str = "-EXECABORT Transaction discarded because of: MISCONF Errors writing to the AOF file: ";
 const PREVIOUS_ERRORS: &str = "-EXECABORT Transaction discarded because of previous errors.\r\n";
-/// script.c:349-356 rejects a write from a read-only script before the
-/// disk-error check at script.c:372-375, so MISCONF never replaces this text.
+/// script.c:350-355 rejects a write from a read-only script before the
+/// disk-error check at script.c:379-382, so MISCONF never replaces this text.
 const READ_ONLY_SCRIPT: &str = "-ERR Write commands are not allowed from read-only scripts.";
 const POLL_LIMIT: Duration = Duration::from_secs(10);
 /// glibc strerror(EFBIG). `fault` sets RLIMIT_FSIZE to the file's current

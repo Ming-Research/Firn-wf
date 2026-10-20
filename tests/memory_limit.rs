@@ -381,7 +381,7 @@ fn scripts_refuse_before_a_write_and_continue_after_a_noop_write() {
     assert!(refused.contains("OOM command not allowed when used memory > 'maxmemory'."), "{refused}");
     assert_eq!(memory_request(&mut client, &["STRLEN", "script-key"]), format!(":{VALUE_BYTES}\r\n"));
     // EVAL_RO is not DENYOOM, and its script's write meets the read-only
-    // refusal (script.c:349-356) before the OOM check (script.c:396-415).
+    // refusal (script.c:350-355) before the OOM check (script.c:396-418).
     assert_eq!(memory_request(&mut client, &["EVAL_RO", "return 102", "0"]), ":102\r\n");
     let read_only = memory_request(&mut client, &["EVAL_RO", "return redis.call('SET','script-key','new')", "0"]);
     assert!(read_only.starts_with("-ERR Write commands are not allowed from read-only scripts. script: ")
