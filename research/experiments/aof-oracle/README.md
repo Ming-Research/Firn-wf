@@ -44,3 +44,15 @@ the reply's raw text.
   returns nothing. Used by
   `firn_scan_type_none_omits_a_key_expired_during_the_scan` and
   `firn_glob_matching_obeys_redis_star_nesting_limit`.
+
+## `held-scan-type-none-recording.json`
+
+- Source run: https://github.com/Ming-Research/Firn-wf/actions/runs/39434249311
+- Run head commit: `9470aa1fa26b131c7c8995494d4bb7977d37d404`
+- Case `held-scan-type-none`: the loaded records of `firn_records_held_scan_type_none_as_redis_propagates_it`
+  preloaded as a base AOF with active expiry off, then the same requests.
+  The replies match the test. The AOF does not match its expected records:
+  Redis 7.2.16 writes `DEL n1`, `DEL n3`, `SET w 1` and `SET t 1` as four
+  separate records, without `MULTI`/`EXEC`, where the test expects two
+  `MULTI DEL SET EXEC` groups. The test is not yet changed; see the board
+  item's log.

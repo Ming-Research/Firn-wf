@@ -1,0 +1,83 @@
+[
+  {
+    "name": "held-scan-type-none",
+    "resp": 2,
+    "replies": [
+      {
+        "cmd": [
+          "DEBUG",
+          "SET-ACTIVE-EXPIRE",
+          "0"
+        ],
+        "reply": "+OK\r\n"
+      },
+      {
+        "cmd": [
+          "MULTI"
+        ],
+        "reply": "+OK\r\n"
+      },
+      {
+        "cmd": [
+          "SCAN",
+          "0",
+          "MATCH",
+          "n1",
+          "TYPE",
+          "none",
+          "COUNT",
+          "1000"
+        ],
+        "reply": "+QUEUED\r\n"
+      },
+      {
+        "cmd": [
+          "SCAN",
+          "0",
+          "MATCH",
+          "n2",
+          "TYPE",
+          "none",
+          "COUNT",
+          "1000"
+        ],
+        "reply": "+QUEUED\r\n"
+      },
+      {
+        "cmd": [
+          "SET",
+          "w",
+          "1"
+        ],
+        "reply": "+QUEUED\r\n"
+      },
+      {
+        "cmd": [
+          "EXEC"
+        ],
+        "reply": "*3\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n"
+      },
+      {
+        "cmd": [
+          "EVAL",
+          "local r = redis.call('SCAN', '0', 'MATCH', 'n3', 'TYPE', 'NONE', 'COUNT', '1000'); redis.call('SET', 't', '1'); return r",
+          "0"
+        ],
+        "reply": "*2\r\n$1\r\n0\r\n*0\r\n"
+      },
+      {
+        "cmd": [
+          "DBSIZE"
+        ],
+        "reply": ":3\r\n"
+      },
+      {
+        "cmd": [
+          "__AOF__"
+        ],
+        "reply": "*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*2\r\n$3\r\nDEL\r\n$2\r\nn1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nn3\r\n*3\r\n$3\r\nSET\r\n$1\r\nw\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$1\r\nt\r\n$1\r\n1\r\n"
+      }
+    ],
+    "file": "held-scan-type-none.json"
+  }
+]
