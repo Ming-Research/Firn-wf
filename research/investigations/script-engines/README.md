@@ -106,6 +106,12 @@ EVALSHA remains protected across retries. KILL increments kills while running > 
 NOTBUSY. eval checks that counter between attempts, after retaking the engine. `return_engine` resets
 suspended execution and puts the engine back.
 
+The millisecond wait between attempts exists because Whitefoot does not yet let other contexts on a
+driver run, or let an idle driver take over its connections, while one context computes without waiting:
+Whitefoot requests `firn-req-ring-assist` and `firn-req-single-driver-progress`. It bounds the starvation
+only for scripts that have not written; a script that has written runs to its end without waiting, and
+other connections on its driver wait for it. When those requests land, the wait is to be re-examined.
+
 Known differences must not be mistaken for Redis requirements: current KILL answers OK for written scripts
 where Redis's [script.c:scriptKill](https://github.com/redis/redis/blob/7.0.15/src/script.c#L294) answers
 UNKILLABLE; EXEC rejects queued EVAL/EVALSHA as commands without held parts; shebang scripts are explicitly

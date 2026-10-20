@@ -7,7 +7,7 @@ proved safe. Redis clients talk to firn over TCP as they would to Redis
 7.2.16, apart from the known differences that
 [firn/README.md](firn/README.md) records and the
 [shared status board](https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip)
-tracks, such as the text of scores. It keeps
+tracks. It keeps
 strings, lists, sets, hashes and sorted sets in one shared keyspace, expires
 keys, and persists every change to an append-only file. It is named for firn,
 snow that has lasted a season: stored and compacted.
@@ -61,7 +61,7 @@ passes.
   `whitefoot-kit/`, a submodule of
   [Whitefoot-kit](https://github.com/Ming-Research/Whitefoot-kit), fetches
   and checks it.
-- `design/`: the decisions firn is built on, and their approval log;
+- `design/`: the decisions firn is built on, and their change log;
   `design/skill/`, a submodule of
   [Design-skill](https://github.com/Ming-Research/Design-skill), holds the
   tree's lint.
