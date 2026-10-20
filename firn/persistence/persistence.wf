@@ -156,7 +156,7 @@ const word_exec: Array<u8, 4> = "EXEC";
 fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name: &[u8], name_length: u64, time: &Time, clock: &Clock) -> loaded: Loaded reads(store), reads(root), reads(name), reads(time), writes(factory), writes(clock) waits contract {
   requires name_length <= name^.len;
 } {
-  doc "Applies every command of the append-only file the name names, refusing an absent file, and returns how many it applied and how much of the file to keep. The commands between MULTI and EXEC apply only once their EXEC is read, so a block the file ends inside, as a write cut short leaves one, applies none of its commands, as Redis 7.0.15 reverts an incomplete MULTI/EXEC block while loading; an EXEC outside a block is passed over. A file whose reading reaches its end inside a command is to be cut after the last whole command, and one that ends cleanly inside a block before its latest MULTI, as Redis cuts each with aof-load-truncated, its default, so the commands appended after the replay follow whole commands; a file that ends after a whole command outside a block is kept whole. As Redis does while loading, no key counts as expired during the replay, time's check being zero, and an expiry whose calendar time has passed is kept as one already reached, so the commands after it in the file apply as they did when they were written; lazy and active expiry remove such a key once the server listens. A record that is not a well-formed command, a read that fails other than at the file's end, or a block or command larger than the input window's ceiling stops the replay with stopped true, as Redis 7.0.15 stops loading and exits.";
+  doc "Applies every command of the append-only file the name names, refusing an absent file, and returns how many it applied and how much of the file to keep. The commands between MULTI and EXEC apply only once their EXEC is read, so a block the file ends inside, as a write cut short leaves one, applies none of its commands, as Redis 7.0.15 reverts an incomplete MULTI/EXEC block while loading; an EXEC outside a block is passed over. A file whose reading reaches its end inside a command is to be cut after the last whole command, and one that ends cleanly inside a block before its latest MULTI, as Redis cuts each with aof-load-truncated, its default, so the commands appended after the replay follow whole commands; a file that ends after a whole command outside a block is kept whole. As Redis does while loading, no key counts as expired during the replay, time's check being zero, and an expiry whose calendar time has passed is kept as one already reached, so the commands after it in the file apply as they did when they were written; lazy and active expiry remove such a key once the server listens. A record that is not a well-formed command, a read that fails other than at the file's end, or a block or command larger than the input window's ceiling stops the replay with stopped true, as Redis 7.0.15 stops loading and exits. Before the first whole command the file's reading parses, and then once every 1024 commands, the replay reads the shutdown request a stop signal records and, when it is set, ends with interrupted true, applying nothing more and leaving the file to be closed unchanged, as Redis 7.2.16 serves events every 1024 commands while it loads (aof.c:1480-1485) and exits with status 0 when it finds a stop signal's request there (server.c:1592-1599).";
   let applied = 0_u64;
   let kept = 0_u64;
   let size = 0_u64;
@@ -164,6 +164,8 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
   let stopped = False();
   let unfinished = False();
   let reverted = 0_u64;
+  let interrupted = False();
+  let loops = 0_u64;
   match open_file(factory: factory, root: root, name: name, start: 0_u64, end: name_length) {
     Ok(value: file) => {
       let env = KeyEnv();
@@ -245,6 +247,14 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
           }
           let next = parsed.next;
           if parsed.state == 1_u64 {
+            let due = iand(loops, 1023_u64);
+            set loops = loops +wrap 1_u64;
+            if due == 0_u64 {
+              if pkg::store::shutdown_requested(store: store) {
+                set interrupted = True();
+                break @commands;
+              }
+            }
             let block_kind = aof_block_command(input: bytes, args: &args);
             let multi = block_kind == 1_u64;
             let exec = block_kind == 2_u64;
@@ -286,6 +296,9 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
           set stopped = True();
           break @chunks;
         }
+        if interrupted {
+          break @chunks;
+        }
         let kept_from = consumed;
         if scanning {
           set kept_from = block_start;
@@ -301,5 +314,5 @@ fn replay(store: &Keyspace, factory: &HandleFactory, root: &DirectoryRead, name:
       set stopped = True();
     }
   }
-  return Loaded(applied: applied, kept: kept, size: size, cut: cut, stopped: stopped, unfinished: unfinished, reverted: reverted);
+  return Loaded(applied: applied, kept: kept, size: size, cut: cut, stopped: stopped, unfinished: unfinished, reverted: reverted, interrupted: interrupted);
 }

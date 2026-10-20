@@ -8,6 +8,8 @@ the entries of the keys a command uses and the separate expiry, log or server
 metadata objects it also needs. It is named for firn, snow that has lasted a
 season: stored and compacted.
 
+See [safety guarantees and their evidence](../docs/safety.md).
+
 Its commands are these, which began as the ones `redis-benchmark`'s default
 suite sends, with expiry, an append-only file and the connection commands
 clients send on their own:
@@ -245,10 +247,18 @@ client until it ends, so one that never ends keeps firn from stopping (the
 SIGTERM and SIGINT stop firn as `SHUTDOWN` does, with the same drain, the
 append-only file's last append and sync, and status 0, as Redis 7.0.15 shuts
 down gracefully on either signal under its default `shutdown-on-sigterm` and
-`shutdown-on-sigint`. firn hears them from just before it listens: one sent
-during the replay before that still ends firn at once, where Redis stops
-loading and exits with status 0, and a host that refuses to deliver them to
-firn stops it with status 3, as an address it cannot listen on does. Once
+`shutdown-on-sigint`. firn hears them from before it replays its append-only
+file. One that comes during the replay ends it at the replay's next check,
+made before the first command it reads and then before every 1024th, and firn exits with status 0
+without cutting, creating, removing or rewriting anything in `appendonlydir`,
+as Redis 7.2.16 serves events every 1024 commands while it loads
+(`aof.c:1480-1485`) and exits there with status 0 (`server.c:1592-1599`),
+opening its file for appending only afterwards (`server.c:7332`). An
+old-style file is upgraded before the replay, as Redis does, so a stop during
+that replay leaves the upgraded layout. One that comes after the replay's
+last check stops firn in order once it listens. A host that refuses to
+deliver the signals to firn stops it with status 3 before the replay, as an
+address it cannot listen on does after it. Once
 firn has taken a signal, or cancellation has ended its signal wait after a
 `SHUTDOWN` request or its last client leaving after the client limit, a
 further SIGTERM or SIGINT ends it at once, without the rest of the drain;
