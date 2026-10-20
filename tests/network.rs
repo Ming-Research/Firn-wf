@@ -7672,9 +7672,8 @@ fn firn_enumerates_keys_as_redis_does() {
 /// follow src/db.c:expireIfNeeded and src/server.c:propagatePendingCommands.
 /// The expected records were recorded on Redis 7.2.16 in
 /// research/experiments/aof-oracle/held-scan-type-none-recording.json.
-/// The records omit the SELECT 0 that Redis 7.2.16 writes at the start of an
-/// incremental file after a restart (server.c:2051, aof.c:1338), which firn
-/// does not write yet; the difference is tracked by firn-scope-select-db.
+/// The records omit the SELECT 0 that Redis 7.2.16 writes into the AOF after a
+/// restart, which firn does not write yet; firn-scope-select-db tracks it.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_held_scan_type_none_as_redis_propagates_it() {
