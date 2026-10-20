@@ -3219,7 +3219,7 @@ fn firn_carries_requests_and_replies_larger_than_its_windows() {
 /// others. A string set before FLUSHALL and a list pushed before FLUSHDB stay
 /// absent, since the file records both commands, and FUNCTION FLUSH after
 /// them, as Redis does, and a FLUSHALL of the keyspace still empty before
-/// them: the file's first bytes follow Redis's append semantics for the
+/// them: the file's first bytes are those redis-server 7.0.15 appends for the
 /// same requests, the SELECT it writes first aside. A key the expiring context
 /// removed is recorded as removed, as Redis propagates it, so a `SET` with NX
 /// that found it absent holds its value after the restart, where a replay
