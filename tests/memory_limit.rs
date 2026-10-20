@@ -392,7 +392,14 @@ fn allkeys_lru_keeps_evicting_while_an_aborted_rewrite_clears() {
         }
         assert!(Instant::now() < deadline, "the rewrite never aborted or writes stopped evicting: {info_all}");
     }
-    let observed = info(&mut client, "all");
+    // The status is written when cleanup clears the rewrite, so wait for it.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut observed = info(&mut client, "all");
+    while number(&observed, "aof_rewrite_in_progress") != 0 {
+        assert!(Instant::now() < deadline, "aborted cache rewrite did not clear: {observed}");
+        std::thread::sleep(Duration::from_millis(10));
+        observed = info(&mut client, "all");
+    }
     assert_eq!(info_field(&observed, "aof_last_bgrewrite_status").as_deref(), Some("err"), "{observed}");
     assert!(number(&observed, "evicted_keys") > evicted_after_abort.unwrap_or(0),
         "writes after the abort evicted no key: {observed}");

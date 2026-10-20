@@ -913,6 +913,11 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
     }
     let manifest = program.working_directory().join("appendonlydir/appendonly.aof.manifest");
     let deadline = Instant::now() + Duration::from_secs(20);
+    // Post-cut writes charge the rotation backlog (see the post-cut backlog
+    // case). A few 16 KiB writes after the cut charge it without exhausting
+    // R; 32 KiB writes during the whole poll kept S1 from rotating (CI run
+    // 39498935592), and 1 KiB writes charged nothing (CI run 39510473972).
+    let mut writes_after_cut = 0;
     loop {
         let text = std::fs::read_to_string(&manifest).unwrap();
         if text.contains("appendonly.aof.2.incr.aof") {
@@ -920,11 +925,10 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
             break;
         }
         assert!(Instant::now() < deadline, "S1 never rotated");
-        // Writes that land while S1 rotates grow the collecting buffer, which
-        // is what the rotation charge records. They are small: 32 KiB writes
-        // here exhausted the reserve and kept S1 from rotating (CI run
-        // 39498935592).
-        request(&mut client, &[b"SET", b"hot", b"rotating"]);
+        if rewrite_info(&mut client)["firn_aof_rewrite_cut"] == "1" && writes_after_cut < 4 {
+            request(&mut client, &[b"SET", b"hot", &payload]);
+            writes_after_cut += 1;
+        }
         std::thread::sleep(Duration::from_micros(100));
     }
     // After rotation the rotation charges are part of the rewrite ledger, and
