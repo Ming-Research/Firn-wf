@@ -98,11 +98,14 @@ fdatasync to return EIO on an already-synced clean inode before any failing
 write; both servers use fdatasync on Linux.
 
 The test is ignored in the ordinary gate and explicitly selected alongside
-the other two by `make aof-sync-fault`, which requires all three passes and
-the test process's successful exit. Each poll uses the existing ten-second
-limit. A three-key seed with one second of rewrite delay per key exposes
-recovery in progress; the healed idle watch uses the existing three seconds.
-These are source-derived expectations, not measured runtimes or CI passes.
+the other five cases of the sync-fault target by `make aof-sync-fault`, which
+requires all six to pass and the test process's successful exit. Each poll uses
+the existing ten-second limit. A three-key seed with one second of rewrite
+delay per key exposes recovery in progress; the healed idle watch uses the
+existing three seconds. On head 2c9a592, CI run
+[39457176042](https://github.com/Ming-Research/Firn-wf/actions/runs/39457176042)
+passed all six cases, and the new case's failed and recovered states were
+printed for the redis, firn-file and firn-native routes.
 
 | Assertions | Failure detected |
 | --- | --- |
@@ -125,29 +128,12 @@ status wait fails, and write/PING/INFO assertions also reject healthy output
 if reached. The existing implementation already records this failure; the
 new case protects it rather than claiming a measured before-fix failure.
 
-CI validation remains outstanding, including both runtime routes' bind
-mount handling, the actual runner's clean-file flush failure, full oracle
-replies and cleanup. The delayed firn sample precedes S1; the later recovery
-wait rejects any observed healthy status while a rewrite still runs, but
-sampling cannot guarantee observation of the brief interval between sealing
-and installation. No new test hook was added for that interval. There are no
-`ORACLE` placeholders: replies are derived from Redis's command handlers and
-C-locale strerror(EIO), and firn's full refusal is compared with the live
-Redis 7.2.16 observation.
-
-### Source review and validation state
-
-A fresh read-only gpt-6.1-sol review at high effort covered the complete
-nine-file working diff against `c6f6058fb17277d4d44d364a45efad1eae01a22b`,
-the project checklist, engineering standards, relevant design nodes and
-Redis 7.2.16 source. It found the stale claim that Redis requires a restart
-and an assertion-table claim broader than the observation; both were
-corrected and rechecked. No unresolved static finding remains within that
-scope. The review marks runtime correspondence, gate results, device probes
-and representative faulty/missing-input trials unverified; no build, test,
-lint or measurement ran locally. The compiler pin and all submodule pins
-are unchanged, and no approval log or commit was written. The design
-clarification remains proposed pending the owner's approval.
+The delayed firn sample precedes S1; the later recovery wait rejects any
+observed healthy status while a rewrite still runs, but sampling cannot
+guarantee observation of the brief interval between sealing and installation.
+No new test hook was added for that interval. Full oracle replies are compared
+with the live Redis 7.2.16 observation: the MISCONF text is the one Redis
+returned, byte for byte.
 
 ## Before this change
 
