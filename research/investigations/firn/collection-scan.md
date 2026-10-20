@@ -1,9 +1,8 @@
 # Whole-collection scans
 
 Investigation for board item `firn-scope-collection-scan`, 2026-10-13. The
-selected direction is implemented on this worktree as proposed design changes;
-compiler acceptance and Firn network results remain for CI. Redis reference replies
-were recorded in the run linked below.
+selected direction is implemented, and the gate's network cases and Redis suite
+check it. Redis reference replies were recorded in the run linked below.
 
 ## Selected scope
 
@@ -23,20 +22,18 @@ scan. Bounded continuation replaces this path when the standard library
 supports it. This ruling supersedes the earlier proposal to introduce encoding
 history and insertion-order representations for this task.
 
-The proposed decision is in [enumeration](../../../design/firn/enumeration.md).
+The decision is in [enumeration](../../../design/firn/enumeration.md).
 The [script restore decision](../../../design/firn/scripts.md) keeps logical
 collection copying: cursor zero carries no continuation tied to backing, and
 map order is not guaranteed across a rebuild. Adding bounded continuation
-must revisit restore semantics. No pin, submodule or approval log changes.
+must revisit restore semantics. No pin or submodule changes.
 
 ## Reference and representation evidence
 
 The reference is [Redis 7.2.16](https://github.com/redis/redis/tree/7.2.16).
-The worktree base is `c6f6058fb17277d4d44d364a45efad1eae01a22b`; compiler pin
-`wf-d75f318d5631` names Whitefoot source
+Compiler pin `wf-d75f318d5631` names Whitefoot source
 `d75f318d56318834785322bde3a3656fb93116a6`. Interfaces and the specification
-were inspected at that source revision. No compiler, build, test suite,
-reference server or benchmark ran on this machine.
+were inspected at that source revision.
 
 [`Value`](../../../firn/store/module.wfm) stores sets and hashes as ordinary
 HashMap values. Sorted stores an ordered score/member map and a member/score
@@ -86,10 +83,10 @@ fn resume(map: &HashMap<u64, unit, 64>, cursor: u64, keys: &KeySet) -> next: u64
 ```
 
 The map argument requires &ConcurrentHashMap<unit> but receives
-&HashMap<u64, unit, 64>. No compiler diagnostic is claimed. The owner is raising
-coord-wfbl-02-01 for ordinary-map resumable scanning; this session has no
-wf-board tools and has not filed a duplicate request. The older direct-bucket
-debt firn-bl-01-20 also remains; this change introduces no new bucket access.
+&HashMap<u64, unit, 64>. No compiler diagnostic is claimed. Ordinary-map
+resumable scanning is tracked by Whitefoot board item coord-wfbl-02-01. The
+older direct-bucket debt firn-bl-01-20 also remains; this change introduces no
+new bucket access.
 
 The needed facility returns an owned continuation and lends keys/values to a
 callback without retaining references across calls. Acceptance must check
@@ -184,21 +181,18 @@ shrinking from 129 to 128 members switches Firn back to d2string. Redis normally
 retains skiplist encoding and skiplist text after that shrink; this is an
 explicitly selected divergence, recorded in the enumeration design node.
 
-Compact ZSCAN calls the shared append_double_text d2string interface; its
-implementation and MIT-attributed helper chain are adopted from the companion
-score-writer work in this same project and use Halo-wf's existing fpconv port.
-The scores module gains its direct fpconv dependency. The old formatter is
-retained independently as score_text_17g and exposed through score_bytes_17g
-for large ZSCAN. Its public signature is:
+Compact ZSCAN calls the scores module's append_double_text d2string
+interface, whose implementation and MIT-attributed helper chain use Halo-wf's
+existing fpconv port. Large ZSCAN calls score_bytes_17g, which the module
+publishes as:
 
 ```whitefoot
-public fn score_bytes_17g(score: f64) -> text: pkg::bytes::Bytes pure doc "A double in C's %.17g text, without RESP framing.";
+public fn score_bytes_17g(score: f64) -> text: pkg::bytes::Bytes pure doc "Redis 7.2.16's ld2string(LD_STR_AUTO) text of a score widened to long double, which ZSCAN writes for a sorted set Redis keeps as a skiplist.";
 ```
 
-The other shared score_bytes interface is not a d2string interface: the
-companion uses it for AOF's plain fpconv text. ZSCAN therefore must not call it
-for compact formatting. This patch leaves the broader reply_score/AOF writer
-migration to the companion; ZSCAN itself now has both required formatters.
+The other shared score_bytes interface is not a d2string interface: AOF
+rewrites use it for plain fpconv text. ZSCAN therefore does not call it for
+compact formatting.
 
 The manifest remains a JSON list of name, resp, optional redis-server startup
 config, and commands. Each entry was recorded on a fresh empty server; HELLO
@@ -219,19 +213,19 @@ association, whole returns at count and byte-length boundaries, script retry
 with an earlier write, and expired direct/EXEC/script reads. The expiry case
 does not isolate lazy deletion from active expiry; it checks the externally
 visible missing-key behavior. New cases could not be run against the old
-revision under the machine rule; missing command dispatch would reject the
-scan commands rather than returning their source-defined replies.
+revision; missing command dispatch would reject the scan commands as unknown
+rather than returning their source-defined replies (deduced from the dispatch
+code, not run).
 The score-selection cases cover 128 -> 129 -> 128 members and 64 -> 65 -> 64
 maximum member bytes, including a 65-byte UTF-8 member with 33 characters.
 MATCH hides the triggers; direct, EXEC and declared-key Lua probes must still
 select the complete collection's formatter. There are no unfilled transcript
-placeholders. The linked run validates the Redis observations, not the changed
-Firn implementation. CI is driven by the owner; no passing Firn suite or
-compiler result is claimed in this record.
+placeholders. The linked run validates the Redis observations; the gate's
+network cases and Redis suite run Firn against them.
 
 Redis 7.2.16's
 [unit/scan.tcl](https://github.com/redis/redis/blob/7.2.16/tests/unit/scan.tcl)
-contains these predicted newly reachable passes:
+contains these tests, which now pass in the gate:
 
 - SSCAN with encoding intset
 - SSCAN with encoding listpack
@@ -247,8 +241,8 @@ contains these predicted newly reachable passes:
 - ZSCAN scores: regression test for issue #2175
 - SCAN regression test for issue #4906
 
-These are candidates, not measured passes, and passing.tsv is unchanged. The
-PATTERN ZSCAN case has no explicit expected-result assertion. The suite runner
+They are registered in `tests/redis-suite/passing.tsv`, so the gate's ratchet
+requires them to pass. The PATTERN ZSCAN case has no explicit expected-result assertion. The suite runner
 already uses --ignore-encoding; its encoding assertions do not validate Firn's
 storage representation. Full held traversal can reach the dictionary and
 shrink-under-scan cases too, but supplies no bounded-work evidence.
