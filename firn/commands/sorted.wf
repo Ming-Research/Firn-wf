@@ -1380,7 +1380,7 @@ fn zrank_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
 }
 
 fn zrank_finish(client: &Client) -> result: unit writes(client) {
-  doc "Completes ZRANK's network reply, retaining replies written while visiting the entry: the rank as an integer, or with WITHSCORE an array of the rank and the score as firn writes every score, Redis 7.0.15's %.17g, which differs from the shortest form of Redis 7.2.16's addReplyDouble for some values, such as 0.1 (board item firn-score-text-72); for an absent key or member the null bulk string, or with WITHSCORE the null array, each in the client's protocol, as Redis 7.2.16's zrankGenericCommand replies.";
+  doc "Completes ZRANK's network reply, retaining replies written while visiting the entry: the rank as an integer, or with WITHSCORE an array of the rank and the score through the shared Redis 7.2.16 addReplyDouble writer, using d2string; for an absent key or member the null bulk string, or with WITHSCORE the null array, each in the client's protocol, as Redis 7.2.16's zrankGenericCommand replies.";
   let withscore = client^.high == 1_i64;
   let score = 0.0_f64;
   if client^.scores.inner.len > 0_u64 {

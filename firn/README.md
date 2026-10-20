@@ -46,10 +46,11 @@ clients send on their own:
   `ZREVRANK` with Redis 7.2's `WITHSCORE`, `ZSCORE`, `ZMSCORE`, `ZCARD`,
   `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count, `ZREMRANGEBYRANK`,
   `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores read as Redis reads
-  them and written as Redis 7.0.15 writes them, in C's `%.17g`, which
-  differs from Redis 7.2.16's text, which comes from Grisu2 (`fpconv_dtoa`)
-  without an exact fallback and so is not always the shortest, for some
-  values, such as 0.1 (board item firn-score-text-72);
+  them and replies written as Redis 7.2.16's `d2string` writes them:
+  signed zeros and infinities, integers through magnitude 2^62, and other
+  values through Halo-wf's port of Grisu2 (`fpconv_dtoa`), without an exact
+  fallback. Rewritten append-only scores use plain `fpconv_dtoa` without
+  the reply's integer shortcut;
 - scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
   `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
   has written nothing, running Lua 5.1 scripts on the Halo engine
@@ -654,8 +655,9 @@ default.
 - `protocol`: reading requests, writing replies, and a connection's state and
   settings;
 - `scores`: sorted-set scores and the ends of score ranges read as Redis's
-  `strtod` reads them, to the nearest double, and written as its `%.17g`
-  writes them;
+  `strtod` reads them, to the nearest double; shared Redis 7.2.16 numeric
+  text for score and script double replies (`d2string`), Lua command
+  arguments, and rewritten append-only scores (plain `fpconv_dtoa`);
 - `extended`: numbers of x86-64's 80-bit long double, read as glibc's
   `strtold` reads them, added, and written as `%.17Lf` writes them, the
   arithmetic of `INCRBYFLOAT` and `HINCRBYFLOAT`;
