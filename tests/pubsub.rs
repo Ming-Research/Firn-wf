@@ -13,12 +13,17 @@ fn start(connections: usize) -> (ProgramChild, TcpStream, u16) {
 }
 
 fn start_with_drivers(connections: usize, drivers: &str) -> (ProgramChild, TcpStream, u16) {
+    start_for(connections, drivers, support::PROGRAM_DEADLINE)
+}
+
+/// Starts firn for a case that outlasts the shared program deadline.
+fn start_for(connections: usize, drivers: &str, limit: Duration) -> (ProgramChild, TcpStream, u16) {
     let lease = support::lease_port();
     let port = lease.port();
     let port_text = port.to_string();
     let count = connections.to_string();
-    let child = firn().spawn_on_route_with(
-        true, &[("WF_DRIVERS", drivers)], &[port_text.as_bytes(), count.as_bytes()],
+    let child = firn().spawn_on_route_with_limit(
+        true, &[("WF_DRIVERS", drivers)], &[port_text.as_bytes(), count.as_bytes()], limit,
     ).with_port(&lease);
     let stream = connect_when_ready(port, &child);
     (child, stream, port)
@@ -864,6 +869,10 @@ fn hard_output_limit_closes_slow_subscriber_and_other_subscriber_keeps_receiving
     assert_eq!(finished(child).0, 0);
 }
 
+/// The soft cases keep firn running past the shared 60-second program
+/// deadline: one waits out the 60-second interval, the other 70 seconds.
+const SOFT_CASE_LIMIT: Duration = Duration::from_secs(150);
+
 /// Reads what the kernel still holds for a closed subscriber and requires the
 /// end of the stream, so a registry removal is not taken for a closed socket.
 fn assert_closed_after_draining(stream: &mut TcpStream, what: &str) {
@@ -890,7 +899,7 @@ fn assert_closed_after_draining(stream: &mut TcpStream, what: &str) {
 /// after it, closed and not merely unregistered.
 #[test]
 fn soft_output_limit_closes_a_subscriber_whose_backlog_stays_over_8_mib_for_60_seconds() {
-    let (child, mut publisher, port) = start(2);
+    let (child, mut publisher, port) = start_for(2, "1", SOFT_CASE_LIMIT);
     let mut slow = connect_when_ready(port, &child);
     assert_eq!(request(&mut slow, &["SUBSCRIBE", "soft"]), acknowledgment(2, "subscribe", Some("soft"), 1));
     let payload = "x".repeat(14 * 1024 * 1024);
@@ -928,7 +937,7 @@ fn soft_output_limit_closes_a_subscriber_whose_backlog_stays_over_8_mib_for_60_s
 /// frame whole.
 #[test]
 fn soft_output_limit_interval_restarts_after_the_backlog_drains() {
-    let (child, mut publisher, port) = start(2);
+    let (child, mut publisher, port) = start_for(2, "1", SOFT_CASE_LIMIT);
     let mut subscriber = connect_when_ready(port, &child);
     assert_eq!(request(&mut subscriber, &["SUBSCRIBE", "soft"]), acknowledgment(2, "subscribe", Some("soft"), 1));
     let payload = "x".repeat(14 * 1024 * 1024);

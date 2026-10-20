@@ -188,7 +188,21 @@ impl CompiledProgram {
         settings: &[(&str, &str)],
         arguments: &[&[u8]],
     ) -> ProgramChild {
-        self.spawn_on_route_options(native_ring, settings, arguments, false)
+        self.spawn_on_route_options(native_ring, settings, arguments, false, PROGRAM_DEADLINE)
+    }
+
+    /// Starts the program as `spawn_on_route_with` does, stopping it after
+    /// `limit` instead of `PROGRAM_DEADLINE`: for a case whose property is an
+    /// interval the program itself keeps, such as a 60-second output limit,
+    /// which the shared deadline would end first.
+    pub fn spawn_on_route_with_limit(
+        &self,
+        native_ring: bool,
+        settings: &[(&str, &str)],
+        arguments: &[&[u8]],
+        limit: Duration,
+    ) -> ProgramChild {
+        self.spawn_on_route_options(native_ring, settings, arguments, false, limit)
     }
 
     /// Linux append-failure cases inherit ignored SIGXFSZ so RLIMIT_FSIZE
@@ -199,7 +213,7 @@ impl CompiledProgram {
         native_ring: bool,
         arguments: &[&[u8]],
     ) -> ProgramChild {
-        self.spawn_on_route_options(native_ring, &[], arguments, true)
+        self.spawn_on_route_options(native_ring, &[], arguments, true, PROGRAM_DEADLINE)
     }
 
     fn spawn_on_route_options(
@@ -208,6 +222,7 @@ impl CompiledProgram {
         settings: &[(&str, &str)],
         arguments: &[&[u8]],
         ignore_xfsz: bool,
+        limit: Duration,
     ) -> ProgramChild {
         let mut command = Command::new(&self.executable);
         #[cfg(target_os = "linux")]
@@ -241,7 +256,7 @@ impl CompiledProgram {
         for (name, count) in settings {
             command.env(name, count);
         }
-        ProgramChild::spawn(&mut command).expect("spawn compiled program")
+        ProgramChild::spawn_with_limit(&mut command, limit).expect("spawn compiled program")
     }
 }
 
