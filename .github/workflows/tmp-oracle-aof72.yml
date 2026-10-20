@@ -1,0 +1,27 @@
+# Temporary, on branch claude/72-scan only (removed before the branch is ready):
+# records Redis 7.2.16's replies and AOF bytes for the held SCAN TYPE none case.
+name: tmp-oracle-aof72
+on:
+  push:
+    branches: [claude/72-scan]
+jobs:
+  record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the Redis build
+        uses: actions/cache/restore@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+      - name: Build the reference Redis
+        env:
+          REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+        run: echo "BIN=$(tests/redis-suite/reference.sh)" >> "$GITHUB_ENV"
+      - name: Record replies
+        run: python3 oracle/replay.py "$BIN/redis-server"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oracle-replies
+          path: oracle-replies.json

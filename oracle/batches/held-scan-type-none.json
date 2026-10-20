@@ -1,0 +1,78 @@
+[
+ {
+  "name": "held-scan-type-none",
+  "resp": 2,
+  "appendonly": true,
+  "preload_aof": [
+   [
+    "SET",
+    "n1",
+    "1"
+   ],
+   [
+    "PEXPIREAT",
+    "n1",
+    "1"
+   ],
+   [
+    "SET",
+    "n2",
+    "2"
+   ],
+   [
+    "SET",
+    "n3",
+    "3"
+   ],
+   [
+    "PEXPIREAT",
+    "n3",
+    "1"
+   ]
+  ],
+  "commands": [
+   [
+    "MULTI"
+   ],
+   [
+    "SCAN",
+    "0",
+    "MATCH",
+    "n1",
+    "TYPE",
+    "none",
+    "COUNT",
+    "1000"
+   ],
+   [
+    "SCAN",
+    "0",
+    "MATCH",
+    "n2",
+    "TYPE",
+    "none",
+    "COUNT",
+    "1000"
+   ],
+   [
+    "SET",
+    "w",
+    "1"
+   ],
+   [
+    "EXEC"
+   ],
+   [
+    "EVAL",
+    "local r = redis.call('SCAN', '0', 'MATCH', 'n3', 'TYPE', 'NONE', 'COUNT', '1000'); redis.call('SET', 't', '1'); return r",
+    "0"
+   ],
+   [
+    "DBSIZE"
+   ],
+   [
+    "__AOF__"
+   ]
+  ]
+ }
+]
