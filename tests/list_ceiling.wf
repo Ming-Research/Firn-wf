@@ -697,6 +697,98 @@ fn case_eval(clock: &std::time::Clock, input: &[u8], script_length: u64, protect
   return band(list_preserved, reply_matches);
 }
 
+fn case_insert_room(after: Bool) -> passed: Bool pure {
+  doc "Checks that LINSERT into a list one element short of the ceiling succeeds and replies with the new length 8.";
+  let slot = case_entry(length: 7_u64, capacity: 8_u64);
+  let client = pkg::protocol::client_new(capacity: 64_u64);
+  set client.now = 1_u64;
+  set client.state = state_absent;
+  set client.low = 0_i64;
+  if after {
+    set client.low = 1_i64;
+  }
+  let args = box_slots_new::<Span>(capacity: 5_u64);
+  let command = Span(start: 0_u64, length: 7_u64);
+  let key = Span(start: 8_u64, length: 1_u64);
+  let direction = Span(start: 10_u64, length: 6_u64);
+  let pivot = Span(start: 17_u64, length: 1_u64);
+  let element = Span(start: 19_u64, length: 1_u64);
+  place_back(window: &args.inner, value: command);
+  place_back(window: &args.inner, value: key);
+  place_back(window: &args.inner, value: direction);
+  place_back(window: &args.inner, value: pivot);
+  place_back(window: &args.inner, value: element);
+  let sequence = pkg::store::sequence_inert();
+  let journal = None<pkg::store::AccessJournal>();
+  let work = linsert_body(sequence: &sequence, journal: &journal, access_key: &case_key[0_u64..1_u64], slot: &slot, client: &client, input: &case_insert_input[0_u64..22_u64], args: &args);
+  if work.removed {
+    return False();
+  }
+  if bnot(work.changed) {
+    return False();
+  }
+  linsert_finish(client: &client);
+  return case_reply(client: &client, expected: &case_length_reply[0_u64..4_u64]);
+}
+
+fn case_move_room(from_head: Bool, to_head: Bool) -> passed: Bool pure waits {
+  doc "Checks that LMOVE into a distinct list one element short of the ceiling succeeds, leaving the source one shorter and the destination at the ceiling of 8.";
+  let map = shared_map_new::<Entry>(capacity: 2_u64);
+  let keys = key_set_new(capacity: 2_u64);
+  let source = key_set_insert(keys: &keys, key: &case_source[0_u64..1_u64]);
+  let destination = key_set_insert(keys: &keys, key: &case_destination[0_u64..1_u64]);
+  let client = pkg::protocol::client_new(capacity: 64_u64);
+  set client.now = 1_u64;
+  let passed = True();
+  atomic slots = &map[keys] {
+    if source < slots^.len {
+      set slots^[source] = case_entry(length: 2_u64, capacity: 8_u64);
+    }
+    if destination < slots^.len {
+      set slots^[destination] = case_entry(length: 7_u64, capacity: 8_u64);
+    }
+    let sequence = pkg::store::sequence_inert();
+    let journal = None<pkg::store::AccessJournal>();
+    let work = lmove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: source, destination: destination, client: &client, from_head: from_head, to_head: to_head);
+    if bnot(work.changed) {
+      set passed = False();
+    }
+    if client.state == state_list_full {
+      set passed = False();
+    }
+    if source < slots^.len {
+      match live_list_size(slot: &slots^[source], now: client.now) {
+        Some(value: length) => {
+          if length != 1_u64 {
+            set passed = False();
+          }
+        }
+        None() => {
+          set passed = False();
+        }
+      }
+    } else {
+      set passed = False();
+    }
+    if destination < slots^.len {
+      match live_list_size(slot: &slots^[destination], now: client.now) {
+        Some(value: length) => {
+          if length != 8_u64 {
+            set passed = False();
+          }
+        }
+        None() => {
+          set passed = False();
+        }
+      }
+    } else {
+      set passed = False();
+    }
+  }
+  lmove_finish(client: &client);
+  return passed;
+}
+
 fn list_ceiling_main(inputs: std::process::Inputs) -> status: CaseExitStatus pure waits {
   doc "Failure status is a bit mask: 1 for push admission, 2 for permitted growth, 4 for LINSERT, 8 for distinct-key moves, and 16 for same-key rotations. 32 for move lookup ordering, 64 for EVAL errors, and 128 for startup cleanup. All groups run even after a failure.";
   let std::process::Inputs(cwd: directory, handles: factory, clock: clock, ..) = move inputs;
@@ -761,10 +853,18 @@ fn list_ceiling_main(inputs: std::process::Inputs) -> status: CaseExitStatus pur
     if bnot(checked_case_16) {
       set failures = ior(failures, 4_u8);
     }
+    let checked_case_19 = case_insert_room(after: front);
+    if bnot(checked_case_19) {
+      set failures = ior(failures, 4_u8);
+    }
     for (to_index in 0_u64..2_u64) {
       let to_head = to_index == 0_u64;
       let checked_case_17 = case_move(from_head: front, to_head: to_head, same: no);
       if bnot(checked_case_17) {
+        set failures = ior(failures, 8_u8);
+      }
+      let checked_case_20 = case_move_room(from_head: front, to_head: to_head);
+      if bnot(checked_case_20) {
         set failures = ior(failures, 8_u8);
       }
       for (scenario in 0_u64..3_u64) {
