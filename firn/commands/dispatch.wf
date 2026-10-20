@@ -1325,7 +1325,7 @@ fn promoted_local_control(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> r
 }
 
 fn execute_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
-  doc "Only the promoted owner's static dispatch reaches this function. Supported dataset commands use their shared EXEC/script bodies under the whole keyspace, metadata and event hub, committing the complete reply before release. Their AOF effects remain ordinary command records without MULTI/EXEC framing. Scripts begin with their existing whole-map/hub attempt. Names without held command parts, top-level command-table arity and authentication refusals, and PING, ECHO, TIME, SELECT, COMMAND and OBJECT HELP retain ordinary dispatch and its error precedence. Command-specific dataset parsing and refusals, including unrecognized subcommands of a dataset family, remain inside the protected execution.";
+  doc "Only the promoted owner's static dispatch reaches this function. Supported dataset commands use their shared EXEC/script bodies under the whole keyspace, metadata and event hub, committing the complete reply before release. Their AOF effects are appended as run_exec appends a transaction's, wrapped in MULTI and EXEC when they are more than one record, including a command's lazy-expiry DELs, as Redis 7.2.16 propagates the complete execution unit of an ordinary command. Scripts begin with their existing whole-map/hub attempt. Names without held command parts, top-level command-table arity and authentication refusals, and PING, ECHO, TIME, SELECT, COMMAND and OBJECT HELP retain ordinary dispatch and its error precedence. Command-specific dataset parsing and refusals, including unrecognized subcommands of a dataset family, remain inside the protected execution.";
   let name = arg(args: args, index: 0_u64);
   let code = name_code(input: input, start: name.start, length: name.length);
   let evaluating = code == code_eval;
@@ -1376,8 +1376,16 @@ fn execute_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
     let sequence = pkg::store::sequence_new(meta: meta, loading: time^.loading);
     let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
     let appended = held_run(sequence: &sequence, journal: &journal, kind: kind, keys: keys, meta: meta, effects: &effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
+    if appended > 1_u64 {
+      pkg::store::log_count(log: &meta^.log, count: 1_u64, room: 16_u64, budget: &budget);
+      pkg::store::log_word(log: &meta^.log, word: &word_multi_log[0_u64..5_u64], budget: &budget);
+    }
     let length = effects.inner.len;
     pkg::store::log_append(log: &meta^.log, bytes: &effects.inner[0_u64..length], budget: &budget);
+    if appended > 1_u64 {
+      pkg::store::log_count(log: &meta^.log, count: 1_u64, room: 16_u64, budget: &budget);
+      pkg::store::log_word(log: &meta^.log, word: &word_exec_log[0_u64..4_u64], budget: &budget);
+    }
     pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &budget);
     pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
   }
