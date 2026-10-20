@@ -89,7 +89,7 @@ redis-suite: $(BUILD)/firn
 # and exports FIRN_SYNC_FAULT_MOUNT=MOUNT and REDIS_SERVER, the path of a
 # redis-server 7.2.16. The cases fail and heal the one device, so they run on
 # one test thread, one after the other. Without one of the variables, or
-# unless all six cases ran and passed, the target fails. The output is kept so
+# unless all seven cases ran and passed, the target fails. The output is kept so
 # that each case's account of what every server did shows, and the pass is
 # read from the run itself.
 aof-sync-fault: firn-test
@@ -107,8 +107,9 @@ aof-sync-fault: firn-test
 	  aof_sync_fault::aof_rewrite_temporary_eio_keeps_acknowledged_state \
 	  aof_sync_fault::aof_rewrite_current_append_failure_observes_publication \
 	  aof_sync_fault::aof_rewrite_switch_directory_sync_failure_refuses_until_recovery \
+	  aof_sync_fault::aof_rewrite_close_sync_failure_is_isolated_and_recovers \
 	  >"$$log" 2>&1; status=$$?; cat "$$log"; \
-	[ $$status -eq 0 ] && grep -q '^test result: ok\. 6 passed' "$$log"
+	[ $$status -eq 0 ] && grep -q '^test result: ok\. 7 passed' "$$log"
 
 # The server as it is measured: the program and the runtime optimized
 # together under full link-time optimization.

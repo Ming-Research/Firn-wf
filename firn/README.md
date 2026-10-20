@@ -46,10 +46,11 @@ clients send on their own:
   `ZREVRANK` with Redis 7.2's `WITHSCORE`, `ZSCORE`, `ZMSCORE`, `ZCARD`,
   `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count, `ZREMRANGEBYRANK`,
   `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores read as Redis reads
-  them and written as Redis 7.0.15 writes them, in C's `%.17g`, which
-  differs from Redis 7.2.16's text, which comes from Grisu2 (`fpconv_dtoa`)
-  without an exact fallback and so is not always the shortest, for some
-  values, such as 0.1 (board item firn-score-text-72);
+  them and replies written as Redis 7.2.16's `d2string` writes them:
+  signed zeros and infinities, integers through magnitude 2^62, and other
+  values through Halo-wf's port of Grisu2 (`fpconv_dtoa`), without an exact
+  fallback. Rewritten append-only scores use plain `fpconv_dtoa` without
+  the reply's integer shortcut;
 - scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
   `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
   has written nothing, running Lua 5.1 scripts on the Halo engine
@@ -103,11 +104,15 @@ clients send on their own:
 
 `SCAN` takes one map scan step per request; its unsigned decimal cursor is
 zero when the scan ends, and a nonzero cursor can accompany an empty batch.
-`MATCH` and `KEYS` patterns are binary and case-sensitive; `TYPE` names are
+`MATCH` and `KEYS` patterns are binary and case-sensitive. The shared glob
+matcher, also used by `CONFIG GET`, follows Redis 7.2.16's limit of 1000
+nested evaluations of a nonterminal `*` suffix; another level does not match.
+Adjacent stars collapse into one, trailing stars add no level, and retries,
+escaped stars and character classes add no level. `TYPE` names are
 case-insensitive. `KEYS` walks the whole keyspace in one atomic statement
 and skips expired entries without removing them. `SCAN` removes expired
-entries reached after `MATCH`, returning their names only under
-`TYPE none`, as Redis 7.0.15 does, and `RANDOMKEY` removes expired
+entries reached after `MATCH` and excludes their names even under
+`TYPE none`, as Redis 7.2.16 does, and `RANDOMKEY` removes expired
 candidates; both record those removals as `DEL`. `RANDOMKEY` draws as Redis's
 `dbRandomKey` does, picking uniformly among the keys one scan step of count
 15 gathers from a random position, wrapping at the table's end, with a
@@ -247,10 +252,18 @@ client until it ends, so one that never ends keeps firn from stopping (the
 SIGTERM and SIGINT stop firn as `SHUTDOWN` does, with the same drain, the
 append-only file's last append and sync, and status 0, as Redis 7.0.15 shuts
 down gracefully on either signal under its default `shutdown-on-sigterm` and
-`shutdown-on-sigint`. firn hears them from just before it listens: one sent
-during the replay before that still ends firn at once, where Redis stops
-loading and exits with status 0, and a host that refuses to deliver them to
-firn stops it with status 3, as an address it cannot listen on does. Once
+`shutdown-on-sigint`. firn hears them from before it replays its append-only
+file. One that comes during the replay ends it at the replay's next check,
+made before the first command it reads and then before every 1024th, and firn exits with status 0
+without cutting, creating, removing or rewriting anything in `appendonlydir`,
+as Redis 7.2.16 serves events every 1024 commands while it loads
+(`aof.c:1480-1485`) and exits there with status 0 (`server.c:1592-1599`),
+opening its file for appending only afterwards (`server.c:7332`). An
+old-style file is upgraded before the replay, as Redis does, so a stop during
+that replay leaves the upgraded layout. One that comes after the replay's
+last check stops firn in order once it listens. A host that refuses to
+deliver the signals to firn stops it with status 3 before the replay, as an
+address it cannot listen on does after it. Once
 firn has taken a signal, or cancellation has ended its signal wait after a
 `SHUTDOWN` request or its last client leaving after the client limit, a
 further SIGTERM or SIGINT ends it at once, without the rest of the drain;
@@ -424,7 +437,9 @@ directory synced. Meanwhile INFO shows `aof_rewrite_in_progress:1` with
 reports `aof_last_bgrewrite_status:err`, stops automatic rewrites as any
 failed attempt does, and is tried again after the next successful sync;
 recovery rewrites run even while automatic rewrites are stopped. An idle
-Redis 7.2.16 instead keeps refusing writes until it is restarted.
+Redis 7.2.16 instead keeps refusing writes until an operator requests
+a rewrite or restarts it; a successful old-file close-sync clears its saved
+background sync failure before that rewrite finishes.
 
 Each scan step calls `map_scan_within` with a limit of the reserve left
 after the step's 64-KiB output buffer, and charges the bytes its KeySet then
@@ -527,8 +542,11 @@ sync and a device that fails while firn is idle shows only at the sync after
 the next write (`aof.c:1071-1094,1236-1267`); a saved sync failure is the
 exception, retried once a second while idle as described above.
 A successful append clears an append failure, and only a rewrite whose
-installation is durable clears a sync failure; ordinary rewrite rotation resets neither
-(`aof.c:790-852`).
+installation is durable clears a sync failure; ordinary rewrite rotation
+resets neither. This deliberately differs from Redis 7.2.16's successful
+old-file fsync-and-close, which clears its background sync error before
+rewrite completion; firn preserves the saved error until the new files are
+durable ([recovery rule](../design/firn/append-only-file.md)).
 
 A refused queued write or PING dirties MULTI. EXEC with a queued WRITE command
 is discarded with EXECABORT and the MISCONF text while failure remains; read-only
@@ -641,8 +659,9 @@ default.
 - `protocol`: reading requests, writing replies, and a connection's state and
   settings;
 - `scores`: sorted-set scores and the ends of score ranges read as Redis's
-  `strtod` reads them, to the nearest double, and written as its `%.17g`
-  writes them;
+  `strtod` reads them, to the nearest double; shared Redis 7.2.16 numeric
+  text for score and script double replies (`d2string`), Lua command
+  arguments, and rewritten append-only scores (plain `fpconv_dtoa`);
 - `extended`: numbers of x86-64's 80-bit long double, read as glibc's
   `strtold` reads them, added, and written as `%.17Lf` writes them, the
   arithmetic of `INCRBYFLOAT` and `HINCRBYFLOAT`;
