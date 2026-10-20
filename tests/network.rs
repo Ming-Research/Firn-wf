@@ -11452,7 +11452,8 @@ fn firn_tracks_idle_time_and_notouch_lookups() {
 /// each look up twice. A zero log factor makes increments effectively
 /// deterministic as in Redis. msetGenericCommand skips MSETNX store lookups,
 /// and renameGenericCommand calls dbAdd, resetting the moved object's LFU.
-/// Witness: https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583.
+/// Witness: research/experiments/aof-oracle/lfu-rename-msetnx.json, copied from
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
