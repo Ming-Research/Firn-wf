@@ -9,18 +9,19 @@ base `c6f6058fb17277d4d44d364a45efad1eae01a22b`, Halo
 The question is whether ordinary clients receive the exact script replies they
 depend on, including inside EXEC. Acceptance requires the RESP2/RESP3 network
 cases to pass against that reference, with transaction isolation preserved.
-This is inspection and an unvalidated implementation, not a passing CI result.
-No compiler, server, test or benchmark was run locally. Neither pins nor
+The direct network cases run in the gate on every push; the five cases that
+run scripts inside EXEC are ignored until `firn-scope-script-client` supports
+that path (see the held transaction interruption below). Neither pins nor
 submodules changed.
 
-| Behaviour | Redis 7.2.16 | Firn before | Firn draft after | Halo gap |
+| Behaviour | Redis 7.2.16 | Firn before | Firn after | Halo gap |
 | --- | --- | --- | --- | --- |
 | Missing EVALSHA, both protocols | `-NOSCRIPT No matching script. Please use EVAL.\r\n`; wrong SHA length wins over invalid numkeys, but a 40-byte SHA's numkeys is checked before lookup | Exact direct error and ordering | Unchanged; new reference cases also cover EVALSHA_RO | None identified |
-| Missing SHA inside EXEC | Queued; NOSCRIPT occupies its array element and later commands execute | Whole transaction refused as unsupported | Waits for `wf-need-firn-script-kill`; reference cases keep Redis's expected reply | Not a Halo issue |
+| Missing SHA inside EXEC | Queued; NOSCRIPT occupies its array element and later commands execute | Whole transaction refused as unsupported | Waits for `firn-req-attempt-publish`; reference cases keep Redis's expected reply | Not a Halo issue |
 | EVAL_RO / EVALSHA_RO | Arity -3; READONLY and NOSCRIPT; no NO_MULTI, WRITE or DENYOOM; same registry as writing invocations | Unknown network commands | Direct legacy-source invocations supported through existing retries and command parts; authority is invocation-local, not cached; the existing explicit refusal of all shebang sources remains | None identified |
-| Write attempted by a read-only script | After command arity checks and before disk/OOM checks: `ERR Write commands are not allowed from read-only scripts.`; call raises with SHA/line, pcall returns an error table; even a no-effect DEL is refused | No RO entry | Shared admission refuses before mutation or WRITE_DIRTY; reads may still perform lazy expiry | None identified |
+| Write attempted by a read-only script | After command arity checks and before disk/OOM checks: `ERR Write commands are not allowed from read-only scripts.`; call raises with SHA/line, pcall returns an error table; even a no-effect DEL is refused. The test is CMD_WRITE or CMD_MAY_REPLICATE (script.c:349-352); apart from the EVAL family, already refused as noscript, only PFCOUNT, PUBLISH and SPUBLISH carry MAY_REPLICATE (commands.def of 7.2.16), and Firn runs none of them from scripts | No RO entry | Shared admission refuses before mutation or WRITE_DIRTY; reads may still perform lazy expiry | None identified |
 | EVAL-family calls from a script | NOSCRIPT refusal after arity check | Incorrect unsupported-command error | Exact arity/NOSCRIPT errors for all four entries | None identified |
-| EVAL-family commands inside MULTI | Permitted; execution, registration and errors occur in queue order | Queued then whole EXEC refused | No execution workaround installed; `wf-need-firn-script-kill` blocks support | Not a Halo issue |
+| EVAL-family commands inside MULTI | Permitted; execution, registration and errors occur in queue order | Queued then whole EXEC refused | No execution workaround installed; `firn-req-attempt-publish` blocks support | Not a Halo issue |
 | cjson | encode/decode, null, new/configuration APIs, default precision 14 and depth 1000 | Exposed through Halo | No codec changes; new network cases check deterministic JSON bytes, decode and error paths | None identified in inspected exposed paths; exhaustive codec equivalence is unverified |
 | cmsgpack | pack/unpack/unpack_one/unpack_limit; binary strings and multiple values | Exposed through Halo | No codec changes; new network cases check exact packed bytes, decoding and error paths | None identified in inspected exposed paths; exhaustive codec equivalence is unverified |
 | redis.replicate_commands(...) | Unconditional Lua true, ignoring arguments and earlier writes | Missing redis table member | Installed host function, unconditional true | Not a Halo issue |
@@ -54,7 +55,7 @@ Reference owners:
   `tests/redis-suite/` runner downloads this pinned suite; it does not vendor
   `unit/scripting.tcl` directly.
 
-### Held transaction interruption: Whitefoot request wf-need-firn-script-kill
+### Held transaction interruption: Whitefoot request firn-req-attempt-publish
 
 Redis's `scriptInterrupt` still processes control requests while a script runs
 inside EXEC. Adding a held script interpreter which runs indefinitely would
@@ -114,7 +115,7 @@ fn main() -> status: ExitStatus pure waits {
 }
 ```
 
-The existing Whitefoot request `wf-need-firn-script-kill` owns this gap. A long
+The existing Whitefoot request `firn-req-attempt-publish` owns this gap. A long
 atomic statement must settle "written first" versus "killed first" with another
 context while preserving the data transaction's isolation, so SCRIPT KILL can
 answer as Redis does. Observation of a kill request must also let the unwritten
@@ -124,7 +125,7 @@ Its language owners are pinned [SHARE-2 and SHARE-3](https://github.com/Ming-Res
 and the [time interface](https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/lib/std/time/module.wfm).
 The attempted uninterruptible EXEC implementation was removed, and
 `firn-scope-script-client` remains incomplete while it waits for that existing
-request; this session files no duplicate request.
+request.
 
 The acceptance witness uses two connections and an observing third connection,
 on one and multiple Whitefoot drivers:
@@ -207,12 +208,12 @@ separately and omitted its reply; the ten greeting expectations remain
 source-derived and are outside this recording comparison. There are no ORACLE
 placeholders. Blocked EXEC expectations remain recorded Redis expectations,
 not Firn's current unsupported reply. This reference evidence confirms the
-cases' expected bytes; it is not a passing Firn CI result.
+cases' expected bytes; Firn's own results are the gate's.
 
-Remaining uncertainty is compiler acceptance, all network results and broader
-codec equivalence outside the inspected paths. The stop reason is the held
-transaction interruption contract above. No Whitefoot or Halo source was
-modified; no dependency pin moved; no commit or design approval log was written.
+Remaining uncertainty is broader codec equivalence outside the inspected paths.
+The transaction cases stay ignored for the held transaction interruption
+contract above. No Whitefoot or Halo source was modified; no dependency pin
+moved.
 
 ## Question and ruling
 
@@ -229,7 +230,7 @@ for Whitefoot request `firn-req-driver-count`; the declared-key implementation k
 
 The owner selected first-write Option<Entry> undo (`firn-q-script-undo`) and holding Meta throughout each
 attempt for this correctness step (`firn-q-script-meta`). The accepted-WRITE publication needed for correct
-KILL is filed as Whitefoot request `wf-need-firn-script-kill`, under firn's busy-script backlog; this work keeps
+KILL is filed as Whitefoot request `firn-req-attempt-publish`, under firn's busy-script backlog; this work keeps
 KILL's existing behavior. The separate string type-metatable protection backlog is outside this work.
 
 The declared-key draft adds ordered command planning, narrow entry adapters, logical entry copies, staged
@@ -330,7 +331,7 @@ Known differences must not be mistaken for Redis requirements: current KILL answ
 where Redis's [script.c:scriptKill](https://github.com/redis/redis/blob/7.0.15/src/script.c#L294) answers
 UNKILLABLE; EXEC rejects queued EVAL/EVALSHA as commands without held parts; shebang scripts are explicitly
 refused. Correct KILL arbitration and scripts inside EXEC wait for Whitefoot request
-`wf-need-firn-script-kill`. The script-time node also chooses frozen TTL time following Redis 7.2 rather than all of 7.0.15's
+`firn-req-attempt-publish`. The script-time node also chooses frozen TTL time following Redis 7.2 rather than all of 7.0.15's
 clocks. This work must expose these limits and register reference cases, not quietly retain wrong KILL/EXEC
 results or weaken expectations to get a green gate.
 
@@ -500,7 +501,7 @@ accepted WRITE_DIRTY, not engine count alone. An all-read-only set can be marked
 invocation return NOTBUSY. If any active invocation has accepted a WRITE, recommend global UNKILLABLE with no partial
 kill. Publishing that flag only after the attempt exits is too late, including DEL of an absent key. The
 needed in-attempt arbitration of "written first" versus "killed first" lacks a pinned Whitefoot contract;
-`wf-need-firn-script-kill` records the gap,
+`firn-req-attempt-publish` records the gap,
 since nesting a scripts atomic under Meta is forbidden. This work keeps the existing KILL behavior until that interface exists. Do not substitute effects != 0 for Redis's WRITE_DIRTY.
 
 Per-slot memory records should distinguish logical Halo heap (`embed:heap_bytes`), compiled-cache payload and
@@ -517,7 +518,7 @@ compilation is not permission to run early. Add a nonwaiting held-script entry u
 hold, shared effects and sequence token. It needs no undeclared fallback. Never call waiting eval from inside
 EXEC or release EXEC between commands. Internal budget retries of EXEC would have to undo/replay the **whole**
 transaction, including preceding writes. Correct KILL/busy behavior waits for the existing Whitefoot request
-`wf-need-firn-script-kill` before claiming full EXEC scripting support.
+`firn-req-attempt-publish` before claiming full EXEC scripting support.
 
 ## Rulings and remaining contracts
 
@@ -536,7 +537,7 @@ transaction, including preceding writes. Correct KILL/busy behavior waits for th
 4. **Shared Lua state:** Redis-compatible library settings and random state remain required. The single
    engine keeps today's behavior; cross-engine synchronization belongs to the pending pool round.
 
-5. **Controls:** correct accepted-WRITE KILL arbitration waits for `wf-need-firn-script-kill`. The recommendation
+5. **Controls:** correct accepted-WRITE KILL arbitration waits for `firn-req-attempt-publish`. The recommendation
    for several active engines remains all-or-none: any accepted WRITE makes KILL UNKILLABLE and stops none;
    otherwise kill all, or return NOTBUSY when none run. This round changes no KILL or FLUSH behavior.
 
@@ -629,7 +630,7 @@ inconclusive cells after examining the probe. Keep CSV/settings/revisions and ac
    implementation and tree correspondence before readiness.
 
 This draft changes no pin/submodule. Firn filed `firn-req-driver-count` and
-`wf-need-firn-script-kill`; this round files no additional external gap. Declared-key implementation and its
+`firn-req-attempt-publish`; this round files no additional external gap. Declared-key implementation and its
 network regressions await CI. Engine pooling, corrected busy-script KILL and metadata concurrency remain
 outside this round, and no scaling claim follows from holding Meta throughout attempts.
 

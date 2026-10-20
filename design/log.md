@@ -11,7 +11,13 @@ Nodes: firn/scripts, firn/command-parts
 
 Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-script-client-tree, which asked to approve PR #89's changes to the design nodes "scripts" and "command composition" at head 3a2c0ab (gate and fault-disk checks green, one review finding fixed).
 
-Summary: `script_command` now also refuses EVAL, EVALSHA, EVAL_RO and EVALSHA_RO inside a script, with Redis 7.2.16's text after their arity checks, on top of the noscript commands it already refused. EVAL_RO and EVALSHA_RO share EVAL's source registry, compiled scripts, attempt protocol and command parts, with read-only authority set afresh on each invocation and kept through every retry; a script's write command is rejected after arity validation but before persistence and OOM checks, and redis.pcall can catch it. The SCRIPT KILL decision now cites Whitefoot request wf-need-firn-script-kill.
+Summary: `script_command` now also refuses EVAL, EVALSHA, EVAL_RO and EVALSHA_RO inside a script, with Redis 7.2.16's text after their arity checks, on top of the noscript commands it already refused. EVAL_RO and EVALSHA_RO share EVAL's source registry, compiled scripts, attempt protocol and command parts, with read-only authority set afresh on each invocation and kept through every retry; a script's write command is rejected after arity validation but before persistence and OOM checks, and redis.pcall can catch it.
+
+## 2026-10-14 Write scores in replies and AOF rewrites byte for byte as Redis 7.2.16
+
+Nodes: firn/scripts
+
+Summary: Redis 7.2.16 selects the text rule by command and encoding, so one module now writes all of them: command-score replies and script double replies use d2string (nan, infinities and signed zeros first, an integral value up to 2^62 as an integer, otherwise fpconv_dtoa); a Lua number passed to redis.call or redis.pcall uses the integer rule and otherwise fpconv_dtoa; rewritten append-only scores use plain fpconv_dtoa; ZSCAN scores for skiplist sorted sets use ld2string(LD_STR_AUTO), implemented by the exact %.17g writer. The Grisu2 digits come from Halo-wf's port, checked against 18,235 doubles recorded on redis-server 7.2.16. Command-reply scores no longer keep %.17g.
 
 ## 2026-10-14 Keep a saved sync error through a successful close-sync of the old file
 
