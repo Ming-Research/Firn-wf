@@ -274,7 +274,11 @@ a tenth of a second, before its next cron acts on it.
 `INFO memory` reports raw `used_memory` and `used_memory_human`,
 `used_memory_rss` when the host supplies it, `used_memory_peak`,
 `mem_not_counted_for_evict`, the configured `maxmemory`, `maxmemory_human`
-and `maxmemory_policy`, with Redis's human-size formatting. It also reports
+and `maxmemory_policy`, with Redis's human-size formatting. Its exclusion
+splits into `firn_aof_buffer_excluded` (the ordinary AOF buffer capacities)
+and the rewrite ledger less `firn_aof_rewrite_charged` (the rotation charges
+already covered by those capacities); the two parts sum to the exclusion, and
+`INFO memory` carries both so that a check can recompute it. It also reports
 the actual registered-script count. Heap readings use `heap_in_use`; RSS
 uses `resident_bytes` on demand. Peak tracks heap readings after commands,
 at admission and at INFO, rather than every transient allocation. AOF
@@ -627,6 +631,9 @@ including a refused admission; counters start at zero before the first attempt.
   bytes, not heap or RSS measurements. While running they show current use
   and its peak; on failure both freeze at the first failure, before refunds.
   Successful completion reports zero used and retains the attempt's peak.
+- `firn_aof_rewrite_charged` is the part of the ledger that rotation charged
+  against the rewrite reserve; it is already in the AOF buffer capacities
+  counted by `firn_aof_buffer_excluded`, so eviction subtracts it once.
 - `firn_aof_rewrite_journal_images` and
   `firn_aof_rewrite_journal_effects` count complete records successfully
   appended to the journal file as replacement images or statement AOF bytes,

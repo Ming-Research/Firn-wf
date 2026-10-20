@@ -950,7 +950,7 @@ Redis 7.2.16 provides the independent semantic reference:
 - `src/aof.c:2427–2494` launches without a maxmemory admission check;
   `src/aof.c:2497–2510` returns the started reply on a successful launch.
 
-The proposal keeps R = floor(maxmemory / 20), or 16 MiB without a limit,
+The ruled design keeps R = floor(maxmemory / 20), or 16 MiB without a limit,
 frozen at admission. It removes both headroom checks while keeping sequence
 exhaustion, stopping and insufficient fixed-plus-chunk reserve refusals.
 Without maxmemory the old headroom calculation was never enforced, so its
@@ -1003,9 +1003,9 @@ failed compilation because aof_rw_cycle still declared writes(meter) after
 admission stopped reading the heap; the fix changes that effect to
 reads(meter), which the remaining meter_share call needs. The scan worker
 still reads the heap through its own meter, so its writes(meter) remains
-required. The head commit's checks pass, including the cache case, in
-[run 39466887032](https://github.com/Ming-Research/Firn-wf/actions/runs/39466887032)
-on 9f5f051. Pins and submodules are unchanged.
+required. The checks pass on c0ada67, including the cache case, in
+[run 39491204021](https://github.com/Ming-Research/Firn-wf/actions/runs/39491204021).
+Pins and submodules are unchanged.
 
 The cache case writes four keys right after the reply. The rewrite's reserve
 is excluded from maxmemory, so these writes may evict nothing (CI run
@@ -1018,8 +1018,10 @@ The rotation-charge subtraction in mem_not_counted_for_evict
 reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom: after
 S1 the exclusion must equal the buffer part (firn_aof_buffer_excluded) plus
 the rewrite ledger less its rotation charge (firn_aof_rewrite_charged). A
-temporary workflow removes the subtraction and expects this check to fail;
-its run is the evidence that the check detects the omission.
+temporary workflow (since removed) deleted the subtraction on c0ada67 and
+ran this case: run [39491203976](https://github.com/Ming-Research/Firn-wf/actions/runs/39491203976)
+fails at rewrite_scan.rs:939 with "rotation charges must be excluded from the
+ledger once", so the check detects the omission.
 
 The wait for an aborted or installing rewrite (the three cleanup points in
 eviction.wf) stays. At the moment of abort aof_charged is not zero in
