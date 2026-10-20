@@ -116,7 +116,7 @@ jobs:
                   "    set chosen[8_u64] = 0_u64;\n", ""),
               "human-unit": (
                   'const human_units: Array<u8, 5> = "KMGTP";',
-                  'const human_units: Array<u8, 5> = "kMGTP";'),
+                  'const human_units: Array<u8, 5> = "kmgtp";'),
               "version": ("redis_version:7.2.16", "redis_version:7.2.15"),
               "lru-clock": (
                   "let lru_clock = now_seconds % 16777216_u64;",
