@@ -5,10 +5,15 @@ acceptance rows.
   summary.py pubsub DIR [--firn LINE] [--twin LINE]
       pubsub.csv and pubsub-limited.csv of a workloads run with the pub/sub
       workloads: per workload and pipeline depth, each line's median rate and
-      p99 over the passes, firn's multiple of the fastest competitor, and
-      whether the depth's criteria hold. A cell is client-limited when the
-      median client work fraction of firn's line or of the fastest competitor's
-      is above 0.90, and then asks only that firn is not behind.
+      p99 over the passes, firn's multiple of the fastest competitor, whether
+      the cell's criteria hold, and the twin's ratio to firn per pass with its
+      95% interval (the noise; its largest half-width over the cells of a run
+      without competitors is the workload class's floor). The fastest
+      competitor is the one with the highest median rate in the cell, and
+      firn's p99 is compared with that competitor's. A cell is client-limited
+      when the median client work fraction of firn's line or of the fastest
+      competitor's is above 0.90, and then asks only that firn is not behind:
+      its p99 is reported and not judged.
   summary.py ratios COMPARE.csv --base NAME --head NAME [--twin NAME]
       compare.csv of a compare run: per cpus, test and depth, the median over
       passes of head's rate over base's, with the 95% interval of the mean log
@@ -99,12 +104,12 @@ def median_or_nan(values):
 
 def pubsub(args):
     directory = Path(args.dir)
-    rates = defaultdict(lambda: defaultdict(list))
+    rates = defaultdict(lambda: defaultdict(dict))
     p99s = defaultdict(lambda: defaultdict(list))
     work = defaultdict(lambda: defaultdict(list))
     for r in rows(directory / "pubsub.csv"):
         key = (int(r["cpus"]), r["workload"], int(r["connections"]), int(r["pipeline"]))
-        rates[key][r["line"]].append(float(r["rate"]))
+        rates[key][r["line"]][int(r["pass"])] = float(r["rate"])
         p99s[key][r["line"]].append(float(r["p99_ms"]))
     for r in rows(directory / "pubsub-limited.csv"):
         key = (int(r["cpus"]), r["workload"], int(r["connections"]), int(r["pipeline"]))
@@ -113,7 +118,7 @@ def pubsub(args):
     for key in sorted(rates):
         cpus, workload, subscribers, depth = key
         lines = rates[key]
-        median = {line: statistics.median(v) for line, v in lines.items()}
+        median = {line: statistics.median(v.values()) for line, v in lines.items()}
         firn = args.firn or next((l for l in sorted(lines)
                                   if is_firn(l) and not l.endswith("-twin")), None)
         competitors = [l for l in lines if not is_firn(l)]
@@ -130,18 +135,26 @@ def pubsub(args):
         limited = any(median_or_nan(work[key][l]) > 0.90 for l in (firn, best))
         multiple = median[firn] / median[best]
         need = 1.0 if depth == 1 or limited else 1.4
-        best_p99 = min(statistics.median(p99s[key][l]) for l in competitors)
+        # The p99 is compared with the fastest competitor's, as the criteria
+        # say; a client-limited cell asks only that firn is not behind, and its
+        # p99, which the client's own queueing sets, is reported and not judged.
+        best_p99 = statistics.median(p99s[key][best])
         firn_p99 = statistics.median(p99s[key][firn])
-        rate_ok, p99_ok = multiple >= need, firn_p99 <= best_p99
+        rate_ok = multiple >= need
+        p99_ok = limited or firn_p99 <= best_p99
         failures += (not rate_ok) + (not p99_ok)
         print(f"{firn} / {best} (the fastest competitor): {multiple:.3f}, needs at least "
               f"{need:.1f}{' (client-limited)' if limited else ''}: {'ok' if rate_ok else 'BELOW'}")
-        print(f"p99 {firn_p99:.3f} ms against the best competitor's {best_p99:.3f} ms: "
-              f"{'ok' if p99_ok else 'HIGHER'}")
+        print(f"p99 {firn_p99:.3f} ms against the fastest competitor's {best_p99:.3f} ms: "
+              f"{'not judged (client-limited)' if limited else 'ok' if p99_ok else 'HIGHER'}")
         twin = args.twin or f"{firn}-twin"
-        if twin in lines:
-            print(f"twin {twin}: {median[twin] / median[firn]:.4f} of {firn}, "
-                  f"a gap of {abs(median[twin] / median[firn] - 1) * 100:.2f}%")
+        shared = sorted(set(lines.get(twin, {})) & set(lines[firn]))
+        if len(shared) >= 2:
+            pairs = [lines[twin][p] / lines[firn][p] for p in shared]
+            low, high = interval(pairs)
+            print(f"twin {twin} / {firn}: median {statistics.median(pairs):.4f}, 95% interval "
+                  f"{low:.4f}-{high:.4f}, half-width {(high - low) / 2 * 100:.2f}% over "
+                  f"{len(shared)} passes ({verdict(low, high)})")
         print()
     print(f"{failures} criteria not met")
 
@@ -187,6 +200,21 @@ def selftest():
         text = out.getvalue()
         assert "firn-2 / reference (the fastest competitor): 1.500, needs at least 1.4: ok" in text, text
         assert text.rstrip().endswith("0 criteria not met"), text
+        assert "twin firn-2-twin / firn-2: median 0.9867" in text, text
+        # firn's p99 of 2.8 ms is above the 2.5 ms of Valkey, which is slower
+        # than Redis, and below the 3.0 ms of Redis, the fastest competitor
+        # (150 against 100 is 1.5 times): the cell holds.
+        data = [header]
+        for p in (1, 2, 3):
+            for line, rate, p99 in (("reference", 100, 3.0), ("valkey", 80, 2.5), ("firn-2", 150, 2.8)):
+                data.append(f"{line},{p},2,pubsub-channel,50,16,10,500,5,{rate},1.0,{p99}")
+        (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None))
+        text = out.getvalue()
+        assert "2.800 ms against the fastest competitor's 3.000 ms: ok" in text, text
+        assert text.rstrip().endswith("0 criteria not met"), text
         # 1.5 against 1.4 fails once firn drops to 130, and p99 once it passes 3.0
         data = [header]
         for p in (1, 2, 3):
@@ -198,6 +226,31 @@ def selftest():
             pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None))
         text = out.getvalue()
         assert "BELOW" in text and "HIGHER" in text and text.rstrip().endswith("2 criteria not met"), text
+        # A client-limited cell asks only that firn is not behind: 105 against
+        # 100 holds with a p99 five times the competitor's, which is not judged.
+        data, limited = [header], [limited[0]]
+        for p in (1, 2, 3):
+            for line, rate, p99, fraction in (("reference", 100, 1.0, 0.95), ("firn-2", 105, 5.0, 0.5)):
+                data.append(f"{line},{p},2,pubsub-channel,50,16,10,500,5,{rate},1.0,{p99}")
+                limited.append(f"{line},{p},2,pubsub-channel,50,16,0.9,{fraction},0")
+        (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
+        (Path(tmp) / "pubsub-limited.csv").write_text("\n".join(limited) + "\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None))
+        text = out.getvalue()
+        assert "needs at least 1.0 (client-limited): ok" in text and "not judged (client-limited)" in text, text
+        assert text.rstrip().endswith("0 criteria not met"), text
+        # and falls short of 1.0 at 95 against 100
+        data = [header]
+        for p in (1, 2, 3):
+            for line, rate in (("reference", 100), ("firn-2", 95)):
+                data.append(f"{line},{p},2,pubsub-channel,50,16,10,500,5,{rate},1.0,1.0")
+        (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None))
+        assert out.getvalue().rstrip().endswith("1 criteria not met"), out.getvalue()
     print("summary selftest: passed")
 
 

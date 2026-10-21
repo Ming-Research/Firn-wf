@@ -1707,17 +1707,27 @@ if [ "$MODE" = workloads ]; then
                                             -o "$OUT/perf-$name.data" >/dev/null 2>&1 &
                                         recorder=$!
                                         sleep 1
+                                        # The profile is evidence about a measured cell,
+                                        # never part of it: a profile that cannot be
+                                        # taken (no usable perf, a recorder that fails
+                                        # to start) is reported and does not stop the
+                                        # run, whose measurements are already written.
                                         taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
                                             --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
                                             --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}" \
-                                            --pipeline "$depth" >/dev/null
-                                        kill -INT "$recorder"
+                                            --pipeline "$depth" >/dev/null ||
+                                            echo "skip,profile,$name: the profiling client failed"
+                                        kill -INT "$recorder" 2>/dev/null || true
                                         wait "$recorder" || true
-                                        "$PERF" report -i "$OUT/perf-$name.data" --stdio --no-children \
-                                            --sort dso,symbol --percent-limit 0.5 -g none >"$OUT/profile-$name.txt" 2>/dev/null
+                                        if "$PERF" report -i "$OUT/perf-$name.data" --stdio --no-children \
+                                            --sort dso,symbol --percent-limit 0.5 -g none >"$OUT/profile-$name.txt" 2>/dev/null; then
+                                            echo "== profile $name"
+                                            grep -v '^#' "$OUT/profile-$name.txt" | grep -v '^$' | head -25
+                                        else
+                                            rm -f "$OUT/profile-$name.txt"
+                                            echo "skip,profile,$name: perf report failed"
+                                        fi
                                         rm -f "$OUT/perf-$name.data"
-                                        echo "== profile $name"
-                                        grep -v '^#' "$OUT/profile-$name.txt" | grep -v '^$' | head -25
                                     done
                                 done
                             fi

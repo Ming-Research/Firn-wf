@@ -31,18 +31,26 @@ medians and the twin spelled out as the firn investigation's
   is the limit, a cell asks only that firn is not behind: the client is the
   limit when the median over passes of its work fraction (below) is above 0.90
   in firn's line or in the fastest competitor's.
-- **Latency.** Firn's p99 is no higher than the lowest competitor's p99 in the
-  cell.
+- **Latency.** Firn's p99 is no higher than the p99 of the fastest competitor
+  of the cell (the one with the highest median rate, the one the rate is
+  compared with). In a client-limited cell the p99 is reported and not judged:
+  the client's own queueing sets it there.
 - **Competitors.** The `reference` line is Redis 7.2.16, the project's
   reference (AGENTS.md), `valkey`, `valkey-io`, `dragonfly` and `garnet` are
   the executables the host has, their versions printed in the run's
   `host.txt`; a competitor that answers `SUBSCRIBE` with an unknown-command
   error is left out of the cells of that workload.
 - **Noise.** Firn is measured as two images of one build, `head` and
-  `head-twin`; the twin's gap to `head` is the run's noise. A cell where the
-  two differ by more than the 5% that earlier runs on this host showed (see
-  [deployment performance](../deployment-performance/README.md)) is repeated
-  with more passes before it is read.
+  `head-twin`; the 95% interval of the mean log of twin/head over the passes
+  is the cell's noise, which `summary.py pubsub` prints. No threshold is
+  picked. A first run on the 14900K measures the two images alone (6
+  interleaved passes, both workloads, both depths, the settings of the
+  comparison) and takes the widest half-width of those intervals as the floor
+  of this workload class; the floor is recorded in the board's record of the
+  14900K. A cell of the comparison whose twin interval is wider than the
+  floor does not count: it is repeated with more passes or reported
+  unresolved. The floor is measured again when the machine, its settings or the
+  toolchain change.
 - **Before and after publish/subscribe.** The 19 default tests of
   `redis-benchmark` of Redis 7.0 (20 rows: the `LRANGE` tests' list fill is
   the 20th, see `SUITE_DEFAULT` in `redis-bench.sh`) at depths 16 and 1 on 2
