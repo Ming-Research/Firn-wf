@@ -959,13 +959,14 @@ PING, QUIT and RESET, after the reference's earlier admission checks. RESP3
 allows ordinary commands. Shared protocol writers own framing, including
 push headers; the event module owns membership and delivery, not sockets.
 
-The shared glob matcher now follows Redis 7.2.16's recursive algorithm,
-including signed-char range handling, malformed classes, empty-name behavior,
-shared suffix-search pruning and refusal above depth 1000. Its existing
-public interface remains unchanged. This also corrects the former greedy
-matcher's missing reference depth refusal for other glob consumers. The
-source's BSD notice is retained beside the port. Stack-ledger evidence is
-still required for the maximum 1002 active calls including a rejected call.
+Pattern matching uses the shared glob matcher the main line already has: it
+is iterative and refuses above Redis 7.2.16's nesting of 1000, as the
+[enumeration](../../../design/firn/enumeration.md) decision records, so
+pub/sub adds no matcher of its own and keeps its public interface. That
+matcher has no counterpart of Redis's suffix-search pruning, so a degenerate
+pattern costs a publication time proportional to the pattern and channel
+lengths for each registered pattern, held under the hub as Redis holds its
+single thread; that cost is read from the source and not measured.
 
 ### Promoted command visibility and reply ordering
 
@@ -981,11 +982,15 @@ That ordering applies equally to data-only EXEC and declared-key scripts.
 
 The proposed correction executes an admitted promoted dataset command
 through the existing held command parts, holding the whole keyspace, Meta
-and event hub until the complete reply is committed. Direct commands retain
-ordinary AOF records without an added MULTI/EXEC wrapper. Promoted EXEC
+and event hub until the complete reply is committed. Direct commands write
+their AOF records as EXEC does, wrapped in MULTI and EXEC when a command makes
+more than one, its lazy-expiry DELs included, as Redis 7.2.16 groups an
+ordinary command's propagation;
+`subscribed_connection_wraps_multi_record_commands_in_the_append_only_file`
+compares the file with fragments Redis 7.2.16 recorded. Promoted EXEC
 uses the existing event-aware transaction body even for a data-only queue.
-Promoted EVAL/EVALSHA starts with the existing whole-map/hub attempt; it
-retains Lua KEYS and all acceptance, error and budget-abandonment semantics.
+Promoted EVAL, EVALSHA, EVAL_RO and EVALSHA_RO start with the existing
+whole-map/hub attempt; they retain Lua KEYS and all acceptance, error and budget-abandonment semantics.
 The broader hold reuses the existing transaction/script execution interface;
 its effect on promoted-command contention and latency remains unmeasured.
 
@@ -1050,7 +1055,7 @@ The original receive/execute/send owner instantiates `execute_client::<0>`;
 the promoted owner instantiates `execute_client::<1>`. The coordinator is
 the original function body with compile-time dispatch selection, without an
 adapter call layer. Ordinary EVAL uses the existing evaluator instantiated
-with initial whole mode zero, while promoted EVAL uses one. The pinned
+with initial whole mode zero, while promoted EVAL and its variants use one. The pinned
 language's FN-2 monomorphization fixes these const arguments; they are not
 runtime connection-state predicates. Ordinary GET/SET still call their
 original handlers with their existing key and optional Meta targets and no
@@ -1321,12 +1326,18 @@ its hard limit while constructing the command reply, before socket flushing
 ([output limit check](https://github.com/redis/redis/blob/7.2.16/src/networking.c),
 [defaults](https://github.com/redis/redis/blob/7.2.16/src/config.c)); the single
 33 MiB body exceeds the 32 MiB threshold without relying on kernel buffering.
-CI compilation and execution remain required. The 60-second soft threshold
-and interval reset are still unverified. A controlled accounting witness
-must hold a backlog above the soft threshold without reaching the hard
-threshold, then exercise a drop
-below and re-entry. Compare the reference and Firn without assuming identical
-kernel socket buffering.
+CI compilation and execution remain required. Two soft-limit witnesses
+publish a 14 MiB body, above the soft and below the hard threshold and larger
+than the kernel's loopback buffers, which a frame owner is charged in full
+until its last byte is accepted. In the first, an unread subscriber must still
+be registered after 30 seconds and be gone, with its socket at EOF or reset,
+between 59 and 90 seconds after the publication. In the second, the subscriber
+reads the frame after 35 seconds, a second frame follows once the first's
+charge is released, and at 70 seconds, past the 61 seconds that end the first
+interval, it must still be registered and receive the second frame whole; the
+stale deadline of the first interval must find a different interval start and
+leave it. They assume the kernel buffers hold less than the body, as the
+loopback defaults do, and do not assume Redis's allocation-based closure point.
 
 The timer reads Unix time and arms a monotonic sleep for the next observed
 threshold. Strict response to a forward calendar jump without another hub

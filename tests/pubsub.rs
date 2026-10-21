@@ -13,12 +13,17 @@ fn start(connections: usize) -> (ProgramChild, TcpStream, u16) {
 }
 
 fn start_with_drivers(connections: usize, drivers: &str) -> (ProgramChild, TcpStream, u16) {
+    start_for(connections, drivers, support::PROGRAM_DEADLINE)
+}
+
+/// Starts firn for a case that outlasts the shared program deadline.
+fn start_for(connections: usize, drivers: &str, limit: Duration) -> (ProgramChild, TcpStream, u16) {
     let lease = support::lease_port();
     let port = lease.port();
     let port_text = port.to_string();
     let count = connections.to_string();
-    let child = firn().spawn_on_route_with(
-        true, &[("WF_DRIVERS", drivers)], &[port_text.as_bytes(), count.as_bytes()],
+    let child = firn().spawn_on_route_with_limit(
+        true, &[("WF_DRIVERS", drivers)], &[port_text.as_bytes(), count.as_bytes()], limit,
     ).with_port(&lease);
     let stream = connect_when_ready(port, &child);
     (child, stream, port)
@@ -642,6 +647,17 @@ fn resp3_self_publication_follows_complete_command_transaction_and_script_reply(
     assert_eq!(request(&mut client, &["EVAL", "return redis.call('PING')", "0"]), b"+PONG\r\n", "the script's fake client has no subscriber mode");
     assert_eq!(request(&mut client, &["EVAL", "return redis.call('ECHO','script-echo')", "0"]), b"$11\r\nscript-echo\r\n", "the script's fake client uses ordinary ECHO framing");
     assert_eq!(request(&mut client, &["EVAL", "return redis.call('PUBSUB','NUMSUB','news')", "0"]), b"*2\r\n$4\r\nnews\r\n:1\r\n");
+    // The read-only variants answer as EVAL does on a subscribed connection.
+    // Redis 7.2.16's scriptVerifyWriteCommandAllow refuses a command flagged
+    // WRITE or MAY_REPLICATE in a read-only script, and publish.json and
+    // spublish.json flag both publications MAY_REPLICATE: source-derived, not
+    // recorded. A refused publication must send no push to the subscriber.
+    const READ_ONLY_REFUSED: &[u8] = b"-ERR Write commands are not allowed from read-only scripts.\r\n";
+    assert_eq!(request(&mut client, &["EVAL_RO", "return redis.call('PING')", "0"]), b"+PONG\r\n");
+    // The SHA1 of the script above, cached by the EVAL that ran it.
+    assert_eq!(request(&mut client, &["EVALSHA_RO", "9e15db9d82a8a2f2029845f70d37494af8690c35", "0"]), b"+PONG\r\n");
+    assert_eq!(request(&mut client, &["EVAL_RO", "return redis.pcall('PUBLISH','news','refused')", "0"]), READ_ONLY_REFUSED);
+    assert_eq!(request(&mut client, &["EVAL_RO", "return redis.pcall('SPUBLISH','news','refused')", "0"]), READ_ONLY_REFUSED);
     assert_eq!(request(&mut client, &["PUBLISH", "news", "direct"]), b":1\r\n");
     assert_eq!(frame(&mut client), message(3, "message", "news", "direct"));
     send(&mut client, &[&["MULTI"], &["PING", "abc"], &["PUBLISH", "news", "first"], &["PUBLISH", "news", "second"], &["PING", "def"], &["EXEC"]]);
@@ -921,6 +937,155 @@ fn hard_output_limit_closes_slow_subscriber_and_other_subscriber_keeps_receiving
     }
     drop((publisher, slow, fast));
     assert_eq!(finished(child).0, 0);
+}
+
+/// The soft cases keep firn running past the shared 60-second program
+/// deadline: one waits out the 60-second interval, the other 70 seconds.
+const SOFT_CASE_LIMIT: Duration = Duration::from_secs(150);
+
+/// Reads what the kernel still holds for a closed subscriber and requires the
+/// end of the stream, so a registry removal is not taken for a closed socket.
+fn assert_closed_after_draining(stream: &mut TcpStream, what: &str) {
+    let mut buffer = [0; 64 * 1024];
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(_) => assert!(Instant::now() < deadline, "{what}: never reached EOF"),
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+            Err(error) => panic!("{what}: did not close: {error}"),
+        }
+    }
+}
+
+/// Redis 7.2.16 gives a pub/sub client the default limit `32mb 8mb 60`
+/// (src/config.c clientBufferLimitsDefaults): output that stays at or over
+/// 8 MiB for more than 60 seconds closes it (src/networking.c
+/// checkClientOutputBufferLimits compares whole-second times). A 14 MiB
+/// publication is over the soft and under the hard limit, and larger than the
+/// kernel's loopback socket buffers, so an unread subscriber holds its whole
+/// frame; firn charges a frame until it has been sent completely. The
+/// subscriber must stay registered well past half the interval and be gone
+/// after it, closed and not merely unregistered.
+#[test]
+fn soft_output_limit_closes_a_subscriber_whose_backlog_stays_over_8_mib_for_60_seconds() {
+    let (child, mut publisher, port) = start_for(2, "1", SOFT_CASE_LIMIT);
+    let mut slow = connect_when_ready(port, &child);
+    assert_eq!(request(&mut slow, &["SUBSCRIBE", "soft"]), acknowledgment(2, "subscribe", Some("soft"), 1));
+    let payload = "x".repeat(14 * 1024 * 1024);
+    assert_eq!(request(&mut publisher, &["PUBLISH", "soft", &payload]), b":1\r\n");
+    let published = Instant::now();
+    let mut registered_past_half = false;
+    loop {
+        let count = request(&mut publisher, &["PUBSUB", "NUMSUB", "soft"]);
+        let elapsed = published.elapsed();
+        if count == b"*2\r\n$4\r\nsoft\r\n:0\r\n" {
+            assert!(
+                elapsed >= Duration::from_secs(59),
+                "the soft limit closed the subscriber after {elapsed:?}, before its 60 seconds"
+            );
+            break;
+        }
+        assert_eq!(count, b"*2\r\n$4\r\nsoft\r\n:1\r\n");
+        registered_past_half |= elapsed >= Duration::from_secs(30);
+        assert!(elapsed < Duration::from_secs(90), "the soft limit did not close the unread subscriber within 90 seconds");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(registered_past_half, "the subscriber was observed registered after 30 seconds");
+    assert_closed_after_draining(&mut slow, "soft-limited subscriber");
+    drop((publisher, slow));
+    assert_eq!(finished(child).0, 0);
+}
+
+/// The soft interval is the time the backlog stays continuously at or over
+/// 8 MiB: Redis 7.2.16 clears obuf_soft_limit_reached_time when the output
+/// falls below the limit (checkClientOutputBufferLimits). The subscriber
+/// reads its 14 MiB frame after 35 seconds, a second frame is published
+/// after the first one's charge is released, and the subscriber must still be
+/// registered at 70 seconds, past the 61 seconds after the first publication
+/// that the first interval would have ended at, and must receive the second
+/// frame whole.
+#[test]
+fn soft_output_limit_interval_restarts_after_the_backlog_drains() {
+    let (child, mut publisher, port) = start_for(2, "1", SOFT_CASE_LIMIT);
+    let mut subscriber = connect_when_ready(port, &child);
+    assert_eq!(request(&mut subscriber, &["SUBSCRIBE", "soft"]), acknowledgment(2, "subscribe", Some("soft"), 1));
+    let payload = "x".repeat(14 * 1024 * 1024);
+    let expected = message(2, "message", "soft", &payload);
+    assert_eq!(request(&mut publisher, &["PUBLISH", "soft", &payload]), b":1\r\n");
+    let first = Instant::now();
+    std::thread::sleep(Duration::from_secs(35));
+    assert_eq!(frame(&mut subscriber), expected, "the first frame arrives whole after the wait");
+    // The sender releases the frame's charge after its last byte is accepted;
+    // wait that out so the second publication starts a new interval.
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(request(&mut publisher, &["PUBLISH", "soft", &payload]), b":1\r\n");
+    std::thread::sleep((first + Duration::from_secs(70)).saturating_duration_since(Instant::now()));
+    assert_eq!(
+        request(&mut publisher, &["PUBSUB", "NUMSUB", "soft"]),
+        b"*2\r\n$4\r\nsoft\r\n:1\r\n",
+        "the first interval ended with the drained backlog and must not close the subscriber"
+    );
+    assert_eq!(frame(&mut subscriber), expected, "the second frame arrives whole");
+    assert_eq!(request(&mut publisher, &["PUBLISH", "soft", "tail"]), b":1\r\n");
+    assert_eq!(frame(&mut subscriber), message(2, "message", "soft", "tail"));
+    drop((publisher, subscriber));
+    assert_eq!(finished(child).0, 0);
+}
+
+/// A subscribed RESP3 connection writes the append-only file as any other
+/// connection does: the lazy-expiry DELs a command makes before its own
+/// effect, and a command with more than one effect, are wrapped in MULTI and
+/// EXEC. The expected bytes are the fragments of the file Redis 7.2.16
+/// recorded for the same requests in
+/// research/experiments/aof-oracle/legacy-forms-recording.json
+/// (legacy-direct-propagation-forms): an MSET over an expired key, a DEL and
+/// an EXISTS that each find two expired keys.
+#[test]
+fn subscribed_connection_wraps_multi_record_commands_in_the_append_only_file() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let lease = support::lease_port();
+    let port = lease.port();
+    let text = port.to_string();
+    let name = "subscribed-forms.aof";
+    let child = program
+        .spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()])
+        .with_port(&lease);
+    let mut client = connect_when_ready(port, &child);
+    hello(&mut client, 3);
+    assert_eq!(request(&mut client, &["SUBSCRIBE", "watch"]), acknowledgment(3, "subscribe", Some("watch"), 1));
+    let mut batch = Vec::new();
+    let mut expected = Vec::new();
+    for (command, effects) in [
+        (vec!["SET", "mset:k", "old", "PXAT", "1"], vec![vec!["SET", "mset:k", "old", "PXAT", "1"]]),
+        (vec!["MSET", "mset:k", "new"], vec![vec!["MULTI"], vec!["DEL", "mset:k"], vec!["MSET", "mset:k", "new"], vec!["EXEC"]]),
+        (vec!["SET", "y2", "1", "PXAT", "1"], vec![vec!["SET", "y2", "1", "PXAT", "1"]]),
+        (vec!["SET", "y1", "1", "PXAT", "1"], vec![vec!["SET", "y1", "1", "PXAT", "1"]]),
+        (vec!["DEL", "y2", "y1", "y2"], vec![vec!["MULTI"], vec!["DEL", "y2"], vec!["DEL", "y1"], vec!["EXEC"]]),
+        (vec!["SET", "x2", "1", "PXAT", "1"], vec![vec!["SET", "x2", "1", "PXAT", "1"]]),
+        (vec!["SET", "x1", "1", "PXAT", "1"], vec![vec!["SET", "x1", "1", "PXAT", "1"]]),
+        (vec!["EXISTS", "x2", "x1"], vec![vec!["MULTI"], vec!["DEL", "x2"], vec!["DEL", "x1"], vec!["EXEC"]]),
+    ] {
+        batch.extend(resp(&command));
+        for effect in effects {
+            expected.extend(resp(&effect));
+        }
+    }
+    client.write_all(&batch).expect("send the writes");
+    expect_replies(
+        &mut client,
+        b"+OK\r\n+OK\r\n+OK\r\n+OK\r\n:0\r\n+OK\r\n+OK\r\n:0\r\n",
+        "the writes on a subscribed connection",
+    );
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+    let file = std::fs::read(aof_incremental_path(fixture.path(), name)).expect("read firn's file");
+    assert_eq!(
+        aof_record_bytes(&aof_records_without_select_zero(&file)),
+        expected,
+        "a subscribed connection's append-only file"
+    );
 }
 
 // Step 5: pattern and shard channels. These are separate acceptance cases.

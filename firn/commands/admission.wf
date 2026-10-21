@@ -92,6 +92,12 @@ fn admission_arity(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> arity: i
   if kind == 173_u64 {
     return -3_i64;
   }
+  if kind == 199_u64 {
+    return -3_i64;
+  }
+  if kind == 200_u64 {
+    return -3_i64;
+  }
   if kind == 174_u64 {
     let sub = arg(args: args, index: 1_u64);
     let code = name_code(input: input, start: sub.start, length: sub.length);

@@ -380,6 +380,15 @@ fn scripts_refuse_before_a_write_and_continue_after_a_noop_write() {
     let refused = memory_request(&mut client, &["EVAL", "return redis.call('SET','script-key','new')", "0"]);
     assert!(refused.contains("OOM command not allowed when used memory > 'maxmemory'."), "{refused}");
     assert_eq!(memory_request(&mut client, &["STRLEN", "script-key"]), format!(":{VALUE_BYTES}\r\n"));
+    // EVAL_RO is not DENYOOM, and its script's write meets the read-only
+    // refusal (script.c:350-355) before the OOM check (script.c:396-418).
+    assert_eq!(memory_request(&mut client, &["EVAL_RO", "return 102", "0"]), ":102\r\n");
+    let read_only = memory_request(&mut client, &["EVAL_RO", "return redis.call('SET','script-key','new')", "0"]);
+    assert!(read_only.starts_with("-ERR Write commands are not allowed from read-only scripts. script: ")
+        && read_only.ends_with(", on @user_script:1.\r\n"), "{read_only}");
+    assert_eq!(memory_request(&mut client, &["EVAL_RO", "return redis.pcall('SET','script-key','new')", "0"]),
+        "-ERR Write commands are not allowed from read-only scripts.\r\n");
+    assert_eq!(memory_request(&mut client, &["STRLEN", "script-key"]), format!(":{VALUE_BYTES}\r\n"));
     for script in ["#!lua\nreturn 1", "#!lua flags=allow-oom\nreturn 1", "#!lua flags=no-writes\nreturn 1"] {
         for prefix in ["EVAL", "SCRIPT"] {
             let args = if prefix == "EVAL" { vec!["EVAL", script, "0"] } else { vec!["SCRIPT", "LOAD", script] };
