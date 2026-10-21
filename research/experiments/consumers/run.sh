@@ -169,7 +169,7 @@ run_each_file() {
 }
 
 # The probe of what Sidekiq's heartbeat does against this server: a real
-# `sidekiq` process, with one job that does nothing in its queue, runs for
+# `sidekiq` process (bin/sidekiq), with one job that does nothing in its queue, runs for
 # about 30 seconds, which spans three heartbeats (a beat every 10 seconds)
 # and the flush of its metrics, which Sidekiq makes on a beat, with the
 # BITFIELD command. The log goes to heartbeat.log and a summary to
@@ -182,7 +182,7 @@ heartbeat_probe() {
         bundle exec ruby -e 'require "sidekiq"; Sidekiq::Client.push("class" => "HeartbeatNoop", "args" => [])' 2>&1
         echo "exit $?"
     } > "$out/heartbeat.log"
-    bundle exec sidekiq -r "$here/sidekiq_heartbeat_job.rb" -q default -c 1 -t 5 >> "$out/heartbeat.log" 2>&1 &
+    bundle exec ruby bin/sidekiq -r "$here/sidekiq_heartbeat_job.rb" -q default -c 1 -t 5 >> "$out/heartbeat.log" 2>&1 &
     pid=$!
     sleep 22
     registered=$(redis-cli -p "$port" SCARD processes 2>&1)
