@@ -936,8 +936,11 @@ exceeded the limit. A full cache cannot satisfy that service-headroom rule.
 
 Redis 7.2.16 provides the independent semantic reference. The names below
 are the functions to read in its source; their line numbers are not given
-here. The references are checked against the 7.2.16 source before merge
-(not yet done: the source could not be fetched during this work):
+here. They were checked against the source at the 7.2.16 tag of the Redis
+repository: each function exists in the file named and does what is stated
+below; `redisFork`'s definition was not read, only its call, and the
+counter claim stays a deduction (`used_memory` is a static, process-local
+atomic in `src/zmalloc.c`):
 
 - `src/aof.c`, `rewriteAppendOnlyFileBackground`: a forked child produces the
   base while the parent opens a new incremental file; `src/server.c`,
@@ -949,10 +952,12 @@ here. The references are checked against the 7.2.16 source before merge
 - `src/evict.c`, `freeMemoryGetNotCountedMemory`: excludes allocated AOF
   buffer storage from that counter for maxmemory. `src/aof.c`, the command
   propagation into the AOF buffer: the multipart protocol uses the new
-  increment rather than a parent rewrite-difference buffer.
+  increment, opened by `openNewIncrAofForAppend` before `redisFork`, rather
+  than a parent rewrite-difference buffer (`aof.c` has no `aof_rewrite_buf`).
 - `src/aof.c`, `rewriteAppendOnlyFileBackground`: launches without a
   maxmemory admission check, and returns the started reply on a successful
-  launch.
+  launch (`bgrewriteaofCommand` answers
+  "Background append only file rewriting started").
 
 The ruled design keeps R = floor(maxmemory / 20), or 16 MiB without a limit,
 frozen at admission. It removes both headroom checks while keeping sequence
