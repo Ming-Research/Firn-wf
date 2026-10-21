@@ -342,7 +342,9 @@ read; a later release (v6.4.0 is tagged) is a separate upgrade.
   --frozen-lockfile --non-interactive` and builds with `yarn build`, which also
   generates the Lua script entry points the tests import; so does `run.sh`,
   on Node 24, with the versions of `yarn.lock` (`what.txt` records Node,
-  ioredis 5.11.1 and vitest 4.1.11).
+  ioredis 5.11.1 and vitest 4.1.11). The workflow sets `check-latest` for
+  `setup-node`: without it a cell takes the Node 24 its runner image holds, and
+  one run had Redis on 24.21.0 and firn on 24.22.0, which `compare.py` reported.
 - **Pointing it at a server.** `REDIS_HOST=127.0.0.1` and `REDIS_PORT=6379`,
   which the connection factory in `vitest.setup.ts` and the test files read;
   some cases of `connection.test.ts` name `localhost:6379`, so both servers

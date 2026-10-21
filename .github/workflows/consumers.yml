@@ -80,9 +80,13 @@ jobs:
         with:
           python-version: "3.13"
 
+      # check-latest makes every cell take the newest Node 24 rather than the
+      # one its runner image happens to hold, so that the two servers' cells
+      # run the tests on the same Node.
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+          check-latest: true
 
       # Sidekiq's own CI runs the newest Ruby of its matrix, 4.0.
       - uses: ruby/setup-ruby@v1
