@@ -259,19 +259,21 @@ Redis 7.2.16 and against firn, with a second Redis run for the unstable list.
 ### Results
 
 The consumers workflow, dispatched by hand
-([run 39618095289](https://github.com/Ming-Research/Firn-wf/actions/runs/39618095289))
-at commit ddc361e, on `ubuntu-24.04` runners: Ruby 4.0.7, `railties` 8.1.4,
+([run 39647659581](https://github.com/Ming-Research/Firn-wf/actions/runs/39647659581))
+at commit f43bea0, on `ubuntu-24.04` runners: Ruby 4.0.7, `railties` 8.1.4,
 `redis-client` 0.31.0, `minitest` 5.27.0, `connection_pool` 3.0.2 and `rack`
 3.2.7 on every cell, Redis 7.2.16 built from its release archive, firn built at
-the same commit. Redis ran twice. All 52 files finished on every cell.
+the same commit. Redis ran twice. All 52 files finished on every cell. An
+earlier run at ddc361e, before the probe counted exception lines, gave the
+same case counts.
 
 | | Redis run 1 | Redis run 2 | firn |
 |---|---|---|---|
 | cases recorded | 749 | 749 | 749 |
 | pass | 749 | 749 | 731 |
 | fail, error | 0 | 0 | 1, 17 |
-| seconds in the test files, summed | 76 | 67 | 59 |
-| job time with the gems installed | 3 min 5 s | 2 min 52 s | 4 min 25 s |
+| seconds in the test files, summed | 55 | 61 | 80 |
+| job time with the gems installed | 2 min 27 s | 2 min 42 s | 4 min 54 s |
 
 The two Redis runs passed the same 749 cases, so `sidekiq-unstable.tsv` is
 empty. The comparison puts 731 cases in both servers' passes, 18 in Redis's
