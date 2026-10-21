@@ -93,7 +93,9 @@ clients send on their own:
   `ZSCAN`, `KEYS` and `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
   `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`, plus pub/sub commands;
   `SSUBSCRIBE` is refused during EXEC as in Redis 7.2.16. `INFO` is not among
-  them. The data commands, publications and PUBSUB queries run in scripts;
+  them. The data commands, publications and PUBSUB queries run in scripts,
+  except that `EVAL_RO` and `EVALSHA_RO` refuse `PUBLISH` and `SPUBLISH`, which
+  Redis 7.2.16 flags may-replicate, as it refuses write commands there;
   all six subscription commands are NOSCRIPT. All four EVAL commands
   remain unsupported inside EXEC: preserving the transaction's isolation
   while interrupting a long script waits for Whitefoot request

@@ -588,6 +588,17 @@ fn resp3_self_publication_follows_complete_command_transaction_and_script_reply(
     assert_eq!(request(&mut client, &["EVAL", "return redis.call('PING')", "0"]), b"+PONG\r\n", "the script's fake client has no subscriber mode");
     assert_eq!(request(&mut client, &["EVAL", "return redis.call('ECHO','script-echo')", "0"]), b"$11\r\nscript-echo\r\n", "the script's fake client uses ordinary ECHO framing");
     assert_eq!(request(&mut client, &["EVAL", "return redis.call('PUBSUB','NUMSUB','news')", "0"]), b"*2\r\n$4\r\nnews\r\n:1\r\n");
+    // The read-only variants answer as EVAL does on a subscribed connection.
+    // Redis 7.2.16's scriptVerifyWriteCommandAllow refuses a command flagged
+    // WRITE or MAY_REPLICATE in a read-only script, and publish.json and
+    // spublish.json flag both publications MAY_REPLICATE: source-derived, not
+    // recorded. A refused publication must send no push to the subscriber.
+    const READ_ONLY_REFUSED: &[u8] = b"-ERR Write commands are not allowed from read-only scripts.\r\n";
+    assert_eq!(request(&mut client, &["EVAL_RO", "return redis.call('PING')", "0"]), b"+PONG\r\n");
+    // The SHA1 of the script above, cached by the EVAL that ran it.
+    assert_eq!(request(&mut client, &["EVALSHA_RO", "9e15db9d82a8a2f2029845f70d37494af8690c35", "0"]), b"+PONG\r\n");
+    assert_eq!(request(&mut client, &["EVAL_RO", "return redis.pcall('PUBLISH','news','refused')", "0"]), READ_ONLY_REFUSED);
+    assert_eq!(request(&mut client, &["EVAL_RO", "return redis.pcall('SPUBLISH','news','refused')", "0"]), READ_ONLY_REFUSED);
     assert_eq!(request(&mut client, &["PUBLISH", "news", "direct"]), b":1\r\n");
     assert_eq!(frame(&mut client), message(3, "message", "news", "direct"));
     send(&mut client, &[&["MULTI"], &["PING", "abc"], &["PUBLISH", "news", "first"], &["PUBLISH", "news", "second"], &["PING", "def"], &["EXEC"]]);

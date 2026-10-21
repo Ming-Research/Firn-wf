@@ -989,8 +989,8 @@ ordinary command's propagation;
 `subscribed_connection_wraps_multi_record_commands_in_the_append_only_file`
 compares the file with fragments Redis 7.2.16 recorded. Promoted EXEC
 uses the existing event-aware transaction body even for a data-only queue.
-Promoted EVAL/EVALSHA starts with the existing whole-map/hub attempt; it
-retains Lua KEYS and all acceptance, error and budget-abandonment semantics.
+Promoted EVAL, EVALSHA, EVAL_RO and EVALSHA_RO start with the existing
+whole-map/hub attempt; they retain Lua KEYS and all acceptance, error and budget-abandonment semantics.
 The broader hold reuses the existing transaction/script execution interface;
 its effect on promoted-command contention and latency remains unmeasured.
 
@@ -1055,7 +1055,7 @@ The original receive/execute/send owner instantiates `execute_client::<0>`;
 the promoted owner instantiates `execute_client::<1>`. The coordinator is
 the original function body with compile-time dispatch selection, without an
 adapter call layer. Ordinary EVAL uses the existing evaluator instantiated
-with initial whole mode zero, while promoted EVAL uses one. The pinned
+with initial whole mode zero, while promoted EVAL and its variants use one. The pinned
 language's FN-2 monomorphization fixes these const arguments; they are not
 runtime connection-state predicates. Ordinary GET/SET still call their
 original handlers with their existing key and optional Meta targets and no

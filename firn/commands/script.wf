@@ -2146,7 +2146,11 @@ fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8]
       let denyoom = command_denyoom(kind: kind);
       let unwritten = bnot(memory^.write_dirty);
       let writing = command_writes(kind: kind);
-      if band(memory^.read_only, writing) {
+      let publish = kind == 192_u64;
+      let spublish = kind == 198_u64;
+      let replicating = bor(publish, spublish);
+      let refused_read_only = bor(writing, replicating);
+      if band(memory^.read_only, refused_read_only) {
         reply_error(client: client, word: &text_script_read_only[0_u64..58_u64]);
         return 0_u64;
       }
