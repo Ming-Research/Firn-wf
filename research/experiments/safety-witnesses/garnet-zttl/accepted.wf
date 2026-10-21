@@ -5,13 +5,11 @@ struct SortedSet {
 }
 
 fn expiry_query(sorted: &SortedSet, now: u64) -> ttl: u64 reads(sorted.expires_at), writes(sorted.member) {
-  doc "expires_at is copied to a local before the subtraction because the checker does not carry the field comparison to it (Whitefoot gap coord-wfbl-01-32); return to `sorted^.expires_at - now` once that gap is closed.";
-  let expires_at = sorted^.expires_at;
-  if expires_at <= now {
+  if sorted^.expires_at <= now {
     set sorted^.member = None<u64>();
     return 0_u64;
   }
-  return expires_at - now;
+  return sorted^.expires_at - now;
 }
 
 fn zttl(sorted: Shared<SortedSet>, now: u64) -> ttl: u64 pure waits {
