@@ -15,7 +15,7 @@
 # A consumer that runs its tests file by file (sidekiq, bullmq) also writes
 # cases.tsv, one `CASE<TAB>STATUS` row for each case, in the format compare.py
 # reads; see run_each_file below. FILE_LIMIT, in seconds, bounds each file
-# (default 120 for sidekiq, 600 for bullmq). Sidekiq's run ends with a
+# (default 120 for sidekiq, 180 for bullmq). Sidekiq's run ends with a
 # probe of its heartbeat, heartbeat.txt.
 # The consumers workflow (.github/workflows/consumers.yml) calls it.
 set -u
@@ -294,8 +294,8 @@ case $consumer in
             node_modules/.bin/vitest list --filesOnly --config vitest.coverage.config.ts | sed "s|^$PWD/||" | grep -E '^tests/.*\.test\.ts$' | sort)
         [ "${#files[@]}" -gt 0 ] || { echo "vitest listed no test file" >&2; exit 1; }
         printf '%s\n' "${files[@]}" > "$out/files-listed.txt"
-        echo "test files: ${#files[@]}, at most ${FILE_LIMIT:-600} s each" | tee -a "$out/what.txt"
-        run_each_file "${FILE_LIMIT:-600}" node_modules/.bin/vitest run --no-file-parallelism \
+        echo "test files: ${#files[@]}, at most ${FILE_LIMIT:-180} s each" | tee -a "$out/what.txt"
+        run_each_file "${FILE_LIMIT:-180}" node_modules/.bin/vitest run --no-file-parallelism \
             --config vitest.coverage.config.ts --reporter=verbose --reporter="$here/vitest_record.mjs"
         echo $? > "$out/status" ;;
 esac

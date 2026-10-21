@@ -1,8 +1,7 @@
-# Temporary (firn-bullmq-wire): BullMQ's tests against Redis alone, once with
-# generous file limits to measure the time and the pass count before the
-# consumers workflow's limits are set, and twice with very short limits to see
-# the time bound act through the Vitest reporter. Removed before the branch is
-# ready.
+# Temporary (firn-bullmq-wire): the BullMQ cells of the consumers workflow
+# (Redis twice, firn once) and their comparison, run on every push of the
+# branch to measure the time of each cell with the default file limit before
+# the consumers workflow's timeout is set. Removed before the branch is ready.
 name: tmp-bullmq
 
 on:
@@ -14,16 +13,20 @@ defaults:
     shell: bash
 
 jobs:
-  redis:
-    name: bullmq against redis, file limit ${{ matrix.limit }} s
+  run:
+    name: bullmq against ${{ matrix.server }}${{ matrix.repeat == 2 && ' (second run)' || '' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 240
     env:
       REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     strategy:
       fail-fast: false
       matrix:
-        limit: [900, 2, 10]
+        server: [redis, firn]
+        repeat: [1]
+        include:
+          - server: redis
+            repeat: 2
     steps:
       - uses: actions/checkout@v4
 
@@ -50,6 +53,10 @@ jobs:
           path: build/redis-compat-cache
           key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
+      - name: Install the pinned release's LLVM
+        if: ${{ matrix.server == 'firn' }}
+        run: make toolchain
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -58,58 +65,86 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Check the comparison script
-        run: python3 -B research/experiments/consumers/compare.py --self-test
+      - name: Build firn
+        if: ${{ matrix.server == 'firn' }}
+        run: |
+          make firn
+          echo "FIRN=$GITHUB_WORKSPACE/build/firn" >> "$GITHUB_ENV"
 
-      - name: Run BullMQ's tests against Redis
+      - name: Run BullMQ's tests
         env:
           OUT: ${{ runner.temp }}/consumers
-          FILE_LIMIT: ${{ matrix.limit }}
         run: |
-          yarn --version
           start=$SECONDS
-          bash research/experiments/consumers/run.sh bullmq redis
+          bash research/experiments/consumers/run.sh bullmq "${{ matrix.server }}"
           echo "run.sh took $((SECONDS - start)) s"
 
       - name: Publish the result
         if: always()
         env:
-          DIR: ${{ runner.temp }}/consumers/bullmq-redis
+          DIR: ${{ runner.temp }}/consumers/bullmq-${{ matrix.server }}
         run: |
           {
-            echo "## bullmq against redis (tmp), file limit ${{ matrix.limit }} s"
+            echo "## bullmq against ${{ matrix.server }} (tmp)"
             echo '```text'
             cat "$DIR/what.txt" 2>/dev/null || true
             echo "tests exited $(cat "$DIR/status" 2>/dev/null || echo '(not run)')"
             echo "--- cases by status"
-            cut -f2 "$DIR/cases.tsv" 2>/dev/null | sort | uniq -c
-            echo "--- files listed / files in files.tsv / files with a case row"
-            wc -l < "$DIR/files-listed.txt" 2>/dev/null || true
-            wc -l < "$DIR/files.tsv" 2>/dev/null || true
-            grep '::' "$DIR/cases.tsv" 2>/dev/null | cut -d: -f1 | sort -u | wc -l
-            echo "--- slowest files (file, exit, seconds)"
-            sort -t$'\t' -k3 -n -r "$DIR/files.tsv" 2>/dev/null | head -n 20
-            echo "--- total seconds over files"
-            awk -F'\t' '{s += $3} END {print s}' "$DIR/files.tsv" 2>/dev/null
+            cut -f2 "$DIR/cases.tsv" 2>/dev/null | sort | uniq -c || true
             echo "--- files by exit status"
-            cut -f2 "$DIR/files.tsv" 2>/dev/null | sort | uniq -c
+            cut -f2 "$DIR/files.tsv" 2>/dev/null | sort | uniq -c || true
+            echo "--- total seconds over files"
+            awk -F'\t' '{s += $3} END {print s}' "$DIR/files.tsv" 2>/dev/null || true
+            echo "--- slowest files (file, exit, seconds)"
+            sort -t$'\t' -k3 -n -r "$DIR/files.tsv" 2>/dev/null | head -n 20 || true
             echo "--- unfinished rows"
-            grep -P '\tunfinished$' "$DIR/cases.tsv" 2>/dev/null | head -n 80
-            echo "--- non-pass cases"
-            grep -v -P '\tpass$' "$DIR/cases.tsv" 2>/dev/null | head -n 80
-            echo "--- sizes of the run's files"
-            ls -l "$DIR" 2>/dev/null
-            echo "--- tail of test.log"
-            tail -n 30 "$DIR/test.log" 2>/dev/null
+            { grep -P '\tunfinished$' "$DIR/cases.tsv" 2>/dev/null || true; } | head -n 80
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tmp-bullmq-redis-${{ matrix.limit }}
+          name: consumers-bullmq-${{ matrix.server }}${{ matrix.repeat == 2 && '-2' || '' }}
           path: |
-            ${{ runner.temp }}/consumers/bullmq-redis/*.txt
-            ${{ runner.temp }}/consumers/bullmq-redis/*.log
-            ${{ runner.temp }}/consumers/bullmq-redis/*.tsv
-            ${{ runner.temp }}/consumers/bullmq-redis/status
+            ${{ runner.temp }}/consumers/bullmq-${{ matrix.server }}/*.txt
+            ${{ runner.temp }}/consumers/bullmq-${{ matrix.server }}/*.log
+            ${{ runner.temp }}/consumers/bullmq-${{ matrix.server }}/*.tsv
+            ${{ runner.temp }}/consumers/bullmq-${{ matrix.server }}/status
+
+  compare:
+    name: bullmq on Redis against firn
+    needs: run
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: consumers-bullmq-*
+          path: ${{ runner.temp }}/bullmq
+
+      - name: Compare the cases
+        env:
+          DIR: ${{ runner.temp }}/bullmq
+        run: |
+          python3 -B research/experiments/consumers/compare.py \
+            --redis "$DIR/consumers-bullmq-redis/cases.tsv" \
+            --redis "$DIR/consumers-bullmq-redis-2/cases.tsv" \
+            --firn "$DIR/consumers-bullmq-firn/cases.tsv" \
+            --redis-what "$DIR/consumers-bullmq-redis/what.txt" \
+            --firn-what "$DIR/consumers-bullmq-firn/what.txt" \
+            --unstable research/experiments/consumers/bullmq-unstable.tsv \
+            --unstable-found "$DIR/unstable-found.tsv" \
+            --title "BullMQ: Redis 7.2.16 against firn" > "$DIR/compare.md"
+          cat "$DIR/compare.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compare-bullmq
+          path: |
+            ${{ runner.temp }}/bullmq/compare.md
+            ${{ runner.temp }}/bullmq/unstable-found.tsv
