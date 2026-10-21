@@ -26,6 +26,7 @@ jobs:
           - { name: alone-long-history, mode: alone, loops: 40, test: "rewrite_scan::reconciled_scan_long_history_completes_under_writes_without_duplicate_effects" }
           - { name: alone-cache-limit, mode: alone, loops: 100, test: "memory_limit::allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data" }
           - { name: alone-pressure, mode: alone, loops: 40, test: "rewrite_scan::reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom" }
+          - { name: alone-post-cut, mode: alone, loops: 20, test: "rewrite_scan::reconciled_scan_post_cut_backlog_charges_rotation_reserve" }
     env:
       REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     steps:

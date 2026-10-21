@@ -976,6 +976,13 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
     rewrite_stop(&mut restored, child);
 }
 
+// tmp diag (firn-rw-memory-tests-flaky): bytes the server has read so far.
+fn diag_rchar(pid: u32) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/io")).ok()
+        .and_then(|text| text.lines().find_map(|line| line.strip_prefix("rchar:").map(|value| value.trim().parse().unwrap_or(0))))
+        .unwrap_or(0)
+}
+
 #[test]
 fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects() {
     let program = CompiledProgram::from_environment();
@@ -1038,12 +1045,14 @@ fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects
         (count, cut_count, last_value, appended, members)
     });
     ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let diag_rchar_before = diag_rchar(child.id());
     rewrite_start(&mut control);
     scanned_keys(&program, &mut control);
     assert_eq!(request(&mut control, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"0"]), Reply::Line(b"+OK".to_vec()));
     let info = rewrite_wait(&mut control);
     running.store(false, Ordering::Release);
     let (count, cut_count, hot, appended, members) = worker.join().unwrap();
+    eprintln!("DIAG-T1-rchar delta={}", diag_rchar(child.id()).saturating_sub(diag_rchar_before));
     eprintln!("DIAG-T1-final status={} reason={} peak={} used={} scan_steps={} buffer={}", info["aof_last_bgrewrite_status"], info["firn_aof_rewrite_abort_reason"], info["firn_aof_rewrite_peak"], info["firn_aof_rewrite_used"], info["firn_aof_rewrite_scan_steps"], info["aof_buffer_length"]);
     assert_eq!(info["aof_last_bgrewrite_status"], "ok", "long history must not suspend ordinary draining at S1; the old full reread exhausts R with rotation_reserve: {info:?}");
     let cut_count = cut_count.expect("the continuous writer must observe S1");
@@ -1100,12 +1109,15 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         std::thread::sleep(Duration::from_millis(10));
     }
     request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"67108864"]);
+    let diag_start = Instant::now();
+    let diag_rchar_before = diag_rchar(child.id());
     rewrite_start(&mut client);
     let deadline = Instant::now() + Duration::from_secs(30);
+    let mut diag_cut_us = 0;
     loop {
         let info = rewrite_info(&mut client);
         assert_eq!(info["aof_rewrite_in_progress"], "1", "must observe S1 before completion");
-        if info["firn_aof_rewrite_cut"] == "1" { break; }
+        if info["firn_aof_rewrite_cut"] == "1" { diag_cut_us = diag_start.elapsed().as_micros(); break; }
         assert!(Instant::now() < deadline, "S1 never sealed the old increment");
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -1131,6 +1143,7 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
             }
         }
         if info["aof_rewrite_in_progress"] == "0" {
+            eprintln!("DIAG-B cut_us={diag_cut_us} abort_us={} writes={writes} rchar_delta={} reason={} used={} peak={}", diag_start.elapsed().as_micros(), diag_rchar(child.id()).saturating_sub(diag_rchar_before), info["firn_aof_rewrite_abort_reason"], info["firn_aof_rewrite_used"], info["firn_aof_rewrite_peak"]);
             assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance");
             assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
             break;
