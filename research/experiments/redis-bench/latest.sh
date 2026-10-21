@@ -124,25 +124,20 @@ build_server() {
     echo "latest.sh: built $name $version into $bin" >&2
 }
 
-# extract_binary NAME VERSION ARCHIVE DIR SUBDIR EXECUTABLE: extracts the
-# prebuilt archive and keeps its SUBDIR (the top level when empty) as DIR, only
-# when the EXECUTABLE in it reports the version.
+# extract_binary NAME VERSION ARCHIVE DIR EXECUTABLE: extracts the prebuilt
+# .tar.gz archive as DIR, only when the EXECUTABLE in it reports the version.
 extract_binary() {
-    local name=$1 version=$2 archive=$3 dir=$4 inner=$5 exe=$6 root
+    local name=$1 version=$2 archive=$3 dir=$4 exe=$5
     work=$(mktemp -d "$cache/extract.XXXXXX")
     trap 'rm -rf "$work"' EXIT
     mkdir "$work/x"
-    case $archive in
-        *.tar.xz) tar -xJf "$archive" -C "$work/x" ;;
-        *) tar -xzf "$archive" -C "$work/x" ;;
-    esac
-    root=$work/x${inner:+/$inner}
-    reports "$root/$exe" "$version" "$name" || {
+    tar -xzf "$archive" -C "$work/x"
+    reports "$work/x/$exe" "$version" "$name" || {
         echo "latest.sh: the $name archive does not report $version" >&2
         exit 1
     }
     rm -rf "$dir"
-    mv "$root" "$dir"
+    mv "$work/x" "$dir"
     rm -rf "$work"
     echo "latest.sh: extracted $name $version into $dir" >&2
 }
@@ -207,7 +202,7 @@ case ${1:-} in
     dragonfly)
         if ! reports "$dragonfly_dir/dragonfly-x86_64" "$dragonfly_version" dragonfly; then
             fetch "$dragonfly_url" "$dragonfly_archive" "$dragonfly_sha256"
-            extract_binary dragonfly "$dragonfly_version" "$dragonfly_archive" "$dragonfly_dir" "" dragonfly-x86_64
+            extract_binary dragonfly "$dragonfly_version" "$dragonfly_archive" "$dragonfly_dir" dragonfly-x86_64
         fi
         echo "$dragonfly_dir/dragonfly-x86_64" ;;
     garnet)
