@@ -936,11 +936,14 @@ exceeded the limit. A full cache cannot satisfy that service-headroom rule.
 
 Redis 7.2.16 provides the independent semantic reference. The names below
 are the functions to read in its source; their line numbers are not given
-here. They were checked against the source at the 7.2.16 tag of the Redis
-repository: each function exists in the file named and does what is stated
-below; `redisFork`'s definition was not read, only its call, and the
-counter claim stays a deduction (`used_memory` is a static, process-local
-atomic in `src/zmalloc.c`):
+here. A temporary workflow (since removed) checked them against the pinned
+release archive, whose SHA-256 `tests/redis-suite/reference.sh` verifies: CI
+run [39531855037](https://github.com/Ming-Research/Firn-wf/actions/runs/39531855037)
+found each function and the cited line in `evict.c`, `aof.c`, `zmalloc.c` and
+`server.c`, found no `aof_rewrite_buf` in `aof.c`, and printed
+`rewriteAppendOnlyFileBackground` up to its fork and `redisFork`, which calls
+`fork()`. The allocation-counter claim stays a deduction from that `fork()`
+and the static, process-local `used_memory` in `zmalloc.c`:
 
 - `src/aof.c`, `rewriteAppendOnlyFileBackground`: a forked child produces the
   base while the parent opens a new incremental file; `src/server.c`,
