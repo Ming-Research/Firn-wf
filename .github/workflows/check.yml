@@ -33,7 +33,7 @@ jobs:
       - name: Install the suite's tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends tcl
+          sudo apt-get install -y --no-install-recommends tcl patch
 
       - name: Download the pinned compiler
         run: make compiler

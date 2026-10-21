@@ -130,6 +130,12 @@ out=$(cd "$out" && pwd)
 suite=$out/redis-$version
 rm -rf "$suite" "$out/logs" "$out/servers" "$out/hung" "$out/data"
 tar -xzf "$archive" -C "$out"
+# Redis's no-argument unsubscribe helpers read no acknowledgments. Preserve
+# those wire commands, but make their tests wait for all known memberships
+# before another connection publishes or the next test starts. The same
+# contextual patch applies to every target; stale or missing hunks stop the run.
+python3 -B "$here/check-pubsub-barriers.py" "$suite" "$here/pubsub-barriers.patch"
+patch --batch --forward --fuzz=0 -p1 -d "$suite" < "$here/pubsub-barriers.patch"
 # Tests that run the suite's own client tools look for them in src/, as in a
 # built source tree; the 7.2.16 tools built from the same archive stand in
 # for them.
@@ -164,6 +170,7 @@ printf '%s\n' $units > "$out/shard-units.txt"
 flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeout")
 {
     echo "suite: redis-$version.tar.gz sha256 $sha256"
+    echo "suite adjustment: pubsub-barriers.patch waits for and checks all known no-argument unsubscribe acknowledgments"
     echo "target: $target"
     case $target in
         redis) echo "server: $(redis-server --version)"
@@ -175,9 +182,9 @@ flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeou
     echo "runtest arguments: --host $host --port PORT --single UNIT --baseport FREE --portcount 1000 ${flags[*]} --skipfile HUNG ${extra[*]}"
     echo "shard: ${shard:-none}"
     if [ "$tolerant" = 1 ]; then
-        echo "framework: tolerant (FLUSHALL, FUNCTION FLUSH and the overrides' CONFIG GET, CONFIG SET and INFO may fail)"
+        echo "start_server framework: tolerant (FLUSHALL, FUNCTION FLUSH and the overrides' CONFIG GET, CONFIG SET and INFO may fail)"
     else
-        echo "framework: as released"
+        echo "start_server framework: as released"
     fi
     echo "retries: $retries"
     echo "client: $(redis-cli --version), tclsh $(echo 'puts [info patchlevel]' | tclsh)"

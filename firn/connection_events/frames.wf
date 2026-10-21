@@ -1,0 +1,142 @@
+alias Client = pkg::protocol::Client;
+alias Key = pkg::bytes::Key;
+alias wire_word = pkg::protocol::frame_word;
+alias wire_decimal = pkg::protocol::frame_decimal;
+alias wire_bulk = pkg::protocol::frame_bulk_input;
+
+const crlf: Array<u8, 2> = "\r\n";
+
+const message_word: Array<u8, 7> = "message";
+
+const pmessage_word: Array<u8, 8> = "pmessage";
+
+const smessage_word: Array<u8, 8> = "smessage";
+
+const subscribe_word: Array<u8, 9> = "subscribe";
+
+const unsubscribe_word: Array<u8, 11> = "unsubscribe";
+
+const psubscribe_word: Array<u8, 10> = "psubscribe";
+
+const punsubscribe_word: Array<u8, 12> = "punsubscribe";
+
+const ssubscribe_word: Array<u8, 10> = "ssubscribe";
+
+const sunsubscribe_word: Array<u8, 12> = "sunsubscribe";
+
+fn wire_key(buffer: &Box<Slots<u8>>, key: &Key) -> result: unit reads(key), writes(buffer) {
+  let copied = pkg::bytes::bytes_copy(bytes: &key^.bytes);
+  let bytes = pkg::bytes::bytes_boxed(bytes: move copied);
+  let length = bytes.inner.len;
+  wire_bulk(buffer: buffer, input: &bytes.inner[0_u64..length], start: 0_u64, length: length);
+  return unit;
+}
+
+fn publication_body(input: &[u8], start: u64, length: u64) -> body: Frozen<Box<Slots<u8>>> reads(input) {
+  let bytes = box_slots_new::<u8>(capacity: 0_u64);
+  wire_bulk(buffer: &bytes, input: input, start: start, length: length);
+  return frozen_new::<Box<Slots<u8>>>(value: move bytes);
+}
+
+fn publication_frame(channel: &Key, pattern: &Key, patterned: Bool, shard: Bool, resp: u64, body: &Frozen<Box<Slots<u8>>>) -> frame: Frame reads(channel), reads(pattern), reads(body) {
+  let prefix = box_slots_new::<u8>(capacity: 64_u64);
+  let marker = 42_u8;
+  if resp == 3_u64 {
+    set marker = 62_u8;
+  }
+  slots_push::<u8>(values: &prefix, value: marker);
+  let count = 3_u64;
+  if patterned {
+    set count = 4_u64;
+  }
+  wire_decimal(buffer: &prefix, number: count);
+  wire_word(buffer: &prefix, word: &crlf[0_u64..2_u64]);
+  if patterned {
+    wire_bulk(buffer: &prefix, input: &pmessage_word[0_u64..8_u64], start: 0_u64, length: 8_u64);
+    wire_key(buffer: &prefix, key: pattern);
+  } else if shard {
+    wire_bulk(buffer: &prefix, input: &smessage_word[0_u64..8_u64], start: 0_u64, length: 8_u64);
+  } else {
+    wire_bulk(buffer: &prefix, input: &message_word[0_u64..7_u64], start: 0_u64, length: 7_u64);
+  }
+  wire_key(buffer: &prefix, key: channel);
+  let prefix_capacity = prefix.inner.cap;
+  let body_capacity = body^.inner.inner.cap;
+  let charge = prefix_capacity +sat body_capacity;
+  let frozen = frozen_new::<Box<Slots<u8>>>(value: move prefix);
+  let retained = frozen_share::<Box<Slots<u8>>>(frozen: body);
+  return Frame(prefix: move frozen, body: move retained, charge: charge);
+}
+
+fn acknowledge(client: &Client, kind: u64, key: &Key, absent: Bool) -> result: unit reads(key), writes(client) {
+  if client^.resp == 3_u64 {
+    pkg::protocol::reply_push(client: client, count: 3_u64);
+  } else {
+    pkg::protocol::reply_array(client: client, count: 3_u64);
+  }
+  if kind == 190_u64 {
+    pkg::protocol::reply_bulk_input(client: client, input: &subscribe_word[0_u64..9_u64], start: 0_u64, length: 9_u64);
+  } else if kind == 191_u64 {
+    pkg::protocol::reply_bulk_input(client: client, input: &unsubscribe_word[0_u64..11_u64], start: 0_u64, length: 11_u64);
+  } else if kind == 194_u64 {
+    pkg::protocol::reply_bulk_input(client: client, input: &psubscribe_word[0_u64..10_u64], start: 0_u64, length: 10_u64);
+  } else if kind == 195_u64 {
+    pkg::protocol::reply_bulk_input(client: client, input: &punsubscribe_word[0_u64..12_u64], start: 0_u64, length: 12_u64);
+  } else if kind == 196_u64 {
+    pkg::protocol::reply_bulk_input(client: client, input: &ssubscribe_word[0_u64..10_u64], start: 0_u64, length: 10_u64);
+  } else {
+    pkg::protocol::reply_bulk_input(client: client, input: &sunsubscribe_word[0_u64..12_u64], start: 0_u64, length: 12_u64);
+  }
+  if absent {
+    pkg::protocol::reply_nil(client: client);
+  } else {
+    pkg::protocol::reply_text(client: client, text: &key^.bytes);
+  }
+  let count = client^.sub +wrap client^.psub;
+  if kind >= 196_u64 {
+    set count = client^.ssub;
+  }
+  let signed = cvt.wrap::<u64, i64>(count);
+  pkg::protocol::reply_integer(client: client, value: signed);
+  return unit;
+}
+
+fn reply_frame(client: &Client) -> frame: Frame reads(client.bytes), writes(client.at) {
+  let length = client^.bytes.inner.len;
+  let prefix = pkg::bytes::copy_bytes(input: &client^.bytes.inner[0_u64..length], start: 0_u64, length: client^.at);
+  set client^.at = 0_u64;
+  let body = box_slots_new::<u8>(capacity: 0_u64);
+  let prefix_capacity = prefix.inner.cap;
+  let body_capacity = body.inner.cap;
+  let charge = prefix_capacity +sat body_capacity;
+  let first = frozen_new::<Box<Slots<u8>>>(value: move prefix);
+  let last = frozen_new::<Box<Slots<u8>>>(value: move body);
+  return Frame(prefix: move first, body: move last, charge: charge);
+}
+
+fn commit(hub: &Hub, client: &Client, stage: &Stage, time: u64) -> result: unit writes(hub), writes(client), writes(stage) {
+  if client^.pubsub_id != 0_u64 {
+    match take_record(hub: hub, id: client^.pubsub_id) {
+      Some(value: record) => {
+        set record.resp = client^.resp;
+        put_record(hub: hub, record: move record);
+      }
+      None() => {
+      }
+    }
+    if client^.at > 0_u64 {
+      let frame = reply_frame(client: client);
+      queue_frame(hub: hub, id: client^.pubsub_id, frame: move frame, time: time);
+    }
+  }
+  loop @publications {
+    if stage^.publications.inner.len > 0_u64 {
+      let delivery = take_front(window: &stage^.publications.inner);
+      let Delivery(id: recipient, frame: selected) = move delivery;
+      queue_frame(hub: hub, id: recipient, frame: move selected, time: time);
+    } else {
+      break @publications;
+    }
+  }
+  return unit;
+}
