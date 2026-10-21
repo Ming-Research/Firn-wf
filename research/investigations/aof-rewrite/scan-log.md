@@ -1022,7 +1022,7 @@ the next write evicts while the rewrite captures).
 The rotation-charge subtraction in mem_not_counted_for_evict
 (`firn/commands/eviction.wf`, memory_excluded) is checked by
 reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom: after
-S1 the exclusion must equal the buffer part (firn_aof_buffer_excluded) plus
+S1 the exclusion must equal the buffer part (mem_aof_buffer) plus
 the rewrite ledger less its rotation charge (firn_aof_rewrite_charged). A
 temporary workflow (since removed) deleted the subtraction on c0ada67 and
 ran this case: run [39491203976](https://github.com/Ming-Research/Firn-wf/actions/runs/39491203976)

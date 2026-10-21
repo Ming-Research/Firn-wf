@@ -313,20 +313,21 @@ signal too, where Redis's cancels a signal's request in the moment, at most
 a tenth of a second, before its next cron acts on it.
 
 `INFO memory` reports raw `used_memory` and `used_memory_human`,
-`used_memory_rss` when the host supplies it, `used_memory_peak`,
+`used_memory_rss` and `used_memory_rss_human` when the host supplies it,
+`used_memory_peak` and `used_memory_peak_human`,
 `mem_not_counted_for_evict`, the configured `maxmemory`, `maxmemory_human`
-and `maxmemory_policy`, with Redis's human-size formatting. Its exclusion
-splits into `firn_aof_buffer_excluded` (the ordinary AOF buffer capacities)
-and the rewrite ledger less `firn_aof_rewrite_charged` (the rotation charges
-already covered by those capacities); the two parts sum to the exclusion, and
-`INFO memory` carries both so that a check can recompute it. It also reports
+and `maxmemory_policy`, with Redis's human-size formatting. It also reports
 the actual registered-script count. Heap readings use `heap_in_use`; RSS
 uses `resident_bytes` on demand. Peak tracks heap readings after commands,
 at admission and at INFO, rather than every transient allocation. AOF
-exclusion uses capacities even when drained, not lengths. It also includes
-the rewrite ledger's current charges through cleanup, less rotation-buffer
-charges already covered by the AOF capacities; those charges are conservative
-allowances rather than independent heap measurements. `INFO stats`
+exclusion uses capacities even when drained, not lengths; `mem_aof_buffer`
+reports those allocated buffers alone. `mem_not_counted_for_evict` adds the
+rewrite ledger's current charges through cleanup, less the rotation-buffer
+charges already covered by the AOF capacities (`firn_aof_rewrite_charged` in
+`INFO persistence`), so while a rewrite runs a check can recompute it as
+`mem_aof_buffer` plus `firn_aof_rewrite_used` less `firn_aof_rewrite_charged`;
+those charges are conservative allowances rather than independent heap
+measurements. `INFO stats`
 reports live `evicted_keys`. The heap meter counts the keyspace's own
 storage, its shared-map tables and nodes, as well as values.
 
@@ -336,15 +337,17 @@ values for the port, the calendar time, the uptime, the clients connected,
 whether the append-only file is kept, the connections accepted and the keys
 held, which it counts holding the table whole, as `DBSIZE` does. The other fields it reports have values
 that are fixed and true of firn: Redis's
-version 7.2.16, no git revision, `redis_git_sha1` being 00000000 as in
-Redis's builds from a release, standalone mode, 64 bits, its active
+version 7.2.16, standalone mode, 64 bits, its active
 expiry's 10 runs a second, no configuration file,
 function, replica, background save, fork, module, publish
 and subscribe, tracking or cluster. What firn does not measure,
-processor time, per-command and per-error counts among them, is left out,
-so its CPU, Commandstats, Errorstats and Latencystats sections are empty
+its own processor time, build revision, per-command and per-error counts
+among them, is left out. CPU reports only the fixed zero child-process times;
+Commandstats, Errorstats and Latencystats have empty headers,
 and its keyspace line gives `keys` alone, without the `expires` and
-`avg_ttl` firn does not count.
+`avg_ttl` firn does not count. Section selection is case insensitive, combines
+several names without duplicates and ignores unknown names. `debug` selects
+an empty Debug header explicitly; `all` and `everything` do not include it.
 
 `CLIENT INFO` answers the connection's line in Redis's form, with real
 values for the id, the name, the age and the protocol, and values fixed and
@@ -614,11 +617,13 @@ command, subsequent script writes skip that check (`multi.c:85-87,105-109,
 136-140,170-178,229-233`; `script.c:349-386,547-557`).
 
 `INFO persistence` reports rewrite progress, attempts, last rewrite status, current
-active-file bytes and the rewrite baseline. `aof_last_write_status` is `ok` only
+active-file bytes and the rewrite baseline. Redis fields follow Redis 7.2.16's
+order; the documented `firn_aof_rewrite_*` diagnostics follow them as a tail.
+`aof_last_write_status` is `ok` only
 when both append and sync errors are clear, otherwise `err`, independently of
 `aof_last_bgrewrite_status`. With AOF enabled, `aof_buffer_length` reports the
 collecting bytes plus bytes retained by the writer, excluding already appended
-bytes awaiting sync (`server.c:5596-5650`). `aof_pending_bio_fsync` and
+bytes awaiting sync (`server.c:5818-5832`). `aof_pending_bio_fsync` and
 `aof_delayed_fsync` are zero: firn's sole writer performs sync itself, with no
 background BIO queue or append postponement behind a background sync. The firn-only field
 `firn_aof_rewrite_commit_seq` is the actual dataset statement sequence while
@@ -689,6 +694,10 @@ including a refused admission; counters start at zero before the first attempt.
   discarded to retry one position, and steps whose subsequent copying fails.
   `firn_aof_rewrite_scan_done` is 1 after the scan finishes writing its base,
   otherwise 0. It does not claim that rotation or installation succeeded.
+- `firn_aof_rewrite_charged` is the part of the ledger that the rotation
+  charged for collecting-buffer growth; `mem_not_counted_for_evict` excludes
+  the ledger less this part, since those bytes are already in the AOF
+  buffer capacities.
 
 Failure before rotation leaves the original manifest authoritative. After
 rotation it leaves the manifest naming the old base and all increments

@@ -30,10 +30,18 @@ fn release_reserve(store: &Keyspace, client: &Client) -> freed: u64 reads(store)
   }
 }
 
+fn memory_aof_buffer(meta: &Meta, logged: Bool) -> bytes: u64 reads(meta) {
+  doc "The allocated capacity of the two AOF buffers, the collecting one and the writer's published pending one, which INFO reports as mem_aof_buffer. With AOF disabled neither is an AOF buffer.";
+  if logged {
+    return meta^.log.inner.cap +sat meta^.aof_pending_capacity;
+  }
+  return 0_u64;
+}
+
 fn memory_excluded(meta: &Meta, logged: Bool) -> bytes: u64 reads(meta) {
   doc "Redis 7.2.16 freeMemoryGetNotCountedMemory excludes allocated AOF storage, and the forked rewrite child's allocations do not enter the parent's heap counter. Firn excludes its bounded rewrite ledger until cleanup. Rotation AOF charges already covered by the two buffer capacities are removed from that ledger exclusion, including conservative growth overlap, so they are not deducted twice. With AOF disabled no rewrite can start and neither buffer is an AOF buffer.";
   if logged {
-    let aof = meta^.log.inner.cap +sat meta^.aof_pending_capacity;
+    let aof = memory_aof_buffer(meta: meta, logged: logged);
     let rewrite = meta^.rewrite.used -sat meta^.rewrite.aof_charged;
     return aof +sat rewrite;
   }

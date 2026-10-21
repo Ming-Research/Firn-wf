@@ -937,7 +937,7 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
     client.write_all(&resp(&["INFO", "all"])).unwrap();
     let rotated = bulk_reply(&mut client, "rotation memory exclusion");
     let charged: u64 = info_field(&rotated, "firn_aof_rewrite_charged").unwrap().parse().unwrap();
-    let buffer: u64 = info_field(&rotated, "firn_aof_buffer_excluded").unwrap().parse().unwrap();
+    let buffer: u64 = info_field(&rotated, "mem_aof_buffer").unwrap().parse().unwrap();
     let used: u64 = info_field(&rotated, "firn_aof_rewrite_used").unwrap().parse().unwrap();
     let excluded: u64 = info_field(&rotated, "mem_not_counted_for_evict").unwrap().parse().unwrap();
     assert!(charged > 0, "rotation must charge the rewrite ledger: {rotated}");
