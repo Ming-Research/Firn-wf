@@ -144,8 +144,10 @@ warm-up, 64-byte payloads; `summary.py pubsub --firn image-head --twin
 image-head-twin --floor 0.86`). The twin half-widths are 0.55% (channel, depth
 1), 0.85% (channel, 16), 0.47% (pattern, 1) and 0.67% (pattern, 16), none above
 the floor, so all four cells count. The client work fraction is 0.108-0.111 for
-firn and 0.048-0.178 for the fastest competitors (no sample of any line is above
-0.181), far below 0.90: no cell is client-limited. Rates are medians, in thousands of messages a second.
+firn and 0.071-0.178 for the fastest competitor of each cell (`redis-latest` at
+depth 16, `dragonfly-latest` at depth 1; no sample of any line is above 0.181),
+far below 0.90: no cell is client-limited. Rates are medians, in thousands of
+messages a second.
 
 | cell | firn | fastest competitor | firn / fastest | required | firn p99 | fastest's p99 |
 |---|---|---|---|---|---|---|
