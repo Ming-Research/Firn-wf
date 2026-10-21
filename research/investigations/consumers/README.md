@@ -153,3 +153,100 @@ and scripts both run several commands as one atomic step, so both need the
 commands they queue or call written as the parts of the
 [command-parts decision](../../../design/firn/command-parts.md): the commands
 above first, the others as consumers need them.
+
+## Per-case records and the comparison
+
+The three consumers above keep an exit status and the end of the log. The
+validation applications that follow them in
+[design/firn/consumers.md](../../../design/firn/consumers.md) have hundreds of
+cases each, and their question is whether firn passes the cases Redis 7.2.16
+passes, so their runs keep one record per case and compare the two servers'
+records. Four parts serve every application run this way and live in
+`research/experiments/consumers/`; an application's wiring adds only a
+reporter for its test runner (Sidekiq's is `minitest_record.rb`).
+
+1. **The record**, `cases.tsv`: one row per case, two columns separated by a
+   TAB, `CASE<TAB>STATUS`. CASE is `FILE::NAME`, led by the test file and
+   holding no TAB or newline; STATUS is `pass`, `fail`, `error`, `skip` or
+   `unfinished`. The reporter appends each row as the case ends, so a process
+   that is killed leaves the cases it finished. A file whose process was killed
+   at its time limit, or ended having recorded no case, gets the row
+   `FILE<TAB>unfinished`. A case without a row did not pass, and a case with
+   several rows passed when all of them did.
+2. **The comparison**, `compare.py`, which knows no application: it reads the
+   records of one or more Redis runs and of one firn run, and the unstable
+   list, and writes Markdown for the job summary with the number and the names
+   of the cases both servers passed, only Redis passed and only firn passed,
+   and of the unstable ones it left out. Redis's stable passes are the cases
+   that passed in every Redis run and are not on the list. It reports a
+   difference between the lines the two cells' `what.txt` hold after the
+   first (the tool and gem versions the run installed), since an application
+   without a lock file installs the newest gems on each cell. `--self-test`
+   checks it on records whose answer is known and on input it must refuse.
+3. **The loop**, `run_each_file LIMIT COMMAND...` in `run.sh`: one process per
+   test file, each on a server started anew on an empty directory (with
+   `MONITOR` appending to the same `monitor.log` on Redis), under
+   `timeout -k 10 LIMIT`; the process gets `CASE_RECORD`, the record's path,
+   and `CASE_FILE`, its file. A server a file crashes then takes none of the
+   next files with it, and a file that hangs costs its limit and no more.
+   `files.tsv` records each file's exit status and seconds.
+4. **The unstable list**, `<application>-unstable.tsv`: rows
+   `CASE<TAB>REASON` under the header `# case<TAB>reason`, as in
+   `tests/redis-suite/unstable.tsv`, with the reason `passed in K of N
+   recorded runs` for a case that passed in some of the Redis runs. The
+   workflow runs Redis twice on the same revision; `compare.py` leaves out a
+   case the two runs disagree on and writes those not yet on the list in this
+   format (`--unstable-found`), to be reviewed and committed.
+
+## Sidekiq
+
+Sidekiq v8.1.7 (the tag's commit is
+`1bb4aa06e5aa178a114a5e855f9f3d5c24f6c61b`), the first of the validation
+applications, runs in the weekly workflow beside the consumers above, against
+Redis 7.2.16 and against firn, with a second Redis run for the unstable list.
+
+- **Tests.** Every `test/**/*_test.rb`, the files of Sidekiq's own
+  `bundle exec rake test` (its Rakefile's pattern is `test/**/*.rb`, which adds
+  the helpers); Sidekiq's CI runs them against Redis 7.0.15, the latest Redis,
+  Valkey 9 and Dragonfly. The tests start no server and run no case in
+  parallel. `run.sh` runs each file in a process of its own (`bundle exec ruby
+  -Ilib -Itest FILE`), with Minitest's seed fixed at 1 on both servers. A file
+  run alone and the same file inside `rake test` may differ when a test leaves
+  state behind for a later file; the record is of the files run alone.
+- **Environment.** The newest cell of Sidekiq's CI matrix: Ruby 4.0 and
+  `RAILS_VERSION=8.1`. The repository has no lock file, so `bundle install`
+  takes the newest gems of the day, and `what.txt` records the Ruby version
+  and the versions of `redis-client`, `railties`, `minitest`,
+  `connection_pool` and `rack`. The `development`, `tui` and `load_test` gem
+  groups (the linters, the terminal UI and the load-test tools) are not
+  installed: the tests load only the default and test groups
+  (`Bundler.require(:default, :test)` in `test/helper.rb`), so these gems'
+  native builds would serve no case.
+- **Pointing it at a server.** `REDIS_URL=redis://127.0.0.1:6379/0`, the one
+  setting `test/helper.rb` reads (`ENV["REDIS_URL"] ||= ...`, line 24); its
+  `reset!` runs `flushdb` on that database before each case. 127.0.0.1
+  rather than `localhost`, so that the name does not resolve to `::1` first.
+  Both servers listen on 6379, as for Django and rate-limiter-flexible. The
+  other addresses in the tests are the unreachable ones of
+  `redis_connection_test.rb`, for which a pool is built and nothing connects.
+- **A correction to the usage survey.** The survey
+  ([usage-survey](../usage-survey/README.md)) writes that Sidekiq's own tests
+  default to `redis://localhost:6379/0`, which holds for `test/helper.rb` alone.
+  `test/sharding_test.rb` builds pools for databases 6 and 5
+  (`Sidekiq::RedisConnection.create(size: 1, db: 6)`, and 5) and flushes both
+  before each case, and firn answers `SELECT` for database 0 only today. That
+  file is neither changed nor excluded: it fails on firn until firn serves more
+  databases, which is the dependency's work.
+- **The heartbeat probe.** After the tests, a real `bundle exec sidekiq`
+  process runs for about 30 seconds, three heartbeats (`BEAT_PAUSE` is 10
+  seconds), on a server started anew, with one job that does nothing already in
+  its queue. `heartbeat.txt` records whether the process registered itself
+  (`SCARD processes` at 22 s), the jobs it processed (`stat:processed`), the
+  jobs left in the queue and the number of ERROR lines in `heartbeat.log`.
+  Sidekiq's metrics flush calls `BITFIELD` on a beat after a job was
+  processed (`metrics/tracking.rb`, `metrics/shared.rb`); read from the
+  source and not run: `fire_event` catches an error from that handler and the
+  default error handler logs it, so the heartbeat itself continues and the
+  window's metrics are lost. The probe is the run that settles it. firn has no
+  `BRPOP` yet, so a `sidekiq` process on firn cannot fetch the job until the
+  blocking list commands exist; the probe records what it finds.
