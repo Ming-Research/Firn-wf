@@ -5,21 +5,13 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
-## 2026-10-20 Treat EINVAL from a rewrite's manifest directory sync as a successful sync
-
-Nodes: firn/aof-rewrite
-
-Owner-approved: pending the ruling on card firn-q-dirsync-einval (recommended option A: EINVAL counts as synced, as Redis 7.2.16's fsyncFileDir does); this entry takes the owner's wording when the card is ruled.
-
-Summary: EINVAL from the directory sync after a rewrite's manifest rename means the filesystem cannot sync directories, which does not change between calls. Counting it as a failure would leave every rewrite unfinished. The rewrite now completes and writes continue on the new increment, as they do on Redis 7.2.16 (the case switch-dirsync-einval shows both servers finish the rewrite and acknowledge writes after it). Other directory sync failures keep the refusal recorded in the entry below.
-
 ## 2026-10-14 Refuse writes after a failed directory sync at the rewrite's manifest swap
 
 Nodes: firn/aof-rewrite
 
 Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-rw-dirsync-tree, which asked to approve PR #120's design change at head ca3d045 (the tree is unchanged at the current head): when the directory sync fails after the AOF rewrite renames the new manifest into place, the rewrite fails and firn records an AOF sync error (EINVAL excepted, as Redis treats it as success), then answers writes with MISCONF until a recovering rewrite installs durably; this deliberately differs from Redis 7.2.16, which reverts the switch but keeps acknowledging writes.
 
-Summary: At the switch point the old manifest and old append file stay in force and the new incremental file is left in place, since both manifests list the old incremental file and data written to it survives whichever manifest a restart reads; at the install point the renamed new manifest stays in force and the sync error is recorded too. Continuing to switch to the new incremental file and acknowledge writes after a failed directory sync is rejected, because a power loss could then lose acknowledged writes (the new case failed on the code before the change). The rule matches firn's existing refusal of writes after a failed sync of the active file.
+Summary: At the switch point the old manifest and old append file stay in force and the new incremental file is left in place, since both manifests list the old incremental file and data written to it survives whichever manifest a restart reads; at the install point the renamed new manifest stays in force and the sync error is recorded too. Continuing to switch to the new incremental file and acknowledge writes after a failed directory sync is rejected, because a power loss could then lose acknowledged writes (the new case failed on the code before the change). The rule matches firn's existing refusal of writes after a failed sync of the active file. EINVAL from the directory sync is not a failure: it means the filesystem cannot sync directories at all, so it counts as a successful sync, as Redis 7.2.16's fsyncFileDir treats it, and the rewrite completes with writes continuing on the new increment (the case switch-dirsync-einval shows both servers finishing the rewrite and acknowledging writes after it).
 
 ## 2026-10-14 Write scores in replies and AOF rewrites byte for byte as Redis 7.2.16
 

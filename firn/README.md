@@ -637,7 +637,7 @@ Failure before rotation leaves the original manifest authoritative. After
 rotation it leaves the manifest naming the old base and all increments
 replayable. If manifest rename succeeds but
 directory sync fails, the rewrite fails (`aof_last_bgrewrite_status` reports
-`err`) and the error is saved as the sync error, so writes are refused with
+`err`) and the error is saved as the sync error, except EINVAL, which counts as synced, as in Redis 7.2.16, so writes are refused with
 `MISCONF` until a recovery rewrite is durably installed, as after a failed
 sync of the incremental file. At the switch firn keeps appending to the old
 incremental file, which either manifest names; at installation the new

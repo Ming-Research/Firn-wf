@@ -184,7 +184,7 @@ fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool
 }
 
 fn aof_sync_counts(error: &std::io::IoError) -> counted: Bool reads(error) {
-  doc "Whether a failed sync of the active file latches the sync error. Redis 7.0.15 bio.c:235-247 treats EINVAL from fsync as success, so a file that cannot be synchronized does not refuse writes; Whitefoot maps EINVAL alone to InvalidInput. Redis also ignores EBADF, which it can meet only because its main thread may close and reuse the descriptor; firn owns its WriteFile, so that case cannot arise.";
+  doc "Whether a failed sync of the active file, or of a manifest's directory, latches the sync error. Redis 7.0.15 bio.c:235-247 treats EINVAL from fsync as success, and Redis 7.2.16's fsyncFileDir does the same for a directory sync, so a file that cannot be synchronized does not refuse writes; Whitefoot maps EINVAL alone to InvalidInput. Redis also ignores EBADF, which it can meet only because its main thread may close and reuse the descriptor; firn owns its WriteFile, so that case cannot arise.";
   match error^ {
     NotFound(code: native_code, origin: native_origin) => {
       return True();
