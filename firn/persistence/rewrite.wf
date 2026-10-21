@@ -53,7 +53,7 @@ fn aof_rw_manifest(original: &AofManifest) -> made: AofManifest reads(original) 
 }
 
 fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock: &Clock) -> accepted: Bool reads(store), writes(factory), writes(log), writes(clock) waits {
-  doc "Flush is complete before entry. Use the boundary retained by startup and actual appends, reading historical bytes only when that state is unknown; if it ends inside an unfinished block, as a startup-retained MULTI leaves it, cut it before that block's first MULTI, whose writes base(S1) holds as live state, then sync it before publishing it as an earlier file. Keep the old handle until the new manifest is published so a failed open or manifest write can continue on it. After publication only the new handle receives writes; close the old one before the rebuild starts. Rotation resets incremental size but preserves saved error status; Redis 7.2.16 instead submits the old file to BIO_CLOSE_AOF, whose successful sync clears its BIO sync error (aof.c:836-838, bio.c:259-276); the sealed file's successful sync marks its bytes synced, and the new file starts with nothing unsynced, as Redis 7.2.16 openNewIncrAofForAppend resets aof_last_incr_fsync_offset with aof_last_incr_size (aof.c:842-845). A successful sync of the sealed file clears no saved sync error: after a failed sync Linux leaves the pages whose writeback failed clean, so this sync can succeed without writing them; only a durable installation, in aof_rw_complete, clears it.";
+  doc "Flush is complete before entry. Use the boundary retained by startup and actual appends, reading historical bytes only when that state is unknown; if it ends inside an unfinished block, as a startup-retained MULTI leaves it, cut it before that block's first MULTI, whose writes base(S1) holds as live state, then sync it before publishing it as an earlier file. Keep the old handle and manifest until the new manifest is durably published, renamed and its directory synced, so a failed open, manifest write or directory sync continues on them. After a renamed manifest's directory sync fails with an error other than EINVAL, which counts as synced, either manifest may be the one a restart reads; both name the old increment and only the renamed one names the new, so the old handle keeps every later append in either selection. The new file stays in place because the renamed manifest may name it; the recovery rewrite's switch reopens it empty. After durable publication only the new handle receives writes; close the old one before the rebuild starts. Rotation resets incremental size but preserves saved error status; Redis 7.2.16 instead submits the old file to BIO_CLOSE_AOF, whose successful sync clears its BIO sync error (aof.c:836-838, bio.c:259-276); the sealed file's successful sync marks its bytes synced, and the new file starts with nothing unsynced, as Redis 7.2.16 openNewIncrAofForAppend resets aof_last_incr_fsync_offset with aof_last_incr_size (aof.c:842-845). A successful sync of the sealed file clears no saved sync error: after a failed sync Linux leaves the pages whose writeback failed clean, so this sync can succeed without writing them; only a durable installation, in aof_rw_complete, clears it.";
   let boundary = aof_rw_boundary(store: store, factory: factory, log: log, clock: clock);
   if boundary.whole {
   } else {
@@ -126,11 +126,6 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
       set candidate.incr_sequence = next;
       let persisted = aof_rw_persist(store: store, factory: factory, writable: &log^.writable, prefix: prefix, manifest: &candidate);
       if persisted.durable {
-      } else {
-        let reason_install_io_7 = pkg::store::RewriteAbortReason::InstallIo();
-        aof_rw_abort(store: store, reason: reason_install_io_7);
-      }
-      if persisted.published {
         set log^.manifest = move candidate;
         swap(first: &log^.file, second: &opened);
         set log^.boundary = aof_boundary_empty();
@@ -140,7 +135,7 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
         }
         match std::fs::close_write(factory: factory, file: move opened) {
           Ok(value: closed) => {
-            return persisted.durable;
+            return True();
           }
           Err(error: problem) => {
             let reason_writer_io_8 = pkg::store::RewriteAbortReason::WriterIo();
@@ -149,6 +144,8 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
           }
         }
       }
+      let reason_install_io_7 = pkg::store::RewriteAbortReason::InstallIo();
+      aof_rw_abort(store: store, reason: reason_install_io_7);
       std::fs::close_write(factory: factory, file: move opened);
       return False();
     }
@@ -161,7 +158,7 @@ fn aof_rw_switch(store: &Keyspace, factory: &HandleFactory, log: &AofLog, clock:
 }
 
 fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool) -> result: unit reads(store) waits {
-  doc "Ends an attempt; accepted means its manifest was published and the directory synced. A durable installation clears a saved sync error in the same Meta statement that ends the attempt, so writes are admitted again only once the new base, written from memory and synced, and its manifest are on the device. Any sync error saved while the attempt ran aborted it, through aof_rw_flush or aof_rw_switch, so an accepted attempt clears only an error saved before it started, whose lost pages the new base replaces.";
+  doc "Ends an attempt; accepted means its manifest was published and the directory synced. A durable installation clears a saved sync error in the same Meta statement that ends the attempt, so writes are admitted again only once the new base, written from memory and synced, and its manifest are on the device. Any sync error saved while the attempt ran aborted it, through aof_rw_flush, aof_rw_switch or a publication's failed directory sync, so an accepted attempt clears only an error saved before it started, whose lost pages the new base replaces.";
   atomic m = &store^.meta {
     if accepted {
       set m^.aof_sync_error = None<std::io::IoError>();
@@ -188,7 +185,7 @@ fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool
 }
 
 fn aof_sync_counts(error: &std::io::IoError) -> counted: Bool reads(error) {
-  doc "Whether a failed sync of the active file latches the sync error. Redis 7.0.15 bio.c:235-247 treats EINVAL from fsync as success, so a file that cannot be synchronized does not refuse writes; Whitefoot maps EINVAL alone to InvalidInput. Redis also ignores EBADF, which it can meet only because its main thread may close and reuse the descriptor; firn owns its WriteFile, so that case cannot arise.";
+  doc "Whether a failed sync of the active file, or of a manifest's directory, latches the sync error. Redis 7.0.15 bio.c:235-247 treats EINVAL from fsync as success, and Redis 7.2.16's fsyncFileDir does the same for a directory sync, so a file that cannot be synchronized does not refuse writes; Whitefoot maps EINVAL alone to InvalidInput. Redis also ignores EBADF, which it can meet only because its main thread may close and reuse the descriptor; firn owns its WriteFile, so that case cannot arise.";
   match error^ {
     NotFound(code: native_code, origin: native_origin) => {
       return True();
