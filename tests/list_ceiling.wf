@@ -684,7 +684,7 @@ fn case_eval(clock: &std::time::Clock, input: &[u8], script_length: u64, protect
   let client = pkg::protocol::client_new(capacity: 256_u64);
   let env = pkg::bytes::KeyEnv();
   let time = pkg::store::Time(unix_ms: 1_u64, check: 1_u64, loading: no);
-  pkg::scripting::eval::<FirnCommands>(store: &store, input: input, args: &args, client: &client, keys_env: &env, time: &time, clock: clock, by_sha: no);
+  pkg::scripting::eval::<FirnCommands, 0>(store: &store, input: input, args: &args, client: &client, keys_env: &env, time: &time, clock: clock, by_sha: no);
   let list_preserved = False();
   atomic slot = &store.keys[store_key] {
     set list_preserved = case_original(slot: slot, length: 8_u64);
