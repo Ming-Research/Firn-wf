@@ -886,6 +886,22 @@ fn reconciled_scan_streams_large_history_for_a_small_live_value() {
     rewrite_stop(&mut restored, child);
 }
 
+/// The rewrite ledger is excluded from eviction less its rotation charges,
+/// which the AOF buffer capacities already cover; without that subtraction the
+/// exclusion would be buffer + used. Read from one INFO reply, which is one
+/// Meta snapshot. Returns the rotation charge the reply shows.
+#[track_caller]
+fn assert_rotation_exclusion(info: &str) -> u64 {
+    let charged: u64 = info_field(info, "firn_aof_rewrite_charged").unwrap().parse().unwrap();
+    let buffer: u64 = info_field(info, "mem_aof_buffer").unwrap().parse().unwrap();
+    let used: u64 = info_field(info, "firn_aof_rewrite_used").unwrap().parse().unwrap();
+    let excluded: u64 = info_field(info, "mem_not_counted_for_evict").unwrap().parse().unwrap();
+    assert!(charged <= used, "{info}");
+    assert_eq!(excluded, buffer + (used - charged),
+        "rotation charges must be excluded from the ledger once, as their buffer capacity is: {info}");
+    charged
+}
+
 #[test]
 fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
     let program = CompiledProgram::from_environment();
@@ -931,19 +947,13 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
         }
         std::thread::sleep(Duration::from_micros(100));
     }
-    // After rotation the rotation charges are part of the rewrite ledger, and
-    // eviction.wf subtracts them so the buffer capacities are not counted
-    // twice. Without that subtraction the exclusion would be buffer + used.
+    // Whether these writes land while the writer rotates, and so charge the
+    // ledger, is a race (CI run 39525916088 sampled a charge of 0), so the
+    // exclusion is only reconciled here; the post-cut backlog case holds the
+    // rotation open and requires a nonzero charge.
     client.write_all(&resp(&["INFO", "all"])).unwrap();
     let rotated = bulk_reply(&mut client, "rotation memory exclusion");
-    let charged: u64 = info_field(&rotated, "firn_aof_rewrite_charged").unwrap().parse().unwrap();
-    let buffer: u64 = info_field(&rotated, "mem_aof_buffer").unwrap().parse().unwrap();
-    let used: u64 = info_field(&rotated, "firn_aof_rewrite_used").unwrap().parse().unwrap();
-    let excluded: u64 = info_field(&rotated, "mem_not_counted_for_evict").unwrap().parse().unwrap();
-    assert!(charged > 0, "rotation must charge the rewrite ledger: {rotated}");
-    assert!(charged <= used, "{rotated}");
-    assert_eq!(excluded, buffer + (used - charged),
-        "rotation charges must be excluded from the ledger once, as their buffer capacity is: {rotated}");
+    assert_rotation_exclusion(&rotated);
     // Lower the ordinary Redis limit while frozen images still await release.
     // Service pressure still refuses DENYOOM under noeviction, but it must
     // not cancel rewrite work whose bounded memory is outside maxmemory.
@@ -1088,10 +1098,24 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     assert_old_manifest(&program);
     let value = vec![b'n'; 16 * 1024];
     let mut writes = 0;
+    let mut reconciled = false;
     loop {
         request(&mut client, &[b"SET", b"hot", &value]);
         writes += 1;
         let info = rewrite_info(&mut client);
+        // The rotation is held open here, so the collecting buffer's growth
+        // charges the ledger and stays charged until the attempt ends: the
+        // exclusion must then leave those charges out of the ledger once.
+        if !reconciled && info["aof_rewrite_in_progress"] == "1" && info["firn_aof_rewrite_charged"] != "0" {
+            client.write_all(&resp(&["INFO", "all"])).unwrap();
+            let all = bulk_reply(&mut client, "exclusion while the backlog charges");
+            if info_field(&all, "aof_rewrite_in_progress").as_deref() == Some("1")
+                && info_field(&all, "firn_aof_rewrite_abort_reason").as_deref() == Some("")
+            {
+                assert!(assert_rotation_exclusion(&all) > 0, "{all}");
+                reconciled = true;
+            }
+        }
         if info["aof_rewrite_in_progress"] == "0" {
             assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance");
             assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
@@ -1100,6 +1124,7 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         assert!(Instant::now() < deadline, "post-cut backlog never aborted");
     }
     assert!(writes > 1);
+    assert!(reconciled, "the exclusion was never checked while the backlog was charged");
     assert_old_manifest(&program);
     request(&mut client, &[b"INCR", b"after-backlog"]);
     rewrite_stop(&mut client, child);
