@@ -1048,8 +1048,10 @@ ledger once", so the check detects the omission; the unmodified case passes in
 Eviction waits only for the cleanup of a rewrite that is installing
 (`aof_installing`, the three cleanup points in eviction.wf). The wait for an
 aborted rewrite was removed: the aborted attempt's ledger is excluded until
-cleanup, and cleanup lowers the compared figure by the same ledger it
-releases, so waiting gives eviction no room. The installing wait stays because
+cleanup, and cleanup lowers the heap and the exclusion by the same ledger (the
+exclusion by at least as much, since a charge is recorded before its
+allocation), so the compared figure, heap less exclusion, does not fall and
+waiting gives eviction no room. The installing wait stays because
 the installation must publish one result before keys change. The aborted case
 is exercised by allkeys_lru_evicts_after_a_flush_aborts_a_rewrite: FLUSHALL
 aborts a paced rewrite, 400 writes at the limit evict, and the attempt clears
