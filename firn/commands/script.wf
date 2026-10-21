@@ -236,6 +236,8 @@ const arity_noscript_with_argument: i64 = -2_i64;
 
 const text_script_arity: Array<u8, 58> = "ERR Wrong number of args calling Redis command from script";
 
+const text_script_read_only: Array<u8, 58> = "ERR Write commands are not allowed from read-only scripts.";
+
 const text_script_unknown: Array<u8, 44> = "ERR Unknown Redis command called from script";
 
 const text_script_unknown_or_unsplit: Array<u8, 87> = "ERR Unknown Redis command called from script, or one firn does not yet run from scripts";
@@ -688,7 +690,7 @@ fn script_mset(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
 }
 
 fn command_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
-  doc "Shared command identity for admission and dispatch; kinds through 171 run by held parts: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME, 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD, 55 HSCAN; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH; 90 SADD, 91 SREM, 92 SPOP, 93 SCARD, 94 SMEMBERS, 95 SISMEMBER, 96 SMISMEMBER, 97 SRANDMEMBER, 98 SMOVE, 99 SINTER, 100 SUNION, 101 SDIFF, 102 SINTERCARD, 103 SINTERSTORE, 104 SUNIONSTORE, 105 SDIFFSTORE, 106 SSCAN; 120 ZADD, 121 ZINCRBY, 122 ZREM, 123 ZPOPMIN, 124 ZPOPMAX, 125 ZCARD, 126 ZSCORE, 127 ZMSCORE, 128 ZRANK, 129 ZREVRANK, 130 ZRANGE, 131 ZREVRANGE, 132 ZRANGEBYSCORE, 133 ZREVRANGEBYSCORE, 134 ZRANGEBYLEX, 135 ZREVRANGEBYLEX, 136 ZCOUNT, 137 ZLEXCOUNT, 138 ZREMRANGEBYRANK, 139 ZREMRANGEBYSCORE, 140 ZREMRANGEBYLEX, 141 ZSCAN; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 164 FLUSHALL, 165 FLUSHDB, 166 COMMAND, 168 SCAN, 169 KEYS, 170 RANDOMKEY, 171 OBJECT, 167 is reserved. Network-only kinds are 172 EVAL, 173 EVALSHA, 174 SCRIPT, 175 INFO, 176 CONFIG, 177 AUTH, 178 HELLO, 179 QUIT, 180 CLIENT, 181 DEBUG, 182 FUNCTION, 183 SHUTDOWN, 184 BGREWRITEAOF, 185 MULTI, 186 EXEC, 187 DISCARD, 188 WATCH (only its inside-MULTI refusal), 189 RESET. Hub-aware kinds are 190 SUBSCRIBE, 191 UNSUBSCRIBE, 192 PUBLISH, 193 PUBSUB, 194 PSUBSCRIBE, 195 PUNSUBSCRIBE, 196 SSUBSCRIBE, 197 SUNSUBSCRIBE and 198 SPUBLISH. Names are case insensitive; zero is unknown.";
+  doc "Shared command identity for admission and dispatch; kinds through 171 run by held parts: 1 GET, 2 SET, 3 INCR, 4 DECR, 5 INCRBY, 6 DECRBY, 7 EXPIRE, 8 PEXPIRE, 9 EXPIREAT, 10 PEXPIREAT, 11 TTL, 12 PTTL, 13 EXPIRETIME, 14 PEXPIRETIME, 15 MSET; 16 DEL, 17 UNLINK, 18 EXISTS, 19 TYPE, 20 PERSIST, 21 DBSIZE, 22 PING, 23 ECHO, 24 SETNX, 25 SETEX, 26 PSETEX, 27 GETSET, 28 GETDEL, 29 GETEX, 30 APPEND, 31 SETRANGE, 32 STRLEN, 33 GETRANGE, 34 MGET, 35 MSETNX, 36 INCRBYFLOAT, 37 RENAME, 38 RENAMENX, 39 COPY; 40 HSET, 41 HMSET, 42 HSETNX, 43 HGET, 44 HMGET, 45 HDEL, 46 HEXISTS, 47 HSTRLEN, 48 HLEN, 49 HGETALL, 50 HKEYS, 51 HVALS, 52 HINCRBY, 53 HINCRBYFLOAT, 54 HRANDFIELD, 55 HSCAN; 60 LPUSH, 61 RPUSH, 62 LPUSHX, 63 RPUSHX, 64 LPOP, 65 RPOP, 66 LRANGE, 67 LLEN, 68 LINDEX, 69 LSET, 70 LREM, 71 LTRIM, 72 LINSERT, 73 LPOS, 74 LMOVE, 75 RPOPLPUSH; 90 SADD, 91 SREM, 92 SPOP, 93 SCARD, 94 SMEMBERS, 95 SISMEMBER, 96 SMISMEMBER, 97 SRANDMEMBER, 98 SMOVE, 99 SINTER, 100 SUNION, 101 SDIFF, 102 SINTERCARD, 103 SINTERSTORE, 104 SUNIONSTORE, 105 SDIFFSTORE, 106 SSCAN; 120 ZADD, 121 ZINCRBY, 122 ZREM, 123 ZPOPMIN, 124 ZPOPMAX, 125 ZCARD, 126 ZSCORE, 127 ZMSCORE, 128 ZRANK, 129 ZREVRANK, 130 ZRANGE, 131 ZREVRANGE, 132 ZRANGEBYSCORE, 133 ZREVRANGEBYSCORE, 134 ZRANGEBYLEX, 135 ZREVRANGEBYLEX, 136 ZCOUNT, 137 ZLEXCOUNT, 138 ZREMRANGEBYRANK, 139 ZREMRANGEBYSCORE, 140 ZREMRANGEBYLEX, 141 ZSCAN; 160 TOUCH, 161 SUBSTR, 162 TIME, 163 SELECT, 164 FLUSHALL, 165 FLUSHDB, 166 COMMAND, 168 SCAN, 169 KEYS, 170 RANDOMKEY, 171 OBJECT, 167 is reserved. Network-only kinds are 172 EVAL, 173 EVALSHA, 174 SCRIPT, 175 INFO, 176 CONFIG, 177 AUTH, 178 HELLO, 179 QUIT, 180 CLIENT, 181 DEBUG, 182 FUNCTION, 183 SHUTDOWN, 184 BGREWRITEAOF, 185 MULTI, 186 EXEC, 187 DISCARD, 188 WATCH (only its inside-MULTI refusal), 189 RESET, 199 EVAL_RO, 200 EVALSHA_RO. Hub-aware kinds are 190 SUBSCRIBE, 191 UNSUBSCRIBE, 192 PUBLISH, 193 PUBSUB, 194 PSUBSCRIBE, 195 PUNSUBSCRIBE, 196 SSUBSCRIBE, 197 SUNSUBSCRIBE and 198 SPUBLISH. Names are case insensitive; zero is unknown.";
   let code = name_code(input: input, start: name.start, length: name.length);
   let events = pubsub_kind(input: input, name: name);
   if events != 0_u64 {
@@ -1134,6 +1136,14 @@ fn command_kind(input: &[u8], name: Span) -> kind: u64 reads(input) {
   }
   if code == code_evalsha {
     return 173_u64;
+  }
+  let eval_ro = name_is(input: input, start: name.start, length: name.length, word: &word_eval_ro[0_u64..7_u64]);
+  if eval_ro {
+    return 199_u64;
+  }
+  let evalsha_ro = name_is(input: input, start: name.start, length: name.length, word: &word_evalsha_ro[0_u64..10_u64]);
+  if evalsha_ro {
+    return 200_u64;
   }
   if code == code_script {
     return 174_u64;
@@ -2083,7 +2093,7 @@ fn held_entries_run(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::
 }
 
 fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> kind: u64 reads(input), reads(args), reads(meta.aof_append_error), reads(meta.aof_append_partial), reads(meta.aof_sync_error), writes(memory), writes(client) {
-  doc "Redis script command admission, shared by declared and whole attempts, in Redis 7.0.15 scriptCall's order (script.c:530-557): subcommand and arity errors, then the active AOF check at the first WRITE command (scriptVerifyWriteCommandAllow, script.c:349-386), then DENYOOM; accepted WRITE flags are recorded before command-specific parsing. Both attempt kinds hold Meta for the entire attempt and the writer needs that hold to publish, so the status read here cannot change during the attempt. WRITE_DIRTY suppresses later disk checks and restarts with each retry, including the whole-keyspace fallback. The shared error reply reaches redis.call as an exception and redis.pcall as an error table.";
+  doc "Redis script command admission, shared by declared and whole attempts, in Redis 7.2.16 scriptCall's order: subcommand and arity errors, then NOSCRIPT refusal (including EVAL, EVALSHA, EVAL_RO and EVALSHA_RO, each with arity -3), then read-only WRITE refusal (Redis also refuses its MAY_REPLICATE commands PFCOUNT, PUBLISH and SPUBLISH there; firn runs none of them from scripts), then the active AOF check at the first WRITE command (scriptVerifyWriteCommandAllow, script.c:344-393), then DENYOOM; accepted WRITE flags are recorded before command-specific parsing. Both attempt kinds hold Meta for the entire attempt and the writer needs that hold to publish, so the status read here cannot change during the attempt. WRITE_DIRTY suppresses later disk checks and restarts with each retry, including the whole-keyspace fallback. The shared error reply reaches redis.call as an exception and redis.pcall as an error table.";
   let count = args^.inner.len;
   let name = arg(args: args, index: 0_u64);
   let kind = held_kind(input: input, name: name);
@@ -2136,6 +2146,10 @@ fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8]
       let denyoom = command_denyoom(kind: kind);
       let unwritten = bnot(memory^.write_dirty);
       let writing = command_writes(kind: kind);
+      if band(memory^.read_only, writing) {
+        reply_error(client: client, word: &text_script_read_only[0_u64..58_u64]);
+        return 0_u64;
+      }
       if band(unwritten, writing) {
         if aof_refuse(meta: meta, client: client) {
           return 0_u64;
@@ -2152,6 +2166,22 @@ fn script_admit(memory: &pkg::scripting::ScriptMemory, meta: &Meta, input: &[u8]
       return kind;
     }
     reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
+    return 0_u64;
+  }
+  let recognized = command_kind(input: input, name: name);
+  let eval = recognized == 172_u64;
+  let evalsha = recognized == 173_u64;
+  let eval_ro = recognized == 199_u64;
+  let evalsha_ro = recognized == 200_u64;
+  let ordinary_eval = bor(eval, evalsha);
+  let read_only_eval = bor(eval_ro, evalsha_ro);
+  if bor(ordinary_eval, read_only_eval) {
+    let fits_eval = arity_holds(arity: -3_i64, count: count);
+    if bnot(fits_eval) {
+      reply_error(client: client, word: &text_script_arity[0_u64..58_u64]);
+      return 0_u64;
+    }
+    reply_error(client: client, word: &text_script_refused[0_u64..49_u64]);
     return 0_u64;
   }
   let code = name_code(input: input, start: name.start, length: name.length);

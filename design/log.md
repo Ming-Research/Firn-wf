@@ -10,6 +10,20 @@ line, a field since retired.
 Nodes: firn, firn/connection-ownership, firn/pubsub-registries, firn/script-attempt-external-effects, firn/scripts, firn/transactions, firn/orderly-stop, firn/enumeration
 
 Summary: A connection keeps the receive/execute/send owner until its first successful subscription, then moves once to independent receive, command and output owners. Membership changes and complete reply groups commit under one event hub, and one dispatcher publishes them in order to per-connection output inboxes. Channels, patterns and shard channels have separate indexes with monotonically allocated registration ids. A dataset command on a promoted connection holds the whole keyspace, Meta and hub through its reply commitment. Outstanding frames are charged to the connection's output limit, with Redis's pub/sub client thresholds. A script attempt that meets PUBLISH, SPUBLISH or PUBSUB retries in whole-map mode, stages its deliveries until the final reply, and publishes nothing if abandoned. EXEC adds the hub for pub/sub queues or promoted connections, and the reference suite's argument-free unsubscribe helpers are patched to drain the known acknowledgments. Pattern delivery and channel listing use the shared iterative glob matcher, whose nesting refusal the enumeration node now names for them.
+
+## 2026-10-14 Match Redis 7.2.16's client-visible script behaviour
+
+Nodes: firn/scripts, firn/command-parts
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-script-client-tree, which asked to approve PR #89's changes to the design nodes "scripts" and "command composition" at head 3a2c0ab (gate and fault-disk checks green, one review finding fixed).
+
+Summary: `script_command` now also refuses EVAL, EVALSHA, EVAL_RO and EVALSHA_RO inside a script, with Redis 7.2.16's text after their arity checks, on top of the noscript commands it already refused. EVAL_RO and EVALSHA_RO share EVAL's source registry, compiled scripts, attempt protocol and command parts, with read-only authority set afresh on each invocation and kept through every retry; a script's write command is rejected after arity validation but before persistence and OOM checks, and redis.pcall can catch it.
+
+## 2026-10-14 Keep firn's AOF rewrite diagnostics after INFO's Redis fields
+
+Nodes: firn/info-diagnostics
+
+Summary: INFO keeps firn's own append-only rewrite diagnostics (the firn_aof_rewrite_ fields that operators and the rewrite acceptance cases read) in the Persistence section, after every selected Redis 7.2.16 field. This keeps the real measurements and Redis's relative field order; interleaving them with Redis fields, deleting them or moving them to another section is rejected.
 ## 2026-10-14 Keep the list element ceiling and refuse before changing anything
 
 Nodes: firn/lists
