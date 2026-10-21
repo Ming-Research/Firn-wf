@@ -13,6 +13,34 @@ Owner-approved: On the shared status board on 2026-10-14, the owner chose option
 
 Summary: At the switch point the old manifest and old append file stay in force and the new incremental file is left in place, since both manifests list the old incremental file and data written to it survives whichever manifest a restart reads; at the install point the renamed new manifest stays in force and the sync error is recorded too. Continuing to switch to the new incremental file and acknowledge writes after a failed directory sync is rejected, because a power loss could then lose acknowledged writes (the new case failed on the code before the change). The rule matches firn's existing refusal of writes after a failed sync of the active file. EINVAL from the directory sync is not a failure: it means the filesystem cannot sync directories at all, so it counts as a successful sync, as Redis 7.2.16's fsyncFileDir treats it, and the rewrite completes with writes continuing on the new increment (the case switch-dirsync-einval shows both servers finishing the rewrite and acknowledging writes after it).
 
+## 2026-10-14 Match Redis 7.2.16's client-visible script behaviour
+
+Nodes: firn/scripts, firn/command-parts
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-script-client-tree, which asked to approve PR #89's changes to the design nodes "scripts" and "command composition" at head 3a2c0ab (gate and fault-disk checks green, one review finding fixed).
+
+Summary: `script_command` now also refuses EVAL, EVALSHA, EVAL_RO and EVALSHA_RO inside a script, with Redis 7.2.16's text after their arity checks, on top of the noscript commands it already refused. EVAL_RO and EVALSHA_RO share EVAL's source registry, compiled scripts, attempt protocol and command parts, with read-only authority set afresh on each invocation and kept through every retry; a script's write command is rejected after arity validation but before persistence and OOM checks, and redis.pcall can catch it.
+
+## 2026-10-14 Keep firn's AOF rewrite diagnostics after INFO's Redis fields
+
+Nodes: firn/info-diagnostics
+
+Summary: INFO keeps firn's own append-only rewrite diagnostics (the firn_aof_rewrite_ fields that operators and the rewrite acceptance cases read) in the Persistence section, after every selected Redis 7.2.16 field. This keeps the real measurements and Redis's relative field order; interleaving them with Redis fields, deleting them or moving them to another section is rejected.
+
+## 2026-10-14 Keep the list element ceiling and refuse before changing anything
+
+Nodes: firn/lists
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-lists-ceiling-tree, which asked to approve PR #83's new design node at head 75133a9: firn lists keep the store-wide ceiling of 2^32 elements shared with hashes and sets, a deliberate difference from Redis 7.2.16 on 64-bit hosts; a command that would exceed it replies with an error naming the limit before changing any element or access metadata.
+
+Summary: A push, LINSERT or LMOVE that would exceed the ceiling refuses whole, so a successful reply always means the elements were kept: a multi-element push is checked as one, LMOVE checks the destination before popping the source, a rotation within one list needs no room, and LINSERT with a missing pivot still returns -1. Dropping elements while replying success, partial multi-element pushes and popping the source before checking the destination are rejected. The ceiling is a storage policy, to be reopened when a selected workload needs more than 2^32 elements.
+
+## 2026-10-14 Add SSCAN, HSCAN and ZSCAN as whole-collection scans
+
+Nodes: firn/enumeration, firn/scripts
+
+Summary: Until Whitefoot's standard-library hash map can resume a scan (board item coord-wfbl-02-01), SSCAN, HSCAN and ZSCAN return the whole MATCH-filtered collection in one held statement with cursor 0, in firn's element order; the temporary code is removed and replaced by bounded batches when the library delivers, and the item's acceptance waits for that. ZSCAN writes scores with Redis's d2string text when the whole sorted set has at most 128 members of at most 64 bytes each, and with the exact %.17g writer otherwise. The script rollback decision now rests on the scans having no cursor that spans an attempt, and reopens when bounded continuation arrives. Rejected: Redis encoding history, resuming at a numeric offset, dropping entries or returning cursor 0 for a partial result, one score formatter for all sizes.
+
 ## 2026-10-14 Write scores in replies and AOF rewrites byte for byte as Redis 7.2.16
 
 Nodes: firn/scripts

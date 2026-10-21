@@ -31,27 +31,31 @@ clients send on their own:
   `LINSERT`, `LPOS` with `RANK`, `COUNT` and `MAXLEN`, and `LMOVE` and
   `RPOPLPUSH`, which move an element in one statement holding both keys;
 - sets: `SADD`, `SREM`, `SPOP` and `SRANDMEMBER` with or without a count,
-  `SCARD`, `SMEMBERS`, `SISMEMBER`, `SMISMEMBER`, `SMOVE`, `SINTER`,
+  `SCARD`, `SMEMBERS`, `SSCAN key cursor [MATCH pattern] [COUNT count]`,
+  `SISMEMBER`, `SMISMEMBER`, `SMOVE`, `SINTER`,
   `SUNION`, `SDIFF`, `SINTERCARD` with `LIMIT`, and `SINTERSTORE`,
   `SUNIONSTORE` and `SDIFFSTORE`, each in one statement holding every key
   it names;
 - hashes: `HSET`, `HMSET`, `HSETNX`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`,
   `HSTRLEN`, `HLEN`, `HGETALL`, `HKEYS`, `HVALS`, `HINCRBY`, `HINCRBYFLOAT`,
   in the x87 extended precision Redis computes it in on x86-64, and
-  `HRANDFIELD` with a count and `WITHVALUES`;
+  `HRANDFIELD` with a count and `WITHVALUES`, and
+  `HSCAN key cursor [MATCH pattern] [COUNT count]`;
 - sorted sets: `ZADD` with `NX`, `XX`, `GT`, `LT`, `CH` and `INCR`,
   `ZINCRBY`, `ZRANGE` with `BYSCORE`, `BYLEX`, `REV`, `LIMIT` and
   `WITHSCORES`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`,
   `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZCOUNT`, `ZLEXCOUNT`, `ZRANK` and
   `ZREVRANK` with Redis 7.2's `WITHSCORE`, `ZSCORE`, `ZMSCORE`, `ZCARD`,
   `ZREM`, `ZPOPMIN` and `ZPOPMAX` with a count, `ZREMRANGEBYRANK`,
-  `ZREMRANGEBYSCORE` and `ZREMRANGEBYLEX`, with scores read as Redis reads
-  them and replies written as Redis 7.2.16's `d2string` writes them:
+  `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, and
+  `ZSCAN key cursor [MATCH pattern] [COUNT count]`, with scores read as Redis
+  reads them and replies written as Redis 7.2.16's `d2string` writes them:
   signed zeros and infinities, integers through magnitude 2^62, and other
   values through Halo-wf's port of Grisu2 (`fpconv_dtoa`), without an exact
-  fallback. Rewritten append-only scores use plain `fpconv_dtoa` without
-  the reply's integer shortcut;
-- scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
+  fallback; ZSCAN's text selection is described below. Rewritten
+  append-only scores use plain `fpconv_dtoa` without the reply's integer
+  shortcut;
+- scripting: `EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
   `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
   has written nothing, running Lua 5.1 scripts on the Halo engine
   of [Halo-wf](https://github.com/Ming-Research/Halo-wf), `deps/halo-wf`,
@@ -66,7 +70,12 @@ clients send on their own:
   reply are written as Redis 7.2.16 writes them, through Halo-wf's port of
   `fpconv_dtoa`; the globals, every table reachable from them and the string
   metatable are read-only, as in Redis 7.2.16, while `KEYS` and `ARGV` stay
-  writable; `redis.REDIS_VERSION` is 7.2.16; `redis.set_repl` accepts
+  writable; the `_RO` commands refuse writes before persistence and OOM
+  checks, including writes that would change nothing, and `redis.pcall`
+  can catch their errors. The invocation selects read-only authority, so a
+  cached script can also run through a writing EVAL command.
+  `redis.replicate_commands(...)` always returns true, as in Redis 7.2.16.
+  `redis.REDIS_VERSION` is 7.2.16; `redis.set_repl` accepts
   `REPL_AOF` and `REPL_ALL` and refuses `REPL_NONE`, `REPL_SLAVE` and
   `REPL_REPLICA`, whose partial propagation firn does not implement;
 - connection: `PING`, `ECHO`, `QUIT`, `RESET`, `AUTH`, `HELLO` with no version,
@@ -76,10 +85,14 @@ clients send on their own:
 - transactions: `MULTI`, `EXEC` and `DISCARD`. `EXEC` runs the queued
   commands in order in one atomic statement, their time frozen at its start,
   for the commands written as parts: every keys, strings, hashes, lists, sets
-  and sorted sets command this list names, including `SCAN`, `KEYS` and
-  `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
+  and sorted sets command this list names, including `SCAN`, `SSCAN`, `HSCAN`,
+  `ZSCAN`, `KEYS` and `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
   `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`; `INFO` is not among
-  them. These same command parts run in scripts.
+  them. These same command parts run in scripts. All four EVAL commands
+  remain unsupported inside EXEC: preserving the transaction's isolation
+  while interrupting a long script waits for Whitefoot request
+  `firn-req-attempt-publish`, described
+  in the [script client audit](../research/investigations/script-engines/README.md#client-visible-script-details-redis-7216).
   A command without parts, or any name firn does not run, is queued and makes
   `EXEC` refuse the whole transaction without running any of it, where Redis
   refuses a name it lacks when it is sent; unknown subcommands and commands
@@ -102,6 +115,17 @@ clients send on their own:
   log to write it to; every other `DEBUG` subcommand is answered as an
   unknown one.
 
+Lists intentionally hold at most 4294967296 (2^32) elements, unlike Redis
+7.2.16 on 64-bit. `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LINSERT`, `LMOVE`
+and `RPOPLPUSH` reject an addition beyond that limit with
+`ERR list would exceed the maximum of 4294967296 elements`, before changing
+any entry, including access metadata. A multi-element push is rejected as a
+whole. A move checks its destination before popping its source; a rotation
+within the same list needs no extra room. `LINSERT` still returns -1 for an absent
+pivot, since that command would add nothing. The shared command bodies apply
+the same rule on the network, in transactions, in scripts and during AOF
+replay.
+
 `SCAN` takes one map scan step per request; its unsigned decimal cursor is
 zero when the scan ends, and a nonzero cursor can accompany an empty batch.
 `MATCH` and `KEYS` patterns are binary and case-sensitive. The shared glob
@@ -120,6 +144,31 @@ fresh position when it gathers none; its positions and draws are its own, so the
 differs from Redis's. All five commands,
 including both flush commands, run through their shared parts on the
 network, in `EXEC` and through `redis.call` or `redis.pcall`.
+
+`SSCAN`, `HSCAN` and `ZSCAN` return cursor `0` and the entire collection after
+MATCH filtering in one call, including when the incoming cursor is nonzero.
+They use firn's element order: map traversal for sets and hashes, and score
+then member order for sorted sets. COUNT is validated as Redis 7.2.16 validates
+it but does not limit this reply. Both protocols use an array of bulk strings;
+hash field/value and sorted-set member/score pairs stay flat. A missing key
+returns cursor `0` and an empty array before options are checked; a wrong type
+is also checked before options, while an invalid cursor is checked first.
+TYPE and NOVALUES are not collection-scan options in Redis 7.2.16.
+
+This whole-collection path supplies SCAN's coverage guarantee but has work
+and reply size proportional to the full collection. It is provisional while
+board item coord-wfbl-02-01 supplies bounded resumable scanning for Whitefoot's
+ordinary hash map; firn adds no direct bucket reads. Redis's compact-encoding
+history, element order, cursors and dictionary batch boundaries are not
+reproduced. ZSCAN uses d2string text while the current sorted set has at most
+128 members and every member is at most 64 bytes; otherwise it uses `%.17g`,
+which supplies Redis's dictionary ZSCAN `%.17Lg` digits for a widened double.
+Both are bulk strings in both protocols. This selection examines all members
+before MATCH and uses the default limits, independently of stored CONFIG
+encoding values. A set that grew beyond a limit and later shrank returns to
+d2string in firn, whereas Redis retains skiplist text after promotion.
+The recorded reference comparison and boundary cases are in
+[the collection-scan investigation](../research/investigations/firn/collection-scan.md).
 
 `CONFIG GET` takes Redis's glob patterns over firn's parameters:
 `appendfilename`, `appendonly`, `bind`, `databases`, `port`, `requirepass`,
@@ -197,7 +246,7 @@ A script without a shebang captures OOM at its start. A DENYOOM call is
 refused until it has accepted a WRITE-flagged command: `DEL` of a missing
 key counts, independently of whether it changes data or appends an effect.
 The OOM state survives script retries, with write acceptance restarted on
-each attempt. `EVAL` and `SCRIPT LOAD` explicitly reject **all** shebang
+each attempt. Source-evaluating commands and `SCRIPT LOAD` explicitly reject **all** shebang
 sources, including plain `#!lua` and the Redis flags `allow-oom`,
 `no-writes`, `allow-stale`, `no-cluster` and `allow-cross-slot-keys`.
 They are not executed with legacy semantics; no shebang flags are supported.
@@ -273,13 +322,15 @@ signal too, where Redis's cancels a signal's request in the moment, at most
 a tenth of a second, before its next cron acts on it.
 
 `INFO memory` reports raw `used_memory` and `used_memory_human`,
-`used_memory_rss` when the host supplies it, `used_memory_peak`,
+`used_memory_rss` and `used_memory_rss_human` when the host supplies it,
+`used_memory_peak` and `used_memory_peak_human`,
 `mem_not_counted_for_evict`, the configured `maxmemory`, `maxmemory_human`
 and `maxmemory_policy`, with Redis's human-size formatting. It also reports
 the actual registered-script count. Heap readings use `heap_in_use`; RSS
 uses `resident_bytes` on demand. Peak tracks heap readings after commands,
 at admission and at INFO, rather than every transient allocation. AOF
-exclusion uses capacities even when drained, not lengths. `INFO stats`
+exclusion uses capacities even when drained, not lengths; `mem_aof_buffer`
+reports the same allocated buffers. `INFO stats`
 reports live `evicted_keys`. The heap meter counts the keyspace's own
 storage, its shared-map tables and nodes, as well as values.
 
@@ -289,15 +340,17 @@ values for the port, the calendar time, the uptime, the clients connected,
 whether the append-only file is kept, the connections accepted and the keys
 held, which it counts holding the table whole, as `DBSIZE` does. The other fields it reports have values
 that are fixed and true of firn: Redis's
-version 7.2.16, no git revision, `redis_git_sha1` being 00000000 as in
-Redis's builds from a release, standalone mode, 64 bits, its active
+version 7.2.16, standalone mode, 64 bits, its active
 expiry's 10 runs a second, no configuration file,
 function, replica, background save, fork, module, publish
 and subscribe, tracking or cluster. What firn does not measure,
-processor time, per-command and per-error counts among them, is left out,
-so its CPU, Commandstats, Errorstats and Latencystats sections are empty
+its own processor time, build revision, per-command and per-error counts
+among them, is left out. CPU reports only the fixed zero child-process times;
+Commandstats, Errorstats and Latencystats have empty headers,
 and its keyspace line gives `keys` alone, without the `expires` and
-`avg_ttl` firn does not count.
+`avg_ttl` firn does not count. Section selection is case insensitive, combines
+several names without duplicates and ignores unknown names. `debug` selects
+an empty Debug header explicitly; `all` and `everything` do not include it.
 
 `CLIENT INFO` answers the connection's line in Redis's form, with real
 values for the id, the name, the age and the protocol, and values fixed and
@@ -556,11 +609,13 @@ command, subsequent script writes skip that check (`multi.c:85-87,105-109,
 136-140,170-178,229-233`; `script.c:349-386,547-557`).
 
 `INFO persistence` reports rewrite progress, attempts, last rewrite status, current
-active-file bytes and the rewrite baseline. `aof_last_write_status` is `ok` only
+active-file bytes and the rewrite baseline. Redis fields follow Redis 7.2.16's
+order; the documented `firn_aof_rewrite_*` diagnostics follow them as a tail.
+`aof_last_write_status` is `ok` only
 when both append and sync errors are clear, otherwise `err`, independently of
 `aof_last_bgrewrite_status`. With AOF enabled, `aof_buffer_length` reports the
 collecting bytes plus bytes retained by the writer, excluding already appended
-bytes awaiting sync (`server.c:5596-5650`). `aof_pending_bio_fsync` and
+bytes awaiting sync (`server.c:5818-5832`). `aof_pending_bio_fsync` and
 `aof_delayed_fsync` are zero: firn's sole writer performs sync itself, with no
 background BIO queue or append postponement behind a background sync. The firn-only field
 `firn_aof_rewrite_commit_seq` is the actual dataset statement sequence while
@@ -677,7 +732,7 @@ default.
   started;
 - `commands`: one file per kind of value, sorted sets' ranges in a second,
   the connection and server commands, and the dispatch;
-- `scripting`: `EVAL`, `EVALSHA` and `SCRIPT`, the Redis Lua environment
+- `scripting`: the four EVAL commands and `SCRIPT`, the Redis Lua environment
   and the conversions between replies and Lua values; `script_pool` holds
   the one Lua engine every script takes in turn and the registry of
   scripts the keyspace shares;
