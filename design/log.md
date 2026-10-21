@@ -13,6 +13,14 @@ Owner-approved: On the shared status board on 2026-10-14, the owner chose option
 
 Summary: `script_command` now also refuses EVAL, EVALSHA, EVAL_RO and EVALSHA_RO inside a script, with Redis 7.2.16's text after their arity checks, on top of the noscript commands it already refused. EVAL_RO and EVALSHA_RO share EVAL's source registry, compiled scripts, attempt protocol and command parts, with read-only authority set afresh on each invocation and kept through every retry; a script's write command is rejected after arity validation but before persistence and OOM checks, and redis.pcall can catch it.
 
+## 2026-10-14 Keep the list element ceiling and refuse before changing anything
+
+Nodes: firn/lists
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-lists-ceiling-tree, which asked to approve PR #83's new design node at head 75133a9: firn lists keep the store-wide ceiling of 2^32 elements shared with hashes and sets, a deliberate difference from Redis 7.2.16 on 64-bit hosts; a command that would exceed it replies with an error naming the limit before changing any element or access metadata.
+
+Summary: A push, LINSERT or LMOVE that would exceed the ceiling refuses whole, so a successful reply always means the elements were kept: a multi-element push is checked as one, LMOVE checks the destination before popping the source, a rotation within one list needs no room, and LINSERT with a missing pivot still returns -1. Dropping elements while replying success, partial multi-element pushes and popping the source before checking the destination are rejected. The ceiling is a storage policy, to be reopened when a selected workload needs more than 2^32 elements.
+
 ## 2026-10-14 Add SSCAN, HSCAN and ZSCAN as whole-collection scans
 
 Nodes: firn/enumeration, firn/scripts
