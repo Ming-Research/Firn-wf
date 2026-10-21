@@ -200,6 +200,7 @@ unit/scripting	EVALSHA - Can we call a SHA1 if already defined?	1
 unit/scripting	EVALSHA - Can we call a SHA1 in uppercase?	1
 unit/scripting	EVALSHA - Do we get an error on invalid SHA1?	1
 unit/scripting	EVALSHA - Do we get an error on non defined SHA1?	1
+unit/scripting	EVALSHA_RO - Can we call a SHA1 if already defined?	1
 unit/scripting	INCRBYFLOAT: We can call scripts expanding client->argv from Lua	1
 unit/scripting	LUA redis.error_reply API with CRLF injection attempt	1
 unit/scripting	LUA redis.status_reply API	1
