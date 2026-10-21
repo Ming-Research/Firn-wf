@@ -180,5 +180,5 @@ before it can be classified as a source defect or a language/compiler gap.
 [contexts]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2270-L2348
 [atomic]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2322-L2359
 [form]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L100
-[validation-run]: https://github.com/Ming-Research/Firn-wf/actions/runs/39570476159
-[validation-revision]: https://github.com/Ming-Research/Firn-wf/commit/9ef54ba8f76996734dd7376b96b069df8db76b9c
+[validation-run]: https://github.com/Ming-Research/Firn-wf/actions/runs/39577032674
+[validation-revision]: https://github.com/Ming-Research/Firn-wf/commit/fe20c21fae9c0a2af49639bf5948f17c426238a3
