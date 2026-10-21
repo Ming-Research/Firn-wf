@@ -81,7 +81,13 @@ const info_stats_head: Array<u8, 36> = "# Stats\r\ntotal_connections_received:";
 
 const info_stats_before_evicted: Array<u8, 210> = "\r\ntotal_net_repl_input_bytes:0\r\ntotal_net_repl_output_bytes:0\r\ninstantaneous_input_repl_kbps:0.00\r\ninstantaneous_output_repl_kbps:0.00\r\nrejected_connections:0\r\nsync_full:0\r\nsync_partial_ok:0\r\nsync_partial_err:0";
 
-const info_stats_tail: Array<u8, 499> = "\r\nevicted_clients:0\r\npubsub_channels:0\r\npubsub_patterns:0\r\npubsubshard_channels:0\r\nlatest_fork_usec:0\r\ntotal_forks:0\r\nmigrate_cached_sockets:0\r\nslave_expires_tracked_keys:0\r\nactive_defrag_hits:0\r\nactive_defrag_misses:0\r\nactive_defrag_key_hits:0\r\nactive_defrag_key_misses:0\r\ntotal_active_defrag_time:0\r\ncurrent_active_defrag_time:0\r\ntracking_total_keys:0\r\ntracking_total_items:0\r\ntracking_total_prefixes:0\r\ndump_payload_sanitizations:0\r\nio_threaded_reads_processed:0\r\nio_threaded_writes_processed:0\r\n";
+const info_stats_pubsub: Array<u8, 37> = "\r\nevicted_clients:0\r\npubsub_channels:";
+
+const info_stats_patterns: Array<u8, 18> = "\r\npubsub_patterns:";
+
+const info_stats_shards: Array<u8, 23> = "\r\npubsubshard_channels:";
+
+const info_stats_tail: Array<u8, 418> = "\r\nlatest_fork_usec:0\r\ntotal_forks:0\r\nmigrate_cached_sockets:0\r\nslave_expires_tracked_keys:0\r\nactive_defrag_hits:0\r\nactive_defrag_misses:0\r\nactive_defrag_key_hits:0\r\nactive_defrag_key_misses:0\r\ntotal_active_defrag_time:0\r\ncurrent_active_defrag_time:0\r\ntracking_total_keys:0\r\ntracking_total_items:0\r\ntracking_total_prefixes:0\r\ndump_payload_sanitizations:0\r\nio_threaded_reads_processed:0\r\nio_threaded_writes_processed:0\r\n";
 
 const info_replication: Array<u8, 209> = "# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_failover_state:no-failover\r\nmaster_repl_offset:0\r\nsecond_repl_offset:-1\r\nrepl_backlog_active:0\r\nrepl_backlog_first_byte_offset:0\r\nrepl_backlog_histlen:0\r\n";
 
@@ -252,7 +258,7 @@ fn info_plan(input: &[u8], args: &Box<Slots<Span>>) -> chosen: Array<u64, 14> re
   return chosen;
 }
 
-fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 14>, clients: u64, started: u64, connections: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
+fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, memory_policy: u64, chosen: &Array<u64, 14>, clients: u64, started: u64, connections: u64, channels: u64, patterns: u64, shards: u64, keys: u64, logged: Bool, persistence: &pkg::store::Meta, client: &Client, time: &Time) -> text: Box<Slots<u8>> reads(chosen), reads(persistence), reads(client), reads(time) {
   doc "Builds INFO's selected sections from the caller's counts and clock, preserving the network field order and text. No key or metadata is changed. Redis 7.2.16 genRedisInfoString defines combined append/sync health, active sizes and buffer length; the buffer length includes collecting and retained bytes. Synchronous syncing has no BIO jobs or postponed syncs, so those counts are zero.";
   let text = box_slots_new::<u8>(capacity: 2048_u64);
   let written = 0_u64;
@@ -424,7 +430,13 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         text_word(text: &text, word: &info_stats_before_evicted[0_u64..210_u64]);
         text_word(text: &text, word: &info_evicted_keys[0_u64..15_u64]);
         text_signed(text: &text, value: persistence^.evicted_keys);
-        text_word(text: &text, word: &info_stats_tail[0_u64..499_u64]);
+        text_word(text: &text, word: &info_stats_pubsub[0_u64..37_u64]);
+        text_number(text: &text, value: channels);
+        text_word(text: &text, word: &info_stats_patterns[0_u64..18_u64]);
+        text_number(text: &text, value: patterns);
+        text_word(text: &text, word: &info_stats_shards[0_u64..23_u64]);
+        text_number(text: &text, value: shards);
+        text_word(text: &text, word: &info_stats_tail[0_u64..418_u64]);
       } else if which == 5_u64 {
         text_word(text: &text, word: &info_replication[0_u64..209_u64]);
       } else if which == 6_u64 {
@@ -463,7 +475,7 @@ fn info_finish(client: &Client, text: &Box<Slots<u8>>) -> result: unit reads(tex
 }
 
 fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 in Redis's form, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, debug with its empty header after keyspace and modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; Redis 7.2.16 genRedisInfoString reports raw heap, its observed peak, and AOF exclusion separately. RSS is read on demand through resident_bytes and omitted if the host supplies None. The fields carry real values where firn has them: the port, the calendar time and its 24-bit LRU clock, the seconds and days since the server started, subtracting calendar seconds with signed formatting as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. The cached-script count reads the registry in a separate short statement. Every other field is one whose value is fixed for firn: Redis's version 7.2.16, whose replies firn follows, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no process supervision or configuration file, no functions, no replica, background save, fork, module, publish and subscribe, tracking or cluster, so that their counts are 0 and child processor time is 0.000000. Fields firn cannot measure, its own processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
+  doc "INFO [section [section ...]]: answers text, a bulk string under RESP2 and a verbatim string under RESP3 in Redis's form, of Redis's sections in Redis's order and form, a # header and lines of name:value each, a blank line between sections: with no argument or default, server, clients, memory, persistence, stats, replication, cpu, modules, errorstats, cluster and keyspace; with all or everything, those and commandstats and latencystats; and otherwise the sections the arguments name, debug with its empty header after keyspace and modules also as module_list, in either case and up to a zero byte, as Redis compares them, an unknown name adding none. The memory limit and policy read ServerState directly without changing the connection's per-read lookup snapshot; Redis 7.2.16 genRedisInfoString reports raw heap, its observed peak, and AOF exclusion separately. RSS is read on demand through resident_bytes and omitted if the host supplies None. The fields carry real values where firn has them: the port, the calendar time and its 24-bit LRU clock, the seconds and days since the server started, subtracting calendar seconds with signed formatting as Redis counts them, the clients connected, whether the append-only file is kept, its rewrite state and byte counts, the connections accepted since the start or CONFIG RESETSTAT, and the keys the keyspace holds, counted in an atomic statement that holds its table whole, as DBSIZE counts them. The cached-script count reads the registry in a separate short statement; the three pub/sub registry counts read one hub snapshot when stats is selected. Every other field is one whose value is fixed for firn: Redis's version 7.2.16, whose replies firn follows, standalone mode, a server of 64 bits, its active expiry's 10 runs a second, no process supervision or configuration file, no functions, no replica, background save, fork, module, tracking or cluster, so that their counts are 0 and child processor time is 0.000000. Fields firn cannot measure, its own processor time among them, the per-command and per-error counts, and the keyspace line's expires and avg_ttl, are left out, the sections of the counts empty and the keyspace line giving keys alone.";
   let chosen = info_plan(input: input, args: args);
   let cached_scripts = 0_u64;
   let used = 0_u64;
@@ -494,9 +506,18 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
   }
   let connections = 0_u64;
+  let channels = 0_u64;
+  let patterns = 0_u64;
+  let shards = 0_u64;
   if chosen[4_u64] == 1_u64 {
     atomic v = &store^.server {
       set connections = v^.connections;
+    }
+    atomic h = &store^.pubsub {
+      let counts = pkg::connection_events::registry_counts(hub: h);
+      set channels = counts.channels;
+      set patterns = counts.patterns;
+      set shards = counts.shards;
     }
   }
   let maxmemory = 0_u64;
@@ -516,7 +537,7 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   let text = box_slots_new::<u8>(capacity: 0_u64);
   atomic m = &store^.meta {
     set m^.memory_peak = imax(m^.memory_peak, used);
-    set text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
+    set text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, channels: channels, patterns: patterns, shards: shards, keys: keys, logged: store^.logging, persistence: m, client: client, time: time);
   }
   info_finish(client: client, text: &text);
   return unit;

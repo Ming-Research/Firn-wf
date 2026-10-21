@@ -11,6 +11,12 @@ Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/memory-limit
 
 Summary: On the 14900K a cache with maxmemory about half its dataset and eviction on answered BGREWRITEAOF with "Can't execute an AOF background rewriting" where Redis 7.2.16 rewrites, so its append-only file would grow until the disk filled. Redis rewrites in a forked child whose memory is not the parent's used memory, and its eviction figure also excludes the AOF buffer. The new case rewriting under eviction and recovering the surviving data after a restart fails on main and passes here.
 
+## 2026-10-14 Add publish/subscribe with promoted connections and an event hub
+
+Nodes: firn, firn/connection-ownership, firn/pubsub-registries, firn/script-attempt-external-effects, firn/scripts, firn/transactions, firn/orderly-stop, firn/enumeration
+
+Summary: A connection keeps the receive/execute/send owner until its first successful subscription, then moves once to independent receive, command and output owners. Membership changes and complete reply groups commit under one event hub, and one dispatcher publishes them in order to per-connection output inboxes. Channels, patterns and shard channels have separate indexes with monotonically allocated registration ids. A dataset command on a promoted connection holds the whole keyspace, Meta and hub through its reply commitment. Outstanding frames are charged to the connection's output limit, with Redis's pub/sub client thresholds. A script attempt that meets PUBLISH, SPUBLISH or PUBSUB retries in whole-map mode, stages its deliveries until the final reply, and publishes nothing if abandoned. EXEC adds the hub for pub/sub queues or promoted connections, and the reference suite's argument-free unsubscribe helpers are patched to drain the known acknowledgments. Pattern delivery and channel listing use the shared iterative glob matcher, whose nesting refusal the enumeration node now names for them.
+
 ## 2026-10-14 Match Redis 7.2.16's client-visible script behaviour
 
 Nodes: firn/scripts, firn/command-parts

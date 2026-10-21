@@ -11,7 +11,14 @@ const oom_execabort: Array<u8, 99> = "EXECABORT Transaction discarded because of
 const command_denyoom_kinds: Array<u64, 34> =[2_u64, 3_u64, 4_u64, 5_u64, 6_u64, 15_u64, 24_u64, 25_u64, 26_u64, 27_u64, 30_u64, 31_u64, 35_u64, 36_u64, 39_u64, 40_u64, 41_u64, 42_u64, 52_u64, 53_u64, 60_u64, 61_u64, 62_u64, 63_u64, 69_u64, 72_u64, 74_u64, 75_u64, 90_u64, 103_u64, 104_u64, 105_u64, 120_u64, 121_u64];
 
 fn command_denyoom(kind: u64) -> marked: Bool pure {
-  doc "Redis 7.0.15 src/commands/*.json DENYOOM flags for firn's held commands. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF.";
+  doc "Redis src/commands/*.json DENYOOM flags for firn's held commands, with pub/sub checked against Redis 7.2.16. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF.";
+  let subscribe = kind == 190_u64;
+  let psubscribe = kind == 194_u64;
+  let ssubscribe = kind == 196_u64;
+  let global = bor(subscribe, psubscribe);
+  if bor(global, ssubscribe) {
+    return True();
+  }
   for (index in 0_u64..34_u64) {
     if command_denyoom_kinds[index] == kind {
       return True();
@@ -57,6 +64,12 @@ fn admission_arity(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> arity: i
   if kind == 0_u64 {
     return 0_i64;
   }
+  if kind == 193_u64 {
+    return pubsub_arity(input: input, args: args);
+  }
+  if pubsub_command(kind: kind) {
+    return held_arity(kind: kind);
+  }
   if kind == 171_u64 {
     return object_arity(input: input, args: args);
   }
@@ -79,10 +92,10 @@ fn admission_arity(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> arity: i
   if kind == 173_u64 {
     return -3_i64;
   }
-  if kind == 190_u64 {
+  if kind == 199_u64 {
     return -3_i64;
   }
-  if kind == 191_u64 {
+  if kind == 200_u64 {
     return -3_i64;
   }
   if kind == 174_u64 {
