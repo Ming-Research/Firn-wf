@@ -169,6 +169,7 @@ fn aof_rw_complete(store: &Keyspace, accepted: Bool, manual: Bool, started: Bool
     set m^.aof_rewrite_scan_peak = m^.rewrite.scan_peak;
     set m^.aof_rewrite_cut = m^.rewrite.cut;
     set m^.rewrite.used = 0_u64;
+    set m^.rewrite.aof_charged = 0_u64;
     set m^.rewrite.running = False();
     set m^.rewrite.active = False();
     set m^.rewrite.aborted = False();
@@ -419,7 +420,7 @@ fn aof_rw_open(store: &Keyspace, factory: &HandleFactory, writable: &std::fs::Di
 }
 
 fn aof_rw_install(store: &Keyspace, factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest, temporary: &[u8], size: u64, closed_size: u64) -> accepted: Bool reads(store), reads(prefix), reads(temporary), writes(factory), writes(writable), writes(manifest) waits {
-  doc "The caller commits installation under Meta after ruling out abort and holds aof_installing, excluding shutdown acceptance and pressure-triggered abort until publication ends; eviction waits for completion instead. Adopt a published manifest even when its directory sync fails, retaining every file and history entry and reporting failure; only durable publication permits history cleanup.";
+  doc "The caller commits installation under Meta after ruling out abort and holds aof_installing, excluding shutdown acceptance until publication ends; eviction waits for completion instead. Adopt a published manifest even when its directory sync fails, retaining every file and history entry and reporting failure; only durable publication permits history cleanup.";
   let candidate = aof_rw_manifest(original: manifest);
   let next = candidate.base_sequence +wrap 1_i64;
   let name = aof_rw_name(prefix: prefix, sequence: next, suffix: &aof_rw_base_suffix[0_u64..9_u64]);
@@ -539,8 +540,8 @@ fn aof_rw_abort(store: &Keyspace, reason: pkg::store::RewriteAbortReason) -> res
   return unit;
 }
 
-fn aof_rw_admit(store: &Keyspace, meter: &std::process::MemoryMeter, manual: Bool, overhead: u64) -> accepted: Bool reads(store), writes(meter) waits {
-  doc "S0 is one Meta-and-settings statement. R is floor(maxmemory/20), or 16 MiB without maxmemory; require R plus max(R,1 MiB) service headroom. The charged fixed directory is at most 64 KiB.";
+fn aof_rw_admit(store: &Keyspace, manual: Bool, overhead: u64) -> accepted: Bool reads(store) waits {
+  doc "S0 is one Meta-and-settings statement. R is floor(maxmemory/20), or 16 MiB without maxmemory. Rewrite charges are excluded from eviction accounting, so a cache at its limit can rewrite without spare service headroom. Admission still requires room within R for the fixed charge and one staging chunk. The charged fixed directory is at most 64 KiB.";
   let admitted = False();
   atomic m = &store^.meta, v = &store^.server {
     set m^.rewrite = pkg::store::rewrite_capture_new();
@@ -552,17 +553,6 @@ fn aof_rw_admit(store: &Keyspace, meter: &std::process::MemoryMeter, manual: Boo
     let limit = v^.memory.maxmemory;
     if limit > 0_u64 {
       set reserve = limit / 20_u64;
-    }
-    let headroom = imax(reserve, 1048576_u64);
-    let heap = std::process::heap_in_use(meter: meter);
-    let excluded = m^.log.inner.cap +sat m^.aof_pending_capacity;
-    let counted = heap -sat excluded;
-    let room = counted +sat reserve;
-    let needed = room +sat headroom;
-    if limit > 0_u64 {
-      if needed > limit {
-        set refused = True();
-      }
     }
     let chunks = reserve / 65536_u64;
     let capacity = imin(chunks, 8188_u64);
@@ -691,7 +681,7 @@ fn aof_rw_cut(store: &Keyspace, pending: &Box<Slots<u8>>) -> accepted: Bool read
   return cut;
 }
 
-fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, manual: Bool, meter: &std::process::MemoryMeter) -> continued: AofLog reads(store), writes(factory), writes(pending), writes(clock), writes(last_sync), writes(last_append), writes(meter) waits {
+fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending: &Box<Slots<u8>>, clock: &Clock, last_sync: &std::time::Instant, last_append: &std::time::Instant, manual: Bool, meter: &std::process::MemoryMeter) -> continued: AofLog reads(store), reads(meter), writes(factory), writes(pending), writes(clock), writes(last_sync), writes(last_append) waits {
   doc "One rewrite attempt, manual, automatic or recovering from a saved sync error. A sync that succeeds during the attempt does not start another recovery: write_log needs a successful sync after this attempt ends.";
   let yes = True();
   let no = False();
@@ -707,7 +697,7 @@ fn aof_rw_cycle(store: &Keyspace, factory: &HandleFactory, log: AofLog, pending:
     return move log;
   }
   let overhead = aof_rw_overhead(log: &log);
-  let admitted = aof_rw_admit(store: store, meter: meter, manual: manual, overhead: overhead);
+  let admitted = aof_rw_admit(store: store, manual: manual, overhead: overhead);
   if admitted {
   } else {
     aof_rw_complete(store: store, accepted: no, manual: manual, started: no);

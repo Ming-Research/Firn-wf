@@ -362,8 +362,8 @@ fn aof_sync_failure_refuses_writes_and_recovers_on_a_failing_device() {
         assert_eq!(info_field(&info, "firn_aof_rewrite_abort_reason").as_deref(), Some(""),
             "{route}: (b) a failed sync with no rewrite running aborts none: {info}");
         let rewrites = count(&info, "aof_rewrites");
-        // maxmemory 1 refuses every rewrite's admission (R plus its headroom
-        // exceeds it) without touching a key: the policy stays noeviction,
+        // maxmemory 1 refuses every rewrite's admission (its reserve R,
+        // maxmemory/20, is below the minimum reserve) without touching a key: the policy stays noeviction,
         // and PING and DEL are not DENYOOM, so they meet MISCONF, not OOM.
         assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory", "1"]), "+OK\r\n", "{route}");
         let misconf = &redis.refused[0];

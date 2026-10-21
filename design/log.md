@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-13 Leave an AOF rewrite's memory out of maxmemory
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/memory-limit
+
+Summary: On the 14900K a cache with maxmemory about half its dataset and eviction on answered BGREWRITEAOF with "Can't execute an AOF background rewriting" where Redis 7.2.16 rewrites, so its append-only file would grow until the disk filled. Redis rewrites in a forked child whose memory is not the parent's used memory, and its eviction figure also excludes the AOF buffer. The new case rewriting under eviction and recovering the surviving data after a restart fails on main and passes here.
+
 ## 2026-10-14 Refuse writes after a failed directory sync at the rewrite's manifest swap
 
 Nodes: firn/aof-rewrite

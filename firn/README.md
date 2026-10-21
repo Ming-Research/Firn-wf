@@ -372,7 +372,14 @@ the actual registered-script count. Heap readings use `heap_in_use`; RSS
 uses `resident_bytes` on demand. Peak tracks heap readings after commands,
 at admission and at INFO, rather than every transient allocation. AOF
 exclusion uses capacities even when drained, not lengths; `mem_aof_buffer`
-reports the same allocated buffers. `INFO stats`
+reports those allocated buffers alone. `mem_not_counted_for_evict` adds the
+rewrite ledger's current charges through cleanup, less the rotation-buffer
+charges already covered by the AOF capacities (`firn_aof_rewrite_charged` in
+`INFO persistence`), so until the attempt aborts a check can recompute it as
+`mem_aof_buffer` plus `firn_aof_rewrite_used` less `firn_aof_rewrite_charged`
+(after an abort `firn_aof_rewrite_used` is frozen at the first failure while
+the exclusion follows the live ledger until cleanup); those charges are
+conservative allowances rather than independent heap measurements. `INFO stats`
 reports live `evicted_keys`. The heap meter counts the keyspace's own
 storage, its shared-map tables and nodes, as well as values.
 
@@ -498,9 +505,12 @@ files.
 R is five percent of maxmemory, or 16 MiB when maxmemory is zero. It covers
 rewrite memory, including staging, in-flight chunks and readback, while the
 temporary journal can exceed R on disk. A full staging queue aborts the
-rewrite without waiting for disk or blocking ordinary writes. Admission
-also requires max(R, 1 MiB) of service headroom. Capture overflow, oversized
-images, flush, exhaustion, shutdown and I/O failure abort the attempt; client
+rewrite without waiting for disk or blocking ordinary writes. Rewrite charges
+are excluded from maxmemory, so a cache at its limit can start a rewrite;
+admission requires no additional service headroom. Ordinary service pressure
+still causes eviction or OOM. Sequence exhaustion, stopping or R too small
+for fixed bookkeeping and one staging chunk still refuses admission. Capture
+overflow, oversized images, flush, exhaustion, shutdown and I/O failure abort the attempt; client
 commands and ordinary AOF appends continue. Aborts report `err`. Any
 unsuccessful attempt, including a refused start, stops automatic rewrites
 until a manual `BGREWRITEAOF` succeeds; Redis instead keeps retrying them with
@@ -513,6 +523,14 @@ directory permits at most 8188 queued chunks, further limited by R. If startup
 left the file inside an unfinished MULTI, the rewrite cuts the sealed file
 before that MULTI; the new base holds the live writes appended after it, as
 Redis's rewrite does.
+
+The rewrite adds an allowance of at most R outside maxmemory, frozen at
+admission even if CONFIG later changes the limit. This is not an RSS ceiling:
+ordinary AOF buffers are already excluded, allocator and operating-system
+overhead differ from requested heap, and commands in flight can overshoot.
+After rewrite owners are released, completion removes the remaining
+conservative ledger exclusion; later admission uses normal eviction or OOM
+if counted memory is then above the limit.
 
 The writer keeps the increment's syntax and unfinished-block boundary from
 startup and advances it after successful appends, so a healthy switch does
@@ -703,13 +721,12 @@ including a refused admission; counters start at zero before the first attempt.
   (missing staging queue),
   `journal_backlog` (insufficient staging slots or memory), `journal_io`
   (temporary-journal host I/O), `flush`,
-  `sequence_exhausted`, `memory_pressure`, `cancelled`, `base_io`, `writer_io`,
+  `sequence_exhausted`, `cancelled`, `base_io`, `writer_io`,
   `drain` (incremental append did not drain), `boundary` (sealed-file reading
   or validation), `install_io` (manifest publication or base installation),
   `rotation_reserve` (collecting-buffer growth), `sequence_invalid`
   (a scanned stamp beyond the commit sequence), `journal_invalid` (invalid
-  framing or effect-byte range), and `admission` (insufficient reserve or
-  service headroom).
+  framing or effect-byte range), and `admission` (insufficient reserve).
 - `firn_aof_rewrite_used` and `firn_aof_rewrite_peak` are reserve ledger
   bytes, not heap or RSS measurements. While running they show current use
   and its peak; on failure both freeze at the first failure, before refunds.
@@ -731,6 +748,11 @@ including a refused admission; counters start at zero before the first attempt.
   discarded to retry one position, and steps whose subsequent copying fails.
   `firn_aof_rewrite_scan_done` is 1 after the scan finishes writing its base,
   otherwise 0. It does not claim that rotation or installation succeeded.
+- `firn_aof_rewrite_charged` is the part of the ledger that the rotation
+  charged for collecting-buffer growth; `mem_not_counted_for_evict` excludes
+  the ledger less this part, since those bytes are already in the AOF
+  buffer capacities. It is the live value: unlike
+  `firn_aof_rewrite_used` it does not freeze at the first failure.
 
 Failure before rotation leaves the original manifest authoritative. After
 rotation it leaves the manifest naming the old base and all increments

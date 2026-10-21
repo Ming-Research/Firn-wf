@@ -323,7 +323,8 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         let excluded = memory_excluded(meta: persistence, logged: logged);
         text_number(text: &text, value: excluded);
         text_word(text: &text, word: &info_memory_buffers[0_u64..120_u64]);
-        text_number(text: &text, value: excluded);
+        let aof_buffer = memory_aof_buffer(meta: persistence, logged: logged);
+        text_number(text: &text, value: aof_buffer);
         text_word(text: &text, word: &info_memory_tail[0_u64..76_u64]);
       } else if which == 3_u64 {
         text_word(text: &text, word: &info_persistence_head[0_u64..350_u64]);
@@ -420,6 +421,8 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         }
         text_word(text: &text, word: &info_rw_scan_done[0_u64..29_u64]);
         text_number(text: &text, value: scan_done);
+        text_word(text: &text, word: &info_rw_charged[0_u64..27_u64]);
+        text_number(text: &text, value: persistence^.rewrite.aof_charged);
         text_word(text: &text, word: &info_gap[0_u64..2_u64]);
       } else if which == 4_u64 {
         text_word(text: &text, word: &info_stats_head[0_u64..36_u64]);
@@ -653,6 +656,8 @@ const info_rw_cut: Array<u8, 23> = "\r\nfirn_aof_rewrite_cut:";
 
 const info_rw_abort_reason: Array<u8, 32> = "\r\nfirn_aof_rewrite_abort_reason:";
 
+const info_rw_charged: Array<u8, 27> = "\r\nfirn_aof_rewrite_charged:";
+
 const info_rw_used: Array<u8, 24> = "\r\nfirn_aof_rewrite_used:";
 
 const info_rw_peak: Array<u8, 24> = "\r\nfirn_aof_rewrite_peak:";
@@ -682,8 +687,6 @@ const info_rw_reason_journal_io: Array<u8, 10> = "journal_io";
 const info_rw_reason_flush: Array<u8, 5> = "flush";
 
 const info_rw_reason_sequence_exhausted: Array<u8, 18> = "sequence_exhausted";
-
-const info_rw_reason_memory_pressure: Array<u8, 15> = "memory_pressure";
 
 const info_rw_reason_cancelled: Array<u8, 9> = "cancelled";
 
@@ -729,9 +732,6 @@ fn info_rewrite_reason(text: &Box<Slots<u8>>, reason: pkg::store::RewriteAbortRe
     }
     SequenceExhausted() => {
       text_word(text: text, word: &info_rw_reason_sequence_exhausted[0_u64..18_u64]);
-    }
-    MemoryPressure() => {
-      text_word(text: text, word: &info_rw_reason_memory_pressure[0_u64..15_u64]);
     }
     Cancelled() => {
       text_word(text: text, word: &info_rw_reason_cancelled[0_u64..9_u64]);
