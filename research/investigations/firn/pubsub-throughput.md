@@ -79,9 +79,14 @@ workloads` ([header](../../experiments/redis-bench/redis-bench.sh)).
   its replies, and so bounds the latency such a server shows.
 - A sample is one fresh set of connections: a warm-up run of 5 seconds that is
   discarded, then the measured run of 10 seconds.
-- Client work fraction is the share of the client threads' loop time spent in
-  scans that moved bytes, as for the other workloads. It is the larger of the
-  publisher's and the subscribers'.
+- Client work fraction is the share of loop time a client thread is busy. The
+  publisher's is the share in scans that moved bytes, as for the other
+  workloads. A subscriber thread polls many sockets in one scan, so its busy
+  time is the time in reads that returned data and in parsing what they
+  returned; counted by scans, a thread polling 50 sockets read 0.98 busy while
+  a server delivered 80 thousand messages a second to a client able to take
+  25 times that (trial run on a GitHub runner, 2026-10-21). The fraction of a
+  sample is the larger of the publisher's and the subscribers'.
 - Not covered: RESP3 push frames, sharded channels, many channels and
   subscribers that unsubscribe during the run.
 

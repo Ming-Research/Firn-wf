@@ -200,7 +200,12 @@ struct Context {
 }
 
 struct Accounting {
-    // Loop time in scans that moved bytes, and all loop time; see Measurement.
+    // Busy time and all loop time. The publisher's busy time is its scans that
+    // moved bytes, as for the other workloads. A subscriber thread scans many
+    // sockets, most of them empty, so a scan in which any socket moved would
+    // make a thread that polls 50 sockets look busy as soon as the server
+    // trickles data: its busy time is the reads that returned data and the
+    // parsing of what they returned.
     work: Duration,
     total: Duration,
 }
@@ -275,9 +280,9 @@ fn subscriber_worker(mut subscribers: Vec<Subscriber>, ctx: &Context, begin: Ins
     let (mut last_message, mut last_progress) = (0, Instant::now());
     loop {
         if shared.cancelled.load(Ordering::Relaxed) { return Err("another worker failed".into()); }
-        let scan_start = Instant::now();
         let mut moved = false;
         for s in &mut subscribers {
+            let read_start = Instant::now();
             if !read_available(&mut s.socket, &mut s.input, &mut scratch)? { continue; }
             moved = true;
             // Messages that arrive in one read share the time it returned.
@@ -302,11 +307,9 @@ fn subscriber_worker(mut subscribers: Vec<Subscriber>, ctx: &Context, begin: Ins
                 shared.received[s.slot].0.store(s.count, Ordering::Relaxed);
                 last_message = now;
             }
+            work += read_start.elapsed();
         }
-        if moved {
-            work += scan_start.elapsed();
-            last_progress = Instant::now();
-        }
+        if moved { last_progress = Instant::now(); }
         if shared.publishing_done.load(Ordering::Acquire) {
             let published = shared.published.load(Ordering::Relaxed);
             if subscribers.iter().any(|s| s.count > published) {
@@ -451,7 +454,7 @@ mod tests {
     const PAYLOAD: usize = 24;
 
     #[derive(Clone, Copy, PartialEq)]
-    enum Fault { None, Unsupported, SkipFifth }
+    enum Fault { None, Unsupported, SkipFifth, Slow }
 
     fn message(wire: &Wire, payload: &[u8]) -> Vec<u8> {
         let mut frame = wire.head.clone();
@@ -507,6 +510,7 @@ mod tests {
                         let _ = socket.write_all(&frame);
                     }
                     number += 1;
+                    if fault == Fault::Slow { thread::sleep(Duration::from_millis(5)); }
                     let _ = publisher.write_all(format!(":{}\r\n", held.len()).as_bytes());
                 }
             }
@@ -545,6 +549,15 @@ mod tests {
                 assert!((0.0..=1.0).contains(&measured.work_fraction));
             }
         }
+    }
+
+    #[test]
+    fn an_idle_client_reports_a_low_work_fraction() {
+        // A server that answers one PUBLISH in 5 ms leaves the client polling
+        // almost all the time.
+        let measured = run_against(Fault::Slow, false, 1).unwrap();
+        assert!(measured.published > 10, "{}", measured.published);
+        assert!(measured.work_fraction < 0.5, "{}", measured.work_fraction);
     }
 
     #[test]

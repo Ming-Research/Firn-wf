@@ -165,10 +165,20 @@
 #                                 the publisher's write to the last subscriber's
 #                                 read, and pubsub-limited.csv has the
 #                                 client_work_fraction and client_limited of each
-#                                 sample as above. A line whose server answers
+#                                 sample as above, except that a subscriber
+#                                 thread's work is its reads that returned data
+#                                 and their parsing, since one scan polls many
+#                                 sockets. A line whose server answers
 #                                 SUBSCRIBE with an unknown-command error is
 #                                 skipped for the workload, except firn, which
-#                                 must support it. Redis 7.2.16 is required,
+#                                 must support it. With PERF naming a perf
+#                                 executable, each firn line's server, after
+#                                 all its measured runs of a workload in pass 1,
+#                                 runs the workload once more at each depth
+#                                 under perf record, unmeasured, and keeps each
+#                                 flat profile as profile-<line>-<cpus>-
+#                                 <workload>-<connections>-<depth>.txt.
+#                                 Redis 7.2.16 is required,
 #                                 WORKLOAD_OPTIONS accepts --warmup-seconds,
 #                                 --value-size (default 64) and --window, and the
 #                                 default lines are Redis and firn.
@@ -1685,6 +1695,32 @@ if [ "$MODE" = workloads ]; then
                                     echo "$line,$pass,$n,$result" | tee -a "$OUT/pubsub.csv"
                                 done
                             done
+                            # Profile only after every measured run on this
+                            # server, so that no measured run follows an
+                            # unmeasured one; a supported firn line, pass 1.
+                            case $line in firn-*|image-*) profiled=1 ;; *) profiled= ;; esac
+                            if [ -n "$PERF" ] && [ -n "$profiled" ] && [ "$pass" -eq 1 ]; then
+                                for conns in ${WORKLOAD_CONNECTIONS:-50}; do
+                                    for depth in ${WORKLOAD_DEPTHS:-16 1}; do
+                                        name="$line-$n-$workload-$conns-$depth"
+                                        "$PERF" record -F "${PERF_FREQUENCY:-4999}" -p "$server" \
+                                            -o "$OUT/perf-$name.data" >/dev/null 2>&1 &
+                                        recorder=$!
+                                        sleep 1
+                                        taskset -c "$CLIENT_CPUS" "$client" ${WORKLOAD_OPTIONS:-} \
+                                            --port "$PORT" --threads "$CLIENT_THREADS" --connections "$conns" \
+                                            --workload "$workload" --seconds "${WORKLOAD_SECONDS:-10}" \
+                                            --pipeline "$depth" >/dev/null
+                                        kill -INT "$recorder"
+                                        wait "$recorder" || true
+                                        "$PERF" report -i "$OUT/perf-$name.data" --stdio --no-children \
+                                            --sort dso,symbol --percent-limit 0.5 -g none >"$OUT/profile-$name.txt" 2>/dev/null
+                                        rm -f "$OUT/perf-$name.data"
+                                        echo "== profile $name"
+                                        grep -v '^#' "$OUT/profile-$name.txt" | grep -v '^$' | head -25
+                                    done
+                                done
+                            fi
                             stop
                             server=
                         done
