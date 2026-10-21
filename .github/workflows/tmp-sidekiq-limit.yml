@@ -1,0 +1,98 @@
+# Temporary (firn-sidekiq-wire): run.sh's time bound, seen to act. Sidekiq's
+# tests against Redis with a file limit so short that files are cut off, once
+# with the process ignoring SIGTERM so that `timeout -k` has to kill it.
+# Removed before the branch is ready.
+name: tmp-sidekiq-limit
+
+on:
+  push:
+    branches: [firn-sidekiq-wire]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  limit:
+    name: limit ${{ matrix.limit }} s, ignore SIGTERM ${{ matrix.ignore_term }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {limit: 1, ignore_term: false}
+          - {limit: 2, ignore_term: false}
+          - {limit: 1, ignore_term: true}
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out Whitefoot-kit
+        run: git submodule update --init whitefoot-kit deps/halo-wf
+
+      - name: Restore the Redis build
+        id: redis-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Put the reference Redis 7.2.16 on PATH
+        run: |
+          bin=$(tests/redis-suite/reference.sh)
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+
+      - name: Run Sidekiq's tests against Redis with a short file limit
+        env:
+          OUT: ${{ runner.temp }}/consumers
+          FILE_LIMIT: ${{ matrix.limit }}
+        run: |
+          if [ "${{ matrix.ignore_term }}" = true ]; then
+            echo 'Signal.trap("TERM", "IGNORE")' > "$RUNNER_TEMP/ignore_term.rb"
+            export RUBYOPT="-r$RUNNER_TEMP/ignore_term.rb"
+          fi
+          bash research/experiments/consumers/run.sh sidekiq redis
+          echo "run.sh exited $?"
+
+      - name: Write what the bound did
+        if: always()
+        env:
+          DIR: ${{ runner.temp }}/consumers/sidekiq-redis
+        run: |
+          {
+            echo "exit statuses of the files (status, files):"
+            cut -f2 "$DIR/files.tsv" | sort | uniq -c
+            echo "cases by status:"
+            cut -f2 "$DIR/cases.tsv" | sort | uniq -c
+            echo "files with an unfinished row, and the case rows before it:"
+            awk -F'\t' '$2=="unfinished" && index($1,"::")==0 {u[$1]=1} index($1,"::")>0 {split($1,a,"::"); n[a[1]]++} END {for (f in u) print f, n[f]+0}' "$DIR/cases.tsv" | sort
+            echo "files with no row at all:"
+            cut -f1 "$DIR/files.tsv" | while read -r f; do grep -q -F "$f" "$DIR/cases.tsv" || echo "$f"; done
+            echo "slowest files (file, exit, seconds):"
+            sort -t$'\t' -k3 -n -r "$DIR/files.tsv" | head -n 5
+            echo "heartbeat:"
+            cat "$DIR/heartbeat.txt" 2>/dev/null
+            tail -n 3 "$DIR/heartbeat.log" 2>/dev/null
+            echo "comparison of this record with itself:"
+            python3 -B research/experiments/consumers/compare.py --redis "$DIR/cases.tsv" --firn "$DIR/cases.tsv" | sed -n 1,16p
+          } > "$DIR/bound.txt" 2>&1
+          cat "$DIR/bound.txt" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tmp-limit-${{ matrix.limit }}-${{ matrix.ignore_term }}
+          path: |
+            ${{ runner.temp }}/consumers/sidekiq-redis/*.txt
+            ${{ runner.temp }}/consumers/sidekiq-redis/*.tsv
+            ${{ runner.temp }}/consumers/sidekiq-redis/test.log

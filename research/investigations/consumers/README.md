@@ -212,8 +212,10 @@ Redis 7.2.16 and against firn, with a second Redis run for the unstable list.
   parallel. `run.sh` runs each file in a process of its own (`bundle exec ruby
   -Ilib -Itest FILE`), with Minitest's seed fixed at 1 on both servers.
   `rake test` loads every file into one process before it runs a case, so a
-  file may use what another loaded: run alone on Redis 7.2.16, four files
-  failed 9 cases for a missing `Sidekiq::DeadSet`, `Rack::Session` or
+  file may use what another loaded: run alone on Redis 7.2.16
+  ([run 39614097764](https://github.com/Ming-Research/Firn-wf/actions/runs/39614097764),
+  commit 2ba5c57), three files failed 8 cases and a fourth ended before its
+  first, for a missing `Sidekiq::DeadSet`, `Rack::Session` or
   `Rails.application` (the pattern makes rake boot the dummy application in
   `test/dummy/`). `sidekiq_suite_context.rb` loads those before each file, as
   rake's process has them, and the tests stay as they are; a library it does
@@ -263,9 +265,7 @@ The consumers workflow, dispatched by hand
 at commit f43bea0, on `ubuntu-24.04` runners: Ruby 4.0.7, `railties` 8.1.4,
 `redis-client` 0.31.0, `minitest` 5.27.0, `connection_pool` 3.0.2 and `rack`
 3.2.7 on every cell, Redis 7.2.16 built from its release archive, firn built at
-the same commit. Redis ran twice. All 52 files finished on every cell. An
-earlier run at ddc361e, before the probe counted exception lines, gave the
-same case counts.
+the same commit. Redis ran twice. All 52 files finished on every cell.
 
 | | Redis run 1 | Redis run 2 | firn |
 |---|---|---|---|

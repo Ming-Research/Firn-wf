@@ -13,8 +13,9 @@ It knows no consumer. Its inputs are the per-case records run.sh writes
 CASE names the case, led by the test file it belongs to and without a tab or
 a newline, as `FILE::NAME`; STATUS is pass, fail, error, skip or unfinished. A
 file whose process ran out of time or recorded no case gets the row
-`FILE<TAB>unfinished`. A case that has no row did not pass. A case with several
-rows passed when all its rows did. Lines that start with `#` and blank lines
+`FILE<TAB>unfinished`; a row `FILE::NAME<TAB>unfinished` is a case that did not
+end. A case that has no row did not pass. A case with several rows passed when
+all its rows did. Lines that start with `#` and blank lines
 are ignored.
 
 The unstable list, which the output also writes in this format, is:
@@ -134,10 +135,18 @@ def compare(redis_runs, firn, listed):
 
 
 def tally(cases):
-    counts = {status: 0 for status in STATUSES if status != "unfinished"}
+    counts = {status: 0 for status in STATUSES}
     for statuses in cases.values():
         counts["pass" if passed(statuses) else next(s for s in statuses if s != "pass")] += 1
     return counts
+
+
+def describe(cases, unfinished_files):
+    """One line: the cases by status, then the files that did not finish."""
+    counts = tally(cases)
+    parts = [f"{counts[status]} {status}" for status in STATUSES if status != "unfinished"]
+    parts.append(f"{counts['unfinished']} unfinished")
+    return f"{len(cases)} cases, " + ", ".join(parts) + f"; {len(unfinished_files)} unfinished files"
 
 
 def names_block(title, names):
@@ -157,14 +166,8 @@ def report(title, redis_runs, firn, sets, redis_what=None, firn_what=None):
     out.append(f"| unstable, left out of the comparison | {len(sets['unstable'])} |")
     out.append("")
     for index, (cases, unfinished) in enumerate(redis_runs, 1):
-        counts = tally(cases)
-        out.append(f"Redis run {index}: {len(cases)} cases, " +
-                   ", ".join(f"{count} {status}" for status, count in counts.items()) +
-                   f"; {len(unfinished)} unfinished files")
-    counts = tally(firn[0])
-    out.append(f"firn: {len(firn[0])} cases, " +
-               ", ".join(f"{count} {status}" for status, count in counts.items()) +
-               f"; {len(firn[1])} unfinished files")
+        out.append(f"Redis run {index}: {describe(cases, unfinished)}")
+    out.append(f"firn: {describe(*firn)}")
     out.append("")
     if redis_what is not None and firn_what is not None and redis_what != firn_what:
         out.append("**The two cells installed different versions**, so a difference may come from them:")
@@ -219,7 +222,8 @@ def self_test():
 
         redis1 = write("redis1.tsv", "f::a\tpass\nf::b\tpass\nf::c\tfail\nf::d\tpass\nf::e\tskip\ng::x\tpass\ng::y\tpass\nh\tunfinished\n")
         redis2 = write("redis2.tsv", "f::a\tpass\nf::b\tpass\nf::c\tfail\nf::d\tfail\nf::e\tskip\ng::x\tpass\ng::y\tpass\nh\tunfinished\n")
-        firn = write("firn.tsv", "f::a\tpass\nf::b\terror\nf::c\tpass\nf::d\tpass\nf::e\tskip\ng::z\tpass\n# comment\n\ng\tunfinished\n")
+        # g::q began and did not end: a case row whose status is unfinished.
+        firn = write("firn.tsv", "f::a\tpass\nf::b\terror\nf::c\tpass\nf::d\tpass\nf::e\tskip\ng::z\tpass\n# comment\n\ng::q\tunfinished\ng\tunfinished\n")
         # g::x and g::y have no firn row, so firn did not pass them.
         unstable = write("unstable.tsv", "# case\treason\ng::y\tpassed in 1 of 3 recorded runs\n")
         sets = compare([read_record(redis1), read_record(redis2)], read_record(firn), read_unstable(unstable))
@@ -229,7 +233,7 @@ def self_test():
         # f::c fails on Redis and passes on firn; g::z is only on firn.
         assert sets["only_firn"] == ["f::c", "g::z"], sets
         # f::e is skipped on both.
-        assert sets["neither"] == ["f::e"], sets
+        assert sets["neither"] == ["f::e", "g::q"], sets
         # f::d passed in one Redis run of two; g::y is on the list.
         assert sets["unstable"] == {"f::d": "passed in 1 of 2 recorded runs",
                                     "g::y": "passed in 1 of 3 recorded runs"}, sets
@@ -247,6 +251,8 @@ def self_test():
                       ["ruby 4.0", "gems: a (1)"], ["ruby 4.0", "gems: a (2)"])
         assert "| both pass | 1 |" in text and "| only Redis passes | 2 |" in text and "| only firn passes | 2 |" in text, text
         assert "different versions" in text and "firn:  gems: a (2)" in text, text
+        # firn's g::q is a case that did not end, and its file g did not finish.
+        assert "1 unfinished; 1 unfinished files" in text, text
         same = report("t", [read_record(redis1)], read_record(firn), single, ["x"], ["x"])
         assert "different versions" not in same
 
