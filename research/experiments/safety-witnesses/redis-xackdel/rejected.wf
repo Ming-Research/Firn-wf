@@ -1,0 +1,20 @@
+fn collect_ids(ids: &[u64]) -> result: u64 reads(ids) {
+  doc "Redis XACKDEL CVE-2025-62507: skipped growth of a fixed ID vector. https://github.com/redis/redis/security/advisories/GHSA-jhjx-x4cf-4vm8";
+  let fixed = array_filled::<u64, 4>(value: 0_u64);
+  let count = ids^.len;
+  for (at in 0_u64..count) {
+    set fixed[at] = ids^[at];
+  }
+  return count;
+}
+
+fn main() -> status: std::process::ExitStatus pure {
+  let requested = array_filled::<u64, 5>(value: 1_u64);
+  let source = &requested[0_u64..5_u64];
+  let collected = collect_ids(ids: source);
+  if collected == 5_u64 {
+    return std::process::exit_status(code: 0_u8);
+  } else {
+    return std::process::exit_status(code: 1_u8);
+  }
+}

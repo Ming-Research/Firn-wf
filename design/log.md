@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-14 Gate the ten safety witnesses
+
+Nodes: firn/building
+
+Summary: Each witness is a pair of small programs written from a real defect in Redis, Valkey, KeyDB, Garnet or Dragonfly. Checking the diagnostic, not just a nonzero exit, avoids masking an unrelated error, and compiling the fixed form avoids masking a correct form Whitefoot does not support. A Whitefoot upgrade that stops rejecting a class, or stops accepting a fix, turns the gate red. Replaced: unchecked examples as safety evidence.
+
 ## 2026-10-21 Queue a promoted connection's INFO reply inside the lock interval
 
 Nodes: firn/connection-ownership

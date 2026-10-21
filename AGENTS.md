@@ -53,12 +53,15 @@ When priorities conflict, first:
 
 ## Checks
 
-- `make check`, the gate, runs in CI on every push, its targets in three
+- `make check`, the gate, runs in CI on every push, its targets in four
   parallel jobs (`check.yml`) so that the answer takes as long as the
   slowest: it downloads the pinned compiler (`make compiler`), builds firn
   and runs the Redis 7.2.16 suite ratchet (`tests/redis-suite/`, without
-  `--tolerant`); builds firn and runs its network cases (`tests/`); and runs
-  the design lint. `make gate-sync` fails when the targets `check.yml` runs
+  `--tolerant`); builds firn and runs its network cases (`tests/`); runs
+  the design lint; and compiles the paired safety witnesses
+  (`research/experiments/safety-witnesses/`). Each faulty program must receive
+  its specified source diagnostic and each correction must build with the pin.
+  `make gate-sync` fails when the targets `check.yml` runs
   and those of `make check` differ, so a target added to one is added to the
   other. The suite runs as two shards side by side
   (`tests/redis-suite/run-shards.sh`): `ratchet.py assign` splits its units
