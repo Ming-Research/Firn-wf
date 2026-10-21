@@ -9,7 +9,8 @@ closest forms are rejected). They implement board item
 They do not change firn or reproduce complete server commands.
 
 **Validation status: all ten pairs passed in [CI][validation-run] at
-[the tested revision][validation-revision].** Each rejected program received
+[the tested revision][validation-revision], with the compiler release
+`wf-af7665be672d` that `whitefoot.pin` names.** Each rejected program received
 its expected diagnostic and each correction built an executable.
 
 ## What the evidence means
@@ -21,9 +22,10 @@ upstream compatibility, termination, or correctness of the compiler/runtime.
 The accepted executables are built but not run; this check measures source
 acceptance, not their application results or scheduling behavior.
 
-The language claim belongs to the [pinned specification][spec], read at
-Whitefoot commit `d75f318d56318834785322bde3a3656fb93116a6`, the revision
-named by [whitefoot.pin](../../../whitefoot.pin):
+The language claim belongs to the [pinned specification][spec] (v0.146), read
+at Whitefoot commit `af7665be672d29912d878dd5da8c3932bb6f296c`, the revision
+of the release `wf-af7665be672d` that [whitefoot.pin](../../../whitefoot.pin)
+names:
 
 - [SCOPE-2 and SCOPE-3][scope] require static discharge before lowering and
   specify no undefined behavior conditional on the compiler, checker, linked
@@ -180,14 +182,14 @@ language/compiler gap before changing its spelling. No gap has yet been
 established; a correction's failed compilation needs its actual diagnostic
 before it can be classified as a source defect or a language/compiler gap.
 
-[spec]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md
-[scope]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L9-L21
-[references]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L695-L710
-[bounds]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L1075
-[arithmetic]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L1012
-[contexts]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L2268-L2344
-[atomic]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L2320-L2353
-[form]: https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/spec/kernel-spec.md#L100
+[spec]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md
+[scope]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L9-L21
+[references]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L695-L710
+[bounds]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1076-L1092
+[arithmetic]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L1013
+[contexts]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2270-L2348
+[atomic]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L2322-L2359
+[form]: https://github.com/Ming-Research/Whitefoot/blob/af7665be672d29912d878dd5da8c3932bb6f296c/spec/kernel-spec.md#L100
 [garnet-op2]: https://github.com/Ming-Research/Firn-wf/actions/runs/38403872458
-[validation-run]: https://github.com/Ming-Research/Firn-wf/actions/runs/38411761425
-[validation-revision]: https://github.com/Ming-Research/Firn-wf/commit/380cf742b3eecca84a0ff078574fe7137c2415c2
+[validation-run]: https://github.com/Ming-Research/Firn-wf/actions/runs/39570476159
+[validation-revision]: https://github.com/Ming-Research/Firn-wf/commit/9ef54ba8f76996734dd7376b96b069df8db76b9c
