@@ -64,9 +64,9 @@ jobs:
         run: |
           failures=0
           for run in $(seq 1 "$RUNS"); do
+            status=0
             FIRN="$PWD/build/firn-test" cargo test --manifest-path tests/Cargo.toml --locked \
-              --test network -- "$CASE" >"$RUNNER_TEMP/case-$run.log" 2>&1
-            status=$?
+              --test network -- "$CASE" >"$RUNNER_TEMP/case-$run.log" 2>&1 || status=$?
             # A filter that selects no case also exits 0: stop on it.
             if ! grep -q 'running 1 test' "$RUNNER_TEMP/case-$run.log"; then
               echo "the filter selected no single case:"
@@ -76,7 +76,7 @@ jobs:
             if [ $status -ne 0 ]; then
               failures=$((failures + 1))
               echo "run $run failed (exit $status):"
-              grep -E 'panicked|not a Redis serial outcome|round [0-9]+' "$RUNNER_TEMP/case-$run.log" | head -5
+              grep -E -A3 'panicked' "$RUNNER_TEMP/case-$run.log" | cut -c1-400 | head -8
             fi
           done
           echo "variant=${{ matrix.variant }} failures=$failures of $RUNS runs"
