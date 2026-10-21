@@ -283,11 +283,11 @@ case $consumer in
         { yarn install --ignore-engines --frozen-lockfile --non-interactive && yarn build; } > "$out/setup.log" 2>&1 ||
             { tail -n 60 "$out/setup.log"; exit 1; }
         echo "node: $(node -v), ioredis $(node -p "require('ioredis/package.json').version"), vitest $(node -p "require('vitest/package.json').version")" | tee -a "$out/what.txt"
-        # The connection factory of vitest.setup.ts and most test files read
-        # REDIS_HOST and REDIS_PORT; connection.test.ts and
-        # create-backend.test.ts name localhost:6379, the port both servers
-        # listen on. The cluster tests that need a real cluster (127.0.0.1:7001
-        # on) skip themselves when none answers, on both servers alike.
+        # The connection factory of vitest.setup.ts and the test files read
+        # REDIS_HOST and REDIS_PORT; some cases of connection.test.ts name
+        # localhost:6379, the port both servers listen on. The cluster tests
+        # that need a real cluster (127.0.0.1:7001 on) skip themselves when
+        # none answers, on both servers alike.
         export REDIS_HOST=127.0.0.1 REDIS_PORT=$port
         files=()
         while IFS= read -r file; do files+=("$file"); done < <(

@@ -163,7 +163,8 @@ cases each, and their question is whether firn passes the cases Redis 7.2.16
 passes, so their runs keep one record per case and compare the two servers'
 records. Four parts serve every application run this way and live in
 `research/experiments/consumers/`; an application's wiring adds only a
-reporter for its test runner (Sidekiq's is `minitest_record.rb`).
+reporter for its test runner (Sidekiq's is `minitest_record.rb`, BullMQ's
+`vitest_record.mjs`).
 
 1. **The record**, `cases.tsv`: one row per case, two columns separated by a
    TAB, `CASE<TAB>STATUS`. CASE is `FILE::NAME`, led by the test file and
@@ -317,3 +318,93 @@ The loop ran through all 52 files with a restarted server before each, the
 cases finished before a kill stayed in the record, and `compare.py` refused the
 record that held no case row ("no Redis run has a case row") and counted the
 unfinished files of the other.
+
+## BullMQ
+
+BullMQ v6.3.13 (the tag's commit is `3d828501874eede00b997902068d301803b64c0f`),
+the third of the validation applications, runs in the weekly workflow beside
+Sidekiq, against Redis 7.2.16 and against firn, with a second Redis run for the
+unstable list. The version is the one the [usage survey](../usage-survey/README.md)
+read; a later release (v6.4.0 is tagged) is a separate upgrade.
+
+- **Tests.** The set of BullMQ's own `yarn coverage`, which its CI runs
+  against Redis 7 and which is the main suite and the ioredis-only suite
+  together (`vitest.coverage.config.ts` says so in its comment): 49 files,
+  listed by `vitest list --filesOnly --config vitest.coverage.config.ts` so
+  that the include and exclude patterns stay BullMQ's own. The client is
+  ioredis. The node-redis, Bun, valkey-glide and PostgreSQL suites are other
+  clients or backends and do not run. `run.sh` runs each file in a process of
+  its own (`vitest run --no-file-parallelism --config
+  vitest.coverage.config.ts FILE`) without the coverage instrumentation, which
+  adds no case, and `vitest_record.mjs` appends a row as each case ends. The
+  file limit is 180 seconds (`FILE_LIMIT` overrides it).
+- **Environment.** BullMQ's CI installs with `yarn install --ignore-engines
+  --frozen-lockfile --non-interactive` and builds with `yarn build`, which also
+  generates the Lua script entry points the tests import; so does `run.sh`,
+  on Node 24, with the versions of `yarn.lock` (`what.txt` records Node,
+  ioredis 5.11.1 and vitest 4.1.11).
+- **Pointing it at a server.** `REDIS_HOST=127.0.0.1` and `REDIS_PORT=6379`,
+  which the connection factory in `vitest.setup.ts` and the test files read;
+  some cases of `connection.test.ts` name `localhost:6379`, so both servers
+  listen on 6379, as for Django, rate-limiter-flexible and Sidekiq. The
+  cluster cases that need a real cluster (127.0.0.1:7001 on) skip themselves
+  when none answers, on both servers alike: 9 cases. The usage survey's note
+  that BullMQ's tests default to localhost holds; the head of the item that
+  wired BullMQ in had read `create-backend.test.ts` as naming it, and that
+  file reads the same two variables.
+
+### Results
+
+The first run with the settings above, a temporary workflow that ran the same
+cells as the consumers workflow
+([run 39693461697](https://github.com/Ming-Research/Firn-wf/actions/runs/39693461697),
+commit b6c96da), on `ubuntu-24.04` runners: Node 24.22.0, Redis 7.2.16 built
+from its release archive, firn built at the same commit. Redis ran twice. All
+49 files finished on every cell.
+
+| | Redis run 1 | Redis run 2 | firn |
+|---|---|---|---|
+| distinct case names recorded | 1,120 | 1,120 | 1,120 |
+| pass | 1,107 | 1,107 | 284 |
+| fail | 0 | 0 | 823 |
+| skip | 13 | 13 | 13 |
+| files that exited 0, of 49 | 49 | 49 | 11 |
+| seconds in the test files, summed | 464 | 456 | 198 |
+| job time with the packages installed | 8 min 38 s | 8 min 40 s | 6 min 11 s |
+
+The two Redis runs passed the same 1,107 cases, so `bullmq-unstable.tsv` is
+empty. The comparison puts 284 cases in both servers' passes, 823 in Redis's
+alone and none in firn's alone; the 13 skipped cases are the same on all three
+(the 9 cluster cases, one in `connection.test.ts` that needs a Redis with another
+`maxmemory-policy`, one in `job_scheduler_stress.test.ts` and two in
+`script_loader.test.ts`). The names of the cases are in the job summary of the
+run. Giving each of the 823 an owner is the work of the item that runs BullMQ's
+tests on firn; the error replies in firn's `test.log` already show where they
+stop, counted as lines, where a worker's retries repeat the same line:
+
+| Reply in firn's `test.log` | Lines |
+|---|---|
+| `ERR unknown command 'bzpopmin'`, the wait of an idle worker | 26,102 |
+| `ERR Unknown Redis command called from script, or one firn does not yet run from scripts`, from BullMQ's Lua scripts | 1,900 |
+| `ERR unknown command 'xread'` (`BLOCK`, the events stream) | 589 |
+| `ERR unknown command 'xlen'` and `'xadd'` | 2 each |
+| `ERR unknown subcommand` | 10 |
+
+This is the order the survey gave for BullMQ: `BZPOPMIN` and the stream
+commands.
+
+The time bound was watched act on Redis in a temporary workflow, since removed,
+that ran the 49 files under limits of 2 and 10 seconds, so that files were cut
+off ([run 39691773602](https://github.com/Ming-Research/Firn-wf/actions/runs/39691773602),
+commit ecdcb65):
+
+| Limit | Files | Case rows | Unfinished rows |
+|---|---|---|---|
+| 2 s | 21 exit 0, 28 exit 124 | 479 pass, 11 skip | 28, one per file killed; 19 of those files had recorded cases before the kill |
+| 10 s | 37 exit 0, 12 exit 124 | 799 pass, 13 skip | 12; 11 of those files had recorded cases before the kill |
+
+A limit of 180 seconds is 2.4 times the slowest file on Redis, `worker.test.ts`
+at 75 seconds in both Redis runs. No file reached it on any cell; the slowest
+on firn was `getters.test.ts` at 71 seconds. The workflow's job limit is 240
+minutes: 49 files that all ran to the limit and its 10 second grace would take
+about 49 x 190 seconds, 155 minutes, besides the install and the build.
