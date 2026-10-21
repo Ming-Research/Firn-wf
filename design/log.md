@@ -10,6 +10,19 @@ line, a field since retired.
 Nodes: firn, firn/connection-ownership, firn/pubsub-registries, firn/script-attempt-external-effects, firn/scripts, firn/transactions, firn/orderly-stop, firn/enumeration
 
 Summary: A connection keeps the receive/execute/send owner until its first successful subscription, then moves once to independent receive, command and output owners. Membership changes and complete reply groups commit under one event hub, and one dispatcher publishes them in order to per-connection output inboxes. Channels, patterns and shard channels have separate indexes with monotonically allocated registration ids. A dataset command on a promoted connection holds the whole keyspace, Meta and hub through its reply commitment. Outstanding frames are charged to the connection's output limit, with Redis's pub/sub client thresholds. A script attempt that meets PUBLISH, SPUBLISH or PUBSUB retries in whole-map mode, stages its deliveries until the final reply, and publishes nothing if abandoned. EXEC adds the hub for pub/sub queues or promoted connections, and the reference suite's argument-free unsubscribe helpers are patched to drain the known acknowledgments. Pattern delivery and channel listing use the shared iterative glob matcher, whose nesting refusal the enumeration node now names for them.
+## 2026-10-14 Keep the list element ceiling and refuse before changing anything
+
+Nodes: firn/lists
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-lists-ceiling-tree, which asked to approve PR #83's new design node at head 75133a9: firn lists keep the store-wide ceiling of 2^32 elements shared with hashes and sets, a deliberate difference from Redis 7.2.16 on 64-bit hosts; a command that would exceed it replies with an error naming the limit before changing any element or access metadata.
+
+Summary: A push, LINSERT or LMOVE that would exceed the ceiling refuses whole, so a successful reply always means the elements were kept: a multi-element push is checked as one, LMOVE checks the destination before popping the source, a rotation within one list needs no room, and LINSERT with a missing pivot still returns -1. Dropping elements while replying success, partial multi-element pushes and popping the source before checking the destination are rejected. The ceiling is a storage policy, to be reopened when a selected workload needs more than 2^32 elements.
+
+## 2026-10-14 Add SSCAN, HSCAN and ZSCAN as whole-collection scans
+
+Nodes: firn/enumeration, firn/scripts
+
+Summary: Until Whitefoot's standard-library hash map can resume a scan (board item coord-wfbl-02-01), SSCAN, HSCAN and ZSCAN return the whole MATCH-filtered collection in one held statement with cursor 0, in firn's element order; the temporary code is removed and replaced by bounded batches when the library delivers, and the item's acceptance waits for that. ZSCAN writes scores with Redis's d2string text when the whole sorted set has at most 128 members of at most 64 bytes each, and with the exact %.17g writer otherwise. The script rollback decision now rests on the scans having no cursor that spans an attempt, and reopens when bounded continuation arrives. Rejected: Redis encoding history, resuming at a numeric offset, dropping entries or returning cursor 0 for a partial result, one score formatter for all sizes.
 
 ## 2026-10-14 Write scores in replies and AOF rewrites byte for byte as Redis 7.2.16
 

@@ -356,7 +356,7 @@ public fn copy_value(value: &Value) -> made: Value reads(value) doc "An owned lo
 
 public fn attempt_undo_new() -> undo: AttemptUndo pure doc "An empty first-mutation journal for a declared-key script attempt.";
 
-public fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result: unit reads(slot), writes(undo) doc "Saves an optional logical entry copy once at this declared insertion index before any possible mutation: members, values, scores, list order, expiry, access and last-write stamps are exact; collection backing is rebuilt. No collection cursor or layout-dependent result is promised; revisit if such a command or guarantee is added (research/investigations/script-engines/README.md, Logical collection restore).";
+public fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result: unit reads(slot), writes(undo) doc "Saves an optional logical entry copy once at this declared insertion index before any possible mutation: members, values, scores, list order, expiry, access and last-write stamps are exact; collection backing is rebuilt. Collection scans return the whole result with cursor zero and no layout-dependent order is promised; revisit when coord-wfbl-02-01 adds bounded continuation or a layout-dependent guarantee is added (research/investigations/script-engines/README.md, Logical collection restore).";
 
 public fn attempt_restore(undo: &AttemptUndo, slots: &Entries<Entry>) -> result: unit writes(undo), writes(slots) contract {
   ensures slots^.len == entry(slots)^.len;

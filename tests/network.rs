@@ -10,6 +10,7 @@ mod rewrite_sequence;
 mod rewrite_scan;
 mod rewrite_faults;
 mod write_meta;
+mod collection_scan;
 mod pubsub;
 
 use std::io::{Read, Write};
