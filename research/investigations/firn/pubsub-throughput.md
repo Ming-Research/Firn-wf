@@ -24,8 +24,9 @@ medians and the twin spelled out as the firn investigation's
   the last arrival. The latency of a message runs from just before the
   publisher writes it to its arrival at the last subscriber that receives it;
   the p99 is over all messages. A cell is the workload at one depth; its value
-  for a line is the median over at least three interleaved passes of the lines,
-  each pass in the reverse order of the one before.
+  for a line is the median over at least six interleaved passes of the lines
+  (the pass count of the noise floor below, so that a cell's twin interval is
+  comparable with it), each pass in the reverse order of the one before.
 - **Rate.** At depth 16 firn's rate is at least 1.4 times the fastest
   competitor's; at depth 1 at least the fastest competitor's. Where the client
   is the limit, a cell asks only that firn is not behind: the client is the
@@ -44,7 +45,12 @@ medians and the twin spelled out as the firn investigation's
   executables, Valkey 9.1.2 and Dragonfly v2.0.2 in the last 14900K run's
   `host.txt`, which are the newest stable releases of both (9.2.0-rc1 is a
   prerelease; GitHub release lists read 2026-10-21). A run's `host.txt` prints the version of each line, and a pin
-  is moved when a newer release appears before the measuring run. A competitor
+  is moved when a newer release appears before the measuring run. Every line
+  runs with its defaults on the server's 2 CPUs, except that `valkey-io` and
+  `dragonfly` use as many I/O or proactor threads as CPUs, as they are meant
+  to; Redis's I/O threads stay off in `reference` and `redis-latest`, and a line
+  of `redis-latest` with them on is added only if a cell where firn is behind
+  `redis-latest` makes the question matter. A competitor
   that answers `SUBSCRIBE` with an unknown-command error is left out of the
   cells of that workload. The fastest competitor of a cell is whichever line
   has the highest median rate in it, `reference` and `redis-latest` included.
