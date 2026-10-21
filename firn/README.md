@@ -735,8 +735,15 @@ including a refused admission; counters start at zero before the first attempt.
 Failure before rotation leaves the original manifest authoritative. After
 rotation it leaves the manifest naming the old base and all increments
 replayable. If manifest rename succeeds but
-directory sync fails, the new manifest stays in force, all files and history
-entries are retained, and `aof_last_bgrewrite_status` reports `err`.
+directory sync fails, the rewrite fails (`aof_last_bgrewrite_status` reports
+`err`) and the error is saved as the sync error, so writes are refused with
+`MISCONF` until a recovery rewrite is durably installed, as after a failed
+sync of the incremental file. At the switch firn keeps appending to the old
+incremental file, which either manifest names; at installation the new
+manifest stays in force and all files and history entries are retained.
+A directory sync that returns EINVAL, which means the filesystem cannot sync
+directories, counts as synced, as in Redis 7.2.16: the rewrite completes and
+writes continue.
 `SHUTDOWN` accepted before installation cancels the rebuild at its next step;
 once installation starts, shutdown waits for it to finish. Shutdown makes its
 final append and sync attempts after clients leave and joins the rebuild before exiting.
