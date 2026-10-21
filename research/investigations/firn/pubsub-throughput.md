@@ -123,4 +123,142 @@ workloads` ([header](../../experiments/redis-bench/redis-bench.sh)).
 
 ## Results
 
-Not measured yet.
+All on the 14900K (self-hosted runner, Linux 7.0.0-38), measured 2026-10-21,
+servers on CPUs 2 and 4 (P-cores), clients on CPUs 16-31 (E-cores), the
+workflow's `redis-bench.yml` at revision `94419bc`. Nothing was installed on the
+host.
+
+### Noise floor
+
+Run 39557237919 (`workloads`, `head` against `head-twin`, 6 interleaved passes,
+both workloads, both depths): the widest half-width of the twin/head interval
+is **0.86%**, which is the floor of this workload class.
+
+### Delivery rate and p99
+
+Run 39566561800 (`workloads`, 6 interleaved passes of 10 s after a 5 s
+warm-up, 64-byte payloads; `summary.py pubsub --firn image-head --twin
+image-head-twin --floor 0.86`). The twin half-widths are 0.55% (channel, depth
+1), 0.85% (channel, 16), 0.47% (pattern, 1) and 0.67% (pattern, 16), none above
+the floor, so all four cells count. The client work fraction is 0.108-0.111 for
+firn and 0.05-0.18 for the fastest competitors, far below 0.90: no cell is
+client-limited. Rates are medians, in thousands of messages a second.
+
+| cell | firn | fastest competitor | firn / fastest | required | firn p99 | fastest's p99 |
+|---|---|---|---|---|---|---|
+| channel, depth 16 | 349.6 | `redis-latest` 6743.6 | 0.052 | at least 1.4 | 150.5 ms | 0.198 ms |
+| channel, depth 1 | 343.5 | `dragonfly-latest` 1098.0 | 0.313 | at least 1.0 | 153.4 ms | 0.091 ms |
+| pattern, depth 16 | 344.9 | `redis-latest` 6109.1 | 0.056 | at least 1.4 | 153.3 ms | 0.212 ms |
+| pattern, depth 1 | 340.0 | `dragonfly-latest` 1086.1 | 0.313 | at least 1.0 | 156.4 ms | 0.092 ms |
+
+At depth 16 the other lines are `reference` 6275 (channel), `valkey-latest` 5303,
+`valkey-io-latest` 5029, `dragonfly-latest` 5819 and `garnet-latest` 643. At depth 1
+they are `reference` 712, `redis-latest` 713, `valkey-latest` 690,
+`valkey-io-latest` 622 and `garnet-latest` 592. Every line delivered every
+message exactly once and in order (the client fails the run otherwise).
+
+All eight criteria (four rates, four p99) are not met, by a margin far outside
+the noise: firn delivers about 1/19 (depth 16) and 1/3.2 (depth 1) of the
+fastest competitor's rate.
+
+Readings, as measured (no cause is concluded):
+
+- Firn's rate hardly changes with depth or subscription kind: 340-350
+  thousand messages a second in all four cells. The competitors are 5 to 9
+  times faster at depth 16 than at depth 1 (`redis-latest` 713 to 6744);
+  Garnet is the exception.
+- Firn's p99 is about 150 ms in every cell. The publisher's window is 1024
+  messages and 343.5 thousand deliveries a second (channel, depth 1) is 6870
+  publications a second, and 1024 / 6870 is 149 ms: the p99 is the publisher waiting at its
+  window, queueing time, not the delivery time of one message. The competitors'
+  p99 is below 1.3 ms.
+- Server profile (`perf`, the first pass of each cell, `head` and `head-twin`,
+  eight profiles, no lost samples): `wf_shared_acquire_as` is 29.5-30.2% of
+  the cycles in every profile and the first entry; `wf_executor_loop` is 4.5-4.9%;
+  the rest is the kernel's TCP send path (each 1-2.5%) and the runtime's
+  `wf_server.send_promoted_frame.resume` and `wf_connection_events.*` (about 1%
+  each). These profiles have no call stacks, so they show where cycles are
+  spent, not who calls; the first step of a performance item is a profile with
+  call stacks (`callers` input of the workflow).
+
+### Before and after publish/subscribe
+
+Run 39573904480 (`compare`, 19 tests at depths 16 and 1, 2 server CPUs, 6
+interleaved passes of 5 s, no `reference` line, no profile). The images are
+the main revision before Firn-wf#100 merged (`00e2bd1fa230`, "before"), the one
+after (`10c20af7da77`, "after") and the latter again (`head-twin`, the twin);
+they are consecutive first-parent commits of main, built with the same pinned
+compiler release, so they differ by Firn-wf#100 alone. After/before is the
+median of the per-pass ratios; the interval is the 95% interval of the mean log
+ratio over the 6 passes (`summary.py ratios`). `lrange_500` and `lrange_600` at
+depth 16 are client-limited in all 6 passes of all three images (client busy
+fraction above 0.90, at most 0.93), so the client sets their rates and their
+cells are reported and not judged.
+
+| test | depth | after/before | 95% interval | verdict | twin/after 95% interval |
+|---|---|---|---|---|---|
+| get | 1 | 1.0030 | 0.9767-1.0318 | no detected change | 0.9913-1.0262 |
+| get | 16 | 0.9535 | 0.9407-0.9800 | slower | 0.9540-1.0119 |
+| hset | 1 | 1.0070 | 0.9711-1.0485 | no detected change | 0.9644-1.0244 |
+| hset | 16 | 0.9740 | 0.9585-0.9921 | slower | 0.9752-1.0306 |
+| incr | 1 | 1.0053 | 0.9873-1.0375 | no detected change | 0.9797-1.0154 |
+| incr | 16 | 0.9788 | 0.9684-0.9967 | slower | 0.9572-1.0189 |
+| lpop | 1 | 1.0107 | 0.9722-1.0894 | no detected change | 0.9785-1.0036 |
+| lpop | 16 | 0.9619 | 0.9513-0.9703 | slower | 0.9809-1.0270 |
+| lpush | 1 | 0.9998 | 0.9809-1.0115 | no detected change | 0.9739-1.0199 |
+| lpush | 16 | 0.9855 | 0.9754-1.0080 | no detected change | 0.9715-1.0219 |
+| lrange_100 | 1 | 0.9910 | 0.9812-0.9993 | slower | 0.9936-1.0250 |
+| lrange_100 | 16 | 0.8890 | 0.8720-0.9045 | slower | 0.9953-1.0238 |
+| lrange_300 | 1 | 0.9853 | 0.9593-0.9979 | slower | 0.9812-1.0340 |
+| lrange_300 | 16 | 0.9832 | 0.9720-0.9933 | slower | 0.9897-1.0132 |
+| lrange_500 | 1 | 0.9934 | 0.9490-1.0148 | no detected change | 0.9695-1.0458 |
+| lrange_500 | 16 | 0.9929 | 0.9877-1.0012 | no detected change (client-limited) | 0.9912-1.0106 |
+| lrange_600 | 1 | 0.9953 | 0.9881-1.0025 | no detected change | 0.9822-1.0037 |
+| lrange_600 | 16 | 0.9909 | 0.9882-0.9961 | slower (client-limited) | 0.9865-1.0119 |
+| mset | 1 | 1.0119 | 0.9493-1.0767 | no detected change | 0.9849-1.0321 |
+| mset | 16 | 1.0015 | 0.9540-1.0291 | no detected change | 0.9676-1.0397 |
+| ping_inline | 1 | 0.9952 | 0.9743-1.0341 | no detected change | 0.9848-1.0084 |
+| ping_inline | 16 | 0.9558 | 0.9329-0.9877 | slower | 0.9963-1.0064 |
+| ping_mbulk | 1 | 1.0022 | 0.9811-1.0326 | no detected change | 0.9699-1.0190 |
+| ping_mbulk | 16 | 0.9469 | 0.9245-0.9719 | slower | 0.9814-1.0137 |
+| rpop | 1 | 1.0048 | 0.9708-1.0872 | no detected change | 0.9883-1.0155 |
+| rpop | 16 | 0.9787 | 0.9625-0.9921 | slower | 0.9778-1.0194 |
+| rpush | 1 | 0.9965 | 0.9831-1.0092 | no detected change | 0.9744-1.0185 |
+| rpush | 16 | 0.9682 | 0.9576-0.9813 | slower | 0.9860-1.0230 |
+| sadd | 1 | 0.9928 | 0.9581-1.0611 | no detected change | 0.9963-1.0200 |
+| sadd | 16 | 0.9647 | 0.9469-1.0045 | no detected change | 0.9853-1.0147 |
+| set | 1 | 0.9989 | 0.9826-1.0417 | no detected change | 0.9742-1.0171 |
+| set | 16 | 0.9614 | 0.9322-0.9764 | slower | 0.9964-1.0425 |
+| spop | 1 | 0.9894 | 0.9588-1.0329 | no detected change | 0.9992-1.0255 |
+| spop | 16 | 0.9744 | 0.9635-0.9887 | slower | 0.9758-1.0624 |
+| zadd | 1 | 1.0051 | 0.9825-1.0407 | no detected change | 0.9734-1.0076 |
+| zadd | 16 | 1.0005 | 0.9912-1.0055 | no detected change | 0.9790-1.0185 |
+| zpopmin | 1 | 0.9934 | 0.9798-1.0141 | no detected change | 0.9674-1.0194 |
+| zpopmin | 16 | 0.9969 | 0.9394-1.0268 | no detected change | 0.9491-1.0532 |
+
+Reading:
+
+- The twin interval holds 1 in all 38 cells, so the run is as noisy as the
+  twin shows: half-widths from 0.5% (`ping_inline`, depth 16) to 5.2%
+  (`zpopmin`, depth 16; `spop`, depth 16 has 4.3%).
+- 15 cells are wholly on the slower side (14 not client-limited): 13 of the 19
+  cells at depth 16 and 2 of the 19 at depth 1. Their medians run from 0.947
+  to 0.991, and 0.889 (11% slower, interval 0.872-0.905) for `lrange_100` at depth
+  16. The other 23 cells show no detected change. The criterion (no cell
+  wholly on the slower side) is not met.
+- Chance would give about two cells out of 38 wholly on the slower side at
+  95%, not 15: they are concentrated at depth 16, where a server does the
+  most work between its reads, and it holds across unrelated commands
+  (`get`, `set`, `ping`, list, set, hash). That is a deduction from this run;
+  the run has no profile, and it does not say which part of Firn-wf#100 costs
+  the time. `no detected change` in a cell with a wide twin interval (such as
+  `mset`, depth 1) does not show that there was no change.
+
+### What this decides
+
+Both parts of the item's criterion fail: the delivery rate and p99 in all four
+cells, and the ordinary commands' rate in 14 of the 36 cells the client does
+not limit. By "What rejects"
+above, this item changes no publish/subscribe code; the gaps stand as
+measured and go to a performance item, whose first step is the profile with call
+stacks.
