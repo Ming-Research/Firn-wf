@@ -1167,12 +1167,18 @@ INFO field compatibility. The RESP3 `txt:` verbatim length and message frame
 are checked byte for byte.
 
 The falsifier is either nonserial pair, incorrect frame text, or a wrong
-transaction reply. The old read-to-commit gap is short, and its failure rate
-has not been measured; 200 rounds may not expose it reliably. No old/new
-execution is claimed. A passing stress run supplements the held-boundary
-argument rather than proving it by frequency. Acceptance requires the
-owner-driven gate to compile both static paths and run the new witness;
-local builds and tests remain prohibited.
+transaction reply. The witness was run on both paths in CI on the PR branch
+with a temporary workflow, since removed. The old path replaced the body of
+`run_info_promoted` by a call of the ordinary `run_info`, which is what a
+promoted connection ran before the fix; the new path was the unmodified
+branch. Each path built `firn-test` and ran the case 20 times, 200 rounds
+each. The old path failed 9 of the 20 runs, each at the assertion on the two
+serial outcomes, with the published message ahead of an empty INFO (rounds 0
+to 175 of a run), and the new path failed none of the 20
+([run](https://github.com/Ming-Research/Firn-wf/actions/runs/39541564441)).
+On that day and runner, then, one run of the case exposed the old gap in 9
+of 20 attempts, so the gate's single run is a witness of the held boundary,
+not a proof by frequency; the ordering rests on the single held statement.
 
 ### Membership confirmations and the Redis suite barrier
 

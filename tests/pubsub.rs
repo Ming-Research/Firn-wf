@@ -579,8 +579,10 @@ fn resp3_visible_write_reply_precedes_causally_later_publication_with_multiple_d
 /// Redis src/networking.c addReplyVerbatim. Redis executes INFO or the whole
 /// EXEC first, so a message followed by an empty snapshot is impossible.
 /// Concurrent writes from two barrier-released threads exercise the old gap
-/// between INFO's key-count snapshot and its output commit; no failure rate
-/// is claimed without a CI run of the old revision.
+/// between INFO's key-count snapshot and its output commit. With a promoted
+/// connection's INFO routed through the ordinary run_info, as before the fix,
+/// the case failed in 9 of 20 CI runs, each with the message ahead of an empty
+/// INFO; the fixed path failed in none of 20.
 #[test]
 fn resp3_info_keyspace_and_exec_publication_have_one_serial_order_with_multiple_drivers() {
     let (child, mut publisher, port) = start_with_drivers(2, "4");
