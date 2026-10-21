@@ -3,7 +3,9 @@
 [Streaming the rewrite journal to disk](journal-disk.md) records the owner's
 disk-journal direction, its bounded staging and S1 protocol, and validation
 criteria before implementation; [A time-sliced live scan within the
-reserve](scan-pace.md) records the scan's bound and pacing on the same ruling.
+reserve](scan-pace.md) records the scan's bound and pacing on the same ruling;
+[Intermittent failures of two rewrite cases](test-stability.md) records why two
+network cases failed in CI at random and what changed in them.
 
 The record below preserves the original closed-log replay investigation and
 its implementation history. The owner's subsequent service-first memory
