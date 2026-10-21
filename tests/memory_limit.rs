@@ -190,6 +190,17 @@ fn allkeys_lru_bounds_heap_and_counts_evictions() {
 /// (status board item firn-rw-cache-refused).
 #[test]
 fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
+    cache_at_limit_rewrite(4);
+}
+
+// tmp diag (firn-rw-memory-tests-flaky): the same case without the writes
+// that follow the rewrite's start.
+#[test]
+fn diag_cache_at_limit_without_window_writes() {
+    cache_at_limit_rewrite(0);
+}
+
+fn cache_at_limit_rewrite(window_writes: usize) {
     let program = CompiledProgram::from_environment();
     let port_lease = support::lease_port();
     let port = port_lease.port();
@@ -235,12 +246,12 @@ fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
     // the rewrite's reserve is outside maxmemory, so eviction resumes only
     // once the figure is over the limit again. Evictions inside the rewrite
     // window are therefore not guaranteed by this case.
-    for index in written..written + 4 {
+    for index in written..written + window_writes {
         assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
         let snapshot = info(&mut client, "all");
         diag_line(&format!("set{}", index - written), &snapshot, diag_start);
     }
-    written += 4;
+    written += window_writes;
     observed = info(&mut client, "all");
     diag_line("after-sets", &observed, diag_start);
     let deadline = Instant::now() + Duration::from_secs(60);

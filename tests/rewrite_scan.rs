@@ -985,7 +985,16 @@ fn diag_rchar(pid: u32) -> u64 {
 
 #[test]
 fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects() {
-    let program = CompiledProgram::from_environment();
+    long_history_under_writes(CompiledProgram::from_environment());
+}
+
+// tmp diag (firn-rw-memory-tests-flaky): the same case with its files in memory.
+#[test]
+fn diag_long_history_on_tmpfs() {
+    long_history_under_writes(CompiledProgram::from_environment_under(std::path::Path::new("/dev/shm")));
+}
+
+fn long_history_under_writes(program: CompiledProgram) {
     long_increment_history(&program);
     // Keep the 128-MiB history from triggering an automatic rewrite. Default
     // unlimited maxmemory retains R = 16 MiB, allowing ordinary switch I/O
