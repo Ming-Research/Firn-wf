@@ -21,8 +21,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {limit: 1, ignore_term: false}
-          - {limit: 2, ignore_term: false}
           - {limit: 1, ignore_term: true}
     env:
       REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
@@ -58,7 +56,9 @@ jobs:
           FILE_LIMIT: ${{ matrix.limit }}
         run: |
           if [ "${{ matrix.ignore_term }}" = true ]; then
-            echo 'Signal.trap("TERM", "IGNORE")' > "$RUNNER_TEMP/ignore_term.rb"
+            # Ignores TERM and, after its tests, stays alive past the grace
+            # period of `timeout -k 10`, so that the KILL is needed.
+            printf '%s\n' 'Signal.trap("TERM", "IGNORE")' 'at_exit { sleep 60 }' > "$RUNNER_TEMP/ignore_term.rb"
             export RUBYOPT="-r$RUNNER_TEMP/ignore_term.rb"
           fi
           bash research/experiments/consumers/run.sh sidekiq redis
@@ -84,7 +84,7 @@ jobs:
             cat "$DIR/heartbeat.txt" 2>/dev/null
             tail -n 3 "$DIR/heartbeat.log" 2>/dev/null
             echo "comparison of this record with itself:"
-            python3 -B research/experiments/consumers/compare.py --redis "$DIR/cases.tsv" --firn "$DIR/cases.tsv" | sed -n 1,16p
+            python3 -B research/experiments/consumers/compare.py --redis "$DIR/cases.tsv" --firn "$DIR/cases.tsv" | sed -n 1,16p || true
           } > "$DIR/bound.txt" 2>&1
           cat "$DIR/bound.txt" >> "$GITHUB_STEP_SUMMARY"
 
