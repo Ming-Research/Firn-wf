@@ -11,6 +11,12 @@ Nodes: firn/connection-ownership
 
 Summary: Every admitted INFO form on a promoted (subscribed) connection commits its complete reply under the dataset, Meta and event-hub boundary, with the script-registry and server-state snapshots taken in that same non-waiting statement. Otherwise a key-count snapshot released before the reply is committed would let a later SET/PUBLISH transaction precede an INFO reply that reports the earlier empty database. Host heap and residency samples precede the statement, and INFO on a never-subscribed connection keeps its original snapshot path.
 
+## 2026-10-13 Leave an AOF rewrite's memory out of maxmemory
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/memory-limit
+
+Summary: On the 14900K a cache with maxmemory about half its dataset and eviction on answered BGREWRITEAOF with "Can't execute an AOF background rewriting" where Redis 7.2.16 rewrites, so its append-only file would grow until the disk filled. Redis rewrites in a forked child whose memory is not the parent's used memory, and its eviction figure also excludes the AOF buffer. The new case rewriting under eviction and recovering the surviving data after a restart fails on main and passes here.
+
 ## 2026-10-14 Refuse writes after a failed directory sync at the rewrite's manifest swap
 
 Nodes: firn/aof-rewrite

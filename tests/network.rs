@@ -4563,7 +4563,7 @@ fn assert_info_field_audit(info: &str, expected_sections: &[&str], aof: bool, po
                 "firn_aof_rewrite_abort_reason", "firn_aof_rewrite_used", "firn_aof_rewrite_peak",
                 "firn_aof_rewrite_cleanup_failed", "firn_aof_rewrite_journal_leftover",
                 "firn_aof_rewrite_journal_images", "firn_aof_rewrite_journal_effects",
-                "firn_aof_rewrite_scan_steps", "firn_aof_rewrite_scan_done",
+                "firn_aof_rewrite_scan_steps", "firn_aof_rewrite_scan_done", "firn_aof_rewrite_charged",
             ]);
         }
         assert_eq!(names, expected, "{section}: Redis field names, section and order");
