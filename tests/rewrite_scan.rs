@@ -976,83 +976,28 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
     rewrite_stop(&mut restored, child);
 }
 
-// tmp diag (firn-rw-memory-tests-flaky): bytes the server has read so far.
-fn diag_rchar(pid: u32) -> u64 {
-    std::fs::read_to_string(format!("/proc/{pid}/io")).ok()
-        .and_then(|text| text.lines().find_map(|line| line.strip_prefix("rchar:").map(|value| value.trim().parse().unwrap_or(0))))
-        .unwrap_or(0)
-}
-
 #[test]
 fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects() {
-    long_history_under_writes(CompiledProgram::from_environment(), false);
-}
-
-// tmp diag (firn-rw-memory-tests-flaky): the same case with its files in memory.
-#[test]
-fn diag_long_history_on_tmpfs() {
-    long_history_under_writes(CompiledProgram::from_environment_under(std::path::Path::new("/dev/shm")), false);
-}
-
-// tmp diag: the same case after a failed append made the boundary unknown, so
-// that the switch rereads the whole history as the old code did. It must fail.
-#[test]
-#[ignore]
-fn diag_long_history_unknown_boundary_on_tmpfs() {
-    long_history_under_writes(CompiledProgram::from_environment_under(std::path::Path::new("/dev/shm")), true);
-}
-
-#[test]
-#[ignore]
-fn diag_long_history_unknown_boundary_on_disk() {
-    long_history_under_writes(CompiledProgram::from_environment(), true);
-}
-
-fn long_history_under_writes(program: CompiledProgram, unknown_boundary: bool) {
-    let increment = long_increment_history(&program);
+    // The files live in memory. Between S1 and the new increment's
+    // publication the sole writer syncs files, and on a shared disk those
+    // syncs wait behind other cases' large writebacks while this case's
+    // writer fills the rotation backlog: past 4 MiB of it the rewrite aborts.
+    // The case checks that S1 does no work proportional to the history, not
+    // the disk's speed. The reread it guards against still fails it in memory
+    // (test-stability.md in research/investigations/aof-rewrite).
+    let program = CompiledProgram::from_environment_under(std::path::Path::new("/dev/shm"));
+    long_increment_history(&program);
     // Keep the 128-MiB history from triggering an automatic rewrite. Default
     // unlimited maxmemory retains R = 16 MiB, allowing ordinary switch I/O
     // while the old history reread still produces enough backlog to exceed R.
-    let (child, mut control, port) = if unknown_boundary {
-        let lease = support::lease_port();
-        let port = lease.port();
-        let text = port.to_string();
-        let child = program.spawn_on_route_ignoring_xfsz(true, &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", b"4294967296"]).with_port(&lease);
-        let mut client = connect_when_ready(port, &child);
-        let previous = aof_write_errors::file_limit(&child, std::fs::metadata(&increment).unwrap().len());
-        assert_eq!(request(&mut client, &[b"SET", b"hot", b"failed-append"]), Reply::Line(b"+OK".to_vec()));
-        let recovery_deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let info = rewrite_info(&mut client);
-            if info["aof_last_write_status"] == "err" { break; }
-            assert!(Instant::now() < recovery_deadline, "file limit did not fail the ordinary append: {info:?}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        aof_write_errors::file_limit(&child, previous.soft);
-        loop {
-            let info = rewrite_info(&mut client);
-            if info["aof_last_write_status"] == "ok" && info["aof_buffer_length"] == "0" { break; }
-            assert!(Instant::now() < recovery_deadline, "ordinary append did not recover: {info:?}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        (child, client, port)
-    } else {
-        start_with_minimum(&program, b"4294967296")
-    };
+    let (child, mut control, port) = start_with_minimum(&program, b"4294967296");
     assert_eq!(request(&mut control, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"100"]), Reply::Line(b"+OK".to_vec()));
     let running = Arc::new(AtomicBool::new(true));
     let worker_running = running.clone();
     let monitor = child.monitor();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-    let diag_manifest = program.working_directory().join("appendonlydir/appendonly.aof.manifest");
     let worker = std::thread::spawn(move || {
         let mut client = connect_when_ready(port, &monitor);
-        // tmp diag (firn-rw-memory-tests-flaky): S1 and publication times.
-        let diag_start = Instant::now();
-        let mut diag_cut: Option<(u128, u64)> = None;
-        let mut diag_publish: Option<(u128, u64)> = None;
-        let mut diag_max_buffer = 0_u64;
-        let mut diag_max_used = 0_u64;
         let mut count = 0_u64;
         let mut appended = Vec::new();
         let mut members = Vec::new();
@@ -1077,11 +1022,6 @@ fn long_history_under_writes(program: CompiledProgram, unknown_boundary: bool) {
             appended.extend_from_slice(&marker);
             members.push(Reply::Bulk(Some(marker.to_vec())));
             let progress = rewrite_info(&mut client);
-            let diag_now = diag_start.elapsed().as_micros();
-            diag_max_buffer = diag_max_buffer.max(progress["aof_buffer_length"].parse().unwrap_or(0));
-            diag_max_used = diag_max_used.max(progress["firn_aof_rewrite_used"].parse().unwrap_or(0));
-            if progress["firn_aof_rewrite_cut"] == "1" && diag_cut.is_none() { diag_cut = Some((diag_now, count)); }
-            if diag_publish.is_none() && std::fs::read_to_string(&diag_manifest).map(|text| text.contains("appendonly.aof.2.incr.aof")).unwrap_or(false) { diag_publish = Some((diag_now, count)); }
             if progress["firn_aof_rewrite_cut"] == "1" && cut_count.is_none() { cut_count = Some(count); }
             if count == 1 { ready_tx.send(()).unwrap(); }
             // At least one whole acknowledged pipeline must follow an
@@ -1089,19 +1029,15 @@ fn long_history_under_writes(program: CompiledProgram, unknown_boundary: bool) {
             if !worker_running.load(Ordering::Acquire) && cut_count.is_none_or(|cut| count > cut) { break; }
             std::thread::sleep(Duration::from_millis(1));
         }
-        eprintln!("DIAG-T1 iterations={count} cut={diag_cut:?} publish={diag_publish:?} max_buffer={diag_max_buffer} max_used={diag_max_used} total_us={}", diag_start.elapsed().as_micros());
         (count, cut_count, last_value, appended, members)
     });
     ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-    let diag_rchar_before = diag_rchar(child.id());
     rewrite_start(&mut control);
     scanned_keys(&program, &mut control);
     assert_eq!(request(&mut control, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"0"]), Reply::Line(b"+OK".to_vec()));
     let info = rewrite_wait(&mut control);
     running.store(false, Ordering::Release);
     let (count, cut_count, hot, appended, members) = worker.join().unwrap();
-    eprintln!("DIAG-T1-rchar delta={}", diag_rchar(child.id()).saturating_sub(diag_rchar_before));
-    eprintln!("DIAG-T1-final status={} reason={} peak={} used={} scan_steps={} buffer={}", info["aof_last_bgrewrite_status"], info["firn_aof_rewrite_abort_reason"], info["firn_aof_rewrite_peak"], info["firn_aof_rewrite_used"], info["firn_aof_rewrite_scan_steps"], info["aof_buffer_length"]);
     assert_eq!(info["aof_last_bgrewrite_status"], "ok", "long history must not suspend ordinary draining at S1; the old full reread exhausts R with rotation_reserve: {info:?}");
     let cut_count = cut_count.expect("the continuous writer must observe S1");
     assert!(cut_count > 1 && count > cut_count, "writes must be acknowledged before rewrite admission and after an observed S1");
@@ -1157,15 +1093,12 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         std::thread::sleep(Duration::from_millis(10));
     }
     request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"67108864"]);
-    let diag_start = Instant::now();
-    let diag_rchar_before = diag_rchar(child.id());
     rewrite_start(&mut client);
     let deadline = Instant::now() + Duration::from_secs(30);
-    let mut diag_cut_us = 0;
     loop {
         let info = rewrite_info(&mut client);
         assert_eq!(info["aof_rewrite_in_progress"], "1", "must observe S1 before completion");
-        if info["firn_aof_rewrite_cut"] == "1" { diag_cut_us = diag_start.elapsed().as_micros(); break; }
+        if info["firn_aof_rewrite_cut"] == "1" { break; }
         assert!(Instant::now() < deadline, "S1 never sealed the old increment");
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -1191,7 +1124,6 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
             }
         }
         if info["aof_rewrite_in_progress"] == "0" {
-            eprintln!("DIAG-B cut_us={diag_cut_us} abort_us={} writes={writes} rchar_delta={} reason={} used={} peak={}", diag_start.elapsed().as_micros(), diag_rchar(child.id()).saturating_sub(diag_rchar_before), info["firn_aof_rewrite_abort_reason"], info["firn_aof_rewrite_used"], info["firn_aof_rewrite_peak"]);
             assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance");
             assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
             break;

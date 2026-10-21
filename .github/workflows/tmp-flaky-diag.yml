@@ -1,5 +1,7 @@
-# Temporary (firn-rw-memory-tests-flaky): measures the rewrite-memory cases
-# alone under injected disk and CPU contention. Removed with the item's last push.
+# Temporary (firn-rw-memory-tests-flaky): validates the two test fixes. Whole-suite
+# legs run the gate's load with the fixed cases; the T1 legs run that case alone
+# under injected disk contention, with the pre-fix case as the control.
+# Removed with the item's last push.
 name: tmp-flaky-diag
 
 on:
@@ -19,22 +21,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: unknown-boundary-tmpfs, mode: alone, noise: none, extra: "--ignored", loops: 40, test: "rewrite_scan::diag_long_history_unknown_boundary_on_tmpfs" }
-          - { name: unknown-boundary-disk, mode: alone, noise: none, extra: "--ignored", loops: 40, test: "rewrite_scan::diag_long_history_unknown_boundary_on_disk" }
-          - { name: continuous-16k, mode: alone, noise: none, extra: "--ignored", loops: 40, test: "memory_limit::diag_cache_at_limit_continuous_writes_16k" }
-          - { name: continuous-1k, mode: alone, noise: none, extra: "--ignored", loops: 40, test: "memory_limit::diag_cache_at_limit_continuous_writes_1k" }
-          - { name: suite-a, mode: suite, noise: none, extra: "", loops: 12, test: "" }
-          - { name: suite-b, mode: suite, noise: none, extra: "", loops: 12, test: "" }
-          - { name: suite-c, mode: suite, noise: none, extra: "", loops: 12, test: "" }
-          - { name: suite-d, mode: suite, noise: none, extra: "", loops: 12, test: "" }
-          - { name: suite-e, mode: suite, noise: none, extra: "", loops: 12, test: "" }
-          - { name: suite-f, mode: suite, noise: none, extra: "", loops: 12, test: "" }
+          - { name: t1-before-disk, tests: base, mode: alone, noise: disk, loops: 20, test: "rewrite_scan::reconciled_scan_long_history_completes_under_writes_without_duplicate_effects" }
+          - { name: t1-after-disk, tests: fixed, mode: alone, noise: disk, loops: 60, test: "rewrite_scan::reconciled_scan_long_history_completes_under_writes_without_duplicate_effects" }
+          - { name: t1-after-cpu, tests: fixed, mode: alone, noise: cpu, loops: 60, test: "rewrite_scan::reconciled_scan_long_history_completes_under_writes_without_duplicate_effects" }
+          - { name: suite-a, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-b, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-c, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-d, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-e, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-f, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-g, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-h, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-i, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-j, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-k, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
+          - { name: suite-l, tests: fixed, mode: suite, noise: none, loops: 11, test: "" }
     env:
       REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
+          fetch-depth: 0
+      - name: Use the pre-fix cases (control legs)
+        if: matrix.tests == 'base'
+        run: git checkout 9703783 -- tests/memory_limit.rs tests/rewrite_scan.rs
       - run: make compiler
       - run: make toolchain
       - run: rustup default stable && cargo --version
@@ -54,7 +65,6 @@ jobs:
         env:
           NOISE: ${{ matrix.noise }}
           MODE: ${{ matrix.mode }}
-          EXTRA: ${{ matrix.extra }}
           LOOPS: ${{ matrix.loops }}
           ONE: ${{ matrix.test }}
         run: |
@@ -79,7 +89,7 @@ jobs:
             if [ "$MODE" = suite ]; then
               cargo test --manifest-path tests/Cargo.toml --locked -- --skip rewrite_faults:: --show-output >"$log" 2>&1
             else
-              cargo test --manifest-path tests/Cargo.toml --locked --test network -- $EXTRA --exact --nocapture --test-threads=1 "$ONE" >"$log" 2>&1
+              cargo test --manifest-path tests/Cargo.toml --locked --test network -- --exact --nocapture --test-threads=1 "$ONE" >"$log" 2>&1
             fi
             status=$?
             end=$(date +%s.%N)
