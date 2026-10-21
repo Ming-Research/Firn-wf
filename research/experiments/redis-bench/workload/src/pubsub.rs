@@ -497,7 +497,7 @@ mod tests {
             let (mut buffer, mut chunk, mut number) = (Vec::new(), [0; 4096], 0);
             loop {
                 match publisher.read(&mut chunk) {
-                    Ok(0) | Err(_) => return,
+                    Ok(0) | Err(_) => break,
                     Ok(n) => buffer.extend_from_slice(&chunk[..n]),
                 }
                 while buffer.len() >= length {
@@ -513,6 +513,14 @@ mod tests {
                     if fault == Fault::Slow { thread::sleep(Duration::from_millis(5)); }
                     let _ = publisher.write_all(format!(":{}\r\n", held.len()).as_bytes());
                 }
+            }
+            // A server does not close its subscribers when the publisher
+            // goes: wait for the client to close them, or a subscriber that
+            // has yet to read the last messages could meet the close first.
+            for socket in &mut held {
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut sink = [0; 64];
+                while matches!(socket.read(&mut sink), Ok(n) if n > 0) {}
             }
         })
     }
