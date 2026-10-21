@@ -35,11 +35,19 @@ medians and the twin spelled out as the firn investigation's
   of the cell (the one with the highest median rate, the one the rate is
   compared with). In a client-limited cell the p99 is reported and not judged:
   the client's own queueing sets it there.
-- **Competitors.** The `reference` line is Redis 7.2.16, the project's
-  reference (AGENTS.md), `valkey`, `valkey-io`, `dragonfly` and `garnet` are
-  the executables the host has, their versions printed in the run's
-  `host.txt`; a competitor that answers `SUBSCRIBE` with an unknown-command
-  error is left out of the cells of that workload.
+- **Competitors.** The competitors are the newest stable release of each
+  project, and `reference` stays Redis 7.2.16, the project's reference
+  (AGENTS.md). `redis-latest` is the newest stable Redis (8.10.2), built by
+  `latest.sh` from its archive, which the script pins by SHA-256; `garnet` is
+  the newest release (2.2.3), run from its prebuilt archive in place of the
+  host's 2.2.1; `valkey`, `valkey-io` and `dragonfly` are the host's
+  executables, Valkey 9.1.2 and Dragonfly v2.0.2 in the last 14900K run's
+  `host.txt`, which are the newest stable releases of both (9.2.0-rc1 is a
+  prerelease; GitHub release lists read 2026-10-21). A run's `host.txt` prints the version of each line, and a pin
+  is moved when a newer release appears before the measuring run. A competitor
+  that answers `SUBSCRIBE` with an unknown-command error is left out of the
+  cells of that workload. The fastest competitor of a cell is whichever line
+  has the highest median rate in it, `reference` and `redis-latest` included.
 - **Noise.** Firn is measured as two images of one build, `head` and
   `head-twin`; the 95% interval of the mean log of twin/head over the passes
   is the cell's noise, which `summary.py pubsub` prints. No threshold is

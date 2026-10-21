@@ -16,7 +16,9 @@
 #                   builds and Redis, interleaved, without AOF
 #                   workload_servers selects competitors alongside all firn images;
 #                   tests pubsub-channel and pubsub-pattern measure publish/subscribe
-#                   delivery at each of `depths` (redis-bench.sh header)
+#                   delivery at each of `depths` (redis-bench.sh header);
+#                   latest_releases adds the newest stable Redis as redis-latest
+#                   and the newest Garnet in place of the host's
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
 #
@@ -104,9 +106,13 @@ on:
         type: boolean
         default: false
       workload_servers:
-        description: "Workloads only: ordered selection from reference firn valkey valkey-io dragonfly garnet, without AOF; firn expands all images with workload_images. Empty preserves defaults."
+        description: "Workloads only: ordered selection from reference redis-latest firn valkey valkey-io dragonfly garnet, without AOF; firn expands all images with workload_images; redis-latest needs latest_releases. Empty preserves defaults."
         type: string
         default: ""
+      latest_releases:
+        description: "Workloads only: build the newest stable Redis release (research/experiments/redis-bench/latest.sh) as the line redis-latest, and run its Garnet release as garnet instead of the host's"
+        type: boolean
+        default: false
       maxmemory:
         description: "Compare only: maxmemory in bytes set with CONFIG SET on every measured server after it starts; empty sets none"
         type: string
@@ -205,6 +211,19 @@ jobs:
           path: build/redis-compat-cache
           key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
+      # The newest stable Redis and Garnet, whatever the host has installed:
+      # latest.sh pins their releases by SHA-256 and builds or extracts them
+      # into a cache of its own, installing nothing on the host.
+      - name: Fetch the newest Redis and Garnet releases
+        if: ${{ inputs.latest_releases }}
+        env:
+          REDIS_BENCH_LATEST_CACHE: ${{ inputs.runner == '14900k' && '' || format('{0}/build/latest-cache', github.workspace) }}
+        run: |
+          redis=$(research/experiments/redis-bench/latest.sh redis)
+          garnet=$(research/experiments/redis-bench/latest.sh garnet)
+          echo "REDIS_LATEST=$redis" >> "$GITHUB_ENV"
+          echo "GARNET=$garnet" >> "$GITHUB_ENV"
+
       - name: Check the host's tools
         run: |
           if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
@@ -272,7 +291,12 @@ jobs:
             redis-server --version || true
             valkey-server --version 2>/dev/null || true
             { dragonfly --version 2>/dev/null | head -1; } || true
-            { garnet-server --version 2>/dev/null | head -1; } || true
+            { "${GARNET:-garnet-server}" --version 2>/dev/null | head -1; } || true
+            if [ -n "${REDIS_LATEST:-}" ]; then
+              echo "redis-latest: $REDIS_LATEST"
+              "$REDIS_LATEST" --version || true
+            fi
+            echo "garnet used: ${GARNET:-garnet-server}"
             redis-benchmark --version || true
             { clang --version | head -1; } || true
             ld.lld --version || true

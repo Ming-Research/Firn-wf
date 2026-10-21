@@ -43,6 +43,39 @@ jobs:
           REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
         run: echo "REDIS_BIN=$(tests/redis-suite/reference.sh)" >> "$GITHUB_ENV"
 
+      - name: Fetch the newest Redis and Garnet releases
+        env:
+          REDIS_BENCH_LATEST_CACHE: ${{ runner.temp }}/latest-cache
+        run: |
+          set -e
+          research/experiments/redis-bench/latest.sh versions
+          redis=$(research/experiments/redis-bench/latest.sh redis)
+          garnet=$(research/experiments/redis-bench/latest.sh garnet)
+          # A second call finds both in the cache and builds nothing.
+          [ "$(research/experiments/redis-bench/latest.sh redis)" = "$redis" ]
+          "$redis" --version
+          "$garnet" --version
+          echo "REDIS_LATEST=$redis" >> "$GITHUB_ENV"
+          echo "GARNET=$garnet" >> "$GITHUB_ENV"
+
+      - name: The pub/sub cells against the newest releases
+        run: |
+          set -e
+          export PATH="$REDIS_BIN:$PATH"
+          mkdir -p "$RUNNER_TEMP/newest"
+          OUT="$RUNNER_TEMP/newest" SERVER_CPU_LIST=0 CLIENT_CPU_LIST=2,3 \
+            WORKLOAD_SERVERS="reference redis-latest garnet firn" \
+            WORKLOADS=pubsub-channel WORKLOAD_CPUS=1 WORKLOAD_PASSES=1 WORKLOAD_SECONDS=2 \
+            WORKLOAD_DEPTHS="16 1" WORKLOAD_OPTIONS="--warmup-seconds 1" \
+            sh research/experiments/redis-bench/redis-bench.sh workloads
+          cat "$RUNNER_TEMP/newest/pubsub.csv"
+          # Four lines at two depths, and the header.
+          [ "$(wc -l < "$RUNNER_TEMP/newest/pubsub.csv")" = 9 ]
+          for line in reference redis-latest garnet-1 firn-1; do
+            grep -q "^$line," "$RUNNER_TEMP/newest/pubsub.csv"
+          done
+          python3 -I research/experiments/redis-bench/summary.py pubsub "$RUNNER_TEMP/newest"
+
       - name: The profile pass with a stand-in for perf that works, and with one whose report fails
         run: |
           set -e
