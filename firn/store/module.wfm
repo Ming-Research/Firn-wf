@@ -234,11 +234,12 @@ public struct ServerState {
 }
 
 public struct Keyspace {
-  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
+  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool and the pub/sub event hub, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
   public keys: Shared<ConcurrentHashMap<Entry>>;
   public meta: Shared<Meta>;
   public server: Shared<ServerState>;
   public scripts: Shared<pkg::script_pool::EnginePool>;
+  public pubsub: Shared<pkg::connection_events::Hub>;
   public logging: Bool;
 }
 

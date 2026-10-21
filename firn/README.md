@@ -56,8 +56,9 @@ clients send on their own:
   append-only scores use plain `fpconv_dtoa` without the reply's integer
   shortcut;
 - scripting: `EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
-  `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
-  has written nothing, running Lua 5.1 scripts on the Halo engine
+  `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which observes a kill
+  between attempts only while no dataset effects or publication deliveries
+  have been selected, running Lua 5.1 scripts on the Halo engine
   of [Halo-wf](https://github.com/Ming-Research/Halo-wf), `deps/halo-wf`,
   with Redis's `KEYS`, `ARGV`, `redis` library and reply conversions, in
   either protocol. A compiled script is kept until `SCRIPT FLUSH`, as in
@@ -82,13 +83,20 @@ clients send on their own:
   version 2 or version 3, which switches the connection to RESP3,
   `SELECT 0`, firn having one database, and `CLIENT ID`, `CLIENT GETNAME`,
   `CLIENT SETNAME` and `CLIENT INFO`, described below;
+- pub/sub: `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`,
+  `PUBLISH`, `SSUBSCRIBE`, `SUNSUBSCRIBE`, `SPUBLISH`, and `PUBSUB CHANNELS`,
+  `NUMSUB`, `NUMPAT`, `SHARDCHANNELS`, `SHARDNUMSUB` and `HELP`;
 - transactions: `MULTI`, `EXEC` and `DISCARD`. `EXEC` runs the queued
   commands in order in one atomic statement, their time frozen at its start,
   for the commands written as parts: every keys, strings, hashes, lists, sets
   and sorted sets command this list names, including `SCAN`, `SSCAN`, `HSCAN`,
   `ZSCAN`, `KEYS` and `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
-  `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`; `INFO` is not among
-  them. These same command parts run in scripts. All four EVAL commands
+  `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`, plus pub/sub commands;
+  `SSUBSCRIBE` is refused during EXEC as in Redis 7.2.16. `INFO` is not among
+  them. The data commands, publications and PUBSUB queries run in scripts,
+  except that `EVAL_RO` and `EVALSHA_RO` refuse `PUBLISH` and `SPUBLISH`, which
+  Redis 7.2.16 flags may-replicate, as it refuses write commands there;
+  all six subscription commands are NOSCRIPT. All four EVAL commands
   remain unsupported inside EXEC: preserving the transaction's isolation
   while interrupting a long script waits for Whitefoot request
   `firn-req-attempt-publish`, described
@@ -114,6 +122,39 @@ clients send on their own:
   answers OK, as Redis does with its debug command enabled, firn keeping no
   log to write it to; every other `DEBUG` subcommand is answered as an
   unknown one.
+
+Channels and patterns are binary and independent of the selected database.
+Patterns use Redis 7.2.16's case-sensitive `stringmatchlen`, including its
+depth limit. Ordinary and shard channels have separate registries; PUBLISH
+counts each direct or matching-pattern delivery, and SPUBLISH reaches shard
+memberships only. Unsubscribe-all acknowledgment order follows Firn's own
+registry order; each removed membership and the resulting count are returned.
+
+In RESP2, a client with any subscription accepts only the three subscribe and
+unsubscribe families, PING, QUIT and RESET, with Redis's subscriber-mode error
+for other admitted commands. PING answers the two-element pong array in this
+mode. RESP3 delivers subscription acknowledgments and messages as push frames
+and allows ordinary commands. A client's command, EXEC or script reply group
+precedes its self-publication pushes. Lua errors retain publications from
+preceding accepted calls; abandoned attempts publish nothing.
+On a promoted connection, a dataset command's complete reply is queued
+before another client can observe its effects and publish a later message,
+including data-only EXEC and declared-key scripts.
+
+A connection transfers once to receive, command and output owners on its
+first subscription. Connections that never subscribe retain the original
+receive/execute/send path and ordinary GET/SET shared targets. Independent
+output owners keep a slow subscriber from blocking another socket. Active
+subscriptions are exempt from CONFIG timeout; the last unsubscribe restores
+ordinary idle handling. Promoted query buffers close above one GiB.
+
+The pub/sub output limits are fixed at 32 MiB hard and 8 MiB continuously for
+more than 60 observed Unix seconds soft. Each connection is charged the
+reserved capacities of outstanding frame bytes, including a shared message
+body in full per recipient until consumed. Allocator rounding, reference
+control and queue storage are not counted, so Firn does not promise Redis's
+exact allocation-based disconnect point. CONFIG client-output-buffer-limit
+is unsupported. Keyspace notifications remain unsupported.
 
 Lists intentionally hold at most 4294967296 (2^32) elements, unlike Redis
 7.2.16 on 64-bit. `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LINSERT`, `LMOVE`
@@ -280,10 +321,11 @@ from the commands before it, which Redis 7.0.15 does not send either; its
 connection closes, and firn stops accepting clients. The request cancels
 each client's receive through its wake generation, and the accept wait,
 expiry sleep and signal wait through a separate shared shutdown state.
-A command or batch already running still finishes before its client closes;
-cancellation does not
-interrupt scripts or the replies being sent. A send blocked on a client that does not read is abandoned
-at its next one-second deadline. Once every client has left, the append-only file's
+A command already running still finishes before its client closes;
+cancellation does not interrupt scripts. On never-promoted connections,
+sends retain their existing one-second deadline shutdown handling. Promoted
+receive and output owners are cancelled directly and pending output is
+discarded. Once every client has left, the append-only file's
 writer makes one forced attempt to append its remaining bytes and one sync
 attempt, then closes and firn exits with status 0. As in Redis 7.0.15's everysec
 shutdown (`server.c:4239-4247,4301-4308`), failed appends or syncs do not retry
@@ -342,8 +384,9 @@ held, which it counts holding the table whole, as `DBSIZE` does. The other field
 that are fixed and true of firn: Redis's
 version 7.2.16, standalone mode, 64 bits, its active
 expiry's 10 runs a second, no configuration file,
-function, replica, background save, fork, module, publish
-and subscribe, tracking or cluster. What firn does not measure,
+function, replica, background save, fork, module, tracking or cluster.
+The three pub/sub registry counts report distinct registered names from one
+hub snapshot. What firn does not measure,
 its own processor time, build revision, per-command and per-error counts
 among them, is left out. CPU reports only the fixed zero child-process times;
 Commandstats, Errorstats and Latencystats have empty headers,
@@ -353,7 +396,8 @@ several names without duplicates and ignores unknown names. `debug` selects
 an empty Debug header explicitly; `all` and `everything` do not include it.
 
 `CLIENT INFO` answers the connection's line in Redis's form, with real
-values for the id, the name, the age and the protocol, and values fixed and
+values for the id, the name, the age, the protocol and `sub`, `psub`, `ssub`,
+with the pub/sub flag reflecting active memberships, and values fixed and
 true of firn for the others it gives. It leaves out what firn cannot report:
 the peer's and its own address, which Whitefoot's socket address does not
 show, the descriptor, the events and the sizes of Redis's buffers.
@@ -716,6 +760,8 @@ default.
   patterns read as Redis reads them;
 - `protocol`: reading requests, writing replies, and a connection's state and
   settings;
+- `connection_events`: pub/sub registries, committed output, cancellation,
+  independent connection inboxes and output limits;
 - `scores`: sorted-set scores and the ends of score ranges read as Redis's
   `strtod` reads them, to the nearest double; shared Redis 7.2.16 numeric
   text for score and script double replies (`d2string`), Lua command
