@@ -413,8 +413,24 @@ fn aof_publication_failed(reporting: &Option<Keyspace>) -> result: unit reads(re
   return unit;
 }
 
+fn aof_publication_unsynced(reporting: &Option<Keyspace>, problem: std::io::IoError) -> result: unit reads(reporting) waits {
+  doc "A rewrite's manifest rename whose directory sync failed with an error that counts (EINVAL does not, see aof_persist_record): save the error as the AOF sync error before aborting the attempt, so writes are refused with MISCONF as after a failed sync of the active file until a recovery rewrite's installation is durable, because the device did not confirm the directory entries either selection depends on. Startup and history cleanup publish without a reporting target and save nothing.";
+  match reporting^ {
+    Some(value: rewrite_store) => {
+      atomic m = &rewrite_store^.meta {
+        set m^.aof_sync_error = Some<std::io::IoError>(value: problem);
+      }
+      let reason_install_io_2 = pkg::store::RewriteAbortReason::InstallIo();
+      aof_rw_abort(store: rewrite_store, reason: reason_install_io_2);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
 fn aof_persist_record(reporting: &Option<Keyspace>, factory: &HandleFactory, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest) -> outcome: AofPublication reads(reporting), reads(prefix), writes(factory), writes(writable), writes(manifest) waits {
-  doc "Publication succeeds once rename replaces the manifest, even if the following directory sync fails. Callers must retain the files it names on that outcome. A failed sync leaves dirty set for a later persistence attempt.";
+  doc "Publication succeeds once rename replaces the manifest, even if the following directory sync fails. Callers must retain the files it names on that outcome. An EINVAL from that sync means the filesystem cannot sync directories at all; as Redis 7.2.16's fsyncFileDir treats it as success, it counts as synced and the publication is durable. Any other failed sync leaves dirty set for a later persistence attempt and, for a rewrite, saves the AOF sync error.";
   let yes = True();
   let no = False();
   if manifest^.dirty {
@@ -469,8 +485,12 @@ fn aof_persist_record(reporting: &Option<Keyspace>, factory: &HandleFactory, wri
       return AofPublication(published: yes, durable: yes);
     }
     Err(error: problem) => {
-      aof_publication_failed(reporting: reporting);
-      return AofPublication(published: yes, durable: no);
+      if aof_sync_counts(error: &problem) {
+        aof_publication_unsynced(reporting: reporting, problem: problem);
+        return AofPublication(published: yes, durable: no);
+      }
+      set manifest^.dirty = False();
+      return AofPublication(published: yes, durable: yes);
     }
   }
 }

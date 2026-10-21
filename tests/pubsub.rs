@@ -572,6 +572,67 @@ fn resp3_visible_write_reply_precedes_causally_later_publication_with_multiple_d
     assert_eq!(finished(child).0, 0);
 }
 
+/// Redis 7.2.16 src/server.c genRedisInfoString (keyspace section) emits
+/// "# Keyspace\r\n" and a db0 line only when the database is nonempty. These
+/// exact text frames preserve the fields Firn reports: keys, with expires and
+/// avg_ttl omitted as documented. RESP3's txt verbatim envelope follows
+/// Redis src/networking.c addReplyVerbatim. Redis executes INFO or the whole
+/// EXEC first, so a message followed by an empty snapshot is impossible.
+/// Concurrent writes from two barrier-released threads exercise the old gap
+/// between INFO's key-count snapshot and its output commit. With a promoted
+/// connection's INFO routed through the ordinary run_info, as before the fix,
+/// the case failed in 9 of 20 CI runs, each with the message ahead of an empty
+/// INFO; the fixed path failed in none of 20.
+#[test]
+fn resp3_info_keyspace_and_exec_publication_have_one_serial_order_with_multiple_drivers() {
+    let (child, mut publisher, port) = start_with_drivers(2, "4");
+    let mut subscriber = connect_when_ready(port, &child);
+    for stream in [&mut publisher, &mut subscriber] {
+        stream.set_nodelay(true).expect("send INFO/EXEC race commands promptly");
+    }
+    hello(&mut subscriber, 3);
+    assert_eq!(request(&mut subscriber, &["SUBSCRIBE", "news"]), acknowledgment(3, "subscribe", Some("news"), 1));
+    let info_frame = |text: &str| format!("={}\r\ntxt:{text}\r\n", text.len() + 4).into_bytes();
+    let empty_info = info_frame("# Keyspace\r\n");
+    let one_key_info = info_frame("# Keyspace\r\ndb0:keys=1\r\n");
+    let info_command = resp(&["INFO", "KEYSPACE"]);
+    let exec_command = resp(&["EXEC"]);
+    for iteration in 0..200 {
+        let key = format!("fresh_{iteration}");
+        let payload = iteration.to_string();
+        assert_eq!(request(&mut publisher, &["MULTI"]), b"+OK\r\n");
+        assert_eq!(request(&mut publisher, &["SET", &key, "v"]), b"+QUEUED\r\n");
+        assert_eq!(request(&mut publisher, &["PUBLISH", "news", &payload]), b"+QUEUED\r\n");
+        let publication = message(3, "message", "news", &payload);
+        let ready = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let executing = scope.spawn(|| {
+                ready.wait();
+                publisher.write_all(&exec_command).expect("send racing EXEC");
+                frame(&mut publisher)
+            });
+            ready.wait();
+            subscriber.write_all(&info_command).expect("send racing INFO KEYSPACE");
+            // Read both complete frames before cleanup. Do not poll the data,
+            // sleep, or wait for B's EXEC reply before A sends INFO.
+            let first = frame(&mut subscriber);
+            let second = frame(&mut subscriber);
+            assert!(
+                (first == empty_info && second == publication) ||
+                (first == publication && second == one_key_info),
+                "round {iteration}: INFO/publication is not a Redis serial outcome: first={first:?}, second={second:?}"
+            );
+            assert_eq!(executing.join().expect("INFO/EXEC sender thread"), b"*2\r\n+OK\r\n:1\r\n", "round {iteration}: EXEC replies");
+        });
+        // This reply is a barrier only between rounds: every new race starts
+        // with no dataset keys and uses a distinct key and message payload.
+        assert_eq!(request(&mut publisher, &["DEL", &key]), b":1\r\n");
+    }
+    assert_eq!(request(&mut subscriber, &["PING"]), b"+PONG\r\n", "no extra INFO or publication frame remains");
+    drop((publisher, subscriber));
+    assert_eq!(finished(child).0, 0);
+}
+
 /// self-publication must follow the command's full reply. Redis's Tcl tests
 /// "publish to self inside multi" and "publish to self inside script" supply
 /// the transaction/script expectations, including ordered pushes afterward.

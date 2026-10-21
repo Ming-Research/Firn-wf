@@ -323,7 +323,8 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         let excluded = memory_excluded(meta: persistence, logged: logged);
         text_number(text: &text, value: excluded);
         text_word(text: &text, word: &info_memory_buffers[0_u64..120_u64]);
-        text_number(text: &text, value: excluded);
+        let aof_buffer = memory_aof_buffer(meta: persistence, logged: logged);
+        text_number(text: &text, value: aof_buffer);
         text_word(text: &text, word: &info_memory_tail[0_u64..76_u64]);
       } else if which == 3_u64 {
         text_word(text: &text, word: &info_persistence_head[0_u64..350_u64]);
@@ -420,6 +421,8 @@ fn info_body(cached_scripts: u64, used: u64, rss: Option<u64>, maxmemory: u64, m
         }
         text_word(text: &text, word: &info_rw_scan_done[0_u64..29_u64]);
         text_number(text: &text, value: scan_done);
+        text_word(text: &text, word: &info_rw_charged[0_u64..27_u64]);
+        text_number(text: &text, value: persistence^.rewrite.aof_charged);
         text_word(text: &text, word: &info_gap[0_u64..2_u64]);
       } else if which == 4_u64 {
         text_word(text: &text, word: &info_stats_head[0_u64..36_u64]);
@@ -540,6 +543,63 @@ fn run_info(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
   return unit;
 }
 
+fn run_info_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
+  doc "The promoted owner's INFO path. Host heap and residency samples precede the hold; all selected shared counters, the key count, complete text formatting and reply commitment share one statement holding the keyspace, metadata, event hub, script registry and server state. The shared formatter and reply encoder do not wait. Ordinary INFO retains run_info and its existing snapshots.";
+  let chosen = info_plan(input: input, args: args);
+  let used = 0_u64;
+  let rss = None<u64>();
+  if chosen[2_u64] == 1_u64 {
+    set used = heap_read(client: client);
+    match client^.meter {
+      Some(value: meter) => {
+        set rss = std::process::resident_bytes(meter: meter);
+      }
+      None() => {
+      }
+    }
+  }
+  let stage = pkg::connection_events::stage_new();
+  let seconds = client^.unix_us / 1000000_u64;
+  atomic keys = &store^.keys, meta = &store^.meta, hub = &store^.pubsub, registry = &store^.scripts, server = &store^.server {
+    let cached_scripts = 0_u64;
+    let maxmemory = 0_u64;
+    let memory_policy = 7_u64;
+    if chosen[2_u64] == 1_u64 {
+      set cached_scripts = registry^.registry.inner.len;
+      set maxmemory = server^.memory.maxmemory;
+      set memory_policy = server^.memory.maxmemory_policy;
+    }
+    let clients = 0_u64;
+    if chosen[1_u64] == 1_u64 {
+      set clients = meta^.clients;
+    }
+    let started = 0_u64;
+    if chosen[0_u64] == 1_u64 {
+      set started = server^.started;
+    }
+    let connections = 0_u64;
+    let channels = 0_u64;
+    let patterns = 0_u64;
+    let shards = 0_u64;
+    if chosen[4_u64] == 1_u64 {
+      set connections = server^.connections;
+      let counts = pkg::connection_events::registry_counts(hub: hub);
+      set channels = counts.channels;
+      set patterns = counts.patterns;
+      set shards = counts.shards;
+    }
+    let count = 0_u64;
+    if chosen[12_u64] == 1_u64 {
+      set count = map_count::<Entry>(map: keys);
+    }
+    set meta^.memory_peak = imax(meta^.memory_peak, used);
+    let text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, channels: channels, patterns: patterns, shards: shards, keys: count, logged: store^.logging, persistence: meta, client: client, time: time);
+    info_finish(client: client, text: &text);
+    pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
+  }
+  return unit;
+}
+
 const human_units: Array<u8, 5> = "KMGTP";
 
 const human_byte: Array<u8, 1> = "B";
@@ -653,6 +713,8 @@ const info_rw_cut: Array<u8, 23> = "\r\nfirn_aof_rewrite_cut:";
 
 const info_rw_abort_reason: Array<u8, 32> = "\r\nfirn_aof_rewrite_abort_reason:";
 
+const info_rw_charged: Array<u8, 27> = "\r\nfirn_aof_rewrite_charged:";
+
 const info_rw_used: Array<u8, 24> = "\r\nfirn_aof_rewrite_used:";
 
 const info_rw_peak: Array<u8, 24> = "\r\nfirn_aof_rewrite_peak:";
@@ -682,8 +744,6 @@ const info_rw_reason_journal_io: Array<u8, 10> = "journal_io";
 const info_rw_reason_flush: Array<u8, 5> = "flush";
 
 const info_rw_reason_sequence_exhausted: Array<u8, 18> = "sequence_exhausted";
-
-const info_rw_reason_memory_pressure: Array<u8, 15> = "memory_pressure";
 
 const info_rw_reason_cancelled: Array<u8, 9> = "cancelled";
 
@@ -729,9 +789,6 @@ fn info_rewrite_reason(text: &Box<Slots<u8>>, reason: pkg::store::RewriteAbortRe
     }
     SequenceExhausted() => {
       text_word(text: text, word: &info_rw_reason_sequence_exhausted[0_u64..18_u64]);
-    }
-    MemoryPressure() => {
-      text_word(text: text, word: &info_rw_reason_memory_pressure[0_u64..15_u64]);
     }
     Cancelled() => {
       text_word(text: text, word: &info_rw_reason_cancelled[0_u64..9_u64]);
