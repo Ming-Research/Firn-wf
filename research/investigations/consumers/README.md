@@ -302,3 +302,17 @@ the exception's class last on the line, which the probe counts as an error
 line); the job stays queued and `BITFIELD` is never reached, so whether
 Sidekiq's heartbeat tolerates an error reply on `BITFIELD` is still open: the
 probe answers it once firn has the blocking list commands.
+
+The time bound was watched act on Redis in a temporary workflow, since removed,
+that ran the Sidekiq files under a limit far shorter than any file needs:
+
+| Limit | Run | Files | Case rows | Unfinished rows |
+|---|---|---|---|---|
+| 1 s | [39653135926](https://github.com/Ming-Research/Firn-wf/actions/runs/39653135926), commit df831a0 | 52 exit 124 | none | 52, one per file |
+| 2 s | the same run | 49 exit 0, 3 exit 124 | 721, all pass | 3: `api_test.rb` after 72 case rows, `rails_test.rb` after 1, `processor_test.rb` after 0 |
+| 1 s, the process ignores `SIGTERM` and outlives the 10 s grace | [39655599561](https://github.com/Ming-Research/Firn-wf/actions/runs/39655599561), commit 2273f95 | 52 exit 137, 11 s each | none | 52, one per file |
+
+The loop ran through all 52 files with a restarted server before each, the
+cases finished before a kill stayed in the record, and `compare.py` refused the
+record that held no case row ("no Redis run has a case row") and counted the
+unfinished files of the other.
