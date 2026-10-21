@@ -44,18 +44,22 @@ medians and the twin spelled out as the firn investigation's
   with as many I/O threads as server CPUs) are built from their release
   archives, Dragonfly v2.0.2 (`dragonfly-latest`, as many proactor threads as
   server CPUs) and Garnet 2.2.3 (`garnet-latest`) are extracted from their
-  prebuilt Linux archives, all by `latest.sh`, which pins each archive by
-  SHA-256 (Redis and Valkey from the projects' hash tables, the other two from
-  the digest GitHub shows for the release asset). The versions are the newest
-  non-prerelease of each project's GitHub release list, read 2026-10-21; the
-  host's own packages are older or absent (Valkey 9.0.4 at the first measuring
-  run, no Dragonfly or Garnet) and are not measured. `reference` stays Redis
-  7.2.16, the project's reference (AGENTS.md). A run's `host.txt` prints the
-  version of each line, and a pin is moved when a newer release appears before
-  the measuring run. Every line runs with its defaults on the server's 2 CPUs
-  apart from those thread counts; Redis's I/O threads stay off in `reference`
-  and `redis-latest`, and a line of `redis-latest` with them on is added only
-  if a cell where firn is behind `redis-latest` makes the question matter. A
+  prebuilt Linux archives, all by `latest.sh`. Garnet is a .NET 10 program and
+  the host has no .NET, so `latest.sh` keeps Microsoft's 10.0.13 runtime beside
+  it and points `DOTNET_ROOT` at it; nothing is installed. Each archive is
+  pinned by SHA-256: Redis and Valkey from the projects' hash tables,
+  Dragonfly and Garnet from the digest GitHub shows for the release asset, the
+  .NET runtime from the SHA-512 of Microsoft's release metadata, which the
+  archive matched. The versions are the newest non-prerelease of each
+  project's GitHub release list, read 2026-10-21; the host's own packages are
+  older or absent (Valkey 9.0.4 at the first measuring run, no Dragonfly or
+  Garnet) and are not measured. `reference` stays Redis 7.2.16, the project's
+  reference (AGENTS.md). A run's `host.txt` prints the version of each line,
+  and a pin is moved when a newer release appears before the measuring run.
+  Every line runs with its defaults on the server's 2 CPUs apart from those
+  thread counts; Redis's I/O threads stay off in `reference` and
+  `redis-latest`, and a line of `redis-latest` with them on is added only if a
+  cell where firn is behind `redis-latest` makes the question matter. A
   competitor that answers `SUBSCRIBE` with an unknown-command error is left out
   of the cells of that workload. The fastest competitor of a cell is whichever
   line has the highest median rate in it, `reference` included.

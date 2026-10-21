@@ -4,10 +4,15 @@
 # garnet-latest-N), whatever the measuring host has installed and without
 # installing anything on it: Redis and Valkey are built from their release
 # archives as tests/redis-suite/reference.sh builds 7.2.16, Dragonfly and
-# Garnet are extracted from the release's prebuilt x86-64 Linux archive. A
-# newer release is adopted by moving the pins below, with the archive's SHA-256
-# (Redis: the redis-hashes table; Valkey: the valkey-hashes table; Dragonfly
-# and Garnet: the digest GitHub shows for the release asset).
+# Garnet are extracted from the release's prebuilt x86-64 Linux archive. Garnet
+# is a framework-dependent .NET 10 program and the measuring host has no .NET,
+# so Microsoft's runtime archive is kept beside it and found through
+# DOTNET_ROOT by a wrapper script, garnet-server, that latest.sh writes next to
+# GarnetServer; nothing is installed system-wide. A newer release is adopted by
+# moving the pins below, with the archive's SHA-256 (Redis: the redis-hashes
+# table; Valkey: the valkey-hashes table; Dragonfly and Garnet: the digest
+# GitHub shows for the release asset; the .NET runtime: its SHA-256 computed
+# when the SHA-512 in Microsoft's releases.json for it was checked).
 #
 # usage: latest.sh [redis | valkey | dragonfly | garnet | versions]
 #
@@ -16,7 +21,8 @@
 #   valkey     prints the path of the valkey-server of the release, built so
 #   dragonfly  prints the path of the dragonfly executable of the release,
 #              extracted from the archive when the cache lacks it
-#   garnet     prints the path of the GarnetServer of the release, extracted so
+#   garnet     prints the path of the garnet-server wrapper of the release,
+#              extracted so, with the .NET runtime it needs
 #   versions   prints the four versions the pins name
 #
 # Everything else goes to standard error. REDIS_BENCH_LATEST_CACHE names the
@@ -38,6 +44,9 @@ dragonfly_url=https://github.com/dragonflydb/dragonfly/releases/download/v$drago
 garnet_version=2.2.3
 garnet_sha256=fda5b097b498edcf3a9d50be84c6da4276dd78219fd48153835f0db51bc80fdd
 garnet_url=https://github.com/microsoft/garnet/releases/download/v$garnet_version/linux-x64-based.tar.xz
+dotnet_version=10.0.13
+dotnet_sha256=958c952691d2c3f8ce21f717f4e911c02b5da0e21ead21bd576368c454b79c77
+dotnet_url=https://builds.dotnet.microsoft.com/dotnet/Runtime/$dotnet_version/dotnet-runtime-$dotnet_version-linux-x64.tar.gz
 
 cache=${REDIS_BENCH_LATEST_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/firn-redis-bench-latest}
 redis_archive=$cache/redis-$redis_version.tar.gz
@@ -48,6 +57,8 @@ dragonfly_archive=$cache/dragonfly-$dragonfly_version-x86_64.tar.gz
 dragonfly_dir=$cache/dragonfly-$dragonfly_version
 garnet_archive=$cache/garnet-$garnet_version-linux-x64-based.tar.xz
 garnet_dir=$cache/garnet-$garnet_version
+dotnet_archive=$cache/dotnet-runtime-$dotnet_version-linux-x64.tar.gz
+dotnet_dir=$cache/dotnet-$dotnet_version
 
 # fetch URL ARCHIVE SHA256: the archive, fetched when missing and checked on
 # every call.
@@ -109,6 +120,7 @@ build_server() {
     cp "$src/src/$name-server" "$work/install/$name-server"
     rm -rf "$bin"
     mv "$work/install" "$bin"
+    rm -rf "$work"
     echo "latest.sh: built $name $version into $bin" >&2
 }
 
@@ -131,7 +143,47 @@ extract_binary() {
     }
     rm -rf "$dir"
     mv "$root" "$dir"
+    rm -rf "$work"
     echo "latest.sh: extracted $name $version into $dir" >&2
+}
+
+# extract_dotnet: Microsoft's .NET runtime, kept only when it lists the pinned
+# version of Microsoft.NETCore.App.
+extract_dotnet() {
+    work=$(mktemp -d "$cache/extract.XXXXXX")
+    trap 'rm -rf "$work"' EXIT
+    mkdir "$work/x"
+    tar -xzf "$dotnet_archive" -C "$work/x"
+    "$work/x/dotnet" --list-runtimes 2> /dev/null | grep -q "^Microsoft.NETCore.App $dotnet_version " || {
+        echo "latest.sh: the .NET archive does not list runtime $dotnet_version" >&2
+        exit 1
+    }
+    rm -rf "$dotnet_dir"
+    mv "$work/x" "$dotnet_dir"
+    rm -rf "$work"
+    echo "latest.sh: extracted .NET runtime $dotnet_version into $dotnet_dir" >&2
+}
+
+# extract_garnet: the release, and beside it the wrapper that runs GarnetServer
+# with DOTNET_ROOT at the runtime; kept only when the wrapper reports the
+# version, and otherwise showing what GarnetServer said.
+extract_garnet() {
+    work=$(mktemp -d "$cache/extract.XXXXXX")
+    trap 'rm -rf "$work"' EXIT
+    mkdir "$work/x"
+    tar -xJf "$garnet_archive" -C "$work/x"
+    rm -rf "$garnet_dir"
+    mv "$work/x/net10.0" "$garnet_dir"
+    rm -rf "$work"
+    printf '#!/bin/sh\nDOTNET_ROOT=%s exec %s "$@"\n' "'$dotnet_dir'" "'$garnet_dir/GarnetServer'" > "$garnet_dir/garnet-server"
+    chmod +x "$garnet_dir/garnet-server"
+    reports "$garnet_dir/garnet-server" "$garnet_version" garnet || {
+        echo "latest.sh: Garnet $garnet_version does not report its version; it says:" >&2
+        "$garnet_dir/garnet-server" --version 2>&1 | head -8 >&2 || true
+        rm -rf "$garnet_dir"
+        exit 1
+    }
+    echo "latest.sh: extracted Garnet $garnet_version into $garnet_dir" >&2
 }
 
 case ${1:-} in
@@ -159,11 +211,13 @@ case ${1:-} in
         fi
         echo "$dragonfly_dir/dragonfly-x86_64" ;;
     garnet)
-        if ! reports "$garnet_dir/GarnetServer" "$garnet_version" garnet; then
+        if ! reports "$garnet_dir/garnet-server" "$garnet_version" garnet; then
+            fetch "$dotnet_url" "$dotnet_archive" "$dotnet_sha256"
+            [ -x "$dotnet_dir/dotnet" ] || extract_dotnet
             fetch "$garnet_url" "$garnet_archive" "$garnet_sha256"
-            extract_binary garnet "$garnet_version" "$garnet_archive" "$garnet_dir" net10.0 GarnetServer
+            extract_garnet
         fi
-        echo "$garnet_dir/GarnetServer" ;;
+        echo "$garnet_dir/garnet-server" ;;
     *)
         sed -n '/^# usage:/,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2
         exit 2 ;;
