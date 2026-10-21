@@ -196,12 +196,12 @@
 #                                 spinning client keeps its CPUs busy anyway.
 #                                 Nonempty WORKLOAD_SERVERS selects, in order,
 #                                 reference redis-latest firn valkey valkey-io
-#                                 dragonfly garnet (no duplicates); every
-#                                 selected line omits AOF and absent competitors
-#                                 are skipped. redis-latest is the newest stable
-#                                 Redis, REDIS_LATEST naming its redis-server
-#                                 (latest.sh builds it); GARNET may name another
-#                                 Garnet than the host's.
+#                                 dragonfly garnet garnet-latest (no duplicates);
+#                                 every selected line omits AOF and absent
+#                                 competitors are skipped. redis-latest and
+#                                 garnet-latest are the newest stable Redis and
+#                                 Garnet, REDIS_LATEST and GARNET_LATEST naming
+#                                 their servers (latest.sh builds them).
 #                                 firn/dragonfly/garnet use the current CPU
 #                                 count. With WORKLOAD_IMAGES, selecting firn
 #                                 expands every IMAGES entry, including twins,
@@ -657,9 +657,11 @@ WHITEFOOTC=${WHITEFOOTC:-$ROOT/build/whitefoot/$RELEASE/whitefootc}
 BASELINE_ROOT=${BASELINE_ROOT:-}
 DRAGONFLY=${DRAGONFLY:-dragonfly}
 GARNET=${GARNET:-garnet-server}
-# The redis-server of the newest stable Redis release (latest.sh), for the line
-# redis-latest; the lines reference and redis-aof stay Redis 7.2.16.
+# The newest stable Redis and Garnet releases (latest.sh), for the lines
+# redis-latest and garnet-latest-N; the lines reference and reference-aof stay
+# Redis 7.2.16, and garnet-N the host's Garnet.
 REDIS_LATEST=${REDIS_LATEST:-}
+GARNET_LATEST=${GARNET_LATEST:-}
 FIRN_BASELINE=${FIRN_BASELINE:-}
 DEFAULT_CLIENT_THREADS=${CLIENT_THREADS:-2}
 REQUESTS=${REQUESTS:-1000000}
@@ -700,6 +702,7 @@ KEEP=
 available() {
     case $1 in
         dragonfly-*) command -v "$DRAGONFLY" >/dev/null 2>&1 ;;
+        garnet-latest-*) test -n "$GARNET_LATEST" && test -x "$GARNET_LATEST" ;;
         garnet-*) command -v "$GARNET" >/dev/null 2>&1 ;;
         redis-latest) test -n "$REDIS_LATEST" && test -x "$REDIS_LATEST" ;;
         firn-base-*) test -n "$FIRN_BASELINE" && test -x "$FIRN_BASELINE" ;;
@@ -779,6 +782,10 @@ start() {
             (registered; exec taskset -c "$SERVER_CPUS" "$DRAGONFLY" --port="$PORT" \
                 --proactor_threads="${1#dragonfly-}" --dbfilename= \
                 --logtostderr ) >"$OUT/server.log" 2>&1 &
+            ;;
+        garnet-latest-*)
+            (registered; exec taskset -c "$SERVER_CPUS" "$GARNET_LATEST" --port "$PORT" \
+                --bind 127.0.0.1 ) >"$OUT/server.log" 2>&1 &
             ;;
         garnet-*)
             (registered; exec taskset -c "$SERVER_CPUS" "$GARNET" --port "$PORT" \
@@ -1504,7 +1511,7 @@ if [ "$MODE" = workloads ]; then
         set -f
         for selected in $WORKLOAD_SERVERS; do
             case $selected in
-                reference|redis-latest|firn|valkey|valkey-io|dragonfly|garnet) ;;
+                reference|redis-latest|firn|valkey|valkey-io|dragonfly|garnet|garnet-latest) ;;
                 *) echo "unknown WORKLOAD_SERVERS name: $selected" >&2; exit 1 ;;
             esac
             case " $seen_servers " in
@@ -1636,7 +1643,7 @@ if [ "$MODE" = workloads ]; then
                                 order="$order firn-$n"
                             fi
                             ;;
-                        dragonfly|garnet) order="$order $selected-$n" ;;
+                        dragonfly|garnet|garnet-latest) order="$order $selected-$n" ;;
                         *) order="$order $selected" ;;
                     esac
                 done

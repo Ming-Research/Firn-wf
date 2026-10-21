@@ -56,7 +56,7 @@ jobs:
           "$redis" --version
           "$garnet" --version
           echo "REDIS_LATEST=$redis" >> "$GITHUB_ENV"
-          echo "GARNET=$garnet" >> "$GITHUB_ENV"
+          echo "GARNET_LATEST=$garnet" >> "$GITHUB_ENV"
 
       - name: The pub/sub cells against the newest releases
         run: |
@@ -64,14 +64,14 @@ jobs:
           export PATH="$REDIS_BIN:$PATH"
           mkdir -p "$RUNNER_TEMP/newest"
           OUT="$RUNNER_TEMP/newest" SERVER_CPU_LIST=0 CLIENT_CPU_LIST=2,3 \
-            WORKLOAD_SERVERS="reference redis-latest garnet firn" \
+            WORKLOAD_SERVERS="reference redis-latest garnet-latest firn" \
             WORKLOADS=pubsub-channel WORKLOAD_CPUS=1 WORKLOAD_PASSES=1 WORKLOAD_SECONDS=2 \
             WORKLOAD_DEPTHS="16 1" WORKLOAD_OPTIONS="--warmup-seconds 1" \
             sh research/experiments/redis-bench/redis-bench.sh workloads
           cat "$RUNNER_TEMP/newest/pubsub.csv"
           # Four lines at two depths, and the header.
           [ "$(wc -l < "$RUNNER_TEMP/newest/pubsub.csv")" = 9 ]
-          for line in reference redis-latest garnet-1 firn-1; do
+          for line in reference redis-latest garnet-latest-1 firn-1; do
             grep -q "^$line," "$RUNNER_TEMP/newest/pubsub.csv"
           done
           python3 -I research/experiments/redis-bench/summary.py pubsub "$RUNNER_TEMP/newest"

@@ -38,9 +38,9 @@ medians and the twin spelled out as the firn investigation's
 - **Competitors.** The competitors are the newest stable release of each
   project, and `reference` stays Redis 7.2.16, the project's reference
   (AGENTS.md). `redis-latest` is the newest stable Redis (8.10.2), built by
-  `latest.sh` from its archive, which the script pins by SHA-256; `garnet` is
-  the newest release (2.2.3), run from its prebuilt archive in place of the
-  host's 2.2.1; `valkey`, `valkey-io` and `dragonfly` are the host's
+  `latest.sh` from its archive, which the script pins by SHA-256; `garnet-latest` is
+  the newest Garnet (2.2.3), run from its prebuilt archive; the host's 2.2.1
+  is not measured; `valkey`, `valkey-io` and `dragonfly` are the host's
   executables, Valkey 9.1.2 and Dragonfly v2.0.2 in the last 14900K run's
   `host.txt`, which are the newest stable releases of both (9.2.0-rc1 is a
   prerelease; GitHub release lists read 2026-10-21). A run's `host.txt` prints the version of each line, and a pin

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The newest stable releases of the two competitors whose installed copy on the
 # self-hosted machine can be older than the release (redis-bench.sh, lines
-# redis-latest and garnet): Redis, built from the official release archive as
+# redis-latest and garnet-latest): Redis, built from the official release archive as
 # tests/redis-suite/reference.sh builds 7.2.16, and Garnet, from the release's
 # prebuilt x86-64 Linux archive. Valkey and Dragonfly are the host's own and
 # their versions stand in each run's host.txt. A newer release is adopted by
