@@ -1016,7 +1016,8 @@ is excluded from maxmemory, so these writes may evict nothing (CI run
 39476647418 with 32-key batches aborted with rotation_reserve; the four-key
 batch did not evict in run 39486884100). Evictions while a rewrite captures
 are covered by allkeys_lru_evicts_while_a_paced_rewrite_captures_and_restores_survivors
-(paced by rdb-key-save-delay, eight writes at the limit).
+(paced by rdb-key-save-delay; the limit is lowered 1 MiB during the window, so
+the next write evicts while the rewrite captures).
 
 The rotation-charge subtraction in mem_not_counted_for_evict
 (`firn/commands/eviction.wf`, memory_excluded) is checked by
@@ -1034,4 +1035,6 @@ aborted rewrite was removed: the aborted attempt's ledger is excluded until
 cleanup, and cleanup lowers the compared figure by the same ledger it
 releases, so waiting gives eviction no room. The installing wait stays because
 the installation must publish one result before keys change. The aborted case
-is covered by allkeys_lru_keeps_evicting_while_an_aborted_rewrite_clears.
+is exercised by allkeys_lru_keeps_evicting_while_an_aborted_rewrite_clears: writes
+after the abort still evict. That case does not show that eviction returns
+before the cleanup ends.

@@ -631,9 +631,6 @@ including a refused admission; counters start at zero before the first attempt.
   bytes, not heap or RSS measurements. While running they show current use
   and its peak; on failure both freeze at the first failure, before refunds.
   Successful completion reports zero used and retains the attempt's peak.
-- `firn_aof_rewrite_charged` is the part of the ledger that rotation charged
-  against the rewrite reserve; it is already in the AOF buffer capacities
-  counted by `firn_aof_buffer_excluded`, so eviction subtracts it once.
 - `firn_aof_rewrite_journal_images` and
   `firn_aof_rewrite_journal_effects` count complete records successfully
   appended to the journal file as replacement images or statement AOF bytes,

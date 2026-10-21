@@ -914,7 +914,7 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
     let manifest = program.working_directory().join("appendonlydir/appendonly.aof.manifest");
     let deadline = Instant::now() + Duration::from_secs(20);
     // Post-cut writes charge the rotation backlog (see the post-cut backlog
-    // case). A few 16 KiB writes after the cut charge it without exhausting
+    // case). A few 32 KiB writes after the cut charge it without exhausting
     // R; 32 KiB writes during the whole poll kept S1 from rotating (CI run
     // 39498935592), and 1 KiB writes charged nothing (CI run 39510473972).
     let mut writes_after_cut = 0;

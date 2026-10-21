@@ -64,7 +64,7 @@ fn record_memory_peak(store: &Keyspace, client: &Client) -> result: unit reads(s
 }
 
 fn memory_over(meta: &Meta, client: &Client, logged: Bool) -> over: Bool writes(meta), writes(client) {
-  doc "Redis 7.2.16 getMaxmemoryState: raw used_memory minus exclusions, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed. Rewrite charges are excluded; ordinary service pressure uses eviction or OOM without cancelling the rewrite. Eviction still waits for an aborted attempt's cleanup or committed installation when over the limit.";
+  doc "Redis 7.2.16 getMaxmemoryState: raw used_memory minus exclusions, saturating at zero. Called again immediately before each victim while holding its entry and Meta, so another context's reclamation is observed. Rewrite charges are excluded; ordinary service pressure uses eviction or OOM without cancelling the rewrite. Eviction waits for a committed installation's publication and cleanup when over the limit, but not for an aborted attempt's cleanup, which gives eviction no extra room.";
   let used = heap_read(client: client);
   set meta^.memory_peak = imax(meta^.memory_peak, used);
   let excluded = memory_excluded(meta: meta, logged: logged);

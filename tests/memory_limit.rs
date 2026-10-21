@@ -302,14 +302,17 @@ fn allkeys_lru_evicts_while_a_paced_rewrite_captures_and_restores_survivors() {
     ]);
     assert_eq!(memory_request(&mut client, &["BGREWRITEAOF"]), "+Background append only file rewriting started\r\n");
     let mut observed = info(&mut client, "all");
-    // Each write is one 16 KiB image in the rewrite's ledger, so only a few
-    // fit R. Eviction removes at least one key per write while over the limit.
-    for index in 512..520 {
-        if number(&observed, "aof_rewrite_in_progress") == 0 { break; }
-        assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
-        written += 1;
-        observed = info(&mut client, "all");
-    }
+    // Lower the limit by 1 MiB while the paced rewrite captures. The next
+    // write must evict down to it, and each eviction's deletion is captured.
+    assert_eq!(number(&observed, "aof_rewrite_in_progress"), 1, "the paced rewrite finished before the window: {observed}");
+    let evicted_before_window = number(&observed, "evicted_keys");
+    configure(&mut client, &["maxmemory", &(limit - 1024 * 1024).to_string()]);
+    assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{}", 512), &value(512)]), "+OK\r\n");
+    written += 1;
+    observed = info(&mut client, "all");
+    assert_eq!(number(&observed, "aof_rewrite_in_progress"), 1, "the paced rewrite finished before eviction: {observed}");
+    assert!(number(&observed, "evicted_keys") > evicted_before_window,
+        "a lower limit during the rewrite evicted no key: {observed}");
     let deadline = Instant::now() + Duration::from_secs(60);
     while number(&observed, "aof_rewrite_in_progress") != 0 {
         assert!(Instant::now() < deadline, "paced cache rewrite did not finish: {observed}");
@@ -345,9 +348,10 @@ fn allkeys_lru_evicts_while_a_paced_rewrite_captures_and_restores_survivors() {
     rewrite_stop(&mut restored, child);
 }
 
-/// A rewrite that aborts while the cache is over its limit must not hold
-/// eviction back: the aborted attempt's cleanup is not awaited, so writes at
-/// the limit keep evicting until the abort is cleared.
+/// A rewrite that aborts while the cache is over its limit: writes made after
+/// the abort is seen still evict, before the abort's cleanup clears the
+/// rewrite. This does not show that eviction returns before the cleanup ends;
+/// it shows that the abort does not stop eviction.
 #[test]
 fn allkeys_lru_keeps_evicting_while_an_aborted_rewrite_clears() {
     let program = CompiledProgram::from_environment();
