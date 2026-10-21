@@ -124,9 +124,12 @@ workloads` ([header](../../experiments/redis-bench/redis-bench.sh)).
 ## Results
 
 All on the 14900K (self-hosted runner, Linux 7.0.0-38), measured 2026-10-21,
-servers on CPUs 2 and 4 (P-cores), clients on CPUs 16-31 (E-cores), the
-workflow's `redis-bench.yml` at revision `94419bc`. Nothing was installed on the
-host.
+servers on CPUs 2 and 4 (P-cores), clients on CPUs 16-31 (E-cores), by the
+workflow `redis-bench.yml`. The noise floor ran at revision `d5bb820`, the
+other two runs at `94419bc`. Between the two revisions only `latest.sh` (the
+fetch of the newest competitor releases) and this record changed, and the floor
+run measured firn's two images alone and skipped that fetch, so the floor holds
+for the later runs. Nothing was installed on the host.
 
 ### Noise floor
 
@@ -141,8 +144,8 @@ warm-up, 64-byte payloads; `summary.py pubsub --firn image-head --twin
 image-head-twin --floor 0.86`). The twin half-widths are 0.55% (channel, depth
 1), 0.85% (channel, 16), 0.47% (pattern, 1) and 0.67% (pattern, 16), none above
 the floor, so all four cells count. The client work fraction is 0.108-0.111 for
-firn and 0.05-0.18 for the fastest competitors, far below 0.90: no cell is
-client-limited. Rates are medians, in thousands of messages a second.
+firn and 0.048-0.178 for the fastest competitors (no sample of any line is above
+0.181), far below 0.90: no cell is client-limited. Rates are medians, in thousands of messages a second.
 
 | cell | firn | fastest competitor | firn / fastest | required | firn p99 | fastest's p99 |
 |---|---|---|---|---|---|---|
@@ -192,8 +195,8 @@ compiler release, so they differ by Firn-wf#100 alone. After/before is the
 median of the per-pass ratios; the interval is the 95% interval of the mean log
 ratio over the 6 passes (`summary.py ratios`). `lrange_500` and `lrange_600` at
 depth 16 are client-limited in all 6 passes of all three images (client busy
-fraction above 0.90, at most 0.93), so the client sets their rates and their
-cells are reported and not judged.
+fraction 0.902-0.928; the other 648 samples of the run are at most 0.889), so
+the client sets their rates and their cells are reported and not judged.
 
 | test | depth | after/before | 95% interval | verdict | twin/after 95% interval |
 |---|---|---|---|---|---|
@@ -258,7 +261,9 @@ Reading:
 
 Both parts of the item's criterion fail: the delivery rate and p99 in all four
 cells, and the ordinary commands' rate in 14 of the 36 cells the client does
-not limit. By "What rejects"
-above, this item changes no publish/subscribe code; the gaps stand as
-measured and go to a performance item, whose first step is the profile with call
-stacks.
+not limit. By "What rejects" above, this item changes no publish/subscribe
+code; the gaps stand as measured and go to a performance item, whose first step
+is the profile with call stacks. The `redis-latest` line with I/O threads on
+(see Competitors) is not added: firn is 19 times behind `redis-latest` at depth
+16, and one more line can only raise a cell's fastest competitor, never lower
+it, so it cannot bring a failing cell to its threshold.
