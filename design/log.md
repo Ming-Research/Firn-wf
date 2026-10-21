@@ -11,6 +11,12 @@ Nodes: firn/info-diagnostics
 
 Summary: INFO keeps firn's own append-only rewrite diagnostics (the firn_aof_rewrite_ fields that operators and the rewrite acceptance cases read) in the Persistence section, after every selected Redis 7.2.16 field. This keeps the real measurements and Redis's relative field order; interleaving them with Redis fields, deleting them or moving them to another section is rejected.
 
+## 2026-10-14 Add SSCAN, HSCAN and ZSCAN as whole-collection scans
+
+Nodes: firn/enumeration, firn/scripts
+
+Summary: Until Whitefoot's standard-library hash map can resume a scan (board item coord-wfbl-02-01), SSCAN, HSCAN and ZSCAN return the whole MATCH-filtered collection in one held statement with cursor 0, in firn's element order; the temporary code is removed and replaced by bounded batches when the library delivers, and the item's acceptance waits for that. ZSCAN writes scores with Redis's d2string text when the whole sorted set has at most 128 members of at most 64 bytes each, and with the exact %.17g writer otherwise. The script rollback decision now rests on the scans having no cursor that spans an attempt, and reopens when bounded continuation arrives. Rejected: Redis encoding history, resuming at a numeric offset, dropping entries or returning cursor 0 for a partial result, one score formatter for all sizes.
+
 ## 2026-10-14 Write scores in replies and AOF rewrites byte for byte as Redis 7.2.16
 
 Nodes: firn/scripts

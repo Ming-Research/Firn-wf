@@ -73,7 +73,7 @@ member actually called, then itself. Aborted transactions do not count their
 unexecuted members. Distinguish an EXEC handler's abort from an EXEC rejected
 before `call()`. An ACL rejection during EXEC skips that member's call.
 
-[Script commands](https://github.com/redis/redis/blob/7.2.16/src/script.c#L520)
+[Script commands](https://github.com/redis/redis/blob/7.2.16/src/script.c#L566)
 entered through `redis.call` or `redis.pcall` count individually, followed by
 the outer EVAL/EVALSHA. Pre-call script validation failures do not count an
 inner invocation; handler errors do. Lua execution steps are not commands.
@@ -82,20 +82,20 @@ execution ending in a Lua error: discard the former's counters, preserve the
 latter's already executed commands and lookups.
 
 Blocking attempts do not increment the total until final reprocessing or
-[updateStatsOnUnblock](https://github.com/redis/redis/blob/7.2.16/src/blocked.c#L100).
+[updateStatsOnUnblock](https://github.com/redis/redis/blob/7.2.16/src/blocked.c#L106).
 The timeout path of blocking list/zset/stream operations also accounts for
 completion. A disconnected unfinished operation is not a completed command.
 This is a rule for any future blocking support, not a claim firn has it.
 
 Loading is not a blanket exclusion: [direct AOF replay](https://github.com/redis/redis/blob/7.2.16/src/aof.c#L1552)
 calls the handler without `call()`, but members of a replayed EXEC go through
-`call(CMD_CALL_NONE)` ([multi.c](https://github.com/redis/redis/blob/7.2.16/src/multi.c#L229)).
+`call(CMD_CALL_NONE)` ([multi.c](https://github.com/redis/redis/blob/7.2.16/src/multi.c#L231)).
 The global command increment is outside the loading guard that suppresses
 commandstats. Preserve that distinction in the implementation audit.
 
 ### Keyspace hits and misses
 
-[lookupKey](https://github.com/redis/redis/blob/7.2.16/src/db.c#L63) resolves
+[lookupKey](https://github.com/redis/redis/blob/7.2.16/src/db.c#L88) resolves
 expiry, then counts one hit for a live value or one miss for absence, unless
 `LOOKUP_NOSTATS` or `LOOKUP_WRITE` suppresses statistics. The write wrappers
 add `LOOKUP_WRITE`. `LOOKUP_NOTOUCH` suppresses access stamps, not statistics;
@@ -121,7 +121,7 @@ not accidentally become Redis read lookups.
 
 ### Expiration
 
-[deleteExpiredKeyAndPropagate](https://github.com/redis/redis/blob/7.2.16/src/db.c#L1679)
+[deleteExpiredKeyAndPropagate](https://github.com/redis/redis/blob/7.2.16/src/db.c#L1680)
 increments `expired_keys` on actual active or lazy expiration deletion. A
 deadline passing alone does not increment it. A lazy read of an expired key
 can therefore cause both one expiration and one lookup miss. Ordinary DEL,
@@ -137,7 +137,7 @@ together, once. Keep this counter in Meta rather than count it again in a shard.
 
 ### Received bytes
 
-[readQueryFromClient](https://github.com/redis/redis/blob/7.2.16/src/networking.c#L2695)
+[readQueryFromClient](https://github.com/redis/redis/blob/7.2.16/src/networking.c#L2722)
 adds every positive `connRead` result before parsing or command validation.
 Count protocol framing, incomplete requests, invalid requests, already-read
 pipeline suffixes and bytes from connections later closed. Zero/error reads
@@ -201,9 +201,9 @@ RESETSTAT appears throughout the suite as setup for other counters; it does not 
 
 - [introspection-2](https://github.com/redis/redis/blob/7.2.16/tests/unit/introspection-2.tcl#L61-L119): GEOADD calls=1 and no ZADD; GEOADD WRONGTYPE calls=1/rejected=0/failed=1; EXPIRE calls=1 and no DEL; BRPOP calls=1 and no RPOP; MULTI and EXEC and each queued command calls=1; scripts EVAL=1, SET=2, EXPIRE=1 and GEOADD=1. All command requests and INFO share `r`. Internal script calls and EXEC entries are separate counted executions, not separate network connections. These six exact names have no current ratchet rows.
 - [info](https://github.com/redis/redis/blob/7.2.16/tests/unit/info.tcl): six latencystats tests check disabled/empty and enabled percentiles; RESETSTAT removes percentiles; errorstats tests check global `total_error_replies` and per-error counts and per-command calls/rejected_calls/failed_calls. The Lua and MULTI/EXEC tests pin attribution without asserting global total_commands_processed. `latencystats: blocking commands` reads BLPOP percentiles after two BLPOPs on `$rd`; `errorstats: blocking commands` reads UNBLOCKED count=1, BLPOP calls=1/failed=1 and total_error_replies=1 after `$rd` is unblocked by `r`. Those read other-connection facts, including immediately after `$rd read` returns. `stats: instantaneous metrics` polls eventloop cycles/duration metrics. Entire info unit is external:skip.
-- [latency-monitor](https://github.com/redis/redis/blob/7.2.16/tests/unit/latency-monitor.tcl#L6-L75): RESETSTAT itself remains a histogram command with calls=1; empty-histogram case dictionary has exactly one entry, config|resetstat. Subsequent cases pin SET=2, CLIENT ID/LIST=1, HSET/GET/HGETALL=1, dictionary lengths, and invalid-command omission. Same control connection, no other-client workload.
-- [type/list](https://github.com/redis/redis/blob/7.2.16/tests/unit/type/list.tcl#L2356-L2403): both exact blocking-stat tests assert BLPOP calls=1/rejected_calls=0/failed_calls=0 after wake or CLIENT UNBLOCK TIMEOUT; `r` reads stats for `$rd`'s execution, the second immediately after CLIENT UNBLOCK. No current ratchet rows for these exact names.
-- [acl](https://github.com/redis/redis/blob/7.2.16/tests/unit/acl.tcl#L326-L343): reprocessed blocked BLPOP on `$rd` becomes NOPERM after ACL change on `r`, then `r` reads BLPOP calls=0/usec=0/rejected=1/failed=0 after `$rd` closes. Cross-connection, including retired facts.
+- [latency-monitor](https://github.com/redis/redis/blob/7.2.16/tests/unit/latency-monitor.tcl#L6-L72): RESETSTAT itself remains a histogram command with calls=1; empty-histogram case dictionary has exactly one entry, config|resetstat. Subsequent cases pin SET=2, CLIENT ID/LIST=1, HSET/GET/HGETALL=1, dictionary lengths, and invalid-command omission. Same control connection, no other-client workload.
+- [type/list](https://github.com/redis/redis/blob/7.2.16/tests/unit/type/list.tcl#L2356-L2401): both exact blocking-stat tests assert BLPOP calls=1/rejected_calls=0/failed_calls=0 after wake or CLIENT UNBLOCK TIMEOUT; `r` reads stats for `$rd`'s execution, the second immediately after CLIENT UNBLOCK. No current ratchet rows for these exact names.
+- [acl](https://github.com/redis/redis/blob/7.2.16/tests/unit/acl.tcl#L326-L341): reprocessed blocked BLPOP on `$rd` becomes NOPERM after ACL change on `r`, then `r` reads BLPOP calls=0/usec=0/rejected=1/failed=0 after `$rd` closes. Cross-connection, including retired facts.
 - [type/stream-cgroups](https://github.com/redis/redis/blob/7.2.16/tests/unit/type/stream-cgroups.tcl#L529-L545): after `$rd` XREADGROUP fails from `r`'s XGROUP DESTROY and `$rd` closes, `r` asserts NOGROUP count=1, XREADGROUP calls=1/rejected=0/failed=1, total_error_replies=1. Cross-connection and retired facts.
 - [scripting](https://github.com/redis/redis/blob/7.2.16/tests/unit/scripting.tcl#L2188-L2340): `Consistent eval error reporting` repeatedly resets and checks OOM/ERR/WRONGTYPE count=1 and global errors=1, and exact nested SET/SELECT/GEOADD and EVAL/EVAL_RO rejected/failed attribution. Error API tests pin MY_ERR_CODE=1, empty error ERR=1; status API leaves MY_ERR_CODE absent. Same control connection, internal calls.
 - [lazyfree](https://github.com/redis/redis/blob/7.2.16/tests/unit/lazyfree.tcl#L43-L90): waits background pending objects=0 then asserts lazyfreed_objects exactly 1 for complex stream, exactly 0 for stream with deleted cgroup. Same control client, background reclamation counter. Neither requested five nor other connections.
