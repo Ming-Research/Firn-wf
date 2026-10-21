@@ -978,7 +978,14 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
 
 #[test]
 fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects() {
-    let program = CompiledProgram::from_environment();
+    // The files live in memory. Between S1 and the new increment's
+    // publication the sole writer syncs files, and on a shared disk those
+    // syncs wait behind other cases' large writebacks while this case's
+    // writer fills the rotation backlog: past 4 MiB of it the rewrite aborts.
+    // The case checks that S1 does no work proportional to the history, not
+    // the disk's speed. The reread it guards against still fails it in memory
+    // (test-stability.md in research/investigations/aof-rewrite).
+    let program = CompiledProgram::from_environment_under(std::path::Path::new("/dev/shm"));
     long_increment_history(&program);
     // Keep the 128-MiB history from triggering an automatic rewrite. Default
     // unlimited maxmemory retains R = 16 MiB, allowing ordinary switch I/O

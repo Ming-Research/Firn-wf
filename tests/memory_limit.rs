@@ -190,7 +190,15 @@ fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
     ).with_port(&port_lease);
     let child = spawn();
     let mut client = connect_when_ready(port, &child);
-    const CACHE_VALUE_BYTES: usize = 16 * 1024;
+    // R is a twentieth of the limit, about 850 KB here, and the first scan
+    // steps charge their key copies, images and buffer growth before the
+    // count hint adapts. With 16 KiB values the rewrite used 96% to 99.6% of
+    // R at its peak, and a write arriving then found about 3 KB of allowance
+    // and aborted the rewrite with capture (3 of 104 runs of the whole suite).
+    // With 1 KiB values the peak was at most 65.7% of R over 72 runs, leaving
+    // at least 290 KB for a write of little more than 1 KiB
+    // (test-stability.md in research/investigations/aof-rewrite).
+    const CACHE_VALUE_BYTES: usize = 1024;
     let value = |index: usize| format!("{index:08}:{}", "c".repeat(CACHE_VALUE_BYTES - 9));
     // Warm the command input allocation before selecting a limit. Eight MiB
     // of cache makes R large enough for these small values and fixed rewrite
@@ -204,7 +212,7 @@ fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
         "maxmemory-eviction-tenacity", "100",
     ]);
     let mut written = 0;
-    for batch in 0..128 {
+    for batch in 0..512 {
         for index in batch * 32..(batch + 1) * 32 {
             assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
             written += 1;
