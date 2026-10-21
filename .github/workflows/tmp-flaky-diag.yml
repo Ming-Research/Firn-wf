@@ -19,13 +19,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: t1-disk-noise, noise: disk, loops: 60, test: "rewrite_scan::reconciled_scan_long_history_completes_under_writes_without_duplicate_effects" }
-          - { name: t1-disk-noise-tmpfs, noise: disk, loops: 60, test: "rewrite_scan::diag_long_history_on_tmpfs" }
-          - { name: t1-cpu-noise, noise: cpu, loops: 60, test: "rewrite_scan::reconciled_scan_long_history_completes_under_writes_without_duplicate_effects" }
-          - { name: t1-cpu-noise-tmpfs, noise: cpu, loops: 60, test: "rewrite_scan::diag_long_history_on_tmpfs" }
-          - { name: m-cpu-noise, noise: cpu, loops: 150, test: "memory_limit::allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data" }
-          - { name: m-cpu-noise-nowrites, noise: cpu, loops: 150, test: "memory_limit::diag_cache_at_limit_without_window_writes" }
-          - { name: m-disk-noise, noise: disk, loops: 150, test: "memory_limit::allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data" }
+          - { name: unknown-boundary-tmpfs, mode: alone, noise: none, extra: "--ignored", loops: 40, test: "rewrite_scan::diag_long_history_unknown_boundary_on_tmpfs" }
+          - { name: unknown-boundary-disk, mode: alone, noise: none, extra: "--ignored", loops: 40, test: "rewrite_scan::diag_long_history_unknown_boundary_on_disk" }
+          - { name: continuous-16k, mode: alone, noise: none, extra: "--ignored", loops: 40, test: "memory_limit::diag_cache_at_limit_continuous_writes_16k" }
+          - { name: continuous-1k, mode: alone, noise: none, extra: "--ignored", loops: 40, test: "memory_limit::diag_cache_at_limit_continuous_writes_1k" }
+          - { name: suite-a, mode: suite, noise: none, extra: "", loops: 12, test: "" }
+          - { name: suite-b, mode: suite, noise: none, extra: "", loops: 12, test: "" }
+          - { name: suite-c, mode: suite, noise: none, extra: "", loops: 12, test: "" }
+          - { name: suite-d, mode: suite, noise: none, extra: "", loops: 12, test: "" }
+          - { name: suite-e, mode: suite, noise: none, extra: "", loops: 12, test: "" }
+          - { name: suite-f, mode: suite, noise: none, extra: "", loops: 12, test: "" }
     env:
       REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     steps:
@@ -50,6 +53,8 @@ jobs:
       - name: Loop
         env:
           NOISE: ${{ matrix.noise }}
+          MODE: ${{ matrix.mode }}
+          EXTRA: ${{ matrix.extra }}
           LOOPS: ${{ matrix.loops }}
           ONE: ${{ matrix.test }}
         run: |
@@ -63,7 +68,7 @@ jobs:
             for n in 1 2; do
               ( while :; do dd if=/dev/zero of=/tmp/noise-$n.bin bs=1M count=600 conv=fsync status=none; done ) &
             done
-          else
+          elif [ "$NOISE" = cpu ]; then
             for n in 1 2 3 4 5 6; do
               ( while :; do :; done ) &
             done
@@ -71,12 +76,16 @@ jobs:
           for i in $(seq 1 "$LOOPS"); do
             log="$RUNNER_TEMP/out/loop-$i.log"
             start=$(date +%s.%N)
-            cargo test --manifest-path tests/Cargo.toml --locked --test network -- --exact --nocapture --test-threads=1 "$ONE" >"$log" 2>&1
+            if [ "$MODE" = suite ]; then
+              cargo test --manifest-path tests/Cargo.toml --locked -- --skip rewrite_faults:: --show-output >"$log" 2>&1
+            else
+              cargo test --manifest-path tests/Cargo.toml --locked --test network -- $EXTRA --exact --nocapture --test-threads=1 "$ONE" >"$log" 2>&1
+            fi
             status=$?
             end=$(date +%s.%N)
             echo "LOOP $i status=$status seconds=$(echo "$end - $start" | bc)"
             grep -o 'DIAG-[A-Za-z0-9-]* .*' "$log" | sed "s/^/  [loop $i] /"
-            grep -E 'panicked at' "$log" | sed "s/^/  [loop $i] /" | cut -c1-300
+            grep -E 'panicked at|FAILED' "$log" | grep -v -E 'reply_assertion_rejects|readiness_' | sed "s/^/  [loop $i] /" | cut -c1-300
           done
           kill $(jobs -p) 2>/dev/null
           echo "fails: $(grep -L 'test result: ok' $RUNNER_TEMP/out/loop-*.log | wc -l) of $LOOPS"

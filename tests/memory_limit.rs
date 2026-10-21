@@ -190,17 +190,31 @@ fn allkeys_lru_bounds_heap_and_counts_evictions() {
 /// (status board item firn-rw-cache-refused).
 #[test]
 fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
-    cache_at_limit_rewrite(4);
+    cache_at_limit_rewrite(4, 16 * 1024, false);
 }
 
-// tmp diag (firn-rw-memory-tests-flaky): the same case without the writes
-// that follow the rewrite's start.
+// tmp diag (firn-rw-memory-tests-flaky): the same case with small values, so
+// that a first scan step leaves most of R free.
 #[test]
-fn diag_cache_at_limit_without_window_writes() {
-    cache_at_limit_rewrite(0);
+fn diag_cache_at_limit_small_values() {
+    cache_at_limit_rewrite(4, 1024, false);
 }
 
-fn cache_at_limit_rewrite(window_writes: usize) {
+// tmp diag: a client that writes without pause from the rewrite's start to
+// its end, with the original and with the small values.
+#[test]
+#[ignore]
+fn diag_cache_at_limit_continuous_writes_16k() {
+    cache_at_limit_rewrite(0, 16 * 1024, true);
+}
+
+#[test]
+#[ignore]
+fn diag_cache_at_limit_continuous_writes_1k() {
+    cache_at_limit_rewrite(0, 1024, true);
+}
+
+fn cache_at_limit_rewrite(window_writes: usize, value_bytes: usize, continuous: bool) {
     let program = CompiledProgram::from_environment();
     let port_lease = support::lease_port();
     let port = port_lease.port();
@@ -211,8 +225,8 @@ fn cache_at_limit_rewrite(window_writes: usize) {
     ).with_port(&port_lease);
     let child = spawn();
     let mut client = connect_when_ready(port, &child);
-    const CACHE_VALUE_BYTES: usize = 16 * 1024;
-    let value = |index: usize| format!("{index:08}:{}", "c".repeat(CACHE_VALUE_BYTES - 9));
+    let cache_value_bytes = value_bytes;
+    let value = |index: usize| format!("{index:08}:{}", "c".repeat(cache_value_bytes - 9));
     // Warm the command input allocation before selecting a limit. Eight MiB
     // of cache makes R large enough for these small values and fixed rewrite
     // storage, so a refusal cannot be attributed to the minimum reserve.
@@ -225,7 +239,7 @@ fn cache_at_limit_rewrite(window_writes: usize) {
         "maxmemory-eviction-tenacity", "100",
     ]);
     let mut written = 0;
-    for batch in 0..128 {
+    for batch in 0..(128 * 16384 / value_bytes) {
         for index in batch * 32..(batch + 1) * 32 {
             assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
             written += 1;
@@ -252,6 +266,13 @@ fn cache_at_limit_rewrite(window_writes: usize) {
         diag_line(&format!("set{}", index - written), &snapshot, diag_start);
     }
     written += window_writes;
+    if continuous {
+        for index in written..written + 2000 {
+            assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
+            written += 1;
+            if index % 8 == 0 && number(&info(&mut client, "persistence"), "aof_rewrite_in_progress") == 0 { break; }
+        }
+    }
     observed = info(&mut client, "all");
     diag_line("after-sets", &observed, diag_start);
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -274,7 +295,7 @@ fn cache_at_limit_rewrite(window_writes: usize) {
     for index in 0..written {
         let actual = memory_request(&mut client, &["GET", &format!("cache:{index}")]);
         if actual != "$-1\r\n" {
-            assert_eq!(actual, format!("${CACHE_VALUE_BYTES}\r\n{}\r\n", value(index)),
+            assert_eq!(actual, format!("${cache_value_bytes}\r\n{}\r\n", value(index)),
                 "live cache value {index}");
             survivors += 1;
         }

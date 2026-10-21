@@ -985,21 +985,60 @@ fn diag_rchar(pid: u32) -> u64 {
 
 #[test]
 fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects() {
-    long_history_under_writes(CompiledProgram::from_environment());
+    long_history_under_writes(CompiledProgram::from_environment(), false);
 }
 
 // tmp diag (firn-rw-memory-tests-flaky): the same case with its files in memory.
 #[test]
 fn diag_long_history_on_tmpfs() {
-    long_history_under_writes(CompiledProgram::from_environment_under(std::path::Path::new("/dev/shm")));
+    long_history_under_writes(CompiledProgram::from_environment_under(std::path::Path::new("/dev/shm")), false);
 }
 
-fn long_history_under_writes(program: CompiledProgram) {
-    long_increment_history(&program);
+// tmp diag: the same case after a failed append made the boundary unknown, so
+// that the switch rereads the whole history as the old code did. It must fail.
+#[test]
+#[ignore]
+fn diag_long_history_unknown_boundary_on_tmpfs() {
+    long_history_under_writes(CompiledProgram::from_environment_under(std::path::Path::new("/dev/shm")), true);
+}
+
+#[test]
+#[ignore]
+fn diag_long_history_unknown_boundary_on_disk() {
+    long_history_under_writes(CompiledProgram::from_environment(), true);
+}
+
+fn long_history_under_writes(program: CompiledProgram, unknown_boundary: bool) {
+    let increment = long_increment_history(&program);
     // Keep the 128-MiB history from triggering an automatic rewrite. Default
     // unlimited maxmemory retains R = 16 MiB, allowing ordinary switch I/O
     // while the old history reread still produces enough backlog to exceed R.
-    let (child, mut control, port) = start_with_minimum(&program, b"4294967296");
+    let (child, mut control, port) = if unknown_boundary {
+        let lease = support::lease_port();
+        let port = lease.port();
+        let text = port.to_string();
+        let child = program.spawn_on_route_ignoring_xfsz(true, &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", b"4294967296"]).with_port(&lease);
+        let mut client = connect_when_ready(port, &child);
+        let previous = aof_write_errors::file_limit(&child, std::fs::metadata(&increment).unwrap().len());
+        assert_eq!(request(&mut client, &[b"SET", b"hot", b"failed-append"]), Reply::Line(b"+OK".to_vec()));
+        let recovery_deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let info = rewrite_info(&mut client);
+            if info["aof_last_write_status"] == "err" { break; }
+            assert!(Instant::now() < recovery_deadline, "file limit did not fail the ordinary append: {info:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        aof_write_errors::file_limit(&child, previous.soft);
+        loop {
+            let info = rewrite_info(&mut client);
+            if info["aof_last_write_status"] == "ok" && info["aof_buffer_length"] == "0" { break; }
+            assert!(Instant::now() < recovery_deadline, "ordinary append did not recover: {info:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        (child, client, port)
+    } else {
+        start_with_minimum(&program, b"4294967296")
+    };
     assert_eq!(request(&mut control, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"100"]), Reply::Line(b"+OK".to_vec()));
     let running = Arc::new(AtomicBool::new(true));
     let worker_running = running.clone();
