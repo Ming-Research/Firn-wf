@@ -333,10 +333,11 @@ exclusion uses capacities even when drained, not lengths; `mem_aof_buffer`
 reports those allocated buffers alone. `mem_not_counted_for_evict` adds the
 rewrite ledger's current charges through cleanup, less the rotation-buffer
 charges already covered by the AOF capacities (`firn_aof_rewrite_charged` in
-`INFO persistence`), so while a rewrite runs a check can recompute it as
-`mem_aof_buffer` plus `firn_aof_rewrite_used` less `firn_aof_rewrite_charged`;
-those charges are conservative allowances rather than independent heap
-measurements. `INFO stats`
+`INFO persistence`), so until the attempt aborts a check can recompute it as
+`mem_aof_buffer` plus `firn_aof_rewrite_used` less `firn_aof_rewrite_charged`
+(after an abort `firn_aof_rewrite_used` is frozen at the first failure while
+the exclusion follows the live ledger until cleanup); those charges are
+conservative allowances rather than independent heap measurements. `INFO stats`
 reports live `evicted_keys`. The heap meter counts the keyspace's own
 storage, its shared-map tables and nodes, as well as values.
 
@@ -706,7 +707,8 @@ including a refused admission; counters start at zero before the first attempt.
 - `firn_aof_rewrite_charged` is the part of the ledger that the rotation
   charged for collecting-buffer growth; `mem_not_counted_for_evict` excludes
   the ledger less this part, since those bytes are already in the AOF
-  buffer capacities.
+  buffer capacities. It is the live value: unlike
+  `firn_aof_rewrite_used` it does not freeze at the first failure.
 
 Failure before rotation leaves the original manifest authoritative. After
 rotation it leaves the manifest naming the old base and all increments
