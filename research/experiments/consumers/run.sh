@@ -175,7 +175,7 @@ run_each_file() {
 # BITFIELD command. The log goes to heartbeat.log and a summary to
 # heartbeat.txt. The probe records what the server does; it fails on nothing.
 heartbeat_probe() {
-    local pid i registered
+    local pid i registered processed
     restart_server
     {
         echo "enqueue one no-op job:"
@@ -197,9 +197,12 @@ heartbeat_probe() {
     {
         echo "heartbeat probe against $server"
         echo "processes registered after 22 s (SCARD processes): $registered"
-        echo "jobs processed (GET stat:processed): $(redis-cli -p "$port" GET stat:processed 2>&1 | head -n 1)"
+        processed=$(redis-cli -p "$port" GET stat:processed 2>&1 | head -n 1)
+        echo "jobs processed (GET stat:processed): ${processed:-(nil)}"
         echo "jobs left in queue:default (LLEN): $(redis-cli -p "$port" LLEN queue:default 2>&1 | head -n 1)"
-        echo "error lines in heartbeat.log: $(grep -c -w ERROR "$out/heartbeat.log")"
+        # An exception that kills a thread is logged at INFO, with the
+        # exception's class last on its line.
+        echo "error lines in heartbeat.log (ERROR, or an exception line ending in Error)): $(grep -c -E '(^|[^A-Za-z])ERROR([^A-Za-z]|$)|Error\)$' "$out/heartbeat.log")"
     } | tee "$out/heartbeat.txt"
 }
 trap stop_server EXIT

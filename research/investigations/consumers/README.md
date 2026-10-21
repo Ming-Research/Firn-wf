@@ -210,9 +210,14 @@ Redis 7.2.16 and against firn, with a second Redis run for the unstable list.
   the helpers); Sidekiq's CI runs them against Redis 7.0.15, the latest Redis,
   Valkey 9 and Dragonfly. The tests start no server and run no case in
   parallel. `run.sh` runs each file in a process of its own (`bundle exec ruby
-  -Ilib -Itest FILE`), with Minitest's seed fixed at 1 on both servers. A file
-  run alone and the same file inside `rake test` may differ when a test leaves
-  state behind for a later file; the record is of the files run alone.
+  -Ilib -Itest FILE`), with Minitest's seed fixed at 1 on both servers.
+  `rake test` loads every file into one process before it runs a case, so a
+  file may use what another loaded: run alone on Redis 7.2.16, four files
+  failed 9 cases for a missing `Sidekiq::DeadSet`, `Rack::Session` or
+  `Rails.application` (the pattern makes rake boot the dummy application in
+  `test/dummy/`). `sidekiq_suite_context.rb` loads those before each file, as
+  rake's process has them, and the tests stay as they are; a library it does
+  not name that a file needs shows as an error on both servers.
 - **Environment.** The newest cell of Sidekiq's CI matrix: Ruby 4.0 and
   `RAILS_VERSION=8.1`. The repository has no lock file, so `bundle install`
   takes the newest gems of the day, and `what.txt` records the Ruby version
@@ -250,3 +255,48 @@ Redis 7.2.16 and against firn, with a second Redis run for the unstable list.
   window's metrics are lost. The probe is the run that settles it. firn has no
   `BRPOP` yet, so a `sidekiq` process on firn cannot fetch the job until the
   blocking list commands exist; the probe records what it finds.
+
+### Results
+
+The consumers workflow, dispatched by hand
+([run 39618095289](https://github.com/Ming-Research/Firn-wf/actions/runs/39618095289))
+at commit ddc361e, on `ubuntu-24.04` runners: Ruby 4.0.7, `railties` 8.1.4,
+`redis-client` 0.31.0, `minitest` 5.27.0, `connection_pool` 3.0.2 and `rack`
+3.2.7 on every cell, Redis 7.2.16 built from its release archive, firn built at
+the same commit. Redis ran twice. All 52 files finished on every cell.
+
+| | Redis run 1 | Redis run 2 | firn |
+|---|---|---|---|
+| cases recorded | 749 | 749 | 749 |
+| pass | 749 | 749 | 731 |
+| fail, error | 0 | 0 | 1, 17 |
+| seconds in the test files, summed | 76 | 67 | 59 |
+| job time with the gems installed | 3 min 5 s | 2 min 52 s | 4 min 25 s |
+
+The two Redis runs passed the same 749 cases, so `sidekiq-unstable.tsv` is
+empty. The comparison puts 731 cases in both servers' passes, 18 in Redis's
+alone and none in firn's alone. The 18, by the error the case raised (read from
+`test.log`):
+
+| Cause on firn | Cases | Files |
+|---|---|---|
+| `ERR unknown command 'bitfield'` or `'bitfield_ro'`, the metrics' storage | 11 | `metrics_test.rb` 8, `web_test.rb` 3 |
+| `ERR DB index is out of range`, `SELECT` of database 5 or 6 | 4 | `sharding_test.rb` |
+| `ERR unknown command 'brpop'`, fetching a job | 2 | `fetch_test.rb` |
+| `actors_test.rb` "deals with errors": its processor never fetches the job, so the error it waits for never arises; read from the test, not yet confirmed | 1 | `actors_test.rb` |
+
+The heartbeat probe, `heartbeat.txt` of each cell:
+
+| | Redis | firn |
+|---|---|---|
+| process registered after 22 s | 1 | 1 |
+| jobs processed (`stat:processed`) | 1 | none |
+| jobs left in the queue | 0 | 1 |
+| error lines in `heartbeat.log` | 0 | 1 |
+
+On firn the process starts and registers itself, and its processor thread
+ends at its first `BRPOP` (`ERR unknown command 'brpop'`, logged at INFO level
+with the exception's class last on the line, which the probe counts as an
+error line); the job stays queued and `BITFIELD` is never reached, so whether
+Sidekiq's heartbeat tolerates an error reply on `BITFIELD` is still open: the
+probe answers it once firn has the blocking list commands.
