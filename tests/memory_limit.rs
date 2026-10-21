@@ -24,6 +24,16 @@ fn configure(client: &mut TcpStream, pairs: &[&str]) {
     assert_eq!(memory_request(client, &args), "+OK\r\n");
 }
 
+// tmp diag (firn-rw-memory-tests-flaky): one line of rewrite facts per sample.
+fn diag_line(tag: &str, text: &str, start: Instant) {
+    let field = |name: &str| info_field(text, name).unwrap_or_default();
+    eprintln!("DIAG-M {tag} us={} in_progress={} steps={} used={} peak={} reserve={} images={} cut={} scan_done={} reason={} status={} maxmemory={} evicted={}",
+        start.elapsed().as_micros(), field("aof_rewrite_in_progress"), field("firn_aof_rewrite_scan_steps"),
+        field("firn_aof_rewrite_used"), field("firn_aof_rewrite_peak"), field("firn_aof_rewrite_reserve"),
+        field("firn_aof_rewrite_journal_images"), field("firn_aof_rewrite_cut"), field("firn_aof_rewrite_scan_done"),
+        field("firn_aof_rewrite_abort_reason"), field("aof_last_bgrewrite_status"), field("maxmemory"), field("evicted_keys"));
+}
+
 fn start(clients: &[u8]) -> (ProgramChild, TcpStream, u16) {
     let port_lease = support::lease_port();
     let port = port_lease.port();
@@ -214,7 +224,9 @@ fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
     let before = info(&mut client, "all");
     assert!(number(&before, "evicted_keys") > 0, "cache never reached eviction: {before}");
     let reply = memory_request(&mut client, &["BGREWRITEAOF"]);
+    let diag_start = Instant::now();
     let mut observed = info(&mut client, "all");
+    diag_line("reply", &observed, diag_start);
     assert_eq!(reply, "+Background append only file rewriting started\r\n",
         "rewrite refused at the eviction limit; before:\n{before}\nafter (abort reason and memory):\n{observed}");
     // A few writes right after the reply, while the rewrite is usually still
@@ -225,15 +237,19 @@ fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
     // window are therefore not guaranteed by this case.
     for index in written..written + 4 {
         assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
+        let snapshot = info(&mut client, "all");
+        diag_line(&format!("set{}", index - written), &snapshot, diag_start);
     }
     written += 4;
     observed = info(&mut client, "all");
+    diag_line("after-sets", &observed, diag_start);
     let deadline = Instant::now() + Duration::from_secs(60);
     while number(&observed, "aof_rewrite_in_progress") != 0 {
         assert!(Instant::now() < deadline, "cache rewrite did not finish: {observed}");
         std::thread::sleep(Duration::from_millis(10));
         observed = info(&mut client, "all");
     }
+    diag_line("done", &observed, diag_start);
     assert_eq!(info_field(&observed, "aof_last_bgrewrite_status").as_deref(), Some("ok"),
         "cache rewrite failed: {observed}");
     assert_eq!(info_field(&observed, "firn_aof_rewrite_abort_reason").as_deref(), Some(""), "{observed}");

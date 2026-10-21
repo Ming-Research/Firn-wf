@@ -989,8 +989,15 @@ fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects
     let worker_running = running.clone();
     let monitor = child.monitor();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let diag_manifest = program.working_directory().join("appendonlydir/appendonly.aof.manifest");
     let worker = std::thread::spawn(move || {
         let mut client = connect_when_ready(port, &monitor);
+        // tmp diag (firn-rw-memory-tests-flaky): S1 and publication times.
+        let diag_start = Instant::now();
+        let mut diag_cut: Option<(u128, u64)> = None;
+        let mut diag_publish: Option<(u128, u64)> = None;
+        let mut diag_max_buffer = 0_u64;
+        let mut diag_max_used = 0_u64;
         let mut count = 0_u64;
         let mut appended = Vec::new();
         let mut members = Vec::new();
@@ -1015,6 +1022,11 @@ fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects
             appended.extend_from_slice(&marker);
             members.push(Reply::Bulk(Some(marker.to_vec())));
             let progress = rewrite_info(&mut client);
+            let diag_now = diag_start.elapsed().as_micros();
+            diag_max_buffer = diag_max_buffer.max(progress["aof_buffer_length"].parse().unwrap_or(0));
+            diag_max_used = diag_max_used.max(progress["firn_aof_rewrite_used"].parse().unwrap_or(0));
+            if progress["firn_aof_rewrite_cut"] == "1" && diag_cut.is_none() { diag_cut = Some((diag_now, count)); }
+            if diag_publish.is_none() && std::fs::read_to_string(&diag_manifest).map(|text| text.contains("appendonly.aof.2.incr.aof")).unwrap_or(false) { diag_publish = Some((diag_now, count)); }
             if progress["firn_aof_rewrite_cut"] == "1" && cut_count.is_none() { cut_count = Some(count); }
             if count == 1 { ready_tx.send(()).unwrap(); }
             // At least one whole acknowledged pipeline must follow an
@@ -1022,6 +1034,7 @@ fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects
             if !worker_running.load(Ordering::Acquire) && cut_count.is_none_or(|cut| count > cut) { break; }
             std::thread::sleep(Duration::from_millis(1));
         }
+        eprintln!("DIAG-T1 iterations={count} cut={diag_cut:?} publish={diag_publish:?} max_buffer={diag_max_buffer} max_used={diag_max_used} total_us={}", diag_start.elapsed().as_micros());
         (count, cut_count, last_value, appended, members)
     });
     ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -1031,6 +1044,7 @@ fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects
     let info = rewrite_wait(&mut control);
     running.store(false, Ordering::Release);
     let (count, cut_count, hot, appended, members) = worker.join().unwrap();
+    eprintln!("DIAG-T1-final status={} reason={} peak={} used={} scan_steps={} buffer={}", info["aof_last_bgrewrite_status"], info["firn_aof_rewrite_abort_reason"], info["firn_aof_rewrite_peak"], info["firn_aof_rewrite_used"], info["firn_aof_rewrite_scan_steps"], info["aof_buffer_length"]);
     assert_eq!(info["aof_last_bgrewrite_status"], "ok", "long history must not suspend ordinary draining at S1; the old full reread exhausts R with rotation_reserve: {info:?}");
     let cut_count = cut_count.expect("the continuous writer must observe S1");
     assert!(cut_count > 1 && count > cut_count, "writes must be acknowledged before rewrite admission and after an observed S1");

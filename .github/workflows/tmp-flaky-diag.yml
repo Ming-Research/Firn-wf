@@ -1,0 +1,73 @@
+# Temporary (firn-rw-memory-tests-flaky): measures the three rewrite-memory
+# cases under the gate's load and alone. Removed with the item's last push.
+name: tmp-flaky-diag
+
+on:
+  push:
+    branches: [firn-rw-memory-tests-flaky]
+
+concurrency:
+  group: tmp-flaky-diag-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: suite-a, mode: suite, loops: 8 }
+          - { name: suite-b, mode: suite, loops: 8 }
+          - { name: suite-c, mode: suite, loops: 8 }
+          - { name: suite-d, mode: suite, loops: 8 }
+          - { name: alone-long-history, mode: alone, loops: 40, test: "rewrite_scan::reconciled_scan_long_history_completes_under_writes_without_duplicate_effects" }
+          - { name: alone-cache-limit, mode: alone, loops: 100, test: "memory_limit::allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data" }
+          - { name: alone-pressure, mode: alone, loops: 40, test: "rewrite_scan::reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom" }
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - run: make compiler
+      - run: make toolchain
+      - run: rustup default stable && cargo --version
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
+      - uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+      - name: Build firn and the test binary
+        run: |
+          make firn-test
+          redis_bin=$(tests/redis-suite/reference.sh)
+          echo "REDIS_BIN=$redis_bin" >> "$GITHUB_ENV"
+          FIRN=$PWD/build/firn-test REDIS_SERVER="$redis_bin/redis-server" \
+            cargo test --manifest-path tests/Cargo.toml --locked --no-run
+      - name: Loop
+        env:
+          MODE: ${{ matrix.mode }}
+          LOOPS: ${{ matrix.loops }}
+          ONE: ${{ matrix.test }}
+        run: |
+          set +e
+          export FIRN=$PWD/build/firn-test REDIS_SERVER="$REDIS_BIN/redis-server"
+          mkdir -p "$RUNNER_TEMP/out"
+          for i in $(seq 1 "$LOOPS"); do
+            log="$RUNNER_TEMP/out/loop-$i.log"
+            start=$(date +%s.%N)
+            if [ "$MODE" = suite ]; then
+              cargo test --manifest-path tests/Cargo.toml --locked -- --skip rewrite_faults:: --show-output >"$log" 2>&1
+            else
+              cargo test --manifest-path tests/Cargo.toml --locked --test network -- --exact --nocapture --test-threads=1 "$ONE" >"$log" 2>&1
+            fi
+            status=$?
+            end=$(date +%s.%N)
+            echo "LOOP $i status=$status seconds=$(echo "$end - $start" | bc)"
+            grep -E '^DIAG-' "$log" | sed "s/^/  [loop $i] /"
+            grep -E 'FAILED|panicked at' "$log" | sed "s/^/  [loop $i] /" | cut -c1-300
+          done
+          echo "fails: $(grep -L 'test result: ok' $RUNNER_TEMP/out/loop-*.log | wc -l) of $LOOPS"
