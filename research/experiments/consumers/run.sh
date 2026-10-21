@@ -14,7 +14,7 @@
 #
 # A consumer that runs its tests file by file (sidekiq) also writes cases.tsv,
 # one `CASE<TAB>STATUS` row for each case, in the format compare.py reads; see
-# run_each_file below. FILE_LIMIT, in seconds, bounds each file (default 300).
+# run_each_file below. FILE_LIMIT, in seconds, bounds each file (default 120).
 # Sidekiq's run ends with a probe of its heartbeat, heartbeat.txt.
 # The consumers workflow (.github/workflows/consumers.yml) calls it.
 set -u
@@ -253,12 +253,14 @@ case $consumer in
         # database 0 before each case; sharding_test.rb uses databases 5 and 6
         # besides. Minitest's SEED fixes the order of cases, the same on both
         # servers. Each file runs in a process of its own, as run_each_file
-        # does for any consumer.
+        # does for any consumer; rake test loads them all into one, so
+        # sidekiq_suite_context.rb gives each the libraries the others load.
         export REDIS_URL="redis://127.0.0.1:$port/0" SEED=1
         files=()
         while IFS= read -r file; do files+=("$file"); done < <(find test -name '*_test.rb' | sort)
-        echo "test files: ${#files[@]}, seed $SEED, at most ${FILE_LIMIT:-300} s each" | tee -a "$out/what.txt"
-        run_each_file "${FILE_LIMIT:-300}" bundle exec ruby -Ilib -Itest -r "$here/minitest_record.rb"
+        echo "test files: ${#files[@]}, seed $SEED, at most ${FILE_LIMIT:-120} s each" | tee -a "$out/what.txt"
+        run_each_file "${FILE_LIMIT:-120}" bundle exec ruby -Ilib -Itest \
+            -r "$here/minitest_record.rb" -r "$here/sidekiq_suite_context.rb"
         echo $? > "$out/status"
         heartbeat_probe ;;
 esac

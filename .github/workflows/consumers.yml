@@ -23,7 +23,7 @@ jobs:
   run:
     name: ${{ matrix.consumer }} against ${{ matrix.server }}${{ matrix.repeat == 2 && ' (second run)' || '' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ matrix.consumer == 'sidekiq' && 90 || 40 }}
+    timeout-minutes: ${{ matrix.consumer == 'sidekiq' && 150 || 40 }}
     env:
       REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     strategy:
