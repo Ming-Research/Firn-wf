@@ -294,9 +294,9 @@ The heartbeat probe, `heartbeat.txt` of each cell:
 | jobs left in the queue | 0 | 1 |
 | error lines in `heartbeat.log` | 0 | 1 |
 
-On firn the process starts and registers itself, and its processor thread
-ends at its first `BRPOP` (`ERR unknown command 'brpop'`, logged at INFO level
-with the exception's class last on the line, which the probe counts as an
-error line); the job stays queued and `BITFIELD` is never reached, so whether
+On firn the process starts and registers itself, and its processor's first
+`BRPOP` fails (`ERR unknown command 'brpop'`, logged once at INFO level with
+the exception's class last on the line, which the probe counts as an error
+line); the job stays queued and `BITFIELD` is never reached, so whether
 Sidekiq's heartbeat tolerates an error reply on `BITFIELD` is still open: the
 probe answers it once firn has the blocking list commands.
