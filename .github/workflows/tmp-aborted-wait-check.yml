@@ -1,0 +1,61 @@
+# Temporary: shows that allkeys_lru_evicts_while_an_aborted_rewrite_is_still_clearing
+# fails when eviction.wf waits for an aborted rewrite's cleanup again. Removed
+# before the branch is ready (item firn-rw-cache-refused).
+name: tmp-aborted-wait-check
+
+on:
+  push:
+    branches: [claude/rw-under-maxmemory]
+  workflow_dispatch:
+
+jobs:
+  mutant:
+    name: wait for an aborted rewrite restored
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Restore the wait for an aborted rewrite
+        run: |
+          f=firn/commands/eviction.wf
+          sed -i \
+            -e 's/band(cleanup_meta^.aof_rewrite_in_progress, committed)/band(cleanup_meta^.aof_rewrite_in_progress, bor(cleanup_meta^.rewrite.aborted, committed))/' \
+            -e 's/band(check_meta^.aof_rewrite_in_progress, committed)/band(check_meta^.aof_rewrite_in_progress, bor(check_meta^.rewrite.aborted, committed))/' \
+            -e 's/band(meta^.aof_rewrite_in_progress, committed)/band(meta^.aof_rewrite_in_progress, bor(meta^.rewrite.aborted, committed))/' \
+            "$f"
+          test "$(grep -c 'rewrite.aborted, committed' "$f")" -eq 3
+
+      - name: Build the mutant firn for the network cases
+        run: make firn-test
+
+      - name: The check must fail on the mutant
+        run: |
+          redis_bin=$(REDIS_COMPAT_CACHE="$REDIS_COMPAT_CACHE" tests/redis-suite/reference.sh)
+          log=$(mktemp)
+          set +e
+          FIRN=$PWD/build/firn-test REDIS_SERVER="$redis_bin/redis-server" \
+            cargo test --manifest-path tests/Cargo.toml --locked \
+            -- allkeys_lru_evicts_while_an_aborted_rewrite_is_still_clearing --test-threads=1 --nocapture >"$log" 2>&1
+          status=$?
+          set -e
+          cat "$log"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::the check passed on the mutant"
+            exit 1
+          fi
+          grep -q "eviction waited for the aborted rewrite's cleanup" "$log"
+          echo "mutant failed as the check intends"

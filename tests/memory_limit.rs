@@ -348,12 +348,14 @@ fn allkeys_lru_evicts_while_a_paced_rewrite_captures_and_restores_survivors() {
     rewrite_stop(&mut restored, child);
 }
 
-/// A rewrite that aborts while the cache is over its limit: writes made after
-/// the abort is seen still evict, before the abort's cleanup clears the
-/// rewrite. This does not show that eviction returns before the cleanup ends;
-/// it shows that the abort does not stop eviction.
+/// FLUSHALL aborts a rewrite at once, but the paced worker only notices at its
+/// next key step. Writes at the limit made in that window must evict without
+/// waiting for the worker's cleanup: the aborted attempt's ledger is already
+/// excluded, so waiting would give eviction no room. With the wait for an
+/// aborted rewrite restored, the first eviction blocks until the cleanup and
+/// the rewrite is no longer in progress when the writes return.
 #[test]
-fn allkeys_lru_keeps_evicting_while_an_aborted_rewrite_clears() {
+fn allkeys_lru_evicts_while_an_aborted_rewrite_is_still_clearing() {
     let program = CompiledProgram::from_environment();
     let port_lease = support::lease_port();
     let port = port_lease.port();
@@ -366,47 +368,39 @@ fn allkeys_lru_keeps_evicting_while_an_aborted_rewrite_clears() {
     const CACHE_VALUE_BYTES: usize = 16 * 1024;
     let value = |index: usize| format!("{index:08}:{}", "c".repeat(CACHE_VALUE_BYTES - 9));
     let baseline = number(&info(&mut client, "memory"), "used_memory");
-    for index in 0..512 {
-        assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
+    for index in 0..16 {
+        assert_eq!(memory_request(&mut client, &["SET", &format!("seed:{index}"), &value(index)]), "+OK\r\n");
     }
     let limit = baseline + 4 * 1024 * 1024;
+    // A three-second pause per scanned key keeps the worker asleep after the
+    // abort, so the aborted attempt stays in progress while the writes below
+    // run.
     configure(&mut client, &[
         "maxmemory", &limit.to_string(), "maxmemory-policy", "allkeys-lru",
-        "maxmemory-eviction-tenacity", "100", "rdb-key-save-delay", "1000",
+        "maxmemory-eviction-tenacity", "100", "rdb-key-save-delay", "3000000",
     ]);
     assert_eq!(memory_request(&mut client, &["BGREWRITEAOF"]), "+Background append only file rewriting started\r\n");
-    // Post-cut writes past R abort the rewrite (rotation_reserve). Writes made
-    // after the abort is seen, while it is not yet cleared, must still evict.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut next = 512;
-    let mut evicted_after_abort = None;
-    loop {
-        let info_all = info(&mut client, "all");
-        if info_field(&info_all, "firn_aof_rewrite_abort_reason").as_deref().map_or(false, |r| !r.is_empty()) {
-            let before = number(&info_all, "evicted_keys");
-            evicted_after_abort.get_or_insert(before);
-            if number(&info_all, "aof_rewrite_in_progress") == 0 { break; }
-            assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{next}"), &value(next)]), "+OK\r\n");
-            next += 1;
-            let after = number(&info(&mut client, "all"), "evicted_keys");
-            if after > before { break; }
-        } else {
-            assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{next}"), &value(next)]), "+OK\r\n");
-            next += 1;
-        }
-        assert!(Instant::now() < deadline, "the rewrite never aborted or writes stopped evicting: {info_all}");
+    assert_eq!(memory_request(&mut client, &["FLUSHALL"]), "+OK\r\n");
+    let aborted = info(&mut client, "all");
+    assert_eq!(number(&aborted, "aof_rewrite_in_progress"), 1, "the worker cleared the abort before the writes: {aborted}");
+    assert_eq!(info_field(&aborted, "firn_aof_rewrite_abort_reason").as_deref(), Some("flush"), "{aborted}");
+    // 400 writes of 16 KiB exceed the 4 MiB limit, so the later ones evict.
+    for index in 0..400 {
+        assert_eq!(memory_request(&mut client, &["SET", &format!("cache:{index}"), &value(index)]), "+OK\r\n");
     }
-    // The status is written when cleanup clears the rewrite, so wait for it.
+    let during = info(&mut client, "all");
+    assert!(number(&during, "evicted_keys") > 0, "the cache never evicted: {during}");
+    assert_eq!(number(&during, "aof_rewrite_in_progress"), 1,
+        "eviction waited for the aborted rewrite's cleanup: {during}");
     let deadline = Instant::now() + Duration::from_secs(60);
-    let mut observed = info(&mut client, "all");
+    let mut observed = during;
     while number(&observed, "aof_rewrite_in_progress") != 0 {
         assert!(Instant::now() < deadline, "aborted cache rewrite did not clear: {observed}");
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(50));
         observed = info(&mut client, "all");
     }
     assert_eq!(info_field(&observed, "aof_last_bgrewrite_status").as_deref(), Some("err"), "{observed}");
-    assert!(number(&observed, "evicted_keys") > evicted_after_abort.unwrap_or(0),
-        "writes after the abort evicted no key: {observed}");
+    assert_eq!(info_field(&observed, "firn_aof_rewrite_abort_reason").as_deref(), Some("flush"), "{observed}");
     rewrite_stop(&mut client, child);
 }
 

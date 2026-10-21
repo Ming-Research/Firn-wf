@@ -1035,6 +1035,6 @@ aborted rewrite was removed: the aborted attempt's ledger is excluded until
 cleanup, and cleanup lowers the compared figure by the same ledger it
 releases, so waiting gives eviction no room. The installing wait stays because
 the installation must publish one result before keys change. The aborted case
-is exercised by allkeys_lru_keeps_evicting_while_an_aborted_rewrite_clears: writes
-after the abort still evict. That case does not show that eviction returns
-before the cleanup ends.
+is covered by allkeys_lru_evicts_while_an_aborted_rewrite_is_still_clearing:
+FLUSHALL aborts a rewrite whose worker sleeps three seconds per key, and 400
+writes at the limit evict while the aborted attempt is still in progress.
