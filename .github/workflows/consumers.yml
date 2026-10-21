@@ -4,10 +4,10 @@
 # recording the commands they send, and against firn built at this revision.
 # Dispatched by hand, and weekly so a change that breaks a consumer is seen
 # within a week; an investigation copies the results it relies on into its
-# record. Sidekiq's tests run file by file and record each case, run.sh's
-# cases.tsv; a job at the end compares the cases passed on Redis with those
-# passed on firn, and Redis runs a second time on the same revision for the
-# cases it does not pass every time.
+# record. Sidekiq's and BullMQ's tests run file by file and record each case,
+# run.sh's cases.tsv; a job at the end compares the cases passed on Redis with
+# those passed on firn, for each of the two, and Redis runs a second time on
+# the same revision for the cases it does not pass every time.
 name: consumers
 
 on:
@@ -23,20 +23,23 @@ jobs:
   run:
     name: ${{ matrix.consumer }} against ${{ matrix.server }}${{ matrix.repeat == 2 && ' (second run)' || '' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ matrix.consumer == 'sidekiq' && 150 || 40 }}
+    timeout-minutes: ${{ matrix.consumer == 'sidekiq' && 150 || matrix.consumer == 'bullmq' && 240 || 40 }}
     env:
       REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
     strategy:
       fail-fast: false
       matrix:
-        consumer: [django, connect-redis, rate-limiter-flexible, sidekiq]
+        consumer: [django, connect-redis, rate-limiter-flexible, sidekiq, bullmq]
         server: [redis, firn]
         repeat: [1]
         include:
-          # The same Sidekiq run on Redis again, on the same revision: the
-          # cases that pass in one and not the other are unstable, and the
-          # comparison leaves them out.
+          # The same Sidekiq and BullMQ runs on Redis again, on the same
+          # revision: the cases that pass in one and not the other are
+          # unstable, and the comparison leaves them out.
           - consumer: sidekiq
+            server: redis
+            repeat: 2
+          - consumer: bullmq
             server: redis
             repeat: 2
     steps:
@@ -143,44 +146,55 @@ jobs:
             ${{ runner.temp }}/consumers/${{ matrix.consumer }}-${{ matrix.server }}/*.tsv
             ${{ runner.temp }}/consumers/${{ matrix.consumer }}-${{ matrix.server }}/status
 
-  # What the two servers' Sidekiq runs differ in: cases passed on both, only on
-  # Redis and only on firn, from the cases.tsv of the three Sidekiq cells.
-  compare-sidekiq:
-    name: sidekiq on Redis against firn
+  # What the two servers' runs differ in, for each consumer that records its
+  # cases: cases passed on both, only on Redis and only on firn, from the
+  # cases.tsv of the three cells.
+  compare:
+    name: ${{ matrix.consumer }} on Redis against firn
     needs: run
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - consumer: sidekiq
+            title: Sidekiq
+          - consumer: bullmq
+            title: BullMQ
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: consumers-sidekiq-*
-          path: ${{ runner.temp }}/sidekiq
+          pattern: consumers-${{ matrix.consumer }}-*
+          path: ${{ runner.temp }}/${{ matrix.consumer }}
 
       - name: Check the comparison script
         run: python3 -B research/experiments/consumers/compare.py --self-test
 
       - name: Compare the cases
         env:
-          DIR: ${{ runner.temp }}/sidekiq
+          DIR: ${{ runner.temp }}/${{ matrix.consumer }}
+          NAME: ${{ matrix.consumer }}
+          TITLE: ${{ matrix.title }}
         run: |
           python3 -B research/experiments/consumers/compare.py \
-            --redis "$DIR/consumers-sidekiq-redis/cases.tsv" \
-            --redis "$DIR/consumers-sidekiq-redis-2/cases.tsv" \
-            --firn "$DIR/consumers-sidekiq-firn/cases.tsv" \
-            --redis-what "$DIR/consumers-sidekiq-redis/what.txt" \
-            --firn-what "$DIR/consumers-sidekiq-firn/what.txt" \
-            --unstable research/experiments/consumers/sidekiq-unstable.tsv \
+            --redis "$DIR/consumers-$NAME-redis/cases.tsv" \
+            --redis "$DIR/consumers-$NAME-redis-2/cases.tsv" \
+            --firn "$DIR/consumers-$NAME-firn/cases.tsv" \
+            --redis-what "$DIR/consumers-$NAME-redis/what.txt" \
+            --firn-what "$DIR/consumers-$NAME-firn/what.txt" \
+            --unstable "research/experiments/consumers/$NAME-unstable.tsv" \
             --unstable-found "$DIR/unstable-found.tsv" \
-            --title "Sidekiq: Redis 7.2.16 against firn" > "$DIR/compare.md"
+            --title "$TITLE: Redis 7.2.16 against firn" > "$DIR/compare.md"
           cat "$DIR/compare.md" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: compare-sidekiq
+          name: compare-${{ matrix.consumer }}
           path: |
-            ${{ runner.temp }}/sidekiq/compare.md
-            ${{ runner.temp }}/sidekiq/unstable-found.tsv
+            ${{ runner.temp }}/${{ matrix.consumer }}/compare.md
+            ${{ runner.temp }}/${{ matrix.consumer }}/unstable-found.tsv
