@@ -14,7 +14,9 @@
 #                   on consumer command forms or opt-in memory/connection workloads;
 #                   with workload_images, instead the image each revision
 #                   builds and Redis, interleaved, without AOF
-#                   workload_servers selects competitors alongside all firn images
+#                   workload_servers selects competitors alongside all firn images;
+#                   tests pubsub-channel and pubsub-pattern measure publish/subscribe
+#                   delivery at each of `depths` (redis-bench.sh header)
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
 #
@@ -74,11 +76,11 @@ on:
         type: boolean
         default: false
       tests:
-        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits handshake client-list"
+        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits handshake client-list pubsub-channel pubsub-pattern"
         type: string
         default: ""
       depths:
-        description: Pipeline depths (compare)
+        description: Pipeline depths (compare, and the publisher's in the pubsub-* workloads)
         type: string
         default: "16 1"
       passes:
@@ -94,7 +96,7 @@ on:
         type: string
         default: "50"
       workload_options:
-        description: "Memory workloads: --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Handshake/client-list: --warmup-seconds SEC (default 5); --sample-ms MS accepted but no auxiliary sampling. Space-separated; seed is the pass."
+        description: "Memory workloads: --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Handshake/client-list: --warmup-seconds SEC (default 5); --sample-ms MS accepted but no auxiliary sampling. Pub/sub: --warmup-seconds SEC, --value-size BYTES (default 64), --window MESSAGES (default 1024). Space-separated; seed is the pass."
         type: string
         default: ""
       workload_images:
@@ -384,6 +386,7 @@ jobs:
           WORKLOAD_PASSES: ${{ inputs.passes }}
           WORKLOAD_SECONDS: ${{ inputs.seconds }}
           WORKLOAD_CONNECTIONS: ${{ inputs.connections }}
+          WORKLOAD_DEPTHS: ${{ inputs.depths }}
           WORKLOADS: ${{ inputs.tests }}
           WORKLOAD_OPTIONS: ${{ inputs.workload_options }}
           WORKLOAD_IMAGES: ${{ inputs.workload_images && '1' || '' }}
