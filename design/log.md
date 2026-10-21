@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-14 Keep firn's AOF rewrite diagnostics after INFO's Redis fields
+
+Nodes: firn/info-diagnostics
+
+Summary: INFO keeps firn's own append-only rewrite diagnostics (the firn_aof_rewrite_ fields that operators and the rewrite acceptance cases read) in the Persistence section, after every selected Redis 7.2.16 field. This keeps the real measurements and Redis's relative field order; interleaving them with Redis fields, deleting them or moving them to another section is rejected.
+
 ## 2026-10-14 Keep the list element ceiling and refuse before changing anything
 
 Nodes: firn/lists
