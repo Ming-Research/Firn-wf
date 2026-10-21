@@ -12,9 +12,9 @@ failed in CI on revisions whose changes did not touch them and passed on rerun.
 Is the margin the cases give the rewrite unfounded, or does firn's reserve
 accounting differ between runs?
 
-Firn's accounting would be at fault if a failing run's charges departed from
-the design nodes (`design/firn/aof-rewrite/capture.md`): a charge not made, made
-twice, or refunded at a point the design does not name. A test fix would be
+Firn's accounting would be at fault if a failing run's in-use total departed
+from the charges the design nodes list (`design/firn/aof-rewrite/capture.md`):
+a charge not made, or made twice. A test fix would be
 accepted only if the case that failed is red every time before it and green
 after it under a condition that reproduces the failure; where no such
 condition is found, if the number of green whole-suite runs `n` makes an
@@ -44,15 +44,18 @@ The case holds a 128-MiB history and writes continuously from a worker while
 the rewrite runs; it passes if S1 (the cut that rotates the collecting buffer)
 does no work proportional to the history.
 
-16721192 is the fixed rewrite charge 75048 plus the cumulative charge of the
-collecting buffer grown from 128 KiB by doubling to 8 MiB:
-128 KiB × (2⁷ − 1) = 16646144. The design charges a growing buffer's full new
-capacity, overlap included, and refunds nothing until the attempt ends
-(`design/firn/aof-rewrite/capture.md`, the rotation decision). The reserve
-therefore holds the rewrite only while the backlog between the cut and the
-publication of the new increment stays at or below 4 MiB; past it the doubling
-to 8 MiB leaves 16777216 − 16721192 = 56024 bytes, and the worker's next
-charge, the 64-KiB readback buffer (65560 bytes), fails.
+16721192 is the sum of every doubling's full new capacity of the collecting
+buffer, from 128 KiB to 8 MiB, 128 KiB × (2⁷ − 1) = 16646144, plus 75048 of the
+rewrite's other charges (the difference). The design has the encoder charge a
+growing buffer's full new capacity, overlap included (`design/firn/aof-rewrite/capture.md`,
+the rotation decision); it does not say when the old capacity is refunded.
+`log_reserve` in `firn/store/store.wf` adds each growth to the statement's
+charge and refunds nothing, and the total at the abort, which equals the sum
+of all seven doublings, shows that none was refunded while the buffer grew. The
+reserve therefore holds the rewrite only while the backlog between the cut and
+the publication of the new increment stays at or below 4 MiB; past it the
+doubling to 8 MiB leaves 16777216 − 16721192 = 56024 bytes, and the worker's
+next charge, the 64-KiB readback buffer (65560 bytes), fails.
 
 What varies between runs is the time from the cut to publication, which holds
 several fsyncs. Measured on CI runners with the whole network suite
@@ -72,21 +75,26 @@ case's assumption that fsyncs return in milliseconds is what failed.
 
 ## Why `cache_at_limit` fails
 
-The reserve R is a twentieth of `maxmemory`: 854212 bytes. The first live scan
-step starts at a count hint of 64 keys, and charges its key set, key copies,
-images and 64-KiB buffer before the hint adapts. With 16-KiB values that step
-used 820612 to 850729 bytes (96 to 99.6% of R) in 33 green runs of the first
-diagnostic (run 39569260143). A statement's capture allowance is the limit less
-what is in use when the statement starts; a SET that starts during that step
-sees about 3 KB, cannot capture its image, and aborts the rewrite with
-`capture`. Both red runs of the diagnostic show `used = 851009` at the abort.
-The collision needs the worker thread to start late, so that the four SETs
-after the `BGREWRITEAOF` reply land in the first step; that happens only under
-the whole suite's load (2 of 32 executions), never alone (100 of 100 green,
-and 0 of 150 under injected CPU or disk contention).
+The reserve R is a twentieth of `maxmemory`: 854212 bytes. The live scan steps
+start at a count hint of 64 keys and charge their key set, key copies, images
+and 64-KiB buffer before the hint adapts. With 16-KiB values the rewrite's
+peak use of R was 820606 to 850735 bytes (96.1 to 99.6% of R) in the 201 green
+executions of the diagnostics (100 alone and 30 in the first whole-suite run
+39569260143, 71 in the second, 39575213690), reached in the first few steps.
+A statement's capture allowance is the limit less what is in use when the
+statement starts; a SET that starts during that peak sees about 3 KB, cannot
+capture its 16-KiB image, and aborts the rewrite with `capture`. The three red
+executions (2 of 32 in the first run, 1 of 72 in the second) all show
+`used = 851009` against R = 854212 at the abort, 3203 bytes left. The
+collision needs the worker thread to start late, so that the four SETs after
+the `BGREWRITEAOF` reply land in the first steps; that happens only under the
+whole suite's load, never alone (100 of 100 green, and 0 of 150 under injected
+CPU or disk contention).
 
-With 1-KiB values the first step used at most 65% of R over 72 executions of
-the whole suite (run 39575213690), and a SET needs about 2 KB.
+With 1-KiB values the rewrite's peak use of R was 426984 to 560748 bytes (50.0
+to 65.7% of R = 853393) over the 72 whole-suite executions of the second run,
+which leaves at least 292645 bytes of allowance; a SET of a 1-KiB value needs
+little more than 1 KiB.
 
 ## Reproduction and detection of the old behavior
 
@@ -150,8 +158,9 @@ socket read failing in the test client (`network.rs:127` or `:288`):
 `aof_write_errors::aof_latched_error_shutdown_and_signals_exit_zero_on_both_routes`
 and `collection_scan::zscan_score_text_uses_current_cardinality_before_match`.
 Earlier diagnostic runs saw `pubsub::soft_output_limit_*`,
-`collection_scan::multi_resp2_oracle` and
-`firn_script_clients_direct_unpack_boundaries`. None is analyzed here.
+`collection_scan::multi_resp2_oracle`,
+`firn_script_clients_direct_unpack_boundaries` and
+`firn_script_clients_direct_arity_and_execution_errors`. None is analyzed here.
 
 ## Weaknesses of the design noticed
 
@@ -162,4 +171,6 @@ Neither is changed here; each is a design decision.
   no allowance and the rewrite aborts with `capture`. A slow start of the count
   hint, or a cap on a step's share of R, would avoid it.
 - Rotation charges for a doubling collecting buffer are not refunded when the
-  buffer moves, so the effective backlog bound is R/4, not R/2.
+  buffer moves (the design is silent on the refund), so with R = 16 MiB the
+  backlog is bounded by 4 MiB, a quarter of R, because the doublings up to 8 MiB
+  already charge R.

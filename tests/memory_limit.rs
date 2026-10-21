@@ -191,13 +191,13 @@ fn allkeys_lru_cache_at_limit_rewrites_and_restores_surviving_data() {
     let child = spawn();
     let mut client = connect_when_ready(port, &child);
     // R is a twentieth of the limit, about 850 KB here, and the first scan
-    // step charges its key copies, images and buffer growth before its
-    // count hint adapts. With 16 KiB values that step took up to 99.6% of R,
-    // so a write arriving during it found about 3 KB of allowance and
-    // aborted the rewrite with capture (2 of 32 and 1 of 72 runs under the
-    // gate's load). With 1 KiB values the same step took at most 65% of R,
-    // and a write needs about 2 KB (test-stability.md in
-    // research/investigations/aof-rewrite).
+    // steps charge their key copies, images and buffer growth before the
+    // count hint adapts. With 16 KiB values the rewrite used 96% to 99.6% of
+    // R at its peak, and a write arriving then found about 3 KB of allowance
+    // and aborted the rewrite with capture (3 of 104 runs of the whole suite).
+    // With 1 KiB values the peak was at most 65.7% of R over 72 runs, leaving
+    // at least 290 KB for a write of little more than 1 KiB
+    // (test-stability.md in research/investigations/aof-rewrite).
     const CACHE_VALUE_BYTES: usize = 1024;
     let value = |index: usize| format!("{index:08}:{}", "c".repeat(CACHE_VALUE_BYTES - 9));
     // Warm the command input allocation before selecting a limit. Eight MiB
