@@ -33,7 +33,7 @@ jobs:
       - name: Install the suite's tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends tcl
+          sudo apt-get install -y --no-install-recommends tcl patch
 
       - name: Download the pinned compiler
         run: make compiler
@@ -283,7 +283,7 @@ jobs:
         run: sudo tests/aof_sync_fault_device.sh check-writeback "$FIRN_SYNC_FAULT_MOUNT"
 
       # The target fails without FIRN_SYNC_FAULT_MOUNT and REDIS_SERVER, set
-      # by the steps above, and unless all six of its cases ran and passed.
+      # by the steps above, and unless all eight of its cases ran and passed.
       - name: Run the sync and rewrite fault cases
         run: make aof-sync-fault
 

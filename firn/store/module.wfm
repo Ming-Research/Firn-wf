@@ -20,7 +20,6 @@ public enum RewriteAbortReason {
   JournalIo();
   Flush();
   SequenceExhausted();
-  MemoryPressure();
   Cancelled();
   BaseIo();
   WriterIo();
@@ -88,7 +87,7 @@ public struct RewriteImage {
 }
 
 public struct RewriteCapture {
-  doc "running covers admission through worker and chunk cleanup; diagnostics survive it. active covers (start,end]; aborted prevents this attempt's installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result after journal draining. Staging chunks contain little-endian u64 sequence, byte count and kind (0 images, 1 effect), then owned RESP bytes in Meta commit order. journal_bytes counts successfully appended file bytes; image/effect counters count complete file records, not staged records. cleanup_failed counts failed journal close/remove operations in this attempt, including failures after the first abort cause. fixed is the part of used that admission charged for the attempt's whole life, so limit minus fixed bounds what any later charge can ever reach.";
+  doc "running covers admission through worker and chunk cleanup; diagnostics survive it. active covers (start,end]; aborted prevents this attempt's installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result after journal draining. Staging chunks contain little-endian u64 sequence, byte count and kind (0 images, 1 effect), then owned RESP bytes in Meta commit order. journal_bytes counts successfully appended file bytes; image/effect counters count complete file records, not staged records. cleanup_failed counts failed journal close/remove operations in this attempt, including failures after the first abort cause. aof_charged is the cumulative rotation-buffer part of used, kept charged until completion to bound growth overlap but already covered by ordinary AOF capacity exclusion; subtract it from used before excluding rewrite charges from maxmemory. fixed is the part of used that admission charged for the attempt's whole life, so limit minus fixed bounds what any later charge can ever reach.";
   public running: Bool;
   public active: Bool;
   public aborted: Bool;
@@ -102,6 +101,7 @@ public struct RewriteCapture {
   public limit: u64;
   public fixed: u64;
   public used: u64;
+  public aof_charged: u64;
   public peak: u64;
   public scan_peak: u64;
   public abort_reason: RewriteAbortReason;
@@ -234,11 +234,12 @@ public struct ServerState {
 }
 
 public struct Keyspace {
-  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
+  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool and the pub/sub event hub, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
   public keys: Shared<ConcurrentHashMap<Entry>>;
   public meta: Shared<Meta>;
   public server: Shared<ServerState>;
   public scripts: Shared<pkg::script_pool::EnginePool>;
+  public pubsub: Shared<pkg::connection_events::Hub>;
   public logging: Bool;
 }
 
@@ -355,7 +356,7 @@ public fn copy_value(value: &Value) -> made: Value reads(value) doc "An owned lo
 
 public fn attempt_undo_new() -> undo: AttemptUndo pure doc "An empty first-mutation journal for a declared-key script attempt.";
 
-public fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result: unit reads(slot), writes(undo) doc "Saves an optional logical entry copy once at this declared insertion index before any possible mutation: members, values, scores, list order, expiry, access and last-write stamps are exact; collection backing is rebuilt. No collection cursor or layout-dependent result is promised; revisit if such a command or guarantee is added (research/investigations/script-engines/README.md, Logical collection restore).";
+public fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result: unit reads(slot), writes(undo) doc "Saves an optional logical entry copy once at this declared insertion index before any possible mutation: members, values, scores, list order, expiry, access and last-write stamps are exact; collection backing is rebuilt. Collection scans return the whole result with cursor zero and no layout-dependent order is promised; revisit when coord-wfbl-02-01 adds bounded continuation or a layout-dependent guarantee is added (research/investigations/script-engines/README.md, Logical collection restore).";
 
 public fn attempt_restore(undo: &AttemptUndo, slots: &Entries<Entry>) -> result: unit writes(undo), writes(slots) contract {
   ensures slots^.len == entry(slots)^.len;

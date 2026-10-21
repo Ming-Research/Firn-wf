@@ -73,7 +73,8 @@ When priorities conflict, first:
   dispatch-only `redis-suite-record.yml` workflow produces both lists for
   review and commit, running the suite in the gate's two shards so that its
   evidence holds under the gate's load.
-- The gate needs git, curl, Python 3, Rust stable with Cargo, `tclsh` 8.5 or
+- The gate needs git, curl, GNU `patch`, Python 3, Rust stable with Cargo,
+  `tclsh` 8.5 or
   later, a C compiler and `make` (the suite builds the Redis 7.2.16 tools it
   needs from source and caches them), the submodules
   (`git submodule update --init`), `/usr/bin/clang` and, on Linux, LLD of
@@ -92,12 +93,12 @@ When priorities conflict, first:
   as the oracle, runs `check-writeback` (a file made before a 40 s failure
   must survive it), runs `make aof-sync-fault` and
   removes the device with `teardown MOUNT` even when a step failed. The
-  target runs the six cases of `tests/aof_sync_fault.rs` that it selects,
+  target runs the eight cases of `tests/aof_sync_fault.rs` that it selects,
   ignored in `make check`, against firn and the oracle, one after the other,
   each on a filesystem made anew by `reset` (`remount` fails the run when
   `e2fsck -fn` finds the metadata damaged),
   and fails unless `FIRN_SYNC_FAULT_MOUNT` names that mount, `REDIS_SERVER`
-  names the oracle and all six cases passed. It needs Linux with passwordless
+  names the oracle and all eight cases passed. It needs Linux with passwordless
   sudo, `dmsetup` and the dm-flakey module; `setup` may install
   `linux-modules-extra-$(uname -r)` through `apt-get` on Ubuntu to get it.
 - `make pin-ready`, with the readiness check: `whitefoot.pin` names no
