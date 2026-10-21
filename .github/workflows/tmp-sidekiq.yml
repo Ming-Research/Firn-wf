@@ -1,0 +1,95 @@
+# Temporary (firn-sidekiq-wire): the Sidekiq cell against Redis alone, once,
+# to measure its time and pass count before the consumers workflow's limits
+# are set. Removed before the branch is ready.
+name: tmp-sidekiq
+
+on:
+  push:
+    branches: [firn-sidekiq-wire]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  redis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out Whitefoot-kit
+        run: git submodule update --init whitefoot-kit deps/halo-wf
+
+      - name: Restore the Redis build
+        id: redis-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Put the reference Redis 7.2.16 on PATH
+        run: |
+          bin=$(tests/redis-suite/reference.sh)
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/redis-server" --version
+
+      - name: Save the Redis build
+        if: ${{ steps.redis-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+
+      - name: Check the comparison script
+        run: python3 -B research/experiments/consumers/compare.py --self-test
+
+      - name: Run Sidekiq's tests against Redis
+        env:
+          OUT: ${{ runner.temp }}/consumers
+        run: |
+          start=$SECONDS
+          bash research/experiments/consumers/run.sh sidekiq redis
+          echo "run.sh took $((SECONDS - start)) s"
+
+      - name: Publish the result
+        if: always()
+        env:
+          DIR: ${{ runner.temp }}/consumers/sidekiq-redis
+        run: |
+          {
+            echo "## sidekiq against redis (tmp)"
+            echo '```text'
+            cat "$DIR/what.txt" 2>/dev/null || true
+            echo "tests exited $(cat "$DIR/status" 2>/dev/null || echo '(not run)')"
+            cut -f2 "$DIR/cases.tsv" 2>/dev/null | sort | uniq -c
+            echo "--- slowest files (file, exit, seconds)"
+            sort -t$'\t' -k3 -n -r "$DIR/files.tsv" 2>/dev/null | head -n 15
+            echo "--- total seconds over files"
+            awk -F'\t' '{s += $3} END {print s}' "$DIR/files.tsv" 2>/dev/null
+            echo "--- heartbeat"
+            cat "$DIR/heartbeat.txt" 2>/dev/null || true
+            echo "--- non-pass cases"
+            grep -v -P '\tpass$' "$DIR/cases.tsv" 2>/dev/null | head -n 80
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tmp-sidekiq-redis
+          path: |
+            ${{ runner.temp }}/consumers/sidekiq-redis/*.txt
+            ${{ runner.temp }}/consumers/sidekiq-redis/*.log
+            ${{ runner.temp }}/consumers/sidekiq-redis/*.tsv
+            ${{ runner.temp }}/consumers/sidekiq-redis/status

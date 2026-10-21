@@ -4,12 +4,18 @@
 #
 #   run.sh <consumer> <server>
 #
-# consumer: django, connect-redis or rate-limiter-flexible; server: redis, the
-# redis-server on PATH, which must be Redis 7.2.16, with MONITOR recording
-# every command into monitor.log from before the tests start, or firn, the
-# executable FIRN names. The consumer's test output goes to test.log and its
-# exit status to status, under $OUT/<consumer>-<server>/. The script exits 0
-# whatever the tests did; a failure to set the run up or to record it exits 1.
+# consumer: django, connect-redis, rate-limiter-flexible or sidekiq; server:
+# redis, the redis-server on PATH, which must be Redis 7.2.16, with MONITOR
+# recording every command into monitor.log from before the tests start, or
+# firn, the executable FIRN names. The consumer's test output goes to test.log
+# and its exit status to status, under $OUT/<consumer>-<server>/. The script
+# exits 0 whatever the tests did; a failure to set the run up or to record it
+# exits 1.
+#
+# A consumer that runs its tests file by file (sidekiq) also writes cases.tsv,
+# one `CASE<TAB>STATUS` row for each case, in the format compare.py reads; see
+# run_each_file below. FILE_LIMIT, in seconds, bounds each file (default 300).
+# Sidekiq's run ends with a probe of its heartbeat, heartbeat.txt.
 # The consumers workflow (.github/workflows/consumers.yml) calls it.
 set -u
 consumer=$1
@@ -32,6 +38,10 @@ case $consumer in
     rate-limiter-flexible)
         repo=https://github.com/animir/node-rate-limiter-flexible.git
         ref=v11.2.1
+        port=6379 ;;
+    sidekiq)
+        repo=https://github.com/sidekiq/sidekiq.git
+        ref=v8.1.7
         port=6379 ;;
     *) echo "unknown consumer $consumer" >&2; exit 1 ;;
 esac
@@ -77,20 +87,120 @@ start_server() {
     redis-cli -p "$port" PING 2>/dev/null | grep -q PONG ||
         { echo "the server did not answer on $port" >&2; cat "$out/server.log" >&2; exit 1; }
     if [ "$server" = redis ]; then
-        redis-cli -p "$port" MONITOR > "$out/monitor.log" 2>&1 &
+        # A restart appends to the same record, each MONITOR session starting
+        # with its own OK.
+        local oks
+        oks=$(grep -c '^OK$' "$out/monitor.log" 2>/dev/null)
+        redis-cli -p "$port" MONITOR >> "$out/monitor.log" 2>&1 &
         watching=$!
         for i in $(seq 1 50); do
-            [ "$(head -n 1 "$out/monitor.log" 2>/dev/null)" = OK ] && return 0
+            [ "$(grep -c '^OK$' "$out/monitor.log")" -gt "${oks:-0}" ] && return 0
             sleep 0.1
         done
-        echo "MONITOR did not start: $(cat "$out/monitor.log")" >&2
+        echo "MONITOR did not start: $(tail -n 3 "$out/monitor.log")" >&2
         exit 1
     fi
 }
 stop_server() {
-    [ -n "$watching" ] && kill "$watching" 2>/dev/null
-    [ -n "$started" ] && kill "$started" 2>/dev/null
+    if [ -n "$watching" ]; then
+        kill "$watching" 2>/dev/null
+        wait "$watching" 2>/dev/null
+        # A kill can leave a half line; the next session's OK starts a line.
+        echo >> "$out/monitor.log"
+    fi
+    if [ -n "$started" ]; then
+        kill "$started" 2>/dev/null
+        for i in $(seq 1 100); do
+            kill -0 "$started" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -9 "$started" 2>/dev/null
+        wait "$started" 2>/dev/null
+    fi
+    started=
+    watching=
     true
+}
+# A server that starts on an empty directory, as the files of a consumer that
+# runs them one by one each need.
+restart_server() {
+    stop_server
+    rm -rf "$out/data"
+    start_server
+}
+
+# run_each_file LIMIT COMMAND [ARG...] runs COMMAND ARG... FILE, once for each
+# FILE of the files array, in a process of its own on a server started anew on
+# an empty directory, so that a server a file crashes does not take the next
+# files with it. It gives each process CASE_RECORD, the path of cases.tsv, and
+# CASE_FILE, FILE; the consumer's reporter appends one row `FILE::NAME<TAB>
+# STATUS` to the record for each case as it ends. A process that is still
+# running after LIMIT seconds is killed and the record gets the row
+# `FILE<TAB>unfinished`; a process that ends having recorded no case gets the
+# same row. A case without a row did not pass. The consumer's output goes to
+# test.log, each file under a line `==== FILE`; files.tsv gets one row `FILE
+# <TAB>EXIT STATUS<TAB>SECONDS` for each. The function returns 1 when any
+# process exited with a status other than 0 or was killed. The record's format
+# is that of compare.py's description.
+cases=$out/cases.tsv
+run_each_file() {
+    local limit=$1 file before rc began worst=0
+    shift
+    : > "$cases"
+    : > "$out/test.log"
+    : > "$out/files.tsv"
+    export CASE_RECORD=$cases
+    for file in "${files[@]}"; do
+        restart_server
+        export CASE_FILE=$file
+        before=$(wc -l < "$cases")
+        echo "==== $file" >> "$out/test.log"
+        began=$SECONDS
+        timeout -k 10 "$limit" "$@" "$file" >> "$out/test.log" 2>&1
+        rc=$?
+        echo "==== $file exited $rc" >> "$out/test.log"
+        printf '%s\t%s\t%s\n' "$file" "$rc" $((SECONDS - began)) >> "$out/files.tsv"
+        [ "$rc" -ne 0 ] && worst=1
+        if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ] || [ "$(wc -l < "$cases")" -eq "$before" ]; then
+            printf '%s\tunfinished\n' "$file" >> "$cases"
+        fi
+    done
+    return $worst
+}
+
+# The probe of what Sidekiq's heartbeat does against this server: a real
+# `sidekiq` process, with one job that does nothing in its queue, runs for
+# about 30 seconds, which spans three heartbeats (a beat every 10 seconds)
+# and the flush of its metrics, which Sidekiq makes on a beat, with the
+# BITFIELD command. The log goes to heartbeat.log and a summary to
+# heartbeat.txt. The probe records what the server does; it fails on nothing.
+heartbeat_probe() {
+    local pid i registered
+    restart_server
+    {
+        echo "enqueue one no-op job:"
+        bundle exec ruby -e 'require "sidekiq"; Sidekiq::Client.push("class" => "HeartbeatNoop", "args" => [])' 2>&1
+        echo "exit $?"
+    } > "$out/heartbeat.log"
+    bundle exec sidekiq -r "$here/sidekiq_heartbeat_job.rb" -q default -c 1 -t 5 >> "$out/heartbeat.log" 2>&1 &
+    pid=$!
+    sleep 22
+    registered=$(redis-cli -p "$port" SCARD processes 2>&1)
+    sleep 10
+    kill -TERM "$pid" 2>/dev/null
+    for i in $(seq 1 150); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    kill -0 "$pid" 2>/dev/null && { kill -9 "$pid" 2>/dev/null; echo "sidekiq had to be killed" >> "$out/heartbeat.log"; }
+    wait "$pid" 2>/dev/null
+    {
+        echo "heartbeat probe against $server"
+        echo "processes registered after 22 s (SCARD processes): $registered"
+        echo "jobs processed (GET stat:processed): $(redis-cli -p "$port" GET stat:processed 2>&1 | head -n 1)"
+        echo "jobs left in queue:default (LLEN): $(redis-cli -p "$port" LLEN queue:default 2>&1 | head -n 1)"
+        echo "error lines in heartbeat.log: $(grep -c -w ERROR "$out/heartbeat.log")"
+    } | tee "$out/heartbeat.txt"
 }
 trap stop_server EXIT
 
@@ -129,6 +239,28 @@ case $consumer in
             test/RateLimiterRedis.redis.test.js \
             test/RateLimiterRedisNonAtomic.ioredis.test.js > "$out/test.log" 2>&1
         echo $? > "$out/status" ;;
+    sidekiq)
+        # The project's own CI runs the newest Ruby and Rails of its matrix
+        # (Ruby 4.0, Rails 8.1) and keeps no lock file, so the gems are the
+        # newest its Gemfile allows today. Its tests load only the default and
+        # test gem groups, so the lint, terminal UI and load-test groups, whose
+        # native gems the tests never use, are not installed.
+        export RAILS_VERSION=8.1 BUNDLE_WITHOUT=development:tui:load_test BUNDLE_PATH="$out/bundle"
+        bundle install --jobs 4 > "$out/setup.log" 2>&1 || { cat "$out/setup.log"; exit 1; }
+        echo "ruby: $(ruby -v)" | tee -a "$out/what.txt"
+        echo "gems: $(bundle list 2>/dev/null | grep -o -E '(redis-client|railties|minitest|connection_pool|rack) \([0-9][^)]*\)' | tr '\n' ' ')" | tee -a "$out/what.txt"
+        # The tests find their server in REDIS_URL, where helper.rb flushes
+        # database 0 before each case; sharding_test.rb uses databases 5 and 6
+        # besides. Minitest's SEED fixes the order of cases, the same on both
+        # servers. Each file runs in a process of its own, as run_each_file
+        # does for any consumer.
+        export REDIS_URL="redis://127.0.0.1:$port/0" SEED=1
+        files=()
+        while IFS= read -r file; do files+=("$file"); done < <(find test -name '*_test.rb' | sort)
+        echo "test files: ${#files[@]}, seed $SEED, at most ${FILE_LIMIT:-300} s each" | tee -a "$out/what.txt"
+        run_each_file "${FILE_LIMIT:-300}" bundle exec ruby -Ilib -Itest -r "$here/minitest_record.rb"
+        echo $? > "$out/status"
+        heartbeat_probe ;;
 esac
 echo "$consumer against $server: tests exited $(cat "$out/status")"
 if [ "$server" = redis ]; then
