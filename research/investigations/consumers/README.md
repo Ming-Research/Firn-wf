@@ -304,7 +304,8 @@ Sidekiq's heartbeat tolerates an error reply on `BITFIELD` is still open: the
 probe answers it once firn has the blocking list commands.
 
 The time bound was watched act on Redis in a temporary workflow, since removed,
-that ran the Sidekiq files under a limit far shorter than any file needs:
+that ran the Sidekiq files under limits of 1 and 2 seconds, so that files were
+cut off:
 
 | Limit | Run | Files | Case rows | Unfinished rows |
 |---|---|---|---|---|
