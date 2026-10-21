@@ -64,3 +64,19 @@ the reply's raw text.
   `lfu-decay-time 0`, the object frequencies after `RENAME`, `RENAMENX`, a
   same-name `RENAME`, and twenty duplicate-key `MSETNX` batches. Used by
   `firn_matches_the_lfu_rename_and_msetnx_oracle`.
+
+## `score-text-recording.json`
+
+- Source run: https://github.com/Ming-Research/Firn-wf/actions/runs/38394816029
+- Run head commit: `9da04882f1e5202b27758d743b0f844a193d7edf`
+- Case `existing-1955 reads_and_writes_scores`: ZSCORE and ZPOPMIN replies
+  for the scores of the read and write cases. Used by
+  `firn_reads_and_writes_scores_as_redis_does`.
+- Case `new-2101 seed+rewrite+resp2` and `new-2101 resp3 readback (fresh seed)`:
+  the twenty-one scores in RESP2 and RESP3, with ZSCORE, ZINCRBY, ZRANK WITHSCORE
+  and ZRANGE WITHSCORES replies, and the records a BGREWRITEAOF writes after
+  them. Used by `firn_writes_score_text_as_redis_7_2_16_does`.
+- Case `existing-2929 replay`: the `0.1` score the replayed file holds. Used by
+  `firn_replays_the_value_types_from_its_append_only_file`.
+- Case `existing-9900 rewrite`: the score records of the rewritten file. Used by
+  `firn_rewrites_all_value_types_with_expiries_and_redis_commands`.
