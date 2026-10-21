@@ -16,8 +16,10 @@ medians and the twin spelled out as the firn investigation's
 - **Workload.** One publisher and 50 subscribers on one channel
   (`SUBSCRIBE`) and, as a second workload, the same subscribers on one pattern
   that matches the channel (`PSUBSCRIBE`), 64-byte payloads, RESP2, over
-  loopback. The server has 2 CPUs, the client the CPUs
-  [placement](../../../design/firn/measurement-sessions.md) leaves it. The
+  loopback. The server has 2 CPUs and the client the rest of the
+  [placement](../../../design/firn/measurement-sessions.md): on the 14900K,
+  the servers on CPUs 2 and 4 (P-cores) and the clients on CPUs 16-31
+  (E-cores), for every line and for the noise floor alike (AGENTS.md). The
   publisher keeps 16 `PUBLISH` commands unanswered (depth 16) or 1 (depth 1).
 - **Measure.** The rate is the messages delivered to subscribers per second,
   50 times the published messages over the span from the first publication to
@@ -37,23 +39,26 @@ medians and the twin spelled out as the firn investigation's
   compared with). In a client-limited cell the p99 is reported and not judged:
   the client's own queueing sets it there.
 - **Competitors.** The competitors are the newest stable release of each
-  project, and `reference` stays Redis 7.2.16, the project's reference
-  (AGENTS.md). `redis-latest` is the newest stable Redis (8.10.2), built by
-  `latest.sh` from its archive, which the script pins by SHA-256; `garnet-latest` is
-  the newest Garnet (2.2.3), run from its prebuilt archive; the host's 2.2.1
-  is not measured; `valkey`, `valkey-io` and `dragonfly` are the host's
-  executables, Valkey 9.1.2 and Dragonfly v2.0.2 in the last 14900K run's
-  `host.txt`, which are the newest stable releases of both (9.2.0-rc1 is a
-  prerelease; GitHub release lists read 2026-10-21). A run's `host.txt` prints the version of each line, and a pin
-  is moved when a newer release appears before the measuring run. Every line
-  runs with its defaults on the server's 2 CPUs, except that `valkey-io` and
-  `dragonfly` use as many I/O or proactor threads as CPUs, as they are meant
-  to; Redis's I/O threads stay off in `reference` and `redis-latest`, and a line
-  of `redis-latest` with them on is added only if a cell where firn is behind
-  `redis-latest` makes the question matter. A competitor
-  that answers `SUBSCRIBE` with an unknown-command error is left out of the
-  cells of that workload. The fastest competitor of a cell is whichever line
-  has the highest median rate in it, `reference` and `redis-latest` included.
+  project, none of them installed on the measuring host: Redis 8.10.2
+  (`redis-latest`) and Valkey 9.1.2 (`valkey-latest`, and `valkey-io-latest`
+  with as many I/O threads as server CPUs) are built from their release
+  archives, Dragonfly v2.0.2 (`dragonfly-latest`, as many proactor threads as
+  server CPUs) and Garnet 2.2.3 (`garnet-latest`) are extracted from their
+  prebuilt Linux archives, all by `latest.sh`, which pins each archive by
+  SHA-256 (Redis and Valkey from the projects' hash tables, the other two from
+  the digest GitHub shows for the release asset). The versions are the newest
+  non-prerelease of each project's GitHub release list, read 2026-10-21; the
+  host's own packages are older or absent (Valkey 9.0.4 at the first measuring
+  run, no Dragonfly or Garnet) and are not measured. `reference` stays Redis
+  7.2.16, the project's reference (AGENTS.md). A run's `host.txt` prints the
+  version of each line, and a pin is moved when a newer release appears before
+  the measuring run. Every line runs with its defaults on the server's 2 CPUs
+  apart from those thread counts; Redis's I/O threads stay off in `reference`
+  and `redis-latest`, and a line of `redis-latest` with them on is added only
+  if a cell where firn is behind `redis-latest` makes the question matter. A
+  competitor that answers `SUBSCRIBE` with an unknown-command error is left out
+  of the cells of that workload. The fastest competitor of a cell is whichever
+  line has the highest median rate in it, `reference` included.
 - **Noise.** Firn is measured as two images of one build, `head` and
   `head-twin`; the 95% interval of the mean log of twin/head over the passes
   is the cell's noise, which `summary.py pubsub` prints. No threshold is

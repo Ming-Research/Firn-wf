@@ -196,12 +196,14 @@
 #                                 spinning client keeps its CPUs busy anyway.
 #                                 Nonempty WORKLOAD_SERVERS selects, in order,
 #                                 reference redis-latest firn valkey valkey-io
-#                                 dragonfly garnet garnet-latest (no duplicates);
+#                                 dragonfly garnet valkey-latest valkey-io-latest
+#                                 dragonfly-latest garnet-latest (no duplicates);
 #                                 every selected line omits AOF and absent
-#                                 competitors are skipped. redis-latest and
-#                                 garnet-latest are the newest stable Redis and
-#                                 Garnet, REDIS_LATEST and GARNET_LATEST naming
-#                                 their servers (latest.sh builds them).
+#                                 competitors are skipped. A name ending in
+#                                 -latest is the newest stable release of its
+#                                 project, REDIS_LATEST, VALKEY_LATEST,
+#                                 DRAGONFLY_LATEST and GARNET_LATEST naming the
+#                                 servers (latest.sh builds or extracts them).
 #                                 firn/dragonfly/garnet use the current CPU
 #                                 count. With WORKLOAD_IMAGES, selecting firn
 #                                 expands every IMAGES entry, including twins,
@@ -657,10 +659,13 @@ WHITEFOOTC=${WHITEFOOTC:-$ROOT/build/whitefoot/$RELEASE/whitefootc}
 BASELINE_ROOT=${BASELINE_ROOT:-}
 DRAGONFLY=${DRAGONFLY:-dragonfly}
 GARNET=${GARNET:-garnet-server}
-# The newest stable Redis and Garnet releases (latest.sh), for the lines
-# redis-latest and garnet-latest-N; the lines reference and reference-aof stay
-# Redis 7.2.16, and garnet-N the host's Garnet.
+# The newest stable releases of the four competitors (latest.sh), for the lines
+# redis-latest, valkey-latest, valkey-io-latest, dragonfly-latest-N and
+# garnet-latest-N; the lines reference and reference-aof stay Redis 7.2.16, and
+# valkey, valkey-io, dragonfly-N and garnet-N the host's own.
 REDIS_LATEST=${REDIS_LATEST:-}
+VALKEY_LATEST=${VALKEY_LATEST:-}
+DRAGONFLY_LATEST=${DRAGONFLY_LATEST:-}
 GARNET_LATEST=${GARNET_LATEST:-}
 FIRN_BASELINE=${FIRN_BASELINE:-}
 DEFAULT_CLIENT_THREADS=${CLIENT_THREADS:-2}
@@ -701,10 +706,12 @@ KEEP=
 # Whether a line's server can run on this host.
 available() {
     case $1 in
+        dragonfly-latest-*) test -n "$DRAGONFLY_LATEST" && test -x "$DRAGONFLY_LATEST" ;;
         dragonfly-*) command -v "$DRAGONFLY" >/dev/null 2>&1 ;;
         garnet-latest-*) test -n "$GARNET_LATEST" && test -x "$GARNET_LATEST" ;;
         garnet-*) command -v "$GARNET" >/dev/null 2>&1 ;;
         redis-latest) test -n "$REDIS_LATEST" && test -x "$REDIS_LATEST" ;;
+        valkey-latest|valkey-io-latest) test -n "$VALKEY_LATEST" && test -x "$VALKEY_LATEST" ;;
         firn-base-*) test -n "$FIRN_BASELINE" && test -x "$FIRN_BASELINE" ;;
         valkey*) command -v valkey-server >/dev/null 2>&1 ;;
         *) true ;;
@@ -769,6 +776,15 @@ start() {
                 --appendonly no --timeout "${IDLE:-0}" --daemonize no \
                 ) >"$OUT/server.log" 2>&1 &
             ;;
+        valkey-latest)
+            (registered; exec taskset -c "$SERVER_CPUS" "$VALKEY_LATEST" --port "$PORT" --save "" \
+                --appendonly no --daemonize no ) >"$OUT/server.log" 2>&1 &
+            ;;
+        valkey-io-latest)
+            (registered; exec taskset -c "$SERVER_CPUS" "$VALKEY_LATEST" --port "$PORT" --save "" \
+                --appendonly no --io-threads "$cpus" --io-threads-do-reads yes \
+                --daemonize no ) >"$OUT/server.log" 2>&1 &
+            ;;
         valkey)
             (registered; exec taskset -c "$SERVER_CPUS" valkey-server --port "$PORT" --save "" \
                 --appendonly no --daemonize no ) >"$OUT/server.log" 2>&1 &
@@ -777,6 +793,11 @@ start() {
             (registered; exec taskset -c "$SERVER_CPUS" valkey-server --port "$PORT" --save "" \
                 --appendonly no --io-threads "$cpus" --io-threads-do-reads yes \
                 --daemonize no ) >"$OUT/server.log" 2>&1 &
+            ;;
+        dragonfly-latest-*)
+            (registered; exec taskset -c "$SERVER_CPUS" "$DRAGONFLY_LATEST" --port="$PORT" \
+                --proactor_threads="${1#dragonfly-latest-}" --dbfilename= \
+                --logtostderr ) >"$OUT/server.log" 2>&1 &
             ;;
         dragonfly-*)
             (registered; exec taskset -c "$SERVER_CPUS" "$DRAGONFLY" --port="$PORT" \
@@ -1511,7 +1532,8 @@ if [ "$MODE" = workloads ]; then
         set -f
         for selected in $WORKLOAD_SERVERS; do
             case $selected in
-                reference|redis-latest|firn|valkey|valkey-io|dragonfly|garnet|garnet-latest) ;;
+                reference|redis-latest|firn|valkey|valkey-io|dragonfly|garnet) ;;
+                valkey-latest|valkey-io-latest|dragonfly-latest|garnet-latest) ;;
                 *) echo "unknown WORKLOAD_SERVERS name: $selected" >&2; exit 1 ;;
             esac
             case " $seen_servers " in
@@ -1643,7 +1665,7 @@ if [ "$MODE" = workloads ]; then
                                 order="$order firn-$n"
                             fi
                             ;;
-                        dragonfly|garnet|garnet-latest) order="$order $selected-$n" ;;
+                        dragonfly|garnet|dragonfly-latest|garnet-latest) order="$order $selected-$n" ;;
                         *) order="$order $selected" ;;
                     esac
                 done

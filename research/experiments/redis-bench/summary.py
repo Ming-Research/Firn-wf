@@ -2,13 +2,15 @@
 """Tables from the CSV files of a redis-bench run, for the records and the
 acceptance rows.
 
-  summary.py pubsub DIR [--firn LINE] [--twin LINE]
+  summary.py pubsub DIR [--firn LINE] [--twin LINE] [--floor PERCENT]
       pubsub.csv and pubsub-limited.csv of a workloads run with the pub/sub
       workloads: per workload and pipeline depth, each line's median rate and
       p99 over the passes, firn's multiple of the fastest competitor, whether
       the cell's criteria hold, and the twin's ratio to firn per pass with its
       95% interval (the noise; its largest half-width over the cells of a run
-      without competitors is the workload class's floor). The fastest
+      without competitors is the workload class's floor, printed last). With
+      --floor, a cell whose twin half-width is above it does not count: it is
+      repeated or reported unresolved, and the last line says how many. The fastest
       competitor is the one with the highest median rate in the cell, and
       firn's p99 is compared with that competitor's. A cell is client-limited
       when the median client work fraction of firn's line or of the fastest
@@ -115,6 +117,8 @@ def pubsub(args):
         key = (int(r["cpus"]), r["workload"], int(r["connections"]), int(r["pipeline"]))
         work[key][r["line"]].append(float(r["client_work_fraction"]))
     failures = 0
+    above = 0
+    widths = []
     for key in sorted(rates):
         cpus, workload, subscribers, depth = key
         lines = rates[key]
@@ -128,6 +132,20 @@ def pubsub(args):
         for line in sorted(lines):
             print(f"{line:<22}{median[line]:>14.0f}{statistics.median(p99s[key][line]):>10.3f}"
                   f"{median_or_nan(work[key][line]):>13.3f}")
+        twin = args.twin or f"{firn}-twin"
+        shared = sorted(set(lines.get(twin, {})) & set(lines.get(firn, {})))
+        if len(shared) >= 2:
+            pairs = [lines[twin][p] / lines[firn][p] for p in shared]
+            low, high = interval(pairs)
+            half = (high - low) / 2 * 100
+            widths.append(half)
+            print(f"twin {twin} / {firn}: median {statistics.median(pairs):.4f}, 95% interval "
+                  f"{low:.4f}-{high:.4f}, half-width {half:.2f}% over "
+                  f"{len(shared)} passes ({verdict(low, high)})")
+            if args.floor is not None and half > args.floor:
+                above += 1
+                print(f"the half-width is above the floor of {args.floor:.2f}%: this cell does not "
+                      f"count; repeat it with more passes or report it unresolved")
         if firn not in lines or not competitors:
             print("no firn line or no competitor in this cell\n")
             continue
@@ -147,16 +165,12 @@ def pubsub(args):
               f"{need:.1f}{' (client-limited)' if limited else ''}: {'ok' if rate_ok else 'BELOW'}")
         print(f"p99 {firn_p99:.3f} ms against the fastest competitor's {best_p99:.3f} ms: "
               f"{'not judged (client-limited)' if limited else 'ok' if p99_ok else 'HIGHER'}")
-        twin = args.twin or f"{firn}-twin"
-        shared = sorted(set(lines.get(twin, {})) & set(lines[firn]))
-        if len(shared) >= 2:
-            pairs = [lines[twin][p] / lines[firn][p] for p in shared]
-            low, high = interval(pairs)
-            print(f"twin {twin} / {firn}: median {statistics.median(pairs):.4f}, 95% interval "
-                  f"{low:.4f}-{high:.4f}, half-width {(high - low) / 2 * 100:.2f}% over "
-                  f"{len(shared)} passes ({verdict(low, high)})")
         print()
     print(f"{failures} criteria not met")
+    if widths:
+        print(f"largest twin half-width over {len(widths)} cells: {max(widths):.2f}%")
+    if args.floor is not None:
+        print(f"{above} cells above the floor of {args.floor:.2f}%")
 
 
 def selftest():
@@ -196,10 +210,10 @@ def selftest():
         (Path(tmp) / "pubsub-limited.csv").write_text("\n".join(limited) + "\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None))
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
         text = out.getvalue()
         assert "firn-2 / reference (the fastest competitor): 1.500, needs at least 1.4: ok" in text, text
-        assert text.rstrip().endswith("0 criteria not met"), text
+        assert "\n0 criteria not met\n" in text, text
         assert "twin firn-2-twin / firn-2: median 0.9867" in text, text
         # firn's p99 of 2.8 ms is above the 2.5 ms of Valkey, which is slower
         # than Redis, and below the 3.0 ms of Redis, the fastest competitor
@@ -211,10 +225,10 @@ def selftest():
         (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None))
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
         text = out.getvalue()
         assert "2.800 ms against the fastest competitor's 3.000 ms: ok" in text, text
-        assert text.rstrip().endswith("0 criteria not met"), text
+        assert "\n0 criteria not met\n" in text, text
         # 1.5 against 1.4 fails once firn drops to 130, and p99 once it passes 3.0
         data = [header]
         for p in (1, 2, 3):
@@ -223,9 +237,9 @@ def selftest():
         (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None))
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
         text = out.getvalue()
-        assert "BELOW" in text and "HIGHER" in text and text.rstrip().endswith("2 criteria not met"), text
+        assert "BELOW" in text and "HIGHER" in text and "\n2 criteria not met\n" in text, text
         # A client-limited cell asks only that firn is not behind: 105 against
         # 100 holds with a p99 five times the competitor's, which is not judged.
         data, limited = [header], [limited[0]]
@@ -237,10 +251,10 @@ def selftest():
         (Path(tmp) / "pubsub-limited.csv").write_text("\n".join(limited) + "\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None))
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
         text = out.getvalue()
         assert "needs at least 1.0 (client-limited): ok" in text and "not judged (client-limited)" in text, text
-        assert text.rstrip().endswith("0 criteria not met"), text
+        assert "\n0 criteria not met\n" in text, text
         # and falls short of 1.0 at 95 against 100
         data = [header]
         for p in (1, 2, 3):
@@ -249,8 +263,26 @@ def selftest():
         (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
         out = io.StringIO()
         with redirect_stdout(out):
-            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None))
-        assert out.getvalue().rstrip().endswith("1 criteria not met"), out.getvalue()
+            pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=None))
+        assert "\n1 criteria not met\n" in out.getvalue(), out.getvalue()
+        # A run without competitors prints the twin's interval and its largest
+        # half-width; with a floor below that, the cell is marked not counting,
+        # and with one above it, it counts.
+        data = [header]
+        for p, ratio in ((1, 1.00), (2, 1.02), (3, 0.98), (4, 1.03)):
+            data.append(f"firn-2,{p},2,pubsub-channel,50,16,10,500,5,100,1.0,1.0")
+            data.append(f"firn-2-twin,{p},2,pubsub-channel,50,16,10,500,5,{100 * ratio},1.0,1.0")
+        (Path(tmp) / "pubsub.csv").write_text("\n".join(data) + "\n")
+        (Path(tmp) / "pubsub-limited.csv").write_text("\n".join(limited[:1]) + "\n")
+        for floor, counts in ((0.5, False), (5.0, True)):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                pubsub(argparse.Namespace(dir=tmp, firn=None, twin=None, floor=floor))
+            text = out.getvalue()
+            assert "twin firn-2-twin / firn-2: median 1.0100" in text, text
+            assert "largest twin half-width over 1 cells:" in text, text
+            assert ("does not count" in text) == (not counts), text
+            assert text.rstrip().endswith(f"{0 if counts else 1} cells above the floor of {floor:.2f}%"), text
     print("summary selftest: passed")
 
 
@@ -261,6 +293,7 @@ def main():
     p.add_argument("dir")
     p.add_argument("--firn")
     p.add_argument("--twin")
+    p.add_argument("--floor", type=float)
     p = sub.add_parser("ratios")
     p.add_argument("compare")
     p.add_argument("--base", required=True)

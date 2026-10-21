@@ -18,8 +18,9 @@
 #                   tests pubsub-channel and pubsub-pattern measure publish/subscribe
 #                   delivery at each of `depths` (redis-bench.sh header);
 #                   a workload_servers name ending in -latest (redis-latest,
-#                   garnet-latest) is the newest stable release, built or
-#                   fetched by the run
+#                   valkey-latest, valkey-io-latest, dragonfly-latest,
+#                   garnet-latest) is the newest stable release of that project,
+#                   built or fetched by the run
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
 #
@@ -107,7 +108,7 @@ on:
         type: boolean
         default: false
       workload_servers:
-        description: "Workloads only: ordered selection from reference redis-latest firn valkey valkey-io dragonfly garnet garnet-latest, without AOF; firn expands all images with workload_images; a name ending in -latest is the newest stable release (research/experiments/redis-bench/latest.sh), built or fetched by this run. Empty preserves defaults."
+        description: "Workloads only: ordered selection from reference redis-latest valkey-latest valkey-io-latest dragonfly-latest garnet-latest firn valkey valkey-io dragonfly garnet, without AOF; firn expands all images with workload_images; a name ending in -latest is the newest stable release (research/experiments/redis-bench/latest.sh), built or fetched by this run. Empty preserves defaults."
         type: string
         default: ""
       maxmemory:
@@ -208,18 +209,19 @@ jobs:
           path: build/redis-compat-cache
           key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
-      # The newest stable Redis and Garnet, whatever the host has installed:
+      # The newest stable Redis, Valkey, Dragonfly and Garnet, whatever the host
+      # has installed:
       # latest.sh pins their releases by SHA-256 and builds or extracts them
       # into a cache of its own, installing nothing on the host.
-      - name: Fetch the newest Redis and Garnet releases
+      - name: Fetch the newest competitor releases
         if: ${{ contains(inputs.workload_servers, '-latest') }}
         env:
           REDIS_BENCH_LATEST_CACHE: ${{ inputs.runner == '14900k' && '' || format('{0}/build/latest-cache', github.workspace) }}
         run: |
-          redis=$(research/experiments/redis-bench/latest.sh redis)
-          garnet=$(research/experiments/redis-bench/latest.sh garnet)
-          echo "REDIS_LATEST=$redis" >> "$GITHUB_ENV"
-          echo "GARNET_LATEST=$garnet" >> "$GITHUB_ENV"
+          for project in redis valkey dragonfly garnet; do
+            path=$(research/experiments/redis-bench/latest.sh "$project")
+            echo "$(echo "$project" | tr a-z A-Z)_LATEST=$path" >> "$GITHUB_ENV"
+          done
 
       - name: Check the host's tools
         run: |
@@ -289,12 +291,13 @@ jobs:
             valkey-server --version 2>/dev/null || true
             { dragonfly --version 2>/dev/null | head -1; } || true
             { garnet-server --version 2>/dev/null | head -1; } || true
-            if [ -n "${REDIS_LATEST:-}" ]; then
-              echo "redis-latest: $REDIS_LATEST"
-              "$REDIS_LATEST" --version || true
-              echo "garnet-latest: $GARNET_LATEST"
-              "$GARNET_LATEST" --version || true
-            fi
+            for project in redis valkey dragonfly garnet; do
+              latest=$(echo "${project}_LATEST" | tr a-z A-Z)
+              if [ -n "${!latest:-}" ]; then
+                echo "$project-latest: ${!latest}"
+                { "${!latest}" --version 2>/dev/null | head -1; } || true
+              fi
+            done
             redis-benchmark --version || true
             { clang --version | head -1; } || true
             ld.lld --version || true

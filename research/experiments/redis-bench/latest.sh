@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# The newest stable releases of the two competitors whose installed copy on the
-# self-hosted machine can be older than the release (redis-bench.sh, lines
-# redis-latest and garnet-latest): Redis, built from the official release archive as
-# tests/redis-suite/reference.sh builds 7.2.16, and Garnet, from the release's
-# prebuilt x86-64 Linux archive. Valkey and Dragonfly are the host's own and
-# their versions stand in each run's host.txt. A newer release is adopted by
-# moving the pins below, with the archive's SHA-256.
+# The newest stable releases of the four competitors of redis-bench.sh (lines
+# redis-latest, valkey-latest, valkey-io-latest, dragonfly-latest-N and
+# garnet-latest-N), whatever the measuring host has installed and without
+# installing anything on it: Redis and Valkey are built from their release
+# archives as tests/redis-suite/reference.sh builds 7.2.16, Dragonfly and
+# Garnet are extracted from the release's prebuilt x86-64 Linux archive. A
+# newer release is adopted by moving the pins below, with the archive's SHA-256
+# (Redis: the redis-hashes table; Valkey: the valkey-hashes table; Dragonfly
+# and Garnet: the digest GitHub shows for the release asset).
 #
-# usage: latest.sh [redis | garnet | versions]
+# usage: latest.sh [redis | valkey | dragonfly | garnet | versions]
 #
-#   redis     prints the path of the redis-server of the release, building it
-#             from the archive when the cache lacks it
-#   garnet    prints the path of the GarnetServer of the release, extracted
-#             from the archive when the cache lacks it
-#   versions  prints the two versions the pins name
+#   redis      prints the path of the redis-server of the release, building it
+#              from the archive when the cache lacks it
+#   valkey     prints the path of the valkey-server of the release, built so
+#   dragonfly  prints the path of the dragonfly executable of the release,
+#              extracted from the archive when the cache lacks it
+#   garnet     prints the path of the GarnetServer of the release, extracted so
+#   versions   prints the four versions the pins name
 #
 # Everything else goes to standard error. REDIS_BENCH_LATEST_CACHE names the
 # directory that keeps the archives and the builds,
@@ -25,6 +29,12 @@ set -euo pipefail
 redis_version=8.10.2
 redis_sha256=b9ffee226b5eecdba98a679260dad764b2a4ebd90dce4ad5ac9e9f3eef9c02b3
 redis_url=https://download.redis.io/releases/redis-$redis_version.tar.gz
+valkey_version=9.1.2
+valkey_sha256=19c23908e7d57e8d91ef85b41f5646307582f10f4f0fb999bbf89ed24ec9c983
+valkey_url=https://github.com/valkey-io/valkey/archive/refs/tags/$valkey_version.tar.gz
+dragonfly_version=2.0.2
+dragonfly_sha256=eb9dfe654c69ab190cb3aa329ed3599ebe19c5e9a3a437bb7bc38ef52f665c88
+dragonfly_url=https://github.com/dragonflydb/dragonfly/releases/download/v$dragonfly_version/dragonfly-x86_64.tar.gz
 garnet_version=2.2.3
 garnet_sha256=fda5b097b498edcf3a9d50be84c6da4276dd78219fd48153835f0db51bc80fdd
 garnet_url=https://github.com/microsoft/garnet/releases/download/v$garnet_version/linux-x64-based.tar.xz
@@ -32,6 +42,10 @@ garnet_url=https://github.com/microsoft/garnet/releases/download/v$garnet_versio
 cache=${REDIS_BENCH_LATEST_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/firn-redis-bench-latest}
 redis_archive=$cache/redis-$redis_version.tar.gz
 redis_bin=$cache/redis-$redis_version-bin
+valkey_archive=$cache/valkey-$valkey_version.tar.gz
+valkey_bin=$cache/valkey-$valkey_version-bin
+dragonfly_archive=$cache/dragonfly-$dragonfly_version-x86_64.tar.gz
+dragonfly_dir=$cache/dragonfly-$dragonfly_version
 garnet_archive=$cache/garnet-$garnet_version-linux-x64-based.tar.xz
 garnet_dir=$cache/garnet-$garnet_version
 
@@ -53,69 +67,101 @@ fetch() {
     fi
 }
 
-redis_reports() {
-    [ "$("$1" --version 2> /dev/null | sed -n 's/^Redis server v=\([^ ]*\).*/\1/p')" = "$redis_version" ]
+# reports EXECUTABLE VERSION KIND: whether the executable reports the version.
+reports() {
+    local esc found
+    esc=$(printf '\033')
+    case $3 in
+        redis) found=$("$1" --version 2> /dev/null | sed -n 's/^Redis server v=\([^ ]*\).*/\1/p') ;;
+        valkey) found=$("$1" --version 2> /dev/null | sed -n 's/^Valkey server v=\([^ ]*\).*/\1/p') ;;
+        dragonfly) found=$("$1" --version 2> /dev/null | sed -n "s/${esc}\[[0-9;]*m//g; s/^dragonfly v\([0-9][0-9.]*\).*/\1/p") ;;
+        garnet) found=$("$1" --version 2> /dev/null | sed -n 's/^GarnetServer \([0-9.]*\).*/\1/p') ;;
+    esac
+    [ "$found" = "$2" ]
 }
 
-garnet_reports() {
-    [ "$("$1" --version 2> /dev/null | sed -n 's/^GarnetServer \([0-9.]*\).*/\1/p')" = "$garnet_version" ]
-}
-
-# The build directory is global: the exit trap removes it after this returns.
+# The work directory is global: the exit trap removes it after the function.
 work=
-build_redis() {
-    local compiler
+
+# build_server NAME VERSION ARCHIVE BIN: builds NAME-server from the source
+# archive, as reference.sh builds Redis.
+build_server() {
+    local name=$1 version=$2 archive=$3 bin=$4 compiler src
     work=$(mktemp -d "$cache/build.XXXXXX")
     trap 'rm -rf "$work"' EXIT
-    tar -xzf "$redis_archive" -C "$work"
+    tar -xzf "$archive" -C "$work"
+    src=$(find "$work" -mindepth 1 -maxdepth 1 -type d)
     compiler=cc
     command -v cc > /dev/null || compiler=clang
     # The caller's make must not hand its job server or flags to this one.
     if ! env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL sh -c \
-        'make -C "$1" -j"$(nproc)" CC="$2" redis-server' \
-        build "$work/redis-$redis_version" "$compiler" > "$work/build.log" 2>&1; then
+        'make -C "$1" -j"$(nproc)" CC="$2" "$3"-server' \
+        build "$src" "$compiler" "$name" > "$work/build.log" 2>&1; then
         tail -n 40 "$work/build.log" >&2
-        echo "latest.sh: building Redis $redis_version failed" >&2
+        echo "latest.sh: building $name $version failed" >&2
         exit 1
     fi
-    redis_reports "$work/redis-$redis_version/src/redis-server" || {
-        echo "latest.sh: the build of Redis $redis_version does not report $redis_version" >&2
+    reports "$src/src/$name-server" "$version" "$name" || {
+        echo "latest.sh: the build of $name $version does not report $version" >&2
         exit 1
     }
     mkdir -p "$work/install"
-    cp "$work/redis-$redis_version/src/redis-server" "$work/install/redis-server"
-    rm -rf "$redis_bin"
-    mv "$work/install" "$redis_bin"
-    echo "latest.sh: built Redis $redis_version into $redis_bin" >&2
+    cp "$src/src/$name-server" "$work/install/$name-server"
+    rm -rf "$bin"
+    mv "$work/install" "$bin"
+    echo "latest.sh: built $name $version into $bin" >&2
 }
 
-extract_garnet() {
+# extract_binary NAME VERSION ARCHIVE DIR SUBDIR EXECUTABLE: extracts the
+# prebuilt archive and keeps its SUBDIR (the top level when empty) as DIR, only
+# when the EXECUTABLE in it reports the version.
+extract_binary() {
+    local name=$1 version=$2 archive=$3 dir=$4 inner=$5 exe=$6 root
     work=$(mktemp -d "$cache/extract.XXXXXX")
     trap 'rm -rf "$work"' EXIT
-    tar -xJf "$garnet_archive" -C "$work"
-    garnet_reports "$work/net10.0/GarnetServer" || {
-        echo "latest.sh: the Garnet archive does not report $garnet_version" >&2
+    mkdir "$work/x"
+    case $archive in
+        *.tar.xz) tar -xJf "$archive" -C "$work/x" ;;
+        *) tar -xzf "$archive" -C "$work/x" ;;
+    esac
+    root=$work/x${inner:+/$inner}
+    reports "$root/$exe" "$version" "$name" || {
+        echo "latest.sh: the $name archive does not report $version" >&2
         exit 1
     }
-    rm -rf "$garnet_dir"
-    mv "$work/net10.0" "$garnet_dir"
-    echo "latest.sh: extracted Garnet $garnet_version into $garnet_dir" >&2
+    rm -rf "$dir"
+    mv "$root" "$dir"
+    echo "latest.sh: extracted $name $version into $dir" >&2
 }
 
 case ${1:-} in
     versions)
         echo "redis $redis_version"
+        echo "valkey $valkey_version"
+        echo "dragonfly $dragonfly_version"
         echo "garnet $garnet_version" ;;
     redis)
-        if ! redis_reports "$redis_bin/redis-server"; then
+        if ! reports "$redis_bin/redis-server" "$redis_version" redis; then
             fetch "$redis_url" "$redis_archive" "$redis_sha256"
-            build_redis
+            build_server redis "$redis_version" "$redis_archive" "$redis_bin"
         fi
         echo "$redis_bin/redis-server" ;;
+    valkey)
+        if ! reports "$valkey_bin/valkey-server" "$valkey_version" valkey; then
+            fetch "$valkey_url" "$valkey_archive" "$valkey_sha256"
+            build_server valkey "$valkey_version" "$valkey_archive" "$valkey_bin"
+        fi
+        echo "$valkey_bin/valkey-server" ;;
+    dragonfly)
+        if ! reports "$dragonfly_dir/dragonfly-x86_64" "$dragonfly_version" dragonfly; then
+            fetch "$dragonfly_url" "$dragonfly_archive" "$dragonfly_sha256"
+            extract_binary dragonfly "$dragonfly_version" "$dragonfly_archive" "$dragonfly_dir" "" dragonfly-x86_64
+        fi
+        echo "$dragonfly_dir/dragonfly-x86_64" ;;
     garnet)
-        if ! garnet_reports "$garnet_dir/GarnetServer"; then
+        if ! reports "$garnet_dir/GarnetServer" "$garnet_version" garnet; then
             fetch "$garnet_url" "$garnet_archive" "$garnet_sha256"
-            extract_garnet
+            extract_binary garnet "$garnet_version" "$garnet_archive" "$garnet_dir" net10.0 GarnetServer
         fi
         echo "$garnet_dir/GarnetServer" ;;
     *)
