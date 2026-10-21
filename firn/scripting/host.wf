@@ -231,7 +231,13 @@ fn callback_line(vm: &Vm) -> r: u64 reads(vm) {
 fn host_call(env: &Env, vm: &Vm, stack: &Box<Slots<Value>>, func: u64, argc: u64, id: u32) -> r: HostOutcome writes(env), writes(vm), writes(stack) contract {
   ensures stack^.inner.len == entry(stack)^.inner.len;
 } {
-  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Runs the host function id names, as the redis table's builtins; redis.set_repl checks its argument as Halo-wf's test host does.";
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Runs the host function id names, as the redis table's builtins; redis.set_repl checks its argument as Halo-wf's test host does. redis.replicate_commands always returns true, ignoring arguments and earlier writes, as Redis 7.2.16 eval.c:161-171 does.";
+  if id == 4105_u32 {
+    if func < stack^.inner.len {
+      set stack^.inner[func] = Value::True();
+    }
+    return HostOutcome::Returned(count: 1_u64);
+  }
   if id == 4102_u32 {
     if argc != 1_u64 {
       let message = literal(vm: vm, text: &sha_arity[0_u64..29_u64]);

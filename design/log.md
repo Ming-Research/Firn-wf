@@ -11,6 +11,14 @@ Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/memory-limit
 
 Summary: On the 14900K a cache with maxmemory about half its dataset and eviction on answered BGREWRITEAOF with "Can't execute an AOF background rewriting" where Redis 7.2.16 rewrites, so its append-only file would grow until the disk filled. Redis rewrites in a forked child whose memory is not the parent's used memory, and its eviction figure also excludes the AOF buffer. The new case rewriting under eviction and recovering the surviving data after a restart fails on main and passes here.
 
+## 2026-10-14 Match Redis 7.2.16's client-visible script behaviour
+
+Nodes: firn/scripts, firn/command-parts
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-script-client-tree, which asked to approve PR #89's changes to the design nodes "scripts" and "command composition" at head 3a2c0ab (gate and fault-disk checks green, one review finding fixed).
+
+Summary: `script_command` now also refuses EVAL, EVALSHA, EVAL_RO and EVALSHA_RO inside a script, with Redis 7.2.16's text after their arity checks, on top of the noscript commands it already refused. EVAL_RO and EVALSHA_RO share EVAL's source registry, compiled scripts, attempt protocol and command parts, with read-only authority set afresh on each invocation and kept through every retry; a script's write command is rejected after arity validation but before persistence and OOM checks, and redis.pcall can catch it.
+
 ## 2026-10-14 Keep firn's AOF rewrite diagnostics after INFO's Redis fields
 
 Nodes: firn/info-diagnostics

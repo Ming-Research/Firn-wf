@@ -55,7 +55,7 @@ clients send on their own:
   fallback; ZSCAN's text selection is described below. Rewritten
   append-only scores use plain `fpconv_dtoa` without the reply's integer
   shortcut;
-- scripting: `EVAL`, `EVALSHA`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
+- scripting: `EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO`, `SCRIPT LOAD`, `SCRIPT EXISTS`,
   `SCRIPT FLUSH [SYNC|ASYNC]` and `SCRIPT KILL`, which stops a script that
   has written nothing, running Lua 5.1 scripts on the Halo engine
   of [Halo-wf](https://github.com/Ming-Research/Halo-wf), `deps/halo-wf`,
@@ -70,7 +70,12 @@ clients send on their own:
   reply are written as Redis 7.2.16 writes them, through Halo-wf's port of
   `fpconv_dtoa`; the globals, every table reachable from them and the string
   metatable are read-only, as in Redis 7.2.16, while `KEYS` and `ARGV` stay
-  writable; `redis.REDIS_VERSION` is 7.2.16; `redis.set_repl` accepts
+  writable; the `_RO` commands refuse writes before persistence and OOM
+  checks, including writes that would change nothing, and `redis.pcall`
+  can catch their errors. The invocation selects read-only authority, so a
+  cached script can also run through a writing EVAL command.
+  `redis.replicate_commands(...)` always returns true, as in Redis 7.2.16.
+  `redis.REDIS_VERSION` is 7.2.16; `redis.set_repl` accepts
   `REPL_AOF` and `REPL_ALL` and refuses `REPL_NONE`, `REPL_SLAVE` and
   `REPL_REPLICA`, whose partial propagation firn does not implement;
 - connection: `PING`, `ECHO`, `QUIT`, `RESET`, `AUTH`, `HELLO` with no version,
@@ -83,7 +88,11 @@ clients send on their own:
   and sorted sets command this list names, including `SCAN`, `SSCAN`, `HSCAN`,
   `ZSCAN`, `KEYS` and `RANDOMKEY`, with `TOUCH`, `SUBSTR`, `TIME`, `SELECT`, `PING`, `ECHO`,
   `COMMAND`, `COMMAND COUNT`, `FLUSHALL` and `FLUSHDB`; `INFO` is not among
-  them. These same command parts run in scripts.
+  them. These same command parts run in scripts. All four EVAL commands
+  remain unsupported inside EXEC: preserving the transaction's isolation
+  while interrupting a long script waits for Whitefoot request
+  `firn-req-attempt-publish`, described
+  in the [script client audit](../research/investigations/script-engines/README.md#client-visible-script-details-redis-7216).
   A command without parts, or any name firn does not run, is queued and makes
   `EXEC` refuse the whole transaction without running any of it, where Redis
   refuses a name it lacks when it is sent; unknown subcommands and commands
@@ -237,7 +246,7 @@ A script without a shebang captures OOM at its start. A DENYOOM call is
 refused until it has accepted a WRITE-flagged command: `DEL` of a missing
 key counts, independently of whether it changes data or appends an effect.
 The OOM state survives script retries, with write acceptance restarted on
-each attempt. `EVAL` and `SCRIPT LOAD` explicitly reject **all** shebang
+each attempt. Source-evaluating commands and `SCRIPT LOAD` explicitly reject **all** shebang
 sources, including plain `#!lua` and the Redis flags `allow-oom`,
 `no-writes`, `allow-stale`, `no-cluster` and `allow-cross-slot-keys`.
 They are not executed with legacy semantics; no shebang flags are supported.
@@ -736,7 +745,7 @@ default.
   started;
 - `commands`: one file per kind of value, sorted sets' ranges in a second,
   the connection and server commands, and the dispatch;
-- `scripting`: `EVAL`, `EVALSHA` and `SCRIPT`, the Redis Lua environment
+- `scripting`: the four EVAL commands and `SCRIPT`, the Redis Lua environment
   and the conversions between replies and Lua values; `script_pool` holds
   the one Lua engine every script takes in turn and the registry of
   scripts the keyspace shares;
