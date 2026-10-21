@@ -1021,13 +1021,21 @@ the next write evicts while the rewrite captures).
 
 The rotation-charge subtraction in mem_not_counted_for_evict
 (`firn/commands/eviction.wf`, memory_excluded) is checked by
-reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom: after
-S1 the exclusion must equal the buffer part (mem_aof_buffer) plus
-the rewrite ledger less its rotation charge (firn_aof_rewrite_charged). A
-temporary workflow (since removed) deleted the subtraction on c0ada67 and
-ran this case: run [39491203976](https://github.com/Ming-Research/Firn-wf/actions/runs/39491203976)
-fails at rewrite_scan.rs:939 with "rotation charges must be excluded from the
-ledger once", so the check detects the omission.
+reconciled_scan_post_cut_backlog_charges_rotation_reserve: while the backlog
+is charged and the attempt has not aborted, the exclusion must equal the
+buffer part (mem_aof_buffer) plus the rewrite ledger less its rotation charge
+(firn_aof_rewrite_charged), and that charge must be nonzero. That case holds
+the rotation open with an unknown boundary, so a charge is certain. The
+pressure case reconciles the same equation but cannot require a charge:
+whether its post-cut writes land while the writer rotates is a race (a run
+sampled a charge of 0, CI run 39525916088), and the rotation window cannot be
+lengthened with a long history because the switch rereads history only when
+the boundary is unknown. A temporary workflow (since removed) deleted the
+subtraction on 8d20576 and ran the backlog case: run
+[39527168327](https://github.com/Ming-Research/Firn-wf/actions/runs/39527168327)
+fails at rewrite_scan.rs:1115 with "rotation charges must be excluded from the
+ledger once", so the check detects the omission; the unmodified case passes in
+[39527168308](https://github.com/Ming-Research/Firn-wf/actions/runs/39527168308).
 
 Eviction waits only for the cleanup of a rewrite that is installing
 (`aof_installing`, the three cleanup points in eviction.wf). The wait for an
