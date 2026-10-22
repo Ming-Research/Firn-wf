@@ -585,10 +585,12 @@ writes no SELECT. The lazy SELECT encoder belongs to database selection
 The recorded bytes stay unchanged; both tests are ignored citing that item and
 return when it lands.
 
-## Merge with main after the pub/sub merge
+## Rules main added that reach the blocking commands
 
-Main gained two list-related rules while this branch was stacked on the
-pub/sub branch; both reach the blocking commands.
+Main's `EVAL_RO` and `EVALSHA_RO` take command kinds 199 and 200, so the four
+blocking commands are kinds 201 (`BLPOP`) to 204 (`BLMOVE`); a shared number
+would run `EVALSHA_RO` as `BLPOP`. Two list-related rules of main reach them
+as well.
 
 Framing. [append-only-file](../../../design/firn/append-only-file.md) frames
 an execution unit that propagated several commands in `MULTI`/`EXEC`,

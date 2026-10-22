@@ -30,10 +30,11 @@ clients send on their own:
   without a count, `LRANGE`, `LLEN`, `LINDEX`, `LSET`, `LREM`, `LTRIM`,
   `LINSERT`, `LPOS` with `RANK`, `COUNT` and `MAXLEN`, and `LMOVE` and
   `RPOPLPUSH`, which move an element in one statement holding both keys;
-  draft `BLPOP`, `BRPOP`, `BRPOPLPUSH` and `BLMOVE` currently accept only the
-  literal timeout `0`. Other timeout spellings return an explicit capability
-  error pending `firn-req-extended-float`; finite-timeout compatibility is not
-  implemented. `CLIENT UNBLOCK` can release an infinite wait;
+  `BLPOP`, `BRPOP`, `BRPOPLPUSH` and `BLMOVE` block the connection until a
+  push serves it, and currently accept only the literal timeout `0`. Other
+  timeout spellings return an explicit capability error pending
+  `firn-req-extended-float`; finite timeouts are not implemented.
+  `CLIENT UNBLOCK` can release an infinite wait;
 - sets: `SADD`, `SREM`, `SPOP` and `SRANDMEMBER` with or without a count,
   `SCARD`, `SMEMBERS`, `SSCAN key cursor [MATCH pattern] [COUNT count]`,
   `SISMEMBER`, `SMISMEMBER`, `SMOVE`, `SINTER`,
