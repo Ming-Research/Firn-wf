@@ -63,7 +63,19 @@ const client_info_name: Array<u8, 6> = " name=";
 
 const client_info_age: Array<u8, 5> = " age=";
 
-const client_info_fixed: Array<u8, 93> = " idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|info user=default redir=-1 resp=";
+const client_info_flags: Array<u8, 14> = " idle=0 flags=";
+
+const client_info_db: Array<u8, 10> = " db=0 sub=";
+
+const client_info_psub: Array<u8, 6> = " psub=";
+
+const client_info_ssub: Array<u8, 6> = " ssub=";
+
+const client_info_fixed: Array<u8, 53> = " multi=-1 cmd=client|info user=default redir=-1 resp=";
+
+const client_info_pubsub: Array<u8, 1> = "P";
+
+const client_info_normal: Array<u8, 1> = "N";
 
 const client_info_end: Array<u8, 1> = "\n";
 
@@ -406,7 +418,19 @@ fn run_client_info(client: &Client) -> result: unit writes(client) {
     let age = current -wrap since;
     text_number(text: &text, value: age);
   }
-  text_word(text: &text, word: &client_info_fixed[0_u64..93_u64]);
+  text_word(text: &text, word: &client_info_flags[0_u64..14_u64]);
+  if subscriber_mode(client: client) {
+    text_word(text: &text, word: &client_info_pubsub[0_u64..1_u64]);
+  } else {
+    text_word(text: &text, word: &client_info_normal[0_u64..1_u64]);
+  }
+  text_word(text: &text, word: &client_info_db[0_u64..10_u64]);
+  text_number(text: &text, value: client^.sub);
+  text_word(text: &text, word: &client_info_psub[0_u64..6_u64]);
+  text_number(text: &text, value: client^.psub);
+  text_word(text: &text, word: &client_info_ssub[0_u64..6_u64]);
+  text_number(text: &text, value: client^.ssub);
+  text_word(text: &text, word: &client_info_fixed[0_u64..53_u64]);
   text_number(text: &text, value: client^.resp);
   text_word(text: &text, word: &client_info_end[0_u64..1_u64]);
   let length = text.inner.len;

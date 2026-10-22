@@ -1,32 +1,121 @@
 # Design tree change log
 
-Newest first. One entry per approved change of the tree: a dated title,
-`Nodes:` naming every node changed, `Owner-approved:` and `Summary:`; the
-owner-wide instructions' design-tree part owns the form.
-
-## 2026-10-13 Approve the maxclients decisions on top of the startup design
-
-Nodes: firn/startup, firn/measurement-sessions
-
-Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-maxclients-tree for PR #115's three maxclients decisions on firn/startup (option A, in English: approve; firn's connection limit is Redis's, with the one stated difference that it does not raise the file-descriptor limit; merge #115 after #114). PR #115 is stacked on PR #114, whose startup decisions and the one on firn/measurement-sessions the owner approved with option A on card firn-q-ops-tree, as the entries below record.
-
-Summary: Against main this branch changes firn/measurement-sessions as well as firn/startup, because it carries PR #114's approved decisions. This entry names both nodes so that the design check, which requires the newest entry to name every node changed since main, passes while the stack is unmerged; it changes no decision.
+Newest first. One entry per change of the tree: a dated title, `Nodes:`
+naming every node changed and `Summary:`; the owner-wide instructions'
+design-tree part owns the form. Older entries also carry an `Owner-approved:`
+line, a field since retired.
 
 ## 2026-10-13 Limit concurrent clients with maxclients
 
 Nodes: firn/startup
 
-Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-maxclients-tree, which asked to approve PR #115's three maxclients decisions on firn/startup: maxclients as Redis 7.2.16 has it (config file, command line, CONFIG GET/SET; default 10000, range 1 to 4294967295; a connection over the limit gets `-ERR max number of clients reached` before any command, is disconnected, and adds only to rejected_connections); the limit is read and the count raised in one atomic statement, and the reply to a refused connection waits at most one second; firn does not raise the process's file-descriptor limit, unlike Redis, because the pinned Whitefoot has no such interface (reopened when it delivers); and startup checks maxclients, port and timeout with CONFIG SET's own validation. #115 is stacked on #114 and merges after it.
-
 Summary: firn had no connection limit and rejected_connections stayed 0. The limit now follows Redis, with the one difference that the operator raises `ulimit -n` since firn cannot; accept errors beyond the system limit are absorbed without stopping the server.
 
 ## 2026-10-13 Start firn the way redis-server does
 
-Nodes: firn/startup (new), firn/measurement-sessions
-
-Owner-approved: On the shared status board on 2026-10-13, the owner chose option A on card firn-q-ops-startup (firn starts and is configured like redis-server: a Redis-syntax config file and --directive arguments, only supported directives accepted and unknown ones refused with status 1, Redis's log format, firn's four positional arguments dropped), option A on card firn-q-ops-paths-interim (until Whitefoot opens ordinary paths, the config file path is relative to the start directory, `dir` accepts only `.` and `./`, and absolute paths, `..`, `include` and other `dir` values are refused with an error naming the missing capability), and option A (approve) on card firn-q-ops-tree, which asked to approve PR #114's design changes at head 4281189: the new node firn/startup with six startup decisions (the form `firn [config file or -] [--directive value ...]`; the interim path limit; the accepted directives, the six maxmemory-family ones validated by CONFIG SET's own code; `bind` taking one IPv4 address or `*`, unlike Redis; the test-only directive `--firn-clients N`; bare arguments after the config file name refused, unlike Redis), and one decision on firn/measurement-sessions: a benchmark picks the startup form for each firn version under test from that version's own source, recorded in the revision table, rather than one form for all versions or guessing by descent from the merge.
+Nodes: firn/startup, firn/measurement-sessions
 
 Summary: firn read no config file, logged nothing and took four positional arguments; an operator replacing redis-server found it treating the config path as a port. It now starts and is configured as redis-server is, with two stated differences (one `bind` address; bare arguments refused) and a temporary path limit that Whitefoot's request for opening ordinary paths removes. The benchmark script chooses the old or new startup form per version so comparisons across the change still run.
+
+## 2026-10-14 Gate the ten safety witnesses
+
+Nodes: firn/building
+
+Summary: Each witness is a pair of small programs written from a real defect in Redis, Valkey, KeyDB, Garnet or Dragonfly. Checking the diagnostic, not just a nonzero exit, avoids masking an unrelated error, and compiling the fixed form avoids masking a correct form Whitefoot does not support. A Whitefoot upgrade that stops rejecting a class, or stops accepting a fix, turns the gate red. Replaced: unchecked examples as safety evidence.
+
+## 2026-10-21 Queue a promoted connection's INFO reply inside the lock interval
+
+Nodes: firn/connection-ownership
+
+Summary: Every admitted INFO form on a promoted (subscribed) connection commits its complete reply under the dataset, Meta and event-hub boundary, with the script-registry and server-state snapshots taken in that same non-waiting statement. Otherwise a key-count snapshot released before the reply is committed would let a later SET/PUBLISH transaction precede an INFO reply that reports the earlier empty database. Host heap and residency samples precede the statement, and INFO on a never-subscribed connection keeps its original snapshot path.
+
+## 2026-10-13 Leave an AOF rewrite's memory out of maxmemory
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/memory-limit
+
+Summary: On the 14900K a cache with maxmemory about half its dataset and eviction on answered BGREWRITEAOF with "Can't execute an AOF background rewriting" where Redis 7.2.16 rewrites, so its append-only file would grow until the disk filled. Redis rewrites in a forked child whose memory is not the parent's used memory, and its eviction figure also excludes the AOF buffer. The new case rewriting under eviction and recovering the surviving data after a restart fails on main and passes here.
+
+## 2026-10-14 Refuse writes after a failed directory sync at the rewrite's manifest swap
+
+Nodes: firn/aof-rewrite
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-rw-dirsync-tree, which asked to approve PR #120's design change at head ca3d045 (the tree is unchanged at the current head): when the directory sync fails after the AOF rewrite renames the new manifest into place, the rewrite fails and firn records an AOF sync error (EINVAL excepted, as Redis treats it as success), then answers writes with MISCONF until a recovering rewrite installs durably; this deliberately differs from Redis 7.2.16, which reverts the switch but keeps acknowledging writes.
+
+Summary: At the switch point the old manifest and old append file stay in force and the new incremental file is left in place, since both manifests list the old incremental file and data written to it survives whichever manifest a restart reads; at the install point the renamed new manifest stays in force and the sync error is recorded too. Continuing to switch to the new incremental file and acknowledge writes after a failed directory sync is rejected, because a power loss could then lose acknowledged writes (the new case failed on the code before the change). The rule matches firn's existing refusal of writes after a failed sync of the active file. EINVAL from the directory sync is not a failure: it means the filesystem cannot sync directories at all, so it counts as a successful sync, as Redis 7.2.16's fsyncFileDir treats it, and the rewrite completes with writes continuing on the new increment (the case switch-dirsync-einval shows both servers finishing the rewrite and acknowledging writes after it).
+
+## 2026-10-14 Add publish/subscribe with promoted connections and an event hub
+
+Nodes: firn, firn/connection-ownership, firn/pubsub-registries, firn/script-attempt-external-effects, firn/scripts, firn/transactions, firn/orderly-stop, firn/enumeration
+
+Summary: A connection keeps the receive/execute/send owner until its first successful subscription, then moves once to independent receive, command and output owners. Membership changes and complete reply groups commit under one event hub, and one dispatcher publishes them in order to per-connection output inboxes. Channels, patterns and shard channels have separate indexes with monotonically allocated registration ids. A dataset command on a promoted connection holds the whole keyspace, Meta and hub through its reply commitment. Outstanding frames are charged to the connection's output limit, with Redis's pub/sub client thresholds. A script attempt that meets PUBLISH, SPUBLISH or PUBSUB retries in whole-map mode, stages its deliveries until the final reply, and publishes nothing if abandoned. EXEC adds the hub for pub/sub queues or promoted connections, and the reference suite's argument-free unsubscribe helpers are patched to drain the known acknowledgments. Pattern delivery and channel listing use the shared iterative glob matcher, whose nesting refusal the enumeration node now names for them.
+
+## 2026-10-14 Match Redis 7.2.16's client-visible script behaviour
+
+Nodes: firn/scripts, firn/command-parts
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-script-client-tree, which asked to approve PR #89's changes to the design nodes "scripts" and "command composition" at head 3a2c0ab (gate and fault-disk checks green, one review finding fixed).
+
+Summary: `script_command` now also refuses EVAL, EVALSHA, EVAL_RO and EVALSHA_RO inside a script, with Redis 7.2.16's text after their arity checks, on top of the noscript commands it already refused. EVAL_RO and EVALSHA_RO share EVAL's source registry, compiled scripts, attempt protocol and command parts, with read-only authority set afresh on each invocation and kept through every retry; a script's write command is rejected after arity validation but before persistence and OOM checks, and redis.pcall can catch it.
+
+## 2026-10-14 Keep firn's AOF rewrite diagnostics after INFO's Redis fields
+
+Nodes: firn/info-diagnostics
+
+Summary: INFO keeps firn's own append-only rewrite diagnostics (the firn_aof_rewrite_ fields that operators and the rewrite acceptance cases read) in the Persistence section, after every selected Redis 7.2.16 field. This keeps the real measurements and Redis's relative field order; interleaving them with Redis fields, deleting them or moving them to another section is rejected.
+
+## 2026-10-14 Keep the list element ceiling and refuse before changing anything
+
+Nodes: firn/lists
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A (approve) on card firn-q-lists-ceiling-tree, which asked to approve PR #83's new design node at head 75133a9: firn lists keep the store-wide ceiling of 2^32 elements shared with hashes and sets, a deliberate difference from Redis 7.2.16 on 64-bit hosts; a command that would exceed it replies with an error naming the limit before changing any element or access metadata.
+
+Summary: A push, LINSERT or LMOVE that would exceed the ceiling refuses whole, so a successful reply always means the elements were kept: a multi-element push is checked as one, LMOVE checks the destination before popping the source, a rotation within one list needs no room, and LINSERT with a missing pivot still returns -1. Dropping elements while replying success, partial multi-element pushes and popping the source before checking the destination are rejected. The ceiling is a storage policy, to be reopened when a selected workload needs more than 2^32 elements.
+
+## 2026-10-14 Add SSCAN, HSCAN and ZSCAN as whole-collection scans
+
+Nodes: firn/enumeration, firn/scripts
+
+Summary: Until Whitefoot's standard-library hash map can resume a scan (board item coord-wfbl-02-01), SSCAN, HSCAN and ZSCAN return the whole MATCH-filtered collection in one held statement with cursor 0, in firn's element order; the temporary code is removed and replaced by bounded batches when the library delivers, and the item's acceptance waits for that. ZSCAN writes scores with Redis's d2string text when the whole sorted set has at most 128 members of at most 64 bytes each, and with the exact %.17g writer otherwise. The script rollback decision now rests on the scans having no cursor that spans an attempt, and reopens when bounded continuation arrives. Rejected: Redis encoding history, resuming at a numeric offset, dropping entries or returning cursor 0 for a partial result, one score formatter for all sizes.
+
+## 2026-10-14 Write scores in replies and AOF rewrites byte for byte as Redis 7.2.16
+
+Nodes: firn/scripts
+
+Summary: Redis 7.2.16 selects the text rule by command and encoding, so one module now writes all of them: command-score replies and script double replies use d2string (nan, infinities and signed zeros first, an integral value up to 2^62 as an integer, otherwise fpconv_dtoa); a Lua number passed to redis.call or redis.pcall uses the integer rule and otherwise fpconv_dtoa; rewritten append-only scores use plain fpconv_dtoa; ZSCAN scores for skiplist sorted sets use ld2string(LD_STR_AUTO), implemented by the exact %.17g writer. The Grisu2 digits come from Halo-wf's port, checked against 18,235 doubles recorded on redis-server 7.2.16. Command-reply scores no longer keep %.17g.
+
+## 2026-10-14 Keep a saved sync error through a successful close-sync of the old file
+
+Nodes: firn/append-only-file
+
+Owner-approved: On the shared status board on 2026-10-14, the owner chose option A on card firn-q-close-sync-recovery (keep firn's recovery rule; not clearing a saved sync error when the sealed old file's pre-close sync succeeds is a deliberate difference from Redis 7.2.16) and option A (approve) on card firn-q-close-sync-tree, which asked to approve PR #91's design change at head a6bbe8d: the decision on rotation preserving health cites Redis 7.2.16 and names its close-sync success rule as an intentional difference, and the rejected clearing on a successful retried sync now includes the pre-close sync.
+
+Summary: A saved sync error survives the successful sync of the sealed old incremental file at a rewrite's switch, as it survives any later successful sync, and only a durable rewrite installation clears it; Redis 7.2.16's BIO_CLOSE_AOF success path clears it at once. A later successful sync does not write the pages whose writeback failed, so clearing would acknowledge writes before the hole is repaired and a restart would lose them. A faulty-device CI case with only the old incremental file on the failing device shows both servers refusing SET and PING with MISCONF after the failed close sync and accepting writes again after the device recovers ([close-fsync status](../research/investigations/aof-write-errors/README.md#close-fsync-status-in-redis-7216)).
+
+## 2026-10-14 Initialize the access stamp at RENAME's destination and MSETNX stores like Redis 7.2.16
+
+Nodes: firn/memory-limit
+
+Summary: A successful RENAME or RENAMENX to a different name initializes the destination's LRU clock or LFU minute with counter 5 instead of carrying the source's stamp, because Redis 7.2.16 adds the moved value through dbAddInternal, which initializes it; same-name and refused renames keep the ordinary lookup refreshes. MSETNX keeps its ordered existence lookups but stores without refreshing a repeated key after each pair, as Redis 7.2.16's msetGenericCommand does, so the last pair wins with the first insertion's fresh stamp. The LFU outcomes are recorded in research/experiments/aof-oracle/lfu-rename-msetnx.json, from Firn-wf run 38406427583.
+
+## 2026-10-14 Exclude expired keys from SCAN and cap glob nesting as Redis 7.2.16
+
+Nodes: firn/enumeration
+
+Summary: SCAN removes and records a matched key found expired before deciding whether its type belongs in the reply, so the removed key is excluded under every TYPE argument including none, as Redis 7.2.16's scanGenericCommand rejects a null lookup result. The shared glob matcher, used by KEYS, SCAN MATCH and CONFIG GET, obeys Redis 7.2.16's maximum nesting of 1000 while staying iterative, counting only entry into a nonterminal star suffix after adjacent stars collapse; a 1001st suffix entry returns no match and a trailing star can still succeed at depth 1000.
+
+## 2026-10-14 Write SET with PXAT and effect groups as Redis 7.2.16 does
+
+Nodes: firn/append-only-file
+
+Summary: A successful SET supplied with PXAT appends its original argument vector; EX, PX and EXAT append SET key value PXAT with the absolute millisecond expiry, and GET is stripped only when there is no expiry, as Redis 7.2.16's setGenericCommand does. An ordinary top-level command remembers its initial AOF length and an effect counter, appends effects under its existing atomic hold, and inserts the 15-byte MULTI frame at that offset and appends the 14-byte EXEC frame only when it commits several effects; zero effects write nothing and one stays bare, as propagatePendingCommands groups the execution unit, including a command's own lazy-expiry DELs. The single-effect hot path adds only the offset and counter; the frame uses the rotation budget and is completed before sequence commit. Counted partial SPOP contributes one SREM per batch of at most 1024 members. Scripts and EXEC keep their outer grouping; active-expiry and eviction deletions are published independently.
+
+## 2026-10-13 Stop the append-only replay on a stop signal and exit 0
+
+Nodes: firn/orderly-stop
+
+Owner-approved: On the shared status board on 2026-10-13, the owner chose option A (approve) on card firn-q-replay-stop-tree, which asked to approve PR #124's design change at head 0059406: the stop listener opens before the replay, so a host that refuses it stops firn with status 3 before the replay and ahead of status 4; a stop requested during the replay stops it at the next check (before the first command, then every 1024 commands, as Redis 7.2.16 does) and firn exits with status 0 without creating or opening an incremental file, truncating, deleting history or writing the manifest; an upgrade of an old single file stays before the replay as in Redis; having the replay poll a cancellation handle is rejected.
+
+Summary: A SIGTERM or SIGINT during the startup replay used to end firn by the host default, where Redis 7.2.16 installs its handlers before loading and exits with status 0 leaving the append-only directory unchanged. The listener now opens first and the replay reads the server's stop request. A request arriving after the last check is taken as the ordinary orderly stop once firn listens. The first signal still closes the listener, so a later signal ends firn at once; matching Redis there needs a Whitefoot immediate exit, requested from Whitefoot.
 
 ## 2026-10-13 Check maxmemory admission without Meta while no AOF is kept
 

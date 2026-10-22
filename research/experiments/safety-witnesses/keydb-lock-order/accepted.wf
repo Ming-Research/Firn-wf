@@ -1,0 +1,27 @@
+fn queue_then_global(queue: Shared<u64>, global: Shared<u64>) -> result: unit pure waits {
+  doc "KeyDB issue 883: name both shared objects in one atomic statement; header order does not choose acquisition order. https://github.com/Snapchat/KeyDB/issues/883";
+  atomic queue_state = &queue, global_state = &global {
+    set queue_state^ = queue_state^ +wrap 1_u64;
+    set global_state^ = global_state^ +wrap 1_u64;
+  }
+  return unit;
+}
+
+fn global_then_queue(queue: Shared<u64>, global: Shared<u64>) -> result: unit pure waits {
+  atomic global_state = &global, queue_state = &queue {
+    set global_state^ = global_state^ +wrap 1_u64;
+    set queue_state^ = queue_state^ +wrap 1_u64;
+  }
+  return unit;
+}
+
+fn main() -> status: std::process::ExitStatus pure waits {
+  let queue = shared_new::<u64>(value: 0_u64);
+  let global = shared_new::<u64>(value: 0_u64);
+  let queued = shared_share::<u64>(shared: &queue);
+  let online = shared_share::<u64>(shared: &global);
+  let worker = spawn queue_then_global(queue: move queued, global: move online);
+  global_then_queue(queue: move queue, global: move global);
+  let completed = worker;
+  return std::process::exit_status(code: 0_u8);
+}
