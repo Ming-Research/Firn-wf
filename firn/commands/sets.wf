@@ -165,9 +165,9 @@ fn run_sadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let lapsed = sadd_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = set_members_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   sadd_finish(client: client);
@@ -245,9 +245,9 @@ fn run_srem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let lapsed = srem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = set_members_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   srem_finish(client: client);
@@ -350,7 +350,7 @@ fn pop_members(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(val
 }
 
 fn run_spop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client) waits {
-  doc "SPOP key [count]: removes and answers a member chosen at random, or an array of up to count of them, removing the key when the set is left empty; more arguments are a syntax error, as in Redis. The file records the pop as Redis records it, so that a replay removes the same members: the members removed as SREM, one command where Redis writes one SREM per member inside a transaction, and a pop with a count that empties the set as DEL of its key. A key whose expiry has been reached is removed, its removal recorded.";
+  doc "SPOP key [count]: removes and answers a member chosen at random, or an array of up to count of them, removing the key when the set is left empty; more arguments are a syntax error, as in Redis. The file records the pop as Redis 7.2.16 records it, so that a replay removes the same members: SREM commands with at most 1024 members each, wrapped in MULTI and EXEC when there is more than one batch, and a pop with a count that empties the set as DEL of its key. A key whose expiry has been reached is removed, its removal recorded.";
   let journal = None<pkg::store::AccessJournal>();
   let ready = spop_parse(input: input, args: args, client: client, now: time^.check);
   if bnot(ready) {
@@ -371,9 +371,9 @@ fn run_spop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let lapsed = spop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = spop_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   spop_finish(client: client);
@@ -925,9 +925,9 @@ fn run_smove(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &C
     }
     let work = smove_body(sequence: &sequence, journal: &journal, access_keys: &keys, slots: slots, source: pair.source, destination: pair.target, client: client);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = smove_meta(log: &m^.log, logged: store^.logging, work: &work, input: input, args: args, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   smove_finish(client: client);
@@ -1221,9 +1221,9 @@ fn run_combine(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: 
     }
     let work = set_combine_body(sequence: &sequence, journal: &journal, slots: slots, keys: &keys, access_keys: &keys, ranks: &ranks, client: client, env: env, operation: operation, storing: storing, members: &members);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &work.removed, changed: work.changed, input: input, args: args, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   set_combine_finish(client: client, storing: storing, members: &members);
@@ -1249,10 +1249,10 @@ fn run_sintercard(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, clien
     }
     let removed = sintercard_body(sequence: &sequence, journal: &journal, slots: slots, keys: &keys, access_keys: &keys, ranks: &ranks, client: client, env: env, limit: plan.limit);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let changed = False();
       let appended = set_operands_meta(log: &m^.log, logged: store^.logging, removed: &removed, changed: changed, input: input, args: args, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   sintercard_finish(client: client);
@@ -1617,15 +1617,22 @@ fn srandmember_finish(client: &Client) -> result: unit writes(client) {
   return unit;
 }
 
-fn set_members_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) {
+fn set_members_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "SADD and SREM record expiry removal before a command that changed members, returning the number of records.";
   let changed = client^.number > 0_u64;
   let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key, budget: budget);
   return appended;
 }
 
-fn spop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) {
-  doc "Records SPOP exactly as before: DEL for a counted whole set, otherwise one SREM naming the members in their selected order.";
+fn spop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
+  doc "Records SPOP as Redis 7.2.16 does: DEL for a counted whole set, otherwise SREM batches of at most 1024 members in their selected order, returning the actual record count so a script or EXEC can wrap the complete execution unit.";
+  let log_initial_length = log^.inner.len;
   let appended = mset_lapse_meta(log: log, logged: logged, lapsed: lapsed, key: key, budget: budget);
   let key_span = arg(args: args, index: 1_u64);
   let counted = client^.high == 1_i64;
@@ -1641,15 +1648,31 @@ fn spop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, 
     }
   } else if popped > 0_u64 {
     if logged {
-      let count = popped +wrap 2_u64;
-      log_count(log: log, count: count, room: key_span.length, budget: budget);
-      log_word(log: log, word: &word_srem[0_u64..4_u64], budget: budget);
-      log_input(log: log, input: input, span: key_span, budget: budget);
-      set appended = appended +wrap 1_u64;
-      for @members (index in 0_u64..popped) {
-        if index < client^.items.inner.len {
-          log_text(log: log, text: &client^.items.inner[index].bytes, budget: budget);
+      let members = &client^.items.inner[0_u64..popped];
+      let first = 0_u64;
+      loop @batches (
+        invariant remaining_members: first <= popped,
+        invariant log_extent: log^.inner.len >= log_initial_length
+      ) {
+        if first == popped {
+          break @batches;
         }
+        let remaining = popped - first;
+        let batch = imin(remaining, 1024_u64);
+        let end = first + batch;
+        invariant batch_end_within_members: end <= popped;
+        let count = batch + 2_u64;
+        log_count(log: log, count: count, room: key_span.length, budget: budget);
+        log_word(log: log, word: &word_srem[0_u64..4_u64], budget: budget);
+        log_input(log: log, input: input, span: key_span, budget: budget);
+        set appended = appended +wrap 1_u64;
+        for @members (
+          index in first..end,
+          invariant member_log_extent: log^.inner.len >= log_initial_length
+        ) {
+          log_text(log: log, text: &members^[index].bytes, budget: budget);
+        }
+        set first = end;
       }
     }
   }
@@ -1766,7 +1789,10 @@ fn smove_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
   return work;
 }
 
-fn smove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &SetMoveWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), writes(log), writes(budget) {
+fn smove_meta(log: &Box<Slots<u8>>, logged: Bool, work: &SetMoveWork, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(work), reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Records source then destination removals, then a move that changed members, exactly as on the network.";
   let source_place = key_bounds(input: input, args: args, index: 1_u64);
   let source_key = &input^[source_place.start..source_place.end];
@@ -1795,11 +1821,18 @@ struct SetCombineWork {
   removed: Box<Slots<u64>>;
 }
 
-fn set_operands_meta(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(removed), reads(input), reads(args), writes(log), writes(budget) {
+fn set_operands_meta(log: &Box<Slots<u8>>, logged: Bool, removed: &Box<Slots<u64>>, changed: Bool, input: &[u8], args: &Box<Slots<Span>>, budget: &pkg::store::LogBudget) -> appended: u64 reads(removed), reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Records removed operands in the body's order, then any expired STORE destination, followed by the STORE command only when its destination changed.";
+  let log_initial_length = log^.inner.len;
   let appended = 0_u64;
   if logged {
-    for @removals (at in 0_u64..removed^.inner.len) {
+    for @removals (
+      at in 0_u64..removed^.inner.len,
+      invariant log_extent: log^.inner.len >= log_initial_length
+    ) {
       if at < removed^.inner.len {
         let position = removed^.inner[at];
         let place = key_bounds(input: input, args: args, index: position);

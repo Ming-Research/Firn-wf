@@ -1,0 +1,31 @@
+struct ScriptState {
+  doc "Redis IO observes script timeout through atomic shared state: https://github.com/redis/redis/pull/15781 .";
+  timed_out: Bool;
+}
+
+fn read_busy(script: SharedRead<ScriptState>) -> busy: Bool pure waits {
+  let observed = False();
+  atomic state = &script {
+    set observed = state^.timed_out;
+  }
+  return observed;
+}
+
+fn leave_timeout(script: Shared<ScriptState>) -> result: unit pure waits {
+  atomic state = &script {
+    set state^.timed_out = False();
+  }
+  return unit;
+}
+
+fn main() -> status: std::process::ExitStatus pure waits {
+  let busy = True();
+  let initial = ScriptState(timed_out: busy);
+  let script = shared_new::<ScriptState>(value: initial);
+  let io_state = shared_read::<ScriptState>(shared: &script);
+  let main_state = shared_share::<ScriptState>(shared: &script);
+  let observed = spawn read_busy(script: move io_state);
+  leave_timeout(script: move main_state);
+  let finished = observed;
+  return std::process::exit_status(code: 0_u8);
+}
