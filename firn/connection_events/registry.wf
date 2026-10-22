@@ -104,12 +104,10 @@ fn record_new(hub: &Hub, client: &Client) -> record: Record reads(client.id), re
   return Record(client_id: client^.id, connection: move connection, resp: client^.resp, channels: move channels, patterns: move patterns, shards: move shards, pending: 0_u64, soft: soft);
 }
 
-fn sync_counts(client: &Client, record: &Record) -> result: unit reads(record.channels), reads(record.patterns), reads(record.shards), writes(client.sub), writes(client.psub), writes(client.ssub), writes(client.changed) {
-  doc "Copies the record's subscription counts into the client and marks them as not yet published to the table of clients CLIENT LIST reads, which shows them for every connection.";
+fn sync_counts(client: &Client, record: &Record) -> result: unit reads(record.channels), reads(record.patterns), reads(record.shards), writes(client.sub), writes(client.psub), writes(client.ssub) {
   set client^.sub = record^.channels.inner.len;
   set client^.psub = record^.patterns.inner.len;
   set client^.ssub = record^.shards.inner.len;
-  set client^.changed = True();
   return unit;
 }
 

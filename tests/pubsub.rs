@@ -1303,9 +1303,9 @@ fn client_text(reply: Vec<u8>) -> String {
 /// every connection and the flag P on a connection holding a subscription,
 /// and getClientType lists a connection pubsub while pubsub.c holds the flag,
 /// normal after the last membership goes. firn gives the caller's own line
-/// every field and another connection's the fields it sets itself
-/// (design/firn/reported-facts.md), subscription counts among them. Before
-/// the change firn wrote sub=0 psub=0 ssub=0 for every other connection and
+/// every field and another connection's the fields it sets itself and the
+/// subscription counts the event hub keeps (design/firn/reported-facts.md).
+/// Before the change firn wrote sub=0 psub=0 ssub=0 for every other connection and
 /// listed it normal.
 #[test]
 fn client_list_shows_subscription_counts_flag_and_type() {
@@ -1318,8 +1318,8 @@ fn client_list_shows_subscription_counts_flag_and_type() {
         let server = observer.peer_addr().expect("the server's address");
         let observing = format!("id=1 addr={observer_addr} laddr={server} name= age=0 idle=0 flags=N db=0 sub=0 psub=0 ssub=0 multi=-1 cmd=client|list user=default redir=-1 resp=2 lib-name= lib-ver=\n");
         let observed = |counts: &str| format!("id=2 addr={subscriber_addr} laddr={server} name= age=0 db=0 {counts} user=default redir=-1 resp={version} lib-name= lib-ver=\n");
-        // The acknowledgments leave only after the connection published its
-        // counts, so the observer sees them at once.
+        // The acknowledgments leave in the statement that holds the event hub
+        // and records the memberships, so the observer sees them at once.
         send(&mut subscriber, &[&["SUBSCRIBE", "a", "b"], &["PSUBSCRIBE", "p*"], &["SSUBSCRIBE", "s"]]);
         assert_eq!(frame(&mut subscriber), acknowledgment(version, "subscribe", Some("a"), 1));
         assert_eq!(frame(&mut subscriber), acknowledgment(version, "subscribe", Some("b"), 2));
@@ -1330,6 +1330,13 @@ fn client_list_shows_subscription_counts_flag_and_type() {
         assert_eq!(client_text(request(&mut observer, &["CLIENT", "LIST", "TYPE", "pubsub"])), counts, "TYPE pubsub");
         assert_eq!(client_text(request(&mut observer, &["CLIENT", "LIST", "TYPE", "normal"])), observing, "TYPE normal");
         assert_eq!(client_text(request(&mut observer, &["CLIENT", "LIST", "ID", "2"])), counts, "ID 2");
+        // An EXEC holding CLIENT LIST holds the event hub too and reads the
+        // same counts.
+        assert_eq!(request(&mut observer, &["MULTI"]), b"+OK\r\n");
+        assert_eq!(request(&mut observer, &["CLIENT", "LIST", "TYPE", "pubsub"]), b"+QUEUED\r\n");
+        let executed = request(&mut observer, &["EXEC"]);
+        assert!(executed.starts_with(b"*1\r\n"), "{executed:?}");
+        assert_eq!(client_text(executed[4..].to_vec()), counts, "TYPE pubsub in EXEC");
         // Under RESP3 the subscriber may run CLIENT and shows the flag P.
         if version == 3 {
             let own = format!("id=2 addr={subscriber_addr} laddr={server} name= age=0 idle=0 flags=P db=0 sub=2 psub=1 ssub=1 multi=-1 cmd=client|info user=default redir=-1 resp=3 lib-name= lib-ver=\n");
@@ -1354,9 +1361,9 @@ fn client_list_shows_subscription_counts_flag_and_type() {
 /// Redis 7.2.16 queues CLIENT subcommands (they lack NO_MULTI) and runs them
 /// in execCommand, a plain SUBSCRIBE too. firn runs an EXEC holding pub/sub
 /// commands in the statement that holds the event hub, and that statement
-/// holds the client table as well, publishing the changed name, library name
-/// and subscription counts before it ends: a connection that sees the key the
-/// EXEC set never sees the old connection facts. Before the change that EXEC
+/// holds the client table as well, publishing the changed name and library
+/// name before it ends: a connection that sees the key the EXEC set never sees
+/// the old connection facts or subscription counts. Before the change that EXEC
 /// answered the queued CLIENT command with the transaction-refusal error.
 #[test]
 fn client_subcommands_run_in_an_exec_that_subscribes() {
@@ -1384,4 +1391,33 @@ fn client_subcommands_run_in_an_exec_that_subscribes() {
         drop((observer, subscriber));
         assert_eq!(finished(child).0, 0);
     }
+}
+
+/// Redis 7.2.16 db.c lookupKey leaves a key's access time alone while the
+/// calling client is in NO-TOUCH mode, except for that client's own TOUCH
+/// (touchCommand), and CLIENT NO-TOUCH stays on after it. A subscribed
+/// connection runs its commands through firn's promoted path, which keeps the
+/// same exception. Before the change a subscribed connection's TOUCH in
+/// NO-TOUCH mode left the key's idle time where it was.
+#[test]
+fn touch_refreshes_a_key_from_a_subscribed_connection_in_no_touch_mode() {
+    let (child, mut observer, port) = start(2);
+    let mut subscriber = connect_when_ready(port, &child);
+    hello(&mut subscriber, 3);
+    assert_eq!(request(&mut observer, &["SET", "foo", "bar"]), b"+OK\r\n");
+    assert_eq!(request(&mut subscriber, &["SUBSCRIBE", "news"]), acknowledgment(3, "subscribe", Some("news"), 1));
+    assert_eq!(request(&mut subscriber, &["CLIENT", "NO-TOUCH", "ON"]), b"+OK\r\n");
+    std::thread::sleep(Duration::from_millis(2200));
+    let idle = |stream: &mut TcpStream| -> i64 {
+        let reply = String::from_utf8(request(stream, &["OBJECT", "IDLETIME", "foo"])).expect("an integer reply");
+        reply.strip_prefix(':').and_then(|rest| rest.strip_suffix("\r\n")).and_then(|digits| digits.parse().ok()).expect("an integer reply")
+    };
+    assert_eq!(request(&mut subscriber, &["GET", "foo"]), bulk("bar"));
+    assert!(idle(&mut observer) >= 2, "GET touched the key in NO-TOUCH mode");
+    assert_eq!(request(&mut subscriber, &["TOUCH", "foo"]), b":1\r\n");
+    assert!(idle(&mut observer) <= 1, "TOUCH did not refresh the key");
+    let info = client_text(request(&mut subscriber, &["CLIENT", "INFO"]));
+    assert!(info.contains(" flags=PT "), "NO-TOUCH must stay on after TOUCH: {info:?}");
+    drop((observer, subscriber));
+    assert_eq!(finished(child).0, 0);
 }

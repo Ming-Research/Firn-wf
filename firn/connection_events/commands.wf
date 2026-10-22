@@ -84,7 +84,6 @@ fn unsubscribe_all(map: &HashMap<Key, Box<Slots<u64>>, extent>, names: &Box<Slot
       } else {
         set client^.ssub = names^.inner.len;
       }
-      set client^.changed = True();
       let absent = False();
       acknowledge(client: client, kind: kind, key: &key, absent: absent);
     } else {

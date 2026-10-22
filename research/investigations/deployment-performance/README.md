@@ -662,10 +662,20 @@ reason firn asks that any bounded-overtaking build be measured the same way.
 
 Firn-wf#74 adds client handshake commands and `CLIENT LIST`. Run
 [38485636396](https://github.com/Ming-Research/Firn-wf/actions/runs/38485636396)
-on the i9-14900K, branch `claude/perf-reproduce` commit 9946abf, measured
-two new workloads of the workload tool: new connections doing the handshake
-(HELLO, CLIENT SETNAME) and `CLIENT LIST`. Rivals: Redis 7.2.16, Valkey
-9.1.2, Dragonfly v2.0.2, Garnet v2.2.1.
+of the `redis-bench` workflow on the i9-14900K, dispatched on branch
+`claude/perf-reproduce` at commit 9946abf, measured two workloads of the
+workload tool: new connections doing the handshake (`HELLO`,
+`CLIENT SETNAME`) and `CLIENT LIST`. Rivals: Redis 7.2.16, Valkey 9.1.2,
+Dragonfly v2.0.2, Garnet v2.2.1.
+
+Conditions, read from the run's log: firn was built from commit de6d7b5, the
+head of the pull request before it merged `main`, with `whitefoot.pin`
+`wf-d75f318d5631`; the servers ran on CPUs 2 and 4 and the load clients on
+CPUs 16-31; 50 connections; 6 passes, each running every server for 10
+seconds per workload, the order of the servers changing between passes.
+The pull request's head now differs from that commit (it has merged `main`
+and `CLIENT LIST` reads other connections' subscription counts from the
+event hub), so these figures describe the earlier build.
 
 CLIENT LIST, firn about 133k requests a second:
 
@@ -677,16 +687,13 @@ CLIENT LIST, firn about 133k requests a second:
 | Garnet v2.2.1 | 0.69x (Garnet is faster) |
 
 Handshake: all six servers land at about 20-23k new connections a second.
-The workload client busy-polls, so every client CPU shows busy rate above
+The workload client busy-polls, so every client CPU shows a busy rate above
 0.998 and no cell can be told apart as client-limited from the data; the
 equal rates may be the client's limit, not the servers'.
 
-Verdict: 未按标准判. These figures are the run's rates as reported to the
-board. The noise-gate and 95% confidence-interval standard needs interleaved
-base/candidate pairs beside the twin, the twin ratio's interval half-width
-as noise, the platform floor, and the candidate/base interval; this record
-has no pairs, noise, floor or interval for this run, so it claims no
-regression, improvement or "no detected change". The ratios are descriptive
-only. An earlier run with the same tooling (firn and Redis only) showed
-handshake within about 3% while the twin spread was about 2%; that is also
-not a verdict.
+Verdict: not judged against the standard. These figures are the run's rates.
+The noise-gate and 95% confidence-interval standard needs interleaved
+base/candidate pairs beside the twin, the twin ratio's interval half-width as
+noise, the platform floor, and the candidate/base interval; this record has no
+pairs, noise, floor or interval for this run, so it claims no regression,
+improvement or "no detected change". The ratios are descriptive only.

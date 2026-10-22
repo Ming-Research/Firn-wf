@@ -567,7 +567,7 @@ fn client_record(client: &Client) -> made: ClientRecord reads(client) {
   let lib_name = bytes_boxed(bytes: move lib_name_copy);
   let lib_ver_copy = bytes_copy(bytes: &client^.lib_ver);
   let lib_ver = bytes_boxed(bytes: move lib_ver_copy);
-  return ClientRecord(id: client^.id, since_us: client^.since_us, resp: client^.resp, addr: move addr, laddr: move laddr, name: move name, lib_name: move lib_name, lib_ver: move lib_ver, sub: client^.sub, psub: client^.psub, ssub: client^.ssub);
+  return ClientRecord(id: client^.id, since_us: client^.since_us, resp: client^.resp, addr: move addr, laddr: move laddr, name: move name, lib_name: move lib_name, lib_ver: move lib_ver);
 }
 
 fn client_publish(table: &ClientTable, record: ClientRecord) -> result: unit writes(table) {

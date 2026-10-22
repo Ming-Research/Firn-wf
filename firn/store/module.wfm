@@ -234,7 +234,7 @@ public struct ServerState {
 }
 
 public struct ClientRecord {
-  doc "What the table of clients keeps of one live connection for CLIENT LIST to show to the other connections: its number, the calendar microsecond the server began serving it, the version of the protocol its replies use, the counts of its direct, pattern and shard subscriptions, and its peer's address, its own address, its name, its library name and its library version, each as the bytes CLIENT LIST prints, the addresses empty where the host refused to report one.";
+  doc "What the table of clients keeps of one live connection for CLIENT LIST to show to the other connections: its number, the calendar microsecond the server began serving it, the version of the protocol its replies use, and its peer's address, its own address, its name, its library name and its library version, each as the bytes CLIENT LIST prints, the addresses empty where the host refused to report one.";
   public id: u64;
   public since_us: u64;
   public resp: u64;
@@ -243,9 +243,6 @@ public struct ClientRecord {
   public name: Box<Slots<u8>>;
   public lib_name: Box<Slots<u8>>;
   public lib_ver: Box<Slots<u8>>;
-  public sub: u64;
-  public psub: u64;
-  public ssub: u64;
 }
 
 public struct ClientTable {

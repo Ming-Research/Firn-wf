@@ -410,8 +410,9 @@ an empty Debug header explicitly; `all` and `everything` do not include it.
 `CLIENT INFO` and `CLIENT LIST` answer the connections' lines in Redis
 7.2.16's form, as bulk strings under RESP2 and verbatim text under RESP3,
 with real values for the id, the peer's and the server's
-address (`ip:port`, an IPv6 address in brackets; empty where the host refuses
-to report one, as Redis leaves it), the name, the age, the protocol, the
+address (`ip:port`, written in brackets for an IPv6 address, which no test
+reaches since firn binds IPv4 only; empty where the host refuses to report one,
+as Redis leaves it), the name, the age, the protocol, the
 subscription counts `sub`, `psub` and `ssub`, the library name and version
 `CLIENT SETINFO` set, and values fixed and true of firn for the others they
 give. They leave out what firn cannot report: the descriptor, the events and
@@ -423,7 +424,7 @@ full queued command count in multi, and `cmd=exec`, as Redis's
 `catClientInfoString` reports them; outside a transaction it shows multi=-1.
 The lines of the other connections in `CLIENT LIST` leave those four out,
 firn keeping no per-command state of one connection where the others can read
-it. `CLIENT LIST` takes `TYPE normal|master|replica|slave|pubsub`, listing the
+it; their subscription counts come from the pub/sub registries. `CLIENT LIST` takes `TYPE normal|master|replica|slave|pubsub`, listing the
 connections that hold no subscription for normal, those that hold one for
 pubsub and nothing for the others, and `ID id...`. `CLIENT NO-TOUCH ON` makes
 the connection's reads leave the access stamps of keys alone, except `TOUCH`

@@ -11,6 +11,7 @@ alias log_append = pkg::store::log_append;
 alias log_count = pkg::store::log_count;
 alias log_word = pkg::store::log_word;
 alias name_code = pkg::bytes::name_code;
+alias name_is = pkg::bytes::name_is;
 alias push_arg = pkg::protocol::push_arg;
 alias reply_array = pkg::protocol::reply_array;
 alias reply_arity = pkg::protocol::reply_arity;
@@ -238,27 +239,38 @@ fn queue_or_refuse(transaction: &Transaction, input: &[u8], args: &Box<Slots<Spa
   return unit;
 }
 
-fn transaction_pubsub(transaction: &Transaction) -> present: Bool reads(transaction) {
+fn transaction_hub(transaction: &Transaction) -> present: Bool reads(transaction) {
+  doc "Whether the queue needs the event hub held with the dataset: it holds a pub/sub command, whose membership and publications the hub keeps, or CLIENT LIST, which reads other connections' subscription counts from it.";
   let count = transaction^.counts.inner.len;
   let length = transaction^.bytes.inner.len;
   let input = &transaction^.bytes.inner[0_u64..length];
   let first = 0_u64;
   for (index in 0_u64..count) {
+    let arguments = transaction^.counts.inner[index];
     if first < transaction^.spans.inner.len {
       let name = transaction^.spans.inner[first];
       let kind = pubsub_kind(input: input, name: name);
       if kind != 0_u64 {
         return True();
       }
+      let code = name_code(input: input, start: name.start, length: name.length);
+      let second = first +wrap 1_u64;
+      if code == code_client {
+        if second < transaction^.spans.inner.len {
+          let sub = transaction^.spans.inner[second];
+          if name_is(input: input, start: sub.start, length: sub.length, word: &word_list[0_u64..4_u64]) {
+            return True();
+          }
+        }
+      }
     }
-    let arguments = transaction^.counts.inner[index];
     set first = first +wrap arguments;
   }
   return False();
 }
 
 fn run_exec_events(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transaction: &Transaction) -> result: unit reads(store), reads(env), reads(time), writes(client), writes(transaction) waits {
-  doc "EXEC on a promoted connection or containing pub/sub: membership, publications and the complete output group share the hub hold with the existing dataset transaction. EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order by its parts or, for the supported CLIENT subcommands, their shared body, in one statement holding every key, the keyspace's metadata, the client table and the event hub so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. Queued WRITE flags also gate EXEC on active AOF health before dirty/foreign handling, under the same Meta hold as mutation (Redis 7.0.15 server.c:3735-3740,3881-3905 and multi.c:136-140); a read-only queue runs through a latched disk error. There are no memory checks between queued commands after EXEC admission. Queued TOUCH temporarily clears NO-TOUCH only around its held body and restores the connection mode afterward, as in the dataset-only EXEC. A queue-time OOM marks the transaction dirty, so an admitted EXEC returns Redis 7.0.15 execCommand's previous-errors abort, even after memory recovers. OOM rejection of EXEC itself happens earlier during admission and returns the explicit OOM cause. Before the statement releases, changed connection facts, subscription counts included, are published to the held client table and the connection's changed flag is cleared, so another client that observes the transaction's key changes cannot subsequently read old names, library metadata or subscription counts. The transaction then closes.";
+  doc "EXEC on a promoted connection or containing pub/sub: membership, publications and the complete output group share the hub hold with the existing dataset transaction. EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order by its parts or, for the supported CLIENT subcommands, their shared body, in one statement holding every key, the keyspace's metadata, the client table and the event hub so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. Queued WRITE flags also gate EXEC on active AOF health before dirty/foreign handling, under the same Meta hold as mutation (Redis 7.0.15 server.c:3735-3740,3881-3905 and multi.c:136-140); a read-only queue runs through a latched disk error. There are no memory checks between queued commands after EXEC admission. Queued TOUCH temporarily clears NO-TOUCH only around its held body and restores the connection mode afterward, as in the dataset-only EXEC. A queue-time OOM marks the transaction dirty, so an admitted EXEC returns Redis 7.0.15 execCommand's previous-errors abort, even after memory recovers. OOM rejection of EXEC itself happens earlier during admission and returns the explicit OOM cause. CLIENT LIST reads the other connections' subscription counts from the held hub, where the pub/sub registries keep them. Before the statement releases, changed connection facts are published to the held client table and the connection's changed flag is cleared, so another client that observes the transaction's key changes cannot subsequently read old names or library metadata. The transaction then closes.";
   let stage = pkg::connection_events::stage_new();
   let unix_seconds = client^.unix_us / 1000000_u64;
   let in_exec = True();
@@ -317,7 +329,7 @@ fn run_exec_events(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time,
         pkg::connection_events::run(hub: hub, kind: kind, input: queued, args: &args, client: client, stage: &stage, in_exec: in_exec, time: unix_seconds);
       } else if code == code_client {
         let queued_count = cvt.wrap::<u64, i64>(commands);
-        run_client(table: clients, input: queued, args: &args, client: client, multi: queued_count);
+        run_client(table: clients, hub: hub, input: queued, args: &args, client: client, multi: queued_count);
       } else if kind != 0_u64 {
         let held_no_touch = client^.no_touch;
         if kind == 160_u64 {
@@ -352,8 +364,8 @@ fn run_exec_events(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time,
 }
 
 fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transaction: &Transaction) -> result: unit reads(store), reads(env), reads(time), writes(client), writes(transaction) waits {
-  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order through its parts or the CLIENT body, in one statement holding every key, the keyspace's metadata and its client table so that no other connection's command comes between them, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. Queued WRITE flags also gate EXEC on active AOF health before dirty/foreign handling, under the same Meta hold as mutation (Redis 7.0.15 server.c:3735-3740,3881-3905 and multi.c:136-140); a read-only queue runs through a latched disk error. There are no memory checks between queued commands after EXEC admission. Queued TOUCH temporarily clears NO-TOUCH only around its held body and restores the connection mode afterward: Redis 7.2.16 db.c lookupKey exempts current_client's touchCommand; inside Lua current_client stays the EVAL caller and script.c scriptCall changes the fake client's command before server.c call changes only executing_client, so the exception belongs to EXEC rather than the shared script body. A queue-time OOM marks the transaction dirty, so an admitted EXEC returns Redis 7.0.15 execCommand's previous-errors abort, even after memory recovers. OOM rejection of EXEC itself happens earlier during admission and returns the explicit OOM cause. Before releasing the statement, changed connection facts are published to the held client table and the connection's changed flag is cleared, so another client that observes the transaction's key changes cannot subsequently read old names or library metadata. The transaction then closes.";
-  if transaction_pubsub(transaction: transaction) {
+  doc "EXEC inside a transaction: a transaction a refused command marked dirty is discarded with Redis's EXECABORT error, and one holding a command firn does not run in transactions with an EXECABORT error saying so, nothing of either run; otherwise every queued command runs in order through its parts or the CLIENT body, in one statement holding every key, the keyspace's metadata and its client table so that no other connection's command comes between them; a queue holding a pub/sub command or CLIENT LIST goes to run_exec_events, which also holds the event hub, and the reply is an array of their replies, an error among them leaving the others done, as Redis 7.0.15 neither stops nor rolls back. The commands all use the connection's memory settings snapshot from the read containing EXEC, and see the time EXEC is given, which serve reads once for each read of the connection, as Redis freezes one time for a transaction. What they changed is appended to the file wrapped in MULTI and EXEC when it is more than one command, as Redis propagates a transaction. Queued WRITE flags also gate EXEC on active AOF health before dirty/foreign handling, under the same Meta hold as mutation (Redis 7.0.15 server.c:3735-3740,3881-3905 and multi.c:136-140); a read-only queue runs through a latched disk error. There are no memory checks between queued commands after EXEC admission. Queued TOUCH temporarily clears NO-TOUCH only around its held body and restores the connection mode afterward: Redis 7.2.16 db.c lookupKey exempts current_client's touchCommand; inside Lua current_client stays the EVAL caller and script.c scriptCall changes the fake client's command before server.c call changes only executing_client, so the exception belongs to EXEC rather than the shared script body. A queue-time OOM marks the transaction dirty, so an admitted EXEC returns Redis 7.0.15 execCommand's previous-errors abort, even after memory recovers. OOM rejection of EXEC itself happens earlier during admission and returns the explicit OOM cause. Before releasing the statement, changed connection facts are published to the held client table and the connection's changed flag is cleared, so another client that observes the transaction's key changes cannot subsequently read old names or library metadata. The transaction then closes.";
+  if transaction_hub(transaction: transaction) {
     run_exec_events(store: store, client: client, env: env, time: time, transaction: transaction);
     return unit;
   }
@@ -407,7 +419,7 @@ fn run_exec(store: &Keyspace, client: &Client, env: &KeyEnv, time: &Time, transa
       let code = name_code(input: queued, start: name.start, length: name.length);
       if code == code_client {
         let queued_count = cvt.wrap::<u64, i64>(commands);
-        run_client(table: clients, input: queued, args: &args, client: client, multi: queued_count);
+        run_client_other(input: queued, args: &args, client: client, multi: queued_count);
       } else if kind != 0_u64 {
         let held_no_touch = client^.no_touch;
         if kind == 160_u64 {
