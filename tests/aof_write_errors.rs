@@ -448,6 +448,13 @@ fn aof_direct_rewrite_installation_failure_keeps_the_old_selection() {
         let (child, mut client, _) = start(&program, native);
         let path = incremental(&program);
         let mut expected = latched_seed(&mut client);
+        // As in the case above: the file size limit must exceed the base, so
+        // that only the obstacle stops the installation.
+        let padding = "p".repeat(1 << 16);
+        assert_eq!(memory_request(&mut client, &["SET", "padding", padding.as_str()]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["DEL", "padding"]), ":1\r\n");
+        expected.extend(resp(&["SET", "padding", padding.as_str()]));
+        expected.extend(resp(&["DEL", "padding"]));
         wait_bytes(&path, &expected);
         wait_empty_healthy_buffer(&mut client);
         let directory = program.working_directory().join("appendonlydir");

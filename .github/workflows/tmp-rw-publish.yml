@@ -39,10 +39,10 @@ jobs:
       - name: Run the write-error and rewrite cases
         run: |
           bin=$(tests/redis-suite/reference.sh)
-          FIRN=build/firn-test REDIS_SERVER="$bin/redis-server" \
+          FIRN="$PWD/build/firn-test" REDIS_SERVER="$bin/redis-server" \
             cargo test --manifest-path tests/Cargo.toml --locked --test network -- \
             aof_write_errors:: rewrite --skip rewrite_faults:: --show-output
-          FIRN=build/firn-test REDIS_SERVER="$bin/redis-server" \
+          FIRN="$PWD/build/firn-test" REDIS_SERVER="$bin/redis-server" \
             cargo test --manifest-path tests/Cargo.toml --locked --test network rewrite_faults:: -- \
             --test-threads=1 --nocapture
 

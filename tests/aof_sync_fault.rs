@@ -1548,7 +1548,13 @@ fn aof_rewrite_current_append_failure_observes_publication() {
         assert_eq!(refused, format!("{MISCONF}Input/output error\r\n"));
         let outcome = rewrite_finished(&mut client);
         trace.assert_fault("EIO", true);
-        assert_eq!(std::fs::read(&current).unwrap(), before, "the failing write must not reach the current increment");
+        if redis {
+            assert_eq!(std::fs::read(&current).unwrap(), before, "the failing write must not reach the current increment");
+        } else {
+            // firn's failing increment became history in the durably
+            // published manifest, and history files are removed.
+            assert!(!current.exists(), "the failing increment is removed as history: {outcome}");
+        }
         let published = rewrite_base_name(server.directory()) != old_base;
         assert!(published, "both publish the completed rewrite while append still fails: {outcome}");
         assert_eq!(info_field(&outcome, "aof_last_bgrewrite_status").as_deref(), Some("ok"), "{outcome}");

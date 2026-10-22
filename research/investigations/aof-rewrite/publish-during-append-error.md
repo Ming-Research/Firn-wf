@@ -466,4 +466,9 @@ and case 4 `aof_direct_rewrite_installation_failure_keeps_the_old_selection`,
 both in `tests/aof_write_errors.rs`; case 4 is there rather than among the
 ordinary network cases because it needs that file's file-size limit. Both
 retain an INCR and an RPUSH in one transaction, so a second application of
-either changes what the restart reads.
+either changes what the restart reads. Case 4 writes and deletes a 64-KiB
+value first, so that the file-size limit exceeds the base and only the
+obstacle stops the installation; without it the base write failed with
+`base_io`. In case 1 firn's failing file is history in the durably published
+manifest and is removed with the other history, so the case checks that it
+is gone instead of comparing its bytes, which it does for Redis.
