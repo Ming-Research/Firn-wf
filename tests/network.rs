@@ -12950,7 +12950,8 @@ fn firn_refuses_client_commands_from_scripts_as_redis_does() {
 /// leaving those four out (design/firn/reported-facts.md), addr and laddr the
 /// addresses the Rust client sees, the name, library name and protocol a
 /// connection set showing in the other connection's list; TYPE normal lists
-/// them all and the other types none; ID lists the named connections in the
+/// them all, none holding a subscription (tests/pubsub.rs covers pubsub), and
+/// the other types none; ID lists the named connections in the
 /// order named, once for each name; and the errors are clientCommand's. Before
 /// the change firn answered CLIENT LIST as an unknown subcommand.
 #[cfg(target_os = "linux")]
