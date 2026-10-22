@@ -38,11 +38,17 @@ unsafe extern "C" {
 /// prlimit(2) on the child owned by this test, preserving its hard limit so
 /// raising the soft limit later needs no privilege. Linux RLIMIT_FSIZE is 1.
 pub(super) fn file_limit(child: &ProgramChild, soft: u64) -> FileLimit {
+    file_limit_pid(child.id(), soft)
+}
+
+/// `file_limit` on a process this test owns through another, such as a
+/// server started under strace.
+pub(super) fn file_limit_pid(pid: u32, soft: u64) -> FileLimit {
     let mut previous = FileLimit { soft: 0, hard: 0 };
-    let read = unsafe { prlimit64(child.id() as i32, 1, std::ptr::null(), &mut previous) };
+    let read = unsafe { prlimit64(pid as i32, 1, std::ptr::null(), &mut previous) };
     assert_eq!(read, 0, "read child file limit: {}", std::io::Error::last_os_error());
     let next = FileLimit { soft, hard: previous.hard };
-    let set = unsafe { prlimit64(child.id() as i32, 1, &next, std::ptr::null_mut()) };
+    let set = unsafe { prlimit64(pid as i32, 1, &next, std::ptr::null_mut()) };
     assert_eq!(set, 0, "set child file limit: {}", std::io::Error::last_os_error());
     previous
 }
@@ -343,22 +349,65 @@ fn aof_short_append_rolls_back_and_replays_exactly_once_on_both_routes() {
     }
 }
 
-/// A rewrite admitted while an append error is latched must name the first
-/// real failure (capture.md's first-cause diagnostics): the writer's next
-/// attempted append fails and latches `drain`. A tick on which the append
-/// retry is not yet due attempts nothing and must not abort the rewrite as
-/// `writer_io`. The 5000 keys, with rdb-key-save-delay sleeping after each,
-/// keep the scan running past the first ticks and the first due retry, so
-/// the cut's own drain is not what latches the cause. A 1-MiB value written
-/// and deleted before the fault makes the incremental file, and so the file
-/// size limit, larger than the whole base, so the base write cannot latch
-/// `base_io` first: an attempted drain is the only failure the rewrite meets.
+/// Commands seeded before the fault, so that a second application of the
+/// retained INCR or RPUSH below changes what a restart reads.
+fn latched_seed(client: &mut TcpStream) -> Vec<u8> {
+    assert_eq!(memory_request(client, &["INCR", "counter"]), ":1\r\n");
+    assert_eq!(memory_request(client, &["RPUSH", "events", "before"]), ":1\r\n");
+    let mut expected = resp(&["INCR", "counter"]);
+    expected.extend(resp(&["RPUSH", "events", "before"]));
+    expected
+}
+
+/// Like `fault`, but the acknowledged command whose append fails is a
+/// transaction holding an INCR and an RPUSH, so the retained bytes hold
+/// non-idempotent writes. Returns the previous limit and the retained bytes.
+fn latched_fault(child: &ProgramChild, client: &mut TcpStream, path: &Path) -> (FileLimit, Vec<u8>) {
+    let previous = file_limit(child, std::fs::metadata(path).unwrap().len());
+    assert_eq!(memory_request(client, &["MULTI"]), "+OK\r\n");
+    assert_eq!(memory_request(client, &["INCR", "counter"]), "+QUEUED\r\n");
+    assert_eq!(memory_request(client, &["RPUSH", "events", "retained"]), "+QUEUED\r\n");
+    assert_eq!(memory_request(client, &["EXEC"]), "*2\r\n:2\r\n:2\r\n");
+    let mut retained = resp(&["MULTI"]);
+    retained.extend(resp(&["INCR", "counter"]));
+    retained.extend(resp(&["RPUSH", "events", "retained"]));
+    retained.extend(resp(&["EXEC"]));
+    let info = wait_status(client, "err");
+    let length: u64 = info_field(&info, "aof_buffer_length").expect("retained AOF buffer reported")
+        .parse().unwrap();
+    assert_eq!(length, retained.len() as u64, "{info}");
+    ignored_xfsz(child);
+    (previous, retained)
+}
+
+fn latched_replayed(program: &CompiledProgram, native: bool, keys: usize) {
+    let (replayed, mut reader, _) = start(program, native);
+    assert_eq!(memory_request(&mut reader, &["GET", "counter"]), "$1\r\n2\r\n", "each INCR applies once");
+    assert_eq!(memory_request(&mut reader, &["LRANGE", "events", "0", "-1"]),
+        "*2\r\n$6\r\nbefore\r\n$8\r\nretained\r\n", "each RPUSH applies once");
+    assert_eq!(memory_request(&mut reader, &["DBSIZE"]), format!(":{}\r\n", keys + 2));
+    stop(&mut reader, replayed);
+}
+
+/// A rewrite admitted while an append error is latched publishes its base
+/// (design/firn/aof-rewrite.md, direct installation): every retained byte
+/// precedes the cut, so the new base holds their effects, a new empty
+/// increment replaces the failing one and writes are admitted again. The
+/// retained bytes hold an INCR and an RPUSH; a firn that also wrote them to
+/// the new increment, or replayed the failing one after the base, applies
+/// each twice after the restart. A 1-MiB value written and deleted before
+/// the fault makes the incremental file, and so the file size limit, larger
+/// than the whole base, so the base and the new files fit under the limit
+/// that fails the current increment's appends. The 5000 keys, with
+/// rdb-key-save-delay sleeping after each, keep the scan running past several
+/// failed retries.
 #[test]
-fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
+fn aof_rewrite_during_latched_append_error_publishes_and_applies_retained_once() {
     for native in [false, true] {
         let program = CompiledProgram::from_environment();
         let (child, mut client, _) = start(&program, native);
         let path = incremental(&program);
+        let mut expected = latched_seed(&mut client);
         let mut args = vec!["MSET".to_owned()];
         for index in 0..5000 {
             args.push(format!("key:{index}"));
@@ -369,20 +418,76 @@ fn aof_rewrite_during_latched_append_error_reports_the_attempted_drain() {
         let padding = "p".repeat(1 << 20);
         assert_eq!(memory_request(&mut client, &["SET", "padding", padding.as_str()]), "+OK\r\n");
         assert_eq!(memory_request(&mut client, &["DEL", "padding"]), ":1\r\n");
-        let mut expected = resp(&args);
+        expected.extend(resp(&args));
         expected.extend(resp(&["SET", "padding", padding.as_str()]));
         expected.extend(resp(&["DEL", "padding"]));
         wait_bytes(&path, &expected);
         wait_empty_healthy_buffer(&mut client);
         rewrite_key_delay(&mut client, "100");
-        let old = fault(&child, &mut client, &path);
+        let (old, _retained) = latched_fault(&child, &mut client, &path);
         rewrite_start(&mut client);
         let info = rewrite_wait(&mut client);
-        assert_eq!(info["aof_last_bgrewrite_status"], "err");
-        assert_eq!(info["firn_aof_rewrite_abort_reason"], "drain", "first real failure, not a deferred retry: {info:?}");
+        assert_eq!(info["aof_last_bgrewrite_status"], "ok", "{info:?}");
+        assert_eq!(info["firn_aof_rewrite_abort_reason"], "", "{info:?}");
+        assert_eq!(info["aof_last_write_status"], "ok", "the base holds the retained bytes: {info:?}");
+        assert_eq!(std::fs::read(&path).ok(), None, "the failing increment is history and removed");
+        let directory = program.working_directory().join("appendonlydir");
+        assert_eq!(std::fs::read_to_string(directory.join("errors.aof.manifest")).unwrap(),
+            "file errors.aof.2.base.aof seq 2 type b\nfile errors.aof.2.incr.aof seq 2 type i\n");
+        assert_eq!(memory_request(&mut client, &["SET", "after", "a"]), "+OK\r\n");
+        wait_bytes(&directory.join("errors.aof.2.incr.aof"), &resp(&["SET", "after", "a"]));
+        file_limit(&child, old.soft);
+        stop(&mut client, child);
+        latched_replayed(&program, native, 5001);
+    }
+}
+
+/// A direct installation that fails before publication, here because a
+/// directory holds the next base's name, keeps the old manifest and handle
+/// and leaves the next increment in place, empty:
+/// the attempt reports `install_io`, the retained bytes stay in order for the
+/// old increment, and once it accepts appends they drain there and a restart
+/// applies each retained INCR and RPUSH once.
+#[test]
+fn aof_direct_rewrite_installation_failure_keeps_the_old_selection() {
+    for native in [false, true] {
+        let program = CompiledProgram::from_environment();
+        let (child, mut client, _) = start(&program, native);
+        let path = incremental(&program);
+        let mut expected = latched_seed(&mut client);
+        // As in the case above: the file size limit must exceed the base, so
+        // that only the obstacle stops the installation.
+        let padding = "p".repeat(1 << 16);
+        assert_eq!(memory_request(&mut client, &["SET", "padding", padding.as_str()]), "+OK\r\n");
+        assert_eq!(memory_request(&mut client, &["DEL", "padding"]), ":1\r\n");
+        expected.extend(resp(&["SET", "padding", padding.as_str()]));
+        expected.extend(resp(&["DEL", "padding"]));
+        wait_bytes(&path, &expected);
+        wait_empty_healthy_buffer(&mut client);
+        let directory = program.working_directory().join("appendonlydir");
+        let manifest = std::fs::read_to_string(directory.join("errors.aof.manifest")).unwrap();
+        let obstacle = directory.join("errors.aof.2.base.aof");
+        std::fs::create_dir(&obstacle).unwrap();
+        let (old, retained) = latched_fault(&child, &mut client, &path);
+        rewrite_start(&mut client);
+        let info = rewrite_wait(&mut client);
+        assert_eq!(info["aof_last_bgrewrite_status"], "err", "{info:?}");
+        assert_eq!(info["firn_aof_rewrite_abort_reason"], "install_io", "{info:?}");
+        assert_eq!(info["aof_last_write_status"], "err", "{info:?}");
+        assert_eq!(info["aof_buffer_length"], retained.len().to_string(), "{info:?}");
+        assert_eq!(std::fs::read_to_string(directory.join("errors.aof.manifest")).unwrap(), manifest);
+        // As after a failed switch, the next increment stays in place: a
+        // manifest renamed by an earlier switch whose directory sync failed
+        // may name it. No manifest on disk names the new base.
+        assert_eq!(std::fs::read(directory.join("errors.aof.2.incr.aof")).unwrap(), b"", "the next increment stays, empty");
+        assert!(!directory.join("errors.aof.2.base.aof").is_file(), "no new base is left");
+        std::fs::remove_dir(&obstacle).unwrap();
         file_limit(&child, old.soft);
         wait_status(&mut client, "ok");
+        expected.extend(retained);
+        wait_bytes(&path, &expected);
         stop(&mut client, child);
+        latched_replayed(&program, native, 0);
     }
 }
 

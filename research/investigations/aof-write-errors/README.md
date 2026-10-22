@@ -411,6 +411,9 @@ citing `firn-req-enospc-text`, until the pin moved to the release with
   attempted append's `drain`. The case
   `aof_rewrite_during_latched_append_error_reports_the_attempted_drain`
   starts a rewrite while an append error is latched and requires `drain`.
+  Superseded: a failed append no longer aborts a rewrite, and that case
+  became `aof_rewrite_during_latched_append_error_publishes_and_applies_retained_once`
+  ([direct installation](../aof-rewrite/publish-during-append-error.md#implementation)).
 - The append retry cadence follows Redis's event loop (every 100 ms) instead
   of the once-per-second cron retry; the idle sync retry stays once per second.
   No test pins the cadence: a timing bound tight enough to separate 100 ms from

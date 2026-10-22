@@ -751,8 +751,6 @@ const info_rw_reason_base_io: Array<u8, 7> = "base_io";
 
 const info_rw_reason_writer_io: Array<u8, 9> = "writer_io";
 
-const info_rw_reason_drain: Array<u8, 5> = "drain";
-
 const info_rw_reason_boundary: Array<u8, 8> = "boundary";
 
 const info_rw_reason_install_io: Array<u8, 10> = "install_io";
@@ -798,9 +796,6 @@ fn info_rewrite_reason(text: &Box<Slots<u8>>, reason: pkg::store::RewriteAbortRe
     }
     WriterIo() => {
       text_word(text: text, word: &info_rw_reason_writer_io[0_u64..9_u64]);
-    }
-    Drain() => {
-      text_word(text: text, word: &info_rw_reason_drain[0_u64..5_u64]);
     }
     Boundary() => {
       text_word(text: text, word: &info_rw_reason_boundary[0_u64..8_u64]);
