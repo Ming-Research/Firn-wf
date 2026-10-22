@@ -4,7 +4,7 @@
 #
 #   run.sh <consumer> <server>
 #
-# consumer: django, connect-redis, rate-limiter-flexible or sidekiq; server:
+# consumer: django, connect-redis, rate-limiter-flexible, sidekiq or bullmq; server:
 # redis, the redis-server on PATH, which must be Redis 7.2.16, with MONITOR
 # recording every command into monitor.log from before the tests start, or
 # firn, the executable FIRN names. The consumer's test output goes to test.log
@@ -12,10 +12,11 @@
 # exits 0 whatever the tests did; a failure to set the run up or to record it
 # exits 1.
 #
-# A consumer that runs its tests file by file (sidekiq) also writes cases.tsv,
-# one `CASE<TAB>STATUS` row for each case, in the format compare.py reads; see
-# run_each_file below. FILE_LIMIT, in seconds, bounds each file (default 120).
-# Sidekiq's run ends with a probe of its heartbeat, heartbeat.txt.
+# A consumer that runs its tests file by file (sidekiq, bullmq) also writes
+# cases.tsv, one `CASE<TAB>STATUS` row for each case, in the format compare.py
+# reads; see run_each_file below. FILE_LIMIT, in seconds, bounds each file
+# (default 120 for sidekiq, 180 for bullmq). Sidekiq's run ends with a
+# probe of its heartbeat, heartbeat.txt.
 # The consumers workflow (.github/workflows/consumers.yml) calls it.
 set -u
 consumer=$1
@@ -42,6 +43,10 @@ case $consumer in
     sidekiq)
         repo=https://github.com/sidekiq/sidekiq.git
         ref=v8.1.7
+        port=6379 ;;
+    bullmq)
+        repo=https://github.com/taskforcesh/bullmq.git
+        ref=v6.3.13
         port=6379 ;;
     *) echo "unknown consumer $consumer" >&2; exit 1 ;;
 esac
@@ -266,6 +271,33 @@ case $consumer in
             -r "$here/minitest_record.rb" -r "$here/sidekiq_suite_context.rb"
         echo $? > "$out/status"
         heartbeat_probe ;;
+    bullmq)
+        # The project's own CI installs with yarn, builds (which also generates
+        # the Lua script entry points the tests import) and runs `yarn
+        # coverage`: the main suite and the ioredis-only suite together
+        # (vitest.coverage.config.ts), against Redis 7. The same set runs here
+        # without the coverage instrumentation, which adds no case; the
+        # node-redis, Bun, valkey-glide and PostgreSQL suites are other
+        # clients or backends and do not run.
+        export HUSKY=0
+        { yarn install --ignore-engines --frozen-lockfile --non-interactive && yarn build; } > "$out/setup.log" 2>&1 ||
+            { tail -n 60 "$out/setup.log"; exit 1; }
+        echo "node: $(node -v), ioredis $(node -p "require('ioredis/package.json').version"), vitest $(node -p "require('vitest/package.json').version")" | tee -a "$out/what.txt"
+        # The connection factory of vitest.setup.ts and the test files read
+        # REDIS_HOST and REDIS_PORT; some cases of connection.test.ts name
+        # localhost:6379, the port both servers listen on. The cluster tests
+        # that need a real cluster (127.0.0.1:7001 on) skip themselves when
+        # none answers, on both servers alike.
+        export REDIS_HOST=127.0.0.1 REDIS_PORT=$port
+        files=()
+        while IFS= read -r file; do files+=("$file"); done < <(
+            node_modules/.bin/vitest list --filesOnly --config vitest.coverage.config.ts | sed "s|^$PWD/||" | grep -E '^tests/.*\.test\.ts$' | sort)
+        [ "${#files[@]}" -gt 0 ] || { echo "vitest listed no test file" >&2; exit 1; }
+        printf '%s\n' "${files[@]}" > "$out/files-listed.txt"
+        echo "test files: ${#files[@]}, at most ${FILE_LIMIT:-180} s each" | tee -a "$out/what.txt"
+        run_each_file "${FILE_LIMIT:-180}" node_modules/.bin/vitest run --no-file-parallelism \
+            --config vitest.coverage.config.ts --reporter=verbose --reporter="$here/vitest_record.mjs"
+        echo $? > "$out/status" ;;
 esac
 echo "$consumer against $server: tests exited $(cat "$out/status")"
 if [ "$server" = redis ]; then
