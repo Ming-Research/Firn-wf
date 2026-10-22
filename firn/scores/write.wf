@@ -1,7 +1,166 @@
 alias Client = pkg::protocol::Client;
-alias byte_at = pkg::bytes::byte_at;
-alias reply_bulk_input = pkg::protocol::reply_bulk_input;
-alias reply_byte = pkg::protocol::reply_byte;
+
+fn push(out: &Box<Slots<u8>>, byte: u8) -> r: unit writes(out) {
+  let cap_v0 = out^.inner.cap;
+  if out^.inner.len == cap_v0 {
+    let twice_v1 = cap_v0 +sat cap_v0;
+    let target_v2 = imax(twice_v1, 4096_u64);
+    if target_v2 > cap_v0 {
+      grow(cell: out, capacity: target_v2);
+    }
+  }
+  if out^.inner.len < out^.inner.cap {
+    place_back(window: &out^.inner, value: byte);
+  }
+  return unit;
+}
+
+fn text_bytes(out: &Box<Slots<u8>>, bytes: &[u8]) -> r: unit reads(bytes), writes(out) {
+  for (i_v3 in 0_u64..bytes^.len) {
+    let b_v4 = bytes^[i_v3];
+    push(out: out, byte: b_v4);
+  }
+  return unit;
+}
+
+fn decimal(out: &Box<Slots<u8>>, n: u64) -> r: unit writes(out) {
+  let digits_v5 = slots_new::<u8, 20>();
+  let n_v6 = n;
+  loop {
+    let d_v7 = n_v6 % 10_u64;
+    let digit_v8 = cvt.wrap::<u64, u8>(d_v7);
+    let b_v9 = digit_v8 +wrap 48_u8;
+    if digits_v5.len < digits_v5.cap {
+      place_back(window: &digits_v5, value: b_v9);
+    }
+    set n_v6 = n_v6 / 10_u64;
+    if n_v6 == 0_u64 {
+      break;
+    }
+  }
+  loop {
+    if digits_v5.len == 0_u64 {
+      break;
+    }
+    let b_v10 = take_back(window: &digits_v5);
+    push(out: out, byte: b_v10);
+  }
+  return unit;
+}
+
+fn whole_integer(x: f64) -> r: Option<i64> pure {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Redis 7.2.16's double2ll (util.h): an integral value no larger in magnitude than LLONG_MAX/2, which is 2^62 as a double, as its integer, otherwise None. NaN gives None and negative zero gives 0, as in Redis.";
+  if flt(x, -4.611686018427388e18_f64) {
+    return None<i64>();
+  }
+  if fgt(x, 4.611686018427388e18_f64) {
+    return None<i64>();
+  }
+  let whole = ftrunc(x);
+  if fne(whole, x) {
+    return None<i64>();
+  }
+  if cvt.defined::<f64, i64>(whole) {
+    let integer = cvt::<f64, i64>(whole);
+    return Some<i64>(value: integer);
+  }
+  return None<i64>();
+}
+
+fn append_integer(out: &Box<Slots<u8>>, value: i64) -> r: unit writes(out) {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Appends an integer in decimal, with a minus sign when negative, as ll2string writes it.";
+  if value < 0_i64 {
+    push(out: out, byte: 45_u8);
+  }
+  let magnitude = 0_u64;
+  if value < 0_i64 {
+    let above = value + 1_i64;
+    let negated = 0_i64 - above;
+    let positive = cvt::<i64, u64>(negated);
+    set magnitude = positive + 1_u64;
+  } else {
+    set magnitude = cvt::<i64, u64>(value);
+  }
+  decimal(out: out, n: magnitude);
+  return unit;
+}
+
+fn fpconv_text(out: &Box<Slots<u8>>, x: f64) -> r: unit writes(out) {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). Appends fpconv_dtoa's text of x, which Redis 7.2.16 links from deps/fpconv, written by Halo-wf's port of it: the minus of a set sign bit first, a NaN's included, then Grisu2's digits, which read back exactly but are not always the shortest (1e23 is 99999999999999990000000).";
+  let bytes = array_filled::<u8, 32>(value: 0_u8);
+  let count = fpconv::dtoa::format_double(value: x, out: &bytes[0_u64..32_u64]);
+  text_bytes(out: out, bytes: &bytes[0_u64..count]);
+  return unit;
+}
+
+fn append_argument_text(out: &Box<Slots<u8>>, x: f64) -> r: unit writes(out) {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). The text a Lua number becomes as a redis.call or redis.pcall argument, after Redis 7.2.16's luaArgsToRedisArgv (script_lua.c): an integer when double2ll accepts it, otherwise fpconv_dtoa's text with no other rule, so negative zero is 0, a NaN keeps its sign (0/0 is -nan on x86-64) and an infinity is inf or -inf.";
+  match whole_integer(x: x) {
+    Some(value: integer) => {
+      append_integer(out: out, value: integer);
+      return unit;
+    }
+    None() => {
+    }
+  }
+  fpconv_text(out: out, x: x);
+  return unit;
+}
+
+fn append_double_text(out: &Box<Slots<u8>>, x: f64) -> r: unit writes(out) {
+  doc "Follows Halo-wf's halo-e2e test host (MIT, Bai Ming; Copyright (c) 2026 Bai Ming, see ../../LICENSE). A double reply's text, after Redis 7.2.16's d2string (util.c), which writes three cases itself before its integer rule and fpconv_dtoa: nan for every NaN whatever its sign, inf or -inf for an infinity, and 0 or -0 for a zero by its sign. Any other value is written as a command argument's text.";
+  if fne(x, x) {
+    text_bytes(out: out, bytes: &numbers_nan[0_u64..3_u64]);
+    return unit;
+  }
+  let zero = feq(x, 0.0_f64);
+  let magnitude = fabs(x);
+  let infinite = fgt(magnitude, 1.7976931348623157e308_f64);
+  if bor(zero, infinite) {
+    let bits = reinterpret::<f64, u64>(x);
+    let sign = ishr.wrap(bits, 63_u32);
+    if sign == 1_u64 {
+      push(out: out, byte: 45_u8);
+    }
+    if zero {
+      push(out: out, byte: 48_u8);
+    } else {
+      text_bytes(out: out, bytes: &numbers_inf[0_u64..3_u64]);
+    }
+    return unit;
+  }
+  append_argument_text(out: out, x: x);
+  return unit;
+}
+
+fn reply_score(client: &Client, score: f64) -> result: unit writes(client) {
+  doc "Writes a score as Redis 7.2.16's addReplyDouble writes one, using d2string: nan for every NaN, inf or -inf for an infinity, 0 or -0 for a zero by its sign, an integer when double2ll accepts it (integral with magnitude at most 2^62), and otherwise fpconv_dtoa's Grisu2 text. The text is a bulk string under RESP2 and a double, comma then text and CR LF, under RESP3.";
+  let text = box_slots_new::<u8>(capacity: 32_u64);
+  append_double_text(out: &text, x: score);
+  let n = text.inner.len;
+  if client^.resp == 3_u64 {
+    pkg::protocol::reply_byte(client: client, value: 44_u8);
+    pkg::protocol::reply_word(client: client, word: &text.inner[0_u64..n]);
+    pkg::protocol::reply_word(client: client, word: &numbers_crlf[0_u64..2_u64]);
+    return unit;
+  }
+  pkg::protocol::reply_bulk_input(client: client, input: &text.inner[0_u64..n], start: 0_u64, length: n);
+  return unit;
+}
+
+fn score_bytes(score: f64) -> text: pkg::bytes::Bytes pure {
+  doc "Writes Redis 7.2.16's rioWriteBulkDouble text without RESP framing for a stored score in a rewritten append-only file: plain fpconv_dtoa, with no integer shortcut or d2string special cases, so fpconv writes a set sign bit first, then 0, inf, nan or Grisu2's digits.";
+  let formatted = box_slots_new::<u8>(capacity: 32_u64);
+  fpconv_text(out: &formatted, x: score);
+  let n = formatted.inner.len;
+  return pkg::bytes::bytes_new(input: &formatted.inner[0_u64..n], start: 0_u64, length: n);
+}
+
+const numbers_nan: Array<u8, 3> = "nan";
+
+const numbers_inf: Array<u8, 3> = "inf";
+
+const numbers_crlf: Array<u8, 2> = "\r\n";
 
 const text_inf: Array<u8, 3> = "inf";
 
@@ -123,7 +282,7 @@ fn text_decimal(text: &ScoreText, decimal: &Decimal) -> result: unit reads(decim
 }
 
 fn score_text(score: f64) -> text: ScoreText pure {
-  doc "A score as Redis 7.0.15 writes one: inf or -inf for an infinity; for a zero, or an integer below 10^17, its digits with a minus sign when negative; otherwise its exact decimal expansion, at most 767 digits, rounded to 17 significant digits with ties to even and written as %.17g writes it.";
+  doc "Redis 7.2.16's ld2string(LD_STR_AUTO) text of a score widened to long double, which ZSCAN writes for a sorted set Redis keeps as a skiplist: inf or -inf for an infinity; for a zero, or an integer below 10^17, its digits with a minus sign when negative; otherwise its exact decimal expansion, at most 767 digits, rounded to 17 significant digits with ties to even and written as %.17g writes it.";
   let bytes = array_filled::<u8, 32>(value: 0_u8);
   let written = ScoreText(bytes: bytes, length: 0_u64);
   let bits = reinterpret::<f64, u64>(score);
@@ -201,26 +360,8 @@ fn score_text(score: f64) -> text: ScoreText pure {
   return written;
 }
 
-fn reply_score(client: &Client, score: f64) -> result: unit writes(client) {
-  doc "Writes a score as Redis 7.0.15's addReplyDouble writes one, in the text of inf or -inf for an infinity and otherwise of C's %.17g, the value rounded to 17 significant digits with ties to even, in fixed notation when its decimal exponent is from -4 to 16 and in exponential notation otherwise, trailing zeros dropped: as a bulk string under RESP2, and under RESP3 as a double, a comma, the text and CR LF.";
-  let text = score_text(score: score);
-  let window = &text.bytes[0_u64..32_u64];
-  if client^.resp == 3_u64 {
-    reply_byte(client: client, value: 44_u8);
-    for @digits (index in 0_u64..text.length) {
-      let byte = byte_at(input: window, index: index);
-      reply_byte(client: client, value: byte);
-    }
-    reply_byte(client: client, value: 13_u8);
-    reply_byte(client: client, value: 10_u8);
-    return unit;
-  }
-  reply_bulk_input(client: client, input: window, start: 0_u64, length: text.length);
-  return unit;
-}
-
-fn score_bytes(score: f64) -> text: pkg::bytes::Bytes pure {
-  doc "The same decimal text as reply_score, without RESP framing, for a stored score in a rewritten append-only file.";
+fn score_bytes_17g(score: f64) -> text: pkg::bytes::Bytes pure {
+  doc "Redis 7.2.16's ld2string(LD_STR_AUTO) text of a score widened to long double, which ZSCAN writes for a sorted set Redis keeps as a skiplist.";
   let formatted = score_text(score: score);
   return pkg::bytes::bytes_new(input: &formatted.bytes[0_u64..32_u64], start: 0_u64, length: formatted.length);
 }
