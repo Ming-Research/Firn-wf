@@ -20,15 +20,6 @@ enum Point { EarlyScan, BeforeManifest, AfterManifest }
 #[derive(Clone, Copy, Debug)]
 enum Server { Redis, Firn(bool) }
 
-fn oracle() -> PathBuf {
-    let binary = std::env::var_os("REDIS_SERVER").map(PathBuf::from)
-        .expect("REDIS_SERVER must name the pinned Redis 7.2.16 oracle");
-    let output = support::run_command(Command::new(&binary).arg("--version"));
-    assert!(output.status.success(), "Redis version command: {output:?}");
-    assert!(String::from_utf8_lossy(&output.stdout).contains(" v=7.2.16 "), "{output:?}");
-    binary
-}
-
 fn start(server: Server, oracle: &Path, directory: &Path, traced: bool) -> (ProgramChild, TcpStream) {
     let lease = support::lease_port();
     let port = lease.port().to_string();
@@ -429,7 +420,7 @@ fn run(server: Server, oracle: &Path, point: Point) {
 
 #[test]
 fn rewrite_sigkill_early_scan_recovers_acknowledged_writes_against_redis() {
-    let oracle = oracle();
+    let oracle = support::redis_oracle();
     for server in [Server::Redis, Server::Firn(false), Server::Firn(true)] {
         run(server, &oracle, Point::EarlyScan);
     }
@@ -437,12 +428,12 @@ fn rewrite_sigkill_early_scan_recovers_acknowledged_writes_against_redis() {
 
 #[test]
 fn rewrite_sigkill_complete_base_before_manifest_recovers_against_redis() {
-    let oracle = oracle();
+    let oracle = support::redis_oracle();
     for server in [Server::Redis, Server::Firn(false)] { run(server, &oracle, Point::BeforeManifest); }
 }
 
 #[test]
 fn rewrite_sigkill_after_atomic_manifest_switch_recovers_against_redis() {
-    let oracle = oracle();
+    let oracle = support::redis_oracle();
     for server in [Server::Redis, Server::Firn(false)] { run(server, &oracle, Point::AfterManifest); }
 }

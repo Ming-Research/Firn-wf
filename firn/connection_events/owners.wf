@@ -1,0 +1,713 @@
+alias CancelSource = std::time::CancelSource;
+alias Instant = std::time::Instant;
+alias Clock = std::time::Clock;
+alias WallClock = std::time::WallClock;
+alias HashMapKey = std::collections::hash_map::HashMapKey;
+alias PriorityOrder = std::collections::priority_queue::PriorityOrder;
+alias Key = pkg::bytes::Key;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias KeyHash = pkg::bytes::KeyHash;
+alias hash_map_new = std::collections::hash_map::hash_map_new;
+alias hash_map_put = std::collections::hash_map::hash_map_put;
+alias hash_map_remove = std::collections::hash_map::hash_map_remove;
+alias hash_map_lookup = std::collections::hash_map::hash_map_lookup;
+alias priority_queue_new = std::collections::priority_queue::priority_queue_new;
+alias priority_queue_push = std::collections::priority_queue::priority_queue_push;
+alias priority_queue_pop = std::collections::priority_queue::priority_queue_pop;
+
+struct Empty {
+}
+
+fn identity_hash(env: &Empty, key: &u64) -> hash: u64 reads(key) {
+  return key^;
+}
+
+fn identity_equal(env: &Empty, left: &u64, right: &u64) -> equal: Bool reads(left), reads(right) {
+  return left^ == right^;
+}
+
+binding IdentityHash : HashMapKey<u64, Empty> {
+  hash = identity_hash;
+  equal = identity_equal;
+}
+
+fn deadline_compare(env: &Empty, left: &Deadline, right: &Deadline) -> order: i32 reads(left), reads(right) {
+  if left^.due < right^.due {
+    return -1_i32;
+  } else if left^.due > right^.due {
+    return 1_i32;
+  }
+  return 0_i32;
+}
+
+binding DeadlineOrder : PriorityOrder<Deadline, Empty> {
+  compare = deadline_compare;
+}
+
+fn queue_push<T: drop>(queue: &Box<Ring<T>>, value: T) -> result: unit writes(queue) {
+  doc "Appends to the process-bounded queue, doubling its capacity when full. Like connection identities, live queue elements remain fewer than 2^64.";
+  if queue^.inner.len >= queue^.inner.cap {
+    let current = queue^.inner.cap;
+    let doubled = current +sat current;
+    let capacity = imax(doubled, 8_u64);
+    set queue^ = std::collections::deque::deque_rebase::<T, extent>(values: move queue^, capacity: capacity);
+  }
+  if queue^.inner.len < queue^.inner.cap {
+    place_back(window: &queue^.inner, value: move value);
+  } else {
+    let dropped = move value;
+  }
+  return unit;
+}
+
+fn slots_push<T: drop>(values: &Box<Slots<T>>, value: T) -> result: unit writes(values) {
+  if values^.inner.len >= values^.inner.cap {
+    let current = values^.inner.cap;
+    let doubled = current +sat current;
+    let capacity = imax(doubled, 8_u64);
+    grow(cell: values, capacity: capacity);
+  }
+  if values^.inner.len < values^.inner.cap {
+    place_back(window: &values^.inner, value: move value);
+  } else {
+    let dropped = move value;
+  }
+  return unit;
+}
+
+fn hub_new() -> made: Shared<Hub> pure {
+  let records = hash_map_new::<u64, Record, extent>(capacity: 8_u64);
+  let clients = hash_map_new::<u64, u64, extent>(capacity: 8_u64);
+  let channels = hash_map_new::<Key, Box<Slots<u64>>, extent>(capacity: 8_u64);
+  let patterns = hash_map_new::<Key, Box<Slots<u64>>, extent>(capacity: 8_u64);
+  let shards = hash_map_new::<Key, Box<Slots<u64>>, extent>(capacity: 8_u64);
+  let committed = box_ring_new::<Action>(capacity: 8_u64);
+  let deadlines = priority_queue_new::<Deadline, extent>();
+  let wake = std::time::cancel_source();
+  let stopping = False();
+  let state = Hub(records: move records, clients: move clients, channels: move channels, patterns: move patterns, shards: move shards, committed: move committed, deadlines: move deadlines, wake: move wake, next: 1_u64, stopping: stopping);
+  return shared_new::<Hub>(value: move state);
+}
+
+fn hub_share(hub: &Shared<Hub>) -> made: Shared<Hub> reads(hub) {
+  return shared_share::<Hub>(shared: hub);
+}
+
+fn connection_share(connection: &Connection) -> made: Connection reads(connection) {
+  let input = shared_share::<InputQueue>(shared: &connection^.input);
+  let output = shared_share::<OutputQueue>(shared: &connection^.output);
+  let state = shared_share::<ReceiveState>(shared: &connection^.receive_state);
+  let source = std::time::cancel_share(source: &connection^.stop);
+  return Connection(id: connection^.id, input: move input, output: move output, receive_state: move state, stop: move source);
+}
+
+fn observe_connection(env: &Empty, key: &u64, value: &Record) -> result: Connection reads(value) {
+  return connection_share(connection: &value^.connection);
+}
+
+fn connection_held(hub: &Hub, id: u64) -> found: Option<Connection> reads(hub.records) {
+  let empty = Empty();
+  let visitor = Empty();
+  match hash_map_lookup::<IdentityHash, Record, Empty, Connection, fn observe_connection, extent>(map: &hub^.records, key: &id, key_env: &empty, visit_env: &visitor) {
+    Ok(value: retained) => {
+      return Some<Connection>(value: move retained);
+    }
+    Err(error: missing) => {
+      return None<Connection>();
+    }
+  }
+}
+
+fn connection_get(hub: &Shared<Hub>, id: u64) -> found: Option<Connection> reads(hub) waits {
+  atomic state = &hub^ {
+    return connection_held(hub: state, id: id);
+  }
+}
+
+fn observe_live(env: &Empty, key: &u64, value: &Record) -> live: Bool pure {
+  return True();
+}
+
+fn connection_live(hub: &Hub, id: u64) -> live: Bool reads(hub) {
+  let empty = Empty();
+  let visitor = Empty();
+  match hash_map_lookup::<IdentityHash, Record, Empty, Bool, fn observe_live, extent>(map: &hub^.records, key: &id, key_env: &empty, visit_env: &visitor) {
+    Ok(value: present) => {
+      return present;
+    }
+    Err(error: missing) => {
+      return False();
+    }
+  }
+}
+
+fn connection_new(id: u64) -> made: Connection pure {
+  let chunks = box_ring_new::<Box<Slots<u8>>>(capacity: 8_u64);
+  let frames = box_ring_new::<Frame>(capacity: 8_u64);
+  let ended = False();
+  let closed = False();
+  let incoming = InputQueue(chunks: move chunks, bytes: 0_u64, ended: ended);
+  let outgoing = OutputQueue(frames: move frames, closed: closed);
+  let input = shared_new::<InputQueue>(value: move incoming);
+  let output = shared_new::<OutputQueue>(value: move outgoing);
+  let source = std::time::cancel_source();
+  let subscribed = False();
+  let wake = std::time::cancel_source();
+  let initial_activity = None<Instant>();
+  let state = ReceiveState(subscribed: subscribed, activity: initial_activity, wake: move wake);
+  let receiving = shared_new::<ReceiveState>(value: move state);
+  return Connection(id: id, input: move input, output: move output, receive_state: move receiving, stop: move source);
+}
+
+fn input_push(connection: &Connection, chunk: Box<Slots<u8>>) -> accepted: Bool reads(connection) waits {
+  let length = chunk.inner.len;
+  atomic inbox = &connection^.input {
+    if inbox^.ended {
+      return False();
+    }
+    let combined = inbox^.bytes +sat length;
+    if combined > 1073741824_u64 {
+      set inbox^.ended = True();
+      return False();
+    }
+    queue_push::<Box<Slots<u8>>>(queue: &inbox^.chunks, value: move chunk);
+    set inbox^.bytes = combined;
+  }
+  return True();
+}
+
+fn input_ready(inbox: &InputQueue, cancelled: Bool) -> ready: Bool reads(inbox) {
+  let pending = inbox^.chunks.inner.len > 0_u64;
+  let ended = bor(inbox^.ended, cancelled);
+  return bor(pending, ended);
+}
+
+fn input_take(connection: &Connection) -> chunk: Option<Box<Slots<u8>>> reads(connection) waits {
+  let watch = std::time::cancel_watch(source: &connection^.stop);
+  let cancelled = std::time::cancel_state(watch: &watch);
+  atomic inbox = &connection^.input, stopped = &cancelled when input_ready(inbox: inbox, cancelled: stopped^.fired) {
+    if stopped^.fired {
+      return None<Box<Slots<u8>>>();
+    }
+    if inbox^.chunks.inner.len > 0_u64 {
+      let chunk = take_front(window: &inbox^.chunks.inner);
+      return Some<Box<Slots<u8>>>(value: move chunk);
+    }
+    return None<Box<Slots<u8>>>();
+  }
+}
+
+fn input_end(connection: &Connection) -> result: unit reads(connection) waits {
+  atomic inbox = &connection^.input {
+    set inbox^.ended = True();
+  }
+  return unit;
+}
+
+fn output_ready(inbox: &OutputQueue, cancelled: Bool) -> ready: Bool reads(inbox) {
+  let pending = inbox^.frames.inner.len > 0_u64;
+  let closed = bor(inbox^.closed, cancelled);
+  return bor(pending, closed);
+}
+
+fn output_take(connection: &Connection) -> frame: Option<Frame> reads(connection) waits {
+  let watch = std::time::cancel_watch(source: &connection^.stop);
+  let cancelled = std::time::cancel_state(watch: &watch);
+  atomic inbox = &connection^.output, stopped = &cancelled when output_ready(inbox: inbox, cancelled: stopped^.fired) {
+    if stopped^.fired {
+      return None<Frame>();
+    }
+    if inbox^.frames.inner.len > 0_u64 {
+      let frame = take_front(window: &inbox^.frames.inner);
+      return Some<Frame>(value: move frame);
+    }
+    return None<Frame>();
+  }
+}
+
+fn stop(connection: &Connection) -> result: unit reads(connection) waits {
+  atomic input = &connection^.input, output = &connection^.output {
+    set input^.ended = True();
+    set input^.chunks = box_ring_new::<Box<Slots<u8>>>(capacity: 0_u64);
+    set input^.bytes = 0_u64;
+    set output^.closed = True();
+    set output^.frames = box_ring_new::<Frame>(capacity: 0_u64);
+  }
+  let source = std::time::cancel_share(source: &connection^.stop);
+  std::time::cancel_fire(source: &source);
+  return unit;
+}
+
+fn dispatch_ready(hub: &Hub) -> ready: Bool reads(hub.committed), reads(hub.stopping) {
+  let pending = hub^.committed.inner.len > 0_u64;
+  return bor(pending, hub^.stopping);
+}
+
+fn next_action(hub: &Shared<Hub>) -> action: Option<Action> reads(hub) waits {
+  atomic state = &hub^ when dispatch_ready(hub: state) {
+    if state^.committed.inner.len > 0_u64 {
+      let action = take_front(window: &state^.committed.inner);
+      return Some<Action>(value: move action);
+    }
+    return None<Action>();
+  }
+}
+
+fn dispatch(hub: Shared<Hub>) -> result: unit pure waits {
+  loop @actions {
+    match next_action(hub: &hub) {
+      Some(value: action) => {
+        match move action {
+          Send(connection: target, frame: bytes) => {
+            atomic inbox = &target.output {
+              if inbox^.closed {
+                let dropped = move bytes;
+              } else {
+                queue_push::<Frame>(queue: &inbox^.frames, value: move bytes);
+              }
+            }
+          }
+          Close(connection: target) => {
+            stop(connection: &target);
+          }
+          Finish(connection: target) => {
+            atomic inbox = &target.output {
+              set inbox^.closed = True();
+            }
+          }
+          Membership(connection: target, subscribed: membership) => {
+            membership_deliver(connection: &target, subscribed: membership);
+          }
+          Fire(source: retained_source) => {
+            std::time::cancel_fire(source: &retained_source);
+          }
+        }
+      }
+      None() => {
+        break @actions;
+      }
+    }
+  }
+  return unit;
+}
+
+fn stage_new() -> made: Stage pure {
+  let pending = box_ring_new::<Delivery>(capacity: 0_u64);
+  return Stage(publications: move pending);
+}
+
+fn stage_has(stage: &Stage) -> present: Bool reads(stage) {
+  return stage^.publications.inner.len > 0_u64;
+}
+
+fn take_record(hub: &Hub, id: u64) -> found: Option<Record> writes(hub.records) {
+  let empty = Empty();
+  match hash_map_remove::<IdentityHash, Record, extent>(map: &hub^.records, key: &id, env: &empty) {
+    Some(value: pair) => {
+      let std::collections::hash_map::HashMapPair(key: unused_id, value: record) = move pair;
+      return Some<Record>(value: move record);
+    }
+    None() => {
+      return None<Record>();
+    }
+  }
+}
+
+fn put_record(hub: &Hub, record: Record) -> result: unit writes(hub.records) {
+  let empty = Empty();
+  let id = record.connection.id;
+  let placed = hash_map_put::<IdentityHash, Record, extent>(map: &hub^.records, key: id, value: move record, env: &empty);
+  return unit;
+}
+
+fn wake_timer(hub: &Hub) -> result: unit writes(hub.wake), writes(hub.committed) {
+  let previous = std::time::cancel_source();
+  swap(first: &previous, second: &hub^.wake);
+  let action = Action::Fire(source: move previous);
+  queue_push::<Action>(queue: &hub^.committed, value: move action);
+  return unit;
+}
+
+fn arm_soft(hub: &Hub, record: &Record, time: u64) -> result: unit reads(record.connection.id), reads(record.pending), reads(record.channels), reads(record.patterns), reads(record.shards), writes(hub.deadlines), writes(hub.wake), writes(hub.committed), writes(record.soft) {
+  let subscribed = record_subscribed(record: record);
+  let below = record^.pending < 8388608_u64;
+  let normal = bnot(subscribed);
+  if bor(below, normal) {
+    set record^.soft = None<u64>();
+    return unit;
+  }
+  match record^.soft {
+    Some(value: existing) => {
+    }
+    None() => {
+      set record^.soft = Some<u64>(value: time);
+      let deadline = time +sat 61_u64;
+      let item = Deadline(id: record^.connection.id, started: time, due: deadline);
+      let empty = Empty();
+      let queued = priority_queue_push::<DeadlineOrder, extent>(queue: &hub^.deadlines, value: item, env: &empty);
+      wake_timer(hub: hub);
+    }
+  }
+  return unit;
+}
+
+fn remove_record(hub: &Hub, record: &Record) -> result: unit reads(record.channels), reads(record.patterns), reads(record.shards), reads(record.connection.id), writes(hub.channels), writes(hub.patterns), writes(hub.shards) {
+  memberships_remove(map: &hub^.channels, names: &record^.channels, id: record^.connection.id);
+  memberships_remove(map: &hub^.patterns, names: &record^.patterns, id: record^.connection.id);
+  memberships_remove(map: &hub^.shards, names: &record^.shards, id: record^.connection.id);
+  return unit;
+}
+
+fn close_record(hub: &Hub, record: Record) -> result: unit writes(hub.clients), writes(hub.channels), writes(hub.patterns), writes(hub.shards), writes(hub.committed) {
+  forget_client(hub: hub, client_id: record.client_id);
+  remove_record(hub: hub, record: &record);
+  let Record(connection: target, ..) = move record;
+  let action = Action::Close(connection: move target);
+  queue_push::<Action>(queue: &hub^.committed, value: move action);
+  return unit;
+}
+
+fn forget(hub: &Shared<Hub>, id: u64) -> result: unit reads(hub) waits {
+  let target = None<Connection>();
+  atomic state = &hub^ {
+    match take_record(hub: state, id: id) {
+      Some(value: record) => {
+        forget_client(hub: state, client_id: record.client_id);
+        remove_record(hub: state, record: &record);
+        let Record(connection: retained, ..) = move record;
+        set target = Some<Connection>(value: move retained);
+      }
+      None() => {
+      }
+    }
+  }
+  match move target {
+    Some(value: connection) => {
+      stop(connection: &connection);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn hub_stop(hub: &Shared<Hub>) -> result: unit reads(hub) waits {
+  atomic state = &hub^ {
+    let ids = box_slots_new::<u64>(capacity: 0_u64);
+    let count = state^.records.cells.inner.len;
+    for (index in 0_u64..count) {
+      if index < state^.records.cells.inner.len {
+        let held = &state^.records.cells.inner[index];
+        match held^ {
+          HashMapFilled(key: identity, value: record) => {
+            slots_push::<u64>(values: &ids, value: identity^);
+          }
+          HashMapVacant() => {
+          }
+          HashMapDeleted() => {
+          }
+        }
+      }
+    }
+    let size = ids.inner.len;
+    for (index in 0_u64..size) {
+      if index < ids.inner.len {
+        match take_record(hub: state, id: ids.inner[index]) {
+          Some(value: record) => {
+            close_record(hub: state, record: move record);
+          }
+          None() => {
+          }
+        }
+      }
+    }
+    set state^.stopping = True();
+    wake_timer(hub: state);
+  }
+  return unit;
+}
+
+fn forget_idle(hub: &Shared<Hub>, connection: &Connection, last: Instant, now: Instant, interval: u64) -> expired: Bool reads(hub), reads(connection) waits {
+  let expired = False();
+  atomic state = &hub^, receiving = &connection^.receive_state {
+    match take_record(hub: state, id: connection^.id) {
+      Some(value: record) => {
+        let active = record_subscribed(record: &record);
+        let latest = last;
+        match receiving^.activity {
+          Some(value: activity) => {
+            if std::time::instant_reached(deadline: latest, instant: activity^) {
+              set latest = activity^;
+            }
+          }
+          None() => {
+          }
+        }
+        let quiet = std::time::nanoseconds_from(earlier: latest, later: now);
+        let normal = bnot(active);
+        let due = quiet >= interval;
+        if band(normal, due) {
+          forget_client(hub: state, client_id: record.client_id);
+          remove_record(hub: state, record: &record);
+          set expired = True();
+          let dropped = move record;
+        } else {
+          put_record(hub: state, record: move record);
+        }
+      }
+      None() => {
+        set expired = True();
+      }
+    }
+  }
+  if expired {
+    stop(connection: connection);
+  }
+  return expired;
+}
+
+fn output_done(hub: &Shared<Hub>, id: u64, bytes: u64, time: u64) -> result: unit reads(hub) waits {
+  atomic state = &hub^ {
+    match take_record(hub: state, id: id) {
+      Some(value: record) => {
+        set record.pending = record.pending -sat bytes;
+        arm_soft(hub: state, record: &record, time: time);
+        put_record(hub: state, record: move record);
+      }
+      None() => {
+      }
+    }
+  }
+  return unit;
+}
+
+fn queue_frame(hub: &Hub, id: u64, frame: Frame, time: u64) -> result: unit writes(hub) {
+  match take_record(hub: hub, id: id) {
+    Some(value: record) => {
+      set record.pending = record.pending +sat frame.charge;
+      let subscribed = record_subscribed(record: &record);
+      let hard = record.pending >= 33554432_u64;
+      if band(subscribed, hard) {
+        close_record(hub: hub, record: move record);
+        let dropped = move frame;
+      } else {
+        arm_soft(hub: hub, record: &record, time: time);
+        let connection = connection_share(connection: &record.connection);
+        let action = Action::Send(connection: move connection, frame: move frame);
+        queue_push::<Action>(queue: &hub^.committed, value: move action);
+        put_record(hub: hub, record: move record);
+      }
+    }
+    None() => {
+      let dropped = move frame;
+    }
+  }
+  return unit;
+}
+
+struct TimerState {
+  source: CancelSource;
+  due: u64;
+  stopping: Bool;
+}
+
+fn timer_ready(hub: &Hub) -> ready: Bool reads(hub.deadlines), reads(hub.stopping) {
+  let pending = hub^.deadlines.storage.inner.len > 0_u64;
+  return bor(pending, hub^.stopping);
+}
+
+fn next_timer(hub: &Shared<Hub>) -> state: TimerState reads(hub) waits {
+  atomic state = &hub^ when timer_ready(hub: state) {
+    let source = std::time::cancel_share(source: &state^.wake);
+    let due = 0_u64;
+    if state^.deadlines.storage.inner.len > 0_u64 {
+      set due = state^.deadlines.storage.inner[0_u64].due;
+    }
+    return TimerState(source: move source, due: due, stopping: state^.stopping);
+  }
+}
+
+fn expire_soft(hub: &Hub, time: u64) -> result: unit writes(hub) {
+  let empty = Empty();
+  loop @due {
+    if hub^.deadlines.storage.inner.len > 0_u64 {
+      if hub^.deadlines.storage.inner[0_u64].due > time {
+        break @due;
+      }
+      let deadline = priority_queue_pop::<DeadlineOrder, extent>(queue: &hub^.deadlines, env: &empty);
+      match take_record(hub: hub, id: deadline.id) {
+        Some(value: record) => {
+          let expired = False();
+          match record.soft {
+            Some(value: started) => {
+              let elapsed = time -sat started;
+              let same = started == deadline.started;
+              let elapsed_limit = elapsed > 60_u64;
+              let over = record.pending >= 8388608_u64;
+              let continuous = band(same, elapsed_limit);
+              set expired = band(continuous, over);
+            }
+            None() => {
+            }
+          }
+          if expired {
+            close_record(hub: hub, record: move record);
+          } else {
+            put_record(hub: hub, record: move record);
+          }
+        }
+        None() => {
+        }
+      }
+    } else {
+      break @due;
+    }
+  }
+  return unit;
+}
+
+fn timer(hub: Shared<Hub>, clock: Clock, wall: WallClock) -> result: unit pure waits {
+  loop @deadlines {
+    let state = next_timer(hub: &hub);
+    if state.stopping {
+      break @deadlines;
+    }
+    let calendar = std::time::unix_nanoseconds(clock: &wall);
+    let time = 0_u64;
+    if calendar > 0_i64 {
+      let unsigned = cvt.wrap::<i64, u64>(calendar);
+      set time = unsigned / 1000000000_u64;
+    }
+    if state.due > time {
+      let delta = state.due - time;
+      let nanoseconds = delta *sat 1000000000_u64;
+      let instant = std::time::now(clock: &clock);
+      let deadline = std::time::instant_after(instant: instant, nanoseconds: nanoseconds);
+      let watch = std::time::cancel_watch(source: &state.source);
+      let slept = std::time::sleep_until(deadline: deadline, cancel: &watch);
+    } else {
+      atomic held = &hub {
+        expire_soft(hub: held, time: time);
+      }
+    }
+  }
+  return unit;
+}
+
+fn input_seed(connection: &Connection, bytes: u64) -> accepted: Bool reads(connection) waits {
+  atomic inbox = &connection^.input {
+    let combined = inbox^.bytes +sat bytes;
+    if combined > 1073741824_u64 {
+      set inbox^.ended = True();
+      return False();
+    }
+    set inbox^.bytes = combined;
+    return True();
+  }
+}
+
+fn input_used(connection: &Connection, bytes: u64) -> result: unit reads(connection) waits {
+  atomic inbox = &connection^.input {
+    set inbox^.bytes = inbox^.bytes -sat bytes;
+  }
+  return unit;
+}
+
+fn finish(hub: &Shared<Hub>, id: u64) -> result: unit reads(hub) waits {
+  atomic state = &hub^ {
+    match connection_held(hub: state, id: id) {
+      Some(value: target) => {
+        let action = Action::Finish(connection: move target);
+        queue_push::<Action>(queue: &state^.committed, value: move action);
+      }
+      None() => {
+      }
+    }
+  }
+  return unit;
+}
+
+fn receive_snapshot(connection: &Connection) -> snapshot: ReceiveSnapshot reads(connection) waits {
+  atomic state = &connection^.receive_state {
+    let watch = std::time::cancel_watch(source: &state^.wake);
+    return ReceiveSnapshot(subscribed: state^.subscribed, activity: state^.activity, cancel: move watch);
+  }
+}
+
+fn membership_deliver(connection: &Connection, subscribed: Bool) -> result: unit reads(connection) waits {
+  let previous = std::time::cancel_source();
+  atomic state = &connection^.receive_state {
+    set state^.subscribed = subscribed;
+    swap(first: &previous, second: &state^.wake);
+  }
+  std::time::cancel_fire(source: &previous);
+  return unit;
+}
+
+fn activity(connection: &Connection, instant: Instant) -> result: unit reads(connection) waits {
+  let fired = None<CancelSource>();
+  atomic state = &connection^.receive_state {
+    let newer = True();
+    match state^.activity {
+      Some(value: previous) => {
+        set newer = std::time::instant_reached(deadline: previous^, instant: instant);
+      }
+      None() => {
+      }
+    }
+    if newer {
+      set state^.activity = Some<Instant>(value: instant);
+      if state^.subscribed {
+      } else {
+        let old = std::time::cancel_source();
+        swap(first: &old, second: &state^.wake);
+        set fired = Some<CancelSource>(value: move old);
+      }
+    }
+  }
+  match move fired {
+    Some(value: source) => {
+      std::time::cancel_fire(source: &source);
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn forget_client(hub: &Hub, client_id: u64) -> result: unit writes(hub.clients) {
+  let empty = Empty();
+  let removed = hash_map_remove::<IdentityHash, u64, extent>(map: &hub^.clients, key: &client_id, env: &empty);
+  return unit;
+}
+
+fn observe_registration(env: &Empty, key: &u64, value: &u64) -> result: u64 reads(value) {
+  return value^;
+}
+
+fn observe_counts(env: &Empty, key: &u64, value: &Record) -> result: Counts reads(value.channels), reads(value.patterns), reads(value.shards) {
+  return Counts(sub: value^.channels.inner.len, psub: value^.patterns.inner.len, ssub: value^.shards.inner.len);
+}
+
+fn client_counts(hub: &Hub, client_id: u64) -> counts: Counts reads(hub) {
+  let env = Empty();
+  let visitor = Empty();
+  match hash_map_lookup::<IdentityHash, u64, Empty, u64, fn observe_registration, extent>(map: &hub^.clients, key: &client_id, key_env: &env, visit_env: &visitor) {
+    Ok(value: registration) => {
+      match hash_map_lookup::<IdentityHash, Record, Empty, Counts, fn observe_counts, extent>(map: &hub^.records, key: &registration, key_env: &env, visit_env: &visitor) {
+        Ok(value: found) => {
+          return found;
+        }
+        Err(error: removed) => {
+        }
+      }
+    }
+    Err(error: absent) => {
+    }
+  }
+  return Counts(sub: 0_u64, psub: 0_u64, ssub: 0_u64);
+}
+
+fn registry_counts(hub: &Hub) -> counts: RegistryCounts reads(hub) {
+  return RegistryCounts(channels: hub^.channels.length, patterns: hub^.patterns.length, shards: hub^.shards.length);
+}

@@ -520,7 +520,7 @@ fn read_signed(input: &[u8], start: u64, end: u64, in_range: Bool) -> score: Sco
 }
 
 fn read_score(input: &[u8], start: u64, length: u64) -> score: Score reads(input) {
-  doc "Reads bytes of the input as a sorted-set score as Redis 7.0.15 reads one, with C's strtod and nothing after it: an optional sign, then a decimal number with an optional exponent, a C99 hexadecimal one with an optional binary exponent, or inf or infinity in either case, rounded to the nearest double with ties to even. Leading spaces, trailing bytes, NaN, a number that overflows to infinity and a nonzero number that rounds to zero are refused.";
+  doc "Reads bytes of the input as a sorted-set score as Redis 7.2.16 reads one, with C's strtod and nothing after it: an optional sign, then a decimal number with an optional exponent, a C99 hexadecimal one with an optional binary exponent, or inf or infinity in either case, rounded to the nearest double with ties to even. Leading spaces, trailing bytes, NaN, a number that overflows to infinity and a nonzero number that rounds to zero are refused.";
   let end = start +sat length;
   let in_range = True();
   let score = read_signed(input: input, start: start, end: end, in_range: in_range);
@@ -528,7 +528,7 @@ fn read_score(input: &[u8], start: u64, length: u64) -> score: Score reads(input
 }
 
 fn read_bound(input: &[u8], start: u64, length: u64) -> score: Score reads(input) {
-  doc "Reads bytes of the input as Redis 7.0.15 reads one end of a score range, with C's strtod over the argument as a C string, up to its first zero byte, accepting only a read that reaches that end: white space before the number, a number past the range of a double, read as infinity, and one that rounds to zero are accepted, and so is an empty string, read as 0, where strtod converts nothing and stops at the end; NaN is refused, and so is text of white space alone, where strtod stops before the white space.";
+  doc "Reads bytes of the input as Redis 7.2.16 reads one end of a score range, with C's strtod over the argument as a C string, up to its first zero byte, accepting only a read that reaches that end: white space before the number, a number past the range of a double, read as infinity, and one that rounds to zero are accepted, and so is an empty string, read as 0, where strtod converts nothing and stops at the end; NaN is refused, and so is text of white space alone, where strtod stops before the white space.";
   let end = start +sat length;
   for @text (offset in 0_u64..length) {
     let position = start +wrap offset;
