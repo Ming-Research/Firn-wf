@@ -1,9 +1,9 @@
-# firn's gate: every push runs the targets of `make check` in three parallel
+# firn's gate: every push runs the targets of `make check` in four parallel
 # jobs, so that its answer takes as long as the slowest, the Redis suite. The
 # jobs download the pinned Whitefoot compiler release, then build firn and run
-# the Redis suite ratchet; build firn and run its network cases; and lint the
-# design trees. `make gate-sync` fails when the targets they run and the
-# targets of `make check` differ, so each `make TARGET` step below stays on
+# the Redis suite ratchet; build firn and run its network cases; lint the
+# design trees; and compile the safety witnesses. `make gate-sync` fails when
+# their targets differ from `make check`, so each `make TARGET` step stays on
 # one line. The exact revision that merges into main passes this first.
 name: check
 
@@ -33,7 +33,7 @@ jobs:
       - name: Install the suite's tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends tcl
+          sudo apt-get install -y --no-install-recommends tcl patch
 
       - name: Download the pinned compiler
         run: make compiler
@@ -119,8 +119,67 @@ jobs:
           path: build/redis-compat-cache
           key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
+      # Board item firn-test-recv-eintr: a socket read with a timeout once
+      # failed with EINTR, but the tests send the test process no signal.
+      # The kernel's signal_generate tracepoint records every signal sent on
+      # the runner with its sender and target, so a recurrence names its
+      # source. Both steps are diagnostic and never fail the job. Remove
+      # them with that item once the source is fixed.
+      - name: Record every signal sent during the network cases
+        run: |
+          t=/sys/kernel/tracing
+          sudo sh -c "echo 32768 > $t/buffer_size_kb && echo 1 > $t/events/signal/signal_generate/enable && echo 1 > $t/tracing_on" ||
+            echo "::warning::signal tracing unavailable"
+
       - name: Build firn for the network cases and run them
         run: make test
+
+      # SIGCHLD (17), sent at every child's exit, has no handler in the test
+      # process and so cannot interrupt a read; it is only counted. SIGURG
+      # (23) is summarized by sender and target with their pids, because the
+      # runner's own agents send it thousands of times to themselves. Every
+      # other signal is listed with its sender (the task column) and its
+      # target (comm= and pid=).
+      - name: Show the signals sent during the network cases
+        if: always()
+        run: |
+          t=/sys/kernel/tracing
+          sudo sh -c "echo 0 > $t/tracing_on" || true
+          sudo cat $t/trace > "$RUNNER_TEMP/signals.txt" || true
+          echo "signal_generate events by signal number:"
+          grep -o 'signal_generate: sig=[0-9]*' "$RUNNER_TEMP/signals.txt" | sort | uniq -c
+          echo "lost events per CPU buffer (overrun):"
+          sudo sh -c "grep -h overrun $t/per_cpu/cpu*/stats" | sort | uniq -c
+          echo "SIGURG by sender and target:"
+          grep 'signal_generate: sig=23 ' "$RUNNER_TEMP/signals.txt" |
+            sed -E 's/^ *(.*-[0-9]+) +\[.*comm=([^ ]*) pid=([0-9]+).*/\1 -> \2-\3/' | sort | uniq -c
+          echo "every other signal:"
+          grep 'signal_generate:' "$RUNNER_TEMP/signals.txt" | grep -v -E ' sig=(17|23) ' || true
+
+  safety-witnesses:
+    name: rejected and accepted safety witnesses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out Whitefoot-kit
+        run: git submodule update --init whitefoot-kit
+      - name: Download the pinned compiler
+        run: make compiler
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+      - name: Compile faulty and corrected bug patterns
+        run: make safety-witnesses
+      - name: Preserve diagnostics and source hashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-witnesses
+          path: |
+            build/safety-witnesses/results.json
+            build/safety-witnesses/**/*.stdout
+            build/safety-witnesses/**/*.stderr
+          if-no-files-found: warn
 
   design:
     name: design lint and gate sync
@@ -224,7 +283,7 @@ jobs:
         run: sudo tests/aof_sync_fault_device.sh check-writeback "$FIRN_SYNC_FAULT_MOUNT"
 
       # The target fails without FIRN_SYNC_FAULT_MOUNT and REDIS_SERVER, set
-      # by the steps above, and unless all five of its cases ran and passed.
+      # by the steps above, and unless all eight of its cases ran and passed.
       - name: Run the sync and rewrite fault cases
         run: make aof-sync-fault
 

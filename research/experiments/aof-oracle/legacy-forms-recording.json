@@ -1,0 +1,319 @@
+[
+ {
+  "name": "legacy-direct-propagation-forms",
+  "resp": 2,
+  "replies": [
+   {
+    "cmd": [
+     "SET",
+     "mset:k",
+     "old",
+     "PXAT",
+     "1"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "MSET",
+     "mset:k",
+     "new"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "read",
+     "v",
+     "PXAT",
+     "1"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "GET",
+     "read"
+    ],
+    "reply": "$-1\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "gd",
+     "v"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "GETDEL",
+     "gd"
+    ],
+    "reply": "$1\r\nv\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "gs",
+     "a"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "GETSET",
+     "gs",
+     "b"
+    ],
+    "reply": "$1\r\na\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "f",
+     "10.5"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "INCRBYFLOAT",
+     "f",
+     "0.1"
+    ],
+    "reply": "$4\r\n10.6\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "ge",
+     "v"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "GETEX",
+     "ge",
+     "PXAT",
+     "99999999999999"
+    ],
+    "reply": "$1\r\nv\r\n"
+   },
+   {
+    "cmd": [
+     "GETEX",
+     "ge",
+     "PERSIST"
+    ],
+    "reply": "$1\r\nv\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "at",
+     "v",
+     "EXAT",
+     "99999999999"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "EXPIREAT",
+     "at",
+     "99999999998"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "PEXPIREAT",
+     "at",
+     "99999999999999",
+     "LT"
+    ],
+    "reply": ":0\r\n"
+   },
+   {
+    "cmd": [
+     "SETNX",
+     "nx",
+     "v"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "APPEND",
+     "ap",
+     "x"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "SETRANGE",
+     "ap",
+     "3",
+     "y"
+    ],
+    "reply": ":4\r\n"
+   },
+   {
+    "cmd": [
+     "INCRBY",
+     "ib",
+     "5"
+    ],
+    "reply": ":5\r\n"
+   },
+   {
+    "cmd": [
+     "DECR",
+     "ib"
+    ],
+    "reply": ":4\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "zz",
+     "1",
+     "PXAT",
+     "1"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "aa",
+     "1",
+     "PXAT",
+     "1"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "live",
+     "v"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "zz",
+     "1",
+     "aa",
+     "2",
+     "live",
+     "3"
+    ],
+    "reply": ":0\r\n"
+   },
+   {
+    "cmd": [
+     "MSETNX",
+     "m1",
+     "a",
+     "m2",
+     "b"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "RENAME",
+     "m1",
+     "m3"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "COPY",
+     "m3",
+     "m4"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "UNLINK",
+     "m4"
+    ],
+    "reply": ":1\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "y2",
+     "1",
+     "PXAT",
+     "1"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "y1",
+     "1",
+     "PXAT",
+     "1"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "DEL",
+     "y2",
+     "y1",
+     "y2"
+    ],
+    "reply": ":0\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "x2",
+     "1",
+     "PXAT",
+     "1"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "SET",
+     "x1",
+     "1",
+     "PXAT",
+     "1"
+    ],
+    "reply": "+OK\r\n"
+   },
+   {
+    "cmd": [
+     "EXISTS",
+     "x2",
+     "x1"
+    ],
+    "reply": ":0\r\n"
+   },
+   {
+    "cmd": [
+     "__AOF__"
+    ],
+    "reply": "*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$6\r\nmset:k\r\n$3\r\nold\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$6\r\nmset:k\r\n*3\r\n$4\r\nMSET\r\n$6\r\nmset:k\r\n$3\r\nnew\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$3\r\nSET\r\n$4\r\nread\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$4\r\nread\r\n*3\r\n$3\r\nSET\r\n$2\r\ngd\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\ngd\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\na\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\nb\r\n*3\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.5\r\n*4\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.6\r\n$7\r\nKEEPTTL\r\n*3\r\n$3\r\nSET\r\n$2\r\nge\r\n$1\r\nv\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nge\r\n$14\r\n99999999999999\r\n*2\r\n$7\r\nPERSIST\r\n$2\r\nge\r\n*5\r\n$3\r\nSET\r\n$2\r\nat\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$14\r\n99999999999000\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nat\r\n$14\r\n99999999998000\r\n*3\r\n$5\r\nSETNX\r\n$2\r\nnx\r\n$1\r\nv\r\n*3\r\n$6\r\nAPPEND\r\n$2\r\nap\r\n$1\r\nx\r\n*4\r\n$8\r\nSETRANGE\r\n$2\r\nap\r\n$1\r\n3\r\n$1\r\ny\r\n*3\r\n$6\r\nINCRBY\r\n$2\r\nib\r\n$1\r\n5\r\n*2\r\n$4\r\nDECR\r\n$2\r\nib\r\n*5\r\n$3\r\nSET\r\n$2\r\nzz\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\naa\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\nlive\r\n$1\r\nv\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nzz\r\n*2\r\n$3\r\nDEL\r\n$2\r\naa\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$6\r\nMSETNX\r\n$2\r\nm1\r\n$1\r\na\r\n$2\r\nm2\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$2\r\nm1\r\n$2\r\nm3\r\n*3\r\n$4\r\nCOPY\r\n$2\r\nm3\r\n$2\r\nm4\r\n*2\r\n$6\r\nUNLINK\r\n$2\r\nm4\r\n*5\r\n$3\r\nSET\r\n$2\r\ny2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\ny1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny2\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny1\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$3\r\nSET\r\n$2\r\nx2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx2\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n*1\r\n$4\r\nEXEC\r\n"
+   }
+  ],
+  "file": "legacy-direct-propagation-forms.json"
+ }
+]

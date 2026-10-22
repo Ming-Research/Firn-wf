@@ -20,15 +20,6 @@ enum Point { EarlyScan, BeforeManifest, AfterManifest }
 #[derive(Clone, Copy, Debug)]
 enum Server { Redis, Firn(bool) }
 
-fn oracle() -> PathBuf {
-    let binary = std::env::var_os("REDIS_SERVER").map(PathBuf::from)
-        .expect("REDIS_SERVER must name the pinned Redis 7.2.16 oracle");
-    let output = support::run_command(Command::new(&binary).arg("--version"));
-    assert!(output.status.success(), "Redis version command: {output:?}");
-    assert!(String::from_utf8_lossy(&output.stdout).contains(" v=7.2.16 "), "{output:?}");
-    binary
-}
-
 fn start(server: Server, oracle: &Path, directory: &Path, traced: bool) -> (ProgramChild, TcpStream) {
     let lease = support::lease_port();
     let port = lease.port().to_string();
@@ -59,8 +50,33 @@ fn start(server: Server, oracle: &Path, directory: &Path, traced: bool) -> (Prog
         }
     }
     let child = ProgramChild::spawn(&mut command).expect("spawn rewrite crash subject").with_port(&lease);
-    let client = connect_when_ready(lease.port(), &child);
+    let mut client = connect_when_ready(lease.port(), &child);
+    loaded(&mut client, server);
     (child, client)
+}
+
+/// Waits until the server answers PING with +PONG. Redis 7.2.16 admits
+/// connections while it replays its append-only file and answers -LOADING
+/// until the replay ends (firn listens only after it); that reply alone is
+/// "not ready yet" and is retried on the same connection. Any other reply,
+/// a closed connection or no +PONG within 60 s fails the test.
+fn loaded(client: &mut TcpStream, server: Server) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        client.write_all(&resp(&["PING"])).expect("send the readiness PING");
+        let mut line = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !line.ends_with(b"\r\n") {
+            assert!(Instant::now() < deadline, "{server:?}: no PING reply within 60 s");
+            assert_eq!(client.read(&mut byte).expect("read the readiness PING reply"), 1,
+                "{server:?}: connection closed while waiting for PONG, saw {:?}", String::from_utf8_lossy(&line));
+            line.push(byte[0]);
+        }
+        if line == b"+PONG\r\n" { return; }
+        assert!(line.starts_with(b"-LOADING "), "{server:?}: unexpected PING reply {:?}", String::from_utf8_lossy(&line));
+        assert!(Instant::now() < deadline, "{server:?}: still loading after 60 s");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn manifest(directory: &Path) -> String {
@@ -404,7 +420,7 @@ fn run(server: Server, oracle: &Path, point: Point) {
 
 #[test]
 fn rewrite_sigkill_early_scan_recovers_acknowledged_writes_against_redis() {
-    let oracle = oracle();
+    let oracle = support::redis_oracle();
     for server in [Server::Redis, Server::Firn(false), Server::Firn(true)] {
         run(server, &oracle, Point::EarlyScan);
     }
@@ -412,12 +428,12 @@ fn rewrite_sigkill_early_scan_recovers_acknowledged_writes_against_redis() {
 
 #[test]
 fn rewrite_sigkill_complete_base_before_manifest_recovers_against_redis() {
-    let oracle = oracle();
+    let oracle = support::redis_oracle();
     for server in [Server::Redis, Server::Firn(false)] { run(server, &oracle, Point::BeforeManifest); }
 }
 
 #[test]
 fn rewrite_sigkill_after_atomic_manifest_switch_recovers_against_redis() {
-    let oracle = oracle();
+    let oracle = support::redis_oracle();
     for server in [Server::Redis, Server::Firn(false)] { run(server, &oracle, Point::AfterManifest); }
 }
