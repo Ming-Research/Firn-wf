@@ -1,0 +1,50 @@
+# Temporary quick check for board item firn-concurrent-check-gate: builds firn
+# and runs only the durability cases, the concurrent-history case five times.
+# Delete this file before the PR is ready.
+name: tmp-concurrent-check
+
+on:
+  push:
+    branches: [claude/durability-cases]
+
+concurrency:
+  group: tmp-concurrent-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  durability:
+    name: durability cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Build firn for the network cases
+        run: make firn-test
+
+      # Each round must run both cases: the history check against firn and
+      # the checker's own case on synthetic histories.
+      - name: Run the durability cases five times
+        run: |
+          for round in 1 2 3 4 5; do
+            echo "round $round"
+            log=$(mktemp)
+            FIRN="$GITHUB_WORKSPACE/build/firn-test" \
+              cargo test --manifest-path tests/Cargo.toml --locked --test network durability:: \
+              -- --show-output >"$log" 2>&1
+            status=$?
+            cat "$log"
+            [ $status -eq 0 ] || exit 1
+            grep -q '^test result: ok\. 2 passed' "$log" || exit 1
+          done
