@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-21 Install a finished AOF rewrite while appends keep failing
+
+Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/append-only-file
+
+Summary: Redis 7.2.16 installs a finished rewrite while appends to its current incremental file fail and marks the rewrite successful; firn abandoned it at the first append error, leaving the old history on disk and the automatic rewrite off until a manual one succeeded ([fault record](../research/investigations/aof-rewrite/rewrite-faults.md#current-append-failure-user-impact-and-policy-assessment)). A failed append no longer aborts a rewrite (a sync failure still does); when the base is complete while bytes before the cut are still unwritten, firn publishes the new base and a new empty incremental file as the only active files, and the statement that adopts that manifest releases the held bytes and clears the append error. The held bytes precede the cut and are already in the new base, so the new selection executes every command once and the old selection stays valid until the new one is published; resuming writes there is the stated difference from Redis, since no append is left to clear the error otherwise. Rejected: moving the held bytes into a new incremental file, releasing them at the cut, waiting for the disk to heal before switching, and keeping the append error after the install. The wording of append-only-file about clearing the error and of capture about memory held in this wait follows ([protocol, crash points and implementation](../research/investigations/aof-rewrite/publish-during-append-error.md)).
+
 ## 2026-10-14 Gate the ten safety witnesses
 
 Nodes: firn/building
