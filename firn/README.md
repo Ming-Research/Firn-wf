@@ -689,7 +689,8 @@ were appended completely since its last sync, so an idle server issues no
 sync and a device that fails while firn is idle shows only at the sync after
 the next write (`aof.c:1071-1094,1236-1267`); a saved sync failure is the
 exception, retried once a second while idle as described above.
-A successful append clears an append failure, and only a rewrite whose
+A successful append clears an append failure, and so does a rewrite installed
+directly while appends fail, described below; only a rewrite whose
 installation is durable clears a sync failure; ordinary rewrite rotation
 resets neither. This deliberately differs from Redis 7.2.16's successful
 old-file fsync-and-close, which clears its background sync error before
@@ -755,7 +756,7 @@ including a refused admission; counters start at zero before the first attempt.
   `journal_backlog` (insufficient staging slots or memory), `journal_io`
   (temporary-journal host I/O), `flush`,
   `sequence_exhausted`, `cancelled`, `base_io`, `writer_io`,
-  `drain` (incremental append did not drain), `boundary` (sealed-file reading
+  `boundary` (sealed-file reading
   or validation), `install_io` (manifest publication or base installation),
   `rotation_reserve` (collecting-buffer growth), `sequence_invalid`
   (a scanned stamp beyond the commit sequence), `journal_invalid` (invalid
@@ -773,7 +774,8 @@ including a refused admission; counters start at zero before the first attempt.
   Counts survive cleanup on failure and success.
 - `firn_aof_rewrite_cleanup_failed` counts each journal close or removal
   step that returned failure during this attempt, including cleanup after
-  an early error. It preserves the first abort cause and resets on admission.
+  an early error, and each failed close of the old incremental file or
+  removal of an unlisted new base in a direct installation. It preserves the first abort cause and resets on admission.
   Startup cleanup leaves this count at zero and reports failed removal
   through `firn_aof_rewrite_journal_leftover` instead.
 - `firn_aof_rewrite_scan_steps` counts completed map_scan_within calls,
@@ -786,6 +788,24 @@ including a refused admission; counters start at zero before the first attempt.
   the ledger less this part, since those bytes are already in the AOF
   buffer capacities. It is the live value: unlike
   `firn_aof_rewrite_used` it does not freeze at the first failure.
+
+A failed append does not abort a rewrite: its scan and journal continue while
+writes are refused. If the bytes retained for the current incremental file
+still cannot be written when the scan ends, firn seals the commands up to the
+cut after them and retries only those, keeping later commands back. If they
+drain, the rewrite rotates as usual; if the new base is complete first, firn
+installs it directly, as Redis 7.2.16 installs a completed rewrite whatever
+its append status: the new manifest names the new base and a new empty
+incremental file, and the old base and every old incremental file become
+history. Every retained byte belongs to a command the new base already holds,
+so publication releases them and clears the append failure, and writes are
+admitted again. This deliberately differs from Redis, which keeps its retained
+bytes for its still-selected incremental file and refuses writes until they
+are written ([direct installation](../design/firn/aof-rewrite.md)). A direct
+installation that fails before publication keeps the old manifest, and the
+retained bytes drain to the old incremental file once it accepts appends; the
+new empty incremental file stays in place, as after a failed switch, because a
+manifest whose directory sync failed may already name it.
 
 Failure before rotation leaves the original manifest authoritative. After
 rotation it leaves the manifest naming the old base and all increments

@@ -2,7 +2,10 @@
 //! The rename cases use strace's syscall-exit delay on the file-adapter
 //! route: it stretches an existing state without changing a syscall result.
 //! An atomic rename has no observable interior; its two sides are separate
-//! cases. Native-ring coverage here is the untraced early-scan case.
+//! cases. Native-ring coverage here is the untraced early-scan case. One
+//! more case delays the temporary base's sync, with strace's syscall-entry
+//! delay, to hold open the window between a rewrite's cut and its completed
+//! base.
 
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -436,4 +439,167 @@ fn rewrite_sigkill_complete_base_before_manifest_recovers_against_redis() {
 fn rewrite_sigkill_after_atomic_manifest_switch_recovers_against_redis() {
     let oracle = support::redis_oracle();
     for server in [Server::Redis, Server::Firn(false)] { run(server, &oracle, Point::AfterManifest); }
+}
+
+/// The server strace started: its only child.
+fn traced_server(child: &ProgramChild) -> u32 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let children = std::fs::read_to_string(format!("/proc/{0}/task/{0}/children", child.id())).unwrap_or_default();
+        if let Some(pid) = children.split_whitespace().next() { return pid.parse().unwrap(); }
+        assert!(Instant::now() < deadline, "strace started no server");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Every line strace wrote with -ff under `prefix`, one file per thread, so
+/// that no call is split by another thread's.
+fn traced_lines(prefix: &Path) -> Vec<String> {
+    let name = prefix.file_name().unwrap().to_str().unwrap().to_owned();
+    let mut lines = Vec::new();
+    for entry in std::fs::read_dir(prefix.parent().unwrap()).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().unwrap().to_str().unwrap().starts_with(&format!("{name}.")) {
+            lines.extend(std::fs::read_to_string(path).unwrap().lines().map(str::to_owned));
+        }
+    }
+    lines
+}
+
+/// When the bytes retained by a failed append drain after the cut and
+/// before the base is complete, the rewrite rotates and installs as usual
+/// (design/firn/aof-rewrite.md): the transaction sealed at the cut reaches
+/// the old increment before the new one is published, and base(S1) is paired
+/// only with the empty new increment. RLIMIT_FSIZE on the old increment makes
+/// its appends fail; strace delays every sync of the temporary base by 2 s
+/// (delay_enter, the result unchanged), so the base completes only after the
+/// test lifts the limit at the observed cut. The trace must show the sealed
+/// transaction written whole to the old increment, which a direct
+/// installation never does, and the restart must apply its INCR and RPUSH
+/// once. File adapter only: the native ring's I/O is not a syscall strace
+/// can delay.
+#[test]
+fn rewrite_rotates_when_retained_bytes_drain_after_the_cut() {
+    let directory = fixture_directory();
+    initialise(directory.path());
+    let root = directory.path().canonicalize().unwrap();
+    let aof = root.join("appendonlydir");
+    let base = aof.join("temp-appendonly.aof.base");
+    let current = aof.join("appendonly.aof.1.incr.aof");
+    let trace = root.join("drain.trace");
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    let mut command = Command::new("strace");
+    command.args(["-ff", "-qq", "-yy", "-s", "80", "-o"]).arg(&trace)
+        .args(["-e", "trace=write,writev,pwrite64,pwritev,pwritev2,fsync,fdatasync",
+            "-e", "inject=fsync,fdatasync:delay_enter=2s", "-P"]).arg(&base)
+        .arg("-P").arg(&current).arg("--")
+        .arg(std::env::var_os("FIRN").expect("FIRN"))
+        .args([&port, "0", "appendonly.aof", "--auto-aof-rewrite-percentage", "0"])
+        .env("WF_WORKERS", "2").env("WF_DRIVERS", "2").env_remove("WF_REQUIRE_WINDOWS_IOCP")
+        .env("WF_IO_NO_NATIVE_RING", "1")
+        .current_dir(&root).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    {
+        use std::os::unix::process::CommandExt;
+        // SIG_IGN survives both execs, so RLIMIT_FSIZE makes write return
+        // EFBIG instead of ending the server, as in aof_write_errors.
+        unsafe extern "C" {
+            fn signal(signal: i32, handler: usize) -> usize;
+        }
+        unsafe {
+            command.pre_exec(|| {
+                if signal(25, 1) == usize::MAX { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+            });
+        }
+    }
+    let child = ProgramChild::spawn(&mut command).expect("spawn traced firn").with_port(&lease);
+    let mut client = connect_when_ready(lease.port(), &child);
+    loaded(&mut client, Server::Firn(false));
+    let server = traced_server(&child);
+    let status = std::fs::read_to_string(format!("/proc/{server}/status")).unwrap();
+    let ignored = status.lines().find_map(|line| line.strip_prefix("SigIgn:")).unwrap().trim();
+    assert_ne!(u64::from_str_radix(ignored, 16).unwrap() & (1 << 24), 0, "the server must ignore SIGXFSZ");
+
+    client.write_all(&resp(&["INCR", "counter"])).unwrap();
+    assert_eq!(integer_reply(&mut client, "INCR before the fault"), 1);
+    client.write_all(&resp(&["RPUSH", "events", "before"])).unwrap();
+    assert_eq!(integer_reply(&mut client, "RPUSH before the fault"), 1);
+    // The limit is the old increment's length; padding makes it exceed the
+    // base, so that only the old increment's appends fail.
+    let padding = "p".repeat(1 << 16);
+    acknowledged(&mut client, &mut BTreeMap::new(), "padding".into(), padding.clone());
+    client.write_all(&resp(&["DEL", "padding"])).unwrap();
+    assert_eq!(integer_reply(&mut client, "DEL padding"), 1);
+    let mut expected = resp(&["INCR", "counter"]);
+    expected.extend(resp(&["RPUSH", "events", "before"]));
+    expected.extend(resp(&["SET", "padding", &padding]));
+    expected.extend(resp(&["DEL", "padding"]));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let info = rewrite_info(&mut client);
+        if std::fs::read(&current).unwrap() == expected && info["aof_buffer_length"] == "0"
+            && info["aof_last_write_status"] == "ok" { break; }
+        assert!(Instant::now() < deadline, "seed never reached the old increment: {info:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let old = aof_write_errors::file_limit_pid(server, expected.len() as u64);
+    client.write_all(&resp(&["MULTI"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "MULTI");
+    client.write_all(&resp(&["INCR", "counter"])).unwrap();
+    expect_replies(&mut client, b"+QUEUED\r\n", "queued INCR");
+    client.write_all(&resp(&["RPUSH", "events", "retained"])).unwrap();
+    expect_replies(&mut client, b"+QUEUED\r\n", "queued RPUSH");
+    client.write_all(&resp(&["EXEC"])).unwrap();
+    expect_replies(&mut client, b"*2\r\n:2\r\n:2\r\n", "EXEC");
+    let mut retained = resp(&["MULTI"]);
+    retained.extend(resp(&["INCR", "counter"]));
+    retained.extend(resp(&["RPUSH", "events", "retained"]));
+    retained.extend(resp(&["EXEC"]));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let info = rewrite_info(&mut client);
+        if info["aof_last_write_status"] == "err" { break; }
+        assert!(Instant::now() < deadline, "the file limit never failed an append: {info:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    rewrite_start(&mut client);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let info = rewrite_info(&mut client);
+        assert_eq!(info["aof_rewrite_in_progress"], "1", "the cut must be seen before completion: {info:?}");
+        if info["firn_aof_rewrite_cut"] == "1" {
+            assert_eq!(info["aof_last_write_status"], "err", "the cut sealed retained bytes: {info:?}");
+            assert_eq!(info["aof_buffer_length"], retained.len().to_string(), "{info:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the rewrite never cut: {info:?}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    aof_write_errors::file_limit_pid(server, old.soft);
+    let info = rewrite_wait(&mut client);
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok", "{info:?}");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "", "{info:?}");
+    assert_eq!(info["aof_last_write_status"], "ok", "{info:?}");
+    assert_eq!(manifest(&root), rewrite_manifest(2, 2));
+    consistent(&root);
+    let lines = traced_lines(&trace);
+    let target = current.to_str().unwrap();
+    let whole = format!("= {}", retained.len());
+    assert!(lines.iter().any(|line| line.contains(target) && line.contains("MULTI") && line.ends_with(&whole)),
+        "the sealed transaction was never written whole to the old increment: {lines:#?}");
+    let temporary = base.to_str().unwrap();
+    assert!(lines.iter().any(|line| line.contains(temporary) && line.contains("DELAYED")),
+        "the temporary base's sync was never delayed: {lines:#?}");
+    rewrite_stop(&mut client, child);
+
+    let (child, mut client) = start(Server::Firn(false), Path::new("unused"), &root, false);
+    client.write_all(&resp(&["GET", "counter"])).unwrap();
+    expect_replies(&mut client, b"$1\r\n2\r\n", "each INCR applies once");
+    client.write_all(&resp(&["LRANGE", "events", "0", "-1"])).unwrap();
+    expect_replies(&mut client, b"*2\r\n$6\r\nbefore\r\n$8\r\nretained\r\n", "each RPUSH applies once");
+    client.write_all(&resp(&["DBSIZE"])).unwrap();
+    assert_eq!(integer_reply(&mut client, "exact keyspace"), 2);
+    rewrite_stop(&mut client, child);
 }
