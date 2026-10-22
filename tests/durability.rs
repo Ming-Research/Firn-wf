@@ -1,7 +1,7 @@
 //! Concurrent histories checked against a serial order (board item
 //! firn-concurrent-check-gate).
 //!
-//! Redis 7.2.16 src/t_string.c:697-732 defines APPEND's byte-length reply.
+//! Redis 7.2.16 src/t_string.c:697-727 defines APPEND's byte-length reply.
 //! Eight clients interleave APPENDs on shared keys, and the checker below
 //! finds a serial order that explains every reply and the final values, which
 //! the append-only file must then reproduce on reload.
