@@ -519,7 +519,9 @@ leaves `RLIMIT_NOFILE` unchanged. Unlike Redis 7.2.16, firn does not reduce
 system cannot supply enough descriptors; Redis can also refuse its event
 loop's capacity adjustment. The configured application limit does not
 promise descriptor availability. Host accept errors retain their existing
-handling.
+handling: any `accept` error, descriptor exhaustion included, ends the accept
+loop and stops firn with exit status 0 (see the
+[safety boundaries](../docs/safety.md)).
 
 The interim path rules follow owner card `firn-q-ops-paths-interim` while
 Whitefoot's path support is tracked by `firn-req-host-paths`. Configuration
