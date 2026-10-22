@@ -351,9 +351,7 @@ read; a later release (v6.4.0 is tagged) is a separate upgrade.
   listen on 6379, as for Django, rate-limiter-flexible and Sidekiq. The
   cluster cases that need a real cluster (127.0.0.1:7001 on) skip themselves
   when none answers, on both servers alike: 9 cases. The usage survey's note
-  that BullMQ's tests default to localhost holds; the head of the item that
-  wired BullMQ in had read `create-backend.test.ts` as naming it, and that
-  file reads the same two variables.
+  that BullMQ's tests default to localhost holds.
 
 ### Results
 
@@ -372,7 +370,7 @@ from its release archive, firn built at the same commit. Redis ran twice. All
 | skip | 13 | 13 | 13 |
 | files that exited 0, of 49 | 49 | 49 | 11 |
 | seconds in the test files, summed | 464 | 456 | 198 |
-| job time with the packages installed | 8 min 38 s | 8 min 40 s | 6 min 11 s |
+| job time, start to end as the run page shows it | 8 min 38 s | 8 min 33 s | 6 min 11 s |
 
 The two Redis runs passed the same 1,107 cases, so `bullmq-unstable.tsv` is
 empty. The comparison puts 284 cases in both servers' passes, 823 in Redis's
@@ -380,9 +378,9 @@ alone and none in firn's alone; the 13 skipped cases are the same on all three
 (the 9 cluster cases, one in `connection.test.ts` that needs a Redis with another
 `maxmemory-policy`, one in `job_scheduler_stress.test.ts` and two in
 `script_loader.test.ts`). The names of the cases are in the job summary of the
-run. Giving each of the 823 an owner is the work of the item that runs BullMQ's
-tests on firn; the error replies in firn's `test.log` already show where they
-stop, counted as lines, where a worker's retries repeat the same line:
+run. Giving each of the 823 an owner is the work of firn-verify-bullmq; the
+error replies in firn's `test.log` already show where they stop, counted as
+lines, where a worker's retries repeat the same line:
 
 | Reply in firn's `test.log` | Lines |
 |---|---|
