@@ -585,8 +585,10 @@ fn run_info_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cl
       set memory_policy = server^.memory.maxmemory_policy;
     }
     let clients = 0_u64;
+    let blocking = BlockingCounts(clients: 0_u64, keys: 0_u64, timed: 0_u64);
     if chosen[1_u64] == 1_u64 {
       set clients = meta^.clients;
+      set blocking = pkg::connection_events::blocking_counts(hub: hub);
     }
     let started = 0_u64;
     if chosen[0_u64] == 1_u64 {
@@ -608,7 +610,7 @@ fn run_info_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cl
       set count = map_count::<Entry>(map: keys);
     }
     set meta^.memory_peak = imax(meta^.memory_peak, used);
-    let text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, channels: channels, patterns: patterns, shards: shards, keys: count, logged: store^.logging, persistence: meta, client: client, time: time);
+    let text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, blocking: blocking, started: started, connections: connections, channels: channels, patterns: patterns, shards: shards, keys: count, logged: store^.logging, persistence: meta, client: client, time: time);
     info_finish(client: client, text: &text);
     pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
   }
