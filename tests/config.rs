@@ -213,6 +213,31 @@ fn maxclients_subscribed_resp3_connection_reports_the_limit_and_counts() {
     }
 }
 
+/// The INFO field audit skips the Clients section, so nothing else fixes where
+/// `maxclients` stands in it. Redis 7.2.16 reports `cluster_connections` and
+/// `maxclients` directly after `connected_clients`; the oracle run settles it.
+#[test]
+fn maxclients_info_clients_lists_the_limit_where_redis_does() {
+    let fixture = fixture_directory();
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    for (label, binary) in servers() {
+        let child = start(&binary, fixture.path(),
+            &arguments(&["--port", &port, "--bind", "127.0.0.1"]), None).with_port(&lease);
+        let mut client = connect_when_ready(lease.port(), &child);
+        client.write_all(&resp(&["INFO", "clients"])).expect("query the Clients section");
+        let info = bulk_reply(&mut client, label);
+        let sections = info_structure(&info);
+        assert_eq!(sections.len(), 1, "{label}: INFO clients answers one section: {info:?}");
+        let (name, fields) = &sections[0];
+        assert_eq!(*name, "Clients", "{label}: {info:?}");
+        let names: Vec<_> = fields.iter().take(3).map(|(field, _)| *field).collect();
+        assert_eq!(names, ["connected_clients", "cluster_connections", "maxclients"],
+            "{label}: Clients must open with Redis's three fields in its order: {info:?}");
+        shutdown(&mut client, child, label);
+    }
+}
+
 #[test]
 fn maxclients_file_accepts_the_uint_upper_bound() {
     let fixture = fixture_directory();
