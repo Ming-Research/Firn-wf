@@ -1,8 +1,10 @@
 # Publishing a rewrite while the current increment cannot be written
 
-Board item: `firn-rw-publish-during-append-error`. This record is written
-before implementation; nothing below has been built or measured unless a
-result is cited with its run.
+Board item: `firn-rw-publish-during-append-error`. The sections up to the
+implementation outline were written before implementation; nothing in them
+has been built or measured unless a result is cited with its run.
+[Implementation](#implementation) records how the code follows them and
+where it departs.
 
 ## Question
 
@@ -434,4 +436,34 @@ is needed, so no Whitefoot gap is expected. Whether the W1 loop's extra
 state fits `aof_rw_cycle` without the function exceeding what the checker
 handles comfortably is a code-size question, not a language gap.
 
-Status: proposal; awaiting the owner's approval of the design-tree change.
+## Implementation
+
+The owner approved the design (card `firn-q-rw-publish-tree`, option A), and
+`firn/persistence/rewrite.wf` follows the outline, with these departures:
+
+- The cut no longer tries the retained bytes before it seals: `aof_rw_cut`
+  appends the collecting bytes after any retained ones, and the single
+  attempt of step 4 follows it. On a healthy writer the private buffer is
+  empty, so the cut exchanges the buffers as before.
+- The normal path keeps its order: `cut_done` is published after the
+  rotation, as before. Only when the sealed bytes stay retained is
+  `cut_done` published at once, with `rotated` false and `rotating` still
+  set, which starts the worker's reconciliation during the wait.
+  `aof_rw_sealed_retry` is that wait; the loop ends `rotating` when it sees
+  the attempt aborted.
+- Step 12's sync error is saved by the directory-sync rule the separate fix
+  (`firn-rw-switch-dirsync`) put into `aof_persist_record`, before the
+  adopting statement rather than in it, so `AofPublication` needs no error.
+  Writes stay refused throughout: the append error stays saved until the
+  adopting statement clears it, after the sync error is saved.
+- A failed append no longer aborts the attempt, so the loop no longer turns
+  a failed flush into `writer_io`; a counted sync failure still aborts it
+  inside `aof_rw_flush` or `aof_rw_switch`.
+
+Acceptance case 3 is named
+`aof_rewrite_during_latched_append_error_publishes_and_applies_retained_once`
+and case 4 `aof_direct_rewrite_installation_failure_keeps_the_old_selection`,
+both in `tests/aof_write_errors.rs`; case 4 is there rather than among the
+ordinary network cases because it needs that file's file-size limit. Both
+retain an INCR and an RPUSH in one transaction, so a second application of
+either changes what the restart reads.

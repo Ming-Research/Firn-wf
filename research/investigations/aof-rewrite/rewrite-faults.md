@@ -318,7 +318,7 @@ proven implementation or an approved design-tree change.
 
 [Publishing a rewrite while the current increment cannot be written](publish-during-append-error.md)
 turns the direction below into a protocol, its crash points and acceptance
-cases, before implementation.
+cases, which firn now implements.
 
 Recommend matching the useful completion behavior: a current-append error
 should not by itself discard a separately valid compaction result. The

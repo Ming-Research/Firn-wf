@@ -1507,9 +1507,17 @@ fn aof_rewrite_temporary_eio_keeps_acknowledged_state() {
 }
 
 /// Keep the current increment unwritable until the rewrite finishes, then
-/// measure publication while the write is still retained. Redis's forked
-/// rewrite succeeds; firn aborts. Repair, drain and crash/restart both, without
-/// treating an everysec acknowledgement as already durable during the fault.
+/// measure publication while the write is still retained. Both publish the
+/// new base and report the rewrite ok (aof.c:2584-2700 never reads the append
+/// status). Redis keeps its retained bytes for the failing increment, which
+/// stays selected, and keeps refusing writes; firn's retained bytes precede
+/// its cut, so its new base holds them: it selects a new empty increment
+/// instead of the failing one, releases them and admits writes again, the
+/// deliberate difference design/firn/aof-rewrite.md records. A firn that
+/// also wrote the retained bytes into the new increment would replay the
+/// INCR twice and fail the counter after restart. Repair, drain and
+/// crash/restart both, without treating an everysec acknowledgement as
+/// already durable during the fault.
 #[test]
 #[ignore = "needs the aof-sync-fault device, strace and pinned Redis oracle"]
 fn aof_rewrite_current_append_failure_observes_publication() {
@@ -1540,23 +1548,33 @@ fn aof_rewrite_current_append_failure_observes_publication() {
         assert_eq!(refused, format!("{MISCONF}Input/output error\r\n"));
         let outcome = rewrite_finished(&mut client);
         trace.assert_fault("EIO", true);
-        assert_eq!(info_field(&outcome, "aof_last_write_status").as_deref(), Some("err"), "{outcome}");
-        assert!(count(&outcome, "aof_buffer_length") > 0, "failed acknowledged bytes must remain buffered: {outcome}");
         assert_eq!(std::fs::read(&current).unwrap(), before, "the failing write must not reach the current increment");
         let published = rewrite_base_name(server.directory()) != old_base;
-        assert_eq!(published, redis, "Redis publishes the completed child while append still fails; firn aborts: {outcome}");
-        assert_eq!(info_field(&outcome, "aof_last_bgrewrite_status").as_deref(), Some(if redis { "ok" } else { "err" }), "{outcome}");
-        if !redis {
-            // The actual failed append latches `drain` inside aof_rw_drain,
-            // before aof_rw_flush returns failure to the rewrite loop.
-            // capture.md's first-cause rule keeps it when that outer loop
-            // subsequently reports `writer_io`, as the latched-append-error
-            // regression in aof_write_errors also requires.
-            assert_eq!(info_field(&outcome, "firn_aof_rewrite_abort_reason").as_deref(), Some("drain"), "{outcome}");
+        assert!(published, "both publish the completed rewrite while append still fails: {outcome}");
+        assert_eq!(info_field(&outcome, "aof_last_bgrewrite_status").as_deref(), Some("ok"), "{outcome}");
+        let manifest = std::fs::read_to_string(server.directory().join("appendonlydir/sync.aof.manifest")).unwrap();
+        let failing = current.file_name().unwrap().to_str().unwrap();
+        let increments: Vec<&str> = manifest.lines().filter(|line| line.ends_with(" type i"))
+            .map(|line| line.split_whitespace().nth(1).unwrap()).collect();
+        if redis {
+            assert_eq!(info_field(&outcome, "aof_last_write_status").as_deref(), Some("err"), "{outcome}");
+            assert!(count(&outcome, "aof_buffer_length") > 0, "failed acknowledged bytes must remain buffered: {outcome}");
+            assert_eq!(increments.last().copied(), Some(failing), "Redis keeps the failing increment selected: {manifest}");
+        } else {
+            assert_eq!(info_field(&outcome, "aof_last_write_status").as_deref(), Some("ok"), "{outcome}");
+            assert_eq!(info_field(&outcome, "firn_aof_rewrite_abort_reason").as_deref(), Some(""), "{outcome}");
+            assert_eq!(increments.len(), 1, "one active increment after the new base: {manifest}");
+            assert_ne!(increments[0], failing, "the failing increment is history: {manifest}");
         }
         rewrite_active_files(server.directory());
-        eprintln!("rewrite-fault observation: server={} case=current-eio rewrite={} append=err buffered={} published-before-append-repair={published} refused={refused:?}",
-            server.label(), if redis { "ok" } else { "err" }, count(&outcome, "aof_buffer_length"));
+        eprintln!("rewrite-fault observation: server={} case=current-eio rewrite=ok append={} buffered={} published-before-append-repair={published} increments={increments:?} refused={refused:?}",
+            server.label(), info_field(&outcome, "aof_last_write_status").unwrap_or_default(), count(&outcome, "aof_buffer_length"));
+        if !redis {
+            // Acknowledged into the new increment while the old one still
+            // fails; it must be present after the restart below.
+            assert_eq!(memory_request(&mut client, &["SET", "rewrite:after-publish", "p"]), "+OK\r\n");
+            expected.insert("rewrite:after-publish".to_string(), "p".to_string());
+        }
         trace.detach();
         rewrite_verify_old(&server, &old, &before_failure);
         wait_status(&mut client, "ok");
