@@ -23,7 +23,6 @@ public enum RewriteAbortReason {
   Cancelled();
   BaseIo();
   WriterIo();
-  Drain();
   Boundary();
   InstallIo();
   RotationReserve();

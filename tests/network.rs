@@ -13,6 +13,7 @@ mod rewrite_faults;
 mod write_meta;
 mod collection_scan;
 mod pubsub;
+mod durability;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
