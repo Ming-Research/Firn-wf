@@ -1,32 +1,41 @@
-# Whole-collection scans
+# Collection scans
 
-Investigation for board item `firn-scope-collection-scan`, 2026-10-13. The
-selected direction is implemented, and the gate's network cases and Redis suite
-check it. Redis reference replies were recorded in the run linked below.
+Investigation for board items `firn-scope-collection-scan` (2026-10-13) and
+`firn-collection-scan-bounded`. The selected direction is implemented, and the
+gate's network cases and Redis suite check it. Redis reference replies were
+recorded in the run linked below.
 
 ## Selected scope
 
-SSCAN, HSCAN and ZSCAN return Firn's existing element order, with the entire
-MATCH-filtered collection and cursor zero in one held statement. COUNT and
-cursor text are validated as Redis 7.2.16 validates them, but do not bound or
-partition this provisional traversal. Sets and hashes use the ordinary map's
-whole-map visitor; sorted sets use their existing score/member order.
+SSCAN, HSCAN and ZSCAN return a collection that is compact by its current
+content whole, with cursor zero and MATCH applied, whatever cursor and COUNT
+arrive. Any other collection is scanned in steps: one call lends the members
+whose home buckets are the next COUNT of Whitefoot's `hash_map_scan` from the
+cursor, and the library's next position, printed in decimal, is the reply's
+cursor, zero at the end. COUNT and cursor text are validated as Redis 7.2.16
+validates them. Sets and hashes scan the ordinary map; a sorted set that is not
+compact scans its member-to-score map, so its steps are in hash order, not
+score order.
 
-The owner selected this behavior instead of retaining Redis encoding history
-and listpack order. It also applies above Redis's compact thresholds: one
-complete held traversal returns every continuously present matching element
-and terminates the iteration. The cost is work and reply storage proportional
-to the whole collection, tracked by Whitefoot board item coord-wfbl-02-01.
-There is no new direct bucket reader or partial result disguised as a completed
-scan. Bounded continuation replaces this path when the standard library
-supports it. This ruling supersedes the earlier proposal to introduce encoding
-history and insertion-order representations for this task.
+Compact means Redis 7.2.16's default listpack limits applied to the current
+content: at most 128 members of a set or sorted set, or 512 fields of a hash
+(`set-max-listpack-entries`, `zset-max-listpack-entries`,
+`hash-max-listpack-entries`), and no member, field or hash value longer than 64
+bytes. The owner selected this reading of the content, with no encoding
+history, for ZSCAN score text first, and the same classification now decides
+the shape of the reply: a listpack-encoded Redis collection answers whole with
+cursor zero, so a client that calls SSCAN once on a small set gets the
+members it gets from Redis, and the recorded transcripts below stay exact. The
+check reads at most 512 entries. An all-integer set is judged like any other
+set, so one of 129 to 512 integers is scanned in steps where Redis's intset
+answers whole.
 
 The decision is in [enumeration](../../../design/firn/enumeration.md).
 The [script restore decision](../../../design/firn/scripts.md) keeps logical
-collection copying: cursor zero carries no continuation tied to backing, and
-map order is not guaranteed across a rebuild. Adding bounded continuation
-must revisit restore semantics. No pin or submodule changes.
+collection copying: the cursor is a position in the hash space, which a rebuild
+of the backing leaves valid, so a scan that spans a script attempt still
+returns every member present throughout it, and no layout-dependent result is
+promised. The pin names the Whitefoot release that carries `hash_map_scan`.
 
 ## Reference and representation evidence
 
@@ -40,15 +49,16 @@ HashMap values. Sorted stores an ordered score/member map and a member/score
 map. None retains Redis encoding history; sets and hashes retain no listpack
 order. Encoding CONFIG values are remembered but do not affect storage, as
 [the server documentation](../../../firn/README.md) states. kept_score only
-normalizes negative zero. Every size still takes the same complete traversal;
-only ZSCAN score text is classified from current cardinality and member lengths.
+normalizes negative zero. The shape of a scan reply and ZSCAN score text are
+classified from the current cardinality and the member lengths.
 
 Redis's defaults are 512 integer set members, 128 listpack set members with
 64-byte members, 512 hash fields with 64-byte fields/values, and 128 sorted-set
 members with 64-byte members. The requested hash figure of 128 is not Redis's
 default: [config.c](https://github.com/redis/redis/blob/7.2.16/src/config.c)
-sets hash-max-listpack-entries to 512. Firn's universal traversal does not depend
-on either figure and leaves existing encoding CONFIG behavior unchanged.
+sets hash-max-listpack-entries to 512. Firn's classification uses the defaults, not
+the figures a CONFIG SET remembers, and leaves existing encoding CONFIG
+behavior unchanged.
 
 For Redis, current cardinality does not establish compact encoding. The
 [set implementation](https://github.com/redis/redis/blob/7.2.16/src/t_set.c)
@@ -60,42 +70,36 @@ Deletion normally does not demote. intset iteration is numeric; listpacks
 follow their physical order, with ordinary new members/fields appended and
 updates retaining position. intset-to-listpack conversion retains numeric
 order before appending the noninteger member. The selected Firn scope does not
-reproduce these histories or compact result order.
+reproduce these histories or compact result order, except that a compact
+sorted set keeps score order.
 
-## Whitefoot resumable-scan gap
+## Resumable scan
 
-The pinned
-[hash-map interface](https://github.com/Ming-Research/Whitefoot/blob/d75f318d56318834785322bde3a3656fb93116a6/lib/std/collections/hash_map/module.wfm)
-has hash_map_each for the whole map, in no promised order, and allows rebuilds
-to change bucket positions. It has no resumable scan. The prelude map_scan and
-map_scan_within accept ConcurrentHashMap, not the ordinary HashMap held by
-Firn collections.
+Whitefoot's `hash_map_scan` (Whitefoot#487) takes a map, a cursor, a limit of
+home buckets, the key binding and a visitor; it lends every pair whose home is
+one of up to limit consecutive buckets and returns the position after the last
+of them, zero when the pass is complete. Any cursor value is accepted. Between
+calls the map may change in any way: every pair present from the start of a
+pass to its completion is lent at least once, a pair may be lent again after
+the bucket count changes, and a pass over an unchanged map lends each pair
+once. The limit must be at least one, which firn guarantees with a small
+function whose postcondition the call site uses. The limit is a hint for work,
+not a cap on pairs. Capacity is three quarters of the bucket count, so a step
+lends fewer than one pair per home bucket (deduced from the interface, not
+measured). The call holds the map read-only, so SSCAN, HSCAN and ZSCAN run it
+twice under one hold, as they ran the whole-map visitor twice: once to count
+the matching pairs for the array header and once to write them.
 
-Minimal existing-API witness, a fragment intentionally not presented as a
-working program and not compiled:
+Sets and hashes pass their map. A sorted set keeps its members twice, in an
+ordered map of (score, member) and in a map from member to score; the cursor
+of a hash map cannot address the ordered one, and a numeric offset into the
+ordered map would lose members that stay when earlier ones are removed, so
+ZSCAN of a sorted set that is not compact scans the member-to-score map and
+writes each score as `%.17g`. The ordered map still serves a compact sorted
+set, whole, in score order.
 
-```whitefoot
-alias HashMap = std::collections::hash_map::HashMap;
-
-fn resume(map: &HashMap<u64, unit, 64>, cursor: u64, keys: &KeySet) -> next: u64 reads(map), writes(keys) {
-  return map_scan::<unit>(map: map, cursor: cursor, count: 1_u64, keys: keys);
-}
-```
-
-The map argument requires &ConcurrentHashMap<unit> but receives
-&HashMap<u64, unit, 64>. No compiler diagnostic is claimed. Ordinary-map
-resumable scanning is tracked by Whitefoot board item coord-wfbl-02-01. The
-older direct-bucket debt firn-bl-01-20 also remains; this change introduces no
-new bucket access.
-
-The needed facility returns an owned continuation and lends keys/values to a
-callback without retaining references across calls. Acceptance must check
-coverage of continuously present entries across growth, reserve, rehash,
-tombstone cleanup, unrelated deletions and colliding keys; duplicates are
-allowed, and an unchanged finite map must terminate. A numeric offset into
-repeated whole-map visitors does not provide this guarantee. Script snapshot
-restoration must preserve the future cursor's semantic validity even when
-logical copies rebuild backing.
+The older direct-bucket debt firn-bl-01-20 remains; this change introduces no
+bucket access.
 
 ## Parsing, expiry and framing
 
@@ -206,22 +210,29 @@ the recorded probes; boundary policy after shrink comes from the owner's rule.
 The network cases compare complete member/value coverage independently of map
 order, protect cursor/error precedence, options, binary matching and flat bulk
 framing, and exercise direct commands, EXEC and both script admission modes.
-There are fifteen tests: eight recorded transcript tests, two score-selection
-boundary tests, and five independently
-specified cases for cursor/options/lookup precedence, binary MATCH and pair
-association, whole returns at count and byte-length boundaries, script retry
-with an earlier write, and expired direct/EXEC/script reads. The expiry case
+There are nineteen tests: eight recorded transcript tests, two score-selection
+boundary tests, and nine independently specified cases: cursor, options and
+lookup precedence; binary MATCH and pair association; the compact bound at 128,
+129, 512 and 513 entries and at 64 and 65 bytes, including a hash's value,
+each checked as one call with cursor zero or as a scan that cannot finish at
+COUNT 1 and then covers every member once; a 2000-member collection of each
+kind followed in steps of COUNT 20, none holding a tenth of it, with and
+without MATCH; arbitrary cursors, COUNT beyond the table and the repeatability
+of one cursor; members present throughout returned while others are added and
+removed between calls and a burst grows the table; Lua following a large scan
+across calls for a declared and an undeclared key; script retry with an earlier
+write; and expired direct/EXEC/script reads. The expiry case
 does not isolate lazy deletion from active expiry; it checks the externally
-visible missing-key behavior. New cases could not be run against the old
-revision; missing command dispatch would reject the scan commands as unknown
-rather than returning their source-defined replies (deduced from the dispatch
-code, not run).
+visible missing-key behavior. The bounded cases fail on the whole-collection
+code they replace: its first call at COUNT 1 returns the whole collection with
+cursor zero (deduced from the code, not run).
 The score-selection cases cover 128 -> 129 -> 128 members and 64 -> 65 -> 64
 maximum member bytes, including a 65-byte UTF-8 member with 33 characters.
 MATCH hides the triggers; direct, EXEC and declared-key Lua probes must still
-select the complete collection's formatter. There are no unfilled transcript
-placeholders. The linked run validates the Redis observations; the gate's
-network cases and Redis suite run Firn against them.
+select the complete collection's formatter, at COUNT 1 while the sorted set is
+compact and at a COUNT that reaches every bucket once it is not. There are no
+unfilled transcript placeholders. The linked run validates the Redis
+observations; the gate's network cases and Redis suite run Firn against them.
 
 Redis 7.2.16's
 [unit/scan.tcl](https://github.com/redis/redis/blob/7.2.16/tests/unit/scan.tcl)
@@ -244,5 +255,5 @@ contains these tests, which now pass in the gate:
 They are registered in `tests/redis-suite/passing.tsv`, so the gate's ratchet
 requires them to pass. The PATTERN ZSCAN case has no explicit expected-result assertion. The suite runner
 already uses --ignore-encoding; its encoding assertions do not validate Firn's
-storage representation. Full held traversal can reach the dictionary and
-shrink-under-scan cases too, but supplies no bounded-work evidence.
+storage representation. The hashtable and skiplist cases loop the cursor to
+zero, so they now run through the bounded steps.

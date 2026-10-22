@@ -186,27 +186,37 @@ differs from Redis's. All five commands,
 including both flush commands, run through their shared parts on the
 network, in `EXEC` and through `redis.call` or `redis.pcall`.
 
-`SSCAN`, `HSCAN` and `ZSCAN` return cursor `0` and the entire collection after
-MATCH filtering in one call, including when the incoming cursor is nonzero.
-They use firn's element order: map traversal for sets and hashes, and score
-then member order for sorted sets. COUNT is validated as Redis 7.2.16 validates
-it but does not limit this reply. Both protocols use an array of bulk strings;
+`SSCAN`, `HSCAN` and `ZSCAN` return a compact collection whole after MATCH
+filtering, with cursor `0`, whatever cursor and COUNT arrive, as Redis 7.2.16
+returns its listpack encodings. A collection is compact by its current content:
+at most 128 members of a set or sorted set, or 512 fields of a hash, and no
+member, field or hash value longer than 64 bytes, Redis's default listpack
+limits; stored CONFIG encoding values do not matter, an all-integer set is
+judged like any other set, and nothing remembers how a collection grew. A
+larger collection is scanned in steps: the cursor is a position in the hash
+space of Whitefoot's `hash_map_scan`, printed in decimal, and COUNT is the
+number of home buckets a step covers, as Redis's COUNT is a hint of the work of
+a call. A step returns the matching members of those buckets, fewer than COUNT
+on average and none at times, and may return more than COUNT where many members
+share a home; the cursor `0` ends the scan. Any cursor value is accepted. A
+member present from the first call to the last is returned at least once while
+others are added and removed between calls, through any growth or rebuild of
+the table; one scanned over an unchanged collection is returned once. Sets and
+hashes use the map's order and a larger sorted set the order of its
+member-to-score map, so its steps are not in score order; a compact sorted set
+keeps score order. Both protocols use an array of bulk strings;
 hash field/value and sorted-set member/score pairs stay flat. A missing key
 returns cursor `0` and an empty array before options are checked; a wrong type
 is also checked before options, while an invalid cursor is checked first.
 TYPE and NOVALUES are not collection-scan options in Redis 7.2.16.
 
-This whole-collection path supplies SCAN's coverage guarantee but has work
-and reply size proportional to the full collection. It is provisional while
-board item coord-wfbl-02-01 supplies bounded resumable scanning for Whitefoot's
-ordinary hash map; firn adds no direct bucket reads. Redis's compact-encoding
-history, element order, cursors and dictionary batch boundaries are not
-reproduced. ZSCAN uses d2string text while the current sorted set has at most
-128 members and every member is at most 64 bytes; otherwise it uses `%.17g`,
+Redis's compact-encoding history, element order and dictionary cursor values are
+not reproduced. ZSCAN uses d2string text while the sorted set is compact;
+otherwise it uses `%.17g`,
 which supplies Redis's dictionary ZSCAN `%.17Lg` digits for a widened double.
-Both are bulk strings in both protocols. This selection examines all members
-before MATCH and uses the default limits, independently of stored CONFIG
-encoding values. A set that grew beyond a limit and later shrank returns to
+Both are bulk strings in both protocols. This selection ignores MATCH, so a
+member MATCH excludes still counts, and uses the default limits, independently
+of stored CONFIG encoding values. A set that grew beyond a limit and later shrank returns to
 d2string in firn, whereas Redis retains skiplist text after promotion.
 The recorded reference comparison and boundary cases are in
 [the collection-scan investigation](../research/investigations/firn/collection-scan.md).
