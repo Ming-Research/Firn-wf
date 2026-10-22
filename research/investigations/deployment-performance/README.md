@@ -697,3 +697,57 @@ base/candidate pairs beside the twin, the twin ratio's interval half-width as
 noise, the platform floor, and the candidate/base interval; this record has no
 pairs, noise, floor or interval for this run, so it claims no regression,
 improvement or "no detected change". The ratios are descriptive only.
+
+## Final-head check of the CLIENT handshake change (Firn-wf#74)
+
+Written before the measurement. The owner ruled (card firn-client-merge-perf,
+option A) that Firn-wf#74 merges when the commands firn already supported are
+not slower than before, the handshake meets the depth-1 rule against the
+fastest competitor, and CLIENT LIST is reported against all four competitors,
+its gap to Garnet followed by firn-client-list-garnet.
+
+Questions and the results that would answer them:
+
+1. Is any command firn supported before this change slower with it? The change
+   touches paths all commands share: every `EXEC` takes the client table with
+   Meta (design/firn/transactions.md), every connection takes the table when
+   it starts and when it ends, and every key access tests the connection's
+   NO-TOUCH flag. Rejected if, for any cell below, the 95% interval of
+   head/base lies wholly under 1 while the twin's interval contains 1; the
+   size does not matter. A cell whose twin interval excludes 1, or whose
+   head/base interval contains 1 yet is wider than the twin's, is undecided:
+   passes are added up to 12, and a cell still undecided is reported
+   unresolved, not as no change.
+2. Does the handshake meet the owner's depth-1 rule? Met if firn's median rate
+   is not below the fastest competitor's and its p99 is not above that
+   competitor's p99. A cell is client-limited when the median client work
+   fraction in `workload-limited.csv` of firn or of that competitor is above
+   0.90; it then asks only that firn is not behind, and its p99 is reported
+   and not judged (as for the pub/sub workloads). A shortfall smaller than the
+   twin's half-width is undecided and gets more passes, up to 12.
+3. How does CLIENT LIST compare? Reported for Redis 7.2.16, Valkey, Dragonfly
+   and Garnet: multiple of rate and p99 against each. The rule of 2 is judged
+   against the fastest competitor other than Garnet; the Garnet cell is
+   reported and not judged.
+
+Sides, measured with `summary.py` over the run's CSV files (`ratios` for A,
+`workloads` for B):
+
+- Run A, `redis-bench.yml` mode `compare`: images `base` (`origin/main` at the
+  dispatch), `head` (this branch at the dispatch) and `head-twin` (head
+  again); Redis 7.0's default `redis-benchmark` suite, the 19 tests named by
+  `SUITE_DEFAULT` in `redis-bench.sh`, at depth 1; server CPUs 2 and 4, client
+  CPUs 16-31; 6 passes of 5 seconds, profiling off. The twin is head measured
+  again, so its ratio to head is the run's noise, as the tool prints it.
+- Run B, mode `workloads` with `workload_images`: the same three images and
+  Redis 7.2.16, Valkey, Dragonfly and Garnet; tests `limiter-tx` (`MULTI`,
+  `INCRBY`, `PTTL`, `EXEC`), `setmany-tx` (`MULTI`, one `MSET` of three keys,
+  three `EXPIRE`, `EXEC`), `handshake` and `client-list`; 50 connections;
+  the same CPUs; 6 passes of 10 seconds. The two transaction workloads cover
+  `EXEC`, which `redis-benchmark` does not send.
+
+Before either run, a probe of Run A with 2 passes of 5 seconds checks that the
+inputs work and times a pass; it is not reported as a result. No noise floor
+is recorded yet for these workload classes on this machine, so each run's
+largest twin half-width per class is reported as that class's floor, for the
+architect to record, and no cell is dropped by it in these runs.
