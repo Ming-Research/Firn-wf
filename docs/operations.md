@@ -95,15 +95,16 @@ firn refused.conf
 
 | Status | Current meaning and operator action |
 | --- | --- |
-| 0 | After startup, an orderly `SHUTDOWN`, SIGTERM or SIGINT drains clients and attempts a final AOF append and sync before exiting. A failed final append or sync can still lose acknowledged writes; status 0 does not certify durability. An accept error can also currently stop firn with status 0, so investigate an unexpected zero-status stop. |
+| 0 | After startup, an orderly `SHUTDOWN`, SIGTERM or SIGINT drains clients and attempts a final AOF append and sync before exiting. A SIGTERM or SIGINT during AOF replay also exits with status 0, at once and with `appendonlydir` as the replay found it. A failed final append or sync can still lose acknowledged writes; status 0 does not certify durability. An accept error can also currently stop firn with status 0, so investigate an unexpected zero-status stop. |
 | 1 | Invalid invocation or configuration, an unreadable configuration file, a refused configuration path, or a configuration with no enabled listener. Read stderr and correct the startup settings. |
-| 3 | firn cannot open its TCP listener or register delivery of stop signals. Check the listening address, port availability and host facilities; these failures currently have no diagnostic. |
+| 3 | firn cannot register delivery of stop signals, which it does before replaying the AOF, or cannot open its TCP listener. Check the listening address, port availability and host facilities; these failures currently have no diagnostic. |
 | 4 | Any AOF startup refusal, including a missing or malformed listed file, unreadable persistence state, or failure to prepare the log for appending or truncate its incomplete tail. firn has not begun listening; preserve the files and investigate or restore a known-good backup. This path currently emits no diagnostic. |
 
 These are the current implementation's statuses: AOF startup refusals use
-4, not 1. Signals during AOF replay can terminate firn immediately. Host
-termination, including a second SIGTERM or SIGINT after the first stop
-request, need not produce one of these statuses. See the
+4, not 1. A SIGTERM or SIGINT during AOF replay ends firn at the replay's
+next check, made at most 1024 commands later, as Redis 7.2.16 exits while it
+loads. Host termination, including a second SIGTERM or SIGINT after the
+first stop request, need not produce one of these statuses. See the
 [abnormal-stop audit](../research/investigations/firn/abnormal-stops.md) and
 [safety boundaries](safety.md) for the accept-error gap and resource failures.
 
