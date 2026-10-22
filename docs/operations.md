@@ -296,7 +296,12 @@ Check that the source workload and AOF use commands firn implements before
 migrating. The [known replay gap](safety.md#evidence-and-known-deviations)
 includes unknown AOF commands whose error replies are discarded; a
 successful startup alone is not evidence that unsupported commands restored
-the correct dataset. The gate's backup example uses firn's own command AOF;
-it does not validate an arbitrary Redis deployment's migration.
+the correct dataset. The gate's case `redis_aof_directory_replays_in_firn`
+follows the steps above with Redis 7.2.16: it writes strings, lists, hashes,
+sets and sorted sets, deletes a key and rewrites once, so that the base and
+the increment both hold records, then copies the directory and requires firn
+to answer reads for those keys exactly as Redis did. It does not validate an
+arbitrary Redis deployment's migration: other commands, expiry times and other
+Redis versions are not checked.
 
 [board]: https://claude.ai/artifact/7tocXS3iUdthCLCQCMd3ip

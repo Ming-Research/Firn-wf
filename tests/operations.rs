@@ -234,3 +234,105 @@ fn guide_checker_rejects_wrong_exit_reply_and_missing_marker() {
             "malformed or unmarked example must fail: {invalid}");
     }
 }
+
+fn write_succeeds(client: &mut TcpStream, arguments: &[&str]) {
+    let reply = pubsub::request(client, arguments);
+    assert!(!reply.starts_with(b"-"), "{arguments:?}: {reply:?}");
+}
+
+fn copy_directory(from: &Path, to: &Path) {
+    std::fs::create_dir(to).expect("create the copied append-only directory");
+    for entry in std::fs::read_dir(from).expect("list the source append-only directory") {
+        let entry = entry.expect("read a directory entry");
+        assert!(entry.file_type().expect("entry type").is_file(), "{:?}", entry.path());
+        std::fs::copy(entry.path(), to.join(entry.file_name())).expect("copy an append-only file");
+    }
+}
+
+/// The guide's migration steps with Redis 7.2.16 as the source: write a
+/// dataset with `aof-use-rdb-preamble no`, rewrite once so that both a base
+/// and an increment hold records, stop, copy the directory and start firn
+/// with the same `appendfilename`. firn must answer each read as Redis did
+/// before the stop. A firn that skipped the base or the increment would miss
+/// the keys or the later writes.
+#[test]
+fn redis_aof_directory_replays_in_firn() {
+    let source = fixture_directory();
+    let source_lease = support::lease_port();
+    let source_port = source_lease.port().to_string();
+    let mut command = Command::new(support::redis_oracle());
+    command.current_dir(source.path())
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .args(["--port", &source_port, "--bind", "127.0.0.1", "--save", "", "--appendonly", "yes",
+            "--appendfilename", "appendonly.aof", "--aof-use-rdb-preamble", "no", "--dir"])
+        .arg(source.path());
+    let redis = ProgramChild::spawn(&mut command).expect("spawn the source redis-server")
+        .with_port(&source_lease);
+    let mut client = connect_when_ready(source_lease.port(), &redis);
+    for arguments in [
+        &["SET", "string", "v1"][..], &["SET", "counter", "1"], &["RPUSH", "list", "a", "b", "c"],
+        &["HSET", "hash", "a", "1", "b", "2"], &["SADD", "set", "x", "y"],
+        &["ZADD", "zset", "1", "one", "2", "two"], &["SET", "gone", "temporary"],
+    ] {
+        write_succeeds(&mut client, arguments);
+    }
+    assert_eq!(pubsub::request(&mut client, &["BGREWRITEAOF"]),
+        b"+Background append only file rewriting started\r\n");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        client.write_all(&resp(&["INFO", "persistence"])).expect("query the source rewrite");
+        let info = bulk_reply(&mut client, "source persistence");
+        if info_field(&info, "aof_rewrite_in_progress").as_deref() == Some("0") {
+            assert_eq!(info_field(&info, "aof_last_bgrewrite_status").as_deref(), Some("ok"), "{info:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the source rewrite did not finish: {info:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for arguments in [
+        &["APPEND", "string", "-more"][..], &["INCRBY", "counter", "41"], &["RPUSH", "list", "d"],
+        &["HSET", "hash", "c", "3"], &["SADD", "set", "z"], &["ZADD", "zset", "3", "three"],
+        &["DEL", "gone"],
+    ] {
+        write_succeeds(&mut client, arguments);
+    }
+    let reads: Vec<Vec<&str>> = vec![
+        vec!["GET", "string"], vec!["GET", "counter"], vec!["LRANGE", "list", "0", "-1"],
+        vec!["HGET", "hash", "a"], vec!["HGET", "hash", "c"], vec!["HLEN", "hash"],
+        vec!["SCARD", "set"], vec!["SISMEMBER", "set", "z"],
+        vec!["ZRANGE", "zset", "0", "-1", "WITHSCORES"], vec!["EXISTS", "gone"], vec!["DBSIZE"],
+    ];
+    let expected: Vec<Vec<u8>> = reads.iter().map(|read| pubsub::request(&mut client, read)).collect();
+    assert_eq!(expected[0], b"$7\r\nv1-more\r\n", "Redis holds the string written before and after the rewrite");
+    assert_eq!(expected[10], b":6\r\n", "Redis holds six keys, the deleted one gone");
+    client.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop the source");
+    let mut byte = [0_u8; 1];
+    assert_eq!(client.read(&mut byte).expect("shutdown closes the source connection"), 0);
+    let stopped = redis.wait_with_output().expect("wait for the source");
+    assert_eq!(stopped.status.code(), Some(0), "{stopped:?}");
+
+    let manifest = std::fs::read_to_string(source.path().join("appendonlydir/appendonly.aof.manifest"))
+        .expect("read the source manifest");
+    assert!(manifest.contains(".base.aof ") && manifest.contains("type b")
+        && manifest.contains("type i") && !manifest.contains(".rdb"),
+        "the source directory must hold a command-format base and an increment: {manifest}");
+    let program = CompiledProgram::from_environment();
+    copy_directory(&source.path().join("appendonlydir"),
+        &program.working_directory().join("appendonlydir"));
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    let firn = program.spawn_on_route(true, &[
+        b"--port", port.as_bytes(), b"--bind", b"127.0.0.1", b"--appendonly", b"yes",
+        b"--appendfilename", b"appendonly.aof",
+    ]).with_port(&lease);
+    let mut migrated = connect_when_ready(lease.port(), &firn);
+    for (read, want) in reads.iter().zip(&expected) {
+        assert_eq!(&pubsub::request(&mut migrated, read), want,
+            "firn must answer {read:?} as Redis did before the directory was copied");
+    }
+    migrated.write_all(&resp(&["SHUTDOWN", "NOSAVE"])).expect("stop firn");
+    assert_eq!(migrated.read(&mut byte).expect("shutdown closes the connection"), 0);
+    let output = firn.wait_with_output().expect("wait for firn");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
