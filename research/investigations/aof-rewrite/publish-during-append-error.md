@@ -212,13 +212,19 @@ ordinary rotation (board item `firn-rw-switch-dirsync`, below) is to adopt.
     that fix is to apply, so both publications of a new increment behave
     alike.
 13. Not published (open, rename or manifest write failed): attempt to
-    remove B' and `I_{n+1}` when they exist, abort with `install_io`, end
-    the rotating state, and keep the old handle. The ordinary flush then
-    drains P and afterwards L to `I_n` in order once the disk is repaired,
-    as the existing pre-publication failure rule requires. A failed removal
-    is counted in `firn_aof_rewrite_cleanup_failed` and is harmless: neither
-    name is in any manifest, the next rotation opens `I_{n+1}` with
-    truncation and the next installation renames over B'.
+    remove B' when it exists, abort with `install_io`, end the rotating
+    state, and keep the old handle. The ordinary flush then drains P and
+    afterwards L to `I_n` in order once the disk is repaired, as the
+    existing pre-publication failure rule requires. `I_{n+1}` stays in
+    place, as after a failed switch: an earlier switch whose manifest was
+    renamed but whose directory sync failed leaves a manifest on disk that
+    may name `I_{n+1}` while the writer kept n, and removing the file would
+    leave that manifest naming a missing file, which stops startup. The
+    next rotation or installation opens it with truncation. No manifest
+    that was not adopted names B', because adopting a manifest that names a
+    new base advances the base sequence past it; a failed removal of B' is
+    counted in `firn_aof_rewrite_cleanup_failed` and is harmless, since the
+    next installation renames over it.
 
 Abort in W1 for any other reason (shutdown, reserve, journal error) takes
 step 13's fall-back: the old handle, P then L in order. Shutdown's single
@@ -294,7 +300,7 @@ were never written, which everysec and Redis also lose.
 | L partly drained to `I_{n+1}` | new | dataset(S1) then a prefix of L | L holds only statements after S1 |
 | An append of L to `I_{n+1}` fails | new | dataset(S1) then the drained prefix of L | the ordinary append-error path: retained bytes, rollback, refusal, retry, all on `I_{n+1}` |
 | History removal partly done | new | as above | startup syncs the directory and removes listed history |
-| Step 13, removal of B' or `I_{n+1}` failed | old | as the first row | both names unlisted; reused by truncation or rename-over |
+| Step 13: B' removed or its removal failed, `I_{n+1}` kept | old, or an earlier switch's renamed manifest naming the empty `I_{n+1}` | as the first row | B' is unlisted and reused by rename-over; `I_{n+1}` is empty, so a selection naming it adds nothing, and the next opening truncates it |
 | Failed direct installation, P and L draining to `I_n` after repair | old | dataset(Q) for the drained prefix | P precedes L on one handle |
 
 In every row the recovered state is the dataset after some prefix of the
@@ -456,6 +462,9 @@ The owner approved the design (card `firn-q-rw-publish-tree`, option A), and
   adopting statement rather than in it, so `AofPublication` needs no error.
   Writes stay refused throughout: the append error stays saved until the
   adopting statement clears it, after the sync error is saved.
+- Step 13 as first written removed `I_{n+1}` too; review found that an
+  earlier switch's renamed manifest whose directory sync failed may name it,
+  so it now stays in place, as the switch leaves it.
 - A failed append no longer aborts the attempt, so the loop no longer turns
   a failed flush into `writer_io`; a counted sync failure still aborts it
   inside `aof_rw_flush` or `aof_rw_switch`.
@@ -466,7 +475,14 @@ and case 4 `aof_direct_rewrite_installation_failure_keeps_the_old_selection`,
 both in `tests/aof_write_errors.rs`; case 4 is there rather than among the
 ordinary network cases because it needs that file's file-size limit. Both
 retain an INCR and an RPUSH in one transaction, so a second application of
-either changes what the restart reads. Case 4 writes and deletes a 64-KiB
+either changes what the restart reads. The rotation path, where the
+retained bytes drain after the cut and before the base completes, is covered
+by `rewrite_rotates_when_retained_bytes_drain_after_the_cut` in
+`tests/rewrite_faults.rs`: strace delays the temporary base's sync by 2 s so
+that the test can lift the file-size limit at the observed cut; the trace
+must show the sealed transaction written whole to the old increment and the
+restart must apply its INCR and RPUSH once. It runs in that file's serial
+selection, which `make test` now requires to pass four cases. Case 4 writes and deletes a 64-KiB
 value first, so that the file-size limit exceeds the base and only the
 obstacle stops the installation; without it the base write failed with
 `base_io`. In case 1 firn's failing file is history in the durably published

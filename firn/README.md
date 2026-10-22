@@ -742,7 +742,7 @@ including a refused admission; counters start at zero before the first attempt.
 - `firn_aof_rewrite_cleanup_failed` counts each journal close or removal
   step that returned failure during this attempt, including cleanup after
   an early error, and each failed close of the old incremental file or
-  removal of an unlisted new file in a direct installation. It preserves the first abort cause and resets on admission.
+  removal of an unlisted new base in a direct installation. It preserves the first abort cause and resets on admission.
   Startup cleanup leaves this count at zero and reports failed removal
   through `firn_aof_rewrite_journal_leftover` instead.
 - `firn_aof_rewrite_scan_steps` counts completed map_scan_within calls,
@@ -770,7 +770,9 @@ admitted again. This deliberately differs from Redis, which keeps its retained
 bytes for its still-selected incremental file and refuses writes until they
 are written ([direct installation](../design/firn/aof-rewrite.md)). A direct
 installation that fails before publication keeps the old manifest, and the
-retained bytes drain to the old incremental file once it accepts appends.
+retained bytes drain to the old incremental file once it accepts appends; the
+new empty incremental file stays in place, as after a failed switch, because a
+manifest whose directory sync failed may already name it.
 
 Failure before rotation leaves the original manifest authoritative. After
 rotation it leaves the manifest naming the old base and all increments

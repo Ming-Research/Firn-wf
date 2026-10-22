@@ -66,7 +66,7 @@ $(BUILD)/firn-test: $(PIN) $(WHITEFOOTC) $(FIRN_SOURCES)
 
 # Keep ptrace and process-stop experiments out of the ordinary suite's load:
 # its continuous-write rewrite cases must not compete with /proc stop polling.
-# Both selections are required; the serial selection must run all three cases.
+# Both selections are required; the serial selection must run all four cases.
 test: firn-test list-ceiling
 	@redis_bin=$$(REDIS_COMPAT_CACHE="$(REDIS_COMPAT_CACHE)" $(ROOT)/tests/redis-suite/reference.sh) && \
 	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
@@ -76,7 +76,7 @@ test: firn-test list-ceiling
 	FIRN=$(BUILD)/firn-test REDIS_SERVER="$$redis_bin/redis-server" \
 	  cargo test --manifest-path $(ROOT)/tests/Cargo.toml --locked --test network rewrite_faults:: -- \
 	  --test-threads=1 --nocapture >"$$log" 2>&1; status=$$?; cat "$$log"; \
-	[ $$status -eq 0 ] && grep -q '^test result: ok\. 3 passed' "$$log"
+	[ $$status -eq 0 ] && grep -q '^test result: ok\. 4 passed' "$$log"
 
 # Direct Whitefoot fixtures exercise the real private list command bodies at
 # an eight-element ceiling, without a production test hook or a giant network

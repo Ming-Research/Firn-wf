@@ -38,11 +38,17 @@ unsafe extern "C" {
 /// prlimit(2) on the child owned by this test, preserving its hard limit so
 /// raising the soft limit later needs no privilege. Linux RLIMIT_FSIZE is 1.
 pub(super) fn file_limit(child: &ProgramChild, soft: u64) -> FileLimit {
+    file_limit_pid(child.id(), soft)
+}
+
+/// `file_limit` on a process this test owns through another, such as a
+/// server started under strace.
+pub(super) fn file_limit_pid(pid: u32, soft: u64) -> FileLimit {
     let mut previous = FileLimit { soft: 0, hard: 0 };
-    let read = unsafe { prlimit64(child.id() as i32, 1, std::ptr::null(), &mut previous) };
+    let read = unsafe { prlimit64(pid as i32, 1, std::ptr::null(), &mut previous) };
     assert_eq!(read, 0, "read child file limit: {}", std::io::Error::last_os_error());
     let next = FileLimit { soft, hard: previous.hard };
-    let set = unsafe { prlimit64(child.id() as i32, 1, &next, std::ptr::null_mut()) };
+    let set = unsafe { prlimit64(pid as i32, 1, &next, std::ptr::null_mut()) };
     assert_eq!(set, 0, "set child file limit: {}", std::io::Error::last_os_error());
     previous
 }
@@ -437,7 +443,8 @@ fn aof_rewrite_during_latched_append_error_publishes_and_applies_retained_once()
 }
 
 /// A direct installation that fails before publication, here because a
-/// directory holds the next base's name, keeps the old manifest and handle:
+/// directory holds the next base's name, keeps the old manifest and handle
+/// and leaves the next increment in place, empty:
 /// the attempt reports `install_io`, the retained bytes stay in order for the
 /// old increment, and once it accepts appends they drain there and a restart
 /// applies each retained INCR and RPUSH once.
@@ -469,7 +476,11 @@ fn aof_direct_rewrite_installation_failure_keeps_the_old_selection() {
         assert_eq!(info["aof_last_write_status"], "err", "{info:?}");
         assert_eq!(info["aof_buffer_length"], retained.len().to_string(), "{info:?}");
         assert_eq!(std::fs::read_to_string(directory.join("errors.aof.manifest")).unwrap(), manifest);
-        assert!(!directory.join("errors.aof.2.incr.aof").exists(), "the unlisted increment is removed");
+        // As after a failed switch, the next increment stays in place: a
+        // manifest renamed by an earlier switch whose directory sync failed
+        // may name it. No manifest on disk names the new base.
+        assert_eq!(std::fs::read(directory.join("errors.aof.2.incr.aof")).unwrap(), b"", "the next increment stays, empty");
+        assert!(!directory.join("errors.aof.2.base.aof").is_file(), "no new base is left");
         std::fs::remove_dir(&obstacle).unwrap();
         file_limit(&child, old.soft);
         wait_status(&mut client, "ok");

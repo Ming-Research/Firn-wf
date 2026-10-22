@@ -729,7 +729,7 @@ fn aof_rw_cleanup_failed(store: &Keyspace) -> result: unit reads(store) waits {
 }
 
 fn aof_rw_unlisted(store: &Keyspace, factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name: &[u8]) -> result: unit reads(store), reads(name), writes(factory), writes(writable) waits {
-  doc "Removes a file that no manifest names; a missing file is removed. A failed removal is harmless: the next rotation opens the name with truncation and the next installation renames over it.";
+  doc "Removes a new base that no manifest names: only a manifest the writer adopted names a new base, and adoption advances the base sequence past it. A missing file is removed. A failed removal is harmless: the next installation renames over it.";
   let length = name^.len;
   match std::fs::remove_file(factory: factory, root: writable, name: name, start: 0_u64, end: length) {
     Ok(value: done) => {
@@ -747,7 +747,7 @@ fn aof_rw_unlisted(store: &Keyspace, factory: &HandleFactory, writable: &std::fs
 }
 
 fn aof_rw_direct(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending: &Box<Slots<u8>>, temporary: &[u8], size: u64) -> accepted: Bool reads(store), reads(temporary), writes(factory), writes(log), writes(pending) waits {
-  doc "Installs base(S1) while the bytes sealed at the cut are still retained for the old increment, which never rotated. The caller commits installation under Meta and holds aof_installing, as for aof_rw_install. Repeat the switch's cancellation and incremental-sequence checks, which this path otherwise skips, but not its cut before an unfinished block: the old increment becomes history and is never replayed again. Open the next increment empty, rename the base, and publish a manifest naming the new base and that increment as the only active files, with the old base and every old increment as history. Every retained byte belongs to a statement at or before S1, whose effect the new base holds, so once the manifest is published the statement that adopts the new increment releases them and clears the append error; the old selection stays authoritative until that publication. A published manifest whose directory sync failed is adopted too, with the sync error aof_rw_persist saved, which keeps refusing writes until a recovery rewrite is durable, and every history file is kept. Before publication a failure removes the unlisted new files and keeps the old handle, so the retained bytes and then the collecting ones drain to the old increment in order once it accepts appends.";
+  doc "Installs base(S1) while the bytes sealed at the cut are still retained for the old increment, which never rotated. The caller commits installation under Meta and holds aof_installing, as for aof_rw_install. Repeat the switch's cancellation and incremental-sequence checks, which this path otherwise skips, but not its cut before an unfinished block: the old increment becomes history and is never replayed again. Open the next increment empty, rename the base, and publish a manifest naming the new base and that increment as the only active files, with the old base and every old increment as history. Every retained byte belongs to a statement at or before S1, whose effect the new base holds, so once the manifest is published the statement that adopts the new increment releases them and clears the append error; the old selection stays authoritative until that publication. A published manifest whose directory sync failed is adopted too, with the sync error aof_rw_persist saved, which keeps refusing writes until a recovery rewrite is durable, and every history file is kept. Before publication a failure removes the renamed base and keeps the old handle, so the retained bytes and then the collecting ones drain to the old increment in order once it accepts appends. The new increment stays in place, as after a failed switch: a manifest renamed by an earlier switch whose directory sync failed may name it, and the next rotation or installation reopens it empty.";
   let aborted = aof_rw_cancelled(store: store);
   if aborted {
     return False();
@@ -785,7 +785,6 @@ fn aof_rw_direct(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pendin
               aof_rw_cleanup_failed(store: store);
             }
           }
-          aof_rw_unlisted(store: store, factory: factory, writable: &log^.writable, name: bytes);
           return False();
         }
       }
@@ -846,7 +845,6 @@ fn aof_rw_direct(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pendin
         }
       }
       aof_rw_unlisted(store: store, factory: factory, writable: &log^.writable, name: base_bytes);
-      aof_rw_unlisted(store: store, factory: factory, writable: &log^.writable, name: bytes);
       return False();
     }
     Err(error: problem) => {
