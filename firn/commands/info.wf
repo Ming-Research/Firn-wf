@@ -588,19 +588,23 @@ fn run_info_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cl
       set memory_policy = server^.memory.maxmemory_policy;
     }
     let clients = 0_u64;
+    let maxclients = 0_u64;
     if chosen[1_u64] == 1_u64 {
       set clients = meta^.clients;
+      set maxclients = server^.maxclients;
     }
     let started = 0_u64;
     if chosen[0_u64] == 1_u64 {
       set started = server^.started;
     }
     let connections = 0_u64;
+    let rejected_connections = 0_u64;
     let channels = 0_u64;
     let patterns = 0_u64;
     let shards = 0_u64;
     if chosen[4_u64] == 1_u64 {
       set connections = server^.connections;
+      set rejected_connections = server^.rejected_connections;
       let counts = pkg::connection_events::registry_counts(hub: hub);
       set channels = counts.channels;
       set patterns = counts.patterns;
@@ -611,7 +615,7 @@ fn run_info_promoted(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cl
       set count = map_count::<Entry>(map: keys);
     }
     set meta^.memory_peak = imax(meta^.memory_peak, used);
-    let text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, started: started, connections: connections, channels: channels, patterns: patterns, shards: shards, keys: count, logged: store^.logging, persistence: meta, client: client, time: time);
+    let text = info_body(cached_scripts: cached_scripts, used: used, rss: rss, maxmemory: maxmemory, memory_policy: memory_policy, chosen: &chosen, clients: clients, maxclients: maxclients, started: started, connections: connections, rejected_connections: rejected_connections, channels: channels, patterns: patterns, shards: shards, keys: count, logged: store^.logging, persistence: meta, client: client, time: time);
     info_finish(client: client, text: &text);
     pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
   }
