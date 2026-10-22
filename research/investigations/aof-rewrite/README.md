@@ -6,6 +6,9 @@ criteria before implementation; [A time-sliced live scan within the
 reserve](scan-pace.md) records the scan's bound and pacing on the same ruling;
 [Intermittent failures of two rewrite cases](test-stability.md) records why two
 network cases failed in CI at random and what changed in them.
+[Publishing a rewrite while the current increment cannot be
+written](publish-during-append-error.md) keeps a rewrite whose old
+increment refuses appends and installs base(S1) directly.
 
 The record below preserves the original closed-log replay investigation and
 its implementation history. The owner's subsequent service-first memory

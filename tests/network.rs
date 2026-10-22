@@ -13,6 +13,7 @@ mod write_meta;
 mod collection_scan;
 mod pubsub;
 mod blocking_lists;
+mod durability;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
