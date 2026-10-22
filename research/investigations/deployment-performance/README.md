@@ -256,6 +256,99 @@ Measured requests keep the planned 100,000-key range. The client also takes
 and either `--seconds` or a total `--requests`; fill emits no timing row,
 and any protocol, I/O or Redis error fails the run.
 
+**Compare mode and AOF.** `redis-bench.yml` mode `compare` measures the
+images `revisions` names, interleaved, with a `-twin` as the noise control.
+Its `aof` input (`COMPARE_AOF=true`, default false) starts every image with
+the append-only file on, as firn's third positional argument, `firn.aof`,
+turns it on, with appendfsync everysec (firn's only policy). Each start
+sets `auto-aof-rewrite-percentage` to 0 with `CONFIG SET`, read back by
+`CONFIG GET`, so that no rewrite runs and the cost measured is the
+steady-state append path. Each server starts in a fresh directory that is
+removed when it stops. The run prints `aof,<line>,aof_enabled=<n>` from
+INFO persistence at every start and fails unless it reads 1; it records
+`setting,aof=true` (`false` when off) in its output and in `host.txt`.
+Its `compare_reference` input (`COMPARE_REFERENCE=true`, default false)
+adds Redis 7.2.16 as one more line named `reference`, measured after the
+images under the same settings: with `aof` set it runs with the append-only
+file on (appendfsync everysec, a fresh directory removed when it stops) and
+the same checks; the script fails unless `redis-server --version` reads
+7.2.16. It records `setting,reference=true` (`false` when off) in its output
+and in `host.txt`.
+
+**Placement.** By default the script places servers and clients itself, one
+thread per physical core, leaving core 0 to the OS. `server_cpus` and
+`client_cpus` (`SERVER_CPU_LIST`, `CLIENT_CPU_LIST`) replace either list with
+explicit CPU numbers or ranges such as `0-15`; empty keeps the automatic
+choice. The server list holds exactly as many CPUs as the count in `cpus`
+(so give one count) and may name both threads of a core, so the count is
+logical CPUs; the client list sets the number of client threads or
+processes, one per CPU. A CPU may appear once in a list, must be online, and
+no client CPU may share a physical core with a server CPU; otherwise the run
+fails before measuring. The owner's shape is the server on 1, 2, 4 or 8
+performance cores, or on 8 with all 16 threads, and clients on the 16
+efficiency cores; the dispatcher keeps it by passing the lists, since the
+script does not enforce core classes (hosts without a hybrid topology must
+run too). Each placement is printed once and appended to `host.txt` as
+`placement,server=<cpus>,client=<cpus>,threads=<n>,source=<kind>,`
+`server_class=<cpu:class,...>,client_class=<cpu:class,...>`, where the class
+is `P` (performance core), `E` (efficiency core) or `-` (no hybrid
+topology), read from `/sys/devices/cpu_core/cpus` and `cpu_atom/cpus` or
+else from `cpu_capacity`. `placement-selftest` checks the rules against a
+fake topology.
+
+**CPU load.** Where `/proc/stat` exists, `compare-cpu.csv` has one row per
+measured sample and per server and client CPU, with 10 columns:
+`line,pass,cpus,test,depth,cpu,role,busy,user,system`. `busy` is the share
+of that CPU's ticks, over the client's run, that were neither idle nor
+iowait; `user` is the user and nice share and `system` the system, irq and
+softirq share (a thread spinning on `sched_yield` shows as system time).
+The workload client spins (it yields between scans and never sleeps, so that
+its throughput and latency add no wake-up cost), so the OS busy fraction says
+nothing about whether it is limited: run 38400671487 showed every cell at 0.998
+or above. `workloads` mode therefore judges the client by its own accounting
+(below); `compare` mode keeps the `busy` rule, and its client is a different
+program.
+A cell is client-limited when the mean `busy` over its client CPUs is above
+0.90: a client that busy cannot be shown to be slower than the server, so
+such a cell only requires firn not to fall behind. `compare-limited.csv`
+marks each sample with `line,pass,cpus,test,depth,client_busy_mean,client_limited`
+(`client_limited` is 1 above 0.90, else 0; exactly 0.90 is not limited).
+`workloads` mode records the same for its handshake, client-list and
+consumer workloads: `workload-cpu.csv` has the same columns with the workload
+name in `test` and the connection count in `depth`, and `workload-limited.csv`
+has `line,pass,cpus,workload,connections,client_busy_mean,client_work_fraction,client_limited`.
+`client_work_fraction` is the client's own accounting: each worker times every
+scan over its connections, a scan counts as work when any connection wrote
+bytes, read bytes, connected or completed a request, and the fraction is the
+work-scan time over the whole loop time, summed over workers, for the measured
+run (warm-up excluded). `client_limited` is 1 when it is above 0.90 (exactly
+0.90 is not limited). `client_busy_mean` is the `/proc/stat` mean over the
+client CPUs for the whole client run, including its connection setup and
+warm-up; it is recorded but does not decide `client_limited`. The memory
+workloads are not recorded.
+
+**Other inputs.**
+
+- `maxmemory`: sets `maxmemory` in bytes with `CONFIG SET` on every measured
+  server after it starts, read back with `CONFIG GET`; empty sets none.
+- `aof`: described above.
+- `compare_reference`: described above.
+- The correctness pass of scale and suite modes runs Redis 7.0's
+  redis-benchmark default suite, its 19 tests named explicitly
+  (`SUITE_DEFAULT`), on every line. Redis 7.2.16's default suite adds XADD;
+  it is left out only because firn has no streams yet, and goes back in when
+  firn's minimal streams (board item `firn-scope-min-streams`) land.
+- `drivers`: sets the Whitefoot driver count of each image, apart from the
+  number of server CPUs; empty gives one driver per server CPU.
+- `c2c`: with `profile`, also records `perf c2c` on each profiled test,
+  showing the cache lines several cores contend for.
+- `sched_report`: sets `WF_SCHED_REPORT=2` on firn images, so each pass's
+  kept server log ends with the runtime's per-driver scheduling counts.
+
+The workflow has no concurrency group, so a new dispatch cancels no running
+one. On the 14900K the single runner takes one job at a time, so dispatches
+queue and run in order; hosted-runner dispatches run side by side.
+
 ### Results
 
 Run [37775047771](https://github.com/Ming-Research/Firn-wf/actions/runs/37775047771)

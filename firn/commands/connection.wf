@@ -119,7 +119,13 @@ const client_info_flag_t: Array<u8, 1> = "T";
 
 const client_info_flag_x: Array<u8, 1> = "x";
 
-const client_info_shared: Array<u8, 25> = " db=0 sub=0 psub=0 ssub=0";
+const client_info_db: Array<u8, 10> = " db=0 sub=";
+
+const client_info_psub: Array<u8, 6> = " psub=";
+
+const client_info_ssub: Array<u8, 6> = " ssub=";
+
+const client_info_flag_p: Array<u8, 1> = "P";
 
 const client_info_multi: Array<u8, 7> = " multi=";
 
@@ -558,8 +564,19 @@ fn put_age(text: &Box<Slots<u8>>, current: u64, since: u64) -> result: unit writ
   return unit;
 }
 
+fn put_subscriptions(text: &Box<Slots<u8>>, sub: u64, psub: u64, ssub: u64) -> result: unit writes(text) {
+  doc "Appends the database, which is firn's one, and the counts of a connection's direct, pattern and shard subscriptions, as Redis's db, sub, psub and ssub fields.";
+  text_word(text: text, word: &client_info_db[0_u64..10_u64]);
+  text_number(text: text, value: sub);
+  text_word(text: text, word: &client_info_psub[0_u64..6_u64]);
+  text_number(text: text, value: psub);
+  text_word(text: text, word: &client_info_ssub[0_u64..6_u64]);
+  text_number(text: text, value: ssub);
+  return unit;
+}
+
 fn put_own_line(text: &Box<Slots<u8>>, client: &Client, command: &[u8], multi: i64) -> result: unit reads(client), reads(command), writes(text) {
-  doc "The line of facts of the connection running CLIENT INFO or CLIENT LIST, in Redis 7.2.16's catClientInfoString form, name=value pairs in Redis's order separated by spaces and ended by a line feed. The fields carry real values where firn has them: the id, both addresses, the name, the whole seconds since the server began serving the connection, the protocol and the library name and version. The fields that follow the connection's latest interaction are true of the connection while it runs this command and are given for it alone: idle 0, since the interaction is the read that brought this command; the flag x during EXEC followed by T while NO-TOUCH is on, N when neither is set; multi is the whole queue's command count during EXEC and -1 outside it; and cmd is exec during EXEC, which Redis retains in lastcmd, or the command given outside it. No publish and subscribe, blocking or tracking is open. The others are fixed and true of firn: database 0, firn's one; no subscriptions; the user default, firn's one; and no tracking redirection. Fields firn cannot measure, the descriptor, the events and the sizes of Redis's buffers, are left out.";
+  doc "The line of facts of the connection running CLIENT INFO or CLIENT LIST, in Redis 7.2.16's catClientInfoString form, name=value pairs in Redis's order separated by spaces and ended by a line feed. The fields carry real values where firn has them: the id, both addresses, the name, the whole seconds since the server began serving the connection, the counts of its direct, pattern and shard subscriptions, the protocol and the library name and version. The fields that follow the connection's latest interaction are true of the connection while it runs this command and are given for it alone: idle 0, since the interaction is the read that brought this command; the flags P while the connection holds a subscription, x during EXEC and T while NO-TOUCH is on, in Redis's order, N when none is set; multi is the whole queue's command count during EXEC and -1 outside it; and cmd is exec during EXEC, which Redis retains in lastcmd, or the command given outside it. No blocking or tracking is open. The others are fixed and true of firn: database 0, firn's one; the user default, firn's one; and no tracking redirection. Fields firn cannot measure, the descriptor, the events and the sizes of Redis's buffers, are left out.";
   text_word(text: text, word: &client_info_id[0_u64..3_u64]);
   text_number(text: text, value: client^.id);
   text_word(text: text, word: &client_info_addr[0_u64..6_u64]);
@@ -573,15 +590,23 @@ fn put_own_line(text: &Box<Slots<u8>>, client: &Client, command: &[u8], multi: i
   let since = client^.since_us / 1000000_u64;
   put_age(text: text, current: current, since: since);
   text_word(text: text, word: &client_info_idle[0_u64..14_u64]);
+  let marked = False();
+  if subscriber_mode(client: client) {
+    text_word(text: text, word: &client_info_flag_p[0_u64..1_u64]);
+    set marked = True();
+  }
   if multi >= 0_i64 {
     text_word(text: text, word: &client_info_flag_x[0_u64..1_u64]);
+    set marked = True();
   }
   if client^.no_touch {
     text_word(text: text, word: &client_info_flag_t[0_u64..1_u64]);
-  } else if multi < 0_i64 {
+    set marked = True();
+  }
+  if bnot(marked) {
     text_word(text: text, word: &client_info_flag_n[0_u64..1_u64]);
   }
-  text_word(text: text, word: &client_info_shared[0_u64..25_u64]);
+  put_subscriptions(text: text, sub: client^.sub, psub: client^.psub, ssub: client^.ssub);
   text_word(text: text, word: &client_info_multi[0_u64..7_u64]);
   if multi >= 0_i64 {
     let queued_count = cvt.wrap::<i64, u64>(multi);
@@ -618,7 +643,7 @@ fn put_record_line(text: &Box<Slots<u8>>, record: &ClientRecord, current: u64) -
   text_word(text: text, word: &client_info_age[0_u64..5_u64]);
   let since = record^.since_us / 1000000_u64;
   put_age(text: text, current: current, since: since);
-  text_word(text: text, word: &client_info_shared[0_u64..25_u64]);
+  put_subscriptions(text: text, sub: record^.sub, psub: record^.psub, ssub: record^.ssub);
   text_word(text: text, word: &client_info_tail[0_u64..28_u64]);
   text_number(text: text, value: record^.resp);
   text_word(text: text, word: &client_info_lib_name[0_u64..10_u64]);
@@ -639,8 +664,29 @@ fn put_client_line(text: &Box<Slots<u8>>, record: &ClientRecord, client: &Client
   return unit;
 }
 
-fn put_clients(table: &ClientTable, client: &Client, text: &Box<Slots<u8>>, filtered: Bool, wanted: u64, multi: i64) -> result: unit reads(table), reads(client), writes(text) {
-  doc "Appends the lines of the live connections from the table already held by the caller: a filtered lookup binary-searches once for wanted and emits its line only when that id is present; an unfiltered call visits every record in client-number order.";
+fn type_selected(record: &ClientRecord, client: &Client, kind: u64) -> selected: Bool reads(record), reads(client) {
+  doc "Whether a connection is of the type CLIENT LIST TYPE asks for, Redis's getClientType: kind 0 selects every connection, 1 the normal ones, which hold no subscription, and 2 the publish and subscribe ones, which hold one. The calling connection's subscriptions are read from its own state and another connection's from the record it published.";
+  if kind == 0_u64 {
+    return True();
+  }
+  let subscribed = False();
+  if record^.id == client^.id {
+    set subscribed = subscriber_mode(client: client);
+  } else {
+    let direct = record^.sub != 0_u64;
+    let pattern = record^.psub != 0_u64;
+    let shard = record^.ssub != 0_u64;
+    let global = bor(direct, pattern);
+    set subscribed = bor(global, shard);
+  }
+  if kind == 2_u64 {
+    return subscribed;
+  }
+  return bnot(subscribed);
+}
+
+fn put_clients(table: &ClientTable, client: &Client, text: &Box<Slots<u8>>, filtered: Bool, wanted: u64, kind: u64, multi: i64) -> result: unit reads(table), reads(client), writes(text) {
+  doc "Appends the lines of the live connections from the table already held by the caller: a filtered lookup binary-searches once for wanted and emits its line only when that id is present, whatever its type, as Redis's CLIENT LIST ID does; an unfiltered call visits every record in client-number order and emits those of the type kind selects.";
   let current = client^.unix_us / 1000000_u64;
   if filtered {
     let position = pkg::store::client_table_position(table: table, id: wanted);
@@ -656,7 +702,9 @@ fn put_clients(table: &ClientTable, client: &Client, text: &Box<Slots<u8>>, filt
   for @records (index in 0_u64..count) {
     if index < table^.records.inner.len {
       let record = &table^.records.inner[index];
-      put_client_line(text: text, record: record, client: client, current: current, multi: multi);
+      if type_selected(record: record, client: client, kind: kind) {
+        put_client_line(text: text, record: record, client: client, current: current, multi: multi);
+      }
     }
   }
   return unit;
@@ -673,7 +721,7 @@ fn run_client_info(client: &Client, multi: i64) -> result: unit writes(client) {
 }
 
 fn run_client_list(table: &ClientTable, input: &[u8], args: &Box<Slots<Span>>, client: &Client, multi: i64) -> result: unit reads(table), reads(input), reads(args), writes(client) {
-  doc "CLIENT LIST, CLIENT LIST TYPE normal|master|replica|slave|pubsub and CLIENT LIST ID id...: the lines of the live connections as Redis 7.2.16's clientCommand answers, as text. A type other than normal lists nothing, firn having no replica, master or publish and subscribe connection; an unknown type, an id that is not an integer and any other arguments are answered with Redis's errors, and an id naming no connection lists nothing for it, one named twice twice.";
+  doc "CLIENT LIST, CLIENT LIST TYPE normal|master|replica|slave|pubsub and CLIENT LIST ID id...: the lines of the live connections as Redis 7.2.16's clientCommand answers, as text. TYPE normal lists the connections that hold no subscription and TYPE pubsub those that hold one, and the other types list nothing, firn having no replica or master connection; an unknown type, an id that is not an integer and any other arguments are answered with Redis's errors, and an id naming no connection lists nothing for it, one named twice twice.";
   let count = args^.inner.len;
   let text = box_slots_new::<u8>(capacity: 512_u64);
   let option = arg(args: args, index: 2_u64);
@@ -691,11 +739,13 @@ fn run_client_list(table: &ClientTable, input: &[u8], args: &Box<Slots<Span>>, c
     let slave = name_is(input: input, start: kind.start, length: kind.length, word: &word_slave[0_u64..5_u64]);
     let pubsub = name_is(input: input, start: kind.start, length: kind.length, word: &word_pubsub[0_u64..6_u64]);
     let replicas = bor(replica, slave);
-    let fanned = bor(replicas, pubsub);
-    let others = bor(master, fanned);
+    let others = bor(master, replicas);
     if normal {
       let unfilteredall = False();
-      put_clients(table: table, client: client, text: &text, filtered: unfilteredall, wanted: 0_u64, multi: multi);
+      put_clients(table: table, client: client, text: &text, filtered: unfilteredall, wanted: 0_u64, kind: 1_u64, multi: multi);
+    } else if pubsub {
+      let unfilteredall = False();
+      put_clients(table: table, client: client, text: &text, filtered: unfilteredall, wanted: 0_u64, kind: 2_u64, multi: multi);
     } else if others {
     } else {
       reply_word(client: client, word: &text_unknown_type[0_u64..26_u64]);
@@ -713,14 +763,14 @@ fn run_client_list(table: &ClientTable, input: &[u8], args: &Box<Slots<Span>>, c
       }
       let wanted = cvt.wrap::<i64, u64>(number.value);
       let byid = True();
-      put_clients(table: table, client: client, text: &text, filtered: byid, wanted: wanted, multi: multi);
+      put_clients(table: table, client: client, text: &text, filtered: byid, wanted: wanted, kind: 0_u64, multi: multi);
     }
   } else if count != 2_u64 {
     reply_error(client: client, word: &text_syntax[0_u64..16_u64]);
     return unit;
   } else {
     let everyone = False();
-    put_clients(table: table, client: client, text: &text, filtered: everyone, wanted: 0_u64, multi: multi);
+    put_clients(table: table, client: client, text: &text, filtered: everyone, wanted: 0_u64, kind: 0_u64, multi: multi);
   }
   let length = text.inner.len;
   let window = &text.inner[0_u64..length];

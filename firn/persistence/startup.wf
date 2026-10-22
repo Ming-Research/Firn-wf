@@ -106,8 +106,9 @@ fn aof_upgrade(factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs
   }
 }
 
-fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, manifest: &AofManifest, time: &Time, clock: &Clock) -> accepted: Bool reads(store), reads(directory), reads(writable), reads(manifest), reads(time), writes(factory), writes(clock) waits {
-  doc "Replay base first, then incrementals in manifest order. Missing listed files are fatal; only the last may be truncated. Keep startup byte sizes beside metadata for the writer and the later rewrite trigger.";
+fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, manifest: &AofManifest, boundary: &AofBoundary, time: &Time, clock: &Clock) -> result: Result<unit, AofStartError> reads(store), reads(directory), reads(writable), reads(manifest), reads(time), writes(factory), writes(boundary), writes(clock) waits {
+  doc "Replay base first, then incrementals in manifest order. Missing listed files are fatal; only the last may be truncated. Keep startup byte sizes beside metadata for the writer and the later rewrite trigger, and retain the current increment's syntax boundary after any successful cut. A replay that saw a stop request returns Interrupted at once, before the file it was replaying could be cut and before any later file is replayed.";
+  let failed = AofStartError::Failed();
   let total = 0_u64;
   for (index in 0_u64..manifest^.parts.inner.len) {
     let part = &manifest^.parts.inner[index];
@@ -116,7 +117,7 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
       let name = &part^.name.inner[0_u64..length];
       let exists = aof_exists(factory: factory, directory: directory, name: name);
       if exists != 1_u64 {
-        return False();
+        return Err<unit, AofStartError>(error: failed);
       }
       set total = total +wrap 1_u64;
     }
@@ -137,19 +138,23 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
         let name = &part^.name.inner[0_u64..length];
         let loaded = replay(store: store, factory: factory, root: directory, name: name, name_length: length, time: time, clock: clock);
         set loaded_count = loaded_count +wrap 1_u64;
+        if loaded.interrupted {
+          let requested = AofStartError::Interrupted();
+          return Err<unit, AofStartError>(error: requested);
+        }
         if loaded.stopped {
-          return False();
+          return Err<unit, AofStartError>(error: failed);
         }
         let size = loaded.size;
         if loaded.cut {
           if loaded_count != total {
-            return False();
+            return Err<unit, AofStartError>(error: failed);
           }
           let cut = aof_cut(factory: factory, writable: writable, name: name, kept: loaded.kept);
           if cut {
             set size = loaded.kept;
           } else {
-            return False();
+            return Err<unit, AofStartError>(error: failed);
           }
         }
         set current_size = current_size +wrap size;
@@ -157,6 +162,10 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
           set base_size = size;
         } else {
           set incr_size = size;
+          set boundary^.whole = True();
+          set boundary^.unfinished = loaded.unfinished;
+          set boundary^.reverted = loaded.reverted;
+          set boundary^.size = size;
         }
       }
     }
@@ -167,7 +176,7 @@ fn aof_load_parts(store: &Keyspace, factory: &HandleFactory, directory: &Directo
     set m^.aof_synced_size = incr_size;
     set m^.aof_base_size = base_size;
   }
-  return True();
+  return Ok<unit, AofStartError>(value: unit);
 }
 
 fn aof_cut(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, name: &[u8], kept: u64) -> accepted: Bool reads(writable), reads(name), writes(factory) waits {
@@ -214,21 +223,25 @@ fn aof_history(factory: &HandleFactory, writable: &std::fs::DirectoryWrite, pref
   return unit;
 }
 
-fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest, time: &Time, clock: &Clock) -> result: Result<WriteFile, unit> reads(store), reads(cwd), reads(directory), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(writable), writes(manifest), writes(clock) waits {
+fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, directory: &DirectoryRead, writable: &std::fs::DirectoryWrite, prefix: &[u8], manifest: &AofManifest, boundary: &AofBoundary, time: &Time, clock: &Clock) -> result: Result<WriteFile, AofStartError> reads(store), reads(cwd), reads(directory), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(writable), writes(manifest), writes(boundary), writes(clock) waits {
+  doc "Reads the manifest, upgrades an old-style file before the replay as Redis 7.2.16's loadAppendOnlyFiles does (aof.c:1668-1676), replays every listed file, and only then removes the unlisted rewrite journal, creates any missing base or increment, persists the manifest and opens the last increment, as Redis opens its file for appending only after loading (server.c:7332-7333). A stop request the replay saw is returned before every step after the replay.";
+  let failed = AofStartError::Failed();
   let parsed = aof_read_manifest(factory: factory, directory: directory, prefix: prefix, manifest: manifest);
   if parsed {
   } else {
-    return Err<WriteFile, unit>(error: unit);
+    return Err<WriteFile, AofStartError>(error: failed);
   }
   let upgraded = aof_upgrade(factory: factory, cwd: cwd, cwd_write: cwd_write, directory: directory, writable: writable, prefix: prefix, manifest: manifest);
   if upgraded {
   } else {
-    return Err<WriteFile, unit>(error: unit);
+    return Err<WriteFile, AofStartError>(error: failed);
   }
-  let loaded = aof_load_parts(store: store, factory: factory, directory: directory, writable: writable, manifest: manifest, time: time, clock: clock);
-  if loaded {
-  } else {
-    return Err<WriteFile, unit>(error: unit);
+  match aof_load_parts(store: store, factory: factory, directory: directory, writable: writable, manifest: manifest, boundary: boundary, time: time, clock: clock) {
+    Ok(value: parts_loaded) => {
+    }
+    Err(error: refusal) => {
+      return Err<WriteFile, AofStartError>(error: refusal);
+    }
   }
   let cleaned = aof_rw_journal_cleanup(store: store, factory: factory, writable: writable, prefix: prefix, manifest: manifest);
   let no_base = manifest^.base_sequence == 0_i64;
@@ -242,7 +255,7 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
     let created = aof_replace(factory: factory, writable: writable, name: bytes, contents: &contents);
     if created {
     } else {
-      return Err<WriteFile, unit>(error: unit);
+      return Err<WriteFile, AofStartError>(error: failed);
     }
     let part = AofPart(name: move name, sequence: 1_i64, kind: 98_u8);
     aof_push(manifest: manifest, part: move part);
@@ -251,6 +264,12 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
   }
   if no_incr {
     let name = aof_named(prefix: prefix, suffix: &aof_incr_suffix[0_u64..11_u64]);
+    let name_length = name.inner.len;
+    let name_bytes = &name.inner[0_u64..name_length];
+    let present = aof_exists(factory: factory, directory: directory, name: name_bytes);
+    if present != 0_u64 {
+      set boundary^.whole = False();
+    }
     let part = AofPart(name: move name, sequence: 1_i64, kind: 105_u8);
     aof_push(manifest: manifest, part: move part);
     set manifest^.incr_sequence = 1_i64;
@@ -278,19 +297,20 @@ fn aof_prepare(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, c
           Err(error: problem) => {
           }
         }
-        return Ok<WriteFile, unit>(value: move opened);
+        return Ok<WriteFile, AofStartError>(value: move opened);
       }
       close_write(factory: factory, file: move opened);
-      return Err<WriteFile, unit>(error: unit);
+      return Err<WriteFile, AofStartError>(error: failed);
     }
     Err(error: problem) => {
-      return Err<WriteFile, unit>(error: unit);
+      return Err<WriteFile, AofStartError>(error: failed);
     }
   }
 }
 
-fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, prefix: &[u8], time: &Time, clock: &Clock) -> result: Result<AofLog, unit> reads(store), reads(cwd), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(clock) waits {
-  doc "Opens appendonlydir, loads and upgrades Redis's manifest layout, cuts only its last active file, removes listed history and opens its last incremental file. A refusal returns Err before the listener starts.";
+fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd_write: &std::fs::DirectoryWrite, prefix: &[u8], time: &Time, clock: &Clock) -> result: Result<AofLog, AofStartError> reads(store), reads(cwd), reads(prefix), reads(time), writes(factory), writes(cwd_write), writes(clock) waits {
+  doc "Opens appendonlydir, loads and upgrades Redis's manifest layout, cuts only its last active file, removes listed history and opens its last incremental file. A refusal returns Err before firn listens; a stop request the replay saw returns Interrupted before anything after the replay writes appendonlydir.";
+  let refusal = AofStartError::Failed();
   let directory_name = &aof_directory_name[0_u64..13_u64];
   match std::fs::open_directory_write(factory: factory, root: cwd_write, name: directory_name, start: 0_u64, end: 13_u64) {
     Ok(value: writable) => {
@@ -299,13 +319,15 @@ fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd
           let parts = box_slots_new::<AofPart>(capacity: 4_u64);
           let clean = False();
           let manifest = AofManifest(parts: move parts, base_sequence: 0_i64, incr_sequence: 0_i64, dirty: clean);
-          match aof_prepare(store: store, factory: factory, cwd: cwd, cwd_write: cwd_write, directory: &directory, writable: &writable, prefix: prefix, manifest: &manifest, time: time, clock: clock) {
+          let boundary = aof_boundary_empty();
+          match aof_prepare(store: store, factory: factory, cwd: cwd, cwd_write: cwd_write, directory: &directory, writable: &writable, prefix: prefix, manifest: &manifest, boundary: &boundary, time: time, clock: clock) {
             Ok(value: opened) => {
               let filename = aof_copy(input: prefix);
-              let log = AofLog(directory: move directory, writable: move writable, prefix: move filename, manifest: move manifest, file: move opened);
-              return Ok<AofLog, unit>(value: move log);
+              let log = AofLog(directory: move directory, writable: move writable, prefix: move filename, manifest: move manifest, file: move opened, boundary: boundary);
+              return Ok<AofLog, AofStartError>(value: move log);
             }
             Err(error: problem) => {
+              set refusal = problem;
               std::fs::close_directory(factory: factory, directory: move directory);
             }
           }
@@ -318,5 +340,5 @@ fn aof_start(store: &Keyspace, factory: &HandleFactory, cwd: &DirectoryRead, cwd
     Err(error: problem) => {
     }
   }
-  return Err<AofLog, unit>(error: unit);
+  return Err<AofLog, AofStartError>(error: refusal);
 }

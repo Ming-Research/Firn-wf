@@ -37,7 +37,7 @@ fn access_minute(client: &Client) -> minute: u32 reads(client) {
 }
 
 fn new_access(client: &Client) -> stamp: u32 reads(client) {
-  doc "Redis 7.0.15 object.c createObject: an LRU clock under every non-LFU policy, otherwise the minute stamp and LFU_INIT_VAL (5).";
+  doc "Redis 7.2.16 object.c initObjectLRUOrLFU: an LRU clock under every non-LFU policy, otherwise the minute stamp and LFU_INIT_VAL (5), initialized when dbAddInternal adds an object.";
   if access_lfu(client: client) {
     let minute = access_minute(client: client);
     let high = ishl.wrap(minute, 8_u32);
@@ -114,7 +114,7 @@ fn update_access(slot: &Option<Entry>, client: &Client) -> result: unit reads(sl
 }
 
 fn replacement_access(slot: &Option<Entry>, client: &Client) -> stamp: u32 reads(slot), reads(client) {
-  doc "Redis 7.0.15 db.c dbOverwrite/setKey preserves the old LFU bits after its lookups; non-LFU replacements retain object.c createObject's fresh LRU clock.";
+  doc "Redis 7.2.16 db.c dbSetValue preserves the old access bits. Firn retains live LFU bits; its fresh non-LFU clock equals the ordinary lookup's refreshed clock or a preceding MSETNX insertion's clock under the same frozen command time. MSETNX skips the lookup before a successful store, preserving a repeated key's initial LFU bits.";
   if access_lfu(client: client) {
     match slot^ {
       Some(value: replaced) => {

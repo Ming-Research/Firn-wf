@@ -20,7 +20,6 @@ public enum RewriteAbortReason {
   JournalIo();
   Flush();
   SequenceExhausted();
-  MemoryPressure();
   Cancelled();
   BaseIo();
   WriterIo();
@@ -88,7 +87,7 @@ public struct RewriteImage {
 }
 
 public struct RewriteCapture {
-  doc "running covers admission through worker and chunk cleanup; diagnostics survive it. active covers (start,end]; aborted prevents this attempt's installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result after journal draining. Staging chunks contain little-endian u64 sequence, byte count and kind (0 images, 1 effect), then owned RESP bytes in Meta commit order. journal_bytes counts successfully appended file bytes; image/effect counters count complete file records, not staged records. cleanup_failed counts failed journal close/remove operations in this attempt, including failures after the first abort cause. fixed is the part of used that admission charged for the attempt's whole life, so limit minus fixed bounds what any later charge can ever reach.";
+  doc "running covers admission through worker and chunk cleanup; diagnostics survive it. active covers (start,end]; aborted prevents this attempt's installation. scan_done hands the end cut to the sole writer; cut_done publishes its rotation result after journal draining. Staging chunks contain little-endian u64 sequence, byte count and kind (0 images, 1 effect), then owned RESP bytes in Meta commit order. journal_bytes counts successfully appended file bytes; image/effect counters count complete file records, not staged records. cleanup_failed counts failed journal close/remove operations in this attempt, including failures after the first abort cause. aof_charged is the cumulative rotation-buffer part of used, kept charged until completion to bound growth overlap but already covered by ordinary AOF capacity exclusion; subtract it from used before excluding rewrite charges from maxmemory. fixed is the part of used that admission charged for the attempt's whole life, so limit minus fixed bounds what any later charge can ever reach.";
   public running: Bool;
   public active: Bool;
   public aborted: Bool;
@@ -102,6 +101,7 @@ public struct RewriteCapture {
   public limit: u64;
   public fixed: u64;
   public used: u64;
+  public aof_charged: u64;
   public peak: u64;
   public scan_peak: u64;
   public abort_reason: RewriteAbortReason;
@@ -234,7 +234,7 @@ public struct ServerState {
 }
 
 public struct ClientRecord {
-  doc "What the table of clients keeps of one live connection for CLIENT LIST to show to the other connections: its number, the calendar microsecond the server began serving it, the version of the protocol its replies use, and its peer's address, its own address, its name, its library name and its library version, each as the bytes CLIENT LIST prints, the addresses empty where the host refused to report one.";
+  doc "What the table of clients keeps of one live connection for CLIENT LIST to show to the other connections: its number, the calendar microsecond the server began serving it, the version of the protocol its replies use, the counts of its direct, pattern and shard subscriptions, and its peer's address, its own address, its name, its library name and its library version, each as the bytes CLIENT LIST prints, the addresses empty where the host refused to report one.";
   public id: u64;
   public since_us: u64;
   public resp: u64;
@@ -243,6 +243,9 @@ public struct ClientRecord {
   public name: Box<Slots<u8>>;
   public lib_name: Box<Slots<u8>>;
   public lib_ver: Box<Slots<u8>>;
+  public sub: u64;
+  public psub: u64;
+  public ssub: u64;
 }
 
 public struct ClientTable {
@@ -251,12 +254,13 @@ public struct ClientTable {
 }
 
 public struct Keyspace {
-  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, to the table of live clients, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
+  doc "One context's handles to the keyspace's keys, to its metadata, to the server's state and to the script engine's pool, to the table of live clients and to the pub/sub event hub, and whether changes are appended to the append-only file's pending bytes, fixed before any client is served. While changes are not appended, a command's statement that queues no expiry and reads nothing else from Meta holds its keys alone, with sequence_inert's token.";
   public keys: Shared<ConcurrentHashMap<Entry>>;
   public meta: Shared<Meta>;
   public server: Shared<ServerState>;
   public scripts: Shared<pkg::script_pool::EnginePool>;
   public clients: Shared<ClientTable>;
+  public pubsub: Shared<pkg::connection_events::Hub>;
   public logging: Bool;
 }
 
@@ -299,7 +303,7 @@ public fn sequence_entry(sequence: &WriteSequence, value: &Entry) -> result: uni
 
 public fn sequence_delete(sequence: &WriteSequence, slot: &Option<Entry>) -> result: unit writes(sequence), writes(slot) doc "Removes a present entry and takes the statement's sequence; an absent entry changes nothing. Expiry, eviction and command deletion share this contract.";
 
-public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget), reads(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) doc "Publishes a taken sequence, its journal unit (after-images, or a one-key statement's own append-only bytes) and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
+public fn sequence_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(meta.log), reads(sequence), reads(budget.charged), reads(budget.failed), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite) doc "Publishes a taken sequence, its journal unit (after-images, or a one-key statement's own append-only bytes) and exhaustion flag, plus collecting-buffer growth or its rewrite-only overflow, before the outer atomic statement releases keys and Meta. Loading takes no sequence and has no active rotation budget.";
 
 public fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started: u64) -> made: Keyspace pure doc "An empty keyspace, its keys a shared map sized for keyspace_capacity keys, appending changes to the append-only file's pending bytes when logging is true, whose SPOP draws start from the seed, beside a server's state that requires the password, none when it is empty, keeps a silent client timeout seconds, none when it is zero, owns an initially unfired receive wake source, holds Redis 7.0.15's defaults for the encoding parameters, and records started, the calendar time in milliseconds at which the server started.";
 
@@ -321,21 +325,45 @@ public fn queue_expiry(meta: &Meta, key: &[u8], at: u64, env: &KeyEnv) -> result
 
 public fn queue_due(due: &ExpiryQueue, key: &[u8], at: u64, env: &KeyEnv) -> result: unit reads(key), reads(env), writes(due) doc "Records new volatile eligibility and queues its expiry, as queue_expiry does, for a caller that holds expiry metadata apart from the rest of Meta. The call shares the atomic statement that creates or transfers the expiry, including when AOF is disabled.";
 
-public fn log_removal(log: &Box<Slots<u8>>, key: &[u8], budget: &LogBudget) -> result: unit reads(key), writes(log), writes(budget) doc "Appends DEL key, as Redis 7.0.15 propagates the removal of a key whose expiry has passed, so that a replay, which counts no key as expired, removes the key where the server did and a later command finds it absent there too.";
+public fn log_removal(log: &Box<Slots<u8>>, key: &[u8], budget: &LogBudget) -> result: unit reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} doc "Appends DEL key, as Redis 7.0.15 propagates the removal of a key whose expiry has passed, so that a replay, which counts no key as expired, removes the key where the server did and a later command finds it absent there too.";
 
-public fn log_count(log: &Box<Slots<u8>>, count: u64, room: u64, budget: &LogBudget) -> result: unit writes(log), writes(budget) doc "Makes room for a command of about room bytes and appends the header of a RESP array of count elements.";
+public fn log_count(log: &Box<Slots<u8>>, count: u64, room: u64, budget: &LogBudget) -> result: unit reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} doc "Makes room for a command of about room bytes, appends the header of a RESP array of count elements and counts one logical effect, saturating grouped records at two without inspecting or changing the group offset.";
 
-public fn log_append(log: &Box<Slots<u8>>, bytes: &[u8], budget: &LogBudget) -> result: unit reads(bytes), writes(log), writes(budget) doc "Appends bytes already in the file's form, such as the commands a transaction recorded, as they are.";
+public fn log_append(log: &Box<Slots<u8>>, bytes: &[u8], budget: &LogBudget) -> result: unit reads(bytes), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} doc "Appends bytes already in the file's form, such as the commands a transaction recorded, as they are, without incrementing budget.records.";
 
-public fn log_word(log: &Box<Slots<u8>>, word: &[u8], budget: &LogBudget) -> result: unit reads(word), writes(log), writes(budget) doc "Appends a constant word as a RESP bulk string.";
+public fn log_word(log: &Box<Slots<u8>>, word: &[u8], budget: &LogBudget) -> result: unit reads(word), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} doc "Appends a constant word as a RESP bulk string.";
 
-public fn log_input(log: &Box<Slots<u8>>, input: &[u8], span: Span, budget: &LogBudget) -> result: unit reads(input), writes(log), writes(budget) doc "Appends an argument of the input as a RESP bulk string.";
+public fn log_input(log: &Box<Slots<u8>>, input: &[u8], span: Span, budget: &LogBudget) -> result: unit reads(input), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} doc "Appends an argument of the input as a RESP bulk string.";
 
-public fn log_text(log: &Box<Slots<u8>>, text: &Bytes, budget: &LogBudget) -> result: unit reads(text), writes(log), writes(budget) doc "Appends a stored string as a RESP bulk string.";
+public fn log_text(log: &Box<Slots<u8>>, text: &Bytes, budget: &LogBudget) -> result: unit reads(text), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} doc "Appends a stored string as a RESP bulk string.";
 
-public fn log_decimal(log: &Box<Slots<u8>>, value: u64, budget: &LogBudget) -> result: unit writes(log), writes(budget) doc "Appends a number as a RESP bulk string of its decimal digits.";
+public fn log_decimal(log: &Box<Slots<u8>>, value: u64, budget: &LogBudget) -> result: unit reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} doc "Appends a number as a RESP bulk string of its decimal digits.";
 
-public fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> result: unit reads(input), reads(args), writes(log), writes(budget) doc "Appends a command as the client sent it, every argument a RESP bulk string.";
+public fn log_command(log: &Box<Slots<u8>>, input: &[u8], args: &Box<Slots<Span>>, budget: &LogBudget) -> result: unit reads(input), reads(args), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} doc "Appends a command as the client sent it, every argument a RESP bulk string.";
 
 public fn client_table_position(table: &ClientTable, id: u64) -> position: u64 reads(table) doc "The lower bound of id in the client table, whose records stay in client-number order: the index of its first record numbered id or more, or the table's length when there is none, found by binary search.";
 
@@ -357,7 +385,7 @@ public fn copy_value(value: &Value) -> made: Value reads(value) doc "An owned lo
 
 public fn attempt_undo_new() -> undo: AttemptUndo pure doc "An empty first-mutation journal for a declared-key script attempt.";
 
-public fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result: unit reads(slot), writes(undo) doc "Saves an optional logical entry copy once at this declared insertion index before any possible mutation: members, values, scores, list order, expiry, access and last-write stamps are exact; collection backing is rebuilt. No collection cursor or layout-dependent result is promised; revisit if such a command or guarantee is added (research/investigations/script-engines/README.md, Logical collection restore).";
+public fn attempt_save(undo: &AttemptUndo, index: u64, slot: &Option<Entry>) -> result: unit reads(slot), writes(undo) doc "Saves an optional logical entry copy once at this declared insertion index before any possible mutation: members, values, scores, list order, expiry, access and last-write stamps are exact; collection backing is rebuilt. Collection scans return the whole result with cursor zero and no layout-dependent order is promised; revisit when coord-wfbl-02-01 adds bounded continuation or a layout-dependent guarantee is added (research/investigations/script-engines/README.md, Logical collection restore).";
 
 public fn attempt_restore(undo: &AttemptUndo, slots: &Entries<Entry>) -> result: unit writes(undo), writes(slots) contract {
   ensures slots^.len == entry(slots)^.len;
@@ -399,15 +427,38 @@ public fn rewrite_measure(slot: &Option<Entry>, key_length: u64) -> measured: Re
 public fn rewrite_image(slot: &Option<Entry>, key: &[u8], capacity: u64, replacement: Bool) -> output: Box<Slots<u8>> reads(slot), reads(key) doc "Serializes the complete held image using Redis command-format reconstruction and absolute expiry. The caller must first charge rewrite_measure bytes plus temporary key and formatting storage; replacement prepends DEL.";
 
 public struct LogBudget {
-  doc "A statement-local allowance for collecting-buffer growth while the sole writer rotates. Charge full new backing capacity before grow, preserving overlap; failed disables only rewrite accounting, never the ordinary append. sequence_commit publishes this local failure under the same Meta hold.";
+  doc "A statement-local encoder budget: group_start records the first effect offset; records is 0, 1 or 2 (at least two) for an ordinary command, or 3 when grouping is disabled. Group begin snapshots the collecting-log offset; only log_count counts effects without changing that offset, and commit inserts markers only for at least two effects. Raw marker appends do not count. While the sole writer rotates, enabled budgets charge full new collecting-buffer capacity before grow, preserving overlap; failed disables only rewrite accounting, never the ordinary append. sequence_commit publishes this local failure under the same Meta hold.";
   public enabled: Bool;
   public allowance: u64;
   public charged: u64;
   public failed: Bool;
+  public group_start: u64;
+  public records: u64;
 }
 
-public fn log_budget_new() -> budget: LogBudget pure doc "An unmetered ordinary encoder budget for buffers that are not stalled by rotation.";
+public fn log_budget_new() -> budget: LogBudget pure contract {
+  ensures budget.group_start == 0_u64;
+  ensures budget.records == 3_u64;
+} doc "An unmetered encoder budget for buffers that are not stalled by rotation, with ordinary-command grouping disabled.";
 
-public fn log_append_plain(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), writes(log) doc "Appends bytes in a private non-command builder, with no rotation-related collecting-buffer budget.";
+public fn log_group_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.log), reads(meta.rewrite) contract {
+  ensures budget.group_start == meta^.log.inner.len;
+  ensures budget.records == 0_u64;
+  ensures budget.group_start <= meta^.log.inner.len;
+} doc "Snapshots the collecting-log offset under the existing Meta hold and starts the rotation budget with ordinary-command effect grouping enabled. Effects append directly; commit inserts MULTI only for a unit with at least two effects.";
 
-public fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.rewrite) doc "Snapshots remaining R under the statement's Meta hold only while the writer rotates; service encoders charge collecting-buffer growth before allocation, and sequence_commit publishes overflow without failing the command.";
+public fn log_group_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget.allowance), reads(budget.group_start), reads(budget.records), writes(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite), writes(budget.enabled), writes(budget.charged), writes(budget.failed) contract {
+  requires budget^.group_start <= meta^.log.inner.len;
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures budget^.group_start <= meta^.log.inner.len;
+  ensures meta^.log.inner.len >= entry(meta)^.log.inner.len;
+} doc "For a unit with at least two effects, inserts MULTI once before the complete unit and appends raw EXEC using the same metered budget, then commits its sequence so one-key capture observes the final group at the original log offset. Singleton effects are never shifted.";
+
+public fn log_append_plain(log: &Box<Slots<u8>>, bytes: &[u8]) -> result: unit reads(bytes), writes(log) contract {
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} doc "Appends bytes in a private non-command builder, with no rotation-related collecting-buffer budget.";
+
+public fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.rewrite) contract {
+  ensures budget.group_start == 0_u64;
+  ensures budget.records == 3_u64;
+} doc "Snapshots remaining R under the statement's Meta hold only while the writer rotates; service encoders charge collecting-buffer growth before allocation, and sequence_commit publishes overflow without failing the command.";

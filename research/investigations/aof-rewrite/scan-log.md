@@ -759,7 +759,9 @@ abort makes this strict case complete successfully and fail its err assertion.
 `reconciled_scan_post_cut_backlog_charges_rotation_reserve` builds a long
 old increment from overwritten 32-KiB values, then waits until INFO confirms the
 atomic S1 cut while the old manifest is still selected. Repeated 16-KiB writes keep live
-memory bounded while the streaming boundary reader still visits history.
+memory bounded while the streaming boundary reader still visits history
+(since the boundary-state change in [scan-pace](scan-pace.md), only after an
+append failure whose outcome is unknown).
 With maxmemory at 64 MiB, the rotation budget must abort before publication;
 subsequent commands and a restart must retain the acknowledged value and
 counter. Removing LogBudget charging leaves the excluded backlog unbounded
@@ -916,3 +918,144 @@ split observations (answered in the capture node); and narrow effect-mode
 coverage (the restore case now also requires its scan output to be read,
 and adds SET EX, EXPIRE, GETEX, INCRBYFLOAT, HINCRBYFLOAT and SPOP, whose
 AOF forms differ from the commands sent).
+
+## Rewrite at the cache limit
+
+Board item `firn-rw-cache-refused`: exclude bounded rewrite charges from
+maxmemory. Owner ruling firn-q-rw-memory-excluded chose this (option A) on
+2026-10-14; it replaces the headroom policy above. The task
+reports refusal in the 14900K cache sample
+[run 38395271960](https://github.com/Ming-Research/Firn-wf/actions/runs/38395271960):
+one core, AOF on, one million keys with Zipf access, allkeys-lru and a limit
+near half the dataset. No reproduction or performance run was made locally.
+
+Source inspection confirms two causes. Admission required counted heap plus
+R plus max(R, 1 MiB) to fit maxmemory. Even if admitted, a command's memory
+check aborted a running rewrite when counted heap plus that headroom
+exceeded the limit. A full cache cannot satisfy that service-headroom rule.
+
+Redis 7.2.16 provides the independent semantic reference. The names below
+are the functions to read in its source; their line numbers are not given
+here. A temporary workflow (since removed) checked them against the pinned
+release archive, whose SHA-256 `tests/redis-suite/reference.sh` verifies: CI
+run [39531855037](https://github.com/Ming-Research/Firn-wf/actions/runs/39531855037)
+found each function and the cited line in `evict.c`, `aof.c`, `zmalloc.c` and
+`server.c`, found no `aof_rewrite_buf` in `aof.c`, and printed
+`rewriteAppendOnlyFileBackground` up to its fork and `redisFork`, which calls
+`fork()`. The allocation-counter claim stays a deduction from that `fork()`
+and the static, process-local `used_memory` in `zmalloc.c`:
+
+- `src/aof.c`, `rewriteAppendOnlyFileBackground`: a forked child produces the
+  base while the parent opens a new incremental file; `src/server.c`,
+  `redisFork`, makes the fork.
+- `src/zmalloc.c`, the process-local allocation counter behind
+  `zmalloc_used_memory`: allocations in the child and physical copy-on-write
+  do not increase the parent's counter. This is a deduction from fork and
+  the counter implementation, not an RSS measurement.
+- `src/evict.c`, `freeMemoryGetNotCountedMemory`: excludes allocated AOF
+  buffer storage from that counter for maxmemory. `src/aof.c`, the command
+  propagation into the AOF buffer: the multipart protocol uses the new
+  increment, opened by `openNewIncrAofForAppend` before `redisFork`, rather
+  than a parent rewrite-difference buffer (`aof.c` has no `aof_rewrite_buf`).
+- `src/aof.c`, `rewriteAppendOnlyFileBackground`: launches without a
+  maxmemory admission check, and returns the started reply on a successful
+  launch (`bgrewriteaofCommand` answers
+  "Background append only file rewriting started").
+
+The ruled design keeps R = floor(maxmemory / 20), or 16 MiB without a limit,
+frozen at admission. It removes both headroom checks while keeping sequence
+exhaustion, stopping and insufficient fixed-plus-chunk reserve refusals.
+Without maxmemory the old headroom calculation was never enforced, so its
+removal changes no unlimited-memory admission behavior. Budget exhaustion
+still aborts the rewrite without rejecting the command or ordinary append.
+
+The comparison and INFO share one calculation, with saturating arithmetic:
+
+```text
+aof = collecting_capacity + pending_capacity
+rewrite_excluded = rewrite.used - rewrite.aof_charged
+mem_not_counted_for_evict = aof + rewrite_excluded
+counted = heap_in_use - mem_not_counted_for_evict
+```
+
+`aof_charged` records the cumulative rotation-buffer portion of `used`.
+Each successful rotation charge adds to both counters under Meta. These
+charges include full replacement capacity and conservative growth overlap,
+and remain in R until completion. They are omitted from the rewrite
+exclusion because ordinary AOF capacities already exclude that storage;
+adding all of `used` would deduct it twice and retain deductions for old
+backings. No command admission interface changes: `evict_before` uses the
+shared comparison for admission, each eviction victim and exhausted-policy
+checks; INFO uses its exclusion helper too.
+
+Abort flags do not release memory, so exclusion persists through worker and
+journal cleanup. Existing refunds follow release. Completion clears both
+counters. The fixed filename/manifest allowance is conservative, and some
+small filename owners survive until the cycle returns, so removing the
+remaining exclusion may raise counted memory; subsequent admission performs
+normal eviction or OOM. The additional rewrite allowance is bounded by R,
+not total RSS by maxmemory + R: ordinary AOF exclusion, in-flight command
+overshoot, allocator overhead and resident pages remain separate.
+
+The new network case fills an allkeys-lru cache to observed eviction, checks
+the exact started reply and successful completion, and verifies all
+surviving values and absent evicted keys after restart. Its assertion prints
+INFO before and after refusal, including abort reason and memory fields.
+The existing post-S1 pressure case now requires successful installation
+after reducing maxmemory to one byte, while checking normal SET OOM and
+restart equality. That expectation changes because ordinary pressure no
+longer cancels the independent rewrite allowance. It also checks pre-cut
+INFO exclusion includes the live rewrite ledger and completion clears it.
+The new cache case fails on main: a temporary branch holding only that case,
+run [38396951877](https://github.com/Ming-Research/Firn-wf/actions/runs/38396951877),
+fails with "rewrite refused at the eviction limit", so the case detects the
+original admission refusal. An earlier gate run on this branch,
+[38396947945](https://github.com/Ming-Research/Firn-wf/actions/runs/38396947945),
+failed compilation because aof_rw_cycle still declared writes(meter) after
+admission stopped reading the heap; the fix changes that effect to
+reads(meter), which the remaining meter_share call needs. The scan worker
+still reads the heap through its own meter, so its writes(meter) remains
+required. The checks pass on c0ada67, including the cache case, in
+[run 39491204021](https://github.com/Ming-Research/Firn-wf/actions/runs/39491204021).
+Pins and submodules are unchanged.
+
+The cache case writes four keys right after the reply. The rewrite's reserve
+is excluded from maxmemory, so these writes may evict nothing (CI run
+39476647418 with 32-key batches aborted with rotation_reserve; the four-key
+batch did not evict in run 39486884100). Evictions while a rewrite captures
+are covered by allkeys_lru_evicts_while_a_paced_rewrite_captures_and_restores_survivors
+(paced by rdb-key-save-delay; the limit is lowered 1 MiB during the window, so
+the next write evicts while the rewrite captures).
+
+The rotation-charge subtraction in mem_not_counted_for_evict
+(`firn/commands/eviction.wf`, memory_excluded) is checked by
+reconciled_scan_post_cut_backlog_charges_rotation_reserve: while the backlog
+is charged and the attempt has not aborted, the exclusion must equal the
+buffer part (mem_aof_buffer) plus the rewrite ledger less its rotation charge
+(firn_aof_rewrite_charged), and that charge must be nonzero. That case holds
+the rotation open with an unknown boundary, so a charge is certain. The
+pressure case reconciles the same equation but cannot require a charge:
+whether its post-cut writes land while the writer rotates is a race (a run
+sampled a charge of 0, CI run 39525916088), and the rotation window cannot be
+lengthened with a long history because the switch rereads history only when
+the boundary is unknown. A temporary workflow (since removed) deleted the
+subtraction on 8d20576 and ran the backlog case: run
+[39527168327](https://github.com/Ming-Research/Firn-wf/actions/runs/39527168327)
+fails at rewrite_scan.rs:1115 with "rotation charges must be excluded from the
+ledger once", so the check detects the omission; the unmodified case passes in
+[39527168308](https://github.com/Ming-Research/Firn-wf/actions/runs/39527168308).
+
+Eviction waits only for the cleanup of a rewrite that is installing
+(`aof_installing`, the three cleanup points in eviction.wf). The wait for an
+aborted rewrite was removed: the aborted attempt's ledger is excluded until
+cleanup, and cleanup lowers the heap and the exclusion by the same ledger (the
+exclusion by at least as much, since a charge is recorded before its
+allocation), so the compared figure, heap less exclusion, does not fall and
+waiting gives eviction no room. The installing wait stays because
+the installation must publish one result before keys change. The aborted case
+is exercised by allkeys_lru_evicts_after_a_flush_aborts_a_rewrite: FLUSHALL
+aborts a paced rewrite, 400 writes at the limit evict, and the attempt clears
+with its cause intact. The case does not time the wait itself: the paced worker
+wakes at the abort (a run with a three-second key delay found the attempt
+cleared before 400 writes finished), so the window in which a restored wait
+would block cannot be held open from a test.

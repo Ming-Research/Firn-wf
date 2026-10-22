@@ -1,0 +1,420 @@
+alias Client = pkg::protocol::Client;
+alias Span = pkg::protocol::Span;
+alias Key = pkg::bytes::Key;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias KeyHash = pkg::bytes::KeyHash;
+alias HashMap = std::collections::hash_map::HashMap;
+alias hash_map_lookup = std::collections::hash_map::hash_map_lookup;
+alias arg = pkg::protocol::arg;
+alias make_key = pkg::bytes::make_key;
+alias reply_array = pkg::protocol::reply_array;
+alias reply_integer = pkg::protocol::reply_integer;
+alias reply_text = pkg::protocol::reply_text;
+
+fn subscribe_record(hub: &Hub, client: &Client) -> record: Option<Record> writes(hub.records), writes(hub.clients), writes(hub.next), writes(client) {
+  if client^.pubsub_id == 0_u64 {
+    let created = record_new(hub: hub, client: client);
+    return Some<Record>(value: move created);
+  }
+  return take_record(hub: hub, id: client^.pubsub_id);
+}
+
+fn subscribe(hub: &Hub, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: u64) -> result: unit reads(input), reads(args), writes(hub), writes(client) {
+  match subscribe_record(hub: hub, client: client) {
+    Some(value: record) => {
+      let before = record_subscribed(record: &record);
+      let count = args^.inner.len;
+      for (index in 1_u64..count) {
+        let span = arg(args: args, index: index);
+        let key = make_key(input: input, start: span.start, length: span.length);
+        let retained_key = pkg::bytes::copy_key(key: &key);
+        if kind == 190_u64 {
+          subscription_add(map: &hub^.channels, names: &record.channels, key: move retained_key, id: record.connection.id);
+        } else if kind == 194_u64 {
+          subscription_add(map: &hub^.patterns, names: &record.patterns, key: move retained_key, id: record.connection.id);
+        } else {
+          subscription_add(map: &hub^.shards, names: &record.shards, key: move retained_key, id: record.connection.id);
+        }
+        sync_counts(client: client, record: &record);
+        let absent = False();
+        acknowledge(client: client, kind: kind, key: &key, absent: absent);
+      }
+      save_subscription(hub: hub, record: move record, before: before, time: time);
+    }
+    None() => {
+      set client^.closing = True();
+    }
+  }
+  return unit;
+}
+
+fn unsubscribe_empty(kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(input), reads(args), writes(client) {
+  let count = args^.inner.len;
+  if count <= 1_u64 {
+    let key = make_key(input: input, start: 0_u64, length: 0_u64);
+    let absent = True();
+    acknowledge(client: client, kind: kind, key: &key, absent: absent);
+  } else {
+    for (index in 1_u64..count) {
+      let span = arg(args: args, index: index);
+      let key = make_key(input: input, start: span.start, length: span.length);
+      let absent = False();
+      acknowledge(client: client, kind: kind, key: &key, absent: absent);
+    }
+  }
+  return unit;
+}
+
+fn unsubscribe_all(map: &HashMap<Key, Box<Slots<u64>>, extent>, names: &Box<Slots<Key>>, id: u64, client: &Client, kind: u64) -> result: unit writes(map), writes(names), writes(client) {
+  if names^.inner.len == 0_u64 {
+    let bytes = box_slots_new::<u8>(capacity: 0_u64);
+    let key = make_key(input: &bytes.inner[0_u64..0_u64], start: 0_u64, length: 0_u64);
+    let absent = True();
+    acknowledge(client: client, kind: kind, key: &key, absent: absent);
+    return unit;
+  }
+  loop @memberships {
+    if names^.inner.len > 0_u64 {
+      let key = take_back(window: &names^.inner);
+      member_remove(map: map, key: &key, id: id);
+      if kind == 191_u64 {
+        set client^.sub = names^.inner.len;
+      } else if kind == 195_u64 {
+        set client^.psub = names^.inner.len;
+      } else {
+        set client^.ssub = names^.inner.len;
+      }
+      set client^.changed = True();
+      let absent = False();
+      acknowledge(client: client, kind: kind, key: &key, absent: absent);
+    } else {
+      break @memberships;
+    }
+  }
+  return unit;
+}
+
+fn unsubscribe(hub: &Hub, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: u64) -> result: unit reads(input), reads(args), writes(hub), writes(client) {
+  match take_record(hub: hub, id: client^.pubsub_id) {
+    Some(value: record) => {
+      let before = record_subscribed(record: &record);
+      let count = args^.inner.len;
+      if count <= 1_u64 {
+        if kind == 191_u64 {
+          unsubscribe_all(map: &hub^.channels, names: &record.channels, id: record.connection.id, client: client, kind: kind);
+        } else if kind == 195_u64 {
+          unsubscribe_all(map: &hub^.patterns, names: &record.patterns, id: record.connection.id, client: client, kind: kind);
+        } else {
+          unsubscribe_all(map: &hub^.shards, names: &record.shards, id: record.connection.id, client: client, kind: kind);
+        }
+      } else {
+        for (index in 1_u64..count) {
+          let span = arg(args: args, index: index);
+          let key = make_key(input: input, start: span.start, length: span.length);
+          if kind == 191_u64 {
+            subscription_remove(map: &hub^.channels, names: &record.channels, key: &key, id: record.connection.id);
+          } else if kind == 195_u64 {
+            subscription_remove(map: &hub^.patterns, names: &record.patterns, key: &key, id: record.connection.id);
+          } else {
+            subscription_remove(map: &hub^.shards, names: &record.shards, key: &key, id: record.connection.id);
+          }
+          sync_counts(client: client, record: &record);
+          let absent = False();
+          acknowledge(client: client, kind: kind, key: &key, absent: absent);
+        }
+      }
+      sync_counts(client: client, record: &record);
+      save_subscription(hub: hub, record: move record, before: before, time: time);
+    }
+    None() => {
+      unsubscribe_empty(kind: kind, input: input, args: args, client: client);
+    }
+  }
+  return unit;
+}
+
+fn observe_members(env: &Empty, key: &Key, value: &Box<Slots<u64>>) -> result: Box<Slots<u64>> reads(value) {
+  let count = value^.inner.len;
+  let copied = box_slots_new::<u64>(capacity: count);
+  for (index in 0_u64..count) {
+    if index < value^.inner.len {
+      slots_push::<u64>(values: &copied, value: value^.inner[index]);
+    }
+  }
+  return move copied;
+}
+
+fn member_ids(map: &HashMap<Key, Box<Slots<u64>>, extent>, key: &Key) -> members: Box<Slots<u64>> reads(map), reads(key) {
+  let env = KeyEnv();
+  let visitor = Empty();
+  match hash_map_lookup::<KeyHash, Box<Slots<u64>>, Empty, Box<Slots<u64>>, fn observe_members, extent>(map: map, key: key, key_env: &env, visit_env: &visitor) {
+    Ok(value: copied) => {
+      return move copied;
+    }
+    Err(error: missing) => {
+      return box_slots_new::<u64>(capacity: 0_u64);
+    }
+  }
+}
+
+fn observe_resp(env: &Empty, key: &u64, value: &Record) -> result: u64 reads(value.resp) {
+  return value^.resp;
+}
+
+fn recipient_resp(hub: &Hub, id: u64) -> resp: u64 reads(hub.records) {
+  let env = Empty();
+  let visitor = Empty();
+  match hash_map_lookup::<IdentityHash, Record, Empty, u64, fn observe_resp, extent>(map: &hub^.records, key: &id, key_env: &env, visit_env: &visitor) {
+    Ok(value: version) => {
+      return version;
+    }
+    Err(error: missing) => {
+      return 0_u64;
+    }
+  }
+}
+
+fn publish_to(hub: &Hub, members: &Box<Slots<u64>>, channel: &Key, pattern: &Key, patterned: Bool, shard: Bool, body: &Frozen<Box<Slots<u8>>>, stage: &Stage) -> count: u64 reads(hub.records), reads(members), reads(channel), reads(pattern), reads(body), writes(stage) {
+  let delivered = 0_u64;
+  let size = members^.inner.len;
+  for (index in 0_u64..size) {
+    if index < members^.inner.len {
+      let id = members^.inner[index];
+      let resp = recipient_resp(hub: hub, id: id);
+      if resp != 0_u64 {
+        let frame = publication_frame(channel: channel, pattern: pattern, patterned: patterned, shard: shard, resp: resp, body: body);
+        let delivery = Delivery(id: id, frame: move frame);
+        queue_push::<Delivery>(queue: &stage^.publications, value: move delivery);
+        set delivered = delivered +wrap 1_u64;
+      }
+    }
+  }
+  return delivered;
+}
+
+fn pattern_matches(pattern: &Key, channel: &Key) -> matched: Bool reads(pattern), reads(channel) {
+  let copied_pattern = pkg::bytes::bytes_copy(bytes: &pattern^.bytes);
+  let pattern_bytes = pkg::bytes::bytes_boxed(bytes: move copied_pattern);
+  let copied_channel = pkg::bytes::bytes_copy(bytes: &channel^.bytes);
+  let channel_bytes = pkg::bytes::bytes_boxed(bytes: move copied_channel);
+  let pattern_length = pattern_bytes.inner.len;
+  let channel_length = channel_bytes.inner.len;
+  let nocase = False();
+  return pkg::bytes::glob_match(input: &pattern_bytes.inner[0_u64..pattern_length], start: 0_u64, length: pattern_length, name: &channel_bytes.inner[0_u64..channel_length], nocase: nocase);
+}
+
+fn publish(hub: &Hub, shard: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, stage: &Stage) -> result: unit reads(hub.records), reads(hub.channels), reads(hub.patterns), reads(hub.shards), reads(input), reads(args), writes(client), writes(stage) {
+  let channel_span = arg(args: args, index: 1_u64);
+  let body_span = arg(args: args, index: 2_u64);
+  let channel = make_key(input: input, start: channel_span.start, length: channel_span.length);
+  let body = publication_body(input: input, start: body_span.start, length: body_span.length);
+  let direct = if shard {
+    give member_ids(map: &hub^.shards, key: &channel);
+  } else {
+    give member_ids(map: &hub^.channels, key: &channel);
+  }
+  let patterned = False();
+  let count = publish_to(hub: hub, members: &direct, channel: &channel, pattern: &channel, patterned: patterned, shard: shard, body: &body, stage: stage);
+  if shard {
+  } else {
+    let size = hub^.patterns.cells.inner.len;
+    for (index in 0_u64..size) {
+      if index < hub^.patterns.cells.inner.len {
+        let held = &hub^.patterns.cells.inner[index];
+        match held^ {
+          HashMapFilled(key: pattern, value: members) => {
+            if pattern_matches(pattern: pattern, channel: &channel) {
+              let matched = True();
+              let delivered = publish_to(hub: hub, members: members, channel: &channel, pattern: pattern, patterned: matched, shard: shard, body: &body, stage: stage);
+              set count = count +wrap delivered;
+            }
+          }
+          HashMapVacant() => {
+          }
+          HashMapDeleted() => {
+          }
+        }
+      }
+    }
+  }
+  let signed = cvt.wrap::<u64, i64>(count);
+  reply_integer(client: client, value: signed);
+  return unit;
+}
+
+const channels_word: Array<u8, 8> = "CHANNELS";
+
+const numsub_word: Array<u8, 6> = "NUMSUB";
+
+const numpat_word: Array<u8, 6> = "NUMPAT";
+
+const shardchannels_word: Array<u8, 13> = "SHARDCHANNELS";
+
+const shardnumsub_word: Array<u8, 11> = "SHARDNUMSUB";
+
+const syntax_prefix: Array<u8, 58> = "-ERR unknown subcommand or wrong number of arguments for '";
+
+const syntax_suffix: Array<u8, 21> = "'. Try PUBSUB HELP.\r\n";
+
+const deny_shard: Array<u8, 55> = "ERR SSUBSCRIBE isn't allowed for a DENY BLOCKING client";
+
+fn list_channels(map: &HashMap<Key, Box<Slots<u64>>, extent>, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(map), reads(input), reads(args), writes(client) {
+  let wanted = arg(args: args, index: 2_u64);
+  let pattern = make_key(input: input, start: wanted.start, length: wanted.length);
+  let filtered = args^.inner.len == 3_u64;
+  let selected = box_slots_new::<Key>(capacity: 0_u64);
+  let size = map^.cells.inner.len;
+  for (index in 0_u64..size) {
+    if index < map^.cells.inner.len {
+      let held = &map^.cells.inner[index];
+      match held^ {
+        HashMapFilled(key: channel, value: members) => {
+          let matched = True();
+          if filtered {
+            set matched = pattern_matches(pattern: &pattern, channel: channel);
+          }
+          if matched {
+            let copied = pkg::bytes::copy_key(key: channel);
+            slots_push::<Key>(values: &selected, value: move copied);
+          }
+        }
+        HashMapVacant() => {
+        }
+        HashMapDeleted() => {
+        }
+      }
+    }
+  }
+  let count = selected.inner.len;
+  reply_array(client: client, count: count);
+  for (index in 0_u64..count) {
+    if index < selected.inner.len {
+      reply_text(client: client, text: &selected.inner[index].bytes);
+    }
+  }
+  return unit;
+}
+
+fn list_counts(map: &HashMap<Key, Box<Slots<u64>>, extent>, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(map), reads(input), reads(args), writes(client) {
+  let count = args^.inner.len;
+  let names = count -sat 2_u64;
+  let fields = names *wrap 2_u64;
+  reply_array(client: client, count: fields);
+  for (index in 2_u64..count) {
+    let span = arg(args: args, index: index);
+    let key = make_key(input: input, start: span.start, length: span.length);
+    reply_text(client: client, text: &key.bytes);
+    let members = member_ids(map: map, key: &key);
+    let signed = cvt.wrap::<u64, i64>(members.inner.len);
+    reply_integer(client: client, value: signed);
+  }
+  return unit;
+}
+
+fn introspect(hub: &Hub, input: &[u8], args: &Box<Slots<Span>>, client: &Client) -> result: unit reads(hub.channels), reads(hub.patterns), reads(hub.shards), reads(input), reads(args), writes(client) {
+  let subcommand = arg(args: args, index: 1_u64);
+  let help = pkg::bytes::name_is(input: input, start: subcommand.start, length: subcommand.length, word: &help_word[0_u64..4_u64]);
+  if help {
+    pubsub_help(client: client);
+    return unit;
+  }
+  let channels = pkg::bytes::name_is(input: input, start: subcommand.start, length: subcommand.length, word: &channels_word[0_u64..8_u64]);
+  let shardchannels = pkg::bytes::name_is(input: input, start: subcommand.start, length: subcommand.length, word: &shardchannels_word[0_u64..13_u64]);
+  if bor(channels, shardchannels) {
+    if args^.inner.len > 3_u64 {
+      pkg::protocol::reply_word(client: client, word: &syntax_prefix[0_u64..58_u64]);
+      let shown = pkg::protocol::reply_echoed(client: client, input: input, span: subcommand, limit: 128_u64);
+      pkg::protocol::reply_word(client: client, word: &syntax_suffix[0_u64..21_u64]);
+    } else if channels {
+      list_channels(map: &hub^.channels, input: input, args: args, client: client);
+    } else {
+      list_channels(map: &hub^.shards, input: input, args: args, client: client);
+    }
+    return unit;
+  }
+  let numsub = pkg::bytes::name_is(input: input, start: subcommand.start, length: subcommand.length, word: &numsub_word[0_u64..6_u64]);
+  let shardnumsub = pkg::bytes::name_is(input: input, start: subcommand.start, length: subcommand.length, word: &shardnumsub_word[0_u64..11_u64]);
+  if numsub {
+    list_counts(map: &hub^.channels, input: input, args: args, client: client);
+  } else if shardnumsub {
+    list_counts(map: &hub^.shards, input: input, args: args, client: client);
+  } else {
+    let count = cvt.wrap::<u64, i64>(hub^.patterns.length);
+    reply_integer(client: client, value: count);
+  }
+  return unit;
+}
+
+fn run(hub: &Hub, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, stage: &Stage, in_exec: Bool, time: u64) -> result: unit reads(input), reads(args), writes(hub), writes(client), writes(stage) {
+  if kind == 193_u64 {
+    introspect(hub: hub, input: input, args: args, client: client);
+  } else if kind == 192_u64 {
+    let shard = False();
+    publish(hub: hub, shard: shard, input: input, args: args, client: client, stage: stage);
+  } else if kind == 198_u64 {
+    let shard = True();
+    publish(hub: hub, shard: shard, input: input, args: args, client: client, stage: stage);
+  } else if kind == 190_u64 {
+    subscribe(hub: hub, kind: kind, input: input, args: args, client: client, time: time);
+  } else if kind == 194_u64 {
+    subscribe(hub: hub, kind: kind, input: input, args: args, client: client, time: time);
+  } else if kind == 196_u64 {
+    if in_exec {
+      pkg::protocol::reply_error(client: client, word: &deny_shard[0_u64..55_u64]);
+    } else {
+      subscribe(hub: hub, kind: kind, input: input, args: args, client: client, time: time);
+    }
+  } else {
+    unsubscribe(hub: hub, kind: kind, input: input, args: args, client: client, time: time);
+  }
+  return unit;
+}
+
+const help_word: Array<u8, 4> = "HELP";
+
+const help_0: Array<u8, 66> = "+PUBSUB <subcommand> [<arg> [value] [opt] ...]. Subcommands are:\r\n";
+
+const help_1: Array<u8, 23> = "+CHANNELS [<pattern>]\r\n";
+
+const help_2: Array<u8, 80> = "+    Return the currently active channels matching a <pattern> (default: '*').\r\n";
+
+const help_3: Array<u8, 9> = "+NUMPAT\r\n";
+
+const help_4: Array<u8, 50> = "+    Return number of subscriptions to patterns.\r\n";
+
+const help_5: Array<u8, 25> = "+NUMSUB [<channel> ...]\r\n";
+
+const help_6: Array<u8, 77> = "+    Return the number of subscribers for the specified channels, excluding\r\n";
+
+const help_7: Array<u8, 51> = "+    pattern subscriptions(default: no channels).\r\n";
+
+const help_8: Array<u8, 28> = "+SHARDCHANNELS [<pattern>]\r\n";
+
+const help_9: Array<u8, 92> = "+    Return the currently active shard level channels matching a <pattern> (default: '*').\r\n";
+
+const help_10: Array<u8, 35> = "+SHARDNUMSUB [<shardchannel> ...]\r\n";
+
+const help_11: Array<u8, 80> = "+    Return the number of subscribers for the specified shard level channel(s)\r\n";
+
+const help_12: Array<u8, 7> = "+HELP\r\n";
+
+const help_13: Array<u8, 23> = "+    Print this help.\r\n";
+
+fn pubsub_help(client: &Client) -> result: unit writes(client) {
+  reply_array(client: client, count: 14_u64);
+  pkg::protocol::reply_word(client: client, word: &help_0[0_u64..66_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_1[0_u64..23_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_2[0_u64..80_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_3[0_u64..9_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_4[0_u64..50_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_5[0_u64..25_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_6[0_u64..77_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_7[0_u64..51_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_8[0_u64..28_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_9[0_u64..92_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_10[0_u64..35_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_11[0_u64..80_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_12[0_u64..7_u64]);
+  pkg::protocol::reply_word(client: client, word: &help_13[0_u64..23_u64]);
+  return unit;
+}

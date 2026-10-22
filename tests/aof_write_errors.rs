@@ -13,6 +13,9 @@ use std::path::Path;
 const MISCONF: &str = "-MISCONF Errors writing to the AOF file: ";
 const EXEC_MISCONF: &str = "-EXECABORT Transaction discarded because of: MISCONF Errors writing to the AOF file: ";
 const PREVIOUS_ERRORS: &str = "-EXECABORT Transaction discarded because of previous errors.\r\n";
+/// script.c:350-355 rejects a write from a read-only script before the
+/// disk-error check at script.c:379-382, so MISCONF never replaces this text.
+const READ_ONLY_SCRIPT: &str = "-ERR Write commands are not allowed from read-only scripts.";
 const POLL_LIMIT: Duration = Duration::from_secs(10);
 /// glibc strerror(EFBIG). `fault` sets RLIMIT_FSIZE to the file's current
 /// length, so write(2) fails before writing a byte; aofWrite returns -1
@@ -23,8 +26,8 @@ const ENOSPC_TEXT: &str = "No space left on device";
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct FileLimit {
-    soft: u64,
+pub(super) struct FileLimit {
+    pub(super) soft: u64,
     hard: u64,
 }
 
@@ -34,7 +37,7 @@ unsafe extern "C" {
 
 /// prlimit(2) on the child owned by this test, preserving its hard limit so
 /// raising the soft limit later needs no privilege. Linux RLIMIT_FSIZE is 1.
-fn file_limit(child: &ProgramChild, soft: u64) -> FileLimit {
+pub(super) fn file_limit(child: &ProgramChild, soft: u64) -> FileLimit {
     let mut previous = FileLimit { soft: 0, hard: 0 };
     let read = unsafe { prlimit64(child.id() as i32, 1, std::ptr::null(), &mut previous) };
     assert_eq!(read, 0, "read child file limit: {}", std::io::Error::last_os_error());
@@ -264,6 +267,29 @@ fn aof_failure_transaction_admission_and_legacy_script_first_write() {
             let error = bulk_reply(&mut client, "pcall err table");
             assert_eq!(error, format!("{}{EFBIG_TEXT}", &MISCONF[1..]), "redis.pcall returns err table");
             assert_eq!(bulk_reply(&mut client, "read after pcall"), "v");
+        }
+        // EVAL_RO and EVALSHA_RO are not WRITE commands, so they pass the
+        // MISCONF admission above; their script's write meets the read-only
+        // refusal before it reaches the disk-error check, for a legacy source
+        // and for a declared-key one, and redis.pcall gets the same text.
+        for name in ["EVAL_RO", "EVALSHA_RO"] {
+            let by_source = name == "EVAL_RO";
+            let read = if by_source { read_source } else { &read_sha };
+            assert_eq!(memory_request(&mut client, &[name, read, "0"]), "$1\r\nv\r\n");
+            let call = if by_source { call_source } else { &call_sha };
+            assert_eq!(memory_request(&mut client, &[name, call, "0"]),
+                format!("{READ_ONLY_SCRIPT} script: {call_sha}, on @user_script:1.\r\n"),
+                "{name}: redis.call raises the read-only text, not MISCONF");
+            let declared = if by_source { declared_source } else { &declared_sha };
+            assert_eq!(memory_request(&mut client, &[name, declared, "2", "readable", "missing"]),
+                format!("{READ_ONLY_SCRIPT} script: {declared_sha}, on @user_script:1.\r\n"),
+                "{name}: declared-entry attempt refuses before the disk-error check");
+            let pcall = if by_source { pcall_source } else { &pcall_sha };
+            client.write_all(&resp(&[name, pcall, "0"])).unwrap();
+            assert_eq!(reply_line(&mut client, "read-only pcall result"), "*2\r\n");
+            let error = bulk_reply(&mut client, "read-only pcall err table");
+            assert_eq!(error, &READ_ONLY_SCRIPT[1..], "{name}: redis.pcall returns the read-only err table");
+            assert_eq!(bulk_reply(&mut client, "read after read-only pcall"), "v");
         }
         assert_eq!(memory_request(&mut client, &["GET", "queued"]), "$-1\r\n");
         file_limit(&child, old.soft);

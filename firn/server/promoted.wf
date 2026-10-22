@@ -1,0 +1,411 @@
+alias CancelSource = std::time::CancelSource;
+alias CancelState = std::time::CancelState;
+alias CancelWatch = std::time::CancelWatch;
+alias Client = pkg::protocol::Client;
+alias Clock = std::time::Clock;
+alias EventConnection = pkg::connection_events::Connection;
+alias Frame = pkg::connection_events::Frame;
+alias HandleFactory = std::io::HandleFactory;
+alias Hub = pkg::connection_events::Hub;
+alias Instant = std::time::Instant;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias Keyspace = pkg::store::Keyspace;
+alias Span = pkg::protocol::Span;
+alias TcpConnection = std::net::TcpConnection;
+alias TcpReceive = std::net::TcpReceive;
+alias TcpSend = std::net::TcpSend;
+alias Transaction = pkg::commands::Transaction;
+alias WallClock = std::time::WallClock;
+
+fn receive_cancelled(global: &CancelState, membership: &CancelState, stopped: &CancelState, finished: &CancelState) -> result: Bool reads(global), reads(membership), reads(stopped), reads(finished) {
+  let changed = bor(global^.fired, membership^.fired);
+  let ended = bor(stopped^.fired, finished^.fired);
+  return bor(changed, ended);
+}
+
+fn forward_receive_cancel(global: CancelWatch, membership: CancelWatch, stopped: CancelWatch, source: CancelSource) -> result: unit pure waits {
+  doc "Combines configuration, membership, connection-stop and read-completion notifications into the one cancellation watch accepted by a host receive. The receive owner fires source before joining this child even when the host operation completes normally.";
+  let global_state = std::time::cancel_state(watch: &global);
+  let membership_state = std::time::cancel_state(watch: &membership);
+  let stopped_state = std::time::cancel_state(watch: &stopped);
+  let finished_watch = std::time::cancel_watch(source: &source);
+  let finished_state = std::time::cancel_state(watch: &finished_watch);
+  atomic g = &global_state, m = &membership_state, s = &stopped_state, f = &finished_state when receive_cancelled(global: g, membership: m, stopped: s, finished: f) {
+  }
+  std::time::cancel_fire(source: &source);
+  return unit;
+}
+
+fn promoted_shutdown(connection: EventConnection, shutdown: CancelWatch) -> result: unit pure waits {
+  doc "Ends promoted input and output waits on server shutdown, or ends its own guarded wait when this connection stops first.";
+  let global = std::time::cancel_state(watch: &shutdown);
+  let local_watch = std::time::cancel_watch(source: &connection.stop);
+  let local = std::time::cancel_state(watch: &local_watch);
+  let stopping = False();
+  atomic g = &global, s = &local when bor(g^.fired, s^.fired) {
+    set stopping = g^.fired;
+  }
+  if stopping {
+    pkg::connection_events::stop(connection: &connection);
+  }
+  return unit;
+}
+
+fn receive_promoted(receive: TcpReceive, factory: HandleFactory, connection: EventConnection, store: Keyspace, clock: Clock) -> result: unit pure waits {
+  doc "Owns only the receiving half. It keeps receiving while commands or sends wait, charges queued and incomplete query bytes together, and closes on EOF, host failure or the one-GiB query limit. Active subscriptions exempt this connection from the idle limit. Configuration, membership and completed writes wake an idle receive directly, through guarded cancellation forwarding rather than periodic deadlines.";
+  let scratch = pkg::protocol::input_new(capacity: 16384_u64);
+  let last = std::time::now(clock: &clock);
+  loop @receiving {
+    let limits = idle_limit(store: &store);
+    if limits.shutdown {
+      break @receiving;
+    }
+    let membership = pkg::connection_events::receive_snapshot(connection: &connection);
+    match membership.activity {
+      Some(value: activity) => {
+        if std::time::instant_reached(deadline: last, instant: activity) {
+          set last = activity;
+        }
+      }
+      None() => {
+      }
+    }
+    let before = std::time::now(clock: &clock);
+    let deadline = None<Instant>();
+    if membership.subscribed {
+    } else if limits.idle != 0_u64 {
+      let quiet = std::time::nanoseconds_from(earlier: last, later: before);
+      let interval = limits.idle *sat 1000000000_u64;
+      let remaining = interval -sat quiet;
+      let bound = std::time::instant_after(instant: before, nanoseconds: remaining);
+      set deadline = Some<Instant>(value: bound);
+    }
+    let source = std::time::cancel_source();
+    let cancel = std::time::cancel_watch(source: &source);
+    let forwarding_source = std::time::cancel_share(source: &source);
+    let stopped = std::time::cancel_watch(source: &connection.stop);
+    let forwarded = spawn forward_receive_cancel(global: move limits.cancel, membership: move membership.cancel, stopped: move stopped, source: move forwarding_source);
+    let size = scratch.inner.len;
+    let outcome = std::net::receive_next(receive: &receive, destination: &scratch.inner[0_u64..size], start: 0_u64, end: size, deadline: deadline, cancel: &cancel);
+    std::time::cancel_fire(source: &source);
+    let joined = forwarded;
+    match outcome {
+      Ok(value: count) => {
+        let arrived = std::time::now(clock: &clock);
+        set last = arrived;
+        pkg::connection_events::activity(connection: &connection, instant: arrived);
+        let chunk = pkg::bytes::copy_bytes(input: &scratch.inner[0_u64..size], start: 0_u64, length: count);
+        let accepted = pkg::connection_events::input_push(connection: &connection, chunk: move chunk);
+        if accepted {
+        } else {
+          break @receiving;
+        }
+      }
+      Err(error: problem) => {
+        if receive_woken(stop: &problem) {
+          let refreshed = idle_limit(store: &store);
+          let current = pkg::connection_events::receive_snapshot(connection: &connection);
+          match current.activity {
+            Some(value: activity) => {
+              if std::time::instant_reached(deadline: last, instant: activity) {
+                set last = activity;
+              }
+            }
+            None() => {
+            }
+          }
+          let watch = std::time::cancel_watch(source: &connection.stop);
+          let stopped_state = std::time::cancel_state(watch: &watch);
+          let stopping = False();
+          atomic s = &stopped_state {
+            set stopping = s^.fired;
+          }
+          if bor(stopping, refreshed.shutdown) {
+            break @receiving;
+          }
+          if current.subscribed {
+          } else if refreshed.idle != 0_u64 {
+            let now = std::time::now(clock: &clock);
+            let quiet = std::time::nanoseconds_from(earlier: last, later: now);
+            let interval = refreshed.idle *sat 1000000000_u64;
+            if quiet >= interval {
+              let expired = pkg::connection_events::forget_idle(hub: &store.pubsub, connection: &connection, last: last, now: now, interval: interval);
+              if expired {
+                break @receiving;
+              }
+            }
+          }
+        } else {
+          break @receiving;
+        }
+      }
+    }
+  }
+  pkg::connection_events::input_end(connection: &connection);
+  pkg::connection_events::forget(hub: &store.pubsub, id: connection.id);
+  pkg::connection_events::stop(connection: &connection);
+  std::net::close_receive(factory: &factory, receive: move receive);
+  return unit;
+}
+
+fn send_promoted_bytes(send: &TcpSend, source: &[u8], cancel: &CancelWatch) -> delivered: Bool reads(source), reads(cancel), writes(send) waits {
+  doc "Sends one immutable frame part from its retained offset. Cancellation and failure discard the connection, so an already-sent prefix is never restarted.";
+  let size = source^.len;
+  let sent = 0_u64;
+  loop @sending (
+    invariant progress: sent <= size
+  ) {
+    if sent == size {
+      return True();
+    }
+    let deadline = None<Instant>();
+    match std::net::send_once(send: send, source: source, start: sent, end: size, deadline: deadline, cancel: cancel) {
+      Ok(value: next) => {
+        set sent = next;
+      }
+      Err(error: problem) => {
+        return False();
+      }
+    }
+  }
+}
+
+fn send_promoted_frame(send: &TcpSend, frame: Frame, cancel: &CancelWatch) -> sent: Option<u64> reads(cancel), writes(send) waits {
+  doc "Consumes a complete frame before reporting its charge released. Frozen message-body storage can be retained by other recipients while this owner releases its two frame parts.";
+  let Frame(prefix: prefix, body: body, charge: charge) = move frame;
+  let prefix_size = prefix.inner.inner.len;
+  let body_size = body.inner.inner.len;
+  let prefix_sent = send_promoted_bytes(send: send, source: &prefix.inner.inner[0_u64..prefix_size], cancel: cancel);
+  if prefix_sent {
+    let body_sent = send_promoted_bytes(send: send, source: &body.inner.inner[0_u64..body_size], cancel: cancel);
+    if body_sent {
+      return Some<u64>(value: charge);
+    }
+  }
+  return None<u64>();
+}
+
+fn output_promoted(send: TcpSend, factory: HandleFactory, connection: EventConnection, hub: Shared<Hub>, clock: Clock, wall: WallClock) -> result: unit pure waits {
+  doc "Alone owns this connection's sending half. It sends ordered immutable frames without holding the hub, retains partial offsets, and releases the hub's pending charge only after a frame owner is consumed. A slow socket cannot delay another output owner. An ordered finish marker drains preceding frames; cancellation instead drops pending output.";
+  let cancel = std::time::cancel_watch(source: &connection.stop);
+  loop @output {
+    let pending = pkg::connection_events::output_take(connection: &connection);
+    match move pending {
+      Some(value: frame) => {
+        let outcome = send_promoted_frame(send: &send, frame: move frame, cancel: &cancel);
+        match outcome {
+          Some(value: charge) => {
+            let instant = std::time::now(clock: &clock);
+            pkg::connection_events::activity(connection: &connection, instant: instant);
+            let reading = read_time(wall: &wall);
+            let seconds = reading.unix_us / 1000000_u64;
+            pkg::connection_events::output_done(hub: &hub, id: connection.id, bytes: charge, time: seconds);
+          }
+          None() => {
+            break @output;
+          }
+        }
+      }
+      None() => {
+        break @output;
+      }
+    }
+  }
+  pkg::connection_events::forget(hub: &hub, id: connection.id);
+  pkg::connection_events::stop(connection: &connection);
+  std::net::close_send(factory: &factory, send: move send);
+  return unit;
+}
+
+fn promoted_input(input: &Box<Slots<u8>>, held: u64, chunk: Box<Slots<u8>>) -> next: Option<u64> writes(input) contract {
+  ensures when Some(value: count): count <= input^.inner.len;
+} {
+  doc "Appends a received chunk to the command owner's incomplete query. The one-GiB query limit bounds this buffer as well as the shared receiver queue; an oversized query closes rather than dropping bytes or stopping reads before EOF.";
+  let count = chunk.inner.len;
+  if held > 1073741824_u64 {
+    return None<u64>();
+  }
+  if count > 1073741824_u64 {
+    return None<u64>();
+  }
+  let next = held + count;
+  if next > 1073741824_u64 {
+    return None<u64>();
+  }
+  loop @room {
+    if next <= input^.inner.len {
+      break @room;
+    }
+    pkg::protocol::input_grow(input: input);
+  }
+  let destination = &input^.inner[held..next];
+  for @bytes (index in 0_u64..count) {
+    set destination^[index] = chunk.inner[index];
+  }
+  return Some<u64>(value: next);
+}
+
+fn promoted_commands(store: &Keyspace, clock: &Clock, wall: &WallClock, shutdown: &CancelSource, connection: &EventConnection, client: Client, args: Box<Slots<Span>>, input: Box<Slots<u8>>, initial: u64, transaction: Transaction) -> graceful: Bool reads(store), reads(wall), reads(connection), writes(clock), writes(shutdown) waits {
+  doc "Owns parsing, client settings and the transaction after promotion. The unconsumed pipeline suffix enters unchanged. Every command completes before the suffix runs; its entire output group is committed before another command is parsed. Input bytes remain charged until parsing consumes them. QUIT and protocol errors request an ordered output finish; receive, send, pressure or shutdown cancellation abandons pending commands.";
+  let env = KeyEnv();
+  let held = initial;
+  let watch = std::time::cancel_watch(source: &connection^.stop);
+  let stopped = std::time::cancel_state(watch: &watch);
+  loop @input {
+    if client.closing {
+      return True();
+    }
+    if held == 0_u64 {
+      let incoming = pkg::connection_events::input_take(connection: connection);
+      match move incoming {
+        Some(value: chunk) => {
+          let appended = promoted_input(input: &input, held: held, chunk: move chunk);
+          match appended {
+            Some(value: count) => {
+              set held = count;
+            }
+            None() => {
+              return False();
+            }
+          }
+        }
+        None() => {
+          return False();
+        }
+      }
+    }
+    let reading = read_time(wall: wall);
+    let time = reading.time;
+    set client.unix_us = reading.unix_us;
+    atomic access = &store^.server {
+      pkg::store::access_settings(server: access, client: &client);
+    }
+    let consumed = 0_u64;
+    let need_more = False();
+    loop @commands {
+      let cancelled = False();
+      atomic s = &stopped {
+        set cancelled = s^.fired;
+      }
+      if cancelled {
+        return False();
+      }
+      if client.authenticated {
+      } else {
+        set client.locked = password_required(store: store);
+      }
+      let capacity = input.inner.len;
+      let bytes = &input.inner[0_u64..capacity];
+      let parsed = pkg::protocol::parse_request(input: bytes, start: consumed, held: held, args: &args, locked: client.locked);
+      if parsed.state == 0_u64 {
+        set need_more = True();
+        break @commands;
+      }
+      if parsed.state == 1_u64 {
+        let live = False();
+        atomic h = &store^.pubsub, s = &stopped {
+          let registered = pkg::connection_events::connection_live(hub: h, id: connection^.id);
+          let running = bnot(s^.fired);
+          set live = band(registered, running);
+        }
+        if live {
+        } else {
+          return False();
+        }
+        let requested = pkg::commands::execute_client::<1>(store: store, input: bytes, args: &args, client: &client, env: &env, time: &time, clock: clock, transaction: &transaction);
+        if requested {
+          std::time::cancel_fire(source: shutdown);
+        }
+        pkg::commands::record_memory_peak(store: store, client: &client);
+        if client.changed {
+          set client.changed = False();
+          pkg::store::client_sync(store: store, client: &client);
+        }
+      } else if parsed.state != 6_u64 {
+        pkg::protocol::protocol_error(client: &client, input: bytes, parsed: parsed);
+        set client.closing = True();
+      }
+      let stage = pkg::connection_events::stage_new();
+      let seconds = client.unix_us / 1000000_u64;
+      atomic h = &store^.pubsub {
+        pkg::connection_events::commit(hub: h, client: &client, stage: &stage, time: seconds);
+      }
+      set consumed = parsed.next;
+      if client.closing {
+        return True();
+      }
+      if consumed >= held {
+        break @commands;
+      }
+    }
+    set held = pkg::protocol::keep_rest(input: &input, from: consumed, held: held);
+    pkg::connection_events::input_used(connection: connection, bytes: consumed);
+    if need_more {
+      let incoming = pkg::connection_events::input_take(connection: connection);
+      match move incoming {
+        Some(value: chunk) => {
+          let appended = promoted_input(input: &input, held: held, chunk: move chunk);
+          match appended {
+            Some(value: count) => {
+              set held = count;
+            }
+            None() => {
+              return False();
+            }
+          }
+        }
+        None() => {
+          return False();
+        }
+      }
+    }
+  }
+}
+
+fn serve_promoted(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clock: Clock, wall: WallClock, shutdown: CancelSource, client: Client, args: Box<Slots<Span>>, input: Box<Slots<u8>>, held: u64, transaction: Transaction) -> result: unit pure waits {
+  doc "Transfers the two socket halves once to independent owners, retaining parser, client and transaction ownership in the command activity. Cleanup enables every child to finish before the activation's implicit joins. A registration id is never reused, so an old retained delivery cannot name a later connection.";
+  let found = pkg::connection_events::connection_get(hub: &store.pubsub, id: client.pubsub_id);
+  let TcpConnection(receive: receive, send: send) = move connection;
+  match move found {
+    Some(value: events) => {
+      let accepted = pkg::connection_events::input_seed(connection: &events, bytes: held);
+      if accepted {
+      } else {
+        pkg::connection_events::forget(hub: &store.pubsub, id: events.id);
+        std::net::close_receive(factory: &factory, receive: move receive);
+        std::net::close_send(factory: &factory, send: move send);
+        return unit;
+      }
+      let receiving_factory = std::io::factory_share(factory: &factory);
+      let receiving_events = pkg::connection_events::connection_share(connection: &events);
+      let receiving_store = pkg::store::keyspace_share(store: &store);
+      let receiving_clock = std::time::clock_share(clock: &clock);
+      spawn receive_promoted(receive: move receive, factory: move receiving_factory, connection: move receiving_events, store: move receiving_store, clock: move receiving_clock);
+      let output_factory = std::io::factory_share(factory: &factory);
+      let output_events = pkg::connection_events::connection_share(connection: &events);
+      let output_hub = pkg::connection_events::hub_share(hub: &store.pubsub);
+      let output_clock = std::time::clock_share(clock: &clock);
+      let output_wall = std::time::wall_clock_share(clock: &wall);
+      spawn output_promoted(send: move send, factory: move output_factory, connection: move output_events, hub: move output_hub, clock: move output_clock, wall: move output_wall);
+      let ending_events = pkg::connection_events::connection_share(connection: &events);
+      let ending_watch = std::time::cancel_watch(source: &shutdown);
+      spawn promoted_shutdown(connection: move ending_events, shutdown: move ending_watch);
+      let graceful = promoted_commands(store: &store, clock: &clock, wall: &wall, shutdown: &shutdown, connection: &events, client: move client, args: move args, input: move input, initial: held, transaction: move transaction);
+      if graceful {
+        pkg::connection_events::finish(hub: &store.pubsub, id: events.id);
+      } else {
+        pkg::connection_events::forget(hub: &store.pubsub, id: events.id);
+        pkg::connection_events::stop(connection: &events);
+      }
+    }
+    None() => {
+      std::net::close_receive(factory: &factory, receive: move receive);
+      std::net::close_send(factory: &factory, send: move send);
+      let dropped_client = move client;
+      let dropped_args = move args;
+      let dropped_input = move input;
+      let dropped_transaction = move transaction;
+    }
+  }
+  return unit;
+}

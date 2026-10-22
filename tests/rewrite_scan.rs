@@ -120,6 +120,22 @@ fn fixture_keys(program: &CompiledProgram, count: usize) {
     std::fs::write(program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof"), bytes).unwrap();
 }
 
+fn long_increment_history(program: &CompiledProgram) -> std::path::PathBuf {
+    fixture(program);
+    let increment = program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof");
+    let mut history = std::fs::OpenOptions::new().append(true).open(&increment).unwrap();
+    let obsolete = vec![b'o'; 32 * 1024];
+    let record = wire(&[b"SET", b"hot", &obsolete]);
+    for _ in 0..4096 { history.write_all(&record).unwrap(); }
+    history.write_all(&wire(&[b"SET", b"hot", b"seed"])).unwrap();
+    // Fixture history is already durable before the server starts, so its
+    // first switch sync measures ongoing appends rather than dirty setup.
+    history.sync_all().unwrap();
+    drop(history);
+    assert!(std::fs::metadata(&increment).unwrap().len() > 128 * 1024 * 1024);
+    increment
+}
+
 #[track_caller]
 fn start(program: &CompiledProgram) -> (ProgramChild, TcpStream, u16) {
     start_with_minimum(program, b"67108864")
@@ -396,6 +412,14 @@ fn reconciled_scan_restores_live_dump_and_non_idempotent_units() {
             request(&mut client, &[b"HINCRBYFLOAT", b"single:hash", b"field", b"0.5"]);
             request(&mut client, &[b"SADD", b"single:set", b"a", b"b", b"c"]);
             request(&mut client, &[b"SPOP", b"single:set"]);
+            // One statement on one key that writes several records: a
+            // 1500-member SPOP COUNT writes two SREM batches (1024 and 476),
+            // and both must reach the captured journal and the restored base.
+            let multi: Vec<String> = (0..2500).map(|i| format!("m{i}")).collect();
+            let mut sadd: Vec<&[u8]> = vec![b"SADD".as_slice(), b"single:multi".as_slice()];
+            sadd.extend(multi.iter().map(|m| m.as_bytes()));
+            request(&mut client, &sadd);
+            request(&mut client, &[b"SPOP", b"single:multi", b"1500"]);
             for key in &worker_unobserved {
                 request(&mut client, &[b"INCR", key]);
             }
@@ -862,19 +886,54 @@ fn reconciled_scan_streams_large_history_for_a_small_live_value() {
     rewrite_stop(&mut restored, child);
 }
 
+/// The rewrite ledger is excluded from eviction less its rotation charges,
+/// which the AOF buffer capacities already cover; without that subtraction the
+/// exclusion would be buffer + used. Read from one INFO reply, which is one
+/// Meta snapshot. Returns the rotation charge the reply shows.
+#[track_caller]
+fn assert_rotation_exclusion(info: &str) -> u64 {
+    let charged: u64 = info_field(info, "firn_aof_rewrite_charged").unwrap().parse().unwrap();
+    let buffer: u64 = info_field(info, "mem_aof_buffer").unwrap().parse().unwrap();
+    let used: u64 = info_field(info, "firn_aof_rewrite_used").unwrap().parse().unwrap();
+    let excluded: u64 = info_field(info, "mem_not_counted_for_evict").unwrap().parse().unwrap();
+    assert!(charged <= used, "{info}");
+    assert_eq!(excluded, buffer + (used - charged),
+        "rotation charges must be excluded from the ledger once, as their buffer capacity is: {info}");
+    charged
+}
+
 #[test]
-fn reconciled_scan_pressure_after_s1_aborts_before_installation() {
+fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
     let program = CompiledProgram::from_environment();
     fixture(&program);
     let (child, mut client, _) = start(&program);
+    client.write_all(&resp(&["INFO", "memory"])).unwrap();
+    let before = bulk_reply(&mut client, "AOF exclusion before rewrite");
+    let aof_capacity: u64 = info_field(&before, "mem_not_counted_for_evict").unwrap().parse().unwrap();
     paced_rewrite_start(&mut client);
     scanned_keys(&program, &mut client);
+    // No client mutation has appended bytes since startup and S1 is still
+    // ahead. Ordinary AOF capacity is unchanged, so this additional exclusion
+    // must be the live rewrite ledger rather than a collecting-buffer charge.
+    client.write_all(&resp(&["INFO", "all"])).unwrap();
+    let capturing = bulk_reply(&mut client, "rewrite memory exclusion");
+    assert_eq!(info_field(&capturing, "aof_rewrite_in_progress").as_deref(), Some("1"), "{capturing}");
+    assert_eq!(info_field(&capturing, "firn_aof_rewrite_cut").as_deref(), Some("0"), "{capturing}");
+    let rewrite_used: u64 = info_field(&capturing, "firn_aof_rewrite_used").unwrap().parse().unwrap();
+    let excluded: u64 = info_field(&capturing, "mem_not_counted_for_evict").unwrap().parse().unwrap();
+    assert!(rewrite_used > 0, "{capturing}");
+    assert_eq!(excluded, aof_capacity + rewrite_used, "rewrite allocations must be excluded exactly once: {capturing}");
     let payload = vec![b'p'; 32 * 1024];
     for _ in 0..200 {
         request(&mut client, &[b"SET", b"hot", &payload]);
     }
     let manifest = program.working_directory().join("appendonlydir/appendonly.aof.manifest");
     let deadline = Instant::now() + Duration::from_secs(20);
+    // Post-cut writes charge the rotation backlog (see the post-cut backlog
+    // case). A few 32 KiB writes after the cut charge it without exhausting
+    // R; 32 KiB writes during the whole poll kept S1 from rotating (CI run
+    // 39498935592), and 1 KiB writes charged nothing (CI run 39510473972).
+    let mut writes_after_cut = 0;
     loop {
         let text = std::fs::read_to_string(&manifest).unwrap();
         if text.contains("appendonly.aof.2.incr.aof") {
@@ -882,20 +941,34 @@ fn reconciled_scan_pressure_after_s1_aborts_before_installation() {
             break;
         }
         assert!(Instant::now() < deadline, "S1 never rotated");
+        if rewrite_info(&mut client)["firn_aof_rewrite_cut"] == "1" && writes_after_cut < 4 {
+            request(&mut client, &[b"SET", b"hot", &payload]);
+            writes_after_cut += 1;
+        }
         std::thread::sleep(Duration::from_micros(100));
     }
+    // Whether these writes land while the writer rotates, and so charge the
+    // ledger, is a race (CI run 39525916088 sampled a charge of 0), so the
+    // exclusion is only reconciled here; the post-cut backlog case holds the
+    // rotation open and requires a nonzero charge.
+    client.write_all(&resp(&["INFO", "all"])).unwrap();
+    let rotated = bulk_reply(&mut client, "rotation memory exclusion");
+    assert_rotation_exclusion(&rotated);
     // Lower the ordinary Redis limit while frozen images still await release.
-    // PING is admitted even under noeviction; it drives the normal pressure check.
+    // Service pressure still refuses DENYOOM under noeviction, but it must
+    // not cancel rewrite work whose bounded memory is outside maxmemory.
     assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"1"]), Reply::Line(b"+OK".to_vec()));
-    request(&mut client, &[b"PING"]);
+    assert_eq!(request(&mut client, &[b"PING"]), Reply::Line(b"+PONG".to_vec()));
+    assert_eq!(memory_request(&mut client, &["SET", "refused", "value"]),
+        "-OOM command not allowed when used memory > 'maxmemory'.\r\n");
     let info = rewrite_wait(&mut client);
-    assert_eq!(info["aof_last_bgrewrite_status"], "err", "post-S1 pressure must cancel retained work");
-    assert_eq!(info["firn_aof_rewrite_abort_reason"], "memory_pressure", "pressure must remain the first cause through cleanup");
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok", "post-S1 service pressure must leave the bounded rewrite intact: {info:?}");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "", "{info:?}");
+    assert_eq!(info["firn_aof_rewrite_used"], "0", "successful cleanup must release the rewrite charge");
     assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"0"]), Reply::Line(b"+OK".to_vec()));
     let text = std::fs::read_to_string(&manifest).unwrap();
-    assert!(text.contains("appendonly.aof.1.base.aof"));
-    assert!(text.contains("appendonly.aof.1.incr.aof"));
-    assert!(text.contains("appendonly.aof.2.incr.aof"));
+    assert_eq!(text, rewrite_manifest(2, 2), "successful rewrite must publish the new base");
+    assert_eq!(request(&mut client, &[b"GET", b"refused"]), Reply::Bulk(None));
     let expected = snapshot(&mut client);
     rewrite_stop(&mut client, child);
     let (child, mut restored, _) = start(&program);
@@ -904,20 +977,121 @@ fn reconciled_scan_pressure_after_s1_aborts_before_installation() {
 }
 
 #[test]
+fn reconciled_scan_long_history_completes_under_writes_without_duplicate_effects() {
+    // The files live in memory. Between S1 and the new increment's
+    // publication the sole writer syncs files, and on a shared disk those
+    // syncs wait behind other cases' large writebacks while this case's
+    // writer fills the rotation backlog: past 4 MiB of it the rewrite aborts.
+    // The case checks that S1 does no work proportional to the history, not
+    // the disk's speed. The reread it guards against still fails it in memory
+    // (test-stability.md in research/investigations/aof-rewrite).
+    let program = CompiledProgram::from_environment_under(std::path::Path::new("/dev/shm"));
+    long_increment_history(&program);
+    // Keep the 128-MiB history from triggering an automatic rewrite. Default
+    // unlimited maxmemory retains R = 16 MiB, allowing ordinary switch I/O
+    // while the old history reread still produces enough backlog to exceed R.
+    let (child, mut control, port) = start_with_minimum(&program, b"4294967296");
+    assert_eq!(request(&mut control, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"100"]), Reply::Line(b"+OK".to_vec()));
+    let running = Arc::new(AtomicBool::new(true));
+    let worker_running = running.clone();
+    let monitor = child.monitor();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut client = connect_when_ready(port, &monitor);
+        let mut count = 0_u64;
+        let mut appended = Vec::new();
+        let mut members = Vec::new();
+        let mut cut_count = None;
+        let mut last_value = vec![b'n'; 16 * 1024];
+        loop {
+            count += 1;
+            let marker = count.to_le_bytes();
+            last_value[..marker.len()].copy_from_slice(&marker);
+            // A small pipeline keeps the old reread's collecting buffer
+            // growing, while bounded values and staging avoid scan pressure.
+            let mut batch = Vec::new();
+            batch.extend(wire(&[b"SET", b"hot", &last_value]));
+            batch.extend(wire(&[b"INCR", b"history:counter"]));
+            batch.extend(wire(&[b"APPEND", b"history:text", &marker]));
+            batch.extend(wire(&[b"RPUSH", b"history:list", &marker]));
+            client.write_all(&batch).unwrap();
+            assert_eq!(read_reply(&mut client), Reply::Line(b"+OK".to_vec()));
+            assert_eq!(read_reply(&mut client), Reply::Line(format!(":{count}").into_bytes()));
+            assert_eq!(read_reply(&mut client), Reply::Line(format!(":{}", count * 8).into_bytes()));
+            assert_eq!(read_reply(&mut client), Reply::Line(format!(":{count}").into_bytes()));
+            appended.extend_from_slice(&marker);
+            members.push(Reply::Bulk(Some(marker.to_vec())));
+            let progress = rewrite_info(&mut client);
+            if progress["firn_aof_rewrite_cut"] == "1" && cut_count.is_none() { cut_count = Some(count); }
+            if count == 1 { ready_tx.send(()).unwrap(); }
+            // At least one whole acknowledged pipeline must follow an
+            // observed S1, even if the fast switch finished before sampling.
+            if !worker_running.load(Ordering::Acquire) && cut_count.is_none_or(|cut| count > cut) { break; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        (count, cut_count, last_value, appended, members)
+    });
+    ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    rewrite_start(&mut control);
+    scanned_keys(&program, &mut control);
+    assert_eq!(request(&mut control, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"0"]), Reply::Line(b"+OK".to_vec()));
+    let info = rewrite_wait(&mut control);
+    running.store(false, Ordering::Release);
+    let (count, cut_count, hot, appended, members) = worker.join().unwrap();
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok", "long history must not suspend ordinary draining at S1; the old full reread exhausts R with rotation_reserve: {info:?}");
+    let cut_count = cut_count.expect("the continuous writer must observe S1");
+    assert!(cut_count > 1 && count > cut_count, "writes must be acknowledged before rewrite admission and after an observed S1");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "");
+    assert_eq!(info["firn_aof_rewrite_cut"], "1");
+    assert_eq!(info["firn_aof_rewrite_reserve"], "16777216");
+    let peak: u64 = info["firn_aof_rewrite_peak"].parse().unwrap();
+    assert!(peak <= 16_777_216, "removing the reread must retain the reserve bound");
+    let check = |client: &mut TcpStream| {
+        assert_eq!(bulk(request(client, &[b"GET", b"hot"])), hot);
+        assert_eq!(bulk(request(client, &[b"GET", b"history:counter"])), count.to_string().into_bytes());
+        assert_eq!(bulk(request(client, &[b"GET", b"history:text"])), appended);
+        assert_eq!(array(request(client, &[b"LRANGE", b"history:list", b"0", b"-1"])), members);
+        assert_eq!(request(client, &[b"DBSIZE"]), Reply::Line(b":6004".to_vec()));
+    };
+    check(&mut control);
+    rewrite_stop(&mut control, child);
+    let (child, mut restored, _) = start(&program);
+    check(&mut restored);
+    rewrite_stop(&mut restored, child);
+}
+
+#[test]
 fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     let program = CompiledProgram::from_environment();
-    fixture(&program);
-    let increment = program.working_directory().join("appendonlydir/appendonly.aof.1.incr.aof");
-    let mut history = std::fs::OpenOptions::new().append(true).open(&increment).unwrap();
-    let obsolete = vec![b'o'; 32 * 1024];
-    let record = wire(&[b"SET", b"hot", &obsolete]);
-    for _ in 0..4096 { history.write_all(&record).unwrap(); }
-    history.write_all(&wire(&[b"SET", b"hot", b"seed"])).unwrap();
-    drop(history);
+    let increment = long_increment_history(&program);
     // The 128 MiB history exceeds the default minimum, and Redis starts an
     // automatic rewrite from it as from any grown AOF; raise the minimum so
     // this case's BGREWRITEAOF is the only rewrite.
-    let (child, mut client, _) = start_with_minimum(&program, b"4294967296");
+    let lease = support::lease_port();
+    let port = lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route_ignoring_xfsz(true, &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", b"4294967296"]).with_port(&lease);
+    let mut client = connect_when_ready(port, &child);
+    // A real failed append makes its boundary outcome unknown under the
+    // Whitefoot I/O contract. Successful recovery must retain that unknown
+    // state until the exceptional switch-time reread refreshes it. This
+    // host failure, rather than ordinary history, now keeps rotation busy.
+    let previous = aof_write_errors::file_limit(&child, std::fs::metadata(&increment).unwrap().len());
+    assert_eq!(request(&mut client, &[b"SET", b"hot", b"failed-append"]), Reply::Line(b"+OK".to_vec()));
+    let recovery_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let info = rewrite_info(&mut client);
+        if info["aof_last_write_status"] == "err" { break; }
+        assert!(Instant::now() < recovery_deadline, "file limit did not fail the ordinary append: {info:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    aof_write_errors::file_limit(&child, previous.soft);
+    loop {
+        let info = rewrite_info(&mut client);
+        if info["aof_last_write_status"] == "ok" && info["aof_buffer_length"] == "0" { break; }
+        assert!(Instant::now() < recovery_deadline, "ordinary append did not recover after restoring its file limit: {info:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"67108864"]);
     rewrite_start(&mut client);
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -931,10 +1105,24 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     assert_old_manifest(&program);
     let value = vec![b'n'; 16 * 1024];
     let mut writes = 0;
+    let mut reconciled = false;
     loop {
         request(&mut client, &[b"SET", b"hot", &value]);
         writes += 1;
         let info = rewrite_info(&mut client);
+        // The rotation is held open here, so the collecting buffer's growth
+        // charges the ledger and stays charged until the attempt ends: the
+        // exclusion must then leave those charges out of the ledger once.
+        if !reconciled && info["aof_rewrite_in_progress"] == "1" && info["firn_aof_rewrite_charged"] != "0" {
+            client.write_all(&resp(&["INFO", "all"])).unwrap();
+            let all = bulk_reply(&mut client, "exclusion while the backlog charges");
+            if info_field(&all, "aof_rewrite_in_progress").as_deref() == Some("1")
+                && info_field(&all, "firn_aof_rewrite_abort_reason").as_deref() == Some("")
+            {
+                assert!(assert_rotation_exclusion(&all) > 0, "{all}");
+                reconciled = true;
+            }
+        }
         if info["aof_rewrite_in_progress"] == "0" {
             assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance");
             assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
@@ -943,6 +1131,7 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         assert!(Instant::now() < deadline, "post-cut backlog never aborted");
     }
     assert!(writes > 1);
+    assert!(reconciled, "the exclusion was never checked while the backlog was charged");
     assert_old_manifest(&program);
     request(&mut client, &[b"INCR", b"after-backlog"]);
     rewrite_stop(&mut client, child);

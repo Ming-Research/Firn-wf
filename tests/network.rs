@@ -8,7 +8,10 @@ mod aof_write_errors;
 mod aof_sync_fault;
 mod rewrite_sequence;
 mod rewrite_scan;
+mod rewrite_faults;
 mod write_meta;
+mod collection_scan;
+mod pubsub;
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
@@ -28,26 +31,49 @@ fn connect_when_ready(port: u16, child: &support::ProgramMonitor) -> TcpStream {
 
 /// Connects to a program that is still starting, at the address it listens on.
 fn connect_to_when_ready(address: SocketAddr, child: &support::ProgramMonitor) -> TcpStream {
+    connect_to_when_ready_using(address, child, TcpStream::connect_timeout)
+}
+
+fn connect_to_when_ready_using(
+    address: SocketAddr,
+    child: &support::ProgramMonitor,
+    mut connect: impl FnMut(&SocketAddr, Duration) -> std::io::Result<TcpStream>,
+) -> TcpStream {
     let port = address.port();
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         child.assert_running(port);
-        match TcpStream::connect_timeout(&address, Duration::from_millis(100)) {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "connect to program at {address} exceeded the 20-second deadline{}",
+            child.diagnostic_block(Some(port))
+        );
+        // Keep a bound even if the local listen backlog is full, but avoid
+        // imposing a short timeout on a handshake delayed by runner load.
+        match connect(&address, remaining) {
             Ok(stream) => {
                 child.assert_running(port);
                 return bounded_stream(stream);
             }
-            Err(error) if Instant::now() < deadline => {
-                let _ = error;
+            // Other errors, notably timeouts, can follow a completed
+            // handshake. Retrying would spend another accepted-client slot.
+            Err(error) if retry_refused_connection(&error, deadline) => {
                 child.assert_running(port);
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => {
-                child.assert_running(port);
-                panic!("the program never listened on {port}: {error}");
+                panic!(
+                    "connect to program at {address} failed: {error}{}",
+                    child.diagnostic_block(Some(port))
+                );
             }
         }
     }
+}
+
+fn retry_refused_connection(error: &std::io::Error, deadline: Instant) -> bool {
+    error.kind() == std::io::ErrorKind::ConnectionRefused && Instant::now() < deadline
 }
 
 fn bounded_stream(stream: TcpStream) -> TcpStream {
@@ -167,6 +193,56 @@ fn info_field(info: &str, name: &str) -> Option<String> {
         .find_map(|line| line.strip_prefix(&format!("{name}:")).map(str::to_owned))
 }
 
+/// INFO is a bulk string in RESP2 and a txt verbatim string in RESP3.
+fn info_reply(stream: &mut TcpStream, protocol: u8) -> String {
+    if protocol == 2 {
+        return bulk_reply(stream, "INFO field audit");
+    }
+    let header = reply_line(stream, "INFO verbatim header");
+    let length = header.strip_prefix('=')
+        .and_then(|rest| rest.strip_suffix("\r\n"))
+        .and_then(|digits| digits.parse::<usize>().ok())
+        .expect("INFO RESP3 verbatim length");
+    let mut body = vec![0; length + 2];
+    stream.read_exact(&mut body).expect("INFO verbatim body");
+    assert!(body.ends_with(b"\r\n"), "{body:?}");
+    body.truncate(length);
+    let body = String::from_utf8(body).expect("INFO UTF-8 text");
+    body.strip_prefix("txt:").expect("INFO txt verbatim tag").to_owned()
+}
+
+/// Unlike a field lookup, this checks every delimiter and duplicate, including
+/// empty sections. Omitting unmeasured fields still preserves Redis's framing.
+fn info_structure(info: &str) -> Vec<(&str, Vec<(&str, &str)>)> {
+    if info.is_empty() {
+        return Vec::new();
+    }
+    let body = info.strip_suffix("\r\n").expect("INFO final CR LF");
+    body.split("\r\n\r\n").map(|section| {
+        let mut lines = section.split("\r\n");
+        let name = lines.next().unwrap().strip_prefix("# ").expect("INFO section header");
+        assert!(!name.is_empty() && !name.contains(['\r', '\n']), "{name:?}");
+        let mut seen = std::collections::BTreeSet::new();
+        let fields = lines.map(|line| {
+            assert!(!line.contains(['\r', '\n']), "INFO line: {line:?}");
+            let (field, value) = line.split_once(':').expect("INFO name:value field");
+            assert!(!field.is_empty() && seen.insert(field), "duplicate INFO field: {field}");
+            (field, value)
+        }).collect();
+        (name, fields)
+    }).collect()
+}
+
+fn info_human_bytes(value: u64) -> String {
+    // Redis 7.2.16 server.c:bytesToHuman, also used by genRedisInfoString.
+    if value < 1024 || value >= 1_u64 << 60 {
+        return format!("{value}B");
+    }
+    let units = ["K", "M", "G", "T", "P"];
+    let unit = ((63 - value.leading_zeros()) / 10 - 1) as usize;
+    format!("{:.2}{}", value as f64 / (1_u64 << (10 * (unit + 1))) as f64, units[unit])
+}
+
 /// Reads one `TIME` reply as calendar milliseconds.
 #[cfg(target_os = "linux")]
 fn time_reply(stream: &mut TcpStream, what: &str) -> u64 {
@@ -227,8 +303,8 @@ fn expect_replies(stream: &mut TcpStream, expected: &[u8], what: &str) {
     let returned = read_reply_bytes(stream, expected.len(), what, None)
         .unwrap_or_else(|failure| panic!("{failure}"));
     assert_eq!(
-        String::from_utf8_lossy(&returned),
-        String::from_utf8_lossy(expected),
+        returned.as_slice(),
+        expected,
         "{what}"
     );
 }
@@ -240,8 +316,8 @@ fn expect_replies_with_child(stream: &mut TcpStream, expected: &[u8], what: &str
     let returned = read_reply_bytes(stream, expected.len(), what, Some(child))
         .unwrap_or_else(|failure| panic!("{failure}"));
     assert_eq!(
-        String::from_utf8_lossy(&returned),
-        String::from_utf8_lossy(expected),
+        returned.as_slice(),
+        expected,
         "{what}"
     );
 }
@@ -342,6 +418,23 @@ fn reply_read_failure_carries_child_diagnostics_in_the_panic_payload() {
     let (peer, _) = listener.accept().expect("accept panic-payload peer");
     drop(peer);
     expect_replies_with_child(&mut reader, b"+PONG\r\n", "loaded", &mut child);
+}
+
+#[test]
+fn reply_assertion_rejects_distinct_non_utf8_bytes() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reply regression listener");
+    let address = listener.local_addr().expect("reply listener address");
+    let mut stream = bounded_stream(TcpStream::connect(address).expect("reply regression connection"));
+    let (peer, _) = listener.accept().expect("reply regression peer");
+    let mut peer = bounded_stream(peer);
+    peer.write_all(b"\xff").expect("send the invalid UTF-8 byte");
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        expect_replies(&mut stream, b"\xfe", "different invalid UTF-8 bytes");
+    }));
+    let failure = outcome.expect_err("different bytes must fail even if their lossy text is equal");
+    let message = failure.downcast_ref::<String>().expect("formatted assertion failure");
+    assert!(message.contains("assertion `left == right` failed")
+        && message.contains("different invalid UTF-8 bytes"), "{message}");
 }
 
 /// [SHARE-1, SHARE-3] firn serves every client over one
@@ -1169,21 +1262,20 @@ fn firn_replays_its_append_only_file_after_a_restart_on_both_routes_with_lists_a
     }
 }
 
-/// [PRE-2] firn records its writes in its append-only file as Redis 7.0.15
+/// [PRE-2] firn records its writes in its append-only file as Redis 7.2.16
 /// propagates them, which a replay does not show where two forms replay to the
-/// same state: a key `MSET` or `GET` finds expired is recorded as its `DEL`
-/// before the command, and so is each key `MSETNX` finds expired before its
-/// first live one, and each key `DEL` or `EXISTS` finds expired, once, in the
-/// order named; `GETDEL` is recorded as `DEL`,
-/// `GETSET` as `SET`, `INCRBYFLOAT` as `SET` with `KEEPTTL`, `GETEX` as
-/// `PEXPIREAT` or `PERSIST`, `EXAT` as `PXAT` and `EXPIREAT` as `PEXPIREAT`,
-/// both in milliseconds, a `PEXPIREAT` its LT refused not at all, and the
-/// other commands as they were sent. The expected file is redis-server
-/// 7.0.15's for the same requests but for the `SELECT 0` it writes first and
-/// the `MULTI` and `EXEC` it brackets one command's records in. The expiring
-/// context, which records the same `DEL` when it removes an expired key
-/// first, could change the file only by removing `zz` or `aa` between their
-/// `SET` and `MSETNX`, a window of microseconds.
+/// same state. A command's lazy expiry DELs precede its own effect, and more
+/// than one effect is wrapped in MULTI/EXEC, including a refused MSETNX whose
+/// only effects are two expired-key removals. GETDEL becomes DEL, GETSET
+/// becomes SET, INCRBYFLOAT becomes SET with KEEPTTL, GETEX becomes
+/// PEXPIREAT or PERSIST, and EXAT and EXPIREAT become millisecond deadlines.
+/// The complete 1418-byte expected incremental file, including SELECT 0,
+/// was recorded by Redis 7.2.16 for the same requests; the recording is kept
+/// in research/experiments/aof-oracle/legacy-forms-recording.json
+/// (legacy-direct-propagation-forms). Only SELECT 0 frames are ignored in
+/// the comparison, keeping it independent of database-selection placement.
+/// The pipeline must reach expired keys before active expiry removes them;
+/// active expiry propagates its removals independently of command effects.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_its_writes_as_redis_propagates_them() {
@@ -1248,13 +1340,168 @@ fn firn_records_its_writes_as_redis_propagates_them() {
     assert!(output.status.success(), "firn: {:?}", output.status);
     let file =
         std::fs::read(aof_incremental_path(fixture.path(), "forms.aof")).expect("read firn's file");
+    let expected: &[u8] = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$6\r\nmset:k\r\n$3\r\nold\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$6\r\nmset:k\r\n*3\r\n$4\r\nMSET\r\n$6\r\nmset:k\r\n$3\r\nnew\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$3\r\nSET\r\n$4\r\nread\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$4\r\nread\r\n*3\r\n$3\r\nSET\r\n$2\r\ngd\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\ngd\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\na\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\nb\r\n*3\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.5\r\n*4\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.6\r\n$7\r\nKEEPTTL\r\n*3\r\n$3\r\nSET\r\n$2\r\nge\r\n$1\r\nv\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nge\r\n$14\r\n99999999999999\r\n*2\r\n$7\r\nPERSIST\r\n$2\r\nge\r\n*5\r\n$3\r\nSET\r\n$2\r\nat\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$14\r\n99999999999000\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nat\r\n$14\r\n99999999998000\r\n*3\r\n$5\r\nSETNX\r\n$2\r\nnx\r\n$1\r\nv\r\n*3\r\n$6\r\nAPPEND\r\n$2\r\nap\r\n$1\r\nx\r\n*4\r\n$8\r\nSETRANGE\r\n$2\r\nap\r\n$1\r\n3\r\n$1\r\ny\r\n*3\r\n$6\r\nINCRBY\r\n$2\r\nib\r\n$1\r\n5\r\n*2\r\n$4\r\nDECR\r\n$2\r\nib\r\n*5\r\n$3\r\nSET\r\n$2\r\nzz\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\naa\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\nlive\r\n$1\r\nv\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nzz\r\n*2\r\n$3\r\nDEL\r\n$2\r\naa\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$6\r\nMSETNX\r\n$2\r\nm1\r\n$1\r\na\r\n$2\r\nm2\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$2\r\nm1\r\n$2\r\nm3\r\n*3\r\n$4\r\nCOPY\r\n$2\r\nm3\r\n$2\r\nm4\r\n*2\r\n$6\r\nUNLINK\r\n$2\r\nm4\r\n*5\r\n$3\r\nSET\r\n$2\r\ny2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\ny1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny2\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny1\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$3\r\nSET\r\n$2\r\nx2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx2\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n*1\r\n$4\r\nEXEC\r\n";
     assert_eq!(
-        String::from_utf8_lossy(&file),
-        String::from_utf8_lossy(
-            b"*5\r\n$3\r\nSET\r\n$6\r\nmset:k\r\n$3\r\nold\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$6\r\nmset:k\r\n*3\r\n$4\r\nMSET\r\n$6\r\nmset:k\r\n$3\r\nnew\r\n*5\r\n$3\r\nSET\r\n$4\r\nread\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$4\r\nread\r\n*3\r\n$3\r\nSET\r\n$2\r\ngd\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\ngd\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\na\r\n*3\r\n$3\r\nSET\r\n$2\r\ngs\r\n$1\r\nb\r\n*3\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.5\r\n*4\r\n$3\r\nSET\r\n$1\r\nf\r\n$4\r\n10.6\r\n$7\r\nKEEPTTL\r\n*3\r\n$3\r\nSET\r\n$2\r\nge\r\n$1\r\nv\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nge\r\n$14\r\n99999999999999\r\n*2\r\n$7\r\nPERSIST\r\n$2\r\nge\r\n*5\r\n$3\r\nSET\r\n$2\r\nat\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$14\r\n99999999999000\r\n*3\r\n$9\r\nPEXPIREAT\r\n$2\r\nat\r\n$14\r\n99999999998000\r\n*3\r\n$5\r\nSETNX\r\n$2\r\nnx\r\n$1\r\nv\r\n*3\r\n$6\r\nAPPEND\r\n$2\r\nap\r\n$1\r\nx\r\n*4\r\n$8\r\nSETRANGE\r\n$2\r\nap\r\n$1\r\n3\r\n$1\r\ny\r\n*3\r\n$6\r\nINCRBY\r\n$2\r\nib\r\n$1\r\n5\r\n*2\r\n$4\r\nDECR\r\n$2\r\nib\r\n*5\r\n$3\r\nSET\r\n$2\r\nzz\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\naa\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$3\r\nSET\r\n$4\r\nlive\r\n$1\r\nv\r\n*2\r\n$3\r\nDEL\r\n$2\r\nzz\r\n*2\r\n$3\r\nDEL\r\n$2\r\naa\r\n*5\r\n$6\r\nMSETNX\r\n$2\r\nm1\r\n$1\r\na\r\n$2\r\nm2\r\n$1\r\nb\r\n*3\r\n$6\r\nRENAME\r\n$2\r\nm1\r\n$2\r\nm3\r\n*3\r\n$4\r\nCOPY\r\n$2\r\nm3\r\n$2\r\nm4\r\n*2\r\n$6\r\nUNLINK\r\n$2\r\nm4\r\n*5\r\n$3\r\nSET\r\n$2\r\ny2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\ny1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny2\r\n*2\r\n$3\r\nDEL\r\n$2\r\ny1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx2\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*5\r\n$3\r\nSET\r\n$2\r\nx1\r\n$1\r\n1\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx2\r\n*2\r\n$3\r\nDEL\r\n$2\r\nx1\r\n"
-        ),
+        aof_record_bytes(&aof_records_without_select_zero(&file)),
+        aof_record_bytes(&aof_records_without_select_zero(expected)),
         "firn's append-only file"
     );
+}
+
+/// Redis 7.2.16 preserves SET's argument vector when PXAT was supplied,
+/// including NX and XX GET, but rewrites EX, PX and EXAT to SET key val PXAT
+/// milliseconds. The first two byte expectations and PX rewrite are recorded
+/// by Redis 7.2.16 in research/experiments/aof-oracle/set-spop-recording.json
+/// (case aof-set-nx-pxat);
+/// mixed-case/reordered arguments and EX/EXAT follow src/t_string.c's
+/// setGenericCommand and getExpireMillisecondsOrReply in tag 7.2.16.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_set_pxat_arguments_and_rewrites_other_expiries() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let name = "set-expiry-arguments.aof";
+    let child = program.spawn_in_directory(
+        fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()],
+    ).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    client.write_all(&resp(&["TIME"])).unwrap();
+    let before = time_reply(&mut client, "before relative SET expiries");
+    let mut batch = Vec::new();
+    for request in [
+        vec!["SET", "k", "v", "NX", "PXAT", "9999999999999"],
+        vec!["SET", "k", "w", "XX", "GET", "PXAT", "9999999999999"],
+        vec!["sEt", "k", "last", "pXaT", "9999999999999", "gEt", "xX"],
+        vec!["SET", "j", "v", "PX", "100000"],
+        vec!["SET", "ex", "v", "NX", "EX", "100"],
+        vec!["SET", "k", "final", "XX", "GET", "EXAT", "9999999999"],
+        vec!["TIME"],
+    ] {
+        batch.extend(resp(&request));
+    }
+    client.write_all(&batch).unwrap();
+    expect_replies(
+        &mut client,
+        b"+OK\r\n$1\r\nv\r\n$1\r\nw\r\n+OK\r\n+OK\r\n$4\r\nlast\r\n",
+        "SET expiry argument forms",
+    );
+    let after = time_reply(&mut client, "after relative SET expiries");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+    let file = std::fs::read(aof_incremental_path(fixture.path(), name)).unwrap();
+    let records = aof_records_without_select_zero(&file);
+    assert_eq!(records.len(), 6, "only the six successful SETs propagate");
+    let mut expected = [
+        resp(&["SET", "k", "v", "NX", "PXAT", "9999999999999"]),
+        resp(&["SET", "k", "w", "XX", "GET", "PXAT", "9999999999999"]),
+        resp(&["sEt", "k", "last", "pXaT", "9999999999999", "gEt", "xX"]),
+    ].concat();
+    for (record, key) in records[3..5].iter().zip(["j", "ex"]) {
+        assert_eq!(record.len(), 5, "{key}: canonical SET has five arguments");
+        assert_eq!(&record[..4], &["SET", key, "v", "PXAT"]);
+        let expires: u64 = record[4].parse().expect("absolute expiry milliseconds");
+        assert!(
+            (before + 100000..=after + 100000).contains(&expires),
+            "{key}: relative 100 seconds must become command time + 100000 ms: {expires}, TIME {before}..{after}"
+        );
+        expected.extend(resp(&["SET", key, "v", "PXAT", &expires.to_string()]));
+    }
+    expected.extend(resp(&["SET", "k", "final", "PXAT", "9999999999000"]));
+    assert_eq!(aof_record_bytes(&records), expected, "SET propagation bytes");
+}
+
+/// Redis 7.2.16 writes SPOP COUNT's partial removals in SREM batches of at
+/// most 1024 members, wraps multiple effects in MULTI/EXEC, and writes DEL
+/// when the entire set is popped. The 2500/3000 and 2/3 cases were recorded by
+/// Redis 7.2.16 in research/experiments/aof-oracle/set-spop-recording.json
+/// (case aof-spop-2500);
+/// the 1024 boundary and whole-set rule follow src/t_set.c's
+/// spopWithCountCommand in tag 7.2.16. Members are random, so the AOF's
+/// removed members must equal the popped reply, in its order, rather than
+/// a particular oracle's draw.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_records_spop_count_in_redis_srem_batches() {
+    let program = firn();
+    let fixture = fixture_directory();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let name = "spop-count-batches.aof";
+    let child = program.spawn_in_directory(
+        fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()],
+    ).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let cases: &[(&str, usize, usize, &[usize], bool)] = &[
+        ("s", 3000, 2500, &[1024, 1024, 452], false),
+        ("t", 3, 2, &[2], false),
+        ("limit", 1025, 1024, &[1024], false),
+        ("over-limit", 1026, 1025, &[1024, 1], false),
+        ("all", 3, 3, &[], false),
+        ("queued", 3000, 2500, &[1024, 1024, 452], true),
+    ];
+    let mut seeds = Vec::new();
+    let mut replies = Vec::new();
+    for &(key, size, count, _, queued) in cases {
+        let members: Vec<String> = (0..size).map(|i| format!("m{i}")).collect();
+        let mut seed = vec!["SADD", key];
+        seed.extend(members.iter().map(String::as_str));
+        client.write_all(&resp(&seed)).unwrap();
+        assert_eq!(integer_reply(&mut client, "seed SPOP set"), size as i64);
+        seeds.push(seed.into_iter().map(str::to_owned).collect::<Vec<_>>());
+        let request = resp(&["SPOP", key, &count.to_string()]);
+        if queued {
+            client.write_all(&[resp(&["MULTI"]), request, resp(&["EXEC"])].concat()).unwrap();
+            expect_replies(&mut client, b"+OK\r\n+QUEUED\r\n", "queue counted SPOP");
+            assert_eq!(reply_line(&mut client, "SPOP transaction"), "*1\r\n");
+        } else {
+            client.write_all(&request).unwrap();
+        }
+        let popped = bulk_strings(&mut client, "counted SPOP reply");
+        assert_eq!(popped.len(), count, "{key}: requested members");
+        let mut sorted = popped.clone();
+        sorted.sort();
+        assert!(sorted.windows(2).all(|pair| pair[0] != pair[1]), "{key}: no duplicate pop");
+        assert!(popped.iter().all(|member| members.contains(member)), "{key}: only seeded members pop");
+        client.write_all(&resp(&["SCARD", key])).unwrap();
+        assert_eq!(integer_reply(&mut client, "remaining SPOP members"), (size - count) as i64);
+        replies.push(popped);
+    }
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+    let file = std::fs::read(aof_incremental_path(fixture.path(), name)).unwrap();
+    let records = aof_records_without_select_zero(&file);
+    let mut at = 0;
+    for ((&(key, _, _, batch_sizes, _), seed), popped) in cases.iter().zip(seeds).zip(replies) {
+        assert_eq!(records.get(at), Some(&seed), "{key}: setup SADD propagates unchanged");
+        at += 1;
+        if batch_sizes.is_empty() {
+            assert_eq!(records.get(at).map(Vec::as_slice), Some(["DEL".to_owned(), key.to_owned()].as_slice()), "{key}: whole-set pop is DEL");
+            at += 1;
+            continue;
+        }
+        if batch_sizes.len() > 1 {
+            assert_eq!(records.get(at).map(Vec::as_slice), Some(["MULTI".to_owned()].as_slice()), "{key}: multiple SREM effects open one block");
+            at += 1;
+        }
+        let mut removed = Vec::new();
+        for &size in batch_sizes {
+            let record = records.get(at).expect("SREM batch must be present");
+            assert_eq!(record.len(), size + 2, "{key}: SREM frame argument count");
+            assert_eq!(&record[..2], &["SREM", key], "{key}: partial pop is SREM");
+            removed.extend_from_slice(&record[2..]);
+            at += 1;
+        }
+        assert_eq!(removed, popped, "{key}: AOF removes exactly the popped members in reply order");
+        if batch_sizes.len() > 1 {
+            assert_eq!(records.get(at).map(Vec::as_slice), Some(["EXEC".to_owned()].as_slice()), "{key}: multiple SREM effects close one block");
+            at += 1;
+        }
+    }
+    assert_eq!(at, records.len(), "no extra SPOP, SREM, DEL or transaction frames");
 }
 
 /// [PRE-2] firn applies append-only blocks only after their EXEC, including
@@ -2069,14 +2316,14 @@ fn dyadic_decimal(m: u64, k: usize) -> String {
 /// range of i64;
 /// infinities and arguments of 400 and 1,000 digits are read as strtod reads
 /// them; NaN, overflow, a leading or trailing space, an empty argument and a
-/// zero byte are refused. Every score is written as %.17g writes it, ties at
-/// the seventeenth digit to even, in exponential notation below 10^-4 and from
-/// 10^17; negative zero is kept as 0, as Redis keeps it in a sorted set it
-/// encodes as a listpack. Members at infinite, subnormal, zero and equal scores
-/// pop in Redis's order. An option word before the first score, in either case
-/// and compared up to a zero byte as strcasecmp compares it, is a syntax
+/// zero byte are refused. Negative zero is kept as 0, as Redis keeps it in a
+/// sorted set it encodes as a listpack. Members at infinite, subnormal, zero
+/// and equal scores pop in Redis's order. An option word before the first
+/// score, in either case and compared up to a zero byte as strcasecmp compares
+/// it, is a syntax
 /// error, while one in a later score's place is an invalid score. The expected
-/// replies are redis-server 7.0.15's.
+/// replies are redis-server 7.2.16's, recorded in
+/// research/experiments/aof-oracle/score-text-recording.json.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_reads_and_writes_scores_as_redis_does() {
@@ -2097,24 +2344,24 @@ fn firn_reads_and_writes_scores_as_redis_does() {
     let long_thirds = format!("3.{}", "3".repeat(1000));
     let cases: [(&str, Option<&str>); 49] = [
         ("1.5", Some("1.5")),
-        ("-2.5e-3", Some("-0.0025000000000000001")),
-        ("0.1", Some("0.10000000000000001")),
-        ("1e23", Some("9.9999999999999992e+22")),
+        ("-2.5e-3", Some("-0.0025")),
+        ("0.1", Some("0.1")),
+        ("1e23", Some("99999999999999990000000")),
         ("9007199254740993", Some("9007199254740992")),
         ("9007199254740995", Some("9007199254740996")),
-        ("2.2250738585072011e-308", Some("2.2250738585072009e-308")),
-        ("4.9e-324", Some("4.9406564584124654e-324")),
+        ("2.2250738585072011e-308", Some("2.225073858507201e-308")),
+        ("4.9e-324", Some("5e-324")),
         ("2.4703282292062327e-324", None),
-        ("2.4703282292062328e-324", Some("4.9406564584124654e-324")),
+        ("2.4703282292062328e-324", Some("5e-324")),
         (&half_smallest, None),
-        (&half_smallest_above, Some("4.9406564584124654e-324")),
-        (&half_smallest_far_above, Some("4.9406564584124654e-324")),
+        (&half_smallest_above, Some("5e-324")),
+        (&half_smallest_far_above, Some("5e-324")),
         (&below_normal, Some("2.2250738585072014e-308")),
-        (&below_normal_below, Some("2.2250738585072009e-308")),
+        (&below_normal_below, Some("2.225073858507201e-308")),
         (&above_normal, Some("2.2250738585072014e-308")),
-        (&above_normal_far_above, Some("2.2250738585072019e-308")),
+        (&above_normal_far_above, Some("2.225073858507202e-308")),
         (&short_tie_far_above, Some("9007199254740994")),
-        (&scaled_tie_far_above, Some("5.0000000000000004e+22")),
+        (&scaled_tie_far_above, Some("50000000000000004000000")),
         ("1.7976931348623158e308", Some("1.7976931348623157e+308")),
         ("1.7976931348623159e308", None),
         ("1e-400", None),
@@ -2129,14 +2376,14 @@ fn firn_reads_and_writes_scores_as_redis_does() {
         ("0x1.000000000000080001p0", Some("1.0000000000000002")),
         ("0x1.fffffffffffff8p1023", None),
         ("0x1.fffffffffffff8p99999999999999999999", None),
-        ("0x3p-1076", Some("4.9406564584124654e-324")),
+        ("0x3p-1076", Some("5e-324")),
         ("0x1p-1075", None),
-        ("1125899906842623.75", Some("1125899906842623.8")),
-        ("1125899906842623.25", Some("1125899906842623.2")),
+        ("1125899906842623.75", Some("1125899906842623.7")),
+        ("1125899906842623.25", Some("1125899906842623.3")),
         ("0.0001", Some("0.0001")),
-        ("0.00001", Some("1.0000000000000001e-05")),
+        ("0.00001", Some("0.00001")),
         ("99999999999999984", Some("99999999999999984")),
-        ("1e17", Some("1e+17")),
+        ("1e17", Some("100000000000000000")),
         ("-0", Some("0")),
         (" 1", None),
         ("1 ", None),
@@ -2187,9 +2434,9 @@ fn firn_reads_and_writes_scores_as_redis_does() {
         "zero",
         "0",
         "tiny",
-        "4.9406564584124654e-324",
+        "5e-324",
         "small",
-        "0.0025000000000000001",
+        "0.0025",
         "a",
         "1.5",
         "b",
@@ -2214,6 +2461,215 @@ fn firn_reads_and_writes_scores_as_redis_does() {
     drop(client);
     let (status, _) = finished(child);
     assert_eq!(status, 0);
+}
+
+/// Redis 7.2.16 writes sorted-set reply scores with d2string and rewritten
+/// AOF scores with plain fpconv. The integer fast path's boundaries,
+/// decimal and exponent forms, extreme finite values, signed zero and
+/// infinities are read through each score reply under RESP2 and RESP3, then
+/// checked independently in the rewritten base's ZADD records.
+/// The expected replies and base score arguments are redis-server 7.2.16's,
+/// recorded in research/experiments/aof-oracle/score-text-recording.json.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_writes_score_text_as_redis_7_2_16_does() {
+    // Each row holds the input, member, complete RESP2 replies for ZSCORE,
+    // ZINCRBY and ZRANK WITHSCORE, the same RESP3 replies, and base AOF text.
+    let cases: [(&str, &str, [&str; 3], [&str; 3], &str); 21] = [
+        (
+            "3", "m00",
+            ["$1\r\n3\r\n", "$1\r\n3\r\n", "*2\r\n:11\r\n$1\r\n3\r\n"],
+            [",3\r\n", ",3\r\n", "*2\r\n:11\r\n,3\r\n"],
+            "3",
+        ),
+        (
+            "-3", "m01",
+            ["$2\r\n-3\r\n", "$2\r\n-3\r\n", "*2\r\n:1\r\n$2\r\n-3\r\n"],
+            [",-3\r\n", ",-3\r\n", "*2\r\n:1\r\n,-3\r\n"],
+            "-3",
+        ),
+        (
+            "1e17", "m02",
+            ["$18\r\n100000000000000000\r\n", "$18\r\n100000000000000000\r\n", "*2\r\n:12\r\n$18\r\n100000000000000000\r\n"],
+            [",100000000000000000\r\n", ",100000000000000000\r\n", "*2\r\n:12\r\n,100000000000000000\r\n"],
+            "1e+17",
+        ),
+        (
+            "4611686018427387904", "m03",
+            ["$19\r\n4611686018427387904\r\n", "$19\r\n4611686018427387904\r\n", "*2\r\n:13\r\n$19\r\n4611686018427387904\r\n"],
+            [",4611686018427387904\r\n", ",4611686018427387904\r\n", "*2\r\n:13\r\n,4611686018427387904\r\n"],
+            "4611686018427388000",
+        ),
+        (
+            "4611686018427389952", "m04",
+            ["$19\r\n4611686018427390000\r\n", "$19\r\n4611686018427390000\r\n", "*2\r\n:14\r\n$19\r\n4611686018427390000\r\n"],
+            [",4611686018427390000\r\n", ",4611686018427390000\r\n", "*2\r\n:14\r\n,4611686018427390000\r\n"],
+            "4611686018427390000",
+        ),
+        (
+            "9223372036854775808", "m05",
+            ["$19\r\n9223372036854776000\r\n", "$19\r\n9223372036854776000\r\n", "*2\r\n:15\r\n$19\r\n9223372036854776000\r\n"],
+            [",9223372036854776000\r\n", ",9223372036854776000\r\n", "*2\r\n:15\r\n,9223372036854776000\r\n"],
+            "9223372036854776000",
+        ),
+        (
+            "0.1", "m06",
+            ["$3\r\n0.1\r\n", "$3\r\n0.1\r\n", "*2\r\n:7\r\n$3\r\n0.1\r\n"],
+            [",0.1\r\n", ",0.1\r\n", "*2\r\n:7\r\n,0.1\r\n"],
+            "0.1",
+        ),
+        (
+            "0.3", "m07",
+            ["$3\r\n0.3\r\n", "$3\r\n0.3\r\n", "*2\r\n:8\r\n$3\r\n0.3\r\n"],
+            [",0.3\r\n", ",0.3\r\n", "*2\r\n:8\r\n,0.3\r\n"],
+            "0.3",
+        ),
+        (
+            "1.5", "m08",
+            ["$3\r\n1.5\r\n", "$3\r\n1.5\r\n", "*2\r\n:10\r\n$3\r\n1.5\r\n"],
+            [",1.5\r\n", ",1.5\r\n", "*2\r\n:10\r\n,1.5\r\n"],
+            "1.5",
+        ),
+        (
+            "0.6666666666666666", "m09",
+            ["$18\r\n0.6666666666666666\r\n", "$18\r\n0.6666666666666666\r\n", "*2\r\n:9\r\n$18\r\n0.6666666666666666\r\n"],
+            [",0.6666666666666666\r\n", ",0.6666666666666666\r\n", "*2\r\n:9\r\n,0.6666666666666666\r\n"],
+            "0.6666666666666666",
+        ),
+        (
+            "1e23", "m10",
+            ["$23\r\n99999999999999990000000\r\n", "$23\r\n99999999999999990000000\r\n", "*2\r\n:18\r\n$23\r\n99999999999999990000000\r\n"],
+            [",99999999999999990000000\r\n", ",99999999999999990000000\r\n", "*2\r\n:18\r\n,99999999999999990000000\r\n"],
+            "99999999999999990000000",
+        ),
+        (
+            "1e22", "m11",
+            ["$5\r\n1e+22\r\n", "$5\r\n1e+22\r\n", "*2\r\n:17\r\n$5\r\n1e+22\r\n"],
+            [",1e+22\r\n", ",1e+22\r\n", "*2\r\n:17\r\n,1e+22\r\n"],
+            "1e+22",
+        ),
+        (
+            "1e21", "m12",
+            ["$5\r\n1e+21\r\n", "$5\r\n1e+21\r\n", "*2\r\n:16\r\n$5\r\n1e+21\r\n"],
+            [",1e+21\r\n", ",1e+21\r\n", "*2\r\n:16\r\n,1e+21\r\n"],
+            "1e+21",
+        ),
+        (
+            "1.7976931348623157e308", "m13",
+            ["$23\r\n1.7976931348623157e+308\r\n", "$23\r\n1.7976931348623157e+308\r\n", "*2\r\n:19\r\n$23\r\n1.7976931348623157e+308\r\n"],
+            [",1.7976931348623157e+308\r\n", ",1.7976931348623157e+308\r\n", "*2\r\n:19\r\n,1.7976931348623157e+308\r\n"],
+            "1.7976931348623157e+308",
+        ),
+        (
+            "5e-324", "m14",
+            ["$6\r\n5e-324\r\n", "$6\r\n5e-324\r\n", "*2\r\n:3\r\n$6\r\n5e-324\r\n"],
+            [",5e-324\r\n", ",5e-324\r\n", "*2\r\n:3\r\n,5e-324\r\n"],
+            "5e-324",
+        ),
+        (
+            "2.2250738585072014e-308", "m15",
+            ["$23\r\n2.2250738585072014e-308\r\n", "$23\r\n2.2250738585072014e-308\r\n", "*2\r\n:4\r\n$23\r\n2.2250738585072014e-308\r\n"],
+            [",2.2250738585072014e-308\r\n", ",2.2250738585072014e-308\r\n", "*2\r\n:4\r\n,2.2250738585072014e-308\r\n"],
+            "2.2250738585072014e-308",
+        ),
+        (
+            "1e-5", "m16",
+            ["$7\r\n0.00001\r\n", "$7\r\n0.00001\r\n", "*2\r\n:5\r\n$7\r\n0.00001\r\n"],
+            [",0.00001\r\n", ",0.00001\r\n", "*2\r\n:5\r\n,0.00001\r\n"],
+            "0.00001",
+        ),
+        (
+            "0.0001", "m17",
+            ["$6\r\n0.0001\r\n", "$6\r\n0.0001\r\n", "*2\r\n:6\r\n$6\r\n0.0001\r\n"],
+            [",0.0001\r\n", ",0.0001\r\n", "*2\r\n:6\r\n,0.0001\r\n"],
+            "0.0001",
+        ),
+        (
+            "-0", "m18",
+            ["$1\r\n0\r\n", "$1\r\n0\r\n", "*2\r\n:2\r\n$1\r\n0\r\n"],
+            [",0\r\n", ",0\r\n", "*2\r\n:2\r\n,0\r\n"],
+            "0",
+        ),
+        (
+            "inf", "m19",
+            ["$3\r\ninf\r\n", "$3\r\ninf\r\n", "*2\r\n:20\r\n$3\r\ninf\r\n"],
+            [",inf\r\n", ",inf\r\n", "*2\r\n:20\r\n,inf\r\n"],
+            "inf",
+        ),
+        (
+            "-inf", "m20",
+            ["$4\r\n-inf\r\n", "$4\r\n-inf\r\n", "*2\r\n:0\r\n$4\r\n-inf\r\n"],
+            [",-inf\r\n", ",-inf\r\n", "*2\r\n:0\r\n,-inf\r\n"],
+            "-inf",
+        ),
+    ];
+    let program = CompiledProgram::from_environment();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    client
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .expect("bound the score oracle client's waits");
+    let mut seed = Vec::new();
+    for (score, member, _, _, _) in &cases {
+        seed.extend(resp(&["ZADD", "score72", score, member]));
+    }
+    client.write_all(&seed).expect("seed every score boundary");
+    expect_replies(&mut client, b":1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n:1\r\n", "the score oracle seed batch");
+
+    // Rewrite the original dataset before ZINCRBY can change a zero's sign.
+    rewrite_start(&mut client);
+    let info = rewrite_wait(&mut client);
+    assert_eq!(info["aof_last_bgrewrite_status"], "ok");
+    let base = std::fs::read(program.working_directory().join("appendonlydir/appendonly.aof.2.base.aof"))
+        .expect("read the score oracle rewritten base");
+    let mut rewritten = std::collections::BTreeMap::new();
+    for record in file_records(&base) {
+        if record.first().is_some_and(|command| command == b"ZADD") {
+            assert!(record.len() >= 4, "rewritten ZADD has a key and score/member pair");
+            assert_eq!(record[1], b"score72");
+            assert_eq!((record.len() - 2) % 2, 0, "complete score/member pairs");
+            for pair in record[2..].chunks_exact(2) {
+                assert!(rewritten.insert(pair[1].clone(), pair[0].clone()).is_none(), "one rewritten score per member");
+            }
+        }
+    }
+    assert_eq!(rewritten.len(), cases.len(), "rewrite every score boundary");
+    for (_, member, _, _, expected) in &cases {
+        assert_eq!(rewritten.get(member.as_bytes()).unwrap(), expected.as_bytes(), "rewritten AOF score for {member}");
+    }
+
+    for (protocol, range_expected) in [
+        ("2", "*42\r\n$3\r\nm20\r\n$4\r\n-inf\r\n$3\r\nm01\r\n$2\r\n-3\r\n$3\r\nm18\r\n$1\r\n0\r\n$3\r\nm14\r\n$6\r\n5e-324\r\n$3\r\nm15\r\n$23\r\n2.2250738585072014e-308\r\n$3\r\nm16\r\n$7\r\n0.00001\r\n$3\r\nm17\r\n$6\r\n0.0001\r\n$3\r\nm06\r\n$3\r\n0.1\r\n$3\r\nm07\r\n$3\r\n0.3\r\n$3\r\nm09\r\n$18\r\n0.6666666666666666\r\n$3\r\nm08\r\n$3\r\n1.5\r\n$3\r\nm00\r\n$1\r\n3\r\n$3\r\nm02\r\n$18\r\n100000000000000000\r\n$3\r\nm03\r\n$19\r\n4611686018427387904\r\n$3\r\nm04\r\n$19\r\n4611686018427390000\r\n$3\r\nm05\r\n$19\r\n9223372036854776000\r\n$3\r\nm12\r\n$5\r\n1e+21\r\n$3\r\nm11\r\n$5\r\n1e+22\r\n$3\r\nm10\r\n$23\r\n99999999999999990000000\r\n$3\r\nm13\r\n$23\r\n1.7976931348623157e+308\r\n$3\r\nm19\r\n$3\r\ninf\r\n"),
+        ("3", "*21\r\n*2\r\n$3\r\nm20\r\n,-inf\r\n*2\r\n$3\r\nm01\r\n,-3\r\n*2\r\n$3\r\nm18\r\n,0\r\n*2\r\n$3\r\nm14\r\n,5e-324\r\n*2\r\n$3\r\nm15\r\n,2.2250738585072014e-308\r\n*2\r\n$3\r\nm16\r\n,0.00001\r\n*2\r\n$3\r\nm17\r\n,0.0001\r\n*2\r\n$3\r\nm06\r\n,0.1\r\n*2\r\n$3\r\nm07\r\n,0.3\r\n*2\r\n$3\r\nm09\r\n,0.6666666666666666\r\n*2\r\n$3\r\nm08\r\n,1.5\r\n*2\r\n$3\r\nm00\r\n,3\r\n*2\r\n$3\r\nm02\r\n,100000000000000000\r\n*2\r\n$3\r\nm03\r\n,4611686018427387904\r\n*2\r\n$3\r\nm04\r\n,4611686018427390000\r\n*2\r\n$3\r\nm05\r\n,9223372036854776000\r\n*2\r\n$3\r\nm12\r\n,1e+21\r\n*2\r\n$3\r\nm11\r\n,1e+22\r\n*2\r\n$3\r\nm10\r\n,99999999999999990000000\r\n*2\r\n$3\r\nm13\r\n,1.7976931348623157e+308\r\n*2\r\n$3\r\nm19\r\n,inf\r\n"),
+    ] {
+        client.write_all(&resp(&["HELLO", protocol])).expect("select score reply protocol");
+        // HELLO itself is checked elsewhere; consume its array or map without
+        // tying these score oracles to Redis's connection ID.
+        let header = reply_line(&mut client, "score oracle HELLO header");
+        let length = header[1..].trim_end().parse::<usize>().expect("HELLO collection length");
+        let fields = if header.starts_with('%') { length * 2 } else { length };
+        for _ in 0..fields {
+            whole_reply(&mut client, "score oracle HELLO field");
+        }
+        client.write_all(&resp(&["ZRANGE", "score72", "0", "-1", "WITHSCORES"]))
+            .expect("read every score in order");
+        assert_eq!(whole_reply(&mut client, "score oracle ZRANGE"), range_expected, "RESP{protocol} range scores");
+        for (_, member, resp2, resp3, _) in &cases {
+            let expected = if protocol == "2" { resp2 } else { resp3 };
+            for (request, expected) in [
+                (vec!["ZSCORE", "score72", member], expected[0]),
+                (vec!["ZINCRBY", "score72", "0", member], expected[1]),
+                (vec!["ZRANK", "score72", member, "WITHSCORE"], expected[2]),
+            ] {
+                client.write_all(&resp(&request)).expect("read a score boundary");
+                assert_eq!(whole_reply(&mut client, "score oracle reply"), expected, "RESP{protocol} {request:?}");
+            }
+        }
+    }
+    rewrite_stop(&mut client, child);
 }
 
 /// firn keeps strings of at most 24 bytes inside the keyspace and longer ones
@@ -2949,7 +3405,8 @@ fn firn_carries_requests_and_replies_larger_than_its_windows() {
 /// keeping the expired key would refuse it. INFO reports the file as kept;
 /// CONFIG SET appendonly yes, the file firn keeps, succeeds, and no is refused
 /// in Redis's form for a refused value with firn's own reason, where Redis
-/// would stop its file.
+/// would stop its file. The expected score replies are redis-server 7.2.16's,
+/// recorded in research/experiments/aof-oracle/score-text-recording.json.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_replays_the_value_types_from_its_append_only_file() {
@@ -3057,7 +3514,7 @@ fn firn_replays_the_value_types_from_its_append_only_file() {
     client.write_all(&batch).expect("read the replayed values");
     expect_replies(
         &mut client,
-        b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nv\r\n:1\r\n$1\r\n2\r\n$19\r\n0.10000000000000001\r\n:25\r\n:0\r\n:0\r\n$3\r\nnew\r\n",
+        b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nv\r\n:1\r\n$1\r\n2\r\n$3\r\n0.1\r\n:25\r\n:0\r\n:0\r\n$3\r\nnew\r\n",
         "the replayed values",
     );
     let mut batch = resp(&["CONFIG", "SET", "appendonly", "yes"]);
@@ -4035,7 +4492,6 @@ fn firn_answers_connection_commands_as_redis_does() {
         // Redis 7.2.16 server.c:genRedisInfoString writes redis_version from
         // version.h's REDIS_VERSION (7.2.16).
         ("redis_version", "7.2.16"),
-        ("redis_git_sha1", "00000000"),
         ("tcp_port", text.as_str()),
         ("uptime_in_days", "0"),
         ("connected_clients", "2"),
@@ -4178,6 +4634,253 @@ fn firn_keeps_transactions_as_redis_does() {
     assert_eq!(status, 0);
 }
 
+// These section and field lists come from Redis 7.2.16 genRedisInfoString
+// and the INFO replies recorded by CI run 38396764389:
+// https://github.com/Ming-Research/Firn-wf/actions/runs/38396764389
+// Batch 0 is RESP2 without AOF; batch 1 is RESP3 with appendonly yes.
+// Machine-dependent values are checked by their Redis format and relationship.
+// Unmeasured fields are omitted under design/firn/reported-facts.md; CLIENT and
+// Clients field coverage belongs to the separate client-handshake work.
+const INFO_AUDIT_DEFAULT: &[&str] = &[
+    "Server", "Clients", "Memory", "Persistence", "Stats", "Replication",
+    "CPU", "Modules", "Errorstats", "Cluster", "Keyspace",
+];
+const INFO_AUDIT_ALL: &[&str] = &[
+    "Server", "Clients", "Memory", "Persistence", "Stats", "Replication",
+    "CPU", "Modules", "Commandstats", "Errorstats", "Latencystats", "Cluster", "Keyspace",
+];
+
+fn assert_info_field_audit(info: &str, expected_sections: &[&str], aof: bool, port: u16) {
+    let sections = info_structure(info);
+    assert_eq!(sections.iter().map(|(name, _)| *name).collect::<Vec<_>>(), expected_sections);
+    for (section, fields) in sections {
+        if section == "Clients" {
+            continue;
+        }
+        let names: Vec<_> = fields.iter().map(|(name, _)| *name).collect();
+        let csv = match section {
+            "Server" => "redis_version,redis_mode,arch_bits,process_supervised,tcp_port,server_time_usec,uptime_in_seconds,uptime_in_days,hz,configured_hz,lru_clock,config_file",
+            "Memory" => "used_memory,used_memory_human,used_memory_rss,used_memory_rss_human,used_memory_peak,used_memory_peak_human,number_of_cached_scripts,number_of_functions,number_of_libraries,used_memory_vm_functions,used_memory_functions,maxmemory,maxmemory_human,maxmemory_policy,mem_not_counted_for_evict,mem_replication_backlog,mem_total_replication_buffers,mem_clients_slaves,mem_cluster_links,mem_aof_buffer,active_defrag_running,lazyfree_pending_objects,lazyfreed_objects",
+            "Persistence" => "loading,async_loading,current_cow_peak,current_cow_size,current_cow_size_age,current_fork_perc,rdb_bgsave_in_progress,rdb_last_bgsave_status,rdb_last_bgsave_time_sec,rdb_current_bgsave_time_sec,rdb_saves,rdb_last_cow_size,rdb_last_load_keys_expired,rdb_last_load_keys_loaded,aof_enabled,aof_rewrite_in_progress,aof_rewrite_scheduled,aof_last_bgrewrite_status,aof_rewrites,aof_last_write_status,aof_last_cow_size,module_fork_in_progress,module_fork_last_cow_size",
+            "Stats" => "total_connections_received,total_net_repl_input_bytes,total_net_repl_output_bytes,instantaneous_input_repl_kbps,instantaneous_output_repl_kbps,rejected_connections,sync_full,sync_partial_ok,sync_partial_err,evicted_keys,evicted_clients,pubsub_channels,pubsub_patterns,pubsubshard_channels,latest_fork_usec,total_forks,migrate_cached_sockets,slave_expires_tracked_keys,active_defrag_hits,active_defrag_misses,active_defrag_key_hits,active_defrag_key_misses,total_active_defrag_time,current_active_defrag_time,tracking_total_keys,tracking_total_items,tracking_total_prefixes,dump_payload_sanitizations,io_threaded_reads_processed,io_threaded_writes_processed",
+            "Replication" => "role,connected_slaves,master_failover_state,master_repl_offset,second_repl_offset,repl_backlog_active,repl_backlog_first_byte_offset,repl_backlog_histlen",
+            "CPU" => "used_cpu_sys_children,used_cpu_user_children",
+            "Cluster" => "cluster_enabled",
+            "Keyspace" => "db0",
+            "Modules" | "Commandstats" | "Errorstats" | "Latencystats" | "Debug" => "",
+            _ => panic!("unexpected INFO section: {section}"),
+        };
+        let mut expected: Vec<_> = csv.split(',').filter(|name| !name.is_empty()).collect();
+        // The host may not expose RSS. When available it has its adjacent human
+        // representation; neither may be synthesized when the measurement fails.
+        if section == "Memory" && !names.contains(&"used_memory_rss") {
+            expected.retain(|name| !["used_memory_rss", "used_memory_rss_human"].contains(name));
+        }
+        if section == "Persistence" {
+            if aof {
+                expected.extend([
+                    "aof_current_size", "aof_base_size", "aof_pending_rewrite",
+                    "aof_buffer_length", "aof_pending_bio_fsync", "aof_delayed_fsync",
+                    "firn_aof_rewrite_commit_seq",
+                ]);
+            }
+            // Firn's existing rewrite diagnostics are an extension after every
+            // Redis field; they must not interrupt Redis's field order.
+            expected.extend([
+                "firn_aof_rewrite_cut", "firn_aof_rewrite_reserve", "firn_aof_rewrite_scan_peak",
+                "firn_aof_rewrite_abort_reason", "firn_aof_rewrite_used", "firn_aof_rewrite_peak",
+                "firn_aof_rewrite_cleanup_failed", "firn_aof_rewrite_journal_leftover",
+                "firn_aof_rewrite_journal_images", "firn_aof_rewrite_journal_effects",
+                "firn_aof_rewrite_scan_steps", "firn_aof_rewrite_scan_done", "firn_aof_rewrite_charged",
+            ]);
+        }
+        assert_eq!(names, expected, "{section}: Redis field names, section and order");
+        for (name, value) in &fields {
+            let fixed = match *name {
+                "redis_version" => Some("7.2.16"),
+                "redis_mode" => Some("standalone"),
+                "arch_bits" => Some("64"),
+                "process_supervised" => Some("no"),
+                "hz" | "configured_hz" => Some("10"),
+                "config_file" | "firn_aof_rewrite_abort_reason" => Some(""),
+                "maxmemory_policy" => Some("noeviction"),
+                "rdb_last_bgsave_status" | "aof_last_bgrewrite_status" | "aof_last_write_status" => Some("ok"),
+                "rdb_last_bgsave_time_sec" | "rdb_current_bgsave_time_sec" | "second_repl_offset" => Some("-1"),
+                "role" => Some("master"),
+                "master_failover_state" => Some("no-failover"),
+                "current_fork_perc" | "instantaneous_input_repl_kbps" | "instantaneous_output_repl_kbps" => Some("0.00"),
+                "used_cpu_sys_children" | "used_cpu_user_children" => Some("0.000000"),
+                "db0" => Some("keys=1"),
+                "aof_enabled" => Some(if aof { "1" } else { "0" }),
+                "total_connections_received" => Some("1"),
+                "number_of_cached_scripts" | "number_of_functions" | "number_of_libraries"
+                | "used_memory_vm_functions" | "used_memory_functions" | "maxmemory"
+                | "mem_replication_backlog" | "mem_total_replication_buffers"
+                | "mem_clients_slaves" | "mem_cluster_links" | "active_defrag_running"
+                | "lazyfree_pending_objects" | "lazyfreed_objects" | "loading" | "async_loading"
+                | "current_cow_peak" | "current_cow_size" | "current_cow_size_age"
+                | "rdb_bgsave_in_progress" | "rdb_saves" | "rdb_last_cow_size"
+                | "rdb_last_load_keys_expired" | "rdb_last_load_keys_loaded"
+                | "aof_rewrite_in_progress" | "aof_rewrite_scheduled" | "aof_rewrites"
+                | "aof_last_cow_size" | "module_fork_in_progress" | "module_fork_last_cow_size"
+                | "aof_pending_rewrite" | "aof_pending_bio_fsync" | "aof_delayed_fsync"
+                | "total_net_repl_input_bytes" | "total_net_repl_output_bytes"
+                | "rejected_connections" | "sync_full" | "sync_partial_ok" | "sync_partial_err"
+                | "evicted_keys" | "evicted_clients" | "pubsub_channels" | "pubsub_patterns"
+                | "pubsubshard_channels" | "latest_fork_usec" | "total_forks"
+                | "migrate_cached_sockets" | "slave_expires_tracked_keys" | "active_defrag_hits"
+                | "active_defrag_misses" | "active_defrag_key_hits" | "active_defrag_key_misses"
+                | "total_active_defrag_time" | "current_active_defrag_time" | "tracking_total_keys"
+                | "tracking_total_items" | "tracking_total_prefixes" | "dump_payload_sanitizations"
+                | "io_threaded_reads_processed" | "io_threaded_writes_processed"
+                | "connected_slaves" | "master_repl_offset" | "repl_backlog_active"
+                | "repl_backlog_first_byte_offset" | "repl_backlog_histlen" | "cluster_enabled" => Some("0"),
+                _ => None,
+            };
+            if let Some(expected) = fixed {
+                assert_eq!(*value, expected, "{section}.{name}");
+            } else if name.ends_with("_human") {
+                let byte_name = name.strip_suffix("_human").unwrap();
+                let bytes = fields.iter().find(|(field, _)| *field == byte_name).unwrap().1;
+                assert_eq!(*value, info_human_bytes(bytes.parse().unwrap()), "{section}.{name}");
+            } else {
+                let number = value.parse::<u64>().unwrap_or_else(|_| panic!("{section}.{name}: unsigned decimal {value:?}"));
+                assert_eq!(*value, number.to_string(), "{section}.{name}: canonical decimal");
+            }
+        }
+        if section == "Server" {
+            assert_eq!(info_field(info, "tcp_port"), Some(port.to_string()));
+            let lru = info_field(info, "lru_clock").unwrap().parse::<u64>().unwrap();
+            let now = info_field(info, "server_time_usec").unwrap().parse::<u64>().unwrap();
+            assert_eq!(lru, (now / 1_000_000) & ((1 << 24) - 1), "LRU clock uses Redis's 24-bit seconds");
+            let seconds = info_field(info, "uptime_in_seconds").unwrap().parse::<u64>().unwrap();
+            let days = info_field(info, "uptime_in_days").unwrap().parse::<u64>().unwrap();
+            assert_eq!(days, seconds / 86400);
+        } else if section == "Memory" {
+            let used = info_field(info, "used_memory").unwrap().parse::<u64>().unwrap();
+            let peak = info_field(info, "used_memory_peak").unwrap().parse::<u64>().unwrap();
+            assert!(used > 0 && peak >= used, "real heap usage and its observed peak");
+            assert_eq!(info_field(info, "mem_aof_buffer"), info_field(info, "mem_not_counted_for_evict"));
+        }
+    }
+}
+
+fn info_field_audit_case(protocol: u8, aof: bool) {
+    let program = CompiledProgram::from_environment();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let port_text = port.to_string();
+    let mut arguments: Vec<&[u8]> = vec![port_text.as_bytes(), b"1"];
+    if aof {
+        arguments.push(b"appendonly.aof");
+    }
+    let child = program.spawn_on_route(true, &arguments).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    if protocol == 3 {
+        client.write_all(&resp(&["HELLO", "3"])).unwrap();
+        // Redis 7.2.16 networking.c:helloCommand; recorded batch 1 uses RESP3.
+        expect_replies(&mut client, b"%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n:1\r\n$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n", "INFO audit HELLO 3");
+    }
+    client.write_all(&resp(&["INFO", "keyspace"])).unwrap();
+    let empty = info_reply(&mut client, protocol);
+    assert_eq!(empty, "# Keyspace\r\n", "an empty keyspace still has its header");
+    client.write_all(&resp(&["SET", "k", "v"])).unwrap();
+    expect_replies(&mut client, b"+OK\r\n", "INFO audit SET");
+    client.write_all(&resp(&["EXPIRE", "k", "100"])).unwrap();
+    assert_eq!(integer_reply(&mut client, "INFO audit EXPIRE"), 1);
+    for (request, expected) in [
+        (vec!["INFO"], INFO_AUDIT_DEFAULT),
+        (vec!["INFO", "default"], INFO_AUDIT_DEFAULT),
+        (vec!["INFO", "all"], INFO_AUDIT_ALL),
+        (vec!["INFO", "everything"], INFO_AUDIT_ALL),
+        (vec!["INFO", "ALL", "unknown"], INFO_AUDIT_ALL),
+        (vec!["INFO", "EvErYtHiNg", "unknown"], INFO_AUDIT_ALL),
+        (vec!["INFO", "mEmOrY", "SERVER", "nosuch", "memory"], &["Server", "Memory"][..]),
+        (vec!["INFO", "server", "clients"], &["Server", "Clients"][..]),
+        (vec!["INFO", "nosuch"], &[][..]),
+        (vec!["INFO", "nosuch", "unknown"], &[][..]),
+        (vec!["INFO", ""], &[][..]),
+        (vec!["INFO", "KEYSPACE\0suffix", "unknown"], &["Keyspace"][..]),
+        (vec!["INFO", "modules", "MODULE_LIST"], &["Modules"][..]),
+        (vec!["INFO", "debug"], &["Debug"][..]),
+        (vec!["INFO", "cpu", "modules", "commandstats", "errorstats", "latencystats"], &["CPU", "Modules", "Commandstats", "Errorstats", "Latencystats"][..]),
+    ] {
+        client.write_all(&resp(&request)).unwrap();
+        let info = info_reply(&mut client, protocol);
+        assert_info_field_audit(&info, expected, aof, port);
+    }
+    for section in INFO_AUDIT_ALL {
+        client.write_all(&resp(&["INFO", section])).unwrap();
+        let info = info_reply(&mut client, protocol);
+        assert_info_field_audit(&info, &[*section], aof, port);
+    }
+    // DEFAULT unions with explicitly requested extra sections; a later DEFAULT
+    // must not erase an earlier commandstats/latencystats request.
+    client.write_all(&resp(&["INFO", "latencystats", "DEFAULT", "commandstats"])).unwrap();
+    let info = info_reply(&mut client, protocol);
+    assert_info_field_audit(&info, INFO_AUDIT_ALL, aof, port);
+    // Redis's Debug section is explicit-only, even under ALL or EVERYTHING.
+    let mut with_debug = INFO_AUDIT_ALL.to_vec();
+    with_debug.push("Debug");
+    client.write_all(&resp(&["INFO", "ALL", "DeBuG", "debug"])).unwrap();
+    let info = info_reply(&mut client, protocol);
+    assert_info_field_audit(&info, &with_debug, aof, port);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Guards against INFO fields in the wrong section/order, incorrect formats,
+/// synthesized facts, enabled-only AOF fields while disabled, and selection
+/// or CR LF errors. Expected structure comes from the RESP2 recorded batch.
+#[test]
+fn firn_info_fields_match_redis_7_2_16_resp2_without_aof() {
+    info_field_audit_case(2, false);
+}
+
+/// Exercises the same structure and section selection under RESP3 verbatim
+/// framing, including the enabled-only persistence suffix from recorded batch 1.
+#[test]
+fn firn_info_fields_match_redis_7_2_16_resp3_with_aof() {
+    info_field_audit_case(3, true);
+}
+
+/// Redis 7.2.16 server.c genRedisInfoString takes uptime_in_seconds as
+/// server.unixtime - server.stat_starttime, two whole-second clocks, so the
+/// uptime steps exactly when the calendar second does. An uptime computed from
+/// the millisecond difference would step a start-time fraction of a second
+/// later. firn reads server_time_usec and the uptime's clock together, so the
+/// calendar second less the uptime is one constant while the uptime steps.
+#[test]
+fn firn_info_uptime_steps_with_the_calendar_second() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let mut starts = std::collections::BTreeSet::new();
+    let mut steps = 0_u32;
+    let mut before = None;
+    let began = Instant::now();
+    // 2.3 s hold at least two calendar-second boundaries wherever they fall.
+    while began.elapsed() < Duration::from_millis(2300) {
+        client.write_all(&resp(&["INFO", "server"])).unwrap();
+        let info = info_reply(&mut client, 2);
+        let seconds = info_field(&info, "uptime_in_seconds").unwrap().parse::<u64>().unwrap();
+        let micros = info_field(&info, "server_time_usec").unwrap().parse::<u64>().unwrap();
+        starts.insert((micros / 1_000_000).wrapping_sub(seconds));
+        if before.is_some_and(|earlier| earlier != seconds) {
+            steps += 1;
+        }
+        before = Some(seconds);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(steps >= 2, "the uptime stepped {steps} times in 2.3 s");
+    assert_eq!(starts.len(), 1, "uptime_in_seconds left the calendar second: starts {starts:?}");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
 /// firn answers in RESP3 after HELLO 3 as Redis 7.2.16 does, and in RESP2
 /// again after HELLO 2: HELLO's map with protocol 3; the null for an absent
 /// string, an absent element of MGET and LPOP's count on an absent key; a map
@@ -4251,11 +4954,9 @@ fn firn_answers_in_resp3_after_hello_3_as_redis_does() {
 /// firn answers ZRANK and ZREVRANK with WITHSCORE, which Redis 7.2 adds, as
 /// Redis 7.2.16's zrankGenericCommand (t_zset.c) does, on the network, inside
 /// a transaction's EXEC and through a script: the rank with the score, in a
-/// two-element array, written as firn writes every score, Redis 7.0.15's
-/// %.17g, which differs from the shortest form of Redis 7.2.16's
-/// addReplyDouble for some values, such as 0.1 (board item
-/// firn-score-text-72); the null array for an
-/// absent key or member, which a script turns into the null bulk string, as
+/// two-element array, written with Redis 7.2.16's addReplyDouble text. These
+/// requests use exact values whose score text is unchanged. An absent key or
+/// member answers the null array, which a script turns into the null bulk string, as
 /// Redis's Lua conversion turns it into false; the option read in either case
 /// up to a zero byte, as strcasecmp reads it; any other fourth argument
 /// refused with the syntax error and a fifth with the command's arity error,
@@ -4509,6 +5210,380 @@ fn firn_records_transactions_as_redis_propagates_them() {
     client.join().expect("the replay's exchange");
     let output = child.wait_with_output().expect("wait for compiled program");
     assert!(output.status.success(), "firn: {:?}", output.status);
+}
+
+/// Run each script-client case with both client protocols. Direct and MULTI
+/// callers are separate tests, so CI can report direct evidence independently.
+/// MULTI is the Redis acceptance required by firn-scope-script-client, which
+/// owns running scripts inside EXEC. MULTI tests are explicitly ignored until
+/// scripts can run inside EXEC; Redis expectations remain unchanged.
+fn script_client_matrix(transaction: bool, mut cases: impl FnMut(&mut TcpStream, bool, bool)) {
+    for resp3 in [false, true] {
+        let port_lease = support::lease_port();
+        let port = port_lease.port();
+        let text = port.to_string();
+        let child = firn().spawn_on_route(true, &[text.as_bytes(), b"1"])
+            .with_port(&port_lease);
+        let mut client = connect_when_ready(port, &child);
+        if resp3 {
+            // Redis 7.2.16 networking.c:helloCommand. The connection id includes
+            // internal clients, so compare it with this connection's CLIENT ID.
+            // The recorder negotiated HELLO separately and omitted its reply;
+            // the other greeting fields retain their source-derived expectation.
+            let mut greeting = resp(&["HELLO", "3"]);
+            greeting.extend(resp(&["PING"]));
+            greeting.extend(resp(&["CLIENT", "ID"]));
+            client.write_all(&greeting).expect("send script-client greeting");
+            expect_replies(&mut client,
+                b"%7\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n7.2.16\r\n$5\r\nproto\r\n:3\r\n$2\r\nid\r\n",
+                "script-client HELLO prefix");
+            let greeting_id = integer_reply(&mut client, "script-client HELLO id");
+            assert!(greeting_id > 0, "script-client HELLO id: {greeting_id}");
+            expect_replies(&mut client,
+                b"$4\r\nmode\r\n$10\r\nstandalone\r\n$4\r\nrole\r\n$6\r\nmaster\r\n$7\r\nmodules\r\n*0\r\n+PONG\r\n",
+                "script-client HELLO suffix and trailing PING");
+            assert_eq!(integer_reply(&mut client, "script-client CLIENT ID"), greeting_id);
+        }
+        cases(&mut client, transaction, resp3);
+        drop(client);
+        assert_eq!(finished(child).0, 0, "RESP3={resp3}, MULTI={transaction}");
+    }
+}
+
+/// Compare exact bytes, including non-UTF-8 MessagePack, and consume a trailing
+/// PING. In EXEC, PING is a later element: a script error must not abort it.
+fn script_client_reply(client: &mut TcpStream, transaction: bool, request: &[&str], expected: &[u8]) {
+    let mut batch = Vec::new();
+    let mut answer = Vec::new();
+    if transaction {
+        batch.extend(resp(&["MULTI"]));
+        answer.extend_from_slice(b"+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n");
+    }
+    batch.extend(resp(request));
+    batch.extend(resp(&["PING"]));
+    if transaction {
+        batch.extend(resp(&["EXEC"]));
+    }
+    answer.extend_from_slice(expected);
+    answer.extend_from_slice(b"+PONG\r\n");
+    client.write_all(&batch).expect("send script-client case");
+    let mut actual = vec![0; answer.len()];
+    client.read_exact(&mut actual)
+        .unwrap_or_else(|error| panic!("script-client {request:?}, MULTI={transaction}: {error}"));
+    assert_eq!(actual, answer, "script-client {request:?}, MULTI={transaction}");
+}
+
+fn script_client_bulk(bytes: &[u8]) -> Vec<u8> {
+    let mut reply = format!("${}\r\n", bytes.len()).into_bytes();
+    reply.extend_from_slice(bytes);
+    reply.extend_from_slice(b"\r\n");
+    reply
+}
+
+/// Redis 7.2.16 eval.c:evalShaCommand checks SHA length before numkeys;
+/// evalGenericCommand checks numkeys before lookup/registration. script.c:
+/// scriptVerifyWriteCommandAllow refuses writes per invocation, not per cached
+/// function. script_lua.c's error handler appends this script's SHA and line.
+fn check_script_clients_lookup_and_read_only(transaction: bool) {
+    const READ: &str = "return redis.call('GET',KEYS[1])";
+    const READ_SHA: &str = "620cd258c2c9c88c9d10db67812ccf663d96bdc6";
+    const WRITE: &str = "local value = ARGV[1]\nreturn redis.call('SET',KEYS[1],value)";
+    const WRITE_SHA: &str = "77f2655554bff93ceed45aefb8b7a7732100fe64";
+    const PROTECTED: &str = "local value = ARGV[1]\nreturn redis.pcall('SET',KEYS[1],value)";
+    const PROTECTED_SHA: &str = "c722735c954551c90e7698082c9d6056c0d45326";
+    const VALIDATED: &str = "return 'validated'";
+    const VALIDATED_SHA: &str = "05cc273ec6d5b4636e6d803a73df33a89f7d83b8";
+    const NOSCRIPT: &[u8] = b"-NOSCRIPT No matching script. Please use EVAL.\r\n";
+    const INTEGER: &[u8] = b"-ERR value is not an integer or out of range\r\n";
+    const NEGATIVE: &[u8] = b"-ERR Number of keys can't be negative\r\n";
+    const EXCESS: &[u8] = b"-ERR Number of keys can't be greater than number of args\r\n";
+    const REFUSED: &[u8] = b"-ERR Write commands are not allowed from read-only scripts.\r\n";
+    script_client_matrix(transaction, |client, transaction, _| {
+        for command in ["EVALSHA", "EVALSHA_RO", "eVaLsHa_Ro"] {
+            for sha in ["", "short", "0000000000000000000000000000000000000000",
+                "abcdefABCDEFabcdefABCDEFabcdefABCDEFabcd",
+                "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"] {
+                script_client_reply(client, transaction, &[command, sha, "0"], NOSCRIPT);
+                let invalid = if sha.len() == 40 { INTEGER } else { NOSCRIPT };
+                script_client_reply(client, transaction, &[command, sha, "bad"], invalid);
+                let negative = if sha.len() == 40 { NEGATIVE } else { NOSCRIPT };
+                script_client_reply(client, transaction, &[command, sha, "-1"], negative);
+                let excess = if sha.len() == 40 { EXCESS } else { NOSCRIPT };
+                script_client_reply(client, transaction, &[command, sha, "1"], excess);
+            }
+        }
+        for command in ["EVAL", "EVAL_RO", "eVaL_rO"] {
+            script_client_reply(client, transaction, &[command, VALIDATED, "bad"], INTEGER);
+            script_client_reply(client, transaction, &[command, VALIDATED, "-1"], NEGATIVE);
+            script_client_reply(client, transaction, &[command, VALIDATED, "1"], EXCESS);
+            script_client_reply(client, transaction, &["SCRIPT", "EXISTS", VALIDATED_SHA], b"*1\r\n:0\r\n");
+        }
+        script_client_reply(client, transaction, &["EVAL_RO", VALIDATED, "0"], b"$9\r\nvalidated\r\n");
+        script_client_reply(client, transaction, &["EVALSHA", VALIDATED_SHA, "0"], b"$9\r\nvalidated\r\n");
+        script_client_reply(client, transaction, &["SET", "script-client", "original"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["EVAL_RO", READ, "1", "script-client"], b"$8\r\noriginal\r\n");
+        // Redis checks command WRITE flags even when DEL would change nothing;
+        // scriptCall checks arity before scriptVerifyWriteCommandAllow.
+        script_client_reply(client, transaction, &["EVAL_RO", "return redis.pcall('DEL',KEYS[1])", "1", "missing-ro-key"], REFUSED);
+        script_client_reply(client, transaction, &["EXISTS", "missing-ro-key"], b":0\r\n");
+        script_client_reply(client, transaction, &["EVAL_RO", "return redis.pcall('SET',KEYS[1])", "1", "script-client"], b"-ERR Wrong number of args calling Redis command from script\r\n");
+        // The first undeclared read abandons Firn's declared-entry attempt.
+        // The retried invocation must retain its original read-only authority.
+        script_client_reply(client, transaction, &["EVAL_RO", "return {redis.call('GET','script-client'),redis.pcall('SET','script-client','refused')}", "0"], b"*2\r\n$8\r\noriginal\r\n-ERR Write commands are not allowed from read-only scripts.\r\n");
+        // More than the first 1000 safepoints require a budget retry before SET.
+        script_client_reply(client, transaction, &["EVAL_RO", "local n=0; for i=1,3000 do n=n+1 end; return {n,redis.pcall('SET',KEYS[1],'refused')}", "1", "script-client"], b"*2\r\n:3000\r\n-ERR Write commands are not allowed from read-only scripts.\r\n");
+        script_client_reply(client, transaction, &["GET", "script-client"], b"$8\r\noriginal\r\n");
+        for command in ["EVALSHA", "EVALSHA_RO", "eVaLsHa_Ro"] {
+            script_client_reply(client, transaction, &[command, &READ_SHA.to_ascii_uppercase(), "1", "script-client"], b"$8\r\noriginal\r\n");
+        }
+        // EVAL_RO registers the function even when execution raises an error.
+        let raised = format!("-ERR Write commands are not allowed from read-only scripts. script: {WRITE_SHA}, on @user_script:2.\r\n");
+        for command in ["EVAL_RO", "eVaL_rO"] {
+            script_client_reply(client, transaction, &[command, WRITE, "1", "script-client", "refused"], raised.as_bytes());
+            script_client_reply(client, transaction, &["GET", "script-client"], b"$8\r\noriginal\r\n");
+        }
+        script_client_reply(client, transaction, &["SCRIPT", "EXISTS", WRITE_SHA], b"*1\r\n:1\r\n");
+        for command in ["EVALSHA_RO", "eVaLsHa_Ro"] {
+            script_client_reply(client, transaction, &[command, &WRITE_SHA.to_ascii_uppercase(), "1", "script-client", "refused"], raised.as_bytes());
+            script_client_reply(client, transaction, &["GET", "script-client"], b"$8\r\noriginal\r\n");
+        }
+        // Both a cached source invocation and a cached SHA invocation may write.
+        script_client_reply(client, transaction, &["EVAL", WRITE, "1", "script-client", "plain"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["GET", "script-client"], b"$5\r\nplain\r\n");
+        script_client_reply(client, transaction, &["EVALSHA", WRITE_SHA, "1", "script-client", "sha"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["EVALSHA_RO", WRITE_SHA, "1", "script-client", "refused"], raised.as_bytes());
+        script_client_reply(client, transaction, &["GET", "script-client"], b"$3\r\nsha\r\n");
+        script_client_reply(client, transaction, &["SCRIPT", "LOAD", PROTECTED], &script_client_bulk(PROTECTED_SHA.as_bytes()));
+        for (command, source) in [("EVAL_RO", PROTECTED), ("EVALSHA_RO", PROTECTED_SHA)] {
+            script_client_reply(client, transaction, &[command, source, "1", "script-client", "refused"], REFUSED);
+            script_client_reply(client, transaction, &["GET", "script-client"], b"$3\r\nsha\r\n");
+        }
+        script_client_reply(client, transaction, &["EVAL", PROTECTED, "1", "script-client", "protected"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["GET", "script-client"], b"$9\r\nprotected\r\n");
+        script_client_reply(client, transaction, &["SCRIPT", "FLUSH"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["EVALSHA_RO", READ_SHA, "1", "script-client"], NOSCRIPT);
+        if transaction {
+            // Cache effects happen at execution, in queue order: the initial
+            // miss cannot see the EVAL which is only later in the same EXEC.
+            let batch = [resp(&["MULTI"]), resp(&["EVALSHA_RO", VALIDATED_SHA, "0"]),
+                resp(&["EVAL_RO", VALIDATED, "0"]), resp(&["EVALSHA_RO", VALIDATED_SHA, "0"]),
+                resp(&["EXEC"])].concat();
+            client.write_all(&batch).expect("send ordered script cache transaction");
+            expect_replies(client, b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n-NOSCRIPT No matching script. Please use EVAL.\r\n$9\r\nvalidated\r\n$9\r\nvalidated\r\n", "script cache follows EXEC order");
+        }
+    });
+}
+
+/// Redis 7.2.16 server.c command arity rejection dirties MULTI, whereas an
+/// accepted EVAL error is one EXEC reply and later queued commands still run.
+fn check_script_client_arity_and_execution_errors(transaction: bool) {
+    script_client_matrix(transaction, |client, transaction, _| {
+        for command in ["EVAL", "EVALSHA", "EVAL_RO", "EVALSHA_RO", "eVaL_rO", "eVaLsHa_Ro"] {
+            for request in [vec![command], vec![command, "return 1"]] {
+                let error = format!("-ERR wrong number of arguments for '{}' command\r\n", command.to_ascii_lowercase());
+                if transaction {
+                    let batch = [resp(&["MULTI"]), resp(&request), resp(&["SET", "arity-write", "bad"]), resp(&["EXEC"])].concat();
+                    client.write_all(&batch).expect("send invalid scripting transaction");
+                    let expected = format!("+OK\r\n{error}+QUEUED\r\n-EXECABORT Transaction discarded because of previous errors.\r\n");
+                    expect_replies(client, expected.as_bytes(), "script arity dirties transaction");
+                    script_client_reply(client, false, &["EXISTS", "arity-write"], b":0\r\n");
+                } else {
+                    script_client_reply(client, false, &request, error.as_bytes());
+                }
+            }
+        }
+        const SOURCE: &str = "local value = ARGV[1]\nerror(value)";
+        const SHA: &str = "87f322ca39697edda58eb5f9f0e96e72fb5fe0eb";
+        let raised = format!("-ERR user_script:2: boom script: {SHA}, on @user_script:2.\r\n");
+        script_client_reply(client, transaction, &["EVAL_RO", SOURCE, "0", "boom"], raised.as_bytes());
+        script_client_reply(client, transaction, &["EVALSHA_RO", SHA, "0", "boom"], raised.as_bytes());
+        script_client_reply(client, transaction, &["SCRIPT", "EXISTS", SHA], b"*1\r\n:1\r\n");
+        // A later write, rather than only PING, proves EXEC continued after error.
+        if transaction {
+            let batch = [resp(&["MULTI"]), resp(&["EVALSHA_RO", SHA, "0", "boom"]),
+                resp(&["SET", "after-script-error", "kept"]), resp(&["EXEC"])].concat();
+            client.write_all(&batch).expect("send execution-error transaction");
+            let expected = format!("+OK\r\n+QUEUED\r\n+QUEUED\r\n*2\r\n{raised}+OK\r\n");
+            expect_replies(client, expected.as_bytes(), "EXEC continues after script error");
+            script_client_reply(client, false, &["GET", "after-script-error"], b"$4\r\nkept\r\n");
+        }
+    });
+}
+
+/// Redis 7.2.16 script_lua.c:luaRedisReturnSingleFieldTable,
+/// luaRedisErrorReplyCommand, luaPushErrorBuff and luaReplyToRedisReply;
+/// eval.c:luaRedisReplicateCommandsCommand is an unconditional true, including
+/// after writes. The byte/control cases distinguish Lua values from wire lines.
+fn check_script_clients_error_status_and_replication(transaction: bool) {
+    script_client_matrix(transaction, |client, transaction, resp3| {
+        for (source, expected) in [
+            ("return redis.status_reply('QUEUED')", b"+QUEUED\r\n".as_slice()),
+            ("return redis.error_reply('ERR denied')", b"-ERR denied\r\n".as_slice()),
+            ("return redis.error_reply('denied')", b"-ERR denied\r\n".as_slice()),
+            ("return redis.error_reply('-BUSY denied')", b"-BUSY denied\r\n".as_slice()),
+            ("return redis.status_reply('a'..string.char(13,10)..'b')", b"+a  b\r\n".as_slice()),
+            ("return redis.status_reply('a'..string.char(0)..'b')", b"+a\r\n".as_slice()),
+            ("return redis.status_reply('a'..string.char(0)..'b').ok", b"$3\r\na\0b\r\n".as_slice()),
+            ("return redis.error_reply('ERR a'..string.char(0)..'b').err", b"$5\r\nERR a\r\n".as_slice()),
+            ("return redis.error_reply('ERR '..string.char(13,10)..'denied'..string.char(13,10)).err", b"$10\r\nERR denied\r\n".as_slice()),
+            ("return redis.pcall().err", b"$64\r\nERR Please specify at least one argument for this redis lib call\r\n".as_slice()),
+            ("return redis.pcall('GET',{}).err", b"$63\r\nERR Lua redis lib command arguments must be strings or integers\r\n".as_slice()),
+            ("return redis.replicate_commands()", b":1\r\n".as_slice()),
+            ("local f=redis.replicate_commands; return f(false,{},'extra')", b":1\r\n".as_slice()),
+        ] {
+            script_client_reply(client, transaction, &["EVAL", source, "0"], expected);
+        }
+        for name in ["status_reply", "error_reply"] {
+            for arguments in ["", "1", "false", "{}", "'a','b'"] {
+                let source = format!("return redis.{name}({arguments})");
+                script_client_reply(client, transaction, &["EVAL", &source, "0"], b"-ERR wrong number or type of arguments\r\n");
+            }
+        }
+        // script.c:scriptCall resolves the command and checks arity before its
+        // CMD_NOSCRIPT flag. The SHA spelling is immaterial after that refusal.
+        for command in ["EVAL", "EVALSHA", "EVAL_RO", "EVALSHA_RO"] {
+            let short = format!("return redis.pcall('{command}')");
+            script_client_reply(client, transaction, &["EVAL", &short, "0"], b"-ERR Wrong number of args calling Redis command from script\r\n");
+            let full = format!("return redis.pcall('{command}','return 1',0)");
+            script_client_reply(client, transaction, &["EVAL", &full, "0"], b"-ERR This Redis command is not allowed from script\r\n");
+        }
+        let missing: &[u8] = if resp3 {
+            b"*3\r\n_\r\n_\r\n:1\r\n"
+        } else {
+            b"*3\r\n$-1\r\n$-1\r\n:1\r\n"
+        };
+        script_client_reply(client, transaction, &["EVAL", "return {redis.pcall('GET',KEYS[1]),false,true}", "1", "script-client-missing"], missing);
+        script_client_reply(client, transaction, &["SET", "script-pcall", "text"], b"+OK\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local r=redis.pcall('INCR',KEYS[1]); redis.call('SET',KEYS[2],'after'); return r", "2", "script-pcall", "after-pcall"], b"-ERR value is not an integer or out of range\r\n");
+        script_client_reply(client, transaction, &["GET", "script-pcall"], b"$4\r\ntext\r\n");
+        script_client_reply(client, transaction, &["GET", "after-pcall"], b"$5\r\nafter\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local ok,e=pcall(redis.call,'INCR',KEYS[1]); return {tostring(ok),type(e),e}", "1", "script-pcall"], b"*3\r\n$5\r\nfalse\r\n$6\r\nstring\r\n$43\r\nERR value is not an integer or out of range\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local before=redis.replicate_commands(); redis.call('SET',KEYS[1],'written'); local f=redis.replicate_commands; return {before,f('ignored')}", "1", "replication-api"], b"*2\r\n:1\r\n:1\r\n");
+        script_client_reply(client, transaction, &["GET", "replication-api"], b"$7\r\nwritten\r\n");
+    });
+}
+
+/// Redis 7.2.16 deps/lua/src/lua_cjson.c and lua_cmsgpack.c, plus
+/// tests/unit/scripting.tcl's codec smoke/number tests. Arrays and single-key
+/// objects make exact encodings independent of Lua hash-table iteration.
+fn check_script_clients_json_and_messagepack(transaction: bool) {
+    script_client_matrix(transaction, |client, transaction, _| {
+        script_client_reply(client, transaction, &["EVAL", "return cjson.encode({a=1})", "0"], b"$7\r\n{\"a\":1}\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return cjson.decode(ARGV[1]).a", "0", "{\"a\":1}"], b":1\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return cmsgpack.pack({a=1})", "0"], &script_client_bulk(b"\x81\xa1\x61\x01"));
+        script_client_reply(client, transaction, &["EVAL", "return cmsgpack.unpack(string.char(129,161,97,1)).a", "0"], b":1\r\n");
+        let json = br#"[1,1.25,1000,0.0003,true,false,null,"a\n\"\\\u0000\/"]"#;
+        script_client_reply(client, transaction, &["EVAL", "return cjson.encode({1,1.25,1000,0.0003,true,false,cjson.null,'a'..string.char(10,34,92,0)..'/'})", "0"], &script_client_bulk(json));
+        script_client_reply(client, transaction, &["EVAL", "local t=cjson.decode(ARGV[1]); return {t[1],tostring(t[2]),tostring(t[4]),tostring(t[5]),tostring(t[6]),t[7]==cjson.null,t[8]}", "0", std::str::from_utf8(json).unwrap()], b"*7\r\n:1\r\n$4\r\n1.25\r\n$6\r\n0.0003\r\n$4\r\ntrue\r\n$5\r\nfalse\r\n:1\r\n$6\r\na\n\"\\\0/\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local t=cjson.decode(ARGV[1]); t[2]=t[2]+1; redis.call('SET',KEYS[1],cjson.encode(t)); return redis.call('GET',KEYS[1])", "1", "json-client", "[1,2,\"x\"]"], b"$9\r\n[1,3,\"x\"]\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return not pcall(cjson.decode,'{\"a\":]')", "0"], b":1\r\n");
+        let packed = b"\x95\x01\xff\xc3\xc2\xa3a\0b";
+        script_client_reply(client, transaction, &["EVAL", "local s='a'..string.char(0)..'b'; local p=cmsgpack.pack({1,-1,true,false,s}); redis.call('SET',KEYS[1],p); return redis.call('GET',KEYS[1])", "1", "msgpack-client"], &script_client_bulk(packed));
+        script_client_reply(client, transaction, &["EVAL", "local t=cmsgpack.unpack(redis.call('GET',KEYS[1])); return {t[1],t[2],tostring(t[3]),tostring(t[4]),t[5]}", "1", "msgpack-client"], b"*5\r\n:1\r\n:-1\r\n$4\r\ntrue\r\n$5\r\nfalse\r\n$3\r\na\0b\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return cmsgpack.pack(0.1,-1099511627776)", "0"], &script_client_bulk(b"\xcb\x3f\xb9\x99\x99\x99\x99\x99\x9a\xd3\xff\xff\xff\x00\x00\x00\x00\x00"));
+        script_client_reply(client, transaction, &["EVAL", "local p=cmsgpack.pack('a',2,'z'); return {cmsgpack.unpack(p)}", "0"], b"*3\r\n$1\r\na\r\n:2\r\n$1\r\nz\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local p=cmsgpack.pack('a',2,'z'); local offset,a=cmsgpack.unpack_one(p,0); local last,b,c=cmsgpack.unpack_limit(p,2,offset); return {offset,a,last,b,c}", "0"], b"*5\r\n:2\r\n$1\r\na\r\n:-1\r\n:2\r\n$1\r\nz\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return not pcall(cmsgpack.unpack,string.char(193))", "0"], b":1\r\n");
+    });
+}
+
+/// Redis 7.2.16 lbaselib.c:luaB_unpack and lapi.c:lua_checkstack require
+/// result_count + argc <= LUAI_MAXCSTACK (8000). The explicit-range failures
+/// also cover scripting.tcl's signed-index overflow regressions. RPUSH crosses
+/// the interpreter/host argument boundary with more than a short argument list.
+fn check_script_clients_unpack_boundaries(transaction: bool) {
+    script_client_matrix(transaction, |client, transaction, _| {
+        script_client_reply(client, transaction, &["EVAL", "local t={}; for i=1,7999 do t[i]=i end; return select('#',unpack(t))", "0"], b":7999\r\n");
+        script_client_reply(client, transaction, &["EVAL", "local t={}; for i=1,8000 do t[i]=i end; local ok,e=pcall(unpack,t); return {tostring(ok),e}", "0"], b"*2\r\n$5\r\nfalse\r\n$26\r\ntoo many results to unpack\r\n");
+        script_client_reply(client, transaction, &["EVAL", "return select('#',unpack({},1,7997))", "0"], b":7997\r\n");
+        for (first, last) in [("1", "7998"), ("-2", "2147483647"), ("0", "2147483647"), ("-2147483648", "-2")] {
+            let source = format!("local ok,e=pcall(unpack,{{}},{first},{last}); return {{tostring(ok),e}}");
+            script_client_reply(client, transaction, &["EVAL", &source, "0"], b"*2\r\n$5\r\nfalse\r\n$26\r\ntoo many results to unpack\r\n");
+        }
+        script_client_reply(client, transaction, &["EVAL", "return {select('#',unpack({},-1,-2)),select('#',unpack({},1,-1)),select('#',unpack({},-2147483648,-2147483646))}", "0"], b"*3\r\n:0\r\n:0\r\n:3\r\n");
+        let values: Vec<String> = (0..128).map(|i| format!("value-{i}")).collect();
+        let mut request = vec!["EVAL", "return redis.call('RPUSH',KEYS[1],unpack(ARGV))", "1", "many-arguments"];
+        request.extend(values.iter().map(String::as_str));
+        script_client_reply(client, transaction, &request, b":128\r\n");
+        script_client_reply(client, transaction, &["LLEN", "many-arguments"], b":128\r\n");
+        script_client_reply(client, transaction, &["LINDEX", "many-arguments", "0"], b"$7\r\nvalue-0\r\n");
+        script_client_reply(client, transaction, &["LINDEX", "many-arguments", "-1"], b"$9\r\nvalue-127\r\n");
+    });
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+fn firn_script_clients_direct_lookup_and_read_only() {
+    check_script_clients_lookup_and_read_only(false);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+#[ignore = "waits for firn-scope-script-client: scripts inside EXEC"]
+fn firn_script_clients_multi_lookup_and_read_only() {
+    check_script_clients_lookup_and_read_only(true);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+fn firn_script_clients_direct_arity_and_execution_errors() {
+    check_script_client_arity_and_execution_errors(false);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+#[ignore = "waits for firn-scope-script-client: scripts inside EXEC"]
+fn firn_script_clients_multi_arity_and_execution_errors() {
+    check_script_client_arity_and_execution_errors(true);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+fn firn_script_clients_direct_error_status_and_replication() {
+    check_script_clients_error_status_and_replication(false);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+#[ignore = "waits for firn-scope-script-client: scripts inside EXEC"]
+fn firn_script_clients_multi_error_status_and_replication() {
+    check_script_clients_error_status_and_replication(true);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+fn firn_script_clients_direct_json_and_messagepack() {
+    check_script_clients_json_and_messagepack(false);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+#[ignore = "waits for firn-scope-script-client: scripts inside EXEC"]
+fn firn_script_clients_multi_json_and_messagepack() {
+    check_script_clients_json_and_messagepack(true);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+fn firn_script_clients_direct_unpack_boundaries() {
+    check_script_clients_unpack_boundaries(false);
+}
+
+/// Expected replies were recorded on redis-server 7.2.16 in
+/// [CI run 38398315312](https://github.com/Ming-Research/Firn-wf/actions/runs/38398315312).
+#[test]
+#[ignore = "waits for firn-scope-script-client: scripts inside EXEC"]
+fn firn_script_clients_multi_unpack_boundaries() {
+    check_script_clients_unpack_boundaries(true);
 }
 
 /// firn runs scripts as Redis 7.0.15's EVAL, EVALSHA and SCRIPT do: a script
@@ -4800,12 +5875,12 @@ fn firn_keeps_a_script_error_reply_on_one_line() {
 /// which it does not implement; redis.REDIS_VERSION and REDIS_VERSION_NUM
 /// name 7.2.16. The expected replies are redis-server 7.2.16's as Halo-wf
 /// recorded them: its oracle scripts under
-/// deps/halo-wf/research/experiments/halo-oracle (number-argument-format,
+/// deps/halo-wf/tests/halo-oracle (number-argument-format,
 /// number-argument-effects, double-reply-table, string-metatable-readonly,
 /// readonly-library-tables, readonly-rawset-error, global-write,
 /// keys-argv-writable, removed-globals, error-message-newline,
 /// set-repl-no-argument, redis-version) and its table of double texts,
-/// deps/halo-wf/research/experiments/redis-double-text/redis-7.2.16.tsv, for
+/// deps/halo-wf/tests/redis-double-text/redis-7.2.16.tsv, for
 /// 2^62, the double after it, their negatives, 1e23, -0 and -inf; the RESP3 doubles follow
 /// addReplyDouble in Redis 7.2.16's networking.c, and set_repl's flag error
 /// its luaRedisSetReplCommand in script_lua.c.
@@ -7603,8 +8678,15 @@ fn firn_enumerates_keys_as_redis_does() {
     assert_eq!(status, 0);
 }
 
-/// firn records SCAN with TYPE none run inside a transaction's EXEC and a script as Redis 7.0.15 propagates it: an expired key its MATCH pattern selects is removed, recorded as DEL where SCAN meets it, and named in the reply, since Redis reads a key's type before its expiry check; a live key is not named. The expected
-/// records are redis-server 7.0.15's (Firn-wf probe run 37552883025).
+/// firn records SCAN with TYPE none inside EXEC and EVAL as Redis 7.2.16
+/// does: a selected expired key is removed and propagated as DEL, but no key
+/// is returned, since the type check rejects the missing object after expiry.
+/// The replies follow src/db.c:scanGenericCommand; the unchanged DEL records
+/// follow src/db.c:expireIfNeeded and src/server.c:propagatePendingCommands.
+/// The expected records were recorded on Redis 7.2.16 in
+/// research/experiments/aof-oracle/held-scan-type-none-recording.json.
+/// The records omit the SELECT 0 that Redis 7.2.16 writes into the AOF after a
+/// restart, which firn does not write yet; firn-scope-select-db tracks it.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_records_held_scan_type_none_as_redis_propagates_it() {
@@ -7625,9 +8707,127 @@ fn firn_records_held_scan_type_none_as_redis_propagates_it() {
             &["EVAL", "local r = redis.call('SCAN', '0', 'MATCH', 'n3', 'TYPE', 'NONE', 'COUNT', '1000'); redis.call('SET', 't', '1'); return r", "0"],
             &["DBSIZE"],
         ],
-        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n*2\r\n$1\r\n0\r\n*1\r\n$2\r\nn1\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n*2\r\n$1\r\n0\r\n*1\r\n$2\r\nn3\r\n:3\r\n",
+        b"+OK\r\n+QUEUED\r\n+QUEUED\r\n+QUEUED\r\n*3\r\n*2\r\n$1\r\n0\r\n*0\r\n*2\r\n$1\r\n0\r\n*0\r\n+OK\r\n*2\r\n$1\r\n0\r\n*0\r\n:3\r\n",
         b"*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nn1\r\n*3\r\n$3\r\nSET\r\n$1\r\nw\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\nn3\r\n*3\r\n$3\r\nSET\r\n$1\r\nt\r\n$1\r\n1\r\n*1\r\n$4\r\nEXEC\r\n",
     );
+}
+
+/// Redis 7.2.16 removes a key that SCAN's TYPE lookup finds expired, including
+/// TYPE none. Creating and scanning it in one script prevents active expiry
+/// from hiding that lookup. The expected SCAN and EXISTS bytes were recorded
+/// in research/experiments/aof-oracle/72-scan-type-none-and-deep-glob.json,
+/// copied from the reference run:
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_scan_type_none_omits_a_key_expired_during_the_scan() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    client
+        .write_all(&resp(&[
+            "EVAL",
+            "redis.call('SET', 'k', 'v', 'PXAT', '1'); return redis.call('SCAN', '0', 'TYPE', 'none', 'COUNT', '1000')",
+            "0",
+        ]))
+        .expect("create and scan a just-expired key inside one script");
+    assert_eq!(whole_reply(&mut client, "SCAN TYPE none"), "*2\r\n$1\r\n0\r\n*0\r\n");
+    client.write_all(&resp(&["EXISTS", "k"])).expect("check the expired key was removed");
+    assert_eq!(whole_reply(&mut client, "EXISTS after SCAN"), ":0\r\n");
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// Redis 7.2.16 accepts 1000 nested nonterminal star groups and rejects 1001.
+/// The KEYS results for 999, 1000 and 1001 '*a' groups against 1001 'a' bytes,
+/// and the empty SCAN result at 1001 groups, were recorded in
+/// research/experiments/aof-oracle/72-scan-type-none-and-deep-glob.json,
+/// copied from the reference run:
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583
+/// The other boundaries follow src/util.c:stringmatchlen_impl: adjacent stars
+/// collapse, trailing stars, '?' and escaped or bracketed stars do not recurse,
+/// and retrying a star at later string positions keeps the same nesting depth.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_glob_matching_obeys_redis_star_nesting_limit() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let key = "a".repeat(1001);
+    client.write_all(&resp(&["SET", &key, "v"])).expect("write the deep-glob key");
+    assert_eq!(whole_reply(&mut client, "SET the deep-glob key"), "+OK\r\n");
+    for groups in [999, 1000, 1001] {
+        let pattern = "*a".repeat(groups);
+        client.write_all(&resp(&["KEYS", &pattern])).expect("send the recorded deep-glob pattern");
+        let expected = if groups <= 1000 { resp(&[&key]) } else { b"*0\r\n".to_vec() };
+        assert_eq!(whole_reply(&mut client, "KEYS star-nesting boundary").as_bytes(), expected, "{groups} star groups");
+    }
+    let over_limit = "*a".repeat(1001);
+    client
+        .write_all(&resp(&["SCAN", "0", "MATCH", &over_limit, "COUNT", "1000"]))
+        .expect("send the recorded deep SCAN pattern");
+    assert_eq!(whole_reply(&mut client, "SCAN over the star-nesting limit"), "*2\r\n$1\r\n0\r\n*0\r\n");
+
+    for (what, pattern) in [
+        ("adjacent stars collapse before nesting", "**a".repeat(1000)),
+        ("a trailing star does not add nesting", format!("{}*", "*a".repeat(1000))),
+        ("a question mark does not add nesting", format!("{}?", "*a".repeat(1000))),
+    ] {
+        client.write_all(&resp(&["KEYS", &pattern])).expect("send a source-derived boundary pattern");
+        assert_eq!(whole_reply(&mut client, what).as_bytes(), resp(&[&key]), "{what}");
+    }
+
+    client.write_all(&resp(&["DEL", &key])).expect("remove the first deep-glob key");
+    assert_eq!(whole_reply(&mut client, "DEL the first deep-glob key"), ":1\r\n");
+    let literal_star_key = format!("{}*", "a".repeat(1000));
+    client.write_all(&resp(&["SET", &literal_star_key, "v"])).expect("write a key ending in a literal star");
+    assert_eq!(whole_reply(&mut client, "SET the literal-star key"), "+OK\r\n");
+    for (what, ending) in [("an escaped star does not add nesting", "\\*"), ("a bracketed star does not add nesting", "[*]")] {
+        let pattern = format!("{}{ending}", "*a".repeat(1000));
+        client.write_all(&resp(&["KEYS", &pattern])).expect("send a literal-star boundary pattern");
+        assert_eq!(whole_reply(&mut client, what).as_bytes(), resp(&[&literal_star_key]), "{what}");
+    }
+
+    client.write_all(&resp(&["DEL", &literal_star_key])).expect("remove the literal-star key");
+    assert_eq!(whole_reply(&mut client, "DEL the literal-star key"), ":1\r\n");
+    let retry_key = format!("{}{}a", "a".repeat(999), "b".repeat(1002));
+    client.write_all(&resp(&["SET", &retry_key, "v"])).expect("write a key requiring many star retries");
+    assert_eq!(whole_reply(&mut client, "SET the retry key"), "+OK\r\n");
+    let pattern = "*a".repeat(1000);
+    client.write_all(&resp(&["KEYS", &pattern])).expect("send the many-retries pattern");
+    assert_eq!(whole_reply(&mut client, "star retries retain nesting").as_bytes(), resp(&[&retry_key]));
+
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
+}
+
+/// CONFIG GET uses Redis 7.2.16's same glob matcher with nocase enabled
+/// (src/config.c:configGetCommand). Adjacent stars are one group regardless
+/// of their count (src/util.c:stringmatchlen_impl), so P + 1001 stars + ORT
+/// selects the canonical name "port" and this server's configured port.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_config_get_collapses_adjacent_stars_without_counting_them_as_depth() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let pattern = format!("P{}ORT", "*".repeat(1001));
+    client.write_all(&resp(&["CONFIG", "GET", &pattern])).expect("send a long case-insensitive config glob");
+    assert_eq!(whole_reply(&mut client, "CONFIG GET adjacent stars").as_bytes(), resp(&["port", &text]));
+    drop(client);
+    let (status, _) = finished(child);
+    assert_eq!(status, 0);
 }
 
 /// firn's RANDOMKEY draws each key of a keyspace of ten keys about equally
@@ -8084,6 +9284,22 @@ fn aof_records(bytes: &[u8]) -> Vec<Vec<String>> {
         }
         records.push(record);
     }
+    records
+}
+
+/// Canonical RESP bytes for complete AOF command frames.
+fn aof_record_bytes(records: &[Vec<String>]) -> Vec<u8> {
+    records.iter().flat_map(|record| {
+        resp(&record.iter().map(String::as_str).collect::<Vec<_>>())
+    }).collect()
+}
+
+/// Checks every byte, including framing and the file's end, before ignoring
+/// only SELECT 0 frames. Its placement is covered by separate database tests.
+fn aof_records_without_select_zero(bytes: &[u8]) -> Vec<Vec<String>> {
+    let mut records = aof_records(bytes);
+    assert_eq!(aof_record_bytes(&records), bytes, "AOF must contain complete canonical RESP frames");
+    records.retain(|record| record != &["SELECT", "0"]);
     records
 }
 
@@ -9002,6 +10218,314 @@ fn firn_ends_at_once_on_a_second_stop_signal_on_both_routes() {
             "{signal} twice: {output:?}"
         );
         drop(looping);
+    }
+}
+
+/// How many `SET` records the replay-stop cases' base file holds. Redis
+/// 7.2.16 and firn each apply AOF records at no more than a few million a
+/// second on a hosted runner, so loading these takes well over a second,
+/// while the cases find the replay within milliseconds of its start; firn's
+/// restart that replays them all must also fit in the harness's 60-second
+/// child deadline. Nothing here was timed on the developer's machine.
+#[cfg(target_os = "linux")]
+const REPLAY_STOP_RECORDS: usize = 3_000_000;
+
+/// How many keys those records cycle over, `key:00000` to `key:65535`.
+#[cfg(target_os = "linux")]
+const REPLAY_STOP_KEYS: usize = 65_536;
+
+/// A base append-only file of `REPLAY_STOP_RECORDS` `SET` records, record `i`
+/// setting key `i % REPLAY_STOP_KEYS` to the eight decimal digits of `i`, so
+/// the last record of a key decides its value after a whole replay.
+#[cfg(target_os = "linux")]
+fn replay_stop_base() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(REPLAY_STOP_RECORDS * 42);
+    for index in 0..REPLAY_STOP_RECORDS {
+        write!(
+            bytes,
+            "*3\r\n$3\r\nSET\r\n$9\r\nkey:{:05}\r\n$8\r\n{index:08}\r\n",
+            index % REPLAY_STOP_KEYS
+        )
+        .expect("build the base file");
+    }
+    bytes
+}
+
+/// The value a whole replay of `replay_stop_base` leaves at key `key`.
+#[cfg(target_os = "linux")]
+fn replay_stop_value(key: usize) -> String {
+    let last = key + (REPLAY_STOP_RECORDS - 1 - key) / REPLAY_STOP_KEYS * REPLAY_STOP_KEYS;
+    format!("{last:08}")
+}
+
+/// Every file of a directory by name, with its length and a SipHash of its
+/// bytes, so that two snapshots are equal only for the same names holding
+/// the same bytes, up to a 64-bit hash collision.
+#[cfg(target_os = "linux")]
+fn directory_snapshot(directory: &std::path::Path) -> std::collections::BTreeMap<String, (usize, u64)> {
+    use std::hash::Hasher as _;
+    std::fs::read_dir(directory)
+        .unwrap_or_else(|error| panic!("list {}: {error}", directory.display()))
+        .map(|entry| {
+            let path = entry.expect("read a directory entry").path();
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            hasher.write(&bytes);
+            let name = path.file_name().expect("entry name").to_string_lossy().into_owned();
+            (name, (bytes.len(), hasher.finish()))
+        })
+        .collect()
+}
+
+/// Whether a running process holds `file`, an absolute path without
+/// symbolic links, open, as Linux's /proc/PID/fd lists its descriptors.
+#[cfg(target_os = "linux")]
+fn holds_open(pid: u32, file: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| std::fs::read_link(entry.path()).is_ok_and(|target| target.as_path() == file))
+}
+
+/// Whether the process takes SIGINT and SIGTERM instead of leaving them to
+/// the host default: Redis catches them with a handler (SigCgt in Linux's
+/// /proc/PID/status), while Whitefoot's runtime blocks them on the process's
+/// first thread and reads them from a signalfd while its stop listener is
+/// open (SigBlk). Bit `n - 1` of either mask stands for signal `n`.
+#[cfg(target_os = "linux")]
+fn takes_stop_signals(pid: u32) -> bool {
+    let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+        return false;
+    };
+    let mask = |name: &str| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+            .unwrap_or(0)
+    };
+    let both = (1_u64 << (2 - 1)) | (1_u64 << (15 - 1));
+    (mask("SigCgt:") | mask("SigBlk:")) & both == both
+}
+
+/// Whether a server serves on the port yet. firn listens only after its
+/// replay, so a refused connection means it has not; Redis 7.2.16 accepts
+/// while it loads and answers -LOADING, which means the same.
+#[cfg(target_os = "linux")]
+fn serves(port: u16, what: &str) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    match TcpStream::connect_timeout(&address, Duration::from_secs(5)) {
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => false,
+        Err(error) => panic!("{what}: connect to {address}: {error}"),
+        Ok(stream) => {
+            let mut stream = bounded_stream(stream);
+            stream.write_all(&resp(&["PING"])).expect("send the readiness PING");
+            let line = reply_line(&mut stream, what);
+            if line == "+PONG\r\n" {
+                return true;
+            }
+            assert!(line.starts_with("-LOADING "), "{what}: PING answered {line:?}");
+            false
+        }
+    }
+}
+
+/// One server under the replay-stop cases: Redis 7.2.16, or firn on the
+/// route `native_ring` names.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+enum ReplayServer {
+    Redis,
+    Firn { native_ring: bool },
+}
+
+/// Starts a server with appendonly on in `directory`, where its
+/// appendonlydir lies. Redis is started as the rewrite crash cases start it.
+#[cfg(target_os = "linux")]
+fn replay_server_start(
+    server: ReplayServer,
+    program: &CompiledProgram,
+    directory: &std::path::Path,
+    lease: &support::PortLease,
+) -> ProgramChild {
+    let port = lease.port().to_string();
+    match server {
+        ReplayServer::Redis => {
+            let mut command = std::process::Command::new(support::redis_oracle());
+            command
+                .current_dir(directory)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .args([
+                    "--port", &port, "--bind", "127.0.0.1", "--save", "", "--appendonly", "yes",
+                    "--appendfilename", "appendonly.aof", "--appendfsync", "everysec",
+                    "--aof-use-rdb-preamble", "no", "--auto-aof-rewrite-percentage", "0", "--dir",
+                ])
+                .arg(directory);
+            ProgramChild::spawn(&mut command)
+                .expect("spawn redis-server")
+                .with_port(lease)
+        }
+        ReplayServer::Firn { native_ring } => program
+            .spawn_on_route(
+                native_ring,
+                &[port.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-percentage", b"0"],
+            )
+            .with_port(lease),
+    }
+}
+
+/// A SIGTERM or SIGINT that comes while the server replays its append-only
+/// file ends it with status 0 and leaves appendonlydir as it was, file names
+/// and bytes, as Redis 7.2.16 does: it takes the signals from `initServer`,
+/// before it loads, finds the request every 1024 commands while it loads and
+/// exits there (`aof.c:1480-1485`, `server.c:1592-1599`), and opens its file
+/// for appending only after loading (`server.c:7332`). In the first layout
+/// the manifest lists a base and no increment, so a server that finished its
+/// replay would create and list an increment; in the second the records lie
+/// in an increment ending in an unfinished record, which a whole replay would
+/// cut. Either way a finished replay changes the directory. The case finds the replay
+/// by the server holding its base file open while it does not yet serve,
+/// sends the signal then, and a restart must still load every key. firn
+/// before this case opened its stop listener only once its replay was done,
+/// so the signal met the host default and ended firn by the signal, a status
+/// this case refuses. Redis runs first, so that a case which does not
+/// describe Redis fails on Redis.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_stops_its_replay_on_sigterm_and_sigint_as_redis_does() {
+    use std::os::unix::process::ExitStatusExt;
+    let records = replay_stop_base();
+    // In the second layout the records lie in an increment after a one-key
+    // base and end in an unfinished record, so the stop comes in a later
+    // file whose end both servers would cut after a whole replay.
+    let mut unfinished = records.clone();
+    unfinished.extend_from_slice(b"*3\r\n$3\r\nSET\r\n$9\r\nkey:0");
+    let base_only = [("appendonly.aof.1.base.aof", records.as_slice())];
+    let with_increment = [
+        ("appendonly.aof.1.base.aof", b"*3\r\n$3\r\nSET\r\n$4\r\nbase\r\n$4\r\nkept\r\n".as_slice()),
+        ("appendonly.aof.1.incr.aof", unfinished.as_slice()),
+    ];
+    for (server, signal, files) in [
+        (ReplayServer::Redis, "TERM", base_only.as_slice()),
+        (ReplayServer::Redis, "INT", base_only.as_slice()),
+        (ReplayServer::Firn { native_ring: false }, "TERM", base_only.as_slice()),
+        (ReplayServer::Firn { native_ring: true }, "INT", base_only.as_slice()),
+        (ReplayServer::Redis, "TERM", with_increment.as_slice()),
+        (ReplayServer::Firn { native_ring: true }, "TERM", with_increment.as_slice()),
+    ] {
+        let what = format!("{server:?} on SIG{signal} with {} file(s)", files.len());
+        let program = CompiledProgram::from_environment();
+        let fixture = fixture_directory();
+        let directory = match server {
+            ReplayServer::Redis => fixture.path().to_path_buf(),
+            ReplayServer::Firn { .. } => program.working_directory().to_path_buf(),
+        };
+        let aof = directory.join("appendonlydir");
+        std::fs::create_dir(&aof).expect("create appendonlydir");
+        let mut manifest = String::new();
+        for (name, bytes) in files {
+            std::fs::write(aof.join(name), bytes).expect("write an append-only file");
+            let kind = if name.ends_with(".base.aof") { "b" } else { "i" };
+            manifest.push_str(&format!("file {name} seq 1 type {kind}\n"));
+        }
+        std::fs::write(aof.join("appendonly.aof.manifest"), manifest).expect("write the manifest");
+        let before = directory_snapshot(&aof);
+        // The file that holds the records, the last one, is the one whose
+        // replay the signal must interrupt.
+        let base_path = aof
+            .join(files[files.len() - 1].0)
+            .canonicalize()
+            .expect("resolve the replayed file");
+
+        let lease = support::lease_port();
+        let mut child = replay_server_start(server, &program, &directory, &lease);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(status) = child.try_wait().expect("poll the server") {
+                panic!("{what}: exited before its replay was seen: {status:?}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{what}: the replay was not seen within 30 seconds"
+            );
+            if holds_open(child.id(), &base_path) {
+                assert!(
+                    !serves(lease.port(), &what),
+                    "{what}: the server already serves while it holds its base file open"
+                );
+                break;
+            }
+            assert!(
+                !serves(lease.port(), &what),
+                "{what}: the server served before its replay was seen; the base \
+                 file is too small for this runner, so the case missed the replay"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let taken = takes_stop_signals(child.id());
+        send_signal(&child, signal);
+        let output = child.wait_with_output().expect("wait for the server");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{what}: a signal during the replay must end it with status 0, not {:?} \
+             (signal {:?}; SIGINT and SIGTERM taken when sent: {taken}); stdout tail: {}",
+            output.status,
+            output.status.signal(),
+            String::from_utf8_lossy(&output.stdout[output.stdout.len().saturating_sub(2048)..])
+        );
+        assert_eq!(
+            directory_snapshot(&aof),
+            before,
+            "{what}: appendonlydir must be left as it was"
+        );
+
+        let lease = support::lease_port();
+        let restarted = replay_server_start(server, &program, &directory, &lease);
+        let deadline = Instant::now() + Duration::from_secs(50);
+        while !serves(lease.port(), &what) {
+            restarted.assert_running(lease.port());
+            assert!(
+                Instant::now() < deadline,
+                "{what}: the restart did not serve within 50 seconds"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut client = connect_when_ready(lease.port(), &restarted);
+        client.write_all(&resp(&["DBSIZE"])).expect("count the keys");
+        assert_eq!(
+            integer_reply(&mut client, "keys after the restart"),
+            (REPLAY_STOP_KEYS + files.len() - 1) as i64,
+            "{what}"
+        );
+        if files.len() > 1 {
+            client.write_all(&resp(&["GET", "base"])).expect("read the base's key");
+            assert_eq!(bulk_reply(&mut client, "the base's key"), "kept", "{what}");
+        }
+        // The last record, number REPLAY_STOP_RECORDS - 1, writes key 50879,
+        // so a restart that lost the file's end fails on it.
+        let last = (REPLAY_STOP_RECORDS - 1) % REPLAY_STOP_KEYS;
+        for key in [0, 1, REPLAY_STOP_KEYS / 2, REPLAY_STOP_KEYS - 1, last] {
+            client
+                .write_all(&resp(&["GET", &format!("key:{key:05}")]))
+                .expect("read a replayed key");
+            assert_eq!(
+                bulk_reply(&mut client, "a replayed key"),
+                replay_stop_value(key),
+                "{what}: key {key}"
+            );
+        }
+        client
+            .write_all(&resp(&["SHUTDOWN", "NOSAVE"]))
+            .expect("stop the restarted server");
+        assert_eq!(client.read(&mut [0]).expect("the restarted server closes"), 0);
+        let output = restarted.wait_with_output().expect("wait for the restart");
+        assert_eq!(output.status.code(), Some(0), "{what}: restart {output:?}");
     }
 }
 
@@ -9936,7 +11460,9 @@ fn firn_refuses_aof_rewrite_without_appendonly() {
 
 /// rewriteAppendOnlyFileRio, rewrite*Object and AOF_REWRITE_ITEMS_PER_CMD
 /// supply the oracle: SET, RPUSH/SADD/ZADD/HMSET in groups of at most 64,
-/// SELECT 0 before the dataset, and absolute PEXPIREAT after each key.
+/// SELECT 0 before the dataset, and absolute PEXPIREAT after each key. The
+/// expected replayed score replies are redis-server 7.2.16's, recorded in
+/// research/experiments/aof-oracle/score-text-recording.json.
 #[test]
 fn firn_rewrites_all_value_types_with_expiries_and_redis_commands() {
     let program = CompiledProgram::from_environment();
@@ -10194,6 +11720,43 @@ fn firn_rewrite_cuts_before_both_retained_unmatched_multis() {
             ("a", Some("2")), ("b", None), ("c", None), ("d", None), ("after", after),
         ]);
     }
+}
+
+/// A clean EOF inside nested MULTIs makes Redis's loader trim only the latest
+/// MULTI. The earlier unmatched MULTI remains in the retained bytes, so switch
+/// validation must still cut before that first MULTI rather than treating the
+/// startup-trimmed file as a complete command stream outside a block.
+#[test]
+fn firn_rewrite_cuts_first_retained_multi_after_nested_clean_eof() {
+    let program = CompiledProgram::from_environment();
+    let name = "appendonly.aof";
+    let path = aof_incremental_fixture(program.working_directory(), name);
+    let retained = [
+        resp(&["SET", "a", "1"]),
+        resp(&["MULTI"]),
+        resp(&["SET", "b", "2"]),
+    ].concat();
+    let nested = [resp(&["MULTI"]), resp(&["SET", "c", "3"])].concat();
+    std::fs::write(&path, [retained.clone(), nested].concat()).unwrap();
+    let lease = support::lease_port();
+    let port = lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", name.as_bytes()]).with_port(&lease);
+    let mut client = connect_when_ready(port, &child);
+    multipart_values(&mut client, &[("a", Some("1")), ("b", None), ("c", None)]);
+    assert_eq!(std::fs::read(&path).unwrap(), retained, "startup trims the latest MULTI while the first remains unmatched");
+    // Keep a descriptor across history cleanup so publication cannot hide
+    // an incorrect boundary behind a newly reconstructed live base.
+    let mut sealed = std::fs::File::open(&path).unwrap();
+    client.write_all(&resp(&["INCR", "after"])).unwrap();
+    expect_replies(&mut client, b":1\r\n", "acknowledged write behind the remaining MULTI");
+    rewrite_start(&mut client);
+    assert_eq!(rewrite_wait(&mut client)["aof_last_bgrewrite_status"], "ok");
+    let mut sealed_bytes = Vec::new();
+    sealed.read_to_end(&mut sealed_bytes).unwrap();
+    assert_eq!(sealed_bytes, resp(&["SET", "a", "1"]), "the switch must cut before the first remaining MULTI, not the trimmed latest one");
+    rewrite_stop(&mut client, child);
+    multipart_load(&program, name, &[("a", Some("1")), ("b", None), ("c", None), ("after", Some("1"))]);
 }
 
 /// State after each durable rewrite step, from backgroundRewriteDoneHandler.
@@ -10906,9 +12469,13 @@ fn firn_tracks_idle_time_and_notouch_lookups() {
     assert_eq!(finished(child).0, 0);
 }
 
-/// object.c createObject starts at five. dbOverwrite preserves the old LFU
-/// bits; setGenericCommand with GET and getsetCommand each look up twice.
-/// A zero log factor makes increments effectively deterministic as in Redis.
+/// Redis 7.2.16 object.c initObjectLRUOrLFU starts at five; db.c dbSetValue
+/// preserves the old LFU bits. setGenericCommand with GET and getsetCommand
+/// each look up twice. A zero log factor makes increments effectively
+/// deterministic as in Redis. msetGenericCommand skips MSETNX store lookups,
+/// and renameGenericCommand calls dbAdd, resetting the moved object's LFU.
+/// Witness: research/experiments/aof-oracle/lfu-rename-msetnx.json, copied from
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583.
 #[cfg(target_os = "linux")]
 #[test]
 fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
@@ -10946,7 +12513,7 @@ fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
     assert_eq!(memory_request(&mut client, &["MSET", "dup", "a", "dup", "b"]), "+OK\r\n");
     assert_eq!(memory_object(&mut client, "FREQ", "dup"), 6);
     assert_eq!(memory_request(&mut client, &["MSETNX", "nxdup", "a", "nxdup", "b"]), ":1\r\n");
-    assert_eq!(memory_object(&mut client, "FREQ", "nxdup"), 6);
+    assert_eq!(memory_object(&mut client, "FREQ", "nxdup"), 5);
     assert_eq!(memory_request(&mut client, &["SADD", "set", "a"]), ":1\r\n");
     memory_request(&mut client, &["SINTER", "set", "set"]);
     assert_eq!(memory_object(&mut client, "FREQ", "set"), 7);
@@ -10955,17 +12522,168 @@ fn firn_preserves_lfu_on_overwrites_and_counts_compound_lookups() {
     assert_eq!(memory_request(&mut client, &["COPY", "freq", "copied"]), ":1\r\n");
     assert_eq!(memory_object(&mut client, "FREQ", "copied"), 5);
     assert_eq!(memory_request(&mut client, &["RENAME", "copied", "renamed"]), "+OK\r\n");
-    assert_eq!(memory_object(&mut client, "FREQ", "renamed"), 6);
+    assert_eq!(memory_object(&mut client, "FREQ", "renamed"), 5);
     assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
     for args in [vec!["GET", "renamed"], vec!["GET", "renamed"], vec!["OBJECT", "FREQ", "renamed"]] {
         assert_eq!(memory_request(&mut client, &args), "+QUEUED\r\n");
     }
-    assert_eq!(memory_request(&mut client, &["EXEC"]), "*3\r\n$1\r\nv\r\n$1\r\nv\r\n:8\r\n");
-    assert_eq!(memory_request(&mut client, &["EVAL", "redis.call('GET', KEYS[1]); local n=0; for i=1,20000 do n=n+i end; return redis.call('OBJECT','FREQ',KEYS[1])", "1", "renamed"]), ":9\r\n");
+    assert_eq!(memory_request(&mut client, &["EXEC"]), "*3\r\n$1\r\nv\r\n$1\r\nv\r\n:7\r\n");
+    assert_eq!(memory_request(&mut client, &["EVAL", "redis.call('GET', KEYS[1]); local n=0; for i=1,20000 do n=n+i end; return redis.call('OBJECT','FREQ',KEYS[1])", "1", "renamed"]), ":8\r\n");
     for _ in 0..260 {
         memory_request(&mut client, &["GET", "renamed"]);
     }
     assert_eq!(memory_object(&mut client, "FREQ", "renamed"), 255);
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Exact Redis 7.2.16 LFU batches from research/experiments/aof-oracle/
+/// lfu-rename-msetnx.json (recorded in
+/// https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583):
+/// a moved object starts at five; a same-name rename only looks it up;
+/// twenty duplicate-key MSETNX batches store the last value without a touch.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_matches_the_lfu_rename_and_msetnx_oracle() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    for (setting, value) in [("maxmemory-policy", "allkeys-lfu"), ("lfu-log-factor", "0"), ("lfu-decay-time", "0")] {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", setting, value]), "+OK\r\n");
+    }
+    let warmup = "while redis.call('OBJECT','FREQ',KEYS[1]) < 6 do redis.call('GET',KEYS[1]) end return redis.call('OBJECT','FREQ',KEYS[1])";
+    assert_eq!(memory_request(&mut client, &["SET", "src", "x"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["EVAL", warmup, "1", "src"]), ":6\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAME", "src", "dst"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ", "dst"]), ":5\r\n");
+    assert_eq!(memory_request(&mut client, &["SET", "a", "x"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["EVAL", warmup, "1", "a"]), ":6\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAMENX", "a", "b"]), ":1\r\n");
+    assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ", "b"]), ":5\r\n");
+    assert_eq!(memory_request(&mut client, &["SET", "same", "x"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["EVAL", warmup, "1", "same"]), ":6\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAME", "same", "same"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ", "same"]), ":7\r\n");
+    for repetition in 0..20 {
+        let deleted = if repetition == 0 { ":0\r\n" } else { ":1\r\n" };
+        assert_eq!(memory_request(&mut client, &["DEL", "k"]), deleted);
+        assert_eq!(memory_request(&mut client, &["MSETNX", "k", "x", "k", "y"]), ":1\r\n");
+        assert_eq!(memory_request(&mut client, &["OBJECT", "FREQ", "k"]), ":5\r\n", "repetition {repetition}");
+        assert_eq!(memory_request(&mut client, &["GET", "k"]), "$1\r\ny\r\n");
+    }
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Redis 7.2.16 db.c renameGenericCommand refreshes source and destination
+/// before refusing RENAMENX, but only the source for a same-name command,
+/// and neither when the source is missing. A replacement uses dbAdd and
+/// initObjectLRUOrLFU just as a move to an absent name does. t_string.c
+/// msetGenericCommand stops at the first existing key during its precheck;
+/// successful stores skip lookups, including under EXEC and both script routes.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_preserves_lfu_lookup_order_for_rename_and_msetnx_branches() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", "allkeys-lfu", "lfu-log-factor", "0", "lfu-decay-time", "0"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["SET", "replace-src", "x"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "replace-src"]), "$1\r\nx\r\n");
+    assert_eq!(memory_request(&mut client, &["SET", "replace-dst", "y"]), "+OK\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "replace-dst"]), "$1\r\ny\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAME", "replace-src", "replace-dst"]), "+OK\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "replace-dst"), 5);
+    assert_eq!(memory_request(&mut client, &["EXISTS", "replace-src"]), ":0\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "replace-dst"]), "$1\r\nx\r\n");
+
+    for (key, value) in [("refused-src", "x"), ("refused-dst", "y"), ("same-nx", "x"), ("missing-dst", "y"), ("blocker", "b"), ("later", "l")] {
+        assert_eq!(memory_request(&mut client, &["SET", key, value]), "+OK\r\n");
+    }
+    assert_eq!(memory_request(&mut client, &["RENAMENX", "refused-src", "refused-dst"]), ":0\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "refused-src"), 6);
+    assert_eq!(memory_object(&mut client, "FREQ", "refused-dst"), 6);
+    assert_eq!(memory_request(&mut client, &["GET", "refused-src"]), "$1\r\nx\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "refused-dst"]), "$1\r\ny\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAMENX", "same-nx", "same-nx"]), ":0\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "same-nx"), 6);
+    assert_eq!(memory_request(&mut client, &["GET", "same-nx"]), "$1\r\nx\r\n");
+    assert_eq!(memory_request(&mut client, &["RENAMENX", "missing-src", "missing-dst"]), "-ERR no such key\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "missing-dst"), 5);
+    assert_eq!(memory_request(&mut client, &["GET", "missing-dst"]), "$1\r\ny\r\n");
+
+    assert_eq!(memory_request(&mut client, &["MSETNX", "before-blocker", "x", "blocker", "x", "later", "x"]), ":0\r\n");
+    assert_eq!(memory_object(&mut client, "FREQ", "blocker"), 6);
+    assert_eq!(memory_object(&mut client, "FREQ", "later"), 5);
+    assert_eq!(memory_request(&mut client, &["EXISTS", "before-blocker"]), ":0\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "blocker"]), "$1\r\nb\r\n");
+    assert_eq!(memory_request(&mut client, &["GET", "later"]), "$1\r\nl\r\n");
+
+    assert_eq!(memory_request(&mut client, &["MULTI"]), "+OK\r\n");
+    for args in [vec!["MSETNX", "exec-dup", "x", "exec-dup", "y"], vec!["OBJECT", "FREQ", "exec-dup"], vec!["GET", "exec-dup"]] {
+        assert_eq!(memory_request(&mut client, &args), "+QUEUED\r\n");
+    }
+    assert_eq!(memory_request(&mut client, &["EXEC"]), "*3\r\n:1\r\n:5\r\n$1\r\ny\r\n");
+    let declared = "local r=redis.call('MSETNX',KEYS[1],'x',KEYS[1],'y'); return {r,redis.call('OBJECT','FREQ',KEYS[1]),redis.call('GET',KEYS[1])}";
+    assert_eq!(memory_request(&mut client, &["EVAL", declared, "1", "script-dup"]), "*3\r\n:1\r\n:5\r\n$1\r\ny\r\n");
+    let undeclared = "local r=redis.call('MSETNX','whole-dup','x','whole-dup','y'); return {r,redis.call('OBJECT','FREQ','whole-dup'),redis.call('GET','whole-dup')}";
+    assert_eq!(memory_request(&mut client, &["EVAL", undeclared, "0"]), "*3\r\n:1\r\n:5\r\n$1\r\ny\r\n");
+    drop(client);
+    assert_eq!(finished(child).0, 0);
+}
+
+/// Redis 7.2.16 initObjectLRUOrLFU uses the current LRU clock under non-LFU
+/// policies. A successful rename and MSETNX leave a fresh idle clock; a
+/// refused MSETNX refreshes only its first existing key. Rename's source
+/// lookup already refreshes LRU, so these cases confirm the policy branch
+/// rather than distinguish the old and new rename code on a frozen clock.
+#[cfg(target_os = "linux")]
+#[test]
+fn firn_uses_idle_time_for_rename_and_msetnx_under_non_lfu_policies() {
+    let program = firn();
+    let port_lease = support::lease_port();
+    let port = port_lease.port();
+    let text = port.to_string();
+    let child = program.spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&port_lease);
+    let mut client = connect_when_ready(port, &child);
+    let policies = ["noeviction", "allkeys-lru", "volatile-lru"];
+    for policy in policies {
+        for suffix in ["src", "nxsrc", "blocker", "later"] {
+            let key = format!("{policy}-{suffix}");
+            assert_eq!(memory_request(&mut client, &["SET", &key, "v"]), "+OK\r\n");
+        }
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    for policy in policies {
+        assert_eq!(memory_request(&mut client, &["CONFIG", "SET", "maxmemory-policy", policy]), "+OK\r\n");
+        let src = format!("{policy}-src");
+        let dst = format!("{policy}-dst");
+        let nxsrc = format!("{policy}-nxsrc");
+        let nxdst = format!("{policy}-nxdst");
+        let fresh = format!("{policy}-fresh");
+        let blocker = format!("{policy}-blocker");
+        let later = format!("{policy}-later");
+        assert!(memory_object(&mut client, "IDLETIME", &src) >= 1, "{policy} source must age");
+        assert!(memory_object(&mut client, "IDLETIME", &nxsrc) >= 1, "{policy} NX source must age");
+        let later_idle = memory_object(&mut client, "IDLETIME", &later);
+        assert!(later_idle >= 1, "{policy} later key must age");
+        assert_eq!(memory_request(&mut client, &["RENAME", &src, &dst]), "+OK\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", &dst) <= 1, "{policy} renamed clock");
+        assert_eq!(memory_request(&mut client, &["RENAMENX", &nxsrc, &nxdst]), ":1\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", &nxdst) <= 1, "{policy} NX renamed clock");
+        assert_eq!(memory_request(&mut client, &["MSETNX", &fresh, "x", &fresh, "y"]), ":1\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", &fresh) <= 1, "{policy} duplicate insertion clock");
+        assert_eq!(memory_request(&mut client, &["GET", &fresh]), "$1\r\ny\r\n");
+        assert_eq!(memory_request(&mut client, &["MSETNX", &blocker, "x", &later, "y"]), ":0\r\n");
+        assert!(memory_object(&mut client, "IDLETIME", &blocker) <= 1, "{policy} blocker lookup must touch");
+        assert!(memory_object(&mut client, "IDLETIME", &later) >= later_idle, "{policy} later key must not be touched");
+    }
     drop(client);
     assert_eq!(finished(child).0, 0);
 }

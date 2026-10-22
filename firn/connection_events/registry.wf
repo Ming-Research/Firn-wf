@@ -1,0 +1,167 @@
+alias Client = pkg::protocol::Client;
+alias Key = pkg::bytes::Key;
+alias KeyEnv = pkg::bytes::KeyEnv;
+alias KeyHash = pkg::bytes::KeyHash;
+alias HashMap = std::collections::hash_map::HashMap;
+alias hash_map_remove = std::collections::hash_map::hash_map_remove;
+alias hash_map_put = std::collections::hash_map::hash_map_put;
+
+fn member_add(map: &HashMap<Key, Box<Slots<u64>>, extent>, key: &Key, id: u64) -> result: unit reads(key), writes(map) {
+  let env = KeyEnv();
+  let values = box_slots_new::<u64>(capacity: 0_u64);
+  match hash_map_remove::<KeyHash, Box<Slots<u64>>, extent>(map: map, key: key, env: &env) {
+    Some(value: pair) => {
+      let std::collections::hash_map::HashMapPair(key: previous_key, value: members) = move pair;
+      set values = move members;
+    }
+    None() => {
+    }
+  }
+  slots_push::<u64>(values: &values, value: id);
+  let retained_key = pkg::bytes::copy_key(key: key);
+  let inserted = hash_map_put::<KeyHash, Box<Slots<u64>>, extent>(map: map, key: move retained_key, value: move values, env: &env);
+  return unit;
+}
+
+fn member_remove(map: &HashMap<Key, Box<Slots<u64>>, extent>, key: &Key, id: u64) -> result: unit reads(key), writes(map) {
+  let env = KeyEnv();
+  match hash_map_remove::<KeyHash, Box<Slots<u64>>, extent>(map: map, key: key, env: &env) {
+    Some(value: pair) => {
+      let std::collections::hash_map::HashMapPair(key: previous_key, value: members) = move pair;
+      let count = members.inner.len;
+      for @members (index in 0_u64..count) {
+        if index < members.inner.len {
+          if members.inner[index] == id {
+            let removed = remove_at(window: &members.inner, index: index);
+            break @members;
+          }
+        }
+      }
+      if members.inner.len > 0_u64 {
+        let inserted = hash_map_put::<KeyHash, Box<Slots<u64>>, extent>(map: map, key: move previous_key, value: move members, env: &env);
+      } else {
+        let dropped_key = move previous_key;
+        let dropped_members = move members;
+      }
+    }
+    None() => {
+    }
+  }
+  return unit;
+}
+
+fn memberships_remove(map: &HashMap<Key, Box<Slots<u64>>, extent>, names: &Box<Slots<Key>>, id: u64) -> result: unit reads(names), writes(map) {
+  let count = names^.inner.len;
+  for (index in 0_u64..count) {
+    if index < names^.inner.len {
+      member_remove(map: map, key: &names^.inner[index], id: id);
+    }
+  }
+  return unit;
+}
+
+fn subscription_add(map: &HashMap<Key, Box<Slots<u64>>, extent>, names: &Box<Slots<Key>>, key: Key, id: u64) -> result: unit writes(map), writes(names) {
+  let env = KeyEnv();
+  let count = names^.inner.len;
+  for (index in 0_u64..count) {
+    if index < names^.inner.len {
+      if pkg::bytes::key_equal(env: &env, left: &names^.inner[index], right: &key) {
+        return unit;
+      }
+    }
+  }
+  member_add(map: map, key: &key, id: id);
+  slots_push::<Key>(values: names, value: move key);
+  return unit;
+}
+
+fn subscription_remove(map: &HashMap<Key, Box<Slots<u64>>, extent>, names: &Box<Slots<Key>>, key: &Key, id: u64) -> result: unit reads(key), writes(map), writes(names) {
+  let env = KeyEnv();
+  let count = names^.inner.len;
+  for @names (index in 0_u64..count) {
+    if index < names^.inner.len {
+      if pkg::bytes::key_equal(env: &env, left: &names^.inner[index], right: key) {
+        let removed = remove_at(window: &names^.inner, index: index);
+        member_remove(map: map, key: key, id: id);
+        break @names;
+      }
+    }
+  }
+  return unit;
+}
+
+fn record_new(hub: &Hub, client: &Client) -> record: Record reads(client.id), reads(client.resp), writes(hub.clients), writes(hub.next), writes(client.pubsub_id) {
+  let id = hub^.next;
+  set hub^.next = hub^.next +wrap 1_u64;
+  set client^.pubsub_id = id;
+  let env = Empty();
+  let indexed = hash_map_put::<IdentityHash, u64, extent>(map: &hub^.clients, key: client^.id, value: id, env: &env);
+  let connection = connection_new(id: id);
+  let channels = box_slots_new::<Key>(capacity: 0_u64);
+  let patterns = box_slots_new::<Key>(capacity: 0_u64);
+  let shards = box_slots_new::<Key>(capacity: 0_u64);
+  let soft = None<u64>();
+  return Record(client_id: client^.id, connection: move connection, resp: client^.resp, channels: move channels, patterns: move patterns, shards: move shards, pending: 0_u64, soft: soft);
+}
+
+fn sync_counts(client: &Client, record: &Record) -> result: unit reads(record.channels), reads(record.patterns), reads(record.shards), writes(client.sub), writes(client.psub), writes(client.ssub), writes(client.changed) {
+  doc "Copies the record's subscription counts into the client and marks them as not yet published to the table of clients CLIENT LIST reads, which shows them for every connection.";
+  set client^.sub = record^.channels.inner.len;
+  set client^.psub = record^.patterns.inner.len;
+  set client^.ssub = record^.shards.inner.len;
+  set client^.changed = True();
+  return unit;
+}
+
+fn reset(hub: &Hub, client: &Client) -> result: unit writes(hub), writes(client) {
+  match take_record(hub: hub, id: client^.pubsub_id) {
+    Some(value: record) => {
+      let before = record_subscribed(record: &record);
+      remove_record(hub: hub, record: &record);
+      set record.channels = box_slots_new::<Key>(capacity: 0_u64);
+      set record.patterns = box_slots_new::<Key>(capacity: 0_u64);
+      set record.shards = box_slots_new::<Key>(capacity: 0_u64);
+      sync_counts(client: client, record: &record);
+      set record.soft = None<u64>();
+      membership_changed(hub: hub, record: &record, before: before);
+      put_record(hub: hub, record: move record);
+    }
+    None() => {
+      set client^.sub = 0_u64;
+      set client^.psub = 0_u64;
+      set client^.ssub = 0_u64;
+    }
+  }
+  return unit;
+}
+
+fn record_subscribed(record: &Record) -> subscribed: Bool reads(record.channels), reads(record.patterns), reads(record.shards) {
+  let exact = record^.channels.inner.len > 0_u64;
+  let pattern = record^.patterns.inner.len > 0_u64;
+  let shard = record^.shards.inner.len > 0_u64;
+  let global = bor(exact, pattern);
+  return bor(global, shard);
+}
+
+fn membership_changed(hub: &Hub, record: &Record, before: Bool) -> result: unit reads(record), writes(hub.committed) {
+  let after = record_subscribed(record: record);
+  if after != before {
+    let target = connection_share(connection: &record^.connection);
+    let action = Action::Membership(connection: move target, subscribed: after);
+    queue_push::<Action>(queue: &hub^.committed, value: move action);
+  }
+  return unit;
+}
+
+fn save_subscription(hub: &Hub, record: Record, before: Bool, time: u64) -> result: unit writes(hub) {
+  membership_changed(hub: hub, record: &record, before: before);
+  let subscribed = record_subscribed(record: &record);
+  let hard = record.pending >= 33554432_u64;
+  if band(subscribed, hard) {
+    close_record(hub: hub, record: move record);
+  } else {
+    arm_soft(hub: hub, record: &record, time: time);
+    put_record(hub: hub, record: move record);
+  }
+  return unit;
+}
