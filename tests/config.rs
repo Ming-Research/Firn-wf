@@ -181,6 +181,38 @@ fn maxclients_live_lowering_keeps_existing_clients_and_rejects_the_next_connecti
     }
 }
 
+/// A connection that has subscribed under RESP3 is served by a path of its
+/// own, and Redis answers INFO there too: it must report the same limit and
+/// counts as an ordinary connection does.
+#[test]
+fn maxclients_subscribed_resp3_connection_reports_the_limit_and_counts() {
+    let fixture = fixture_directory();
+    let lease = support::lease_port();
+    let port = lease.port().to_string();
+    for (label, binary) in servers() {
+        let child = start(&binary, fixture.path(),
+            &arguments(&["--port", &port, "--bind", "127.0.0.1", "--maxclients", "2"]),
+            None).with_port(&lease);
+        let mut subscriber = connect_when_ready(lease.port(), &child);
+        pubsub::hello(&mut subscriber, 3);
+        let subscribed = pubsub::request(&mut subscriber, &["SUBSCRIBE", "limit"]);
+        assert!(subscribed.starts_with(b">3\r\n"), "{label}: subscription push: {subscribed:?}");
+        let mut plain = connect_when_ready(lease.port(), &child);
+        maxclients_ping(&mut plain, label);
+        maxclients_rejected(lease.port(), &child, label);
+        subscriber.write_all(&resp(&["INFO", "clients", "stats"]))
+            .expect("query the limit and counts on a subscribed connection");
+        let info = info_reply(&mut subscriber, 3);
+        for (name, value) in [("maxclients", "2"), ("connected_clients", "2"),
+            ("rejected_connections", "1"), ("total_connections_received", "2")] {
+            assert_eq!(info_field(&info, name).as_deref(), Some(value),
+                "{label}: a subscribed connection's INFO must report {name} {value}: {info:?}");
+        }
+        drop(subscriber);
+        shutdown(&mut plain, child, label);
+    }
+}
+
 #[test]
 fn maxclients_file_accepts_the_uint_upper_bound() {
     let fixture = fixture_directory();
