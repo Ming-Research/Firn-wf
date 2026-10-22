@@ -732,7 +732,7 @@ fn case_blocking_move(full: Bool) -> passed: Bool waits {
   let completed = False();
   let records = 99_u64;
   atomic held = &store.keys {
-    let (done, appended) = blocking_move_try(sequence: &sequence, journal: &journal, kind: 203_u64, keys: held, effects: &effects, logged: no, input: input, args: &args, client: &client, time: &time);
+    let (done, appended) = blocking_move_try(sequence: &sequence, journal: &journal, kind: 204_u64, keys: held, effects: &effects, logged: no, input: input, args: &args, client: &client, time: &time);
     set completed = done;
     set records = appended;
   }

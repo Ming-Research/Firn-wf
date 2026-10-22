@@ -100,7 +100,7 @@ fn held_blocking_list(sequence: &pkg::store::WriteSequence, journal: &Option<pkg
   }
   let (completed, appended) = blocking_try(sequence: sequence, journal: journal, kind: kind, keys: keys, effects: effects, logged: logged, input: input, args: args, client: client, time: time);
   if bnot(completed) {
-    if kind < 202_u64 {
+    if kind < 203_u64 {
       pkg::protocol::reply_nil_array(client: client);
     } else {
       pkg::protocol::reply_nil(client: client);

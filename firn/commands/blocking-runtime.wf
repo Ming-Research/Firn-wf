@@ -162,7 +162,7 @@ fn blocking_request(hub: &Hub, input: &[u8], args: &Box<Slots<Span>>, client: &C
   let names = box_slots_new::<Key>(capacity: args^.inner.len);
   let unique = key_set_new(capacity: 0_u64);
   let count = args^.inner.len;
-  let source_end = if kind < 202_u64 {
+  let source_end = if kind < 203_u64 {
     give count -sat 1_u64;
   } else {
     give 2_u64;

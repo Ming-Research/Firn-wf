@@ -12,8 +12,8 @@ const command_denyoom_kinds: Array<u64, 34> =[2_u64, 3_u64, 4_u64, 5_u64, 6_u64,
 
 fn command_denyoom(kind: u64) -> marked: Bool pure {
   doc "Redis src/commands/*.json DENYOOM flags for firn's held commands, with pub/sub checked against Redis 7.2.16. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF.";
-  let blocking_move = kind == 202_u64;
-  let directed_move = kind == 203_u64;
+  let blocking_move = kind == 203_u64;
+  let directed_move = kind == 204_u64;
   if bor(blocking_move, directed_move) {
     return True();
   }
@@ -91,7 +91,7 @@ fn admission_arity(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> arity: i
     }
     return 0_i64;
   }
-  if kind >= 200_u64 {
+  if kind >= 201_u64 {
     return held_arity(kind: kind);
   }
   if kind < 172_u64 {
