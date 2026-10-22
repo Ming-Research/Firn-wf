@@ -3,7 +3,9 @@
 [Streaming the rewrite journal to disk](journal-disk.md) records the owner's
 disk-journal direction, its bounded staging and S1 protocol, and validation
 criteria before implementation; [A time-sliced live scan within the
-reserve](scan-pace.md) records the scan's bound and pacing on the same ruling.
+reserve](scan-pace.md) records the scan's bound and pacing on the same ruling;
+[Intermittent failures of two rewrite cases](test-stability.md) records why two
+network cases failed in CI at random and what changed in them.
 
 The record below preserves the original closed-log replay investigation and
 its implementation history. The owner's subsequent service-first memory
@@ -179,10 +181,11 @@ last rewrite and exceed `auto-aof-rewrite-min-size` (64 MB):
    it leaves the manifest of step 1, removes the temporary file and any
    renamed base the manifest does not name, and records failure for `INFO`'s
    `aof_last_bgrewrite_status`. If rename succeeds but the directory sync
-   fails, the new manifest stays in force, every published file and history
-   entry is retained, and the status reports failure. The persistence result
-   carries publication and durability separately, so the writer also adopts
-   a published switch manifest and its new append handle on that failure.
+   fails, every published file and history entry is retained, the status
+   reports failure and the error is saved as the AOF sync error; at the
+   switch the old manifest and append handle stay in force, at installation
+   the new manifest does ([switch manifest whose directory sync
+   fails](rewrite-faults.md#switch-manifest-whose-directory-sync-fails)).
    Redis 7.0.15's `writeAofManifestFile` can return failure after rename,
    while `backgroundRewriteDoneHandler` then unlinks the new base; retaining
    it avoids leaving a visible manifest that names a missing file.
@@ -281,22 +284,33 @@ and passes over a subsequent EXEC outside a block.
 
 ## Validation still needed
 
+The [rewrite fault investigation](rewrite-faults.md) adds paired Redis
+7.2.16 and Firn cases for process kills, temporary-base ENOSPC/EIO and a
+current-increment append error. At revision c27b414,
+[run 38426641490](https://github.com/Ming-Research/Firn-wf/actions/runs/38426641490)
+passed all three serial crash cases in 27.44 seconds and all five device
+cases in 106.39 seconds. The ordinary network suite passed in 55.70 seconds,
+including the unchanged long-history scan case before the crash cases ran;
+that supports but does not prove the parallel-load hypothesis. The
+investigation records the recovery evidence, current-append consequences,
+policy recommendation and observation limits.
+
 The network cases cover the disabled-AOF refusal, independent appendfilenames
 sharing a directory, interrupted directory states, host refusals before
 publication, concurrent writes, shutdown and successful installation. They
-have not been run for this implementation; compilation and all checks await
-CI after push. Interrupted-state fixtures establish restart expectations,
-not execution of a failing directory sync. That path needs a CI fault
-experiment in which manifest rename succeeds and the following directory
-sync returns an error, for both switching and installation. It must observe
-the selected files, retained history, later writes and restart, and require
-`aof_last_bgrewrite_status:err`. Startup's history-removal case covers the
+passed in the ordinary network invocation of that gate. Interrupted-state
+fixtures establish restart expectations,
+not execution of a failing directory sync. The aof-sync-fault job now
+fails the switch's directory sync after its rename ([switch manifest whose
+directory sync fails](rewrite-faults.md#switch-manifest-whose-directory-sync-fails));
+the installation's remains without a fault case (board item
+`firn-rw-install-dirsync-case`). Startup's history-removal case covers the
 successful cleanup path, but neither proves syscall ordering nor portably
 injects failure of the new pre-cleanup directory sync; that failure remains
 unverified and must retain both history files and manifest entries. The
 partial-command-in-block and nested-MULTI rewrite cases expect Redis's
 reverted values after restart; the appended-transaction case expects the
 now-completed block's values to survive. The apostrophe appendfilename case
-expects a quoted, reloadable manifest. These cases await CI; no local build,
-check or test was run for these review fixes. No performance result is
+expects a quoted, reloadable manifest. These cases passed in that gate; no
+local build, check or test was run. No performance result is
 claimed.

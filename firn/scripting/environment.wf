@@ -33,6 +33,9 @@ fn install_host(engine: &Engine) -> r: unit writes(engine) {
   let k_4104 = literal(vm: vm, text: &env_set_repl[0_u64..8_u64]);
   let v_4104 = Value::Builtin(id: 4104_u32);
   raw(vm: vm, table: redis, key: k_4104, value: v_4104);
+  let k_4105 = literal(vm: vm, text: &env_replicate_commands[0_u64..18_u64]);
+  let v_4105 = Value::Builtin(id: 4105_u32);
+  raw(vm: vm, table: redis, key: k_4105, value: v_4105);
   let level_0 = literal(vm: vm, text: &env_text_7[0_u64..9_u64]);
   let number_0 = num(x: 0.0_f64);
   raw(vm: vm, table: redis, key: level_0, value: number_0);
@@ -347,6 +350,8 @@ const env_text_15: Array<u8, 4> = "ERR ";
 const env_text_16: Array<u8, 3> = "err";
 
 const env_set_repl: Array<u8, 8> = "set_repl";
+
+const env_replicate_commands: Array<u8, 18> = "replicate_commands";
 
 const env_repl_none: Array<u8, 9> = "REPL_NONE";
 

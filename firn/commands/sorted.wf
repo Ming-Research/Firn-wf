@@ -463,7 +463,10 @@ fn zadd_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   return lapsed;
 }
 
-fn zadd_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, plan: &ZaddPlan, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), writes(log), writes(budget) {
+fn zadd_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, plan: &ZaddPlan, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(plan), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";
   let changes = plan^.adding.added +wrap plan^.adding.updated;
   let changed = changes > 0_u64;
@@ -523,9 +526,9 @@ fn run_zadd(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let lapsed = zadd_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client, plan: &plan);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = zadd_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, plan: &plan, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   zadd_finish(client: client, plan: &plan);
@@ -618,7 +621,10 @@ fn zrem_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   return lapsed;
 }
 
-fn zrem_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) {
+fn zrem_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";
   let changed = client^.number > 0_u64;
   let appended = changed_meta(log: log, logged: logged, removed: lapsed, changed: changed, input: input, args: args, key: key, budget: budget);
@@ -660,9 +666,9 @@ fn run_zrem(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let lapsed = zrem_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = zrem_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   zrem_finish(client: client);
@@ -866,7 +872,10 @@ fn zpop_body(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::
   return lapsed;
 }
 
-fn zpop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), writes(log), writes(budget) {
+fn zpop_meta(log: &Box<Slots<u8>>, logged: Bool, lapsed: Bool, client: &Client, input: &[u8], args: &Box<Slots<Span>>, key: &[u8], budget: &pkg::store::LogBudget) -> appended: u64 reads(client), reads(input), reads(args), reads(key), reads(budget.allowance), writes(log), writes(budget.enabled), writes(budget.charged), writes(budget.failed), writes(budget.records) contract {
+  ensures budget^.group_start == entry(budget)^.group_start;
+  ensures log^.inner.len >= entry(log)^.inner.len;
+} {
   doc "Records an expired removal followed by a changed command, returning the propagated record count.";
   let done = client^.state == state_done;
   let emptied = client^.state == state_emptied;
@@ -916,9 +925,9 @@ fn run_zpop(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cl
     }
     let lapsed = zpop_body(sequence: &sequence, journal: &journal, access_key: key, slot: slot, client: client);
     if store^.logging {
-      let log_budget = pkg::store::log_budget_begin(meta: m, loading: time^.loading);
+      let log_budget = pkg::store::log_group_begin(meta: m, loading: time^.loading);
       let appended = zpop_meta(log: &m^.log, logged: store^.logging, lapsed: lapsed, client: client, input: input, args: args, key: key, budget: &log_budget);
-      pkg::store::sequence_commit(meta: m, sequence: &sequence, budget: &log_budget);
+      pkg::store::log_group_commit(meta: m, sequence: &sequence, budget: &log_budget);
     }
   }
   zpop_finish(client: client);
@@ -1371,7 +1380,7 @@ fn zrank_body(journal: &Option<pkg::store::AccessJournal>, access_key: &[u8], sl
 }
 
 fn zrank_finish(client: &Client) -> result: unit writes(client) {
-  doc "Completes ZRANK's network reply, retaining replies written while visiting the entry: the rank as an integer, or with WITHSCORE an array of the rank and the score as firn writes every score, Redis 7.0.15's %.17g, which differs from the shortest form of Redis 7.2.16's addReplyDouble for some values, such as 0.1 (board item firn-score-text-72); for an absent key or member the null bulk string, or with WITHSCORE the null array, each in the client's protocol, as Redis 7.2.16's zrankGenericCommand replies.";
+  doc "Completes ZRANK's network reply, retaining replies written while visiting the entry: the rank as an integer, or with WITHSCORE an array of the rank and the score through the shared Redis 7.2.16 addReplyDouble writer, using d2string; for an absent key or member the null bulk string, or with WITHSCORE the null array, each in the client's protocol, as Redis 7.2.16's zrankGenericCommand replies.";
   let withscore = client^.high == 1_i64;
   let score = 0.0_f64;
   if client^.scores.inner.len > 0_u64 {

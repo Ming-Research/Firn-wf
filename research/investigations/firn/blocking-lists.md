@@ -584,3 +584,37 @@ writes no SELECT. The lazy SELECT encoder belongs to database selection
 (status board item firn-scope-select-db), which is blocked on a Whitefoot gap.
 The recorded bytes stay unchanged; both tests are ignored citing that item and
 return when it lands.
+
+## Merge with main after the pub/sub merge
+
+Main gained two list-related rules while this branch was stacked on the
+pub/sub branch; both reach the blocking commands.
+
+Framing. [append-only-file](../../../design/firn/append-only-file.md) frames
+an execution unit that propagated several commands in `MULTI`/`EXEC`,
+including a command's own lazy-expiry `DEL`s. Redis 7.2.16 runs a served
+waiter's command as its own unit (`unblockClientOnKey` wraps
+`processCommandAndResetClient` in `enterExecutionUnit` and calls
+`afterCommand`, which reaches `propagatePendingCommands`), after the
+producer's unit has been propagated, so every blocking attempt and every
+served waiter frames its own effects: an expired key removed before the pop
+or move gives `MULTI`, `DEL`, `LPOP`/`LMOVE`, `EXEC`; one effect stays bare.
+`blocking_commit` applies the rule to the three sites that append blocking
+effects (the immediate attempt, a served waiter and the list producers that
+share the held path). This is read from the Redis 7.2.16 source
+(`src/blocked.c` `unblockClientOnKey`, `src/server.c`
+`propagatePendingCommands`) and rests on main's recorded lazy-expiry groups for
+ordinary commands; no Redis recording of a
+blocking pop over an expired key exists yet, so the framed bytes of that case
+are not checked against the reference.
+
+List ceiling. Main refuses a list addition beyond 2^32 elements before
+changing anything, and `lmove_body` checks a distinct destination before
+popping its source. A blocking move reuses `lmove_body`, so a source that has
+an element and a destination at the ceiling would otherwise look like an
+empty source and leave the waiter registered although no push could serve
+it; `blocking_move_try` instead completes the attempt with the same
+list-limit error as `LMOVE`. `tests/list_ceiling.wf` runs the real
+`blocking_move_try` against an eight-element ceiling: the full destination
+case fails if the check is removed (the attempt returns without a reply) and
+the one-short case fails if the check refuses too early.

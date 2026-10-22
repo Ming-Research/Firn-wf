@@ -602,98 +602,111 @@ fn class_match(input: &[u8], open: u64, end: u64, byte: u8, nocase: Bool) -> res
 }
 
 fn glob_match(input: &[u8], start: u64, length: u64, name: &[u8], nocase: Bool) -> matched: Bool reads(input), reads(name) {
-  doc "Redis 7.2.16 util.c stringmatchlen, including its nesting > 1000 refusal and shared skipLongerMatches pruning. The pattern and name are binary strings; classes preserve x86-64 signed-char ranges and C-locale folding through class_match. Ported from Redis under the BSD notice in redis-license.txt. An initially empty name matches only an empty pattern, whereas trailing stars are skipped after a pattern token consumes the final name byte.";
+  doc "Whether a name matches the glob pattern of length bytes of the input from start, as Redis 7.2.16's stringmatchlen matches one with the supplied case flag: * matches any run of bytes, ? any one byte, [...] one byte as class_match reads a class, a backslash makes the next byte literal, and any other byte matches itself, folding case only when nocase is true. This returns to the last * passed and lets it take one more byte, counting entry into each nonterminal star suffix as Redis counts recursion: adjacent stars collapse, a trailing star succeeds without another level, and entering a 1001st suffix returns no match. Retries, classes, escaped stars and other bytes add no level. As in Redis, a * never takes the name's last byte from the rest of the pattern, which cannot match an empty name, and an empty name matches only an empty pattern.";
   let end = start +wrap length;
-  let skip_longer = False();
-  return glob_match_at(input: input, start: start, end: end, name: name, offset: 0_u64, nocase: nocase, skip_longer: &skip_longer, nesting: 0_u64);
-}
-
-fn glob_match_at(input: &[u8], start: u64, end: u64, name: &[u8], offset: u64, nocase: Bool, skip_longer: &Bool, nesting: u64) -> matched: Bool reads(input), reads(name), writes(skip_longer) {
-  doc "The bounded recursive stringmatchlen_impl transition. The depth guard is Redis's observable matching rule, not a substitute for a compiler proof. A failed suffix search sets skip_longer for every earlier star, as the source does, so no earlier star repeats a suffix search already exhausted. Maximum active depth is 1002 calls including the rejected depth-1001 call; machine stack cost requires CI stack-ledger inspection.";
-  if nesting > 1000_u64 {
-    return False();
+  let size = name^.len;
+  if size == 0_u64 {
+    let empty = length == 0_u64;
+    return empty;
   }
   let position = start;
-  let at = offset;
-  let size = name^.len;
+  let at = 0_u64;
+  let starred = False();
+  let resume = start;
+  let resume_at = 0_u64;
+  let nesting = 0_u64;
   loop @matching {
-    let pattern_left = position < end;
-    let name_left = at < size;
-    let both_left = band(pattern_left, name_left);
-    if bnot(both_left) {
-      break @matching;
-    }
-    let current = byte_at(input: input, index: position);
-    let byte = byte_at(input: name, index: at);
-    if current == 42_u8 {
-      loop @stars {
-        let following = position +wrap 1_u64;
-        let more = byte_before(input: input, position: following, end: end);
-        if more != 42_u8 {
-          break @stars;
+    let step = 0_u64;
+    let next = position;
+    if at < size {
+      if position < end {
+        let current = byte_at(input: input, index: position);
+        let byte = byte_at(input: name, index: at);
+        if current == 42_u8 {
+          let last = position;
+          loop @stars {
+            let following = last +wrap 1_u64;
+            let more = byte_before(input: input, position: following, end: end);
+            if more == 42_u8 {
+              set last = following;
+            } else {
+              break @stars;
+            }
+          }
+          let after = last +wrap 1_u64;
+          if after >= end {
+            return True();
+          }
+          if nesting >= 1000_u64 {
+            return False();
+          }
+          set nesting = nesting + 1_u64;
+          set starred = True();
+          set resume = after;
+          set resume_at = at;
+          set next = after;
+          set step = 2_u64;
+        } else if current == 63_u8 {
+          set next = position +wrap 1_u64;
+          set step = 1_u64;
+        } else if current == 91_u8 {
+          let class = class_match(input: input, open: position, end: end, byte: byte, nocase: nocase);
+          if class.matched {
+            set next = class.next;
+            set step = 1_u64;
+          }
+        } else {
+          let literal = current;
+          set next = position +wrap 1_u64;
+          let left = end -wrap position;
+          let backslash = current == 92_u8;
+          let two_left = left >= 2_u64;
+          let quoted = band(backslash, two_left);
+          if quoted {
+            set literal = byte_at(input: input, index: next);
+            set next = position +wrap 2_u64;
+          }
+          let literal_folded = literal;
+          let byte_folded = byte;
+          if nocase {
+            set literal_folded = lower(byte: literal);
+            set byte_folded = lower(byte: byte);
+          }
+          if literal_folded == byte_folded {
+            set step = 1_u64;
+          }
         }
-        set position = following;
       }
-      let after = position +wrap 1_u64;
-      if after == end {
-        return True();
-      }
-      let deeper = nesting + 1_u64;
-      loop @suffixes {
-        if at >= size {
-          break @suffixes;
-        }
-        if glob_match_at(input: input, start: after, end: end, name: name, offset: at, nocase: nocase, skip_longer: skip_longer, nesting: deeper) {
-          return True();
-        }
-        if skip_longer^ {
-          return False();
-        }
-        set at = at +wrap 1_u64;
-      }
-      set skip_longer^ = True();
-      return False();
-    } else if current == 63_u8 {
-      set position = position +wrap 1_u64;
-    } else if current == 91_u8 {
-      let class = class_match(input: input, open: position, end: end, byte: byte, nocase: nocase);
-      if bnot(class.matched) {
-        return False();
-      }
-      set position = class.next;
     } else {
-      let literal = current;
-      let left = end -sat position;
-      let backslash = current == 92_u8;
-      let two_left = left >= 2_u64;
-      if band(backslash, two_left) {
-        set position = position +wrap 1_u64;
-        set literal = byte_at(input: input, index: position);
-      }
-      let folded_literal = literal;
-      let folded_byte = byte;
-      if nocase {
-        set folded_literal = lower(byte: literal);
-        set folded_byte = lower(byte: byte);
-      }
-      if folded_literal != folded_byte {
-        return False();
-      }
-      set position = position +wrap 1_u64;
-    }
-    set at = at +wrap 1_u64;
-    if at == size {
       loop @trailing {
-        let trailing = byte_before(input: input, position: position, end: end);
-        if trailing != 42_u8 {
+        let current = byte_before(input: input, position: position, end: end);
+        if current == 42_u8 {
+          set position = position +wrap 1_u64;
+        } else {
           break @trailing;
         }
-        set position = position +wrap 1_u64;
       }
-      break @matching;
+      if position >= end {
+        return True();
+      }
+    }
+    if step == 1_u64 {
+      set position = next;
+      set at = at +wrap 1_u64;
+    } else if step == 2_u64 {
+      set position = next;
+    } else {
+      if starred {
+      } else {
+        return False();
+      }
+      set resume_at = resume_at +wrap 1_u64;
+      if resume_at >= size {
+        break @matching;
+      }
+      set position = resume;
+      set at = resume_at;
     }
   }
-  let pattern_done = position == end;
-  let name_done = at == size;
-  return band(pattern_done, name_done);
+  return False();
 }

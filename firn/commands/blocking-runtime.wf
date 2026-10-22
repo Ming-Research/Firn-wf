@@ -262,9 +262,7 @@ fn blocking_drain(map_shared: &Shared<ConcurrentHashMap<Entry>>, keys: &Concurre
                     let journal = None<pkg::store::AccessJournal>();
                     let (done, appended) = blocking_try(sequence: &sequence, journal: &journal, kind: request.kind, keys: keys, effects: &effects, logged: logged, input: &request.input.inner[0_u64..input_length], args: &request.args, client: &retry_client, time: &time);
                     set completed = done;
-                    let effect_length = effects.inner.len;
-                    pkg::store::log_append(log: &meta^.log, bytes: &effects.inner[0_u64..effect_length], budget: &log_budget);
-                    pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &log_budget);
+                    blocking_commit(meta: meta, sequence: &sequence, effects: &effects, appended: appended, budget: &log_budget);
                   }
                   list_ready_merge(target: client, source: &retry_client);
                   set request.random = retry_client.random;

@@ -11,9 +11,16 @@
 #                 them, on each server CPU count in `cpus`
 #                 (redis-bench.sh scale)
 #   mode workloads  this checkout's firn and Redis, without and with AOF,
-#                   on consumer command forms or opt-in memory-limit workloads;
+#                   on consumer command forms or opt-in memory/connection workloads;
 #                   with workload_images, instead the image each revision
 #                   builds and Redis, interleaved, without AOF
+#                   workload_servers selects competitors alongside all firn images;
+#                   tests pubsub-channel and pubsub-pattern measure publish/subscribe
+#                   delivery at each of `depths` (redis-bench.sh header);
+#                   a workload_servers name ending in -latest (redis-latest,
+#                   valkey-latest, valkey-io-latest, dragonfly-latest,
+#                   garnet-latest) is the newest stable release of that project,
+#                   built or fetched by the run
 #   mode build    the images built and kept as the run's artifact
 #                 redis-bench-images, measuring nothing
 #
@@ -73,11 +80,11 @@ on:
         type: boolean
         default: false
       tests:
-        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits"
+        description: "Tests/workloads, space-separated; empty uses mset set get (compare/scale) or the original five consumers (workloads). Also: evict-zipf session-set-limits session-get-limits handshake client-list pubsub-channel pubsub-pattern"
         type: string
         default: ""
       depths:
-        description: Pipeline depths (compare)
+        description: Pipeline depths (compare, and the publisher's in the pubsub-* workloads)
         type: string
         default: "16 1"
       passes:
@@ -93,13 +100,17 @@ on:
         type: string
         default: "50"
       workload_options:
-        description: "Memory workloads only: space-separated --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Empty keeps workload defaults; seed is the pass."
+        description: "Memory workloads: --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Handshake/client-list: --warmup-seconds SEC (default 5); --sample-ms MS accepted but no auxiliary sampling. Pub/sub: --warmup-seconds SEC, --value-size BYTES (default 64), --window MESSAGES (default 1024). Space-separated; seed is the pass."
         type: string
         default: ""
       workload_images:
         description: "Workloads only: measure the images `revisions` names (a -twin as a noise control) against Redis, instead of this checkout's firn"
         type: boolean
         default: false
+      workload_servers:
+        description: "Workloads only: ordered selection from reference redis-latest valkey-latest valkey-io-latest dragonfly-latest garnet-latest firn valkey valkey-io dragonfly garnet, without AOF; firn expands all images with workload_images; a name ending in -latest is the newest stable release (research/experiments/redis-bench/latest.sh), built or fetched by this run. Empty preserves defaults."
+        type: string
+        default: ""
       maxmemory:
         description: "Compare only: maxmemory in bytes set with CONFIG SET on every measured server after it starts; empty sets none"
         type: string
@@ -108,8 +119,12 @@ on:
         description: "Compare only: start every measured server with the append-only file on (appendfsync everysec), automatic rewrites off and a fresh directory per run, so the cost measured is the steady-state append path; the run fails unless INFO reports aof_enabled:1"
         type: boolean
         default: false
+      compare_reference:
+        description: "Compare only: also measure Redis 7.2.16 as the line named reference, with the append-only file on when aof is set"
+        type: boolean
+        default: false
       profile:
-        description: "Record a perf profile of each image (compare), or rerun each firn line's first pass under perf (original consumer workloads only; memory workloads have no perf pass)"
+        description: "Record a perf profile of each image (compare), or rerun each firn line's first pass under perf (original consumer workloads only; memory/connection workloads have no perf pass)"
         type: boolean
         default: true
       profile_test:
@@ -194,6 +209,20 @@ jobs:
           path: build/redis-compat-cache
           key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
 
+      # The newest stable Redis, Valkey, Dragonfly and Garnet, whatever the host
+      # has installed:
+      # latest.sh pins their releases by SHA-256 and builds or extracts them
+      # into a cache of its own, installing nothing on the host.
+      - name: Fetch the newest competitor releases
+        if: ${{ contains(inputs.workload_servers, '-latest') }}
+        env:
+          REDIS_BENCH_LATEST_CACHE: ${{ inputs.runner == '14900k' && '' || format('{0}/build/latest-cache', github.workspace) }}
+        run: |
+          for project in redis valkey dragonfly garnet; do
+            path=$(research/experiments/redis-bench/latest.sh "$project")
+            echo "$(echo "$project" | tr a-z A-Z)_LATEST=$path" >> "$GITHUB_ENV"
+          done
+
       - name: Check the host's tools
         run: |
           if [ "$RUNNER_ENVIRONMENT" = self-hosted ]; then
@@ -262,6 +291,13 @@ jobs:
             valkey-server --version 2>/dev/null || true
             { dragonfly --version 2>/dev/null | head -1; } || true
             { garnet-server --version 2>/dev/null | head -1; } || true
+            for project in redis valkey dragonfly garnet; do
+              latest=$(echo "${project}_LATEST" | tr a-z A-Z)
+              if [ -n "${!latest:-}" ]; then
+                echo "$project-latest: ${!latest}"
+                { "${!latest}" --version 2>/dev/null | head -1; } || true
+              fi
+            done
             redis-benchmark --version || true
             { clang --version | head -1; } || true
             ld.lld --version || true
@@ -361,6 +397,7 @@ jobs:
           COMPARE_SECONDS: ${{ inputs.seconds }}
           COMPARE_MAXMEMORY: ${{ inputs.maxmemory }}
           COMPARE_AOF: ${{ inputs.aof && 'true' || 'false' }}
+          COMPARE_REFERENCE: ${{ inputs.compare_reference && 'true' || 'false' }}
           PROFILE: ${{ inputs.profile }}
           COMPARE_PROFILE: ${{ inputs.profile_test }}
           PERF_ANNOTATE: ${{ inputs.annotate }}
@@ -374,9 +411,11 @@ jobs:
           WORKLOAD_PASSES: ${{ inputs.passes }}
           WORKLOAD_SECONDS: ${{ inputs.seconds }}
           WORKLOAD_CONNECTIONS: ${{ inputs.connections }}
+          WORKLOAD_DEPTHS: ${{ inputs.depths }}
           WORKLOADS: ${{ inputs.tests }}
           WORKLOAD_OPTIONS: ${{ inputs.workload_options }}
           WORKLOAD_IMAGES: ${{ inputs.workload_images && '1' || '' }}
+          WORKLOAD_SERVERS: ${{ inputs.workload_servers }}
         run: |
           set -o pipefail
           . "$RUNNER_TEMP/redis-bench-session.sh"

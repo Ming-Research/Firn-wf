@@ -975,13 +975,14 @@ PING, QUIT and RESET, after the reference's earlier admission checks. RESP3
 allows ordinary commands. Shared protocol writers own framing, including
 push headers; the event module owns membership and delivery, not sockets.
 
-The shared glob matcher now follows Redis 7.2.16's recursive algorithm,
-including signed-char range handling, malformed classes, empty-name behavior,
-shared suffix-search pruning and refusal above depth 1000. Its existing
-public interface remains unchanged. This also corrects the former greedy
-matcher's missing reference depth refusal for other glob consumers. The
-source's BSD notice is retained beside the port. Stack-ledger evidence is
-still required for the maximum 1002 active calls including a rejected call.
+Pattern matching uses the shared glob matcher the main line already has: it
+is iterative and refuses above Redis 7.2.16's nesting of 1000, as the
+[enumeration](../../../design/firn/enumeration.md) decision records, so
+pub/sub adds no matcher of its own and keeps its public interface. That
+matcher has no counterpart of Redis's suffix-search pruning, so a degenerate
+pattern costs a publication time proportional to the pattern and channel
+lengths for each registered pattern, held under the hub as Redis holds its
+single thread; that cost is read from the source and not measured.
 
 ### Promoted command visibility and reply ordering
 
@@ -997,11 +998,15 @@ That ordering applies equally to data-only EXEC and declared-key scripts.
 
 The proposed correction executes an admitted promoted dataset command
 through the existing held command parts, holding the whole keyspace, Meta
-and event hub until the complete reply is committed. Direct commands retain
-ordinary AOF records without an added MULTI/EXEC wrapper. Promoted EXEC
+and event hub until the complete reply is committed. Direct commands write
+their AOF records as EXEC does, wrapped in MULTI and EXEC when a command makes
+more than one, its lazy-expiry DELs included, as Redis 7.2.16 groups an
+ordinary command's propagation;
+`subscribed_connection_wraps_multi_record_commands_in_the_append_only_file`
+compares the file with fragments Redis 7.2.16 recorded. Promoted EXEC
 uses the existing event-aware transaction body even for a data-only queue.
-Promoted EVAL/EVALSHA starts with the existing whole-map/hub attempt; it
-retains Lua KEYS and all acceptance, error and budget-abandonment semantics.
+Promoted EVAL, EVALSHA, EVAL_RO and EVALSHA_RO start with the existing
+whole-map/hub attempt; they retain Lua KEYS and all acceptance, error and budget-abandonment semantics.
 The broader hold reuses the existing transaction/script execution interface;
 its effect on promoted-command contention and latency remains unmeasured.
 
@@ -1066,7 +1071,7 @@ The original receive/execute/send owner instantiates `execute_client::<0>`;
 the promoted owner instantiates `execute_client::<1>`. The coordinator is
 the original function body with compile-time dispatch selection, without an
 adapter call layer. Ordinary EVAL uses the existing evaluator instantiated
-with initial whole mode zero, while promoted EVAL uses one. The pinned
+with initial whole mode zero, while promoted EVAL and its variants use one. The pinned
 language's FN-2 monomorphization fixes these const arguments; they are not
 runtime connection-state predicates. Ordinary GET/SET still call their
 original handlers with their existing key and optional Meta targets and no
@@ -1100,6 +1105,96 @@ history: the subscriber's next frame must be that barrier, with no leaked
 queued message ahead of it. Expected status, count, EXECABORT and message
 bytes follow the pinned Redis command bodies; no new oracle recording or
 ORACLE placeholder is needed for these histories.
+
+### Promoted INFO observation and reply ordering
+
+The direct adapter previously left INFO outside the protected dataset path
+because INFO has no held EXEC/script command parts. Its KEYSPACE section
+counted the map, released it, formatted under a separate Meta statement and
+then returned to the promoted owner's hub commitment. This permits A to
+observe an empty database, B to execute `MULTI; SET fresh v; PUBLISH news seen;
+EXEC`, and A to receive `seen` followed by that empty INFO snapshot. The
+observation and its output order disagree. This is the separate scope of
+board item `firn-pubsub-info-order`.
+
+Redis 7.2.16's [genRedisInfoString keyspace section](https://github.com/redis/redis/blob/7.2.16/src/server.c)
+counts each database dictionary and emits its `dbN` line only when keys or
+expiries are nonzero. The [INFO handler](https://github.com/redis/redis/blob/7.2.16/src/server.c)
+queues that complete text reply before another command executes; the
+[transaction handler](https://github.com/redis/redis/blob/7.2.16/src/multi.c)
+executes SET and PUBLISH together. With an initially empty database and no
+expiries there are exactly two observable serial outcomes on A: empty INFO
+then message, or message then INFO reporting one key. Message then empty
+INFO, and one-key INFO then message, are both incompatible.
+
+The proposed promoted INFO adapter parses the requested sections and samples
+host heap and residency before the shared statement. It then names the whole
+keyspace, Meta, event hub, script registry and server state in one atomic
+statement. Section-selected counts are read directly from these held values;
+`info_body` formats their text and `info_finish` writes the complete frame
+without waiting, and hub commitment occurs before leaving that statement.
+The ordinary `run_info` remains unchanged. The existing compile-time
+`execute_client::<0>` / `execute_client::<1>` owner choice selects the ordinary
+or promoted dispatch; there is no promotion predicate in ordinary INFO and
+no added target or wrapper on ordinary GET/SET. All promoted INFO selectors,
+including default, ALL, multi-section and unknown-section requests, use the
+adapter rather than making a KEYSPACE-only special path. The actual
+key-count read remains conditional on selecting KEYSPACE. Naming the extra
+objects can increase promoted INFO contention through the compiler's lock
+ordering; no narrow-lock or performance result is claimed.
+
+If A's key-count read precedes B's transaction, A retains the dataset hold
+through its INFO commitment, so B's publication follows it. If B wins the
+hold, its publication commits before the dataset is released and A counts
+one key, then commits INFO after that publication. The dispatcher cannot
+extract a committed frame while another statement holds the same hub, and
+sockets remain outside the hold. A repeated empty outer commitment after
+the adapter returns does not create a second reply. The host memory samples
+remain earlier independent measurements, not a simultaneous dataset/heap
+snapshot promise. INFO in EXEC or scripts still lacks held command parts;
+this direct-path repair does not add support for those existing refusals.
+
+The direct-command audit is based on implemented handlers in this stack:
+
+| Command | Dataset observation and disposition |
+|---|---|
+| DBSIZE | Kind 21 reaches `dbsize_body` through `held_run`; the existing whole-keyspace/Meta/hub boundary includes reply commitment. |
+| SCAN, KEYS, RANDOMKEY | Kinds 168, 169 and 170 reach `held_scan`, `held_keys` and `held_randomkey` under the same boundary; enumeration and lookup results do not escape before commitment. |
+| OBJECT IDLETIME / FREQ | Kind 171 reaches `script_object` under the boundary. OBJECT HELP is static and excluded; ENCODING / REFCOUNT are unsupported, not unprotected key observations. |
+| MEMORY USAGE | MEMORY has no implemented identity or handler here and observes no key before its unknown-command refusal. |
+| CLIENT LIST / CLIENT INFO | LIST is unsupported in this stack. INFO reads the connection-owned client fields and subscription counts, not dataset state; its commands and earlier membership confirmations are ordered by that connection's command owner. The separate client-table branch is not part of this base. |
+| DEBUG | Only LOG is implemented, returning OK without a dataset read; other forms are refused. |
+| CONFIG | GET reports settings, not key, expiry or eviction counters. SET changes settings and RESETSTAT resets statistics; they do not return a dataset observation. Their existing administrative boundaries are retained. |
+| BGREWRITEAOF | Returns rewrite admission/start status from Meta, waiting for the background writer; it does not return a dataset count or value. The writer's background snapshot is not a direct dataset-query reply. |
+| SCRIPT / FUNCTION / AUTH / HELLO / QUIT / RESET | Registry, configuration and connection controls, not additional dataset-query results. RESET's membership-removal confirmation retains its existing hub boundary. |
+| PUBSUB queries and publication | Use the existing registry/hub execution-and-commit boundary rather than observing the dataset outside a held command. |
+
+The correctness witness uses four drivers and 200 rounds. A negotiates RESP3
+and subscribes to `news`. Each round B queues SET of a distinct `fresh_i` and
+PUBLISH of `i`; two barrier-released host threads send A's INFO KEYSPACE and
+B's EXEC concurrently. A reads both complete frames and accepts only the
+two serial outcomes above. B's DEL acknowledgment clears that one key only
+after both frames and the EXEC reply, before the next round; no sleep, data
+poll or intermediate command narrows the race. A final PING detects leftover
+frames. Expected text preserves Redis's header, conditional database line,
+key count and CRLF order for Firn's existing reported fields. Firn still
+omits `expires` and `avg_ttl`; this test neither adds them nor claims full
+INFO field compatibility. The RESP3 `txt:` verbatim length and message frame
+are checked byte for byte.
+
+The falsifier is either nonserial pair, incorrect frame text, or a wrong
+transaction reply. The witness was run on both paths in CI on the PR branch
+with a temporary workflow, since removed. The old path replaced the body of
+`run_info_promoted` by a call of the ordinary `run_info`, which is what a
+promoted connection ran before the fix; the new path was the unmodified
+branch. Each path built `firn-test` and ran the case 20 times, 200 rounds
+each. The old path failed 9 of the 20 runs, each at the assertion on the two
+serial outcomes, with the published message ahead of an empty INFO (rounds 0
+to 175 of a run), and the new path failed none of the 20
+([run](https://github.com/Ming-Research/Firn-wf/actions/runs/39541564441)).
+On that day and runner, then, one run of the case exposed the old gap in 9
+of 20 attempts, so the gate's single run is a witness of the held boundary,
+not a proof by frequency; the ordering rests on the single held statement.
 
 ### Membership confirmations and the Redis suite barrier
 
@@ -1253,12 +1348,18 @@ its hard limit while constructing the command reply, before socket flushing
 ([output limit check](https://github.com/redis/redis/blob/7.2.16/src/networking.c),
 [defaults](https://github.com/redis/redis/blob/7.2.16/src/config.c)); the single
 33 MiB body exceeds the 32 MiB threshold without relying on kernel buffering.
-CI compilation and execution remain required. The 60-second soft threshold
-and interval reset are still unverified. A controlled accounting witness
-must hold a backlog above the soft threshold without reaching the hard
-threshold, then exercise a drop
-below and re-entry. Compare the reference and Firn without assuming identical
-kernel socket buffering.
+CI compilation and execution remain required. Two soft-limit witnesses
+publish a 14 MiB body, above the soft and below the hard threshold and larger
+than the kernel's loopback buffers, which a frame owner is charged in full
+until its last byte is accepted. In the first, an unread subscriber must still
+be registered after 30 seconds and be gone, with its socket at EOF or reset,
+between 59 and 90 seconds after the publication. In the second, the subscriber
+reads the frame after 35 seconds, a second frame follows once the first's
+charge is released, and at 70 seconds, past the 61 seconds that end the first
+interval, it must still be registered and receive the second frame whole; the
+stale deadline of the first interval must find a different interval start and
+leave it. They assume the kernel buffers hold less than the body, as the
+loopback defaults do, and do not assume Redis's allocation-based closure point.
 
 The timer reads Unix time and arms a monotonic sleep for the next observed
 threshold. Strict response to a forward calendar jump without another hub

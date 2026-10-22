@@ -200,7 +200,7 @@ fn blocking_move_log(effects: &Box<Slots<u8>>, kind: u64, input: &[u8], args: &B
 }
 
 fn blocking_move_try(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store::AccessJournal>, kind: u64, keys: &ConcurrentHashMap<Entry>, effects: &Box<Slots<u8>>, logged: Bool, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time) -> (completed: Bool, appended: u64) reads(input), reads(args), reads(time), writes(sequence), writes(journal), writes(keys), writes(effects), writes(client) {
-  doc "Attempts a validated BRPOPLPUSH or BLMOVE through lmove_body, retaining its same-key behavior, source-before-destination lookup, expiry records and capture. Reestablishes directions from the retained command but never reparses its timeout. An empty source leaves the destination untouched and returns false without an empty reply.";
+  doc "Attempts a validated BRPOPLPUSH or BLMOVE through lmove_body, retaining its same-key behavior, source-before-destination lookup, expiry records and capture. Reestablishes directions from the retained command but never reparses its timeout. An empty source leaves the destination untouched and returns false without an empty reply. A non-empty source whose distinct destination is at the list ceiling is refused by lmove_body before any change; the list-limit error completes the attempt, so the waiter is served that error instead of waiting for room.";
   let from_head = False();
   let to_head = True();
   if kind == 203_u64 {
@@ -224,6 +224,10 @@ fn blocking_move_try(sequence: &pkg::store::WriteSequence, journal: &Option<pkg:
   let source_records = mset_lapse_meta(log: effects, logged: logged, lapsed: work.source_expired, key: source_key, budget: &budget);
   let target_records = mset_lapse_meta(log: effects, logged: logged, lapsed: work.target_expired, key: target_key, budget: &budget);
   let appended = source_records +wrap target_records;
+  if client^.state == state_list_full {
+    reply_list_limit(client: client);
+    return True(), appended;
+  }
   if work.changed {
     if logged {
       blocking_move_log(effects: effects, kind: kind, input: input, args: args, budget: &budget);

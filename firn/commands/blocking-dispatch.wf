@@ -4,6 +4,22 @@ alias Keyspace = pkg::store::Keyspace;
 alias Span = pkg::protocol::Span;
 alias Time = pkg::store::Time;
 
+fn blocking_commit(meta: &pkg::store::Meta, sequence: &pkg::store::WriteSequence, effects: &Box<Slots<u8>>, appended: u64, budget: &pkg::store::LogBudget) -> result: unit reads(effects), reads(sequence), writes(meta), writes(budget) {
+  doc "Appends one execution unit's effect records to the file's pending bytes and commits its sequence. Several records, the lazy-expiry removals and the command's own record, are wrapped in MULTI and EXEC as Redis 7.2.16 propagatePendingCommands groups an execution unit that propagated more than one command, each served waiter's command being its own unit; one record stays bare and none writes nothing.";
+  if appended > 1_u64 {
+    pkg::store::log_count(log: &meta^.log, count: 1_u64, room: 16_u64, budget: budget);
+    pkg::store::log_word(log: &meta^.log, word: &word_multi_log[0_u64..5_u64], budget: budget);
+  }
+  let length = effects^.inner.len;
+  pkg::store::log_append(log: &meta^.log, bytes: &effects^.inner[0_u64..length], budget: budget);
+  if appended > 1_u64 {
+    pkg::store::log_count(log: &meta^.log, count: 1_u64, room: 16_u64, budget: budget);
+    pkg::store::log_word(log: &meta^.log, word: &word_exec_log[0_u64..4_u64], budget: budget);
+  }
+  pkg::store::sequence_commit(meta: meta, sequence: sequence, budget: budget);
+  return unit;
+}
+
 fn run_list_producer(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits {
   doc "Runs a list-producing command through the existing held command parts. Dataset changes, AOF publication, the producer's complete reply commitment and FIFO service of newly ready lists occur in that order under one keyspace, metadata, event-hub and server-state hold. Ordinary GET and SET retain their existing dispatch and targets. LPUSH, RPUSH, LPUSHX, RPUSHX and LINSERT change only their one key, so their statement keeps the one-key sequence their former dedicated paths took: during a rewrite a key already journaled in the window records only these appended bytes, not a further complete image of the list.";
   let journal = None<pkg::store::AccessJournal>();
@@ -26,9 +42,7 @@ fn run_list_producer(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots
     }
     let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
     let appended = held_run(sequence: &sequence, journal: &journal, kind: kind, keys: keys, meta: meta, effects: &effects, logged: logged, input: input, args: args, client: client, env: env, time: time);
-    let length = effects.inner.len;
-    pkg::store::log_append(log: &meta^.log, bytes: &effects.inner[0_u64..length], budget: &budget);
-    pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &budget);
+    blocking_commit(meta: meta, sequence: &sequence, effects: &effects, appended: appended, budget: &budget);
     pkg::connection_events::commit(hub: hub, client: client, stage: &stage, time: seconds);
     blocking_drain(map_shared: &store^.keys, keys: keys, meta: meta, hub: hub, server: server, client: client, clock: clock, wall: &store^.wall, logged: logged);
   }
@@ -65,9 +79,7 @@ fn run_blocking_list(store: &Keyspace, kind: u64, input: &[u8], args: &Box<Slots
     }
     let budget = pkg::store::log_budget_begin(meta: meta, loading: time^.loading);
     let (completed, appended) = blocking_try(sequence: &sequence, journal: &journal, kind: kind, keys: keys, effects: &effects, logged: logged, input: input, args: args, client: client, time: time);
-    let length = effects.inner.len;
-    pkg::store::log_append(log: &meta^.log, bytes: &effects.inner[0_u64..length], budget: &budget);
-    pkg::store::sequence_commit(meta: meta, sequence: &sequence, budget: &budget);
+    blocking_commit(meta: meta, sequence: &sequence, effects: &effects, appended: appended, budget: &budget);
     if bnot(completed) {
       blocking_request(hub: hub, input: input, args: args, client: client, kind: kind, deadline: deadline);
     }
