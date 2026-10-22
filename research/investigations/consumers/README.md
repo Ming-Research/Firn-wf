@@ -395,6 +395,14 @@ stop, counted as lines, where a worker's retries repeat the same line:
 This is the order the survey gave for BullMQ: `BZPOPMIN` and the stream
 commands.
 
+The run after `check-latest` was set
+([run 39696795512](https://github.com/Ming-Research/Firn-wf/actions/runs/39696795512),
+commit 28faf5e) took Node 24.22.1 on all three cells, so `compare.py` reported
+no mismatch, and gave the same counts: 1,107 passes on both Redis runs, 284 on
+firn, 49 files finished on every cell, 11 files that exited 0 on firn, and an
+empty unstable list. The jobs took 9 min 18 s, 8 min 48 s and 6 min 15 s, from
+start to end as the run page shows them (Redis run 1, Redis run 2, firn).
+
 The time bound was watched act on Redis in a temporary workflow, since removed,
 that ran the 49 files under limits of 2 and 10 seconds, so that files were cut
 off ([run 39691773602](https://github.com/Ming-Research/Firn-wf/actions/runs/39691773602),
