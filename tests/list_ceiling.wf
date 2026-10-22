@@ -699,7 +699,7 @@ fn case_eval(clock: &std::time::Clock, input: &[u8], script_length: u64, protect
   return band(list_preserved, reply_matches);
 }
 
-fn case_blocking_move(full: Bool) -> passed: Bool waits {
+fn case_blocking_move(full: Bool) -> passed: Bool pure waits {
   doc "Runs the actual BLMOVE attempt over a two-element source and a distinct destination. At the ceiling of 8 the attempt completes at once with the list-limit error and leaves both lists and their metadata as they were, rather than registering a waiter that no push could ever satisfy; one element short of the ceiling it moves an element and writes no limit error.";
   let no = False();
   let password = pkg::bytes::bytes_new(input: &case_key[0_u64..1_u64], start: 0_u64, length: 0_u64);
