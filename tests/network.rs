@@ -3746,20 +3746,23 @@ fn firn_reads_count_and_length_lines_as_redis_does() {
     assert_eq!(status, 0);
 }
 
-/// firn answers CONFIG GET for the parameters it reports as Redis 7.0 does,
+/// firn answers CONFIG GET for the parameters it reports as Redis does,
 /// matching an argument that holds [, * or ? as Redis's stringmatchlen
-/// matches a pattern, in either case: * reaches all 30, the encoding
-/// parameters and their aliases among them, each with Redis's default; an
-/// argument naming a parameter and a pattern reaching it answer it once,
+/// matches a pattern, in either case: * reaches all visible parameters, the
+/// encoding parameters and their aliases among them, each with Redis's default;
+/// an argument naming a parameter and a pattern reaching it answer it once,
 /// spelled as the first argument spells it; a class with a range, ? and a
 /// negated class match; the range [Z-a] holds nothing, because Redis swaps a
 /// reversed range's bounds before folding their case; a backslash outside a
 /// class folds case and inside one does not; a pattern stops at a zero byte;
 /// and an argument with none of the three bytes is a name, \Port among them.
 /// The options --timeout and --appendfilename set the values reported. Every
-/// reply holds what redis-server 7.0.15 answers for these parameters with the
-/// same settings, in firn's stable parameter order, one of Redis's possible
-/// orders. Memory settings and automatic rewrite thresholds join glob results.
+/// older parameter expectation comes from redis-server 7.0.15 with the same
+/// settings, in firn's stable parameter order, one of Redis's possible orders.
+/// Memory settings and automatic rewrite thresholds join glob results.
+/// maxclients joins glob results with the default 10000 declared in Redis
+/// 7.2.16's config.c:3209. Firn reports that configured default unconditionally;
+/// Redis can lower it when the operating system's fd limit is too small.
 /// Redis's *o*t matches only port and timeout among these parameters: the
 /// final t must end the name, so neither automatic rewrite threshold matches.
 /// set-max-listpack-entries and set-max-listpack-value, with their Redis
@@ -3812,7 +3815,7 @@ fn firn_matches_config_get_patterns_as_redis_does() {
     let memory_fields = "$9\r\nmaxmemory\r\n$1\r\n0\r\n$16\r\nmaxmemory-policy\r\n$10\r\nnoeviction\r\n$17\r\nmaxmemory-samples\r\n$1\r\n5\r\n$14\r\nlfu-log-factor\r\n$2\r\n10\r\n$14\r\nlfu-decay-time\r\n$1\r\n1\r\n$27\r\nmaxmemory-eviction-tenacity\r\n$2\r\n10\r\n";
     let rewrite_fields = "$27\r\nauto-aof-rewrite-percentage\r\n$3\r\n100\r\n$25\r\nauto-aof-rewrite-min-size\r\n$8\r\n67108864\r\n";
     let expected = format!(
-        "*64\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}\
+        "*66\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n{hash_and_list}{port_field}$11\r\nrequirepass\r\n$0\r\n\r\n{s_fields}$7\r\ntimeout\r\n$1\r\n7\r\n{zset_fields}{memory_fields}{rewrite_fields}$10\r\nmaxclients\r\n$5\r\n10000\r\n\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nappendonly\r\n$2\r\nno\r\n{rewrite_fields}\
          *8\r\n$14\r\nappendfilename\r\n$12\r\npatterns.aof\r\n$10\r\nAPPENDONLY\r\n$2\r\nno\r\n{rewrite_fields}\
          *4\r\n$4\r\nbind\r\n$9\r\n127.0.0.1\r\n$9\r\ndatabases\r\n$1\r\n1\r\n\
