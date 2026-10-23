@@ -21,10 +21,11 @@ redis_bin=$(tests/redis-suite/reference.sh)
 hard=$(ulimit -Hn)
 echo "hard limit of this shell: $hard"
 
-# One run of the scratch program under a soft and a hard limit; the pid it
+# One run of the scratch program under a soft and a hard limit (soft first:
+# the hard limit cannot go below the soft one); the pid it
 # should print goes to $out/pid.
 run_scratch() {
-  ( ulimit -Hn "$1"; ulimit -Sn "$2"; export TZ=Asia/Kolkata
+  ( ulimit -Sn "$2"; ulimit -Hn "$1"; export TZ=Asia/Kolkata
     exec bash -c 'echo $$ > build/scratch/pid; exec build/scratch/scratch-bin' ) > "$out/out.txt" || echo "scratch exited with $?"
 }
 
@@ -33,7 +34,7 @@ strip() { sed -E 's/^[0-9]+:[A-Z] [0-9]{2} [A-Za-z]{3} [0-9]{4} [0-9:.]{12} [.*#
 
 # Redis' log lines about the limit when started under a soft and a hard limit.
 run_redis() {
-  ( ulimit -Hn "$1"; ulimit -Sn "$2"
+  ( ulimit -Sn "$2"; ulimit -Hn "$1"
     exec timeout 3 "$redis_bin/redis-server" --port 26379 --maxclients "$3" --save "" --appendonly no --logfile "" ) > "$out/redis.txt" 2>&1 || true
   grep -E "open files|maxclients of|ulimit" "$out/redis.txt" | strip > "$out/redis-fd.txt" || true
 }
