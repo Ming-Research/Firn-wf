@@ -840,8 +840,7 @@ The client work fraction is read from `workload-limited.csv` of each run's
 artifact; the artifacts expire, so its range is copied here: over the 12 passes
 every handshake line stayed between 0.943 and 0.990, every `CLIENT LIST` line
 between 0.021 and 0.156. Both ranges come from all 72 lines of each workload
-(six lines, 12 passes) of runs 39922503246 and 39927545727, read again from the
-downloaded artifacts after the review.
+(six lines, 12 passes) of runs 39922503246 and 39927545727.
 
 | CLIENT LIST | rate per second | firn / rival | p99 (ms) | client work fraction |
 | --- | --- | --- | --- | --- |
