@@ -582,8 +582,11 @@ selected database when it opens a new incremental file, so the first command
 written there is preceded by `SELECT 0`, and firn, which has one database,
 writes no SELECT. The lazy SELECT encoder belongs to database selection
 (status board item firn-scope-select-db), which is blocked on a Whitefoot gap.
-The recorded bytes stay unchanged; both tests are ignored citing that item and
-return when it lands.
+The recorded bytes stay unchanged. The tests compare them as the suite's other
+AOF comparisons do: every byte of both sides must parse as complete canonical
+command frames, and only `SELECT 0` frames are then ignored, wherever Redis
+placed them (the `expiry-before-ready` recording has one inside the `MULTI`).
+Placement of `SELECT 0` is covered by the database-selection item.
 
 ## Rules main added that reach the blocking commands
 
@@ -606,9 +609,28 @@ effects (the immediate attempt, a served waiter and the list producers that
 share the held path). This is read from the Redis 7.2.16 source
 (`src/blocked.c` `unblockClientOnKey`, `src/server.c`
 `propagatePendingCommands`) and rests on main's recorded lazy-expiry groups for
-ordinary commands; no Redis recording of a
-blocking pop over an expired key exists yet, so the framed bytes of that case
-are not checked against the reference.
+ordinary commands. Redis 7.2.16 recorded the remaining cases in run
+39899773861
+(`research/experiments/aof-oracle/blocking-expired-keys-recording.json`), each
+key made expired by `SET key v PXAT 1` in the same write as the command:
+
+- `RPUSH` and `LPUSH` onto an expired key, `LMOVE` and `RPOPLPUSH` into one,
+  and `RENAME` or `COPY` over one give `MULTI`, `DEL`, the command, `EXEC`;
+  `RPUSHX` and `LINSERT` on one write the `DEL` bare, because the command
+  itself changes nothing.
+- An immediately served `BLPOP`, `BRPOPLPUSH` or `BLMOVE` over an expired key
+  gives `MULTI`, `DEL`, `LPOP` (or `RPOPLPUSH`, `LMOVE`), `EXEC`: the pop is
+  propagated as the command it is rewritten to.
+- A waiter blocked on `BLMOVE s d` whose destination `d` expired while it waited
+  is served by `RPUSH s w`: the file holds the producer's `RPUSH`, then a
+  separate `MULTI`, `DEL d`, `LMOVE`, `EXEC` for the waiter, so each served
+  waiter is its own execution unit.
+
+`tests/blocking_lists_oracle.rs` replays all three against firn (scenarios
+`aof-expired-top-level-producers`, `aof-expired-immediate-blocking-pops` and
+`aof-expired-served-waiter`). The one waiter case records a single
+destination key; a waiter served with several expired keys of its own is not
+recorded.
 
 List ceiling. Main refuses a list addition beyond 2^32 elements before
 changing anything, and `lmove_body` checks a distinct destination before

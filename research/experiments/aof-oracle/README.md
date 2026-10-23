@@ -56,6 +56,21 @@ the reply's raw text.
   starts with `SELECT 0`, then three setup `SET`s; after them are the
   expected records of the test, which the replies match too.
 
+## `blocking-expired-keys-recording.json`
+
+- Source run: https://github.com/Ming-Research/Firn-wf/actions/runs/39899773861
+- Run head commit: `b00c4463a2d05b8fad0415ac024924f9f1d5ddc6`
+- Three cases of list commands that meet an expired key, each made expired by
+  `SET key v PXAT 1` in the same write as the command. A case has `name` and
+  `steps`; a step is `pipe` (requests sent in one write with the `replies`
+  Redis gave), `send` (a request whose reply is read later), `read` (that later
+  reply) or `aof` (the complete incremental file at that point, `SELECT 0`
+  included). Cases: `top-level-producers-over-expired-key`,
+  `immediate-blocking-pops-over-expired-key` and
+  `served-waiter-over-expired-destination`. Used by the scenarios
+  `aof-expired-top-level-producers`, `aof-expired-immediate-blocking-pops` and
+  `aof-expired-served-waiter` in `tests/blocking_lists_oracle.rs`.
+
 ## `lfu-rename-msetnx.json`
 
 - Source run: https://github.com/Ming-Research/Firn-wf/actions/runs/38406427583

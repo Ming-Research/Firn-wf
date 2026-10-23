@@ -1144,4 +1144,97 @@ pub(super) const SCENARIOS: &[Scenario] = &[
             Command("p", &["PING"], b"+PONG\r\n"),
         ],
     },
+    Scenario {
+        name: "aof-expired-top-level-producers",
+        clients: &["p"],
+        aof: true,
+        actions: &[
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 0 replies.
+            Pipeline("p", &[&["SET", "e1", "v", "PXAT", "1"], &["RPUSH", "e1", "b"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 1 replies.
+            Pipeline("p", &[&["SET", "e2", "v", "PXAT", "1"], &["LPUSH", "e2", "b"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 2 replies.
+            Pipeline("p", &[&["SET", "e3", "v", "PXAT", "1"], &["RPUSHX", "e3", "b"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b":0\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 3 replies.
+            Pipeline("p", &[&["SET", "e4", "v", "PXAT", "1"], &["LINSERT", "e4", "BEFORE", "a", "b"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b":0\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 4.
+            Command("p", &["RPUSH", "s5", "a"], b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 5 replies.
+            Pipeline("p", &[&["SET", "e5", "v", "PXAT", "1"], &["LMOVE", "s5", "e5", "LEFT", "LEFT"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b"$1\r\na\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 6.
+            Command("p", &["RPUSH", "s6", "a"], b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 7 replies.
+            Pipeline("p", &[&["SET", "e6", "v", "PXAT", "1"], &["RPOPLPUSH", "s6", "e6"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b"$1\r\na\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 8.
+            Command("p", &["RPUSH", "r1", "a"], b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 9 replies.
+            Pipeline("p", &[&["SET", "e7", "v", "PXAT", "1"], &["RENAME", "r1", "e7"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b"+OK\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 10.
+            Command("p", &["RPUSH", "c1", "a"], b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, step 11 replies.
+            Pipeline("p", &[&["SET", "e8", "v", "PXAT", "1"], &["COPY", "c1", "e8"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, top-level-producers-over-expired-key, incremental file.
+            Aof(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$2\r\ne1\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne1\r\n*3\r\n$5\r\nRPUSH\r\n$2\r\ne1\r\n$1\r\nb\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$3\r\nSET\r\n$2\r\ne2\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne2\r\n*3\r\n$5\r\nLPUSH\r\n$2\r\ne2\r\n$1\r\nb\r\n*1\r\n$4\r\nEXEC\r\n*5\r\n$3\r\nSET\r\n$2\r\ne3\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne3\r\n*5\r\n$3\r\nSET\r\n$2\r\ne4\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne4\r\n*3\r\n$5\r\nRPUSH\r\n$2\r\ns5\r\n$1\r\na\r\n*5\r\n$3\r\nSET\r\n$2\r\ne5\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne5\r\n*5\r\n$5\r\nLMOVE\r\n$2\r\ns5\r\n$2\r\ne5\r\n$4\r\nLEFT\r\n$4\r\nLEFT\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$5\r\nRPUSH\r\n$2\r\ns6\r\n$1\r\na\r\n*5\r\n$3\r\nSET\r\n$2\r\ne6\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne6\r\n*3\r\n$9\r\nRPOPLPUSH\r\n$2\r\ns6\r\n$2\r\ne6\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$5\r\nRPUSH\r\n$2\r\nr1\r\n$1\r\na\r\n*5\r\n$3\r\nSET\r\n$2\r\ne7\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne7\r\n*3\r\n$6\r\nRENAME\r\n$2\r\nr1\r\n$2\r\ne7\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$5\r\nRPUSH\r\n$2\r\nc1\r\n$1\r\na\r\n*5\r\n$3\r\nSET\r\n$2\r\ne8\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne8\r\n*3\r\n$4\r\nCOPY\r\n$2\r\nc1\r\n$2\r\ne8\r\n*1\r\n$4\r\nEXEC\r\n"),
+        ],
+    },
+    Scenario {
+        name: "aof-expired-immediate-blocking-pops",
+        clients: &["p"],
+        aof: true,
+        actions: &[
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, immediate-blocking-pops-over-expired-key, step 0.
+            Command("p", &["RPUSH", "l1", "x"], b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, immediate-blocking-pops-over-expired-key, step 1 replies.
+            Pipeline("p", &[&["SET", "e1", "v", "PXAT", "1"], &["BLPOP", "e1", "l1", "0"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b"*2\r\n$2\r\nl1\r\n$1\r\nx\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, immediate-blocking-pops-over-expired-key, step 2.
+            Command("p", &["RPUSH", "s1", "a"], b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, immediate-blocking-pops-over-expired-key, step 3 replies.
+            Pipeline("p", &[&["SET", "e2", "v", "PXAT", "1"], &["BRPOPLPUSH", "s1", "e2", "0"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b"$1\r\na\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, immediate-blocking-pops-over-expired-key, step 4.
+            Command("p", &["RPUSH", "s2", "a"], b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, immediate-blocking-pops-over-expired-key, step 5 replies.
+            Pipeline("p", &[&["SET", "e3", "v", "PXAT", "1"], &["BLMOVE", "s2", "e3", "LEFT", "RIGHT", "0"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b"$1\r\na\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, immediate-blocking-pops-over-expired-key, incremental file.
+            Aof(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*3\r\n$5\r\nRPUSH\r\n$2\r\nl1\r\n$1\r\nx\r\n*5\r\n$3\r\nSET\r\n$2\r\ne1\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne1\r\n*2\r\n$4\r\nLPOP\r\n$2\r\nl1\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$5\r\nRPUSH\r\n$2\r\ns1\r\n$1\r\na\r\n*5\r\n$3\r\nSET\r\n$2\r\ne2\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne2\r\n*3\r\n$9\r\nRPOPLPUSH\r\n$2\r\ns1\r\n$2\r\ne2\r\n*1\r\n$4\r\nEXEC\r\n*3\r\n$5\r\nRPUSH\r\n$2\r\ns2\r\n$1\r\na\r\n*5\r\n$3\r\nSET\r\n$2\r\ne3\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$2\r\ne3\r\n*5\r\n$5\r\nLMOVE\r\n$2\r\ns2\r\n$2\r\ne3\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*1\r\n$4\r\nEXEC\r\n"),
+        ],
+    },
+    Scenario {
+        name: "aof-expired-served-waiter",
+        clients: &["p", "a"],
+        aof: true,
+        actions: &[
+            Send("a", &["BLMOVE", "s", "d", "LEFT", "RIGHT", "0"]),
+            WaitBlocked(1),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, served-waiter-over-expired-destination, step 1 replies.
+            Pipeline("p", &[&["SET", "d", "v", "PXAT", "1"], &["RPUSH", "s", "w"]]),
+            Read("p", b"+OK\r\n"),
+            Read("p", b":1\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, served-waiter-over-expired-destination, step 2.
+            Read("a", b"$1\r\nw\r\n"),
+            // Redis 7.2.16 run 39899773861, blocking-expired-keys-recording.json, served-waiter-over-expired-destination, incremental file.
+            Aof(b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n*5\r\n$3\r\nSET\r\n$1\r\nd\r\n$1\r\nv\r\n$4\r\nPXAT\r\n$1\r\n1\r\n*3\r\n$5\r\nRPUSH\r\n$1\r\ns\r\n$1\r\nw\r\n*1\r\n$5\r\nMULTI\r\n*2\r\n$3\r\nDEL\r\n$1\r\nd\r\n*5\r\n$5\r\nLMOVE\r\n$1\r\ns\r\n$1\r\nd\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n*1\r\n$4\r\nEXEC\r\n"),
+        ],
+    },
 ];
