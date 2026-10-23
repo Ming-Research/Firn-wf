@@ -459,3 +459,42 @@ ratios and its 95% interval; head over base, above 1 is faster):
 - Even `f4s3` and `f4c` stay 1.3% above `before` for `set` here (0.992
   (0.978-1.013) in P4): a floor that no segment of Firn-wf#100 explains, which
   the images' own placement can produce.
+
+### Run F: the formal comparison
+
+Written before F runs. The question: with the fix as it stands (tables for the
+admission flags, publish/subscribe names last, the subscriber checks only in
+the promoted owner), is any cell of the 19 default tests of `redis-benchmark`
+at depths 16 and 1 still wholly on the slower side of the main revision before
+Firn-wf#100 merged, the comparison that found the cost (run 39573904480,
+[pubsub-throughput.md](pubsub-throughput.md#before-and-after-publishsubscribe))?
+
+- **Images.** `before` (`00e2bd1fa230`), `main` (`7f8b4f84658b`, what the branch
+  starts from), `head` (the branch head built by the run) and `head-twin`
+  (`head` again). `main` is in the run so that a cell that stays slower than
+  `before` can be told from a cell that the fix did not change: `head`/`main`
+  wholly on the faster side supports that the fix, not something else, moved it
+  (the check that could refute the attribution).
+- **Settings.** The 14900K with the placement of AGENTS.md set by hand, servers
+  on CPUs 2 and 4 and clients on CPUs 16-31, 2 server CPUs, the 19 tests at
+  depths 16 and 1, 6 interleaved passes of 5 s, no profile, no `reference`
+  line. As in run 39573904480 the 19 tests are 20 rows of the suite: the
+  `LRANGE` tests' list fill is the 20th.
+- **Measure.** `summary.py ratios` for `head`/`before`, `head`/`main` and
+  `head-twin`/`head`: the median of the per-pass ratios of the rate and its
+  95% interval of the mean log over the 6 passes (above 1 is faster). A
+  competitor's rate does not change between the images of one run, so the
+  ratio of the rate is the change in firn's multiple of the fastest
+  competitor. The ratio of the server CPU time per request (`--metric cpu`)
+  is reported beside it for every cell, and it is the one read for a cell
+  whose client is busy more than 90% of the time, where the client sets the
+  rate.
+- **Reading.** The run counts only if `head-twin`/`head` holds 1 in every cell
+  that is not client-limited; a cell where it does not is measured again. The
+  criterion of the item is met if no cell that is not client-limited has its
+  `head`/`before` interval wholly on the slower side. A cell that is wholly
+  slower is measured again alone with 12 passes (more pairs of the same
+  comparison, not a new question, as chance puts about one of the 38 cells
+  there at 95%) and stands only if it is wholly slower again; it then goes
+  to the board as a size and a reason for the owner to accept or to ask for a
+  further fix. The proposal is rejected for a cell that stands.
