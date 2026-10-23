@@ -1,0 +1,51 @@
+# Temporary quick check for board item firn-ops-pin-followup: builds firn and
+# its network-test binary with the pinned compiler and runs only the startup
+# configuration cases. Delete this file before the PR is ready.
+name: tmp-ops-pin-followup
+
+on:
+  push:
+    branches: [firn-ops-pin-followup]
+
+concurrency:
+  group: tmp-ops-pin-followup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick:
+    name: build and startup cases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      REDIS_COMPAT_CACHE: ${{ github.workspace }}/build/redis-compat-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download the pinned compiler
+        run: make compiler
+
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+
+      - name: Select the Rust toolchain
+        run: rustup default stable && cargo --version
+
+      - name: Restore the Redis build
+        uses: actions/cache@v4
+        with:
+          path: build/redis-compat-cache
+          key: redis-reference-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tests/redis-suite/reference.sh') }}
+
+      - name: Build the reference Redis
+        run: tests/redis-suite/reference.sh
+
+      - name: Build firn for the network cases
+        run: make firn-test
+
+      - name: Run the startup configuration cases
+        run: |
+          redis_bin=$(tests/redis-suite/reference.sh)
+          FIRN="$GITHUB_WORKSPACE/build/firn-test" REDIS_SERVER="$redis_bin/redis-server" \
+            cargo test --manifest-path tests/Cargo.toml --locked --test network config:: -- --show-output
