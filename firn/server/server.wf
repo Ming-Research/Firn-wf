@@ -313,7 +313,6 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
   let last = nanoseconds_from(earlier: origin, later: started);
   let polled = last;
   let held = 0_u64;
-  let promoted = False();
   loop @requests {
     if client.closing {
       break @requests;
@@ -422,11 +421,6 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
           std::time::cancel_fire(source: &shutdown);
         }
         pkg::commands::record_memory_peak(store: &store, client: &client);
-        if client.pubsub_id != 0_u64 {
-          set consumed = parsed.next;
-          set promoted = True();
-          break @commands;
-        }
         if client.closing {
           set closing = True();
           break @commands;
@@ -446,10 +440,6 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
         }
       }
     }
-    if promoted {
-      set held = keep_rest(input: &input, from: consumed, held: held);
-      break @requests;
-    }
     if client.at > 0_u64 {
       let delivered = flush(send: &connection.send, client: &client, store: &store, clock: &clock, base: woke);
       if delivered {
@@ -462,19 +452,6 @@ fn serve(connection: TcpConnection, factory: HandleFactory, store: Keyspace, clo
       break @requests;
     }
     set held = keep_rest(input: &input, from: consumed, held: held);
-  }
-  if promoted {
-    std::time::close_cancel_watch(watch: move limits.cancel);
-    let promoted_store = keyspace_share(store: &store);
-    let promoted_clock = clock_share(clock: &clock);
-    let promoted_wall = wall_clock_share(clock: &wall);
-    let promoted_shutdown = std::time::cancel_share(source: &shutdown);
-    serve_promoted(connection: move connection, factory: move factory, store: move promoted_store, clock: move promoted_clock, wall: move promoted_wall, shutdown: move promoted_shutdown, client: move client, args: move args, input: move input, held: held, transaction: move transaction);
-    std::time::close_cancel_source(source: move shutdown);
-    atomic m = &store.meta {
-      set m^.clients = m^.clients -wrap 1_u64;
-    }
-    return unit;
   }
   std::time::close_cancel_watch(watch: move limits.cancel);
   std::time::close_cancel_source(source: move shutdown);
