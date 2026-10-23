@@ -1,6 +1,7 @@
 alias HandleFactory = std::io::HandleFactory;
 alias IoError = std::io::IoError;
 alias OutputStream = std::io::OutputStream;
+alias WallClock = std::time::WallClock;
 alias WriteFile = std::fs::WriteFile;
 
 const log_months: Array<u8, 36> = "JanFebMarAprMayJunJulAugSepOctNovDec";
