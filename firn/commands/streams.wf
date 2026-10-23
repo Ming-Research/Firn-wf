@@ -363,13 +363,13 @@ fn stream_space(byte: u8) -> space: Bool pure {
 fn stream_part(input: &[u8], start: u64, end: u64) -> part: StreamPart reads(input) {
   doc "Reads one part of an ID as Redis 7.2.16's string2ull does: a strict signed decimal, refused when negative; otherwise strtoull's form, leading white space, an optional sign, at least one digit and nothing after, refused on overflow, a minus sign negating modulo 2^64.";
   let length = end -sat start;
-  let strict = read_integer(input: input, start: start, length: length);
-  if strict.state == 1_u64 {
-    if strict.value < 0_i64 {
+  let signed = read_integer(input: input, start: start, length: length);
+  if signed.state == 1_u64 {
+    if signed.value < 0_i64 {
       let false_13 = False();
       return StreamPart(value: 0_u64, valid: false_13);
     }
-    let value = cvt.wrap::<i64, u64>(strict.value);
+    let value = cvt.wrap::<i64, u64>(signed.value);
     let true_14 = True();
     return StreamPart(value: value, valid: true_14);
   }
@@ -423,8 +423,8 @@ fn stream_part(input: &[u8], start: u64, end: u64) -> part: StreamPart reads(inp
   }
   let none = digits == 0_u64;
   let left = position < end;
-  let refused = bor(none, left);
-  if bor(refused, overflow) {
+  let rejected_part = bor(none, left);
+  if bor(rejected_part, overflow) {
     let false_15 = False();
     return StreamPart(value: 0_u64, valid: false_15);
   }
@@ -437,14 +437,14 @@ fn stream_part(input: &[u8], start: u64, end: u64) -> part: StreamPart reads(inp
   return StreamPart(value: value, valid: true_17);
 }
 
-fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: Bool) -> read: StreamIdRead reads(input) {
-  doc "Reads an ID argument as Redis 7.2.16's streamGenericParseIDOrReply does: at most 127 bytes, read up to its first zero byte; - and + alone are 0-0 and max-max, refused when strict; otherwise milliseconds, then after the first dash the sequence, or missing without a dash. With star, ms-* gives the milliseconds and leaves the sequence to XADD.";
+fn stream_parse_id(input: &[u8], span: Span, careful: Bool, missing: u64, star: Bool) -> read: StreamIdRead reads(input) {
+  doc "Reads an ID argument as Redis 7.2.16's streamGenericParseIDOrReply does: at most 127 bytes, read up to its first zero byte; - and + alone are 0-0 and max-max, refused when careful, as strict parsing refuses them; otherwise milliseconds, then after the first dash the sequence, or missing without a dash. With star, ms-* gives the milliseconds and leaves the sequence to XADD.";
   let zero = StreamId(ms: 0_u64, seq: 0_u64);
   let true_18 = True();
   let false_19 = False();
-  let refused = StreamIdRead(id: zero, valid: false_19, seq_given: true_18);
+  let rejected_id = StreamIdRead(id: zero, valid: false_19, seq_given: true_18);
   if span.length > 127_u64 {
-    return refused;
+    return rejected_id;
   }
   let start = span.start;
   let end = span.start +wrap span.length;
@@ -466,8 +466,8 @@ fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: B
   let lone_plus = band(plus, alone);
   let special = bor(lone_minus, lone_plus);
   if special {
-    if strict {
-      return refused;
+    if careful {
+      return rejected_id;
     }
     if lone_minus {
       let true_20 = True();
@@ -491,7 +491,7 @@ fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: B
   }
   let ms = stream_part(input: input, start: start, end: dash);
   if bnot(ms.valid) {
-    return refused;
+    return rejected_id;
   }
   if dash >= end {
     let whole = StreamId(ms: ms.value, seq: missing);
@@ -514,7 +514,7 @@ fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: B
   }
   let seq = stream_part(input: input, start: seq_start, end: end);
   if bnot(seq.valid) {
-    return refused;
+    return rejected_id;
   }
   let whole = StreamId(ms: ms.value, seq: seq.value);
   let true_28 = True();
@@ -1093,6 +1093,7 @@ fn node_info(env: &StreamNodeInfo, key: &StreamId, value: &StreamNode) -> result
 
 fn mark_entries(env: &StreamMark, key: &StreamId, value: &StreamNode) -> result: unit reads(key), writes(value), writes(env) {
   doc "Exact trimming inside one node, as streamTrim marks entries: from the first entry, until the stream is short enough or an entry reaches minid, each live entry is marked deleted, its count moving from live to deleted; the node keeps its bytes.";
+  let unused_master = key^;
   let count = value^.items.inner.len;
   for @items (index in 0_u64..count) {
     if index < value^.items.inner.len {
@@ -1132,7 +1133,7 @@ fn stream_first_live(log: &StreamLog, client: &Client) -> result: unit writes(lo
   return unit;
 }
 
-fn stream_trim(log: &StreamLog, op: &StreamOp, client: &Client) -> removed: u64 writes(log), reads(op), writes(client) {
+fn stream_trim(log: &StreamLog, op: &StreamOp, client: &Client) -> removed: u64 reads(op), writes(log), writes(client) {
   doc "Trims the stream as Redis 7.2.16's streamTrim does and returns how many live entries it removed. From the first node: MAXLEN stops once the stream is no longer than maxlen; a node is removed whole when the rest would still hold maxlen entries (MAXLEN) or its last entry, a deleted one included, is below minid (MINID); a nonzero limit stops before the node whose entries would pass it. With ~ trimming stops at the first node it cannot remove; otherwise entries inside that node are marked deleted. The first ID is recomputed.";
   let removed = 0_u64;
   let keys = KeyEnv();
@@ -1196,6 +1197,7 @@ fn stream_threshold(log: &StreamLog, op: &StreamOp) -> result: unit reads(log), 
 
 fn delete_entry(env: &StreamDelete, key: &StreamId, value: &StreamNode) -> result: unit reads(key), writes(value), writes(env) {
   doc "Marks the node's live entry with the target ID deleted, as streamIteratorRemoveEntry does, moving one count from live to deleted, and reports a node left with no live entry.";
+  let unused_master = key^;
   let count = value^.items.inner.len;
   for @items (index in 0_u64..count) {
     if index < value^.items.inner.len {
@@ -1571,9 +1573,9 @@ fn xadd_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp, xadd: Bool, 
         set op^.maxlen = cvt.wrap::<i64, u64>(number.value);
         set op^.trim = 1_u64;
       } else {
-        let strict = True();
+        let careful = True();
         let no = False();
-        let read = stream_parse_id(input: input, span: value_span, strict: strict, missing: 0_u64, star: no);
+        let read = stream_parse_id(input: input, span: value_span, careful: careful, missing: 0_u64, star: no);
         if bnot(read.valid) {
           set op^.error = 1_u64;
           return False();
@@ -1601,9 +1603,9 @@ fn xadd_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp, xadd: Bool, 
     } else if band(xadd, nomkstream) {
       set op^.nomkstream = True();
     } else if xadd {
-      let strict = True();
+      let careful = True();
       let yes = True();
-      let read = stream_parse_id(input: input, span: span, strict: strict, missing: 0_u64, star: yes);
+      let read = stream_parse_id(input: input, span: span, careful: careful, missing: 0_u64, star: yes);
       if bnot(read.valid) {
         set op^.error = 1_u64;
         return False();
@@ -1703,9 +1705,9 @@ fn interval_parse(input: &[u8], span: Span, missing: u64, start: Bool) -> read: 
     let rest_start = span.start +wrap 1_u64;
     let rest_length = span.length -wrap 1_u64;
     let rest = Span(start: rest_start, length: rest_length);
-    let strict = True();
+    let careful = True();
     let no = False();
-    let read = stream_parse_id(input: input, span: rest, strict: strict, missing: missing, star: no);
+    let read = stream_parse_id(input: input, span: rest, careful: careful, missing: missing, star: no);
     if bnot(read.valid) {
       return read;
     }
@@ -1727,7 +1729,7 @@ fn interval_parse(input: &[u8], span: Span, missing: u64, start: Bool) -> read: 
     return previous;
   }
   let no = False();
-  let read = stream_parse_id(input: input, span: span, strict: no, missing: missing, star: no);
+  let read = stream_parse_id(input: input, span: span, careful: no, missing: missing, star: no);
   return read;
 }
 
@@ -1803,11 +1805,11 @@ fn xdel_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp) -> result: u
   let count = args^.inner.len;
   let named = count -sat 2_u64;
   let ids = box_slots_new::<StreamId>(capacity: named);
-  let strict = True();
+  let careful = True();
   let no = False();
   for @ids (index in 2_u64..count) {
     let span = arg(args: args, index: index);
-    let read = stream_parse_id(input: input, span: span, strict: strict, missing: 0_u64, star: no);
+    let read = stream_parse_id(input: input, span: span, careful: careful, missing: 0_u64, star: no);
     if bnot(read.valid) {
       if op^.error == 0_u64 {
         set op^.error = 1_u64;
@@ -1824,10 +1826,10 @@ fn xdel_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp) -> result: u
 
 fn xsetid_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp) -> valid: Bool reads(input), reads(args), writes(op) {
   doc "Reads XSETID's ID and its ENTRIESADDED and MAXDELETEDID options as xsetidCommand does, before the key is looked up.";
-  let strict = True();
+  let careful = True();
   let no = False();
   let id_span = arg(args: args, index: 2_u64);
-  let read = stream_parse_id(input: input, span: id_span, strict: strict, missing: 0_u64, star: no);
+  let read = stream_parse_id(input: input, span: id_span, careful: careful, missing: 0_u64, star: no);
   if bnot(read.valid) {
     set op^.error = 1_u64;
     return False();
@@ -1860,7 +1862,7 @@ fn xsetid_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp) -> valid: 
       set op^.entries_added = cvt.wrap::<i64, u64>(number.value);
       set op^.added_given = True();
     } else if band(deleted, following) {
-      let given = stream_parse_id(input: input, span: value_span, strict: strict, missing: 0_u64, star: no);
+      let given = stream_parse_id(input: input, span: value_span, careful: careful, missing: 0_u64, star: no);
       if bnot(given.valid) {
         set op^.error = 1_u64;
         return False();
@@ -2139,7 +2141,7 @@ fn stream_read_finish(client: &Client, op: &StreamOp) -> result: unit reads(op),
   return unit;
 }
 
-fn run_stream_write(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, op: &StreamOp) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(op), writes(client) waits {
+fn run_stream_write(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, op: &StreamOp) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client), writes(op) waits {
   doc "Runs a parsed XADD, XTRIM, XDEL or XSETID in one atomic statement on the key's entry that also appends the change to the append-only file's pending bytes; a key found expired counts as absent and its removal is recorded first.";
   let journal = None<pkg::store::AccessJournal>();
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -2170,7 +2172,7 @@ fn run_stream_write(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, cli
   return unit;
 }
 
-fn run_stream_read(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, op: &StreamOp) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(op), writes(client) waits {
+fn run_stream_read(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, time: &Time, op: &StreamOp) -> result: unit reads(store), reads(input), reads(args), reads(time), writes(client), writes(op) waits {
   doc "Runs a parsed XRANGE, XREVRANGE or XLEN in one atomic statement on the key's entry; a key found expired is removed afterwards and answered as absent.";
   let journal = None<pkg::store::AccessJournal>();
   let place = key_bounds(input: input, args: args, index: 1_u64);
@@ -2245,9 +2247,9 @@ fn xread_held(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store:
       set op^.error = 19_u64;
       return appended;
     } else {
-      let strict = True();
+      let careful = True();
       let no = False();
-      let read = stream_parse_id(input: input, span: id_span, strict: strict, missing: 0_u64, star: no);
+      let read = stream_parse_id(input: input, span: id_span, careful: careful, missing: 0_u64, star: no);
       if bnot(read.valid) {
         set op^.error = 1_u64;
         return appended;
@@ -2403,7 +2405,7 @@ fn stream_held(sequence: &pkg::store::WriteSequence, journal: &Option<pkg::store
   set client^.state = state_absent;
   let scripted = False();
   match journal^ {
-    Some(..) => {
+    Some(value: unused_journal) => {
       set scripted = True();
     }
     None() => {
