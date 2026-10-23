@@ -1,0 +1,35 @@
+# Temporary (firn-pubsub-cmd-regression): compiles the six experiment images of
+# the branch firn-pubsub-cmd-regression-exp before they are measured on the
+# 14900K. Removed before the pull request is ready.
+name: tmp-firn-pubsub-cmd-regression
+
+on:
+  push:
+    branches: [firn-pubsub-cmd-regression]
+
+jobs:
+  build:
+    name: compile ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: v1, sha: 33a5ef17a17a23d61a44172e652f47208a4f73c7}
+          - {name: v2, sha: 51ff081d1aa9471ed716d04c214b466e6c8a77cd}
+          - {name: v3, sha: 5892b83159127022d113e3eaa8eda94029fe2edd}
+          - {name: v4, sha: 532accab8dd00ba71fb7e0e29dca21839d045588}
+          - {name: v5, sha: c7a9c8d9d0e8b766c8f44e75b6a78a78a85902a3}
+          - {name: v6, sha: fa0dcb459974f2cf862e2ac246dd187ebed1c287}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.sha }}
+          submodules: true
+      - name: Download the pinned compiler
+        run: make compiler
+      - name: Install the pinned release's LLVM
+        run: make toolchain
+      - name: Compile the image
+        run: make firn
