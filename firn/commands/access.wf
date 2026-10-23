@@ -263,29 +263,33 @@ fn memory_policy_text(text: &Box<Slots<u8>>, policy: u64) -> result: unit writes
   return unit;
 }
 
-fn config_memory_value(input: &[u8], span: Span, which: u64, client: &Client) -> amount: Amount reads(input), writes(client) {
-  doc "Redis 7.0.15 config.c enumConfigSet/numericConfigSet bounds and error text for the six maxmemory settings; maxmemory uses util.c memtoull through memory_value.";
+fn parse_memory_config(input: &[u8], span: Span, which: u64) -> result: MemoryConfigValue reads(input) contract {
+  requires which >= 24_u64;
+  requires which <= 29_u64;
+} {
+  doc "Redis 7.2.16 config.c enumConfigSet/numericConfigSet bounds and plain error reasons for startup and CONFIG SET; maxmemory uses util.c memtoull through memory_value.";
   let no = False();
   let yes = True();
+  let error = box_slots_new::<u8>(capacity: 0_u64);
   if which == 24_u64 {
     let parsed = memory_value(input: input, span: span);
     if bnot(parsed.valid) {
-      reply_set_failed(client: client, which: which, reason: &text_not_memory[0_u64..31_u64]);
+      text_word(text: &error, word: &text_not_memory[0_u64..31_u64]);
     }
-    return parsed;
+    return MemoryConfigValue(value: parsed.value, valid: parsed.valid, error: move error);
   }
   if which == 25_u64 {
     let policy = memory_policy(input: input, span: span);
     if policy == 8_u64 {
-      reply_set_failed(client: client, which: which, reason: &memory_policy_error[0_u64..153_u64]);
-      return Amount(value: 0_u64, valid: no);
+      text_word(text: &error, word: &memory_policy_error[0_u64..153_u64]);
+      return MemoryConfigValue(value: 0_u64, valid: no, error: move error);
     }
-    return Amount(value: policy, valid: yes);
+    return MemoryConfigValue(value: policy, valid: yes, error: move error);
   }
   let number = read_integer(input: input, start: span.start, length: span.length);
   if number.state != 1_u64 {
-    reply_set_failed(client: client, which: which, reason: &text_not_parsed[0_u64..43_u64]);
-    return Amount(value: 0_u64, valid: no);
+    text_word(text: &error, word: &text_not_parsed[0_u64..43_u64]);
+    return MemoryConfigValue(value: 0_u64, valid: no, error: move error);
   }
   let least = 0_i64;
   let most = 2147483647_i64;
@@ -298,10 +302,31 @@ fn config_memory_value(input: &[u8], span: Span, which: u64, client: &Client) ->
   let below = number.value < least;
   let above = number.value > most;
   if bor(below, above) {
-    reply_bounds(client: client, which: which, least: least, most: most);
-    return Amount(value: 0_u64, valid: no);
+    text_word(text: &error, word: &text_between[0_u64..25_u64]);
+    let lower = cvt.wrap::<i64, u64>(least);
+    text_number(text: &error, value: lower);
+    text_word(text: &error, word: &text_and[0_u64..5_u64]);
+    let upper = cvt.wrap::<i64, u64>(most);
+    text_number(text: &error, value: upper);
+    text_word(text: &error, word: &text_inclusive[0_u64..10_u64]);
+    return MemoryConfigValue(value: 0_u64, valid: no, error: move error);
   }
   let value = cvt.wrap::<i64, u64>(number.value);
+  return MemoryConfigValue(value: value, valid: yes, error: move error);
+}
+
+fn config_memory_value(input: &[u8], span: Span, which: u64, client: &Client) -> amount: Amount reads(input), writes(client) contract {
+  requires which >= 24_u64;
+  requires which <= 29_u64;
+} {
+  doc "Formats CONFIG SET's failure frame around the shared memory-setting validation's plain error reason.";
+  let parsed = parse_memory_config(input: input, span: span, which: which);
+  if bnot(parsed.valid) {
+    let length = parsed.error.inner.len;
+    reply_set_failed(client: client, which: which, reason: &parsed.error.inner[0_u64..length]);
+  }
+  let value = parsed.value;
+  let yes = parsed.valid;
   return Amount(value: value, valid: yes);
 }
 

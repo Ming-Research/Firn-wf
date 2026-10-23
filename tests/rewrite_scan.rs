@@ -146,7 +146,7 @@ fn start_with_minimum(program: &CompiledProgram, minimum: &[u8]) -> (ProgramChil
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route_with(true, &[("WF_WORKERS", "2"), ("WF_DRIVERS", "2")], &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", minimum]).with_port(&port_lease);
+    let child = program.spawn_on_route_with(true, &[("WF_WORKERS", "2"), ("WF_DRIVERS", "2")], &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof", b"--auto-aof-rewrite-min-size", minimum]).with_port(&port_lease);
     let client = connect_when_ready(port, &child);
     (child, client, port)
 }
@@ -1070,7 +1070,7 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     let lease = support::lease_port();
     let port = lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route_ignoring_xfsz(true, &[text.as_bytes(), b"0", b"appendonly.aof", b"--auto-aof-rewrite-min-size", b"4294967296"]).with_port(&lease);
+    let child = program.spawn_on_route_ignoring_xfsz(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"appendonly.aof", b"--auto-aof-rewrite-min-size", b"4294967296"]).with_port(&lease);
     let mut client = connect_when_ready(port, &child);
     // A real failed append makes its boundary outcome unknown under the
     // Whitefoot I/O contract. Successful recovery must retain that unknown

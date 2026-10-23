@@ -51,7 +51,7 @@ fn start(protocol: u8) -> (ProgramChild, TcpStream) {
     let lease = support::lease_port();
     let port = lease.port();
     let text = port.to_string();
-    let child = firn().spawn_on_route(true, &[text.as_bytes(), b"1"]).with_port(&lease);
+    let child = firn().spawn_on_route(true, &[b"--port", text.as_bytes(), b"--firn-clients", b"1"]).with_port(&lease);
     let mut client = connect_when_ready(port, &child);
     if protocol == 3 {
         let reply = request(&mut client, &["HELLO", "3"]);

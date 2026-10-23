@@ -4,6 +4,18 @@ alias Span = pkg::protocol::Span;
 alias Keyspace = pkg::store::Keyspace;
 alias Time = pkg::store::Time;
 
+public struct MemoryConfigValue {
+  doc "One validated memory setting, with an empty error on success or Redis's plain error reason on failure, without a RESP frame.";
+  public value: u64;
+  public valid: Bool;
+  public error: Box<Slots<u8>>;
+}
+
+public fn parse_memory_config(input: &[u8], span: Span, which: u64) -> result: MemoryConfigValue reads(input) contract {
+  requires which >= 24_u64;
+  requires which <= 29_u64;
+} doc "Validates the six memory settings with Redis 7.2.16's parsing, bounds and error reasons: parameter indices 24 through 29 name maxmemory, maxmemory-policy, maxmemory-samples, lfu-log-factor, lfu-decay-time and maxmemory-eviction-tenacity, respectively. Startup and CONFIG SET share this validation without touching a client or server state.";
+
 public fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Client, env: &KeyEnv, time: &Time, clock: &std::time::Clock) -> result: unit reads(store), reads(input), reads(args), reads(env), reads(time), writes(client), writes(clock) waits doc "Answers one command, whose arguments are spans of the input, by appending its reply to the client's. A command that changes the keyspace does so in one atomic statement, which also appends the change to the append-only file's pending bytes when the keyspace keeps them. A connection that must authenticate first is answered NOAUTH for every command but AUTH, HELLO and QUIT, once the command is known and its arguments counted, as in Redis.";
 
 public struct Transaction {
