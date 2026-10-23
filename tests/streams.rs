@@ -201,8 +201,9 @@ fn increment(directory: &Path) -> Vec<u8> {
 
 /// The file records XADD with the ID it made and a trim with `~` with the
 /// threshold Redis writes, the length after trimming or the first entry's
-/// ID, so the bytes appended show both the rewriting and the node layout.
-/// Only the SELECT 0 that Redis writes first is ignored, as the other AOF
+/// ID, so the bytes appended show both the rewriting and the node layout;
+/// an XDEL naming an invalid ID beside a live one deletes and records
+/// nothing. Only the SELECT 0 that Redis writes first is ignored, as the other AOF
 /// cases do; firn-scope-select-db tracks it.
 #[test]
 fn streams_record_their_writes_as_redis_does() {
@@ -215,6 +216,7 @@ fn streams_record_their_writes_as_redis_does() {
     commands.extend([
         "DEL w", "XADD w 5-* a 1", "XADD w 5-* a 1", "XADD w MAXLEN ~ 1 6-* a 1", "XADD w MINID ~ 6 7-* a 1",
         "XTRIM w MINID ~ 9", "XTRIM w MAXLEN ~ 0", "XTRIM w MINID = 7", "XDEL w 6-0 404-0", "XDEL w 404-0",
+        "XADD w 8-0 a 1", "XDEL w 8-0 bad", "XLEN w", "XRANGE w 8-0 8-0",
         "XSETID w 99-0 ENTRIESADDED 50 MAXDELETEDID 9-0",
     ].iter().map(|text| words(text)));
     compare(&mut server, &mut oracle, &commands);

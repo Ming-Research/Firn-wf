@@ -1418,6 +1418,9 @@ compare_client() {
     ticks=$(server_ticks)
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-before"
     begin=$(date +%s%N)
+    # $what is split into words but must not be globbed: XADD's * ID would
+    # otherwise become the names of the files in the working directory.
+    set -f
     if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
         taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" --threads "$CLIENT_THREADS" \
             -c 50 -n "$3" -r 100000 -d 3 -P "$2" --csv $what >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
@@ -1437,6 +1440,7 @@ compare_client() {
         cp "$OUT/compare-client-0.csv" "$OUT/compare-client.csv"
         set -- "$1" "$2" $(($3 / CLIENT_THREADS * CLIENT_THREADS))
     fi
+    set +f
     end=$(date +%s%N)
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-after"
     ticks=$(($(server_ticks) - ticks))

@@ -1218,7 +1218,10 @@ fn delete_entry(env: &StreamDelete, key: &StreamId, value: &StreamNode) -> resul
 }
 
 fn stream_delete(log: &StreamLog, op: &StreamOp, client: &Client) -> result: unit writes(log), writes(op), writes(client) {
-  doc "XDEL's work as Redis 7.2.16's xdelCommand does it: each named live entry is marked deleted, a node left without live entries removed; max_deleted_entry_id becomes the greatest ID deleted when above it, and the first ID is recomputed when the first entry went or the stream is empty.";
+  doc "XDEL's work as Redis 7.2.16's xdelCommand does it: each named live entry is marked deleted, a node left without live entries removed; max_deleted_entry_id becomes the greatest ID deleted when above it, and the first ID is recomputed when the first entry went or the stream is empty; an invalid ID among them deletes nothing, as xdelCommand validates every ID before it deletes any.";
+  if op^.error != 0_u64 {
+    return unit;
+  }
   let keys = KeyEnv();
   let first = log^.first_id;
   let first_entry = False();

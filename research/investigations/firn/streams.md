@@ -4,9 +4,10 @@ Board item `firn-scope-min-streams`: Redis 7.2.16's stream type with XADD
 (MAXLEN/MINID, `=`/`~`, LIMIT, NOMKSTREAM), XRANGE, XREVRANGE, XLEN, XTRIM,
 XDEL and XREAD (BLOCK included), without consumer groups.
 
-Status: study. The facts below were read from the Redis 7.2.16 release
-source (archive SHA-256 as `tests/redis-suite/reference.sh` pins); paths are
-relative to its `src/`. Nothing here was measured. Where a fact is deduced
+Status: implemented by board item `firn-streams-core`, except XREAD's BLOCK
+wait, which `firn-streams-xread-block` delivers. The facts below were read
+from the Redis 7.2.16 release source (archive SHA-256 as
+`tests/redis-suite/reference.sh` pins); paths are relative to its `src/`. Nothing here was measured. Where a fact is deduced
 rather than read, it says so.
 
 ## Reference semantics
