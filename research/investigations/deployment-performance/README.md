@@ -751,3 +751,145 @@ inputs work and times a pass; it is not reported as a result. No noise floor
 is recorded yet for these workload classes on this machine, so each run's
 largest twin half-width per class is reported as that class's floor, for the
 architect to record, and no cell is dropped by it in these runs.
+
+### Changes to the plan after the first dispatch
+
+All runs below measured Firn-wf#74 at commit 9b514d5 (compiler release
+wf-af7665be672d) against `main` at 7f8b4f8, which that commit had merged, on
+the i9-14900K: server CPUs 2 and 4, load clients on CPUs 16-31, depth 1.
+
+- The probe of Run A (run 39898075275, 2 passes of 5 seconds) took 13.5
+  minutes, 2 of them building, and is not reported.
+- Run B was split in two. The probe of Run B (run 39910304830) stopped at the
+  handshake workload on the `base` image: `main`'s firn has neither
+  `CLIENT SETINFO` nor `CLIENT LIST`, so these two workloads have no "before"
+  to pair with. This was an error in the plan above, not a finding. Run B2
+  measures the handshake and `CLIENT LIST` with images `head` and `head-twin`
+  and the four rivals (Redis 7.2.16, Valkey 9.1.2, Dragonfly v2.0.2, Garnet
+  2.2.3); Run B1 measures the two transaction workloads with the three images
+  and no rivals.
+- Every dispatch builds its images again, so the binary of one source differs
+  in its SHA-256 between dispatches. A cell the rule left undecided after 6
+  passes got a second dispatch of the same inputs, and the two dispatches'
+  passes are pooled as passes 1-12. Within a dispatch `head` and `head-twin`
+  are one binary; `base` and `head` are two.
+- The rule was not changed after its results were seen.
+
+### Results
+
+Run A, `redis-benchmark` default suite (19 tests), 6 passes of 5 seconds in
+each of runs
+[39899821670](https://github.com/Ming-Research/Firn-wf/actions/runs/39899821670)
+and
+[39903665355](https://github.com/Ming-Research/Firn-wf/actions/runs/39903665355),
+12 passes pooled, `summary.py ratios`. The verdict column applies the rule
+above: rejected needs the head/base interval wholly under 1 with the twin's
+interval containing 1.
+
+| test | head/base median | head/base 95% interval | twin/head 95% interval | twin half-width | verdict |
+| --- | --- | --- | --- | --- | --- |
+| get | 1.0042 | 0.9949-1.0257 | 0.9874-1.0019 | 0.73% | undecided (wider than twin) |
+| hset | 0.9880 | 0.9723-1.0299 | 0.9811-1.0105 | 1.47% | undecided (wider than twin) |
+| incr | 0.9969 | 0.9801-1.0129 | 0.9927-1.0182 | 1.28% | undecided (wider than twin) |
+| lpop | 1.0014 | 0.9948-1.0183 | 0.9971-1.0118 | 0.74% | undecided (wider than twin) |
+| lpush | 0.9902 | 0.9759-1.0068 | 0.9961-1.0173 | 1.06% | undecided (wider than twin) |
+| lrange_100 | 1.0022 | 0.9879-1.0303 | 0.9923-1.0099 | 0.88% | undecided (wider than twin) |
+| lrange_300 | 1.0033 | 0.9965-1.0106 | 0.9552-1.0222 | 3.35% | no detected change |
+| lrange_500 | 1.0064 | 1.0000-1.0170 | 0.9964-1.0040 | 0.38% | undecided (wider than twin) |
+| lrange_600 | 1.0051 | 1.0009-1.0102 | 0.9918-1.0062 | 0.72% | faster |
+| mset | 1.0058 | 0.9956-1.0189 | 0.9929-1.0083 | 0.77% | undecided (wider than twin) |
+| ping_inline | 0.9911 | 0.9850-1.0136 | 0.9921-1.0075 | 0.77% | undecided (wider than twin) |
+| ping_mbulk | 0.9948 | 0.9885-1.0066 | 0.9941-1.0150 | 1.05% | no detected change |
+| rpop | 0.9918 | 0.9843-1.0033 | 0.9839-1.0115 | 1.38% | no detected change |
+| rpush | 0.9892 | 0.9753-0.9977 | 1.0020-1.0176 | 0.78% | undecided (twin interval excludes 1) |
+| sadd | 0.9831 | 0.9706-1.0248 | 0.9877-1.0145 | 1.34% | undecided (wider than twin) |
+| set | 1.0084 | 0.9859-1.0531 | 0.9877-1.0098 | 1.10% | undecided (wider than twin) |
+| spop | 0.9881 | 0.9786-1.0356 | 0.9867-1.0107 | 1.20% | undecided (wider than twin) |
+| zadd | 1.0032 | 0.9875-1.0347 | 0.9766-0.9951 | 0.92% | undecided (twin interval excludes 1) |
+| zpopmin | 0.9894 | 0.9725-1.0240 | 0.9821-1.0107 | 1.43% | undecided (wider than twin) |
+
+No client was limited (`compare-limited.csv`: no sample above 0.90). Run B1,
+transaction workloads, 50 connections, 6 passes of 10 seconds in each of runs
+[39933326848](https://github.com/Ming-Research/Firn-wf/actions/runs/39933326848)
+and
+[39935877361](https://github.com/Ming-Research/Firn-wf/actions/runs/39935877361),
+12 passes pooled, `summary.py workloads`:
+
+| workload | rate base / head / twin | head/base median | head/base 95% interval | twin/head 95% interval | twin half-width | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| limiter-tx | 612.2k / 611.3k / 608.6k per second | 0.9972 | 0.9824-1.0041 | 0.9915-1.0032 | 0.59% | undecided (wider than twin) |
+| setmany-tx | 340.9k / 338.5k / 336.6k per second | 0.9927 | 0.9761-1.0038 | 0.9668-1.0132 | 2.32% | no detected change |
+
+Run B2, the handshake and `CLIENT LIST` against the rivals, 50 connections, 6
+passes of 10 seconds in each of runs
+[39922503246](https://github.com/Ming-Research/Firn-wf/actions/runs/39922503246)
+and
+[39927545727](https://github.com/Ming-Research/Firn-wf/actions/runs/39927545727),
+12 passes pooled, `summary.py workloads`. Medians over the 12 passes:
+
+| handshake | rate per second | p99 (ms) | client work fraction |
+| --- | --- | --- | --- |
+| firn (head) | 23.29k | 5.329 | 0.981 |
+| firn (head-twin) | 23.30k | 5.316 | 0.984 |
+| Redis 7.2.16 | 23.38k | 5.128 | 0.981 |
+| Valkey 9.1.2 | 23.25k | 5.274 | 0.978 |
+| Dragonfly v2.0.2 | 21.90k | 5.412 | 0.962 |
+| Garnet 2.2.3 | 20.90k | 5.216 | 0.966 |
+
+| CLIENT LIST | rate per second | firn / rival | p99 (ms) | client work fraction |
+| --- | --- | --- | --- | --- |
+| firn (head) | 127.1k | | 0.635 | 0.085 |
+| firn (head-twin) | 127.5k | 0.997 | 0.677 | 0.085 |
+| Redis 7.2.16 | 34.5k | 3.679 | 2.458 | 0.036 |
+| Valkey 9.1.2 | 28.2k | 4.508 | 3.015 | 0.034 |
+| Dragonfly v2.0.2 | 23.9k | 5.311 | 4.521 | 0.021 |
+| Garnet 2.2.3 | 218.5k | 0.582 | 0.625 | 0.152 |
+
+Twin half-widths over 12 passes, offered as the first floor measurements of
+these classes on this machine: `redis-benchmark` default suite, 19 cells,
+median 1.05%, from 0.38% (lrange_500) to 3.35% (lrange_300); `limiter-tx`
+0.59%; `setmany-tx` 2.32%; handshake 1.04%; `CLIENT LIST` 0.54%.
+
+### Verdicts
+
+1. Commands firn supported before: no cell is rejected. Of the 21 cells, 16
+   are undecided, 4 show no detected change and 1 (lrange_600) is faster.
+   Fourteen of the undecided cells are undecided by the second clause only (the
+   head/base interval contains 1 but is wider than the twin's); none of them is
+   detected slower, since each interval contains 1. The clause is unmeetable as
+   written, because `base` and `head` are two binaries whose build-to-build
+   difference adds variance the twin, one binary measured twice, does not have;
+   the first dispatch of Run A made hset look wholly slower (0.9835,
+   0.9765-0.9970) and the second made it look unchanged (0.9914, 0.9502-1.0840).
+   Two cells have a twin interval that excludes 1 (rpush: twin 1.1% faster than
+   head, the same binary; zadd: twin 0.7% slower). rpush is the only cell whose
+   head/base interval lies wholly under 1 (0.9753-0.9977); the twin as the
+   candidate against `base` gives 0.9957 (0.9866-1.0056), no detected change,
+   which does not support attributing the rpush difference to the code.
+   Exploratory, not part of the rule: the geometric mean over the 19 tests of
+   each pass's ratio, with the interval taken over the passes as for a cell, is
+   1.0025 (0.9927-1.0123) for head/base in requests per second, 0.9981
+   (0.9886-1.0078) for head/base in server CPU per request, and 0.9993
+   (0.9949-1.0038) for twin/head in requests per second. Unresolved by the
+   rule: these 16 cells.
+2. Handshake: unresolved. The cell is client-limited (work fraction above 0.90
+   for every server), so only "not behind" is asked and p99 is reported, not
+   judged. Firn's median is 0.996 of the fastest rival (Redis), 0.4% short;
+   the twin half-width is 1.04%, so the shortfall is smaller than the noise
+   and, after 12 passes, the rule leaves it undecided. The paired per-pass
+   ratio firn/Redis has median 0.9943 and 95% interval 0.9867-1.0000, not part
+   of the rule. Firn is level with Redis and Valkey (1.002 of Valkey) and ahead
+   of Dragonfly (1.063) and Garnet (1.114); the three leaders sit at about
+   23.3k a second, which suggests the workload client, not the servers, sets
+   the ceiling.
+3. `CLIENT LIST`: against the fastest rival other than Garnet (Redis) firn is
+   3.679 times as fast with p99 0.635 ms against 2.458 ms, so the rule is met.
+   Against Garnet the figures are reported and not judged, as the owner ruled
+   (card firn-client-merge-perf): firn is 0.582 times as fast, p99 0.635 ms
+   against 0.625 ms; the gap is followed by item firn-client-list-garnet.
+   Against the earlier run of this section (firn de6d7b5, Garnet 2.2.1) firn's
+   `CLIENT LIST` rate is about 4% lower (127k against 133k a second) and the
+   multiples over Redis, Valkey and Dragonfly are about 4% lower (3.68, 4.51,
+   5.31 against 3.85, 4.70, 5.57); the commit differs by the merge of `main`
+   and by `CLIENT LIST` reading the other connections' subscription counts from
+   the event hub, which this measurement does not separate.
