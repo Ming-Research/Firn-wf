@@ -200,4 +200,9 @@ cause given under the workload above. The same inputs at aa2a6b7 (run
 broken clients (run 40020673115, throwaway branch deleted after it): a
 consumer that blocks again after the drain (222 bytes sent after it, 0
 expected), and a producer that never drains (the run ends in `server closed
-connection`).
+connection`). The harness's reaction to a line
+that stops handing out elements was run with a client whose stall limit is 1 ms
+(run 40021985233, throwaway branch deleted after it): `valkey-latest` finished
+depth 16, stopped at depth 1 and was recorded as `skip,valkey-latest,blocking-handoff
+incomplete: ... (connections=20 pipeline=1)`, and firn, next in the order, stopped
+the run with `firn-1 stopped handing out elements in blocking-handoff`.
