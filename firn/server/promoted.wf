@@ -185,13 +185,15 @@ fn send_promoted_frame(send: &TcpSend, frame: Frame, cancel: &CancelWatch) -> se
   return None<u64>();
 }
 
-fn output_promoted(send: TcpSend, factory: HandleFactory, connection: EventConnection, hub: Shared<Hub>, clock: Clock, wall: WallClock) -> result: unit pure waits {
-  doc "Alone owns this connection's sending half. It sends ordered immutable frames without holding the hub, retains partial offsets, and releases the hub's pending charge only after a frame owner is consumed. A slow socket cannot delay another output owner. An ordered finish marker drains preceding frames; cancellation instead drops pending output.";
+fn output_promoted(send: TcpSend, factory: HandleFactory, connection: EventConnection, hub: Shared<Hub>, store: Keyspace, clock: Clock, wall: WallClock) -> result: unit pure waits {
+  doc "Alone owns this connection's sending half. Before each frame it waits until every append-only record committed by then is in the file, as flush does for a connection that never subscribed, so neither a reply nor a message shows a write a process kill can lose. It sends ordered immutable frames without holding the hub, retains partial offsets, and releases the hub's pending charge only after a frame owner is consumed. A slow socket cannot delay another output owner. An ordered finish marker drains preceding frames; cancellation instead drops pending output.";
   let cancel = std::time::cancel_watch(source: &connection.stop);
   loop @output {
     let pending = pkg::connection_events::output_take(connection: &connection);
     match move pending {
       Some(value: frame) => {
+        let observed = pkg::store::aof_reply_sequence(store: &store);
+        pkg::store::aof_reply_wait(store: &store, sequence: observed);
         let outcome = send_promoted_frame(send: &send, frame: move frame, cancel: &cancel);
         match outcome {
           Some(value: charge) => {
@@ -382,7 +384,8 @@ fn serve_promoted(connection: TcpConnection, factory: HandleFactory, store: Keys
       let output_hub = pkg::connection_events::hub_share(hub: &store.pubsub);
       let output_clock = std::time::clock_share(clock: &clock);
       let output_wall = std::time::wall_clock_share(clock: &wall);
-      spawn output_promoted(send: move send, factory: move output_factory, connection: move output_events, hub: move output_hub, clock: move output_clock, wall: move output_wall);
+      let output_store = pkg::store::keyspace_share(store: &store);
+      spawn output_promoted(send: move send, factory: move output_factory, connection: move output_events, hub: move output_hub, store: move output_store, clock: move output_clock, wall: move output_wall);
       let ending_events = pkg::connection_events::connection_share(connection: &events);
       let ending_watch = std::time::cancel_watch(source: &shutdown);
       spawn promoted_shutdown(connection: move ending_events, shutdown: move ending_watch);

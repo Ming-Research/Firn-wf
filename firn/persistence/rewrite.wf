@@ -292,8 +292,10 @@ fn aof_rw_flush(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
         pkg::store::log_append_plain(log: pending, bytes: &m^.log.inner[0_u64..length]);
         set m^.log = box_slots_new::<u8>(capacity: 65536_u64);
       }
+      set m^.aof_pending_sequence = m^.commit_seq;
     } else if pending^.inner.len == 0_u64 {
       swap(first: &m^.log, second: pending);
+      set m^.aof_pending_sequence = m^.commit_seq;
     }
     set m^.aof_pending_capacity = pending^.inner.cap;
     set m^.aof_pending_length = pending^.inner.len;
@@ -685,6 +687,7 @@ fn aof_rw_cut(store: &Keyspace, pending: &Box<Slots<u8>>) -> accepted: Bool read
         }
         set m^.log = box_slots_new::<u8>(capacity: 65536_u64);
       }
+      set m^.aof_pending_sequence = m^.commit_seq;
       set m^.aof_pending_capacity = pending^.inner.cap;
       set m^.aof_pending_length = pending^.inner.len;
       set cut = True();
@@ -818,6 +821,7 @@ fn aof_rw_direct(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pendin
           set m^.aof_base_size = size;
           set m^.aof_append_error = None<std::io::IoError>();
           set m^.aof_append_partial = False();
+          set m^.aof_written_sequence = imax(m^.aof_written_sequence, m^.aof_pending_sequence);
           set pending^ = box_slots_new::<u8>(capacity: 65536_u64);
           set m^.aof_pending_capacity = pending^.inner.cap;
           set m^.aof_pending_length = pending^.inner.len;
@@ -1106,10 +1110,12 @@ fn aof_rw_drain(store: &Keyspace, factory: &HandleFactory, log: &AofLog, pending
     if drained {
       set m^.aof_append_error = None<std::io::IoError>();
       set m^.aof_append_partial = False();
+      set m^.aof_written_sequence = imax(m^.aof_written_sequence, m^.aof_pending_sequence);
       set pending^ = box_slots_new::<u8>(capacity: 65536_u64);
     } else {
       set m^.aof_append_error = appended.error;
       set m^.aof_append_partial = partial;
+      set m^.aof_failed_sequence = imax(m^.aof_failed_sequence, m^.commit_seq);
       if progress > 0_u64 {
         if progress <= length {
           let suffix = aof_copy(input: &pending^.inner[progress..length]);

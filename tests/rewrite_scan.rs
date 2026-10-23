@@ -949,8 +949,9 @@ fn reconciled_scan_pressure_after_s1_keeps_rewrite_and_refuses_denyoom() {
     }
     // Whether these writes land while the writer rotates, and so charge the
     // ledger, is a race (CI run 39525916088 sampled a charge of 0), so the
-    // exclusion is only reconciled here; the post-cut backlog case holds the
-    // rotation open and requires a nonzero charge.
+    // exclusion is only reconciled here. No client observes a charge held
+    // open by the post-cut backlog case either: every reply waits until the
+    // records committed before it are in the file, after the rotation.
     client.write_all(&resp(&["INFO", "all"])).unwrap();
     let rotated = bulk_reply(&mut client, "rotation memory exclusion");
     assert_rotation_exclusion(&rotated);
@@ -1103,36 +1104,34 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_old_manifest(&program);
-    let value = vec![b'n'; 16 * 1024];
-    let mut writes = 0;
-    let mut reconciled = false;
-    loop {
-        request(&mut client, &[b"SET", b"hot", &value]);
-        writes += 1;
-        let info = rewrite_info(&mut client);
-        // The rotation is held open here, so the collecting buffer's growth
-        // charges the ledger and stays charged until the attempt ends: the
-        // exclusion must then leave those charges out of the ledger once.
-        if !reconciled && info["aof_rewrite_in_progress"] == "1" && info["firn_aof_rewrite_charged"] != "0" {
-            client.write_all(&resp(&["INFO", "all"])).unwrap();
-            let all = bulk_reply(&mut client, "exclusion while the backlog charges");
-            if info_field(&all, "aof_rewrite_in_progress").as_deref() == Some("1")
-                && info_field(&all, "firn_aof_rewrite_abort_reason").as_deref() == Some("")
-            {
-                assert!(assert_rotation_exclusion(&all) > 0, "{all}");
-                reconciled = true;
-            }
-        }
-        if info["aof_rewrite_in_progress"] == "0" {
-            assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance");
-            assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
-            break;
-        }
-        assert!(Instant::now() < deadline, "post-cut backlog never aborted");
+    // Every reply, INFO's included, waits until the records committed before
+    // it are in the file, so nothing is observed while the reread holds the
+    // switch, and a client that waits for each reply adds one record to the
+    // backlog. Sixteen 256 KiB writes from connections of their own outgrow the
+    // 3.2 MiB reserve (maxmemory/20), each growth of the collecting buffer
+    // charging its full capacity; their replies are read once it aborted.
+    let value = vec![b'n'; 256 * 1024];
+    let writers: Vec<TcpStream> = (0..16).map(|_| {
+        let mut writer = connect_when_ready(port, &child);
+        writer.write_all(&wire(&[b"SET", b"hot", &value])).unwrap();
+        writer
+    }).collect();
+    let info = rewrite_wait(&mut client);
+    assert_eq!(info["aof_last_bgrewrite_status"], "err", "bounded live values must still exhaust the rotation backlog allowance: {info:?}");
+    assert_eq!(info["firn_aof_rewrite_abort_reason"], "rotation_reserve", "post-cut collecting-buffer growth must identify its own resource failure");
+    for mut writer in writers {
+        assert_eq!(read_reply(&mut writer), Reply::Line(b"+OK".to_vec()));
     }
-    assert!(writes > 1);
-    assert!(reconciled, "the exclusion was never checked while the backlog was charged");
     assert_old_manifest(&program);
+    // The charged backlog was in the ledger only while the reread held the
+    // switch, when no reply, INFO's included, could be sent. Once the attempt
+    // ends, only the AOF buffers stay excluded; firn_aof_rewrite_used then
+    // reports the aborted attempt's ledger, not a live one.
+    client.write_all(&resp(&["INFO", "all"])).unwrap();
+    let all = bulk_reply(&mut client, "exclusion after the backlog aborted");
+    assert_eq!(info_field(&all, "firn_aof_rewrite_charged").as_deref(), Some("0"), "{all}");
+    assert_eq!(info_field(&all, "mem_not_counted_for_evict"), info_field(&all, "mem_aof_buffer"),
+        "an ended attempt must leave no rewrite charge excluded: {all}");
     request(&mut client, &[b"INCR", b"after-backlog"]);
     rewrite_stop(&mut client, child);
     let (child, mut restored, _) = start(&program);
@@ -1142,8 +1141,6 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     rewrite_stop(&mut restored, child);
 }
 
-/// Keys above 512 elements or 64 KiB serialized, scanned and written during
-/// the rewrite, rewrite and restore as main's replay and Redis rewrite them.
 #[test]
 fn reconciled_scan_rewrites_large_keys_scanned_and_written() {
     let program = CompiledProgram::from_environment();

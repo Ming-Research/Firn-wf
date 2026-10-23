@@ -1,5 +1,8 @@
 # Active AOF write and sync errors
 
+Replying only after a command's record is in the file is investigated in
+[reply-after-append.md](reply-after-append.md).
+
 ## Question and reference
 
 Can firn preserve Redis 7.0.15's everysec failure admission and retained-byte

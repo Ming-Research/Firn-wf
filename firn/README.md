@@ -565,6 +565,18 @@ An old single file `F` in the working directory is upgraded by persisting a
 manifest and moving `F` into `appendonlydir`. Interrupted upgrades resume;
 when both copies exist and the manifest names `F`, the directory copy wins.
 
+With append-only persistence enabled, a reply, or a message delivered to a
+subscriber, is sent only once every record committed before it is sent is in
+the increment file, as Redis 7.2.16 appends its AOF buffer before it writes
+any reply of an event-loop iteration (`server.c:1721-1739`). A value a client
+has seen therefore survives a SIGKILL and restart; the file is synced once a
+second, so a host failure can still lose about the last second, as with
+Redis's everysec. Reads wait too, for the records committed before them.
+After a failed append, the replies of commands already executed are sent
+without waiting, as Redis still sends them. While the exceptional reread
+described below holds a rewrite's switch, every reply waits for it, INFO's
+included, which Redis does not.
+
 The rewrite below is the reconciled-scan route under comparison ([investigation](../research/investigations/aof-rewrite/scan-log.md)); its design decisions await the owner's approval.
 
 With append-only persistence enabled, `BGREWRITEAOF` answers started after
@@ -616,7 +628,9 @@ not reread accumulated history. Successful append rollback preserves the
 previous boundary. An uncertain append or truncation outcome invalidates it;
 the next switch then uses the charged streaming reader to recover the state.
 Collecting-buffer growth during rotation still consumes R and can abort a
-rewrite when storage or this exceptional reread delays ordinary draining.
+rewrite when storage or this exceptional reread delays ordinary draining;
+since replies wait for that draining, the backlog grows only by commands
+clients send without waiting for their replies.
 
 When a sync of the append-only file fails, firn refuses writes and `PING`
 with Redis's `MISCONF` reply, still answers reads, and INFO reports
@@ -722,8 +736,9 @@ reports `No space left on device` whatever the host returned
 (`aof.c:1163-1184`); firn describes the short write by the host's text for the
 no-space class, which leaves the suffix empty only when the host cannot
 describe an error.
-The command that exposed the failure can already have succeeded, since replies
-do not wait for everysec durability. Partial appends attempt rollback to the
+The commands whose records the failed append carried have executed, and
+their replies are sent, as Redis 7.2.16 sends them after a failed write.
+Partial appends attempt rollback to the
 pre-flush incremental size, retaining all bytes on successful rollback and only
 the unwritten suffix otherwise (`aof.c:1146-1230`). Failed appends retry every
 100 ms, Redis's idle cadence at its default hz of 10; Redis also retries on

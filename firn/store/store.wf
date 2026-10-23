@@ -60,7 +60,7 @@ fn keyspace_new(seed: u64, logging: Bool, password: Bytes, timeout: u64, started
   let eviction_pool = box_slots_new::<EvictionCandidate>(capacity: 16_u64);
   let capture = rewrite_capture_new();
   let no_error = None<std::io::IoError>();
-  let meta = Meta(due: move due, commit_seq: 0_u64, aof_rewrite_seq_exhausted: running, rewrite: move capture, aof_rewrite_retry_blocked: running, aof_rewrite_reserve: 0_u64, aof_rewrite_scan_peak: 0_u64, aof_rewrite_cut: running, aof_rewrite_journal_leftover: running, log: move log, aof_pending_capacity: 0_u64, aof_pending_length: 0_u64, aof_append_error: no_error, aof_sync_error: no_error, aof_append_partial: running, memory_peak: 0_u64, evicted_keys: 0_u64, expired_keys: 0_u64, eviction_pool: move eviction_pool, eviction_policy: 7_u64, eviction_cursor: 0_u64, eviction_start: 0_u64, eviction_searching: running, eviction_wrapped: running, aof_current_size: 0_u64, aof_incr_size: 0_u64, aof_synced_size: 0_u64, aof_base_size: 0_u64, aof_rewrite_in_progress: running, aof_rewrite_requested: running, aof_rewrite_reply: 0_u64, aof_rewrites: 0_u64, aof_rewrite_ok: rewrite_ok, aof_worker_done: running, aof_installing: 0_u64, aof_rewrite_percentage: 100_u64, aof_rewrite_min_size: 67108864_u64, aof_rewrite_key_delay: 0_i64, clients: 0_u64, stopping: running, random: seed);
+  let meta = Meta(due: move due, commit_seq: 0_u64, aof_rewrite_seq_exhausted: running, rewrite: move capture, aof_rewrite_retry_blocked: running, aof_rewrite_reserve: 0_u64, aof_rewrite_scan_peak: 0_u64, aof_rewrite_cut: running, aof_rewrite_journal_leftover: running, log: move log, aof_pending_capacity: 0_u64, aof_pending_length: 0_u64, aof_pending_sequence: 0_u64, aof_written_sequence: 0_u64, aof_failed_sequence: 0_u64, aof_append_error: no_error, aof_sync_error: no_error, aof_append_partial: running, memory_peak: 0_u64, evicted_keys: 0_u64, expired_keys: 0_u64, eviction_pool: move eviction_pool, eviction_policy: 7_u64, eviction_cursor: 0_u64, eviction_start: 0_u64, eviction_searching: running, eviction_wrapped: running, aof_current_size: 0_u64, aof_incr_size: 0_u64, aof_synced_size: 0_u64, aof_base_size: 0_u64, aof_rewrite_in_progress: running, aof_rewrite_requested: running, aof_rewrite_reply: 0_u64, aof_rewrites: 0_u64, aof_rewrite_ok: rewrite_ok, aof_worker_done: running, aof_installing: 0_u64, aof_rewrite_percentage: 100_u64, aof_rewrite_min_size: 67108864_u64, aof_rewrite_key_delay: 0_i64, clients: 0_u64, stopping: running, random: seed);
   let kept = shared_new::<Meta>(value: move meta);
   let encodings = array_filled::<i64, 11>(value: 0_i64);
   for @defaults (slot in 0_u64..11_u64) {
@@ -652,7 +652,7 @@ fn log_group_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.l
   return budget;
 }
 
-fn log_group_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(sequence), reads(budget.allowance), reads(budget.group_start), reads(budget.records), writes(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite), writes(budget.enabled), writes(budget.charged), writes(budget.failed) contract {
+fn log_group_commit(meta: &Meta, sequence: &WriteSequence, budget: &LogBudget) -> result: unit reads(budget.allowance), reads(budget.group_start), reads(budget.records), writes(sequence), writes(meta.log), writes(meta.commit_seq), writes(meta.aof_rewrite_seq_exhausted), writes(meta.rewrite), writes(budget.enabled), writes(budget.charged), writes(budget.failed) contract {
   requires budget^.group_start <= meta^.log.inner.len;
   ensures budget^.group_start == entry(budget)^.group_start;
   ensures budget^.group_start <= meta^.log.inner.len;
@@ -683,6 +683,48 @@ fn log_budget_begin(meta: &Meta, loading: Bool) -> budget: LogBudget reads(meta.
   set budget.enabled = band(meta^.rewrite.rotating, serving);
   set budget.allowance = meta^.rewrite.limit -sat meta^.rewrite.used;
   return budget;
+}
+
+fn aof_reply_ready(meta: &Meta, sequence: u64) -> ready: Bool reads(meta.log), reads(meta.aof_pending_length), reads(meta.aof_written_sequence), reads(meta.aof_failed_sequence), reads(meta.aof_append_error) {
+  doc "Whether output that observed the commit sequence may leave: every record through it is in the file, or an append failure released it, or an append error is saved, while which Redis 7.2.16 everysec sends the replies it produced (aof.c:1191-1213). At the saturated sequence an old maximum watermark cannot tell a later record apart, so only both buffers being empty releases it.";
+  match meta^.aof_append_error {
+    Some(..) => {
+      return True();
+    }
+    None() => {
+    }
+  }
+  if sequence == 18446744073709551615_u64 {
+    let collecting_empty = meta^.log.inner.len == 0_u64;
+    let pending_empty = meta^.aof_pending_length == 0_u64;
+    return band(collecting_empty, pending_empty);
+  }
+  let written = meta^.aof_written_sequence >= sequence;
+  let failed = meta^.aof_failed_sequence >= sequence;
+  return bor(written, failed);
+}
+
+fn aof_reply_sequence(store: &Keyspace) -> sequence: u64 reads(store) waits {
+  doc "The commit sequence that output produced so far may have observed, zero without an append-only file.";
+  if store^.logging {
+  } else {
+    return 0_u64;
+  }
+  let sequence = 0_u64;
+  atomic m = &store^.meta {
+    set sequence = m^.commit_seq;
+  }
+  return sequence;
+}
+
+fn aof_reply_wait(store: &Keyspace, sequence: u64) -> result: unit reads(store) waits {
+  doc "Waits until output that observed the commit sequence may leave, as aof_reply_ready decides; zero, output that observed no logged state, does not wait.";
+  if sequence == 0_u64 {
+    return unit;
+  }
+  atomic m = &store^.meta when aof_reply_ready(meta: m, sequence: sequence) {
+  }
+  return unit;
 }
 
 fn aof_failed(meta: &Meta) -> failed: Bool reads(meta.aof_append_error), reads(meta.aof_sync_error) {

@@ -133,7 +133,9 @@ fn send_all(send: &TcpSend, source: &[u8], length: u64, store: &Keyspace, clock:
 }
 
 fn flush(send: &TcpSend, client: &Client, store: &Keyspace, clock: &Clock, base: Instant) -> sent: Bool reads(store), writes(send), writes(client), writes(clock) waits {
-  doc "Sends the replies the client holds and empties them; false reports a connection that refused them.";
+  doc "Sends the replies the client holds and empties them; false reports a connection that refused them. With an append-only file the replies first wait until every record committed before the send is in the file, as Redis 7.2.16 writes the AOF before it sends the replies of an event-loop iteration (server.c:1721-1739), so no reply shows a write a process kill can lose.";
+  let observed = pkg::store::aof_reply_sequence(store: store);
+  pkg::store::aof_reply_wait(store: store, sequence: observed);
   let written = client^.at;
   let capacity = client^.bytes.inner.len;
   let window = &client^.bytes.inner[0_u64..capacity];
