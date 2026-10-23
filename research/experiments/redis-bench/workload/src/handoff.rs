@@ -27,6 +27,21 @@ const READ_CHUNK: usize = 65536;
 // run starts: no element exists yet, so any reply then is a refusal.
 const SETTLE: Duration = Duration::from_millis(200);
 
+/// The consumers waited `Shared::stall` for an element that never came: the
+/// server lost it or stopped handing elements out. The workload does not
+/// complete on that server, which is a result for a competitor and a failure
+/// for firn.
+#[derive(Debug)]
+pub(super) struct Stalled(String);
+
+impl std::fmt::Display for Stalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Stalled {}
+
 pub(super) fn is_handoff(workload: &str) -> bool {
     workload == "blocking-handoff"
 }
@@ -276,7 +291,7 @@ fn consumer_worker(mut group: Vec<Consumer>, begin: Instant, shared: &Shared) ->
         if moved { last_progress = Instant::now(); }
         if shared.done.load(Ordering::Acquire) { break; }
         if last_progress.elapsed() > shared.stall {
-            return Err(format!("no element for {} seconds", shared.stall.as_secs_f64()).into());
+            return Err(Stalled(format!("no element for {} seconds", shared.stall.as_secs_f64())).into());
         }
         thread::yield_now();
     }
@@ -596,6 +611,7 @@ mod tests {
             .expect("the run neither finished nor failed");
         assert_eq!(lost, 1);
         let error = result.err().unwrap();
+        assert!(error.downcast_ref::<Stalled>().is_some(), "{error}");
         assert!(error.to_string().starts_with("no element for 1 seconds"), "{error}");
     }
 

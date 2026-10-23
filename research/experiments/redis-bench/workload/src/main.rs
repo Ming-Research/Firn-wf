@@ -643,9 +643,17 @@ fn run(opts: Options) -> Result<()> {
 fn main() {
     if let Err(e) = Options::parse().and_then(run) {
         eprintln!("firn-workload: {e}");
-        // Exit status 3 says that the server lacks the workload's commands, so
-        // that the harness can record a skip; every other failure is 1.
-        std::process::exit(if e.downcast_ref::<pubsub::Unsupported>().is_some() { 3 } else { 1 });
+        // Exit status 3 says that the server lacks the workload's commands and
+        // 4 that it stopped handing out the elements, so that the harness can
+        // record a skip for a competitor; every other failure is 1.
+        let status = if e.downcast_ref::<pubsub::Unsupported>().is_some() {
+            3
+        } else if e.downcast_ref::<handoff::Stalled>().is_some() {
+            4
+        } else {
+            1
+        };
+        std::process::exit(status);
     }
 }
 

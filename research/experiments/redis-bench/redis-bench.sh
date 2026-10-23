@@ -1941,6 +1941,22 @@ if [ "$MODE" = workloads ]; then
                                         unsupported=1
                                         continue
                                     fi
+                                    # Status 4: the consumers got no element for 30
+                                    # seconds. For a competitor that is its result,
+                                    # not a failure of the run: the line has no cell
+                                    # from here on in this pass. Firn losing an
+                                    # element is a failure.
+                                    if [ "$status" -eq 4 ]; then
+                                        case $line in
+                                            firn-*|image-*)
+                                                echo "$line stopped handing out elements in $workload" >&2
+                                                exit 1
+                                                ;;
+                                        esac
+                                        echo "skip,$line,$workload incomplete: the server stopped handing out elements (connections=$conns pipeline=$depth)"
+                                        unsupported=1
+                                        continue
+                                    fi
                                     if [ "$status" -ne 0 ]; then
                                         echo "$workload failed: line=$line pass=$pass cpus=$n connections=$conns pipeline=$depth (exit $status)" >&2
                                         exit "$status"
