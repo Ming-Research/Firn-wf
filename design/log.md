@@ -11,6 +11,12 @@ Nodes: firn, firn/aof-rewrite/capture, firn/append-only-file, firn/blocking-list
 
 Summary: A new node records that a failed list lookup and FIFO waiter registration share one whole-keyspace, Meta and event-hub hold, and that a producer services ready waiters after committing its whole command, EXEC or script and before releasing the hold. Pending requests extend the event hub and promote a connection on its first actual suspension; they keep owned arguments, a never-reused generation and a scalar continuation, and each resumed command repeats memory and persistence admission. Timeout conversion stays an explicit incomplete boundary pending firn-req-extended-float, with only the literal 0 (infinite wait) implemented. Inside a script, blocking commands never register a waiter, and list readiness is drained after the script commits. The AOF capture rule lets list producers and blocking pops journal their own bytes when they change exactly one key. Top-level list producers now stage their effects and copy them into the log, an exception to the append-only file's in-place rule that is measured after the merge. The reference suite's two BRPOPLPUSH/WATCH fixtures are patched to close their clients on failure.
 
+## 2026-10-13 Limit concurrent clients with maxclients
+
+Nodes: firn/startup
+
+Summary: firn had no connection limit and rejected_connections stayed 0. The limit now follows Redis, with the one difference that the operator raises `ulimit -n` since firn cannot. Accept errors, descriptor exhaustion included, keep their existing handling, which ends the accept loop and stops firn; Redis logs them and keeps serving, which firn does not yet; that belongs to the separate accept-error change.
+
 ## 2026-10-13 Start firn the way redis-server does
 
 Nodes: firn/startup, firn/measurement-sessions
