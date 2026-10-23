@@ -10,7 +10,7 @@ rm -rf "$out"
 mkdir -p "$out"
 cp -r firn/serverlog firn/fdlimit tmp-scratch/scratch "$out/"
 cat > "$out/modules.wfg" <<'GRAPH'
-pkg::serverlog: [std::io, std::fs, std::time];
+pkg::serverlog: [std::io, std::fs, std::time, std::collections::deque];
 pkg::fdlimit: [pkg::serverlog, std::io, std::process];
 pkg::scratch: [pkg::serverlog, pkg::fdlimit, std::io, std::fs, std::process, std::time];
 

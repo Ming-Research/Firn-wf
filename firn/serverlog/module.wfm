@@ -50,6 +50,8 @@ public fn serverlog_line(pid: u64, level: u64, unix_ms: u64, offset: i64, messag
 
 public fn serverlog_write(log: &ServerLog, level: u64, message: &Box<Slots<u8>>) -> result: unit reads(log), reads(message) waits doc "Queues the message as one line stamped with the present time, unless level is below the log's level.";
 
+public fn serverlog_enqueue(log: &ServerLog, line: Box<Slots<u8>>) -> result: unit reads(log) waits doc "Queues a finished line as it is, which the level filter and the clock do not touch.";
+
 public fn serverlog_close(log: &ServerLog) -> result: unit reads(log) waits doc "Tells serverlog_run to end once it has written every queued line.";
 
 public fn serverlog_run(log: ServerLog, factory: HandleFactory, sink: LogSink) -> result: unit pure waits doc "Writes the queued lines to the sink in order, one whole line at a time, until serverlog_close has been called and the queue is empty. A line the sink refuses is dropped, as Redis ignores a failed log write.";

@@ -9,6 +9,7 @@ alias log_message_append = pkg::serverlog::log_message_append;
 alias log_message_new = pkg::serverlog::log_message_new;
 alias log_message_number = pkg::serverlog::log_message_number;
 alias serverlog_close = pkg::serverlog::serverlog_close;
+alias serverlog_enqueue = pkg::serverlog::serverlog_enqueue;
 alias serverlog_line = pkg::serverlog::serverlog_line;
 alias serverlog_new = pkg::serverlog::serverlog_new;
 alias serverlog_run = pkg::serverlog::serverlog_run;
@@ -44,9 +45,7 @@ fn fixed(log: &ServerLog, unix_ms: u64, offset: i64) -> result: unit reads(log) 
   let message = log_message_new();
   log_message_append(message: &message, source: &word_case[0_u64..4_u64]);
   let line = serverlog_line(pid: 4242_u64, level: 3_u64, unix_ms: unix_ms, offset: offset, message: &message);
-  atomic state = &log^.queue {
-    queue_push::<Box<Slots<u8>>>(queue: &state^.lines, value: move line);
-  }
+  serverlog_enqueue(log: log, line: move line);
   return unit;
 }
 

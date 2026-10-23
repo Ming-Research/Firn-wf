@@ -10,6 +10,8 @@ const log_marks: Array<u8, 4> = ".-*#";
 
 const log_unknown: Array<u8, 39> = "firn: I/O error description unavailable";
 
+const log_extent: u64 = 18446744073709551615_u64;
+
 struct Civil {
   year: u64;
   month: u64;
@@ -244,8 +246,23 @@ fn serverlog_write(log: &ServerLog, level: u64, message: &Box<Slots<u8>>) -> res
   }
   let unix_ms = cvt.wrap::<i64, u64>(millis);
   let line = serverlog_line(pid: log^.pid, level: level, unix_ms: unix_ms, offset: offset, message: message);
+  serverlog_enqueue(log: log, line: move line);
+  return unit;
+}
+
+fn serverlog_enqueue(log: &ServerLog, line: Box<Slots<u8>>) -> result: unit reads(log) waits {
   atomic state = &log^.queue {
-    queue_push::<Box<Slots<u8>>>(queue: &state^.lines, value: move line);
+    if state^.lines.inner.len >= state^.lines.inner.cap {
+      let current = state^.lines.inner.cap;
+      let doubled = current +sat current;
+      let capacity = imax(doubled, 8_u64);
+      set state^.lines = std::collections::deque::deque_rebase::<Box<Slots<u8>>, log_extent>(values: move state^.lines, capacity: capacity);
+    }
+    if state^.lines.inner.len < state^.lines.inner.cap {
+      place_back(window: &state^.lines.inner, value: move line);
+    } else {
+      let dropped = move line;
+    }
   }
   return unit;
 }
