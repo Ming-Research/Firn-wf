@@ -1081,12 +1081,6 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
     return exit_status(code: 0_u8);
   }
   let keyspace = keyspace_logging(store: &root, logging: logging);
-  let delivery_hub = pkg::connection_events::hub_share(hub: &keyspace.pubsub);
-  spawn pkg::connection_events::dispatch(hub: move delivery_hub);
-  let timing_hub = pkg::connection_events::hub_share(hub: &keyspace.pubsub);
-  let timing_clock = clock_share(clock: &clock);
-  let timing_wall = wall_clock_share(clock: &wall_clock);
-  spawn pkg::connection_events::timer(hub: move timing_hub, clock: move timing_clock, wall: move timing_wall);
   let expiring_store = keyspace_share(store: &keyspace);
   let expiring_clock = clock_share(clock: &clock);
   let expiring_wall = wall_clock_share(clock: &wall_clock);
@@ -1151,7 +1145,6 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   }
   atomic m = &keyspace.meta when m^.clients == 0_u64 {
   }
-  pkg::connection_events::hub_stop(hub: &keyspace.pubsub);
   let wake = None<CancelSource>();
   atomic m = &keyspace.meta, v = &keyspace.server when m^.aof_installing == 0_u64 {
     set m^.stopping = True();
