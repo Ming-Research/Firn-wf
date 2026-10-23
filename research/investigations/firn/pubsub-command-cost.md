@@ -249,7 +249,8 @@ move it by several percent again.
    connection it serves holds a subscription when it executes a command and
    the check could never be true there. Added after P3 (below), which found
    `set` still wholly on the slower side with S1 and the tables fixed.
-4. S3 stays until P4 says it matters.
+4. S3 stays until P5 says what in it costs. P4 (below) found it costs `set`
+   2%, and P3 and P4 together leave nothing else.
 
 ### Run P3: the fix, probe
 
@@ -332,3 +333,76 @@ stays, what is left if it does not?
   interval of `f4`/`f123` that holds 1 for `set` means the change does nothing
   measurable and is questioned in review. `main-twin`/`main` is the noise of
   the run, as before.
+
+### P4 results
+
+Run 39930789009 (`compare`, the images of the criteria above, 6 passes of 5 s,
+depth 16, servers on CPUs 2 and 4, clients on 16-31; the check workflow was
+green on `b71c081`, run 39928190575, and built `e811c01`, the base of
+`f4s3`). No sample was client-limited (client busy fraction at most 0.65).
+Server CPU time per request, mean of 6 passes, in microseconds:
+
+| test | before | main | main-twin | f123 | f4 | f4s3 |
+|---|---|---|---|---|---|---|
+| `get` | 0.2580 | 0.2743 | 0.2745 | 0.2360 | 0.2320 | 0.2313 |
+| `set` | 0.3032 | 0.3173 | 0.3173 | 0.3137 | 0.3100 | 0.3045 |
+| `ping_mbulk` | 0.2340 | 0.2530 | 0.2523 | 0.2135 | 0.2095 | 0.2063 |
+| `lrange_100` | 1.1900 | 1.2070 | 1.2072 | 1.1720 | 1.1623 | 1.1585 |
+
+The ratios of `summary.py ratios --metric cpu` (median of the 6 per-pass
+ratios and its 95% interval; head over base, above 1 is faster):
+
+| head / base | `get` | `set` | `ping_mbulk` | `lrange_100` |
+|---|---|---|---|---|
+| main / before | 0.943 (0.934-0.947) | 0.957 (0.946-0.965) | 0.925 (0.919-0.931) | 0.985 (0.983-0.989) |
+| main-twin / main | 1.000 (0.993-1.006) | 1.000 (0.987-1.013) | 1.002 (0.999-1.006) | 0.998 (0.990-1.010) |
+| f123 / before | 1.098 (1.079-1.107) | 0.965 (0.956-0.978) | 1.117 (1.044-1.153) | 1.016 (1.010-1.021) |
+| f4 / f123 (S2) | 1.013 (1.008-1.026) | 1.013 (1.005-1.019) | 1.000 (0.970-1.069) | 1.007 (1.000-1.017) |
+| f4 / before | 1.112 (1.107-1.117) | 0.977 (0.971-0.985) | 1.117 (1.111-1.123) | 1.024 (1.018-1.029) |
+| f4s3 / f4 (S3) | 1.002 (0.999-1.007) | 1.021 (1.004-1.032) | 1.012 (1.001-1.030) | 1.001 (0.999-1.008) |
+| f4s3 / before | 1.115 (1.107-1.123) | 0.992 (0.978-1.013) | 1.130 (1.122-1.147) | 1.027 (1.025-1.030) |
+
+- By the criterion written above `f4` is still insufficient: `f4`/`before` is
+  wholly on the slower side for `set` (2.3% more CPU per request; the rate
+  ratio is 0.984 (0.969-0.993)) and wholly on the faster side for the other
+  three. `f4s3`/`f4` is wholly on the faster side for `set` (2.1%), and
+  `f4s3`/`before` holds 1: what `f4` still lacks on `set` is in what `f4s3`
+  removes.
+- The S2 change gains `set` 1.3% (P2 measured S2 at 2.0%) and `get` 1.3%;
+  `ping_mbulk` holds 1 with a wide interval (the `f123` samples of that test
+  spread more in this run).
+- What `f4s3` removes is more than the check in `serve`: without the
+  promotion `serve_promoted` has no caller, so the link drops it and
+  everything only it reaches (the promoted owner, its command path and the
+  event hub's delivery code) from the program. The 2.1% is either the check
+  that runs after every command, or the presence and the inlining of that
+  code, which P2's `v4` also removed with the check. The two are separated by
+  run P5.
+
+### Run P5: what in S3 costs `set`
+
+Written before P5 runs. The question: of the 2.1% that `f4s3` recovers on
+`set`, how much is the check `client.pubsub_id != 0` after every command, and
+how much is the promoted code being in the program?
+
+- **Images.** `before` (`00e2bd1`), `f4` (`b71c081`), `f4-twin`, `f4s3`
+  (`e811c01`, no promotion, as in P4) and `f4c` (`6263405`, on the branch
+  `firn-pubsub-cmd-regression-exp3`, no pull request merges it): `f4` with the
+  check taken out of the loop over the commands and made once per read after
+  it, so that `serve_promoted` stays reachable and the program holds the
+  promoted code. `f4c` hands a connection over wrongly when commands follow a
+  subscription in the same read; the run sends no subscription.
+- **Settings and measure.** As P3, but the tests `set` and `get`, and a flat
+  profile of `set` at depth 16 for every image (`profile_test` `set 16`) with
+  the instructions of `serve` and `execute_client` annotated.
+- **Reading.** `f4c`/`f4` wholly on the faster side for `set` with
+  `f4s3`/`f4c` holding 1: the cost is the check after every command, and the
+  fix takes it out of the loop. `f4c`/`f4` holding 1 with `f4s3`/`f4c` wholly
+  on the faster side: the cost is the presence of the promoted code, the check
+  is innocent, and the profile says whether it is `serve` (inlined code,
+  spills) or the layout of other functions. Both intervals wholly on the faster
+  side: both. `get` is the control: `f4s3`/`f4` held 1 for it in P4, so an
+  interval of `f4c`/`f4` for `get` that does not hold 1 is questioned.
+  `f4-twin`/`f4` is the noise of the run. The profile is read per symbol (cycles
+  per request) and, in `serve` and `execute_client`, per instruction between
+  `before`, `f4` and `f4s3`, for the instructions that gained cycles.
