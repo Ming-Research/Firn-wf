@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-23 Give firn Redis's paths, log and open-file limit
+
+Nodes: firn/startup
+
+Summary: firn opened only relative paths below its start directory, wrote no log and left the open-file limit to the operator, so an operator replacing redis-server still changed the start command, ran `ulimit -n` first and had nothing to read when a start or a write failed. The three Whitefoot capabilities these waited for (host paths, process id with local time, the open-file limit) are in release wf-63b7cbb03820 and later, and firn now uses them as Redis does: ordinary paths with `dir` as a swap of the held directory handles, Redis's log line format through one shared queue and one log context, and Redis's limit adjustment at startup and in `CONFIG SET maxclients`. Replaced: the interim relative-path rule and the decision to leave the descriptor limit unchanged. Stated differences from Redis: no glob in `include`; only the soft limit is raised, so the hard limit differs, and when the hard limit is below the request the host's refusal text in the warning line is Whitefoot's `Invalid argument` where Redis's is `Operation not permitted`.
+
 ## 2026-10-13 Limit concurrent clients with maxclients
 
 Nodes: firn/startup
