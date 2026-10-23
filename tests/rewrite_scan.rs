@@ -1093,6 +1093,11 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         std::thread::sleep(Duration::from_millis(10));
     }
     request(&mut client, &[b"CONFIG", b"SET", b"maxmemory", b"67108864"]);
+    // Every reply, INFO's included, waits until the records committed before
+    // it are in the file, so the backlog charged below can only be observed
+    // after the switch has drained it; the slowed scan keeps the attempt
+    // running past that point, about 6 s for the fixture's 6002 keys.
+    assert_eq!(request(&mut client, &[b"CONFIG", b"SET", b"rdb-key-save-delay", b"1000"]), Reply::Line(b"+OK".to_vec()));
     rewrite_start(&mut client);
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -1103,16 +1108,20 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_old_manifest(&program);
-    // A reply waits until its record is in the file, and the reread holds the
-    // file, so one connection adds at most one record to the backlog: each
-    // write comes from a connection of its own, whose reply is read at the end.
+    // A reply waits until its record is in the file, so one connection adds
+    // at most one record to the backlog: each write comes from a connection
+    // of its own, whose reply is read at the end. Once the exclusion is
+    // checked, four writes a round exceed the 3.2 MiB reserve (maxmemory/20)
+    // while the slowed scan still runs.
     let value = vec![b'n'; 256 * 1024];
     let mut writers = Vec::new();
     let mut reconciled = false;
     loop {
-        let mut writer = connect_when_ready(port, &child);
-        writer.write_all(&wire(&[b"SET", b"hot", &value])).unwrap();
-        writers.push(writer);
+        for _ in 0..if reconciled { 4 } else { 1 } {
+            let mut writer = connect_when_ready(port, &child);
+            writer.write_all(&wire(&[b"SET", b"hot", &value])).unwrap();
+            writers.push(writer);
+        }
         let info = rewrite_info(&mut client);
         // The rotation is held open here, so the collecting buffer's growth
         // charges the ledger and stays charged until the attempt ends: the
