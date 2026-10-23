@@ -23,7 +23,7 @@ fn start_for(connections: usize, drivers: &str, limit: Duration) -> (ProgramChil
     let port_text = port.to_string();
     let count = connections.to_string();
     let child = firn().spawn_on_route_with_limit(
-        true, &[("WF_DRIVERS", drivers)], &[port_text.as_bytes(), count.as_bytes()], limit,
+        true, &[("WF_DRIVERS", drivers)], &[b"--port", port_text.as_bytes(), b"--firn-clients", count.as_bytes()], limit,
     ).with_port(&lease);
     let stream = connect_when_ready(port, &child);
     (child, stream, port)
@@ -1052,7 +1052,7 @@ fn subscribed_connection_wraps_multi_record_commands_in_the_append_only_file() {
     let text = port.to_string();
     let name = "subscribed-forms.aof";
     let child = program
-        .spawn_in_directory(fixture.path(), &[text.as_bytes(), b"1", name.as_bytes()])
+        .spawn_in_directory(fixture.path(), &[b"--port", text.as_bytes(), b"--firn-clients", b"1", b"--appendonly", b"yes", b"--appendfilename", name.as_bytes()])
         .with_port(&lease);
     let mut client = connect_when_ready(port, &child);
     hello(&mut client, 3);

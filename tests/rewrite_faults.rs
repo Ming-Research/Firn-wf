@@ -46,7 +46,7 @@ fn start(server: Server, oracle: &Path, directory: &Path, traced: bool) -> (Prog
                 .arg(directory);
         }
         Server::Firn(native) => {
-            command.args([&port, "0", "appendonly.aof", "--auto-aof-rewrite-percentage", "0"])
+            command.args(["--port", &port, "--firn-clients", "0", "--appendonly", "yes", "--appendfilename", "appendonly.aof", "--auto-aof-rewrite-percentage", "0"])
                 .env("WF_WORKERS", "2").env("WF_DRIVERS", "2").env_remove("WF_REQUIRE_WINDOWS_IOCP");
             if native { command.env_remove("WF_IO_NO_NATIVE_RING"); }
             else { command.env("WF_IO_NO_NATIVE_RING", "1"); }
@@ -495,7 +495,8 @@ fn rewrite_rotates_when_retained_bytes_drain_after_the_cut() {
             "-e", "inject=fsync,fdatasync:delay_enter=2s", "-P"]).arg(&base)
         .arg("-P").arg(&current).arg("--")
         .arg(std::env::var_os("FIRN").expect("FIRN"))
-        .args([&port, "0", "appendonly.aof", "--auto-aof-rewrite-percentage", "0"])
+        .args(["--port", &port, "--firn-clients", "0", "--appendonly", "yes", "--appendfilename", "appendonly.aof",
+            "--auto-aof-rewrite-percentage", "0"])
         .env("WF_WORKERS", "2").env("WF_DRIVERS", "2").env_remove("WF_REQUIRE_WINDOWS_IOCP")
         .env("WF_IO_NO_NATIVE_RING", "1")
         .current_dir(&root).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());

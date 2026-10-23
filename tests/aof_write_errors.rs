@@ -65,7 +65,7 @@ fn start(program: &CompiledProgram, native: bool) -> (ProgramChild, TcpStream, u
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    let child = program.spawn_on_route_ignoring_xfsz(native, &[text.as_bytes(), b"0", b"errors.aof"]).with_port(&port_lease);
+    let child = program.spawn_on_route_ignoring_xfsz(native, &[b"--port", text.as_bytes(), b"--firn-clients", b"0", b"--appendonly", b"yes", b"--appendfilename", b"errors.aof"]).with_port(&port_lease);
     let client = connect_when_ready(port, &child);
     ignored_xfsz(&child);
     (child, client, port)

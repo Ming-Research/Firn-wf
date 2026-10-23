@@ -34,12 +34,22 @@ fn start(
     aof: bool,
 ) -> (ProgramChild, TcpStream) {
     let port = lease.port().to_string();
-    let name = if aof { AOF_NAME } else { "-" };
+    let mut arguments: Vec<&[u8]> = Vec::new();
+    arguments.extend_from_slice(&[
+        b"--port", port.as_bytes(), b"--firn-clients", b"0", b"--timeout", b"0",
+        b"--auto-aof-rewrite-percentage", b"0",
+    ]);
+    if aof {
+        arguments.extend_from_slice(&[
+            b"--appendonly", b"yes", b"--appendfilename", AOF_NAME.as_bytes(),
+        ]);
+    } else {
+        arguments.extend_from_slice(&[b"--appendonly", b"no"]);
+    }
     let child = program.spawn_on_route_with(
         true,
         &[("WF_WORKERS", "4"), ("WF_DRIVERS", "2")],
-        &[port.as_bytes(), b"0", name.as_bytes(), b"0",
-          b"--auto-aof-rewrite-percentage", b"0"],
+        &arguments,
     ).with_port(lease);
     let control = peer(lease.port(), &child);
     (child, control)

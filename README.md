@@ -45,7 +45,7 @@ compiler release was built with, which `make toolchain` installs on Linux:
 git clone --recurse-submodules https://github.com/Ming-Research/Firn-wf.git
 cd Firn-wf
 make firn
-./build/firn 6379 0 - 0
+./build/firn --port 6379
 redis-cli -p 6379 PING
 ```
 
