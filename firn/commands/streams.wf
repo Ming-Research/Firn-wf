@@ -35,6 +35,7 @@ alias ordered_map_remove = std::collections::ordered_map::ordered_map_remove;
 alias read_integer = pkg::bytes::read_integer;
 alias remove_expired = pkg::store::remove_expired;
 alias reply_array = pkg::protocol::reply_array;
+alias reply_arity = pkg::protocol::reply_arity;
 alias reply_echoed = pkg::protocol::reply_echoed;
 alias reply_error = pkg::protocol::reply_error;
 alias reply_integer = pkg::protocol::reply_integer;
@@ -85,11 +86,7 @@ const word_maxlen: Array<u8, 6> = "MAXLEN";
 
 const word_minid: Array<u8, 5> = "MINID";
 
-const word_limit: Array<u8, 5> = "LIMIT";
-
 const word_nomkstream: Array<u8, 10> = "NOMKSTREAM";
-
-const word_count: Array<u8, 5> = "COUNT";
 
 const word_block: Array<u8, 5> = "BLOCK";
 
@@ -484,8 +481,8 @@ fn stream_parse_id(input: &[u8], span: Span, strict: Bool, missing: u64, star: B
   }
   let dash = end;
   let length = end -sat start;
-  for @dash (offset in 0_u64..length) {
-    let position = start +wrap offset;
+  for @dash (step in 0_u64..length) {
+    let position = start +wrap step;
     let byte = byte_at(input: input, index: position);
     if byte == 45_u8 {
       set dash = position;
@@ -1682,8 +1679,8 @@ fn xadd_parse(input: &[u8], args: &Box<Slots<Span>>, op: &StreamOp, xadd: Bool, 
   }
   let pairs = box_slots_new::<Bytes>(capacity: given);
   let raw = 0_u64;
-  for @pairs (index in fields_start..count) {
-    let span = arg(args: args, index: index);
+  for @pairs (at in fields_start..count) {
+    let span = arg(args: args, index: at);
     let text = bytes_new(input: input, start: span.start, length: span.length);
     set raw = raw +sat span.length;
     if pairs.inner.len < pairs.inner.cap {
