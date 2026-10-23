@@ -1106,8 +1106,8 @@ fn reconciled_scan_post_cut_backlog_charges_rotation_reserve() {
     assert_old_manifest(&program);
     // Every reply, INFO's included, waits until the records committed before
     // it are in the file, so nothing is observed while the reread holds the
-    // switch, and one connection adds at most one record to the backlog.
-    // Sixteen 256 KiB writes from connections of their own outgrow the
+    // switch, and a client that waits for each reply adds one record to the
+    // backlog. Sixteen 256 KiB writes from connections of their own outgrow the
     // 3.2 MiB reserve (maxmemory/20), each growth of the collecting buffer
     // charging its full capacity; their replies are read once it aborted.
     let value = vec![b'n'; 256 * 1024];

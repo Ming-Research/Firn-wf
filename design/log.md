@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-23 Send replies after the records before them are written
+
+Nodes: firn/append-only-file
+
+Summary: firn replied before its writer appended, so a SIGKILL lost acknowledged writes that Redis 7.2.16 keeps. Every reply and subscriber frame now waits until the records committed before it are in the file, reads included, as Redis's event loop appends before it sends any reply; a failed append or a saved append error releases them, as Redis still replies then ([investigation](../research/investigations/aof-write-errors/reply-after-append.md#group-commit-firn-group-commit)).
+
 ## 2026-10-13 Limit concurrent clients with maxclients
 
 Nodes: firn/startup
