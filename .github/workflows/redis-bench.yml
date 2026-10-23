@@ -101,7 +101,7 @@ on:
         type: string
         default: "50"
       workload_options:
-        description: "Memory workloads: --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Handshake/client-list: --warmup-seconds SEC (default 5); --sample-ms MS accepted but no auxiliary sampling. Pub/sub: --warmup-seconds SEC, --value-size BYTES (default 64), --window MESSAGES (default 1024). Space-separated; seed is the pass."
+        description: "Memory workloads: --keys N --value-size BYTES --zipf-s S --warmup-seconds SEC --sample-ms MS. Handshake/client-list: --warmup-seconds SEC (default 5); --sample-ms MS accepted but no auxiliary sampling. Pub/sub: --warmup-seconds SEC, --value-size BYTES (default 64), --window MESSAGES (default 1024); blocking-handoff takes the first two and no --window. Space-separated; seed is the pass."
         type: string
         default: ""
       workload_images:

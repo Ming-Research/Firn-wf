@@ -73,23 +73,29 @@ leaves the PR's own change as it is does not repeat a measurement.
   marks) is reported and not judged. A cell that does not decide is repeated
   with more passes before it is called.
 - **Chance.** 42 cells each have about a 2.5% chance of lying wholly below 1
-  with no change in the code. The twin/head intervals of the same run are
-  reported beside them: the cells in which the twin lies wholly off 1 count the
-  chance cells this run produced. A lone slower cell outside the list producers
-  is read against that count and against the other cells of its kind; the list
-  producers (`lpush`, `rpush`, `linsert`, `lmove`) and a slower cell in either
-  AOF setting are what the acceptance row (b) and the card
-  firn-q-list-producer-staging act on.
+  with no change in the code, so one cell in a run may. The control for that is
+  the twin of the same cell: a cell whose twin/head interval lies wholly off 1
+  in the same run, or whose twin half-width is above the floor (Noise), does not
+  count and is repeated with more passes. Every other cell wholly on the slower
+  side is a regression, whichever command it is: the acceptance row (b) sends it
+  to the owner with its numbers and with the number of cells whose twin lay off
+  1 in the run, and it is not read away against that number.
 - **Noise.** The class has no recorded floor. The only earlier measurement of
   these cells is run 39573904480 (pub/sub, same machine, settings and tool): the
   twin half-widths of its 38 cells run from 0.5% to 5.2% (`zpopmin`, depth 16).
   A cell here whose twin half-width is above 5.2% does not count and is repeated
   with more passes; this run's twin half-widths are then proposed to the
   architect as the class floor for the record of the 14900K.
-- **What rejects.** A list-producer cell wholly on the slower side rejects "the
-  staged copy costs nothing measurable" for that cell. The profile of the first
-  `lpush 16` and `lmove 16` pass of each image (`perf record`, flat, no call
-  stacks) then separates the hypotheses of question 1: share of cycles in the
+- **What rejects.** A cell wholly on the slower side, in either AOF setting,
+  rejects the claim its command rests on. For `lpush`, `rpush`, `linsert` and
+  `lmove` it is "the staged copy costs nothing measurable". For every other cell
+  it is "an ordinary command's path is unchanged", which the design states for
+  `GET` and `SET` (blocking-lists.md: they gain no shared target and no registry
+  lookup) and which the other commands that are not list producers rest on
+  alike; the cause is then not the copy and the profile below does not apply
+  to it. For the list producers, the profile of
+  the first `lpush 16` and `lmove 16` pass of each image (`perf record`, flat,
+  no call stacks) separates the hypotheses of question 1: share of cycles in the
   allocator and `memcpy` against share in the shared-acquire function and
   the hub. A share that is near zero in `base` and large in `head` names the
   part; no cause is concluded from one run.
@@ -105,8 +111,11 @@ leaves the PR's own change as it is does not repeat a measurement.
   more than one element. A consumer sends its next `BLPOP` as soon as it has an
   element. Each element starts with its number among its key's elements and its
   send time; a consumer checks the key, the length, the padding and that the
-  numbers arrive in sequence, so a lost, repeated, reordered or altered element
-  fails the run. RESP2, loopback.
+  numbers arrive in sequence, so a repeated, reordered or altered element
+  fails the run at once. A lost element is found by silence: the producer
+  pushes nothing more to its key, so once the others have everything the
+  consumers receive nothing, and the run fails when a client thread has gone 30
+  seconds without an element. RESP2, loopback.
 - **Measure.** The rate is the elements received per second over the span from
   the start of the run to the last arrival. An element's latency runs from just
   before the producer writes its batch to its arrival at its consumer; the p99 is

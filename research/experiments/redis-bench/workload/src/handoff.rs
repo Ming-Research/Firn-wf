@@ -151,6 +151,9 @@ struct Shared {
     // Set by the producer once every pushed element has been received.
     done: AtomicBool,
     cancelled: AtomicBool,
+    // How long the consumers of a thread may go without an element before the
+    // run fails: an element the server never delivers is found this way.
+    stall: Duration,
 }
 
 struct Context {
@@ -272,7 +275,9 @@ fn consumer_worker(mut group: Vec<Consumer>, begin: Instant, shared: &Shared) ->
         }
         if moved { last_progress = Instant::now(); }
         if shared.done.load(Ordering::Acquire) { break; }
-        if last_progress.elapsed() > TIMEOUT { return Err("no element for 30 seconds".into()); }
+        if last_progress.elapsed() > shared.stall {
+            return Err(format!("no element for {} seconds", shared.stall.as_secs_f64()).into());
+        }
         thread::yield_now();
     }
     Ok(ConsumerResult { histogram, last_message,
@@ -302,8 +307,8 @@ impl Measured {
 // One run of `run_for`: block the consumers, push until the time is up, then
 // wait until every consumer has every element. The span counts from the start
 // of the run to the last arrival; setup and the merging of results are outside
-// it.
-fn measure(opts: &Options, run_for: Duration) -> Result<Measured> {
+// it. A consumer thread that receives nothing for `stall` fails the run.
+fn measure(opts: &Options, run_for: Duration, stall: Duration) -> Result<Measured> {
     let consumers = consumers(opts)?;
     let producer = Producer { socket: connect(opts.port)?, input: Vec::new(), out: Vec::new(),
         sent: 0, awaiting: 0, pushed: vec![0; opts.connections] };
@@ -317,6 +322,7 @@ fn measure(opts: &Options, run_for: Duration) -> Result<Measured> {
         received: (0..opts.connections).map(|_| Counter(AtomicU64::new(0))).collect(),
         done: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
+        stall,
     });
     let ctx = Arc::new(Context { payload_len: opts.value.len(), depth: opts.pipeline });
     let barrier = Arc::new(Barrier::new(threads + 2));
@@ -386,8 +392,8 @@ fn measure(opts: &Options, run_for: Duration) -> Result<Measured> {
 
 pub(super) fn run(opts: &Options) -> Result<()> {
     let seconds = opts.seconds.ok_or("the blocking-handoff workload takes --seconds")?;
-    if !opts.warmup.is_zero() { measure(opts, opts.warmup)?; }
-    let measured = measure(opts, seconds)?;
+    if !opts.warmup.is_zero() { measure(opts, opts.warmup, TIMEOUT)?; }
+    let measured = measure(opts, seconds, TIMEOUT)?;
     if let Some(path) = &opts.work_file {
         std::fs::write(path, format!("{:.4}\n", measured.work_fraction))?;
     }
@@ -406,7 +412,7 @@ mod tests {
     const PAYLOAD: usize = 24;
 
     #[derive(Clone, Copy, PartialEq)]
-    enum Fault { None, Unsupported, Refused, ServeTwice }
+    enum Fault { None, Unsupported, Refused, ServeTwice, LoseOne }
 
     fn frame(slot: usize, payload: &[u8]) -> Vec<u8> {
         let mut frame = Reply::new(slot, PAYLOAD).head;
@@ -421,8 +427,9 @@ mod tests {
     // `pushes_before_delivery` counts the pushes that reached a key before the
     // server had delivered every earlier element of it, which the client must
     // never send.
+    // `lost` counts the elements `Fault::LoseOne` did not deliver.
     fn serve(listener: TcpListener, consumers: usize, fault: Fault,
-             pushes_before_delivery: Arc<AtomicUsize>) -> thread::JoinHandle<()> {
+             pushes_before_delivery: Arc<AtomicUsize>, lost: Arc<AtomicUsize>) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             let mut senders = Vec::new();
             let delivered = Arc::new(Mutex::new(vec![0u64; consumers]));
@@ -446,9 +453,15 @@ mod tests {
                 }
                 let (tx, rx) = mpsc::channel::<Vec<u8>>();
                 senders.push(tx);
-                let delivered = delivered.clone();
+                let (delivered, lost) = (delivered.clone(), lost.clone());
                 workers.push(thread::spawn(move || {
                     while let Ok(payload) = rx.recv() {
+                        // The push is answered and the element is dropped: the
+                        // consumer is left blocked on a key that holds nothing.
+                        if fault == Fault::LoseOne && slot == 0 && payload[..8] == 2u64.to_le_bytes() {
+                            lost.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
                         let reply = frame(slot, &payload);
                         // Counted before the write, so that a push sent after
                         // the consumer received the element finds it counted.
@@ -537,44 +550,64 @@ mod tests {
         opts
     }
 
-    fn run_against(fault: Fault, consumers: usize, pipeline: usize) -> (Result<Measured>, usize) {
+    // The result of the run, the pushes that found an undelivered element and
+    // the elements the server dropped. Only the run that loses an element
+    // shortens the stall limit, so that a healthy run on a loaded machine does
+    // not meet it.
+    fn run_against(fault: Fault, consumers: usize, pipeline: usize) -> (Result<Measured>, usize, usize) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let opts = options(listener.local_addr().unwrap().port(), consumers, pipeline);
-        let early = Arc::new(AtomicUsize::new(0));
-        let server = serve(listener, consumers, fault, early.clone());
-        let result = measure(&opts, opts.seconds.unwrap());
+        let (early, lost) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let server = serve(listener, consumers, fault, early.clone(), lost.clone());
+        let stall = if fault == Fault::LoseOne { Duration::from_secs(1) } else { TIMEOUT };
+        let result = measure(&opts, opts.seconds.unwrap(), stall);
         server.join().unwrap();
-        (result, early.load(Ordering::Relaxed))
+        (result, early.load(Ordering::Relaxed), lost.load(Ordering::Relaxed))
     }
 
     #[test]
     fn every_element_reaches_its_consumer_and_no_push_finds_a_backlog() {
         for pipeline in [1, 4] {
-            let (measured, early) = run_against(Fault::None, 6, pipeline);
+            let (measured, early, lost) = run_against(Fault::None, 6, pipeline);
             let measured = measured.unwrap();
             assert!(measured.pushed > 0);
             assert!(measured.seconds > 0.0 && measured.p50 > 0.0 && measured.p99 >= measured.p50);
             assert!((0.0..=1.0).contains(&measured.work_fraction));
-            assert_eq!(early, 0);
+            assert_eq!((early, lost), (0, 0));
         }
     }
 
     #[test]
     fn a_repeated_element_fails_the_run() {
-        let (result, _) = run_against(Fault::ServeTwice, 3, 1);
+        let (result, _, _) = run_against(Fault::ServeTwice, 3, 1);
         let error = result.err().unwrap();
         assert!(error.to_string().contains("consumer 0 received element 2 where 3 was due"), "{error}");
     }
 
     #[test]
+    fn a_lost_element_fails_the_run() {
+        // The producer never pushes to a key whose consumer is behind, so after
+        // the loss the consumers go quiet and the run ends in the stall check.
+        // Were there none, the run would never end: the watchdog fails the
+        // test instead of leaving it hanging.
+        let (done, outcome) = mpsc::channel();
+        thread::spawn(move || { let _ = done.send(run_against(Fault::LoseOne, 3, 1)); });
+        let (result, _, lost) = outcome.recv_timeout(Duration::from_secs(20))
+            .expect("the run neither finished nor failed");
+        assert_eq!(lost, 1);
+        let error = result.err().unwrap();
+        assert!(error.to_string().starts_with("no element for 1 seconds"), "{error}");
+    }
+
+    #[test]
     fn unknown_blpop_is_reported_as_unsupported() {
-        let (result, _) = run_against(Fault::Unsupported, 2, 1);
+        let (result, _, _) = run_against(Fault::Unsupported, 2, 1);
         assert!(result.err().unwrap().downcast_ref::<Unsupported>().is_some());
     }
 
     #[test]
     fn other_refusals_fail() {
-        let (result, _) = run_against(Fault::Refused, 2, 1);
+        let (result, _, _) = run_against(Fault::Refused, 2, 1);
         let error = result.err().unwrap();
         assert!(error.downcast_ref::<Unsupported>().is_none());
         assert!(error.to_string().contains("NOPERM"), "{error}");
