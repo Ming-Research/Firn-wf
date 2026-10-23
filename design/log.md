@@ -5,6 +5,18 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-13 Limit concurrent clients with maxclients
+
+Nodes: firn/startup
+
+Summary: firn had no connection limit and rejected_connections stayed 0. The limit now follows Redis, with the one difference that the operator raises `ulimit -n` since firn cannot. Accept errors, descriptor exhaustion included, keep their existing handling, which ends the accept loop and stops firn; Redis logs them and keeps serving, which firn does not yet; that belongs to the separate accept-error change.
+
+## 2026-10-13 Start firn the way redis-server does
+
+Nodes: firn/startup, firn/measurement-sessions
+
+Summary: firn read no config file, logged nothing and took four positional arguments; an operator replacing redis-server found it treating the config path as a port. It now starts and is configured as redis-server is, with two stated differences (one `bind` address; bare arguments refused) and a temporary path limit that Whitefoot's request for opening ordinary paths removes. The benchmark script chooses the old or new startup form per version so comparisons across the change still run.
+
 ## 2026-10-21 Install a finished AOF rewrite while appends keep failing
 
 Nodes: firn/aof-rewrite, firn/aof-rewrite/capture, firn/append-only-file

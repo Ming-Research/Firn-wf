@@ -9,7 +9,7 @@ public struct Span {
 }
 
 public struct Parsed {
-  doc "What reading one request found. State 1 is a command whose arguments parse_request placed, ending before next; 0 means the bytes held end before the request does; 6 is a request of no arguments, which is skipped up to next; 2 to 5 and 7 to 11 are malformed requests, whose replies protocol_error writes.";
+  doc "What reading one request found. For request parsing, state 1 is a command whose arguments parse_request placed, ending before next; 0 means the bytes held end before the request does; 6 is a request of no arguments, which is skipped up to next; 2 to 5 and 7 to 11 are malformed requests, whose replies protocol_error writes. split_arguments reuses states 1, 6 and 7 for a bounded content range, with next equal to that range end.";
   public state: u64;
   public next: u64;
 }
@@ -73,6 +73,11 @@ public struct Client {
   public settings: Settings;
   public seen_peak: u64;
 }
+
+public fn split_arguments(input: &[u8], start: u64, end: u64, args: &Box<Slots<Span>>) -> parsed: Parsed writes(input), writes(args) contract {
+  requires start <= end;
+  requires end <= input^.len;
+} doc "Splits input[start..end] with Redis sdssplitargs quoting into args, cleared first, decoding in place. State 1 means arguments, 6 none, 7 malformed quoting; next is end. Input NUL terminates the line, escaped NUL is retained. This has no RESP framing or line-length policy.";
 
 public fn parse_request(input: &[u8], start: u64, held: u64, args: &Box<Slots<Span>>, locked: Bool) -> parsed: Parsed writes(input), writes(args) doc "Reads one request from a position of the input, of which held bytes are filled: a RESP array of bulk strings, or an inline command split as Redis splits one, quotes and escapes included. A command's arguments replace what args held, one span each; an inline command's decoded arguments are written back into the input over its line. locked is true for a client that must authenticate first, whose arrays Redis limits.";
 

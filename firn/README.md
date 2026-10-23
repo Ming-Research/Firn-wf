@@ -213,8 +213,8 @@ The recorded reference comparison and boundary cases are in
 
 `CONFIG GET` takes Redis's glob patterns over firn's parameters:
 `appendfilename`, `appendonly`, `bind`, `databases`, `port`, `requirepass`,
-`save`, `timeout`, `auto-aof-rewrite-percentage` and `auto-aof-rewrite-min-size`,
-and the parameters whose only effect in Redis is on its
+`save`, `timeout`, `maxclients`, `auto-aof-rewrite-percentage` and
+`auto-aof-rewrite-min-size`, and the parameters whose only effect in Redis is on its
 internal encodings, leaving every value as commands read it,
 `hash-max-listpack-entries`, `hash-max-listpack-value`,
 `list-compress-depth`, `list-max-listpack-size`, `set-max-intset-entries`,
@@ -312,9 +312,9 @@ the first stamp of every key it refreshed and firn's LFU random state before
 releasing the keys; completed attempts and attempts that wrote retain them.
 SCRIPT KILL between attempts therefore leaves abandoned refreshes undone.
 
-`CONFIG RESETSTAT` answers OK and zeroes connections accepted, evicted keys
-and active-expiry counts. It preserves `used_memory_peak`, the observed
-heap maximum since startup, as Redis 7.0.15 does.
+`CONFIG RESETSTAT` answers OK and zeroes connections admitted, connections
+rejected, evicted keys and active-expiry counts. It preserves
+`used_memory_peak`, the observed heap maximum since startup, as Redis 7.0.15 does.
 
 `SHUTDOWN` sends no reply, nor the replies its connection holds unsent
 from the commands before it, which Redis 7.0.15 does not send either; its
@@ -356,7 +356,7 @@ last check stops firn in order once it listens. A host that refuses to
 deliver the signals to firn stops it with status 3 before the replay, as an
 address it cannot listen on does after it. Once
 firn has taken a signal, or cancellation has ended its signal wait after a
-`SHUTDOWN` request or its last client leaving after the client limit, a
+`SHUTDOWN` request or its last client leaving after the `firn-clients` test shutdown limit, a
 further SIGTERM or SIGINT ends it at once, without the rest of the drain;
 Redis ends at once, with status 1, on a second SIGINT, but ignores a second
 SIGTERM. `SHUTDOWN ABORT` answers `ERR No shutdown in progress.` after a
@@ -387,7 +387,13 @@ storage, its shared-map tables and nodes, as well as values.
 answers Redis's sections in Redis's order and form. Its fields carry real
 values for the port, the calendar time, the uptime, the clients connected,
 whether the append-only file is kept, the connections accepted and the keys
-held, which it counts holding the table whole, as `DBSIZE` does. The other fields it reports have values
+held, which it counts holding the table whole, as `DBSIZE` does.
+`INFO clients` reports `maxclients` and `connected_clients`, excluding
+connections refused by the limit. `INFO stats` reports
+`total_connections_received` for admitted connections only and
+`rejected_connections` for connections refused by the limit, both since
+startup or the last `CONFIG RESETSTAT`.
+The other fields it reports have values
 that are fixed and true of firn: Redis's
 version 7.2.16, standalone mode, 64 bits, its active
 expiry's 10 runs a second, no configuration file,
@@ -428,7 +434,7 @@ installed, and LLD on Linux:
 
 ```sh
 make firn
-./build/firn 6379 0 - 0
+./build/firn --port 6379
 redis-cli -p 6379 PING
 ```
 
@@ -439,38 +445,108 @@ what the edit changed. A cached build does not link the runtime under
 link-time optimization; `make firn-lto` builds `build/firn-lto` with
 `--full-lto` instead, to measure firn's speed, as the benchmarks do.
 
-Up to four arguments may come first by position, in this order:
+The invocation is `firn [configfile] [--directive value ...]`. The first
+argument, when it does not start with `--`, names a configuration file;
+`-` reads configuration from standard input. The former four positional
+arguments are removed. Command-line directives follow the file and override
+its values; repeated directives take the last value. Each argument starting
+with `--` begins a directive, whose values run up to the next such argument.
 
-1. the port to listen on, 6379 when absent;
-2. how many clients to accept before stopping, 0, the default, for no
-   limit;
-3. `appendfilename`, the prefix of the append-only files below `appendonlydir`
-   in the working directory, or `-` for none, the default; firn replays the
-   manifest's base and then its incremental files before listening, appends
-   changes to the last incremental file and syncs it once a second, as
-   Redis's `appendfsync everysec` does;
-4. how many seconds a silent client is kept before it is closed, 0, the
-   default, for no limit.
+These argument boundaries have four differences from Redis's complete
+command-line parser: firn always treats a `--` argument as a new directive,
+accepts stdin `-` only in the initial configuration position, and treats a
+first argument beginning with a single dash as a configuration filename.
+Firn also refuses naked arguments after the configuration file and before
+any `--` directive: `firn startup.conf timeout 3` is an error, while Redis
+quotes those arguments into a configuration line and accepts it. Use
+`firn startup.conf --timeout 3` instead.
+Redis can consume a `--` argument as a preceding directive's first value,
+also accepts a trailing stdin `-`, and classifies a single-dash first argument
+as an option.
 
-Options by name follow them, each `--` and a name, in either case, then its
-value; a later value replaces an earlier one:
+Configuration files use Redis 7.2.16's syntax: one directive per line,
+case-insensitive names, blank lines and comments starting with `#` after
+leading whitespace, and single or double quotes. Double quotes support
+`\n`, `\r`, `\t`, `\b`, `\a`, `\\`, `\"` and `\xHH`; single quotes
+escape only `\'`. A closing quote must be followed by whitespace or the end
+of the line. Command-line values retain their spaces and quotes as argument
+values rather than being parsed a second time as configuration text.
 
-- `--port` and `--timeout`, as the first and fourth arguments;
-- `--bind`, the address to listen on: a dotted IPv4 address, or `*` for every
-  one, the loopback address 127.0.0.1 by default;
-- `--appendonly yes` or `no`, whether to keep the append-only file, and
-  `--appendfilename`, its name, `appendonly.aof` by default, which alone does
-  not turn the file on, as in Redis;
-- `--requirepass`, a password every client must give with `AUTH` or `HELLO`
-  before other commands, none when empty or absent;
-- `--clients`, as the second argument.
+Supported directives, in files or after `--`, are:
+
+- `port`, 6379 by default, and `timeout`, seconds before closing an idle
+  client, 0 by default for no limit. A final `port 0` disables TCP and exits
+  with status 1 because firn has no other listener;
+- `maxclients`, the simultaneous client limit, 10000 by default, accepting
+  integers from 1 through 4294967295 with Redis 7.2.16's validation errors;
+- `bind`, one dotted IPv4 address or `*` for all IPv4 addresses. The default
+  is 127.0.0.1; firn keeps its loopback default rather than Redis's default
+  bind and protected-mode combination. More than one address and space-split
+  address forms are refused. IPv6 and multiple listeners are firn limitations;
+  Whitefoot's standard library supports both. `bind` with no values or one
+  empty value disables the listener; with no other listener, startup exits 1
+  with `Configured to not listen anywhere, exiting.`;
+- `appendonly yes` or `no` (the default), and `appendfilename`, the prefix
+  of the append-only files below `appendonlydir` in the working directory,
+  `appendonly.aof` by default. Naming the prefix alone does not enable AOF;
+- `requirepass`, the password clients give with `AUTH` or `HELLO`, empty by
+  default;
+- `auto-aof-rewrite-percentage` and `auto-aof-rewrite-min-size`, initially
+  100 and 64 MiB;
+- `maxmemory`, `maxmemory-policy`, `maxmemory-samples`,
+  `maxmemory-eviction-tenacity`, `lfu-log-factor` and `lfu-decay-time`, using
+  the same validation as `CONFIG SET`;
+- `dir .` or `dir ./`, retaining the working directory;
+- `firn-clients`, a **firn-only test directive**: how many connections to
+  admit over the server's lifetime before stopping, 0 by default for no
+  limit. Connections refused by `maxclients` do not count. This shutdown
+  count is separate from the simultaneous client limit.
+
+An accepted connection that would exceed `maxclients` receives
+`-ERR max number of clients reached\r\n` and closes before any command is
+served. The reply is best effort: partial sends share one absolute deadline
+one second after the attempt starts. A send error, including expiry of that
+deadline, ends the attempt and closes the connection even if sending is
+incomplete. The host send contract permits zero progress, so this deadline
+alone establishes no strict return-time bound.
+`CONFIG SET maxclients` changes admission for subsequent connections;
+lowering it below the current count leaves every existing client connected.
+The pinned Whitefoot host APIs have no resource-limit facility, so firn
+leaves `RLIMIT_NOFILE` unchanged. Unlike Redis 7.2.16, firn does not reduce
+`maxclients` at startup or refuse `CONFIG SET` solely because the operating
+system cannot supply enough descriptors; Redis can also refuse its event
+loop's capacity adjustment. The configured application limit does not
+promise descriptor availability. Host accept errors retain their existing
+handling: any `accept` error, descriptor exhaustion included, ends the accept
+loop and stops firn with exit status 0 (see the
+[safety boundaries](../docs/safety.md)).
+
+The interim path rules follow owner card `firn-q-ops-paths-interim` while
+Whitefoot's path support is tracked by `firn-req-host-paths`. Configuration
+paths are resolved from the working directory and must be accepted by the
+standard library's relative-path interface. Absolute paths and paths it refuses
+stop startup with a firn-specific diagnostic citing that gap. Every `include`
+directive and every `dir` value other than `.` or `./` is refused in the
+fatal configuration error frame, with a reason citing the same gap.
+Startup does not create a data directory.
 
 ```sh
-./firn --port 6380 --bind 0.0.0.0 --requirepass secret --appendonly yes
+./build/firn startup.conf --port 6380 --requirepass secret --appendonly yes
+./build/firn --port 6381 --firn-clients 1
 ```
 
-An unknown option, a value that does not read or an argument by position after
-an option stops firn with status 1.
+Unknown directives, wrong argument counts, malformed quotes and invalid
+values stop startup with status 1 and a Redis 7.2.16 fatal configuration
+error on stderr. The error prints the trimmed source line and its line
+number; command-line directives continue after the configuration file,
+including Redis's extra separating newline. A file that cannot be opened
+also stops startup with status 1 and a cannot-open diagnostic.
+
+Common Redis configuration directives still refused include `daemonize`,
+`supervised`, `pidfile`, `loglevel`, `logfile`, `databases`, `save`,
+`appendfsync`, `protected-mode`, `tcp-backlog`, `tcp-keepalive`
+and `aof-use-rdb-preamble`. Their default values receive no special
+acceptance in this version.
 
 Persistence uses Redis 7.0.15's manifest layout: with prefix `F`, a fresh
 start creates `appendonlydir/F.1.base.aof` (empty), `F.1.incr.aof` and

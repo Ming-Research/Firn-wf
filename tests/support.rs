@@ -158,8 +158,11 @@ impl CompiledProgram {
         .expect("spawn compiled program")
     }
 
-    /// Starts the program on one runtime route with raw invocation arguments,
+    /// Starts the program on one runtime route with raw invocation arguments
     /// and hands back the running child.
+    /// Firn callers supply Redis-style directives explicitly, including
+    /// `--firn-clients N` when the test ends after accepting N clients; the
+    /// harness passes argv through unchanged.
     ///
     /// A loopback case has to play the peer while the program runs, so it
     /// needs the child rather than the finished output: the program is a
