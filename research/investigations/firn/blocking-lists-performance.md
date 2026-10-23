@@ -36,18 +36,22 @@ placement is [measurement-sessions](../../../design/firn/measurement-sessions.md
 on the 14900K the servers on CPUs 2 and 4 (P-cores) and the clients on CPUs
 16-31 (E-cores), for every line and the noise floor alike. Every run is
 dispatched on the head commit of the PR that merges; the base is the revision of
-main the PR starts from (`ac291c1a1`, the revision the PR's last merge of main
-brought in), so the two images differ by the PR alone. A later merge of main that
-leaves the PR's own change as it is does not repeat a measurement.
+main that the PR's last merge of main brought in (`05f7e89`, the point where the
+PR and main meet and the tip of main when the PR merged it, with the stream
+commands of main in both images), so the two images differ by the PR alone. A
+later merge of main that leaves the PR's own change as it is does not repeat a
+measurement.
 
 ### Cost on existing commands (question 1)
 
-- **Cells.** The 19 tests of the redis-benchmark default suite of Redis 7.0
-  (`SUITE_DEFAULT` in `redis-bench.sh`, 20 rows with the `LRANGE` fill, which
-  `compare` sends outside the timed span), plus `linsert` and `lmove`, which
-  `compare_client` defines for this measurement; each at depth 16 and depth 1 on 2
-  server CPUs: 42 cells, with the append-only file off (the redis-bench
-  default). With the file on (`appendfsync everysec`, rewrites off, a fresh
+- **Cells.** The 20 tests of the redis-benchmark default suite of Redis 7.2
+  (`SUITE_DEFAULT` in `redis-bench.sh`, 21 rows with the `LRANGE` fill, which
+  `compare` sends outside the timed span; `xadd` is one of them, a stream
+  command of main that the head image's dispatcher reaches after trying the
+  four blocking commands), plus `linsert` and `lmove`, which `compare_client`
+  defines for this measurement; each at depth 16 and depth 1 on 2 server CPUs:
+  44 cells, with the append-only file off (the redis-bench default). With the
+  file on (`appendfsync everysec`, rewrites off, a fresh
   directory per run, which the instrument checks with INFO) the cells are
   `set`, `lpush`, `rpush`, `linsert` and `lmove` at both depths: the copy into the file
   exists only there, `set` is the control that the PR does not touch.
@@ -72,7 +76,7 @@ leaves the PR's own change as it is does not repeat a measurement.
   the limit (the client CPUs busy more than 0.90, as `compare-limited.csv`
   marks) is reported and not judged. A cell that does not decide is repeated
   with more passes before it is called.
-- **Chance.** 42 cells each have about a 2.5% chance of lying wholly below 1
+- **Chance.** 44 cells each have about a 2.5% chance of lying wholly below 1
   with no change in the code, so one cell in a run may. The control for that is
   the twin of the same cell: a cell whose twin/head interval lies wholly off 1
   in the same run, or whose twin half-width is above the floor (Noise), does not
@@ -144,7 +148,12 @@ leaves the PR's own change as it is does not repeat a measurement.
   (Redis 7.2.16), `redis-latest`, `valkey-latest`, `valkey-io-latest`,
   `dragonfly-latest`, `garnet-latest`, each with its defaults on the server's 2
   CPUs apart from the thread counts `latest.sh` sets. A server that answers `BLPOP`
-  with an unknown-command error is left out of the workload's cells.
+  with an unknown-command error is left out of the workload's cells. A server
+  that stops handing out elements gets a skip line for the cell it stops in and
+  no value in the cells after it in that pass; the fastest competitor of a
+  cell is the fastest of the lines that have a value in it, and a line that
+  stopped in some passes only is summarised over the passes that gave a value
+  (`summary.py` reads the rows present).
 - **Noise.** A first run measures `head` against `head-twin` alone (6 passes, both
   depths) and takes the widest half-width of the twin/head intervals as the floor
   of this workload class; the comparison run follows with `--floor` set to it, and
@@ -171,7 +180,7 @@ orders them on the 14900K, one at a time.
 
 | run | mode and inputs | answers | expected duration |
 |---|---|---|---|
-| A1 | `compare`, `base`, `head`, `head-twin`, the 21 tests, depths 16 and 1, 2 server CPUs, 6 passes of 5 s, profile `lpush 16;lmove 16` | question 1, file off | about 70 min (the 38-cell run 39573904480 took 60) |
+| A1 | `compare`, `base`, `head`, `head-twin`, the 22 tests, depths 16 and 1, 2 server CPUs, 6 passes of 5 s, profile `lpush 16;lmove 16` | question 1, file off | about 70 min (the 38-cell run 39573904480 took 60) |
 | A2 | `compare`, the same images, `aof`, tests `set lpush rpush linsert lmove`, the same profile | question 1, file on | about 20 min |
 | B | `workloads` with `workload_images`, `head` and `head-twin` only, `blocking-handoff`, depths 16 and 1, 50 connections, 6 passes of 10 s | the floor of question 2 | about 10 min |
 | C | `workloads` with `workload_images`, the six competitor lines and `head` and `head-twin`, `sched_report`, profile | question 2 | about 40 min |
