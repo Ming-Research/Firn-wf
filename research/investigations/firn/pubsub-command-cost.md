@@ -249,8 +249,12 @@ move it by several percent again.
    connection it serves holds a subscription when it executes a command and
    the check could never be true there. Added after P3 (below), which found
    `set` still wholly on the slower side with S1 and the tables fixed.
-4. S3 stays until P5 says what in it costs. P4 (below) found it costs `set`
-   2%, and P3 and P4 together leave nothing else.
+4. S3 stays. P4 found it costs `set` 2%; P5 (below) found about 1% of that in
+   the check after every command and the rest not in any segment. The check is
+   the only route that hands a connection over whatever subscribed it (a
+   subscription command, `EXEC` running one, any later path), so a check
+   restricted to some commands, or made once per read, would drop a
+   subscription the loop does not name.
 
 ### Run P3: the fix, probe
 
@@ -406,3 +410,52 @@ how much is the promoted code being in the program?
   `f4-twin`/`f4` is the noise of the run. The profile is read per symbol (cycles
   per request) and, in `serve` and `execute_client`, per instruction between
   `before`, `f4` and `f4s3`, for the instructions that gained cycles.
+
+### P5 results
+
+Run 39934594064 (`compare`, `set` and `get`, 6 passes of 5 s, depth 16,
+servers on CPUs 2 and 4, clients on 16-31, a flat profile of `set` for every
+image). No sample was client-limited (client busy fraction at most 0.27). The
+run was started with the profile on and every image's absolute times, `get`
+most, are about 20% above those of P4 (`before` 0.3052 against 0.2580 us); only
+the ratios inside the run are read. Server CPU time per request, mean of 6
+passes, in microseconds:
+
+| test | before | f4 | f4-twin | f4s3 | f4c |
+|---|---|---|---|---|---|
+| `get` | 0.3052 | 0.2790 | 0.2785 | 0.2758 | 0.2762 |
+| `set` | 0.2998 | 0.3098 | 0.3083 | 0.3037 | 0.3048 |
+
+The ratios of `summary.py ratios --metric cpu` (median of the 6 per-pass
+ratios and its 95% interval; head over base, above 1 is faster):
+
+| head / base | `get` | `set` |
+|---|---|---|
+| f4 / before | 1.094 (1.081-1.107) | 0.966 (0.959-0.976) |
+| f4-twin / f4 | 0.998 (0.992-1.012) | 1.005 (0.993-1.017) |
+| f4c / f4 | 1.007 (0.999-1.021) | 1.011 (1.004-1.029) |
+| f4s3 / f4 | 1.007 (1.002-1.022) | 1.022 (1.009-1.032) |
+| f4s3 / f4c | 1.000 (0.996-1.006) | 1.005 (0.994-1.014) |
+| f4c / before | 1.105 (1.096-1.114) | 0.987 (0.976-0.992) |
+| f4s3 / before | 1.107 (1.099-1.114) | 0.987 (0.981-0.994) |
+
+- By the reading written above, the cost in S3 is the check after every
+  command: `f4c`/`f4` is wholly on the faster side for `set` (1.1%, 3.4 ns) and
+  `f4s3`/`f4c` holds 1, so removing the promoted code as well adds nothing
+  measurable. For `get` `f4c`/`f4` holds 1, the control behaves.
+- The profile does not say where the 3.4 ns go. The annotation inputs
+  `serve execute_client` matched no symbol (the symbols are
+  `wf_server.serve.resume` and `wf_commands.execute_client$instance$...resume`),
+  so no instruction was annotated; the flat profiles, in nanoseconds per
+  request (share of samples times the mean CPU per request), give
+  `execute_client` 14.7 `before`, 14.8 `f4`, 14.4 `f4c`, and `serve.resume`
+  11.4, 10.8, 10.9. The total per request is 298.5 (`before`), 307.9 (`f4`),
+  302.9 (`f4c`) and 302.1 (`f4s3`); the 9.4 ns of `f4` is spread over many
+  symbols of the runtime and the kernel, each within what `f4-twin` differs
+  from `f4` in the same symbol (about 1 ns): the check does not show as an
+  instruction cost of its own, and 3.4 ns is more than a load, a comparison and
+  a branch take, so it is probably an effect of code placement and of the
+  coroutine frame (deduced, not tested).
+- Even `f4s3` and `f4c` stay 1.3% above `before` for `set` here (0.992
+  (0.978-1.013) in P4): a floor that no segment of Firn-wf#100 explains, which
+  the images' own placement can produce.
