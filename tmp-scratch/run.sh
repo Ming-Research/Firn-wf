@@ -16,7 +16,7 @@ pkg::scratch: [pkg::serverlog, pkg::fdlimit, std::io, std::fs, std::process, std
 
 entry scratch = pkg::scratch::main;
 GRAPH
-"$compiler" --par --par-call-grain off --graph "$out/modules.wfg" --entry scratch --cache "$out/cache" -o "$out/scratch"
+"$compiler" --par --par-call-grain off --graph "$out/modules.wfg" --entry scratch --cache "$out/cache" -o "$out/scratch-bin"
 redis_bin=$(tests/redis-suite/reference.sh)
 hard=$(ulimit -Hn)
 echo "hard limit of this shell: $hard"
@@ -25,7 +25,7 @@ echo "hard limit of this shell: $hard"
 # should print goes to $out/pid.
 run_scratch() {
   ( ulimit -Hn "$1"; ulimit -Sn "$2"; export TZ=Asia/Kolkata
-    exec bash -c 'echo $$ > build/scratch/pid; exec build/scratch/scratch' ) > "$out/out.txt" || echo "scratch exited with $?"
+    exec bash -c 'echo $$ > build/scratch/pid; exec build/scratch/scratch-bin' ) > "$out/out.txt" || echo "scratch exited with $?"
 }
 
 # The message of a Redis log line, without its process id, time and level mark.
