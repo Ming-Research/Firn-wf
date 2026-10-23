@@ -899,3 +899,78 @@ median 1.05%, from 0.38% (lrange_500) to 3.35% (lrange_300); `limiter-tx`
    5.31 against 3.85, 4.70, 5.57); the commit differs by the merge of `main`
    and by `CLIENT LIST` reading the other connections' subscription counts from
    the event hub, which this measurement does not separate.
+
+### Second measurement, on the merged head
+
+Written before the measurement. Everything above measured Firn-wf#74 at
+9b514d5 against `main` at 7f8b4f8. The commit that merges is 5a0a1b9
+(5a0a1b942aeb2ba2343282a77495b4cb44fc4e89), which has since merged `main`
+three more times: the `maxclients` check and count in one atomic statement of
+`accept` with the new startup options, and the stream commands, which add a
+stream check to command dispatch and copy two more connection fields once per
+request read. The handshake workload crosses the changed accept path and every
+cell crosses dispatch, so the first measurement does not stand for the merged
+head. The three groups are measured again on it; the first results stay above,
+marked as made on 9b514d5. `main` is not merged into the branch again unless
+the host reports a conflict, so these revisions stay the merged head.
+
+Revisions: `head` and `head-twin` are 5a0a1b9; `base` is
+05f7e89c62a7b9d10733a43b9a08aaea53fa2090, the `main` that 5a0a1b9 merged, so
+base and head differ only by this change (14 `firn/` files, 920 insertions and
+82 deletions). The machine, CPUs, depth, connection count and rivals are those
+of the first measurement. Each group is one dispatch, so one binary per image
+for all its passes (the first measurement pooled two dispatches of six, whose
+binaries differed).
+
+- Run A, mode `compare`: the 19 tests of the first measurement and `xadd`,
+  which `main`'s `SUITE_DEFAULT` now holds and which `main` supports, so it is
+  a command supported before this change; 5 seconds, 18 passes.
+- Run B1, mode `workloads` with `workload_images`, firn only: `limiter-tx` and
+  `setmany-tx`; 10 seconds, 18 passes.
+- Run B2, mode `workloads` with `workload_images`, images `head` and
+  `head-twin` and Redis 7.2.16, Valkey, Dragonfly and Garnet (the newest stable
+  release of each at the dispatch): `handshake` and `client-list`; 10 seconds,
+  12 passes.
+
+The rule is that of the questions above with these changes:
+
+1. Commands supported before (Run A, B1). The condition is the first sentence
+   only: no cell has a head/base 95% interval wholly under 1. A cell whose
+   head/base interval contains 1 yet is wider than the twin's is reported
+   undecided and does not block: base and head are two binaries, whose
+   build-to-build difference the twin, one binary measured twice, does not
+   carry, so that clause cannot be met and gets no more passes. A cell whose
+   twin interval excludes 1 has too much noise in this run to count: it is
+   judged on the first 12 passes, and while its twin interval still excludes 1
+   the later passes of the run are added one at a time, up to all 18, then it
+   is judged by the first sentence; one still excluding 1 at 18 is reported as
+   noise that did not settle, with its size. rpush and zadd were such cells in
+   the first measurement, which is why Run A and B1 have 18 passes. A cell
+   rejected (interval wholly under 1, twin interval containing 1) blocks the
+   merge until it is fixed or accepted on an owner's card with its size and
+   reason.
+2. Handshake against the fastest rival. The cell is client-limited when the
+   median client work fraction of firn or of that rival is above 0.90; it asks
+   only that firn is not behind: the 95% interval of the per-pass ratio of
+   firn to the rival is not wholly under 1. A shortfall smaller than the twin's
+   half-width is reported undecided. p99 is judged where the cell is not
+   client-limited.
+3. `CLIENT LIST` as in the questions above: judged against the fastest rival
+   other than Garnet, reported against Garnet.
+
+The twin is still `head` measured again, not `base` (the engineering standards
+ask for a twin of the base); this keeps the results comparable with the first
+measurement and means the twin does not carry the build-to-build difference.
+No noise floor is recorded for these classes on this machine; each class's
+largest twin half-width is reported again.
+
+What each result shows: a rejected cell says the change slows that command;
+no rejected cell, with the undecided ones listed, meets the owner's "not
+slower than before" in the sense of the first sentence; a handshake interval
+wholly under 1 with a work fraction above 0.90 says firn is behind Redis on
+the handshake; `CLIENT LIST` against Redis, Valkey and Dragonfly is expected
+near the first measurement's 3.7, 4.5 and 5.3 times, and a figure clearly
+below that would say the merged accept or dispatch path costs it.
+
+Expected time on the 14900K, from the first measurement's runs: about 99
+minutes for Run A, 25 for Run B1 and 45 for Run B2.
