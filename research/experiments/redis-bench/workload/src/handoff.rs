@@ -14,6 +14,12 @@
 //! the server before the consumer's new `BLPOP` does; the server then keeps
 //! the element and the `BLPOP` returns at once. The client cannot tell the two
 //! cases apart, and every server runs the same protocol.
+//!
+//! A run ends with one more element for each key, the drain, after which its
+//! consumer does not block again. No `BLPOP` is left on the server when the
+//! connections close, so that a server which keeps the blocked commands of
+//! closed connections (Garnet 2.2.3 does) cannot hand the next run's first
+//! element on the same keys to a connection that is gone.
 use super::pubsub::{read_available, Accounting, Counter, Unsupported};
 use super::*;
 use std::sync::atomic::AtomicU64;
@@ -22,6 +28,8 @@ use std::sync::OnceLock;
 // An element starts with its number among the elements of its key and the time
 // the batch holding it was built, both little-endian u64, then padding.
 const HEADER: usize = 16;
+// The number of the drain, which no key reaches.
+const DRAIN: u64 = u64::MAX;
 const READ_CHUNK: usize = 65536;
 // How long the consumers' first BLPOP commands have to be refused before the
 // run starts: no element exists yet, so any reply then is a refusal.
@@ -108,6 +116,8 @@ struct Consumer {
     // Elements received so far, which is also the number due next.
     count: u64,
     slot: usize,
+    // The drain has arrived: the consumer holds no BLPOP and expects nothing.
+    drained: bool,
 }
 
 // Connects every consumer, blocks it, and checks that the server accepted the
@@ -120,7 +130,7 @@ fn consumers(opts: &Options) -> Result<Vec<Consumer>> {
         command(&mut blpop, &[b"BLPOP", &key(slot), b"0"]);
         socket.write_all(&blpop)?;
         all.push(Consumer { socket, input: Vec::new(), blpop, pending: Vec::new(),
-            reply: Reply::new(slot, opts.value.len()), count: 0, slot });
+            reply: Reply::new(slot, opts.value.len()), count: 0, slot, drained: false });
     }
     thread::sleep(SETTLE);
     let mut scratch = vec![0; 4096];
@@ -163,8 +173,6 @@ struct Producer {
 struct Shared {
     // Per consumer, the elements it has received.
     received: Vec<Counter>,
-    // Set by the producer once every pushed element has been received.
-    done: AtomicBool,
     cancelled: AtomicBool,
     // How long the consumers of a thread may go without an element before the
     // run fails: an element the server never delivers is found this way.
@@ -189,7 +197,7 @@ fn producer_worker(mut p: Producer, ctx: &Context, begin: Instant, run_for: Dura
     let mut payload = vec![b'x'; ctx.payload_len];
     let keys: Vec<Vec<u8>> = (0..p.pushed.len()).map(key).collect();
     let (loop_start, mut work) = (Instant::now(), Duration::ZERO);
-    let (mut cursor, mut stopping) = (0, false);
+    let (mut cursor, mut stopping, mut draining) = (0, false, false);
     loop {
         if shared.cancelled.load(Ordering::Relaxed) { return Err("another worker failed".into()); }
         let scan_start = Instant::now();
@@ -204,14 +212,23 @@ fn producer_worker(mut p: Producer, ctx: &Context, begin: Instant, run_for: Dura
         }
         if p.awaiting == 0 && p.sent == p.out.len() {
             if !p.input.is_empty() { return Err("extra bytes on the producer's connection".into()); }
+            // The drain's replies are in: the run is over.
+            if draining { break; }
             if begin.elapsed() >= run_for { stopping = true; }
             // Everything pushed has been received once every key is ready.
             let want = if stopping { p.pushed.len() } else { ctx.depth };
             let ready = ready_keys(|k| shared.received[k].0.load(Ordering::Relaxed), &p.pushed, cursor, want);
             if stopping {
                 if ready.len() == want {
-                    shared.done.store(true, Ordering::Release);
-                    break;
+                    // The consumers hold everything pushed: end the run with
+                    // an element for each, after which none blocks again.
+                    payload[..8].copy_from_slice(&DRAIN.to_le_bytes());
+                    payload[8..HEADER].fill(0);
+                    p.out.clear();
+                    p.sent = 0;
+                    for key in &keys { command(&mut p.out, &[b"LPUSH", key, &payload]); }
+                    p.awaiting = keys.len();
+                    draining = true;
                 }
             } else if ready.len() == want {
                 let sent = begin.elapsed().as_nanos() as u64;
@@ -267,7 +284,15 @@ fn consumer_worker(mut group: Vec<Consumer>, begin: Instant, shared: &Shared) ->
             let before = c.count;
             let mut pos = 0;
             while let Some(frame) = c.reply.parse(&c.input[pos..])? {
+                if c.drained { return Err(format!("consumer {} received an element after the drain", c.slot).into()); }
                 let (number, sent) = c.reply.decode(&c.input[pos..pos + frame])?;
+                pos += frame;
+                if number == DRAIN {
+                    // The producer's last element for this key; the consumer
+                    // stays unblocked.
+                    c.drained = true;
+                    continue;
+                }
                 if number != c.count {
                     return Err(format!("consumer {} received element {number} where {} was due",
                         c.slot, c.count).into());
@@ -275,7 +300,6 @@ fn consumer_worker(mut group: Vec<Consumer>, begin: Instant, shared: &Shared) ->
                 let us = now.saturating_sub(sent).div_ceil(1000).max(1);
                 *histogram.entry(us).or_insert(0) += 1;
                 c.count += 1;
-                pos += frame;
                 // Block again before the producer learns that this element
                 // has arrived.
                 c.pending.extend_from_slice(&c.blpop);
@@ -289,7 +313,7 @@ fn consumer_worker(mut group: Vec<Consumer>, begin: Instant, shared: &Shared) ->
             work += read_start.elapsed();
         }
         if moved { last_progress = Instant::now(); }
-        if shared.done.load(Ordering::Acquire) { break; }
+        if group.iter().all(|c| c.drained) { break; }
         if last_progress.elapsed() > shared.stall {
             return Err(Stalled(format!("no element for {} seconds", shared.stall.as_secs_f64())).into());
         }
@@ -335,7 +359,6 @@ fn measure(opts: &Options, run_for: Duration, stall: Duration) -> Result<Measure
     for c in consumers { groups[c.slot % threads].push(c); }
     let shared = Arc::new(Shared {
         received: (0..opts.connections).map(|_| Counter(AtomicU64::new(0))).collect(),
-        done: AtomicBool::new(false),
         cancelled: AtomicBool::new(false),
         stall,
     });
@@ -436,15 +459,25 @@ mod tests {
         frame
     }
 
+    // What a run did to the fake server.
+    #[derive(Default)]
+    struct Counts {
+        // Pushes that reached a key before the server had delivered every
+        // earlier element of it, which the client must never send.
+        pushes_before_delivery: AtomicUsize,
+        // Elements `Fault::LoseOne` did not deliver.
+        lost: AtomicUsize,
+        // Consumers that received the drain.
+        drained: AtomicUsize,
+        // Bytes a consumer sent after the drain: a BLPOP the server would
+        // keep blocked when the connection closes.
+        after_drain: AtomicUsize,
+    }
+
     // A server with the behaviour the client relies on: a consumer's BLPOP
     // holds its connection until an LPUSH to its key sends it the element as
     // the two-element reply, and every LPUSH answers with the list length 1.
-    // `pushes_before_delivery` counts the pushes that reached a key before the
-    // server had delivered every earlier element of it, which the client must
-    // never send.
-    // `lost` counts the elements `Fault::LoseOne` did not deliver.
-    fn serve(listener: TcpListener, consumers: usize, fault: Fault,
-             pushes_before_delivery: Arc<AtomicUsize>, lost: Arc<AtomicUsize>) -> thread::JoinHandle<()> {
+    fn serve(listener: TcpListener, consumers: usize, fault: Fault, counts: Arc<Counts>) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             let mut senders = Vec::new();
             let delivered = Arc::new(Mutex::new(vec![0u64; consumers]));
@@ -468,23 +501,31 @@ mod tests {
                 }
                 let (tx, rx) = mpsc::channel::<Vec<u8>>();
                 senders.push(tx);
-                let (delivered, lost) = (delivered.clone(), lost.clone());
+                let (delivered, counts) = (delivered.clone(), counts.clone());
                 workers.push(thread::spawn(move || {
+                    let mut drained = false;
                     while let Ok(payload) = rx.recv() {
                         // The push is answered and the element is dropped: the
                         // consumer is left blocked on a key that holds nothing.
                         if fault == Fault::LoseOne && slot == 0 && payload[..8] == 2u64.to_le_bytes() {
-                            lost.fetch_add(1, Ordering::Relaxed);
+                            counts.lost.fetch_add(1, Ordering::Relaxed);
                             continue;
                         }
                         let reply = frame(slot, &payload);
+                        let drain = payload[..8] == DRAIN.to_le_bytes();
                         // Counted before the write, so that a push sent after
                         // the consumer received the element finds it counted.
-                        delivered.lock().unwrap()[slot] += 1;
+                        if !drain { delivered.lock().unwrap()[slot] += 1; }
                         // A client that has failed has closed its sockets.
                         if socket.write_all(&reply).is_err() { return; }
                         if fault == Fault::ServeTwice && slot == 0 && payload[..8] == 2u64.to_le_bytes() {
                             let _ = socket.write_all(&reply);
+                        }
+                        // The consumer does not block again.
+                        if drain {
+                            counts.drained.fetch_add(1, Ordering::Relaxed);
+                            drained = true;
+                            break;
                         }
                         // The consumer blocks again.
                         let mut expected = Vec::new();
@@ -498,7 +539,10 @@ mod tests {
                     // consumer that has yet to see the run end could meet the
                     // close first.
                     let mut sink = [0; 64];
-                    while matches!(socket.read(&mut sink), Ok(n) if n > 0) {}
+                    while let Ok(n) = socket.read(&mut sink) {
+                        if n == 0 { break; }
+                        if drained { counts.after_drain.fetch_add(n, Ordering::Relaxed); }
+                    }
                 }));
             }
             if !refused.is_empty() {
@@ -510,7 +554,7 @@ mod tests {
                 return;
             }
             let (mut producer, _) = listener.accept().unwrap();
-            let mut counts = vec![0u64; consumers];
+            let mut pushed = vec![0u64; consumers];
             let (mut buffer, mut chunk) = (Vec::new(), [0; 4096]);
             'serving: loop {
                 match producer.read(&mut chunk) {
@@ -537,13 +581,15 @@ mod tests {
                     assert_eq!(fields[0], b"LPUSH");
                     let slot: usize = String::from_utf8(fields[1][8..].to_vec()).unwrap().parse().unwrap();
                     let number = u64::from_le_bytes(fields[2][..8].try_into().unwrap());
-                    assert_eq!(number, counts[slot]);
-                    // The consumer has received element `number - 1` before
-                    // this push, and the server counted it before writing it.
-                    if delivered.lock().unwrap()[slot] != number {
-                        pushes_before_delivery.fetch_add(1, Ordering::Relaxed);
+                    if number != DRAIN {
+                        assert_eq!(number, pushed[slot]);
+                        // The consumer has received element `number - 1` before
+                        // this push, and the server counted it before writing it.
+                        if delivered.lock().unwrap()[slot] != number {
+                            counts.pushes_before_delivery.fetch_add(1, Ordering::Relaxed);
+                        }
+                        pushed[slot] += 1;
                     }
-                    counts[slot] += 1;
                     // A failed client has closed its sockets and the workers.
                     let _ = senders[slot].send(fields[2].clone());
                     if producer.write_all(b":1\r\n").is_err() { break 'serving; }
@@ -565,36 +611,49 @@ mod tests {
         opts
     }
 
-    // The result of the run, the pushes that found an undelivered element and
-    // the elements the server dropped. Only the run that loses an element
-    // shortens the stall limit, so that a healthy run on a loaded machine does
-    // not meet it.
-    fn run_against(fault: Fault, consumers: usize, pipeline: usize) -> (Result<Measured>, usize, usize) {
+    // The result of the run and what it did to the server. Only the run that
+    // loses an element shortens the stall limit, so that a healthy run on a
+    // loaded machine does not meet it.
+    fn run_against(fault: Fault, consumers: usize, pipeline: usize) -> (Result<Measured>, Arc<Counts>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let opts = options(listener.local_addr().unwrap().port(), consumers, pipeline);
-        let (early, lost) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-        let server = serve(listener, consumers, fault, early.clone(), lost.clone());
+        let counts = Arc::new(Counts::default());
+        let server = serve(listener, consumers, fault, counts.clone());
         let stall = if fault == Fault::LoseOne { Duration::from_secs(1) } else { TIMEOUT };
         let result = measure(&opts, opts.seconds.unwrap(), stall);
         server.join().unwrap();
-        (result, early.load(Ordering::Relaxed), lost.load(Ordering::Relaxed))
+        (result, counts)
     }
 
     #[test]
     fn every_element_reaches_its_consumer_and_no_push_finds_a_backlog() {
         for pipeline in [1, 4] {
-            let (measured, early, lost) = run_against(Fault::None, 6, pipeline);
+            let (measured, counts) = run_against(Fault::None, 6, pipeline);
             let measured = measured.unwrap();
             assert!(measured.pushed > 0);
             assert!(measured.seconds > 0.0 && measured.p50 > 0.0 && measured.p99 >= measured.p50);
             assert!((0.0..=1.0).contains(&measured.work_fraction));
-            assert_eq!((early, lost), (0, 0));
+            assert_eq!(counts.pushes_before_delivery.load(Ordering::Relaxed), 0);
+            assert_eq!(counts.lost.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn a_run_leaves_no_consumer_blocked() {
+        // Every consumer receives the drain and sends nothing after it, so no
+        // BLPOP is left for a server that keeps the commands of closed
+        // connections to serve to a connection that is gone.
+        for pipeline in [1, 4] {
+            let (measured, counts) = run_against(Fault::None, 6, pipeline);
+            measured.unwrap();
+            assert_eq!(counts.drained.load(Ordering::Relaxed), 6);
+            assert_eq!(counts.after_drain.load(Ordering::Relaxed), 0);
         }
     }
 
     #[test]
     fn a_repeated_element_fails_the_run() {
-        let (result, _, _) = run_against(Fault::ServeTwice, 3, 1);
+        let (result, _) = run_against(Fault::ServeTwice, 3, 1);
         let error = result.err().unwrap();
         assert!(error.to_string().contains("consumer 0 received element 2 where 3 was due"), "{error}");
     }
@@ -607,9 +666,9 @@ mod tests {
         // test instead of leaving it hanging.
         let (done, outcome) = mpsc::channel();
         thread::spawn(move || { let _ = done.send(run_against(Fault::LoseOne, 3, 1)); });
-        let (result, _, lost) = outcome.recv_timeout(Duration::from_secs(20))
+        let (result, counts) = outcome.recv_timeout(Duration::from_secs(20))
             .expect("the run neither finished nor failed");
-        assert_eq!(lost, 1);
+        assert_eq!(counts.lost.load(Ordering::Relaxed), 1);
         let error = result.err().unwrap();
         assert!(error.downcast_ref::<Stalled>().is_some(), "{error}");
         assert!(error.to_string().starts_with("no element for 1 seconds"), "{error}");
@@ -617,13 +676,13 @@ mod tests {
 
     #[test]
     fn unknown_blpop_is_reported_as_unsupported() {
-        let (result, _, _) = run_against(Fault::Unsupported, 2, 1);
+        let (result, _) = run_against(Fault::Unsupported, 2, 1);
         assert!(result.err().unwrap().downcast_ref::<Unsupported>().is_some());
     }
 
     #[test]
     fn other_refusals_fail() {
-        let (result, _, _) = run_against(Fault::Refused, 2, 1);
+        let (result, _) = run_against(Fault::Refused, 2, 1);
         let error = result.err().unwrap();
         assert!(error.downcast_ref::<Unsupported>().is_none());
         assert!(error.to_string().contains("NOPERM"), "{error}");

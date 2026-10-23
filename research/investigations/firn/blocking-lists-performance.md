@@ -115,7 +115,19 @@ leaves the PR's own change as it is does not repeat a measurement.
   fails the run at once. A lost element is found by silence: the producer
   pushes nothing more to its key, so once the others have everything the
   consumers receive nothing, and the run fails when a client thread has gone 30
-  seconds without an element. RESP2, loopback.
+  seconds without an element. A competitor that fails this way is recorded as a
+  skipped line (`skip,<line>,blocking-handoff incomplete`) and firn failing it
+  stops the run. A run ends with one more element for every key, the drain,
+  after which a consumer does not block again, so that no `BLPOP` outlives its
+  connection; the warm-up, the measured run and the next cell on the same
+  server all use the same keys. Garnet 2.2.3 serves the `BLPOP` of a connection
+  that has closed. A probe on a hosted runner (run 40019254666): a connection
+  blocks on a key and closes, a second blocks on the same key, a push is
+  answered `:1`, the second receives nothing and the list is empty. The client
+  without the drain (run 39941574831: warm-up 1 s, then the measured run, on a
+  fresh Garnet) stopped at its first measured run with every list empty: the
+  first push of the run went to a connection the warm-up had closed. RESP2,
+  loopback.
 - **Measure.** The rate is the elements received per second over the span from
   the start of the run to the last arrival. An element's latency runs from just
   before the producer writes its batch to its arrival at its consumer; the p99 is
