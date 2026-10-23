@@ -12,13 +12,6 @@ const command_denyoom_kinds: Array<u64, 34> =[2_u64, 3_u64, 4_u64, 5_u64, 6_u64,
 
 fn command_denyoom(kind: u64) -> marked: Bool pure {
   doc "Redis src/commands/*.json DENYOOM flags for firn's held commands, with pub/sub checked against Redis 7.2.16. This flag describes admission, including a write that changes no value, independently of effects appended to the AOF.";
-  let subscribe = kind == 190_u64;
-  let psubscribe = kind == 194_u64;
-  let ssubscribe = kind == 196_u64;
-  let global = bor(subscribe, psubscribe);
-  if bor(global, ssubscribe) {
-    return True();
-  }
   for (index in 0_u64..34_u64) {
     if command_denyoom_kinds[index] == kind {
       return True();
@@ -63,12 +56,6 @@ fn admission_arity(kind: u64, input: &[u8], args: &Box<Slots<Span>>) -> arity: i
   doc "Redis 7.0.15 processCommand resolves existence and command-table arity before authentication and eviction. Zero means unknown/unsupported: the existing dispatcher emits its refusal without admission. Syntax beyond command-table arity is checked by the command after admission. COMMAND's deliberately unsupported descriptors remain foreign when queued.";
   if kind == 0_u64 {
     return 0_i64;
-  }
-  if kind == 193_u64 {
-    return pubsub_arity(input: input, args: args);
-  }
-  if pubsub_command(kind: kind) {
-    return held_arity(kind: kind);
   }
   if kind == 171_u64 {
     return object_arity(input: input, args: args);

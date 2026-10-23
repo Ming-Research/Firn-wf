@@ -447,23 +447,10 @@ fn execute_client<const promoted: u64>(store: &Keyspace, input: &[u8], args: &Bo
     }
   }
   let kind = command_kind(input: input, name: name);
-  if kind == 193_u64 {
-    if pubsub_refused(input: input, args: args, client: client) {
-      if transaction^.open {
-        set transaction^.dirty = True();
-      }
-      return False();
-    }
-  }
   let resetting = code == code_reset;
   let watching = code == code_watch;
   let outside = bnot(transaction^.open);
-  let subscribed = subscriber_mode(client: client);
-  let resp2 = client^.resp == 2_u64;
-  let subscriber = band(subscribed, resp2);
-  let ordinary = bnot(subscriber);
-  let outside_watch = band(watching, outside);
-  if band(outside_watch, ordinary) {
+  if band(watching, outside) {
     pkg::protocol::reply_unknown(client: client, input: input, args: args);
     return False();
   }
@@ -565,12 +552,6 @@ fn execute_client<const promoted: u64>(store: &Keyspace, input: &[u8], args: &Bo
     if failed {
       return False();
     }
-  }
-  if subscriber_refused(kind: kind, input: input, args: args, client: client) {
-    if transaction^.open {
-      set transaction^.dirty = True();
-    }
-    return False();
   }
   if resetting {
     transaction_reset(transaction: transaction);
