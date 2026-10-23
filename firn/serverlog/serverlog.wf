@@ -17,7 +17,8 @@ struct Civil {
 
 fn serverlog_new(clock: WallClock, pid: u64, level: u64) -> made: ServerLog pure {
   let lines = box_ring_new::<Box<Slots<u8>>>(capacity: 8_u64);
-  let state = LogQueue(lines: move lines, closed: False());
+  let open_queue = False();
+  let state = LogQueue(lines: move lines, closed: open_queue);
   let queue = shared_new::<LogQueue>(value: move state);
   return ServerLog(queue: move queue, clock: move clock, pid: pid, level: level);
 }

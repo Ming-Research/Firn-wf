@@ -95,7 +95,8 @@ fn main(inputs: Inputs) -> status: ExitStatus pure waits {
   let log = serverlog_new(clock: move wall_clock, pid: pid, level: 2_u64);
   let writer_log = serverlog_share(log: &log);
   let writer_factory = factory_share(factory: &handles);
-  spawn serverlog_run(log: move writer_log, factory: move writer_factory, sink: LogSink::Stream(output: move stdout));
+  let sink = LogSink::Stream(output: move stdout);
+  spawn serverlog_run(log: move writer_log, factory: move writer_factory, sink: move sink);
   fixed(log: &log, unix_ms: 0_u64, offset: 0_i64);
   fixed(log: &log, unix_ms: 951782400000_u64, offset: 0_i64);
   fixed(log: &log, unix_ms: 1709164799999_u64, offset: 0_i64);
