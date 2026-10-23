@@ -188,3 +188,16 @@ the `LINSERT` pivot changed to one that is not in the list it stopped the run
 with `LLEN '1'` (run 39929636578), and with `LMOVE` changed to `LEFT LEFT` it
 stopped the run with the list `a b c d e` (run 39929639885). The two broken
 forms were on throwaway branches, deleted after the runs.
+
+The hand-off against the competitors was tried the same way (function only):
+run 39935935258 at 232cb66 (`workloads`, `blocking-handoff`, 20 consumers,
+depths 16 and 1, warm-up 1 s, 3 s runs, one pass, `redis-latest`,
+`valkey-latest`, `valkey-io-latest`, `dragonfly-latest`, `garnet-latest` and
+firn) stopped at Garnet's first cell with `no element for 30 seconds`, the
+cause given under the workload above. The same inputs at aa2a6b7 (run
+40020579726, the drain in place) gave both cells for all six lines, Garnet's
+94000 and 45059 elements included. The drain test was watched to fail on two
+broken clients (run 40020673115, throwaway branch deleted after it): a
+consumer that blocks again after the drain (222 bytes sent after it, 0
+expected), and a producer that never drains (the run ends in `server closed
+connection`).
