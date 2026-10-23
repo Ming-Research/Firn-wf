@@ -108,6 +108,8 @@ fn case_original(slot: &Option<Entry>, length: u64) -> same: Bool reads(slot) {
         }
         Ranked(ranked: sorted) => {
         }
+        Stream(..) => {
+        }
       }
     }
     None() => {
@@ -174,6 +176,8 @@ fn case_contents(slot: &Option<Entry>, initial: u64, added: u64, front: Bool, ro
         Fields(fields: hash_of) => {
         }
         Ranked(ranked: sorted) => {
+        }
+        Stream(..) => {
         }
       }
     }
@@ -481,6 +485,8 @@ fn case_move_list(slot: &Option<Entry>, length: u64, first: u8, expires_at: u64,
         }
         Ranked(ranked: sorted) => {
         }
+        Stream(..) => {
+        }
       }
     }
     None() => {
@@ -525,6 +531,8 @@ fn case_text_original(slot: &Option<Entry>) -> same: Bool reads(slot) {
         Fields(fields: hash_of) => {
         }
         Ranked(ranked: sorted) => {
+        }
+        Stream(..) => {
         }
       }
     }

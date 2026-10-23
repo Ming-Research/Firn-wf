@@ -1334,6 +1334,10 @@ fn execute(store: &Keyspace, input: &[u8], args: &Box<Slots<Span>>, client: &Cli
   if ranked {
     return unit;
   }
+  let streamed = stream_command(store: store, input: input, args: args, client: client, env: env, time: time, code: code, name: name);
+  if streamed {
+    return unit;
+  }
   reply_unknown(client: client, input: input, args: args);
   return unit;
 }

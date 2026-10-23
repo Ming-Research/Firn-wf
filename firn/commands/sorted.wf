@@ -282,6 +282,10 @@ fn add_scores(env: &Client, value: &Entry, adding: &Adding) -> kind: u64 writes(
       set env^.state = state_done;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
     Text(bytes: stored) => {
       set env^.state = state_wrong;
       return 1_u64;
@@ -572,6 +576,10 @@ fn remove_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(v
       }
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
     Text(bytes: stored) => {
       set env^.state = state_wrong;
       return 1_u64;
@@ -794,6 +802,10 @@ fn pop_ranked(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
       }
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
     Text(bytes: stored) => {
       set env^.state = state_wrong;
       return 1_u64;
@@ -947,6 +959,10 @@ fn sorted_size(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
       set env^.state = state_done;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
     Text(bytes: stored) => {
       set env^.state = state_wrong;
       return 1_u64;
@@ -1039,6 +1055,10 @@ fn member_score(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(e
         }
       }
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
     Text(bytes: stored) => {
       set env^.state = state_wrong;
@@ -1144,6 +1164,10 @@ fn member_scores(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
       }
       set env^.state = state_done;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
     Text(bytes: stored) => {
       set env^.state = state_wrong;
@@ -1310,6 +1334,10 @@ fn member_rank(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
         }
       }
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
     Text(bytes: stored) => {
       set env^.state = state_wrong;

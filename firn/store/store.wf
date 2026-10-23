@@ -524,13 +524,15 @@ fn request_shutdown(store: &Keyspace) -> result: unit reads(store) waits {
 }
 
 fn access_settings(server: &ServerState, client: &pkg::protocol::Client) -> result: unit reads(server), writes(client) {
-  doc "Copies config.c memory settings into the connection once per request read, before its commands hold any keys, and again after this connection executes CONFIG SET. A lookup racing CONFIG SET may write an old-policy stamp, accepted as Redis policy switches leave stale stamps.";
+  doc "Copies config.c memory settings, and the two stream node limits XADD reads, into the connection once per request read, before its commands hold any keys, and again after this connection executes CONFIG SET. A lookup racing CONFIG SET may write an old-policy stamp, accepted as Redis policy switches leave stale stamps.";
   set client^.memory_policy = server^.memory.maxmemory_policy;
   set client^.maxmemory = server^.memory.maxmemory;
   set client^.maxmemory_samples = server^.memory.maxmemory_samples;
   set client^.maxmemory_tenacity = server^.memory.maxmemory_eviction_tenacity;
   set client^.lfu_log_factor = server^.memory.lfu_log_factor;
   set client^.lfu_decay_time = server^.memory.lfu_decay_time;
+  set client^.stream_node_bytes = cvt.wrap::<i64, u64>(server^.encodings[7_u64]);
+  set client^.stream_node_entries = cvt.wrap::<i64, u64>(server^.encodings[8_u64]);
   return unit;
 }
 

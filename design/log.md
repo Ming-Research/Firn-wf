@@ -5,6 +5,12 @@ naming every node changed and `Summary:`; the owner-wide instructions'
 design-tree part owns the form. Older entries also carry an `Owner-approved:`
 line, a field since retired.
 
+## 2026-10-23 Store streams in Redis's nodes
+
+Nodes: firn/streams
+
+Summary: firn gains the stream type and its non-blocking commands. A stream is kept in nodes keyed by their master ID with tombstones and Redis's listpack byte sizes, as the owner ruled, so that `~` trimming removes the same whole nodes Redis 7.2.16 removes and XLEN and XTRIM answer as it does ([semantics and node layout](../research/investigations/firn/streams.md#node-layout)). Rejected: an entry map with a node summary map, `~` as exact trimming, and stored listpack bytes.
+
 ## 2026-10-13 Limit concurrent clients with maxclients
 
 Nodes: firn/startup

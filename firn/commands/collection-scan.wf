@@ -222,6 +222,8 @@ fn collection_scan_body(sequence: &pkg::store::WriteSequence, journal: &Option<p
           set visit.emitting = True();
           ordered_map_each::<Rank, unit, CollectionScanVisit, fn collection_scan_rank, ceiling>(map: &sorted^.order, env: &visit);
         }
+        Stream(..) => {
+        }
         Text(..) => {
         }
         Items(..) => {
