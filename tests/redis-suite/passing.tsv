@@ -538,7 +538,47 @@ unit/type/set	SUNIONSTORE with two sets - intset	1
 unit/type/set	SUNIONSTORE with two sets - regular	1
 unit/type/set	Variadic SADD	1
 unit/type/set	intsets implementation stress testing	1
+unit/type/stream	Blocking XREAD waiting old data	1
+unit/type/stream	Non blocking XREAD with empty streams	1
+unit/type/stream	XADD 0-* should succeed	1
+unit/type/stream	XADD IDs are incremental	1
+unit/type/stream	XADD IDs are incremental when ms is the same as well	1
+unit/type/stream	XADD IDs correctly report an error when overflowing	1
+unit/type/stream	XADD auto-generated sequence can't be smaller than last ID	1
+unit/type/stream	XADD auto-generated sequence can't overflow	1
+unit/type/stream	XADD auto-generated sequence is incremented for last ID	1
+unit/type/stream	XADD auto-generated sequence is zero for future timestamp ID	1
+unit/type/stream	XADD can add entries into a stream that XRANGE can fetch	1
+unit/type/stream	XADD mass insertion and XLEN	1
+unit/type/stream	XADD streamID edge	1
 unit/type/stream	XADD with ID 0-0	1
+unit/type/stream	XADD with LIMIT consecutive calls	1
+unit/type/stream	XADD with LIMIT delete entries no more than limit	1
+unit/type/stream	XADD with MAXLEN option	1
+unit/type/stream	XADD with MAXLEN option and the '=' argument	1
+unit/type/stream	XADD with MAXLEN option and the '~' argument	1
+unit/type/stream	XADD with MINID option	1
+unit/type/stream	XADD with NOMKSTREAM option	1
+unit/type/stream	XADD wrong number of args	1
+unit/type/stream	XDEL basic test	1
+unit/type/stream	XDEL multiply id test	1
+unit/type/stream	XRANGE COUNT works as expected	1
+unit/type/stream	XRANGE can be used to iterate the whole stream	1
+unit/type/stream	XRANGE exclusive ranges	1
+unit/type/stream	XRANGE fuzzing	1
+unit/type/stream	XREAD streamID edge (no-blocking)	1
+unit/type/stream	XREAD with non empty second stream	1
+unit/type/stream	XREAD with non empty stream	1
+unit/type/stream	XREVRANGE COUNT works as expected	1
+unit/type/stream	XREVRANGE regression test for issue #5006	1
+unit/type/stream	XREVRANGE returns the reverse of XRANGE	1
+unit/type/stream	XTRIM with LIMIT delete entries no more than limit	1
+unit/type/stream	XTRIM with MAXLEN option basic test	1
+unit/type/stream	XTRIM with MINID option	1
+unit/type/stream	XTRIM with MINID option, big delta from master record	1
+unit/type/stream	XTRIM with ~ is limited	1
+unit/type/stream	XTRIM without ~ and with LIMIT	1
+unit/type/stream	XTRIM without ~ is not limited	1
 unit/type/stream-cgroups	XGROUP CREATE: automatic stream creation fails without MKSTREAM	1
 unit/type/string	APPEND modifies the encoding from int to raw	1
 unit/type/string	Coverage: SUBSTR	1

@@ -11,6 +11,12 @@ Nodes: firn/reported-facts, firn/transactions
 
 Summary: CLIENT LIST gives other connections only the fields they set themselves, with the subscription counts the event hub already keeps for pub/sub (the decision pubsub-registries records), because the four per-command fields could be shared only by a contended write to the client table on every command; replication and MONITOR, whose suite checks read another connection's flags, are outside firn's supported features. An unreported address is empty as in Redis 7.2.16's genClientAddrString, not the placeholder the parent decision rejects. Redis 7.2.16 queues the CLIENT subcommands, which lack NO_MULTI, and runs them in execCommand, so firn runs them inside EXEC's atomic statement, which also holds the event hub when the queue holds a pub/sub command or CLIENT LIST, instead of refusing their transaction with EXECABORT; changed connection records are published inside that statement so no connection sees new keys with old connection facts. The pinned compiler takes the client table with Meta on every EXEC, so acquiring it only when CLIENT is queued is recorded as not implemented; its cost was measured on the two transaction workloads, base and candidate paired against `main`: neither is wholly on the slower side, but only one is settled (`setmany-tx`, head over base 0.9927 with 95% interval 0.9761-1.0038, no change detected), while `limiter-tx` (0.9972, 0.9824-1.0041, an interval wider than the twin's) is undecided under the rule written before the runs, so a slowdown of about 2% is not excluded for either; [final-head check](../research/investigations/deployment-performance/README.md#final-head-check-of-the-client-handshake-change-firn-wf74).
 
+## 2026-10-23 Store streams in Redis's nodes
+
+Nodes: firn/streams
+
+Summary: firn gains the stream type and its non-blocking commands. A stream is kept in nodes keyed by their master ID with tombstones and Redis's listpack byte sizes, as the owner ruled, so that `~` trimming removes the same whole nodes Redis 7.2.16 removes and XLEN and XTRIM answer as it does ([semantics and node layout](../research/investigations/firn/streams.md#node-layout)). Rejected: an entry map with a node summary map, `~` as exact trimming, and stored listpack bytes.
+
 ## 2026-10-13 Limit concurrent clients with maxclients
 
 Nodes: firn/startup

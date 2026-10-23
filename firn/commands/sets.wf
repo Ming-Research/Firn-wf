@@ -143,6 +143,10 @@ fn add_members(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(val
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -222,6 +226,10 @@ fn remove_members(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -346,6 +354,10 @@ fn pop_members(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(val
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -409,6 +421,10 @@ fn set_size(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env) 
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -464,6 +480,10 @@ fn members_out(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(en
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -543,6 +563,10 @@ fn members_known(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -695,6 +719,10 @@ fn random_members(env: &Client, value: &Entry) -> kind: u64 reads(value), writes
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -741,6 +769,9 @@ fn set_kind(slot: &Option<Entry>, now: u64) -> kind: u64 reads(slot) {
         Ranked(ranked: sorted) => {
           return entry_other;
         }
+        Stream(..) => {
+          return entry_other;
+        }
       }
     }
     None() => {
@@ -782,6 +813,9 @@ fn entry_size(slot: &Option<Entry>) -> size: u64 reads(slot) {
         Ranked(ranked: sorted) => {
           return 0_u64;
         }
+        Stream(..) => {
+          return 0_u64;
+        }
       }
     }
     None() => {
@@ -813,6 +847,9 @@ fn entry_holds(slot: &Option<Entry>, member: &Key, keys: &KeyEnv, now: u64) -> h
           return False();
         }
         Ranked(ranked: sorted) => {
+          return False();
+        }
+        Stream(..) => {
           return False();
         }
       }
@@ -853,6 +890,9 @@ fn drop_member(slot: &Option<Entry>, member: &Key, client: &Client) -> removed: 
         Ranked(ranked: sorted) => {
           return False();
         }
+        Stream(..) => {
+          return False();
+        }
       }
     }
     None() => {
@@ -888,6 +928,10 @@ fn place_member(sequence: &pkg::store::WriteSequence, client: &Client, slot: &Op
           return unit;
         }
         Ranked(ranked: sorted) => {
+          let dropped = move member;
+          return unit;
+        }
+        Stream(..) => {
           let dropped = move member;
           return unit;
         }
@@ -1124,6 +1168,8 @@ fn combine(slots: &Entries<Entry>, keys: &KeySet, ranks: &Box<Slots<u64>>, posit
           }
           Ranked(ranked: sorted) => {
           }
+          Stream(..) => {
+          }
         }
       }
       None() => {
@@ -1191,6 +1237,8 @@ fn store_members(sequence: &pkg::store::WriteSequence, client: &Client, slot: &O
         Fields(fields: hash_of) => {
         }
         Ranked(ranked: sorted) => {
+        }
+        Stream(..) => {
         }
       }
     }

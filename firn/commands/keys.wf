@@ -139,6 +139,8 @@ const reply_type_hash: Array<u8, 7> =[43_u8, 104_u8, 97_u8, 115_u8, 104_u8, 13_u
 
 const reply_type_zset: Array<u8, 7> =[43_u8, 122_u8, 115_u8, 101_u8, 116_u8, 13_u8, 10_u8];
 
+const reply_type_stream: Array<u8, 9> =[43_u8, 115_u8, 116_u8, 114_u8, 101_u8, 97_u8, 109_u8, 13_u8, 10_u8];
+
 const reply_zero: Array<u8, 4> =[58_u8, 48_u8, 13_u8, 10_u8];
 
 const reply_one: Array<u8, 4> =[58_u8, 49_u8, 13_u8, 10_u8];
@@ -220,7 +222,7 @@ fn option_code(input: &[u8], span: Span) -> code: u64 reads(input) {
 }
 
 fn kind_of(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env) {
-  doc "Reports a live entry's kind: 1 a string, 2 a list, 3 a set, 4 a hash and 5 a sorted set, recording done in state; an expired one is 0, recording expired.";
+  doc "Reports a live entry's kind: 1 a string, 2 a list, 3 a set, 4 a hash, 5 a sorted set and 6 a stream, recording done in state; an expired one is 0, recording expired.";
   let reached = expired(expires: value^.expires, now: env^.now);
   if reached {
     set env^.state = state_expired;
@@ -242,6 +244,9 @@ fn kind_of(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env) {
     }
     Ranked(ranked: sorted) => {
       return 5_u64;
+    }
+    Stream(..) => {
+      return 6_u64;
     }
   }
 }
@@ -1297,6 +1302,8 @@ fn type_finish(client: &Client, kind: u64) -> result: unit writes(client) {
     reply_word(client: client, word: &reply_type_hash[0_u64..7_u64]);
   } else if kind == 5_u64 {
     reply_word(client: client, word: &reply_type_zset[0_u64..7_u64]);
+  } else if kind == 6_u64 {
+    reply_word(client: client, word: &reply_type_stream[0_u64..9_u64]);
   } else {
     reply_word(client: client, word: &reply_type_none[0_u64..7_u64]);
   }

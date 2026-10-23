@@ -41,7 +41,8 @@
 #                                 appear under two names as a noise control;
 #                                 each pass starts every image in turn, the
 #                                 order reversed on even passes, and runs
-#                                 COMPARE_TESTS (default mset set get) at each
+#                                 COMPARE_TESTS (default mset set get; also
+#                                 xadd_maxlen and xrange_10 for streams) at each
 #                                 depth in COMPARE_DEPTHS (default 16 1) for
 #                                 COMPARE_SECONDS (default 10) each, on
 #                                 each server CPU count in COMPARE_CPUS (default 1 2), for
@@ -1191,12 +1192,10 @@ EOF
 }
 
 # The firn criteria: every test of the suite completes on the line with no
-# error reply. The suite is redis-benchmark's default of Redis 7.0, named
-# explicitly: 7.2's default adds XADD, which firn lacks until its minimal
-# streams land (board item firn-scope-min-streams), so the default would fail
-# firn before anything is measured; XADD joins the list when they land. Its
-# 19 tests print 20 rows, LRANGE's LPUSH fill among them.
-SUITE_DEFAULT=ping_inline,ping_mbulk,set,get,incr,lpush,rpush,lpop,rpop,sadd,hset,spop,zadd,zpopmin,lrange_100,lrange_300,lrange_500,lrange_600,mset
+# error reply. The suite is redis-benchmark 7.2's default, named explicitly:
+# Redis 7.0's tests and XADD. Its 20 tests print 21 rows, LRANGE's LPUSH fill
+# among them.
+SUITE_DEFAULT=ping_inline,ping_mbulk,set,get,incr,lpush,rpush,lpop,rpop,sadd,hset,spop,zadd,zpopmin,lrange_100,lrange_300,lrange_500,lrange_600,mset,xadd
 verify_suite() {
     start "$1"
     taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" -c 50 -n 20000 \
@@ -1210,7 +1209,7 @@ verify_suite() {
     # which changes nothing it measures. Any other message is a failure.
     grep -v '^WARNING: Could not fetch server CONFIG$' "$OUT/suite-$1.err" \
         >"$OUT/suite-$1.problems" || true
-    if [ "$tests" != 20 ] || [ -s "$OUT/suite-$1.problems" ]; then
+    if [ "$tests" != 21 ] || [ -s "$OUT/suite-$1.problems" ]; then
         fail "$1" "the default suite"
     fi
 }
@@ -1402,10 +1401,26 @@ compare_client() {
             esac
             what="LRANGE mylist 0 $last"
             ;;
+        xadd_maxlen)
+            # Appends that trim with ~ to about 1000 entries, removing whole
+            # nodes as the stream passes each node's worth.
+            redis-cli -p "$PORT" DEL mystream >/dev/null
+            what="XADD mystream MAXLEN ~ 1000 * field __rand_int__"
+            ;;
+        xrange_10)
+            # Reads of the first ten entries of a stream of 10,000 filled
+            # outside the timed span.
+            redis-cli -p "$PORT" DEL mystream >/dev/null
+            redis-benchmark -p "$PORT" -n 10000 -P 16 -q XADD mystream '*' field value >/dev/null 2>&1
+            what="XRANGE mystream - + COUNT 10"
+            ;;
     esac
     ticks=$(server_ticks)
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-before"
     begin=$(date +%s%N)
+    # $what is split into words but must not be globbed: XADD's * ID would
+    # otherwise become the names of the files in the working directory.
+    set -f
     if [ "${COMPARE_CLIENT:-procs}" = threads ]; then
         taskset -c "$CLIENT_CPUS" redis-benchmark -p "$PORT" --threads "$CLIENT_THREADS" \
             -c 50 -n "$3" -r 100000 -d 3 -P "$2" --csv $what >"$OUT/compare-client.csv" 2>"$OUT/compare-client.err"
@@ -1425,6 +1440,7 @@ compare_client() {
         cp "$OUT/compare-client-0.csv" "$OUT/compare-client.csv"
         set -- "$1" "$2" $(($3 / CLIENT_THREADS * CLIENT_THREADS))
     fi
+    set +f
     end=$(date +%s%N)
     [ -z "$cpu_record" ] || cat /proc/stat >"$OUT/compare-stat-after"
     ticks=$(($(server_ticks) - ticks))

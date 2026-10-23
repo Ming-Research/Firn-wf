@@ -168,6 +168,10 @@ fn set_fields(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(valu
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -276,6 +280,10 @@ fn set_field_once(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -353,6 +361,10 @@ fn get_field(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env)
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -419,6 +431,10 @@ fn get_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -491,6 +507,10 @@ fn delete_fields(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(v
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -559,6 +579,10 @@ fn find_field(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -609,6 +633,10 @@ fn hash_size(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env)
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -698,6 +726,10 @@ fn all_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -784,6 +816,10 @@ fn add_to_field(env: &Client, value: &Entry) -> kind: u64 writes(env), writes(va
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -907,6 +943,10 @@ fn add_float(env: &Client, value: &Entry, floating: &Floating) -> kind: u64 writ
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }
@@ -1090,6 +1130,10 @@ fn random_fields(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(
     Ranked(ranked: sorted) => {
       set env^.state = state_wrong;
       return 5_u64;
+    }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
     }
   }
 }

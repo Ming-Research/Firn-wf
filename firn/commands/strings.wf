@@ -210,6 +210,10 @@ fn text_value(env: &Client, value: &Entry) -> kind: u64 reads(value), writes(env
       set env^.state = state_wrong;
       return 5_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 6_u64;
+    }
   }
 }
 
@@ -998,6 +1002,10 @@ fn bump_value(env: &Counted, value: &Entry) -> result: u64 writes(env), writes(v
       set env^.state = state_wrong;
       return 3_u64;
     }
+    Stream(..) => {
+      set env^.state = state_wrong;
+      return 3_u64;
+    }
   }
 }
 
@@ -1267,6 +1275,9 @@ fn held_text_length(slot: &Option<Entry>) -> length: u64 reads(slot) {
         Ranked(ranked: sorted) => {
           return 0_u64;
         }
+        Stream(..) => {
+          return 0_u64;
+        }
       }
     }
     None() => {
@@ -1294,6 +1305,9 @@ fn held_text_write(slot: &Option<Entry>, input: &[u8], span: Span, offset: u64) 
           return 0_u64;
         }
         Ranked(ranked: sorted) => {
+          return 0_u64;
+        }
+        Stream(..) => {
           return 0_u64;
         }
       }
@@ -1375,6 +1389,8 @@ fn reply_held_range(slot: &Option<Entry>, client: &Client, start: i64, end: i64)
         Fields(fields: hash_of) => {
         }
         Ranked(ranked: sorted) => {
+        }
+        Stream(..) => {
         }
       }
     }
@@ -1734,6 +1750,10 @@ fn float_value(env: &FloatSum, value: &Entry) -> result: u64 writes(env), writes
       return 3_u64;
     }
     Ranked(ranked: sorted) => {
+      set env^.state = state_wrong;
+      return 3_u64;
+    }
+    Stream(..) => {
       set env^.state = state_wrong;
       return 3_u64;
     }
