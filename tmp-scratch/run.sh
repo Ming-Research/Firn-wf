@@ -92,7 +92,15 @@ run_redis 2000 1024 5000
 cat "$out/redis-fd.txt"
 run_scratch 2000 1024
 firn_fd | head -3 > "$out/firn-fd.txt"
-diff -u "$out/redis-fd.txt" "$out/firn-fd.txt"
+# The host's reason differs by design: Redis sets the soft and the hard limit
+# together, so an unprivileged process is refused with EPERM; Whitefoot raises
+# only the soft limit, which the kernel refuses with EINVAL when it exceeds the
+# hard one. Show both reasons, compare everything else.
+grep 'because of OS error' "$out/redis-fd.txt" "$out/firn-fd.txt"
+reason() { sed -E 's/(because of OS error: ).*/\1<reason>/' "$1"; }
+reason "$out/redis-fd.txt" > "$out/redis-fd-flat.txt"
+reason "$out/firn-fd.txt" > "$out/firn-fd-flat.txt"
+diff -u "$out/redis-fd-flat.txt" "$out/firn-fd-flat.txt"
 grep -q 'scratch: maxclients=1960 fatal=0 soft=1992 hard=2000' "$out/out.txt"
 firn_fd | sed -n 4,6p | grep -E "maxclients of 1990 requiring at least 2022|Current maximum open files is 1992. maxclients has been reduced to 1960"
 echo "reduction matches"
