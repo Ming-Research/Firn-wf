@@ -11674,40 +11674,18 @@ fn rewrite_large_fixture(program: &CompiledProgram) {
 fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     let program = CompiledProgram::from_environment();
     rewrite_large_fixture(&program);
-    let startup_diagnostics = |stage: &str, port: u16| {
-        eprintln!("{}:{} rewrite exactly-once: {stage}; port={port}; route=native-ring; WF_WORKERS/WF_DRIVERS unset (runtime defaults)", file!(), line!());
-        let directory = program.working_directory().join("appendonlydir");
-        match std::fs::read_to_string(directory.join("appendonly.aof.manifest")) {
-            Ok(manifest) => {
-                eprintln!("{stage} manifest:\n{manifest}");
-                // This fixture uses fixed, unquoted filenames in Redis's manifest format.
-                for line in manifest.lines() {
-                    let fields: Vec<_> = line.split_whitespace().collect();
-                    if fields.len() == 6 && fields[0] == "file" && fields[4] == "type" && matches!(fields[5], "b" | "i") {
-                        let size = std::fs::metadata(directory.join(fields[1])).map(|metadata| metadata.len());
-                        eprintln!("{stage} active AOF {} bytes={size:?}", fields[1]);
-                    }
-                }
-            }
-            Err(error) => eprintln!("{stage} manifest diagnostic failed: {error}"),
-        }
-    };
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    startup_diagnostics("first-load before spawn/connect", port);
     let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
     let mut control = connect_when_ready(port, &child);
-    eprintln!("{}:{} rewrite exactly-once: first-load connected; starting worker connections", file!(), line!());
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let mut workers = Vec::new();
     for operation in ["INCR", "APPEND", "LPUSH"] {
         let running = running.clone();
         let monitor = child.monitor();
         workers.push(std::thread::spawn(move || {
-            eprintln!("{}:{} rewrite exactly-once: {operation} worker connecting; port={port}", file!(), line!());
             let mut client = connect_when_ready(port, &monitor);
-            eprintln!("{}:{} rewrite exactly-once: {operation} worker connected", file!(), line!());
             let mut count = 0;
             while running.load(std::sync::atomic::Ordering::Acquire) || count < 100 {
                 let mut request = vec![operation, operation];
@@ -11721,7 +11699,6 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
             (operation, count)
         }));
     }
-    eprintln!("{}:{} rewrite exactly-once: configuring and starting rewrite", file!(), line!());
     rewrite_key_delay(&mut control, "100");
     rewrite_start(&mut control);
     assert_eq!(rewrite_info(&mut control)["aof_rewrite_in_progress"], "1", "fixture must overlap the rewrite");
@@ -11730,15 +11707,12 @@ fn firn_rewrite_keeps_concurrent_non_idempotent_writes_exactly_once() {
     assert_eq!(rewrite_wait(&mut control)["aof_last_bgrewrite_status"], "ok");
     running.store(false, std::sync::atomic::Ordering::Release);
     let expected: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
-    eprintln!("{}:{} rewrite exactly-once: rewrite complete; workers joined; successful writes={expected:?}", file!(), line!());
     rewrite_stop(&mut control, child);
     let port_lease = support::lease_port();
     let port = port_lease.port();
     let text = port.to_string();
-    startup_diagnostics("restart before spawn/connect", port);
     let child = program.spawn_on_route(true, &[text.as_bytes(), b"0", b"appendonly.aof"]).with_port(&port_lease);
     let mut client = connect_when_ready(port, &child);
-    eprintln!("{}:{} rewrite exactly-once: restart connected; checking persisted writes", file!(), line!());
     for (operation, count) in expected {
         match operation {
             "INCR" => {

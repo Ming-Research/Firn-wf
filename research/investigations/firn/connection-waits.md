@@ -48,7 +48,7 @@ condition, not a conclusion from source inspection.**
 
 Today `Keyspace.keys` is already a retained
 `Shared<ConcurrentHashMap<Entry>>` handle, copied by `keyspace_share` when a
-connection is accepted. A keyed command such as `run_push` or a string command
+connection is accepted. A keyed command such as `run_hset` or a string command
 addresses `store.keys[key]`; it does not first look up a database. `run_select`
 currently accepts only database zero and changes nothing. See
 [store interface](../../../firn/store/module.wfm),
