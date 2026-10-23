@@ -836,6 +836,11 @@ and
 | Dragonfly v2.0.2 | 21.90k | 5.412 | 0.962 |
 | Garnet 2.2.3 | 20.90k | 5.216 | 0.966 |
 
+The client work fraction is read from `workload-limited.csv` of each run's
+artifact; the artifacts expire, so its range is copied here: over the 12 passes
+every handshake line stayed between 0.943 and 0.990, every `CLIENT LIST` line
+between 0.021 and 0.156.
+
 | CLIENT LIST | rate per second | firn / rival | p99 (ms) | client work fraction |
 | --- | --- | --- | --- | --- |
 | firn (head) | 127.1k | | 0.635 | 0.085 |
