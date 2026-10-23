@@ -1397,6 +1397,11 @@ server_ticks() {
     sed 's/^.*) //' "/proc/$server/stat" | awk '{ print $12 + $13 }'
 }
 
+# The commands compare_client sends for the linsert and lmove tests, which the
+# timed runs and verify_list_forms both use. linsert_form takes the depth.
+linsert_form() { echo "LINSERT ins$1:__rand_int__ AFTER pivot xxx"; }
+lmove_form() { echo "LMOVE mylist mylist RIGHT LEFT"; }
+
 # One redis-benchmark run of <test> at depth <depth> for <requests> against
 # the started server, its client threads on CLIENT_CPUS; prints the rate over
 # the run's wall time, the server's CPU microseconds per request, and the
@@ -1419,13 +1424,13 @@ compare_client() {
             # every image.
             redis-benchmark -p "$PORT" -r 100000 -n 1000000 -P 16 -q \
                 RPUSH "ins$2:__rand_int__" pivot >/dev/null 2>&1
-            what="LINSERT ins$2:__rand_int__ AFTER pivot xxx"
+            what=$(linsert_form "$2")
             ;;
         lmove)
             # The one list rotates onto itself, so that it keeps its length.
             redis-cli -p "$PORT" DEL mylist >/dev/null
             redis-cli -p "$PORT" RPUSH mylist a b c d e >/dev/null
-            what="LMOVE mylist mylist RIGHT LEFT"
+            what=$(lmove_form)
             ;;
         lrange_*)
             # redis-benchmark fills the list an LRANGE test reads inside its own
@@ -1473,6 +1478,28 @@ compare_client() {
         $1 != "\"test" {
             printf "%.0f,%.3f,%s,%s\n", n / (ns / 1e9), ticks / hz * 1e6 / n, $5, $7
         }' "$OUT/compare-client.csv"
+}
+
+# The linsert and lmove forms change a list as the tests assume: one is sent
+# 100 and the other 101 times by redis-benchmark itself to a server with keys
+# the timed runs never use, and the lists must show it. A form that misses its
+# key, or a command that does not write, would otherwise be measured as a
+# miss and pass for a fast server.
+verify_list_forms() {
+    start "$1"
+    redis-cli -p "$PORT" RPUSH ins0:000000000000 pivot >/dev/null
+    redis-benchmark -p "$PORT" -c 1 -n 100 -r 1 -q $(linsert_form 0) >/dev/null 2>&1
+    length=$(redis-cli -p "$PORT" LLEN ins0:000000000000)
+    redis-cli -p "$PORT" DEL mylist >/dev/null
+    redis-cli -p "$PORT" RPUSH mylist a b c d e >/dev/null
+    redis-benchmark -p "$PORT" -c 1 -n 101 -q $(lmove_form) >/dev/null 2>&1
+    rotated=$(redis-cli -p "$PORT" LRANGE mylist 0 -1 | tr '\n' ' ')
+    stop
+    # 100 insertions after the one pivot make 101 elements; 101 rotations of
+    # five move the last element to the front.
+    if [ "$length" != 101 ] || [ "$rotated" != "e a b c d " ]; then
+        fail "$1" "the linsert and lmove forms (LLEN '$length', list '$rotated')"
+    fi
 }
 
 # The comparison of prebuilt images. A line whose replies fail verify stops
@@ -1556,6 +1583,9 @@ if [ "$MODE" = compare ]; then
         placement_for_count "$n" "$((total - n < 1 ? 1 : total - n < 16 ? total - n : 16))" || continue
         for name in $names; do
             verify "$(compare_arg "$name")"
+            case " $tests " in
+                *" linsert "*|*" lmove "*) verify_list_forms "$(compare_arg "$name")" ;;
+            esac
         done
         sizes="$OUT/compare-sizes-$n.txt"
         : >"$sizes"
