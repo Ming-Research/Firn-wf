@@ -12,7 +12,7 @@
 #             reference.sh, anew for every unit on a free port, without
 #             persistence and with any further arguments given
 #   firn      starts the given firn executable anew for every unit on a free
-#             port, as `firn PORT 0 - 0`
+#             port, as `firn --port PORT --firn-clients 0 --appendonly no --timeout 0`
 #   external  runs every unit against a server that is already running
 #
 # options:
@@ -183,7 +183,7 @@ flags=(--singledb --ignore-encoding --ignore-digest --durable --timeout "$timeou
         redis) echo "server: $(redis-server --version)"
                echo "server arguments: --port PORT$(printf ' %q' "${redis_args[@]}")" ;;
         firn) echo "server: firn sha256 $(sha256sum < "$firn" | cut -d' ' -f1)"
-              echo "server arguments: PORT 0 - 0" ;;
+              echo "server arguments: --port PORT --firn-clients 0 --appendonly no --timeout 0" ;;
         external) echo "server: $host:$port" ;;
     esac
     echo "runtest arguments: --host $host --port PORT --single UNIT --baseport FREE --portcount 1000 ${flags[*]} --skipfile HUNG ${extra[*]}"
@@ -250,7 +250,7 @@ start_server() {
         port=$(free_port)
         case $target in
             redis) redis-server --port "$port" --dir "$out/data" "${redis_args[@]}" > "$log" 2>&1 & ;;
-            firn) (cd "$out/data" && exec "$firn" "$port" 0 - 0) > "$log" 2>&1 & ;;
+            firn) (cd "$out/data" && exec "$firn" --port "$port" --firn-clients 0 --appendonly no --timeout 0) > "$log" 2>&1 & ;;
         esac
         server_pid=$!
         # The server has 10 seconds to answer PING; redis-cli waits for a

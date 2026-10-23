@@ -125,8 +125,8 @@ fn aof_matches_recording(actual: &[u8], recorded: &[u8]) -> bool {
 fn spawn(program: &CompiledProgram, lease: &support::PortLease, count: usize, aof: bool, drivers: &str) -> ProgramChild {
     let port = lease.port().to_string();
     let count = count.to_string();
-    let mut arguments: Vec<&[u8]> = vec![port.as_bytes(), count.as_bytes()];
-    if aof { arguments.push(b"blocking.aof"); }
+    let mut arguments: Vec<&[u8]> = vec![b"--port", port.as_bytes(), b"--firn-clients", count.as_bytes()];
+    if aof { arguments.extend_from_slice(&[b"--appendonly", b"yes", b"--appendfilename", b"blocking.aof"]); }
     program.spawn_on_route_with(true, &[("WF_DRIVERS", drivers)], &arguments).with_port(lease)
 }
 
