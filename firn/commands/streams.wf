@@ -997,7 +997,7 @@ fn append_into_node(env: &StreamAppend, key: &StreamId, value: &StreamNode) -> a
   return True();
 }
 
-fn stream_add(log: &StreamLog, op: &StreamOp, client: &Client) -> result: unit writes(log), writes(op), writes(client) {
+fn stream_add(log: &StreamLog, op: &StreamOp) -> result: unit writes(log), writes(op) {
   doc "XADD's append, as Redis 7.2.16's xaddCommand and streamAppendItem make it: the ID given, the milliseconds given with the next sequence, or the next ID from the clock; refused when the stream's last ID is max-max, when the ID is not above the last, or when the entry's strings pass 2^30 bytes. The entry goes into the tail node, or a new node when the tail is full.";
   let last = log^.last_id;
   let exhausted_ms = last.ms == stream_max;
@@ -1320,7 +1320,7 @@ fn stream_range_reply(log: &StreamLog, op: &StreamOp, client: &Client) -> result
 fn stream_apply(op: &StreamOp, log: &StreamLog, client: &Client) -> result: unit writes(op), writes(log), writes(client) {
   doc "Runs the stream command op names on a live stream.";
   if op^.act == 1_u64 {
-    stream_add(log: log, op: op, client: client);
+    stream_add(log: log, op: op);
     if op^.error != 0_u64 {
       return unit;
     }
